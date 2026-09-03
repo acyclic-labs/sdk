@@ -4,27 +4,473 @@
 pub struct ContextRef {
     #[prost(string, tag="1")]
     pub context_id: ::prost::alloc::string::String,
-    #[prost(string, tag="2")]
-    pub revision_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct InferenceRequest {
+pub struct Item {
+    #[prost(string, tag="1")]
+    pub item_id: ::prost::alloc::string::String,
+    #[prost(enumeration="ItemKind", tag="2")]
+    pub kind: i32,
+    #[prost(bytes="vec", tag="3")]
+    pub content: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, optional, tag="4")]
+    pub link: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="5")]
+    pub continuation_profile: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ModelCapabilities {
+    #[prost(string, tag="1")]
+    pub model: ::prost::alloc::string::String,
+    #[prost(uint64, tag="2")]
+    pub maximum_context_bytes: u64,
+    #[prost(uint64, tag="3")]
+    pub maximum_output: u64,
+    #[prost(string, repeated, tag="4")]
+    pub features: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListModelsRequest {
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListModelsResponse {
+    #[prost(message, repeated, tag="1")]
+    pub models: ::prost::alloc::vec::Vec<ModelCapabilities>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CreateContextRequest {
     #[prost(message, optional, tag="1")]
     pub operation: ::core::option::Option<super::super::harness::v1::OperationIdentity>,
     #[prost(string, tag="2")]
     pub model: ::prost::alloc::string::String,
-    #[prost(string, repeated, tag="3")]
-    pub messages: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    #[prost(message, optional, tag="4")]
+    #[prost(message, repeated, tag="3")]
+    pub items: ::prost::alloc::vec::Vec<Item>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct InspectContextRequest {
+    #[prost(message, optional, tag="1")]
     pub context: ::core::option::Option<ContextRef>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct InferenceResponse {
+pub struct Insert {
+    #[prost(string, tag="1")]
+    pub target_item_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="2")]
+    pub item: ::core::option::Option<Item>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Replace {
+    #[prost(string, tag="1")]
+    pub target_item_id: ::prost::alloc::string::String,
+    #[prost(bytes="vec", tag="2")]
+    pub content: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ContextEdit {
+    #[prost(oneof="context_edit::Action", tags="1, 2, 3, 4, 5")]
+    pub action: ::core::option::Option<context_edit::Action>,
+}
+/// Nested message and enum types in `ContextEdit`.
+pub mod context_edit {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Action {
+        #[prost(message, tag="1")]
+        Append(super::Item),
+        #[prost(message, tag="2")]
+        InsertBefore(super::Insert),
+        #[prost(message, tag="3")]
+        InsertAfter(super::Insert),
+        #[prost(message, tag="4")]
+        Replace(super::Replace),
+        #[prost(string, tag="5")]
+        DeleteItemId(::prost::alloc::string::String),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EditContext {
+    #[prost(message, repeated, tag="1")]
+    pub edits: ::prost::alloc::vec::Vec<ContextEdit>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TruncateContext {
+    #[prost(string, optional, tag="1")]
+    pub through_item_id: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CompactContext {
+    #[prost(string, repeated, tag="1")]
+    pub selected_item_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag="2")]
+    pub replacement: ::prost::alloc::vec::Vec<Item>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TransferContext {
+    #[prost(string, tag="1")]
+    pub model: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MutateContextRequest {
+    #[prost(message, optional, tag="1")]
+    pub operation: ::core::option::Option<super::super::harness::v1::OperationIdentity>,
+    #[prost(message, optional, tag="2")]
+    pub source: ::core::option::Option<ContextRef>,
+    #[prost(oneof="mutate_context_request::Mutation", tags="3, 4, 5, 6, 7")]
+    pub mutation: ::core::option::Option<mutate_context_request::Mutation>,
+}
+/// Nested message and enum types in `MutateContextRequest`.
+pub mod mutate_context_request {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Mutation {
+        #[prost(bool, tag="3")]
+        Fork(bool),
+        #[prost(message, tag="4")]
+        Edit(super::EditContext),
+        #[prost(message, tag="5")]
+        Truncate(super::TruncateContext),
+        #[prost(message, tag="6")]
+        Compact(super::CompactContext),
+        #[prost(message, tag="7")]
+        Transfer(super::TransferContext),
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Retention {
+    #[prost(enumeration="RetentionKind", tag="1")]
+    pub kind: i32,
+    #[prost(uint64, optional, tag="2")]
+    pub expires_at_unix_ms: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RetainContextRequest {
+    #[prost(message, optional, tag="1")]
+    pub operation: ::core::option::Option<super::super::harness::v1::OperationIdentity>,
+    #[prost(message, optional, tag="2")]
+    pub context: ::core::option::Option<ContextRef>,
+    #[prost(message, optional, tag="3")]
+    pub retention: ::core::option::Option<Retention>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteContextRequest {
+    #[prost(message, optional, tag="1")]
+    pub operation: ::core::option::Option<super::super::harness::v1::OperationIdentity>,
+    #[prost(message, optional, tag="2")]
+    pub context: ::core::option::Option<ContextRef>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteContextResponse {
     #[prost(message, optional, tag="1")]
     pub admission: ::core::option::Option<super::super::harness::v1::Admission>,
-    #[prost(string, tag="2")]
-    pub output: ::prost::alloc::string::String,
-    #[prost(message, optional, tag="3")]
+    #[prost(bool, tag="2")]
+    pub deleted: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ContextProvenance {
+    #[prost(enumeration="ContextProvenanceKind", tag="1")]
+    pub kind: i32,
+    #[prost(message, optional, tag="2")]
+    pub source: ::core::option::Option<ContextRef>,
+    #[prost(string, optional, tag="3")]
+    pub run_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag="4")]
+    pub reused_compatible_state: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Context {
+    #[prost(message, optional, tag="1")]
     pub context: ::core::option::Option<ContextRef>,
+    #[prost(string, tag="2")]
+    pub lineage_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="3")]
+    pub parent: ::core::option::Option<ContextRef>,
+    #[prost(string, tag="4")]
+    pub model: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag="5")]
+    pub items: ::prost::alloc::vec::Vec<Item>,
+    #[prost(message, optional, tag="6")]
+    pub retention: ::core::option::Option<Retention>,
+    #[prost(message, optional, tag="7")]
+    pub provenance: ::core::option::Option<ContextProvenance>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ContextResponse {
+    #[prost(message, optional, tag="1")]
+    pub admission: ::core::option::Option<super::super::harness::v1::Admission>,
+    #[prost(message, optional, tag="2")]
+    pub context: ::core::option::Option<Context>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GenerationSettings {
+    #[prost(uint64, tag="1")]
+    pub maximum_output: u64,
+    #[prost(uint64, optional, tag="2")]
+    pub seed: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GenerateRequest {
+    #[prost(message, optional, tag="1")]
+    pub operation: ::core::option::Option<super::super::harness::v1::OperationIdentity>,
+    #[prost(message, optional, tag="2")]
+    pub context: ::core::option::Option<ContextRef>,
+    #[prost(message, optional, tag="3")]
+    pub input: ::core::option::Option<Item>,
+    #[prost(message, optional, tag="4")]
+    pub settings: ::core::option::Option<GenerationSettings>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RunRef {
+    #[prost(string, tag="1")]
+    pub run_id: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Usage {
+    #[prost(uint64, tag="1")]
+    pub new_prefill: u64,
+    #[prost(uint64, tag="2")]
+    pub generated_output: u64,
+    #[prost(uint64, tag="3")]
+    pub effective_context_reads: u64,
+    #[prost(uint64, tag="4")]
+    pub retained_byte_millis: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UsageReceipt {
+    #[prost(string, tag="1")]
+    pub receipt_id: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub model: ::prost::alloc::string::String,
+    #[prost(string, tag="3")]
+    pub meter_revision: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="4")]
+    pub usage: ::core::option::Option<Usage>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RunResult {
+    #[prost(bytes="vec", tag="1")]
+    pub output: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag="2")]
+    pub context: ::core::option::Option<Context>,
+    #[prost(enumeration="RunTerminal", tag="3")]
+    pub terminal: i32,
+    #[prost(message, optional, tag="4")]
+    pub receipt: ::core::option::Option<UsageReceipt>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Run {
+    #[prost(message, optional, tag="1")]
+    pub run: ::core::option::Option<RunRef>,
+    #[prost(message, optional, tag="2")]
+    pub input: ::core::option::Option<ContextRef>,
+    #[prost(message, optional, tag="3")]
+    pub result: ::core::option::Option<RunResult>,
+    #[prost(message, repeated, tag="4")]
+    pub events: ::prost::alloc::vec::Vec<RunEvent>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GenerateResponse {
+    #[prost(message, optional, tag="1")]
+    pub admission: ::core::option::Option<super::super::harness::v1::Admission>,
+    #[prost(message, optional, tag="2")]
+    pub run: ::core::option::Option<Run>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct InspectRunRequest {
+    #[prost(message, optional, tag="1")]
+    pub run: ::core::option::Option<RunRef>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WatchRunRequest {
+    #[prost(message, optional, tag="1")]
+    pub run: ::core::option::Option<RunRef>,
+    #[prost(uint64, tag="2")]
+    pub from_sequence: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RunEvent {
+    #[prost(uint64, tag="1")]
+    pub sequence: u64,
+    #[prost(oneof="run_event::Event", tags="2, 3, 4")]
+    pub event: ::core::option::Option<run_event::Event>,
+}
+/// Nested message and enum types in `RunEvent`.
+pub mod run_event {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Event {
+        #[prost(bytes, tag="2")]
+        Output(::prost::alloc::vec::Vec<u8>),
+        #[prost(message, tag="3")]
+        Usage(super::Usage),
+        #[prost(enumeration="super::RunTerminal", tag="4")]
+        Terminal(i32),
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ItemKind {
+    Unspecified = 0,
+    Instruction = 1,
+    System = 2,
+    Developer = 3,
+    User = 4,
+    Assistant = 5,
+    ToolDefinition = 6,
+    ToolCall = 7,
+    ToolResult = 8,
+    Image = 9,
+    Audio = 10,
+    File = 11,
+    Continuation = 12,
+}
+impl ItemKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ITEM_KIND_UNSPECIFIED",
+            Self::Instruction => "ITEM_KIND_INSTRUCTION",
+            Self::System => "ITEM_KIND_SYSTEM",
+            Self::Developer => "ITEM_KIND_DEVELOPER",
+            Self::User => "ITEM_KIND_USER",
+            Self::Assistant => "ITEM_KIND_ASSISTANT",
+            Self::ToolDefinition => "ITEM_KIND_TOOL_DEFINITION",
+            Self::ToolCall => "ITEM_KIND_TOOL_CALL",
+            Self::ToolResult => "ITEM_KIND_TOOL_RESULT",
+            Self::Image => "ITEM_KIND_IMAGE",
+            Self::Audio => "ITEM_KIND_AUDIO",
+            Self::File => "ITEM_KIND_FILE",
+            Self::Continuation => "ITEM_KIND_CONTINUATION",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ITEM_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "ITEM_KIND_INSTRUCTION" => Some(Self::Instruction),
+            "ITEM_KIND_SYSTEM" => Some(Self::System),
+            "ITEM_KIND_DEVELOPER" => Some(Self::Developer),
+            "ITEM_KIND_USER" => Some(Self::User),
+            "ITEM_KIND_ASSISTANT" => Some(Self::Assistant),
+            "ITEM_KIND_TOOL_DEFINITION" => Some(Self::ToolDefinition),
+            "ITEM_KIND_TOOL_CALL" => Some(Self::ToolCall),
+            "ITEM_KIND_TOOL_RESULT" => Some(Self::ToolResult),
+            "ITEM_KIND_IMAGE" => Some(Self::Image),
+            "ITEM_KIND_AUDIO" => Some(Self::Audio),
+            "ITEM_KIND_FILE" => Some(Self::File),
+            "ITEM_KIND_CONTINUATION" => Some(Self::Continuation),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum RetentionKind {
+    Unspecified = 0,
+    Durable = 1,
+    WarmUntil = 2,
+}
+impl RetentionKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "RETENTION_KIND_UNSPECIFIED",
+            Self::Durable => "RETENTION_KIND_DURABLE",
+            Self::WarmUntil => "RETENTION_KIND_WARM_UNTIL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RETENTION_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "RETENTION_KIND_DURABLE" => Some(Self::Durable),
+            "RETENTION_KIND_WARM_UNTIL" => Some(Self::WarmUntil),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ContextProvenanceKind {
+    Unspecified = 0,
+    Created = 1,
+    Derived = 2,
+    Forked = 3,
+    Transferred = 4,
+    Generated = 5,
+}
+impl ContextProvenanceKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CONTEXT_PROVENANCE_KIND_UNSPECIFIED",
+            Self::Created => "CONTEXT_PROVENANCE_KIND_CREATED",
+            Self::Derived => "CONTEXT_PROVENANCE_KIND_DERIVED",
+            Self::Forked => "CONTEXT_PROVENANCE_KIND_FORKED",
+            Self::Transferred => "CONTEXT_PROVENANCE_KIND_TRANSFERRED",
+            Self::Generated => "CONTEXT_PROVENANCE_KIND_GENERATED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CONTEXT_PROVENANCE_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "CONTEXT_PROVENANCE_KIND_CREATED" => Some(Self::Created),
+            "CONTEXT_PROVENANCE_KIND_DERIVED" => Some(Self::Derived),
+            "CONTEXT_PROVENANCE_KIND_FORKED" => Some(Self::Forked),
+            "CONTEXT_PROVENANCE_KIND_TRANSFERRED" => Some(Self::Transferred),
+            "CONTEXT_PROVENANCE_KIND_GENERATED" => Some(Self::Generated),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum RunTerminal {
+    Unspecified = 0,
+    Completed = 1,
+    OutputLimited = 2,
+    ToolCall = 3,
+    Refusal = 4,
+    Cancelled = 5,
+    Failed = 6,
+    Indeterminate = 7,
+}
+impl RunTerminal {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "RUN_TERMINAL_UNSPECIFIED",
+            Self::Completed => "RUN_TERMINAL_COMPLETED",
+            Self::OutputLimited => "RUN_TERMINAL_OUTPUT_LIMITED",
+            Self::ToolCall => "RUN_TERMINAL_TOOL_CALL",
+            Self::Refusal => "RUN_TERMINAL_REFUSAL",
+            Self::Cancelled => "RUN_TERMINAL_CANCELLED",
+            Self::Failed => "RUN_TERMINAL_FAILED",
+            Self::Indeterminate => "RUN_TERMINAL_INDETERMINATE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RUN_TERMINAL_UNSPECIFIED" => Some(Self::Unspecified),
+            "RUN_TERMINAL_COMPLETED" => Some(Self::Completed),
+            "RUN_TERMINAL_OUTPUT_LIMITED" => Some(Self::OutputLimited),
+            "RUN_TERMINAL_TOOL_CALL" => Some(Self::ToolCall),
+            "RUN_TERMINAL_REFUSAL" => Some(Self::Refusal),
+            "RUN_TERMINAL_CANCELLED" => Some(Self::Cancelled),
+            "RUN_TERMINAL_FAILED" => Some(Self::Failed),
+            "RUN_TERMINAL_INDETERMINATE" => Some(Self::Indeterminate),
+            _ => None,
+        }
+    }
 }
 // @@protoc_insertion_point(module)

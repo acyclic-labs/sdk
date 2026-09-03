@@ -1,7 +1,7 @@
 //! Reusable black-box conformance entrypoints for public providers.
 
 use acyclic_filesystem::FilesystemProvider;
-use acyclic_inference::{InferenceProvider, InferenceRequest};
+use acyclic_inference::InferenceProvider;
 use acyclic_machines::{ExecutionRequest, MachinesProvider};
 use acyclic_objects::ObjectsProvider;
 use acyclic_stream::StreamProvider;
@@ -66,18 +66,9 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
         .ok_or_else(|| "execution failed".into())
 }
 
-/// Exercises deterministic inference request semantics.
+/// Exercises immutable Context, fork, Run, replay, receipt, and lifetime semantics.
 pub async fn inference(provider: &dyn InferenceProvider) -> Result<(), String> {
-    let result = provider
-        .complete(InferenceRequest {
-            model: "deterministic".into(),
-            messages: vec!["hello".into()],
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    (result.output == "hello")
-        .then_some(())
-        .ok_or_else(|| "inference mismatch".into())
+    acyclic_inference::conformance(provider).await
 }
 
 #[cfg(test)]

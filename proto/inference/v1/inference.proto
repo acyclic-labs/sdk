@@ -1,47 +1,244 @@
 syntax = "proto3";
 package acyclic.inference.v1;
 
-import "google/api/annotations.proto";
 import "harness/v1/harness.proto";
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/inference/v1;inferencev1";
 
 message ContextRef {
   string context_id = 1;
-  string revision_id = 2;
+  reserved 2;
 }
-message InferenceRequest {
+
+enum ItemKind {
+  ITEM_KIND_UNSPECIFIED = 0;
+  ITEM_KIND_INSTRUCTION = 1;
+  ITEM_KIND_SYSTEM = 2;
+  ITEM_KIND_DEVELOPER = 3;
+  ITEM_KIND_USER = 4;
+  ITEM_KIND_ASSISTANT = 5;
+  ITEM_KIND_TOOL_DEFINITION = 6;
+  ITEM_KIND_TOOL_CALL = 7;
+  ITEM_KIND_TOOL_RESULT = 8;
+  ITEM_KIND_IMAGE = 9;
+  ITEM_KIND_AUDIO = 10;
+  ITEM_KIND_FILE = 11;
+  ITEM_KIND_CONTINUATION = 12;
+}
+
+message Item {
+  string item_id = 1;
+  ItemKind kind = 2;
+  bytes content = 3;
+  optional string link = 4;
+  optional string continuation_profile = 5;
+}
+
+message ModelCapabilities {
+  string model = 1;
+  uint64 maximum_context_bytes = 2;
+  uint64 maximum_output = 3;
+  repeated string features = 4;
+}
+
+message ListModelsRequest {}
+message ListModelsResponse { repeated ModelCapabilities models = 1; }
+
+message CreateContextRequest {
   acyclic.harness.v1.OperationIdentity operation = 1;
   string model = 2;
-  repeated string messages = 3;
-  ContextRef context = 4;
+  repeated Item items = 3;
 }
-message InferenceResponse {
+
+message InspectContextRequest { ContextRef context = 1; }
+
+message Insert {
+  string target_item_id = 1;
+  Item item = 2;
+}
+
+message Replace {
+  string target_item_id = 1;
+  bytes content = 2;
+}
+
+message ContextEdit {
+  oneof action {
+    Item append = 1;
+    Insert insert_before = 2;
+    Insert insert_after = 3;
+    Replace replace = 4;
+    string delete_item_id = 5;
+  }
+}
+
+message EditContext {
+  repeated ContextEdit edits = 1;
+}
+
+message TruncateContext { optional string through_item_id = 1; }
+
+message CompactContext {
+  repeated string selected_item_ids = 1;
+  repeated Item replacement = 2;
+}
+
+message TransferContext { string model = 1; }
+
+message MutateContextRequest {
+  acyclic.harness.v1.OperationIdentity operation = 1;
+  ContextRef source = 2;
+  oneof mutation {
+    bool fork = 3;
+    EditContext edit = 4;
+    TruncateContext truncate = 5;
+    CompactContext compact = 6;
+    TransferContext transfer = 7;
+  }
+}
+
+enum RetentionKind {
+  RETENTION_KIND_UNSPECIFIED = 0;
+  RETENTION_KIND_DURABLE = 1;
+  RETENTION_KIND_WARM_UNTIL = 2;
+}
+
+message Retention {
+  RetentionKind kind = 1;
+  optional uint64 expires_at_unix_ms = 2;
+}
+
+message RetainContextRequest {
+  acyclic.harness.v1.OperationIdentity operation = 1;
+  ContextRef context = 2;
+  Retention retention = 3;
+}
+
+message DeleteContextRequest {
+  acyclic.harness.v1.OperationIdentity operation = 1;
+  ContextRef context = 2;
+}
+
+message DeleteContextResponse {
   acyclic.harness.v1.Admission admission = 1;
-  string output = 2;
-  ContextRef context = 3;
+  bool deleted = 2;
+}
+
+enum ContextProvenanceKind {
+  CONTEXT_PROVENANCE_KIND_UNSPECIFIED = 0;
+  CONTEXT_PROVENANCE_KIND_CREATED = 1;
+  CONTEXT_PROVENANCE_KIND_DERIVED = 2;
+  CONTEXT_PROVENANCE_KIND_FORKED = 3;
+  CONTEXT_PROVENANCE_KIND_TRANSFERRED = 4;
+  CONTEXT_PROVENANCE_KIND_GENERATED = 5;
+}
+
+message ContextProvenance {
+  ContextProvenanceKind kind = 1;
+  optional ContextRef source = 2;
+  optional string run_id = 3;
+  bool reused_compatible_state = 4;
+}
+
+message Context {
+  ContextRef context = 1;
+  string lineage_id = 2;
+  optional ContextRef parent = 3;
+  string model = 4;
+  repeated Item items = 5;
+  Retention retention = 6;
+  ContextProvenance provenance = 7;
+}
+
+message ContextResponse {
+  acyclic.harness.v1.Admission admission = 1;
+  Context context = 2;
+}
+
+message GenerationSettings {
+  uint64 maximum_output = 1;
+  optional uint64 seed = 2;
+}
+
+message GenerateRequest {
+  acyclic.harness.v1.OperationIdentity operation = 1;
+  ContextRef context = 2;
+  Item input = 3;
+  GenerationSettings settings = 4;
+}
+
+message RunRef { string run_id = 1; }
+
+enum RunTerminal {
+  RUN_TERMINAL_UNSPECIFIED = 0;
+  RUN_TERMINAL_COMPLETED = 1;
+  RUN_TERMINAL_OUTPUT_LIMITED = 2;
+  RUN_TERMINAL_TOOL_CALL = 3;
+  RUN_TERMINAL_REFUSAL = 4;
+  RUN_TERMINAL_CANCELLED = 5;
+  RUN_TERMINAL_FAILED = 6;
+  RUN_TERMINAL_INDETERMINATE = 7;
+}
+
+message Usage {
+  uint64 new_prefill = 1;
+  uint64 generated_output = 2;
+  uint64 effective_context_reads = 3;
+  uint64 retained_byte_millis = 4;
+}
+
+message UsageReceipt {
+  string receipt_id = 1;
+  string model = 2;
+  string meter_revision = 3;
+  Usage usage = 4;
+}
+
+message RunResult {
+  bytes output = 1;
+  optional Context context = 2;
+  RunTerminal terminal = 3;
+  UsageReceipt receipt = 4;
+}
+
+message Run {
+  RunRef run = 1;
+  ContextRef input = 2;
+  optional RunResult result = 3;
+  repeated RunEvent events = 4;
+}
+
+message GenerateResponse {
+  acyclic.harness.v1.Admission admission = 1;
+  Run run = 2;
+}
+
+message InspectRunRequest { RunRef run = 1; }
+
+message WatchRunRequest {
+  RunRef run = 1;
+  uint64 from_sequence = 2;
+}
+
+message RunEvent {
+  uint64 sequence = 1;
+  oneof event {
+    bytes output = 2;
+    Usage usage = 3;
+    RunTerminal terminal = 4;
+  }
 }
 
 service InferenceService {
-  rpc Handshake(acyclic.harness.v1.HandshakeRequest) returns (acyclic.harness.v1.HandshakeResponse) {
-    option (google.api.http) = {
-      post: "/v1/inference:handshake"
-      body: "*"
-    };
-  }
-  rpc Complete(InferenceRequest) returns (InferenceResponse) {
-    option (google.api.http) = {
-      post: "/v1/inference:complete"
-      body: "*"
-    };
-  }
-  rpc Observe(acyclic.harness.v1.ObserveRequest) returns (acyclic.harness.v1.OperationStatus) {
-    option (google.api.http) = {get: "/v1/inference/operations/{operation_id}"};
-  }
-  rpc Cancel(acyclic.harness.v1.CancelRequest) returns (acyclic.harness.v1.CancelResponse) {
-    option (google.api.http) = {
-      post: "/v1/inference/operations/{operation_id}:cancel"
-      body: "*"
-    };
-  }
+  rpc Handshake(acyclic.harness.v1.HandshakeRequest) returns (acyclic.harness.v1.HandshakeResponse);
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+  rpc CreateContext(CreateContextRequest) returns (ContextResponse);
+  rpc InspectContext(InspectContextRequest) returns (Context);
+  rpc MutateContext(MutateContextRequest) returns (ContextResponse);
+  rpc RetainContext(RetainContextRequest) returns (ContextResponse);
+  rpc DeleteContext(DeleteContextRequest) returns (DeleteContextResponse);
+  rpc Generate(GenerateRequest) returns (GenerateResponse);
+  rpc InspectRun(InspectRunRequest) returns (Run);
+  rpc WatchRun(WatchRunRequest) returns (stream RunEvent);
+  rpc CancelRun(InspectRunRequest) returns (Run);
 }

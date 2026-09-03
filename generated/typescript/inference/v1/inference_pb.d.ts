@@ -2,9 +2,9 @@
 // @generated from file inference/v1/inference.proto (package acyclic.inference.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
-import type { Admission, CancelRequestSchema, CancelResponseSchema, HandshakeRequestSchema, HandshakeResponseSchema, ObserveRequestSchema, OperationIdentity, OperationStatusSchema } from "../../harness/v1/harness_pb";
+import type { Admission, HandshakeRequestSchema, HandshakeResponseSchema, OperationIdentity } from "../../harness/v1/harness_pb";
 
 /**
  * Describes the file inference/v1/inference.proto.
@@ -19,11 +19,6 @@ export declare type ContextRef = Message<"acyclic.inference.v1.ContextRef"> & {
    * @generated from field: string context_id = 1;
    */
   contextId: string;
-
-  /**
-   * @generated from field: string revision_id = 2;
-   */
-  revisionId: string;
 };
 
 /**
@@ -33,9 +28,104 @@ export declare type ContextRef = Message<"acyclic.inference.v1.ContextRef"> & {
 export declare const ContextRefSchema: GenMessage<ContextRef>;
 
 /**
- * @generated from message acyclic.inference.v1.InferenceRequest
+ * @generated from message acyclic.inference.v1.Item
  */
-export declare type InferenceRequest = Message<"acyclic.inference.v1.InferenceRequest"> & {
+export declare type Item = Message<"acyclic.inference.v1.Item"> & {
+  /**
+   * @generated from field: string item_id = 1;
+   */
+  itemId: string;
+
+  /**
+   * @generated from field: acyclic.inference.v1.ItemKind kind = 2;
+   */
+  kind: ItemKind;
+
+  /**
+   * @generated from field: bytes content = 3;
+   */
+  content: Uint8Array;
+
+  /**
+   * @generated from field: optional string link = 4;
+   */
+  link?: string | undefined;
+
+  /**
+   * @generated from field: optional string continuation_profile = 5;
+   */
+  continuationProfile?: string | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.Item.
+ * Use `create(ItemSchema)` to create a new message.
+ */
+export declare const ItemSchema: GenMessage<Item>;
+
+/**
+ * @generated from message acyclic.inference.v1.ModelCapabilities
+ */
+export declare type ModelCapabilities = Message<"acyclic.inference.v1.ModelCapabilities"> & {
+  /**
+   * @generated from field: string model = 1;
+   */
+  model: string;
+
+  /**
+   * @generated from field: uint64 maximum_context_bytes = 2;
+   */
+  maximumContextBytes: bigint;
+
+  /**
+   * @generated from field: uint64 maximum_output = 3;
+   */
+  maximumOutput: bigint;
+
+  /**
+   * @generated from field: repeated string features = 4;
+   */
+  features: string[];
+};
+
+/**
+ * Describes the message acyclic.inference.v1.ModelCapabilities.
+ * Use `create(ModelCapabilitiesSchema)` to create a new message.
+ */
+export declare const ModelCapabilitiesSchema: GenMessage<ModelCapabilities>;
+
+/**
+ * @generated from message acyclic.inference.v1.ListModelsRequest
+ */
+export declare type ListModelsRequest = Message<"acyclic.inference.v1.ListModelsRequest"> & {
+};
+
+/**
+ * Describes the message acyclic.inference.v1.ListModelsRequest.
+ * Use `create(ListModelsRequestSchema)` to create a new message.
+ */
+export declare const ListModelsRequestSchema: GenMessage<ListModelsRequest>;
+
+/**
+ * @generated from message acyclic.inference.v1.ListModelsResponse
+ */
+export declare type ListModelsResponse = Message<"acyclic.inference.v1.ListModelsResponse"> & {
+  /**
+   * @generated from field: repeated acyclic.inference.v1.ModelCapabilities models = 1;
+   */
+  models: ModelCapabilities[];
+};
+
+/**
+ * Describes the message acyclic.inference.v1.ListModelsResponse.
+ * Use `create(ListModelsResponseSchema)` to create a new message.
+ */
+export declare const ListModelsResponseSchema: GenMessage<ListModelsResponse>;
+
+/**
+ * @generated from message acyclic.inference.v1.CreateContextRequest
+ */
+export declare type CreateContextRequest = Message<"acyclic.inference.v1.CreateContextRequest"> & {
   /**
    * @generated from field: acyclic.harness.v1.OperationIdentity operation = 1;
    */
@@ -47,47 +137,911 @@ export declare type InferenceRequest = Message<"acyclic.inference.v1.InferenceRe
   model: string;
 
   /**
-   * @generated from field: repeated string messages = 3;
+   * @generated from field: repeated acyclic.inference.v1.Item items = 3;
    */
-  messages: string[];
+  items: Item[];
+};
 
+/**
+ * Describes the message acyclic.inference.v1.CreateContextRequest.
+ * Use `create(CreateContextRequestSchema)` to create a new message.
+ */
+export declare const CreateContextRequestSchema: GenMessage<CreateContextRequest>;
+
+/**
+ * @generated from message acyclic.inference.v1.InspectContextRequest
+ */
+export declare type InspectContextRequest = Message<"acyclic.inference.v1.InspectContextRequest"> & {
   /**
-   * @generated from field: acyclic.inference.v1.ContextRef context = 4;
+   * @generated from field: acyclic.inference.v1.ContextRef context = 1;
    */
   context?: ContextRef | undefined;
 };
 
 /**
- * Describes the message acyclic.inference.v1.InferenceRequest.
- * Use `create(InferenceRequestSchema)` to create a new message.
+ * Describes the message acyclic.inference.v1.InspectContextRequest.
+ * Use `create(InspectContextRequestSchema)` to create a new message.
  */
-export declare const InferenceRequestSchema: GenMessage<InferenceRequest>;
+export declare const InspectContextRequestSchema: GenMessage<InspectContextRequest>;
 
 /**
- * @generated from message acyclic.inference.v1.InferenceResponse
+ * @generated from message acyclic.inference.v1.Insert
  */
-export declare type InferenceResponse = Message<"acyclic.inference.v1.InferenceResponse"> & {
+export declare type Insert = Message<"acyclic.inference.v1.Insert"> & {
+  /**
+   * @generated from field: string target_item_id = 1;
+   */
+  targetItemId: string;
+
+  /**
+   * @generated from field: acyclic.inference.v1.Item item = 2;
+   */
+  item?: Item | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.Insert.
+ * Use `create(InsertSchema)` to create a new message.
+ */
+export declare const InsertSchema: GenMessage<Insert>;
+
+/**
+ * @generated from message acyclic.inference.v1.Replace
+ */
+export declare type Replace = Message<"acyclic.inference.v1.Replace"> & {
+  /**
+   * @generated from field: string target_item_id = 1;
+   */
+  targetItemId: string;
+
+  /**
+   * @generated from field: bytes content = 2;
+   */
+  content: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.Replace.
+ * Use `create(ReplaceSchema)` to create a new message.
+ */
+export declare const ReplaceSchema: GenMessage<Replace>;
+
+/**
+ * @generated from message acyclic.inference.v1.ContextEdit
+ */
+export declare type ContextEdit = Message<"acyclic.inference.v1.ContextEdit"> & {
+  /**
+   * @generated from oneof acyclic.inference.v1.ContextEdit.action
+   */
+  action: {
+    /**
+     * @generated from field: acyclic.inference.v1.Item append = 1;
+     */
+    value: Item;
+    case: "append";
+  } | {
+    /**
+     * @generated from field: acyclic.inference.v1.Insert insert_before = 2;
+     */
+    value: Insert;
+    case: "insertBefore";
+  } | {
+    /**
+     * @generated from field: acyclic.inference.v1.Insert insert_after = 3;
+     */
+    value: Insert;
+    case: "insertAfter";
+  } | {
+    /**
+     * @generated from field: acyclic.inference.v1.Replace replace = 4;
+     */
+    value: Replace;
+    case: "replace";
+  } | {
+    /**
+     * @generated from field: string delete_item_id = 5;
+     */
+    value: string;
+    case: "deleteItemId";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message acyclic.inference.v1.ContextEdit.
+ * Use `create(ContextEditSchema)` to create a new message.
+ */
+export declare const ContextEditSchema: GenMessage<ContextEdit>;
+
+/**
+ * @generated from message acyclic.inference.v1.EditContext
+ */
+export declare type EditContext = Message<"acyclic.inference.v1.EditContext"> & {
+  /**
+   * @generated from field: repeated acyclic.inference.v1.ContextEdit edits = 1;
+   */
+  edits: ContextEdit[];
+};
+
+/**
+ * Describes the message acyclic.inference.v1.EditContext.
+ * Use `create(EditContextSchema)` to create a new message.
+ */
+export declare const EditContextSchema: GenMessage<EditContext>;
+
+/**
+ * @generated from message acyclic.inference.v1.TruncateContext
+ */
+export declare type TruncateContext = Message<"acyclic.inference.v1.TruncateContext"> & {
+  /**
+   * @generated from field: optional string through_item_id = 1;
+   */
+  throughItemId?: string | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.TruncateContext.
+ * Use `create(TruncateContextSchema)` to create a new message.
+ */
+export declare const TruncateContextSchema: GenMessage<TruncateContext>;
+
+/**
+ * @generated from message acyclic.inference.v1.CompactContext
+ */
+export declare type CompactContext = Message<"acyclic.inference.v1.CompactContext"> & {
+  /**
+   * @generated from field: repeated string selected_item_ids = 1;
+   */
+  selectedItemIds: string[];
+
+  /**
+   * @generated from field: repeated acyclic.inference.v1.Item replacement = 2;
+   */
+  replacement: Item[];
+};
+
+/**
+ * Describes the message acyclic.inference.v1.CompactContext.
+ * Use `create(CompactContextSchema)` to create a new message.
+ */
+export declare const CompactContextSchema: GenMessage<CompactContext>;
+
+/**
+ * @generated from message acyclic.inference.v1.TransferContext
+ */
+export declare type TransferContext = Message<"acyclic.inference.v1.TransferContext"> & {
+  /**
+   * @generated from field: string model = 1;
+   */
+  model: string;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.TransferContext.
+ * Use `create(TransferContextSchema)` to create a new message.
+ */
+export declare const TransferContextSchema: GenMessage<TransferContext>;
+
+/**
+ * @generated from message acyclic.inference.v1.MutateContextRequest
+ */
+export declare type MutateContextRequest = Message<"acyclic.inference.v1.MutateContextRequest"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.OperationIdentity operation = 1;
+   */
+  operation?: OperationIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.ContextRef source = 2;
+   */
+  source?: ContextRef | undefined;
+
+  /**
+   * @generated from oneof acyclic.inference.v1.MutateContextRequest.mutation
+   */
+  mutation: {
+    /**
+     * @generated from field: bool fork = 3;
+     */
+    value: boolean;
+    case: "fork";
+  } | {
+    /**
+     * @generated from field: acyclic.inference.v1.EditContext edit = 4;
+     */
+    value: EditContext;
+    case: "edit";
+  } | {
+    /**
+     * @generated from field: acyclic.inference.v1.TruncateContext truncate = 5;
+     */
+    value: TruncateContext;
+    case: "truncate";
+  } | {
+    /**
+     * @generated from field: acyclic.inference.v1.CompactContext compact = 6;
+     */
+    value: CompactContext;
+    case: "compact";
+  } | {
+    /**
+     * @generated from field: acyclic.inference.v1.TransferContext transfer = 7;
+     */
+    value: TransferContext;
+    case: "transfer";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message acyclic.inference.v1.MutateContextRequest.
+ * Use `create(MutateContextRequestSchema)` to create a new message.
+ */
+export declare const MutateContextRequestSchema: GenMessage<MutateContextRequest>;
+
+/**
+ * @generated from message acyclic.inference.v1.Retention
+ */
+export declare type Retention = Message<"acyclic.inference.v1.Retention"> & {
+  /**
+   * @generated from field: acyclic.inference.v1.RetentionKind kind = 1;
+   */
+  kind: RetentionKind;
+
+  /**
+   * @generated from field: optional uint64 expires_at_unix_ms = 2;
+   */
+  expiresAtUnixMs?: bigint | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.Retention.
+ * Use `create(RetentionSchema)` to create a new message.
+ */
+export declare const RetentionSchema: GenMessage<Retention>;
+
+/**
+ * @generated from message acyclic.inference.v1.RetainContextRequest
+ */
+export declare type RetainContextRequest = Message<"acyclic.inference.v1.RetainContextRequest"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.OperationIdentity operation = 1;
+   */
+  operation?: OperationIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.ContextRef context = 2;
+   */
+  context?: ContextRef | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.Retention retention = 3;
+   */
+  retention?: Retention | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.RetainContextRequest.
+ * Use `create(RetainContextRequestSchema)` to create a new message.
+ */
+export declare const RetainContextRequestSchema: GenMessage<RetainContextRequest>;
+
+/**
+ * @generated from message acyclic.inference.v1.DeleteContextRequest
+ */
+export declare type DeleteContextRequest = Message<"acyclic.inference.v1.DeleteContextRequest"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.OperationIdentity operation = 1;
+   */
+  operation?: OperationIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.ContextRef context = 2;
+   */
+  context?: ContextRef | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.DeleteContextRequest.
+ * Use `create(DeleteContextRequestSchema)` to create a new message.
+ */
+export declare const DeleteContextRequestSchema: GenMessage<DeleteContextRequest>;
+
+/**
+ * @generated from message acyclic.inference.v1.DeleteContextResponse
+ */
+export declare type DeleteContextResponse = Message<"acyclic.inference.v1.DeleteContextResponse"> & {
   /**
    * @generated from field: acyclic.harness.v1.Admission admission = 1;
    */
   admission?: Admission | undefined;
 
   /**
-   * @generated from field: string output = 2;
+   * @generated from field: bool deleted = 2;
    */
-  output: string;
-
-  /**
-   * @generated from field: acyclic.inference.v1.ContextRef context = 3;
-   */
-  context?: ContextRef | undefined;
+  deleted: boolean;
 };
 
 /**
- * Describes the message acyclic.inference.v1.InferenceResponse.
- * Use `create(InferenceResponseSchema)` to create a new message.
+ * Describes the message acyclic.inference.v1.DeleteContextResponse.
+ * Use `create(DeleteContextResponseSchema)` to create a new message.
  */
-export declare const InferenceResponseSchema: GenMessage<InferenceResponse>;
+export declare const DeleteContextResponseSchema: GenMessage<DeleteContextResponse>;
+
+/**
+ * @generated from message acyclic.inference.v1.ContextProvenance
+ */
+export declare type ContextProvenance = Message<"acyclic.inference.v1.ContextProvenance"> & {
+  /**
+   * @generated from field: acyclic.inference.v1.ContextProvenanceKind kind = 1;
+   */
+  kind: ContextProvenanceKind;
+
+  /**
+   * @generated from field: optional acyclic.inference.v1.ContextRef source = 2;
+   */
+  source?: ContextRef | undefined;
+
+  /**
+   * @generated from field: optional string run_id = 3;
+   */
+  runId?: string | undefined;
+
+  /**
+   * @generated from field: bool reused_compatible_state = 4;
+   */
+  reusedCompatibleState: boolean;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.ContextProvenance.
+ * Use `create(ContextProvenanceSchema)` to create a new message.
+ */
+export declare const ContextProvenanceSchema: GenMessage<ContextProvenance>;
+
+/**
+ * @generated from message acyclic.inference.v1.Context
+ */
+export declare type Context = Message<"acyclic.inference.v1.Context"> & {
+  /**
+   * @generated from field: acyclic.inference.v1.ContextRef context = 1;
+   */
+  context?: ContextRef | undefined;
+
+  /**
+   * @generated from field: string lineage_id = 2;
+   */
+  lineageId: string;
+
+  /**
+   * @generated from field: optional acyclic.inference.v1.ContextRef parent = 3;
+   */
+  parent?: ContextRef | undefined;
+
+  /**
+   * @generated from field: string model = 4;
+   */
+  model: string;
+
+  /**
+   * @generated from field: repeated acyclic.inference.v1.Item items = 5;
+   */
+  items: Item[];
+
+  /**
+   * @generated from field: acyclic.inference.v1.Retention retention = 6;
+   */
+  retention?: Retention | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.ContextProvenance provenance = 7;
+   */
+  provenance?: ContextProvenance | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.Context.
+ * Use `create(ContextSchema)` to create a new message.
+ */
+export declare const ContextSchema: GenMessage<Context>;
+
+/**
+ * @generated from message acyclic.inference.v1.ContextResponse
+ */
+export declare type ContextResponse = Message<"acyclic.inference.v1.ContextResponse"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.Admission admission = 1;
+   */
+  admission?: Admission | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.Context context = 2;
+   */
+  context?: Context | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.ContextResponse.
+ * Use `create(ContextResponseSchema)` to create a new message.
+ */
+export declare const ContextResponseSchema: GenMessage<ContextResponse>;
+
+/**
+ * @generated from message acyclic.inference.v1.GenerationSettings
+ */
+export declare type GenerationSettings = Message<"acyclic.inference.v1.GenerationSettings"> & {
+  /**
+   * @generated from field: uint64 maximum_output = 1;
+   */
+  maximumOutput: bigint;
+
+  /**
+   * @generated from field: optional uint64 seed = 2;
+   */
+  seed?: bigint | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.GenerationSettings.
+ * Use `create(GenerationSettingsSchema)` to create a new message.
+ */
+export declare const GenerationSettingsSchema: GenMessage<GenerationSettings>;
+
+/**
+ * @generated from message acyclic.inference.v1.GenerateRequest
+ */
+export declare type GenerateRequest = Message<"acyclic.inference.v1.GenerateRequest"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.OperationIdentity operation = 1;
+   */
+  operation?: OperationIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.ContextRef context = 2;
+   */
+  context?: ContextRef | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.Item input = 3;
+   */
+  input?: Item | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.GenerationSettings settings = 4;
+   */
+  settings?: GenerationSettings | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.GenerateRequest.
+ * Use `create(GenerateRequestSchema)` to create a new message.
+ */
+export declare const GenerateRequestSchema: GenMessage<GenerateRequest>;
+
+/**
+ * @generated from message acyclic.inference.v1.RunRef
+ */
+export declare type RunRef = Message<"acyclic.inference.v1.RunRef"> & {
+  /**
+   * @generated from field: string run_id = 1;
+   */
+  runId: string;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.RunRef.
+ * Use `create(RunRefSchema)` to create a new message.
+ */
+export declare const RunRefSchema: GenMessage<RunRef>;
+
+/**
+ * @generated from message acyclic.inference.v1.Usage
+ */
+export declare type Usage = Message<"acyclic.inference.v1.Usage"> & {
+  /**
+   * @generated from field: uint64 new_prefill = 1;
+   */
+  newPrefill: bigint;
+
+  /**
+   * @generated from field: uint64 generated_output = 2;
+   */
+  generatedOutput: bigint;
+
+  /**
+   * @generated from field: uint64 effective_context_reads = 3;
+   */
+  effectiveContextReads: bigint;
+
+  /**
+   * @generated from field: uint64 retained_byte_millis = 4;
+   */
+  retainedByteMillis: bigint;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.Usage.
+ * Use `create(UsageSchema)` to create a new message.
+ */
+export declare const UsageSchema: GenMessage<Usage>;
+
+/**
+ * @generated from message acyclic.inference.v1.UsageReceipt
+ */
+export declare type UsageReceipt = Message<"acyclic.inference.v1.UsageReceipt"> & {
+  /**
+   * @generated from field: string receipt_id = 1;
+   */
+  receiptId: string;
+
+  /**
+   * @generated from field: string model = 2;
+   */
+  model: string;
+
+  /**
+   * @generated from field: string meter_revision = 3;
+   */
+  meterRevision: string;
+
+  /**
+   * @generated from field: acyclic.inference.v1.Usage usage = 4;
+   */
+  usage?: Usage | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.UsageReceipt.
+ * Use `create(UsageReceiptSchema)` to create a new message.
+ */
+export declare const UsageReceiptSchema: GenMessage<UsageReceipt>;
+
+/**
+ * @generated from message acyclic.inference.v1.RunResult
+ */
+export declare type RunResult = Message<"acyclic.inference.v1.RunResult"> & {
+  /**
+   * @generated from field: bytes output = 1;
+   */
+  output: Uint8Array;
+
+  /**
+   * @generated from field: optional acyclic.inference.v1.Context context = 2;
+   */
+  context?: Context | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.RunTerminal terminal = 3;
+   */
+  terminal: RunTerminal;
+
+  /**
+   * @generated from field: acyclic.inference.v1.UsageReceipt receipt = 4;
+   */
+  receipt?: UsageReceipt | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.RunResult.
+ * Use `create(RunResultSchema)` to create a new message.
+ */
+export declare const RunResultSchema: GenMessage<RunResult>;
+
+/**
+ * @generated from message acyclic.inference.v1.Run
+ */
+export declare type Run = Message<"acyclic.inference.v1.Run"> & {
+  /**
+   * @generated from field: acyclic.inference.v1.RunRef run = 1;
+   */
+  run?: RunRef | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.ContextRef input = 2;
+   */
+  input?: ContextRef | undefined;
+
+  /**
+   * @generated from field: optional acyclic.inference.v1.RunResult result = 3;
+   */
+  result?: RunResult | undefined;
+
+  /**
+   * @generated from field: repeated acyclic.inference.v1.RunEvent events = 4;
+   */
+  events: RunEvent[];
+};
+
+/**
+ * Describes the message acyclic.inference.v1.Run.
+ * Use `create(RunSchema)` to create a new message.
+ */
+export declare const RunSchema: GenMessage<Run>;
+
+/**
+ * @generated from message acyclic.inference.v1.GenerateResponse
+ */
+export declare type GenerateResponse = Message<"acyclic.inference.v1.GenerateResponse"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.Admission admission = 1;
+   */
+  admission?: Admission | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.Run run = 2;
+   */
+  run?: Run | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.GenerateResponse.
+ * Use `create(GenerateResponseSchema)` to create a new message.
+ */
+export declare const GenerateResponseSchema: GenMessage<GenerateResponse>;
+
+/**
+ * @generated from message acyclic.inference.v1.InspectRunRequest
+ */
+export declare type InspectRunRequest = Message<"acyclic.inference.v1.InspectRunRequest"> & {
+  /**
+   * @generated from field: acyclic.inference.v1.RunRef run = 1;
+   */
+  run?: RunRef | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.InspectRunRequest.
+ * Use `create(InspectRunRequestSchema)` to create a new message.
+ */
+export declare const InspectRunRequestSchema: GenMessage<InspectRunRequest>;
+
+/**
+ * @generated from message acyclic.inference.v1.WatchRunRequest
+ */
+export declare type WatchRunRequest = Message<"acyclic.inference.v1.WatchRunRequest"> & {
+  /**
+   * @generated from field: acyclic.inference.v1.RunRef run = 1;
+   */
+  run?: RunRef | undefined;
+
+  /**
+   * @generated from field: uint64 from_sequence = 2;
+   */
+  fromSequence: bigint;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.WatchRunRequest.
+ * Use `create(WatchRunRequestSchema)` to create a new message.
+ */
+export declare const WatchRunRequestSchema: GenMessage<WatchRunRequest>;
+
+/**
+ * @generated from message acyclic.inference.v1.RunEvent
+ */
+export declare type RunEvent = Message<"acyclic.inference.v1.RunEvent"> & {
+  /**
+   * @generated from field: uint64 sequence = 1;
+   */
+  sequence: bigint;
+
+  /**
+   * @generated from oneof acyclic.inference.v1.RunEvent.event
+   */
+  event: {
+    /**
+     * @generated from field: bytes output = 2;
+     */
+    value: Uint8Array;
+    case: "output";
+  } | {
+    /**
+     * @generated from field: acyclic.inference.v1.Usage usage = 3;
+     */
+    value: Usage;
+    case: "usage";
+  } | {
+    /**
+     * @generated from field: acyclic.inference.v1.RunTerminal terminal = 4;
+     */
+    value: RunTerminal;
+    case: "terminal";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message acyclic.inference.v1.RunEvent.
+ * Use `create(RunEventSchema)` to create a new message.
+ */
+export declare const RunEventSchema: GenMessage<RunEvent>;
+
+/**
+ * @generated from enum acyclic.inference.v1.ItemKind
+ */
+export enum ItemKind {
+  /**
+   * @generated from enum value: ITEM_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: ITEM_KIND_INSTRUCTION = 1;
+   */
+  INSTRUCTION = 1,
+
+  /**
+   * @generated from enum value: ITEM_KIND_SYSTEM = 2;
+   */
+  SYSTEM = 2,
+
+  /**
+   * @generated from enum value: ITEM_KIND_DEVELOPER = 3;
+   */
+  DEVELOPER = 3,
+
+  /**
+   * @generated from enum value: ITEM_KIND_USER = 4;
+   */
+  USER = 4,
+
+  /**
+   * @generated from enum value: ITEM_KIND_ASSISTANT = 5;
+   */
+  ASSISTANT = 5,
+
+  /**
+   * @generated from enum value: ITEM_KIND_TOOL_DEFINITION = 6;
+   */
+  TOOL_DEFINITION = 6,
+
+  /**
+   * @generated from enum value: ITEM_KIND_TOOL_CALL = 7;
+   */
+  TOOL_CALL = 7,
+
+  /**
+   * @generated from enum value: ITEM_KIND_TOOL_RESULT = 8;
+   */
+  TOOL_RESULT = 8,
+
+  /**
+   * @generated from enum value: ITEM_KIND_IMAGE = 9;
+   */
+  IMAGE = 9,
+
+  /**
+   * @generated from enum value: ITEM_KIND_AUDIO = 10;
+   */
+  AUDIO = 10,
+
+  /**
+   * @generated from enum value: ITEM_KIND_FILE = 11;
+   */
+  FILE = 11,
+
+  /**
+   * @generated from enum value: ITEM_KIND_CONTINUATION = 12;
+   */
+  CONTINUATION = 12,
+}
+
+/**
+ * Describes the enum acyclic.inference.v1.ItemKind.
+ */
+export declare const ItemKindSchema: GenEnum<ItemKind>;
+
+/**
+ * @generated from enum acyclic.inference.v1.RetentionKind
+ */
+export enum RetentionKind {
+  /**
+   * @generated from enum value: RETENTION_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: RETENTION_KIND_DURABLE = 1;
+   */
+  DURABLE = 1,
+
+  /**
+   * @generated from enum value: RETENTION_KIND_WARM_UNTIL = 2;
+   */
+  WARM_UNTIL = 2,
+}
+
+/**
+ * Describes the enum acyclic.inference.v1.RetentionKind.
+ */
+export declare const RetentionKindSchema: GenEnum<RetentionKind>;
+
+/**
+ * @generated from enum acyclic.inference.v1.ContextProvenanceKind
+ */
+export enum ContextProvenanceKind {
+  /**
+   * @generated from enum value: CONTEXT_PROVENANCE_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: CONTEXT_PROVENANCE_KIND_CREATED = 1;
+   */
+  CREATED = 1,
+
+  /**
+   * @generated from enum value: CONTEXT_PROVENANCE_KIND_DERIVED = 2;
+   */
+  DERIVED = 2,
+
+  /**
+   * @generated from enum value: CONTEXT_PROVENANCE_KIND_FORKED = 3;
+   */
+  FORKED = 3,
+
+  /**
+   * @generated from enum value: CONTEXT_PROVENANCE_KIND_TRANSFERRED = 4;
+   */
+  TRANSFERRED = 4,
+
+  /**
+   * @generated from enum value: CONTEXT_PROVENANCE_KIND_GENERATED = 5;
+   */
+  GENERATED = 5,
+}
+
+/**
+ * Describes the enum acyclic.inference.v1.ContextProvenanceKind.
+ */
+export declare const ContextProvenanceKindSchema: GenEnum<ContextProvenanceKind>;
+
+/**
+ * @generated from enum acyclic.inference.v1.RunTerminal
+ */
+export enum RunTerminal {
+  /**
+   * @generated from enum value: RUN_TERMINAL_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: RUN_TERMINAL_COMPLETED = 1;
+   */
+  COMPLETED = 1,
+
+  /**
+   * @generated from enum value: RUN_TERMINAL_OUTPUT_LIMITED = 2;
+   */
+  OUTPUT_LIMITED = 2,
+
+  /**
+   * @generated from enum value: RUN_TERMINAL_TOOL_CALL = 3;
+   */
+  TOOL_CALL = 3,
+
+  /**
+   * @generated from enum value: RUN_TERMINAL_REFUSAL = 4;
+   */
+  REFUSAL = 4,
+
+  /**
+   * @generated from enum value: RUN_TERMINAL_CANCELLED = 5;
+   */
+  CANCELLED = 5,
+
+  /**
+   * @generated from enum value: RUN_TERMINAL_FAILED = 6;
+   */
+  FAILED = 6,
+
+  /**
+   * @generated from enum value: RUN_TERMINAL_INDETERMINATE = 7;
+   */
+  INDETERMINATE = 7,
+}
+
+/**
+ * Describes the enum acyclic.inference.v1.RunTerminal.
+ */
+export declare const RunTerminalSchema: GenEnum<RunTerminal>;
 
 /**
  * @generated from service acyclic.inference.v1.InferenceService
@@ -102,28 +1056,84 @@ export declare const InferenceService: GenService<{
     output: typeof HandshakeResponseSchema;
   },
   /**
-   * @generated from rpc acyclic.inference.v1.InferenceService.Complete
+   * @generated from rpc acyclic.inference.v1.InferenceService.ListModels
    */
-  complete: {
+  listModels: {
     methodKind: "unary";
-    input: typeof InferenceRequestSchema;
-    output: typeof InferenceResponseSchema;
+    input: typeof ListModelsRequestSchema;
+    output: typeof ListModelsResponseSchema;
   },
   /**
-   * @generated from rpc acyclic.inference.v1.InferenceService.Observe
+   * @generated from rpc acyclic.inference.v1.InferenceService.CreateContext
    */
-  observe: {
+  createContext: {
     methodKind: "unary";
-    input: typeof ObserveRequestSchema;
-    output: typeof OperationStatusSchema;
+    input: typeof CreateContextRequestSchema;
+    output: typeof ContextResponseSchema;
   },
   /**
-   * @generated from rpc acyclic.inference.v1.InferenceService.Cancel
+   * @generated from rpc acyclic.inference.v1.InferenceService.InspectContext
    */
-  cancel: {
+  inspectContext: {
     methodKind: "unary";
-    input: typeof CancelRequestSchema;
-    output: typeof CancelResponseSchema;
+    input: typeof InspectContextRequestSchema;
+    output: typeof ContextSchema;
+  },
+  /**
+   * @generated from rpc acyclic.inference.v1.InferenceService.MutateContext
+   */
+  mutateContext: {
+    methodKind: "unary";
+    input: typeof MutateContextRequestSchema;
+    output: typeof ContextResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.inference.v1.InferenceService.RetainContext
+   */
+  retainContext: {
+    methodKind: "unary";
+    input: typeof RetainContextRequestSchema;
+    output: typeof ContextResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.inference.v1.InferenceService.DeleteContext
+   */
+  deleteContext: {
+    methodKind: "unary";
+    input: typeof DeleteContextRequestSchema;
+    output: typeof DeleteContextResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.inference.v1.InferenceService.Generate
+   */
+  generate: {
+    methodKind: "unary";
+    input: typeof GenerateRequestSchema;
+    output: typeof GenerateResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.inference.v1.InferenceService.InspectRun
+   */
+  inspectRun: {
+    methodKind: "unary";
+    input: typeof InspectRunRequestSchema;
+    output: typeof RunSchema;
+  },
+  /**
+   * @generated from rpc acyclic.inference.v1.InferenceService.WatchRun
+   */
+  watchRun: {
+    methodKind: "server_streaming";
+    input: typeof WatchRunRequestSchema;
+    output: typeof RunEventSchema;
+  },
+  /**
+   * @generated from rpc acyclic.inference.v1.InferenceService.CancelRun
+   */
+  cancelRun: {
+    methodKind: "unary";
+    input: typeof InspectRunRequestSchema;
+    output: typeof RunSchema;
   },
 }>;
 

@@ -1,0 +1,20 @@
+{
+  "revision": 1,
+  "suite": "acyclic.inference.v1",
+  "cases": [
+    "create-idempotency",
+    "immutable-append",
+    "independent-fork-lineage",
+    "item-addressed-replace",
+    "explicit-compaction",
+    "exact-prefix-truncate",
+    "canonical-content-transfer",
+    "own-reference-deletion",
+    "run-identity-before-observation",
+    "inclusive-event-replay",
+    "drop-does-not-cancel",
+    "four-meter-receipt",
+    "unsupported-model-rejection",
+    "changed-idempotency-conflict"
+  ]
+}

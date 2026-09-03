@@ -8,6 +8,11 @@
     "stream": { "version": "0.0.0", "schemaDigest": "unreleased" },
     "objects": { "version": "0.0.0", "schemaDigest": "unreleased" },
     "machines": { "version": "0.0.0", "schemaDigest": "unreleased" },
-    "inference": { "version": "0.0.0", "schemaDigest": "unreleased" }
+    "inference": {
+      "version": "1.0.0",
+      "schemaDigest": "sha256:a23c97c6be108259199f27fc13ea29140bf4f85bbc83b8cf319901503b762fe2",
+      "descriptorDigest": "sha256:f7d87a86e1b22eabd2e3d51d5302498e0ad204e5edbce9a705055702d1ad501e",
+      "conformanceDigest": "sha256:651937f5419c70f9f035de57d5f80025464795c036f77edf1589dcfce17808a3"
+    }
   }
 }
