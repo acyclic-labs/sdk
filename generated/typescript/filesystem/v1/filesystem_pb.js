@@ -2,7 +2,7 @@
 // @generated from file filesystem/v1/filesystem.proto (package acyclic.filesystem.v1, syntax proto3)
 /* eslint-disable */
 
-import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
+import { enumDesc, fileDesc, messageDesc, serviceDesc, tsEnum } from "@bufbuild/protobuf/codegenv2";
 import { file_google_api_annotations } from "../../google/api/annotations_pb";
 import { file_harness_v1_harness } from "../../harness/v1/harness_pb";
 
@@ -10,77 +10,580 @@ import { file_harness_v1_harness } from "../../harness/v1/harness_pb";
  * Describes the file filesystem/v1/filesystem.proto.
  */
 export const file_filesystem_v1_filesystem = /*@__PURE__*/
-  fileDesc("Ch5maWxlc3lzdGVtL3YxL2ZpbGVzeXN0ZW0ucHJvdG8SFWFjeWNsaWMuZmlsZXN5c3RlbS52MSI8Cg1HZW5lcmF0aW9uUmVmEhQKDHdvcmtzcGFjZV9pZBgBIAEoCRIVCg1nZW5lcmF0aW9uX2lkGAIgASgJIlIKFkNyZWF0ZVdvcmtzcGFjZVJlcXVlc3QSOAoJb3BlcmF0aW9uGAEgASgLMiUuYWN5Y2xpYy5oYXJuZXNzLnYxLk9wZXJhdGlvbklkZW50aXR5IoUBChdDcmVhdGVXb3Jrc3BhY2VSZXNwb25zZRIwCglhZG1pc3Npb24YASABKAsyHS5hY3ljbGljLmhhcm5lc3MudjEuQWRtaXNzaW9uEjgKCmdlbmVyYXRpb24YAiABKAsyJC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuR2VuZXJhdGlvblJlZiJQChRHZXRHZW5lcmF0aW9uUmVxdWVzdBI4CgpnZW5lcmF0aW9uGAEgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkdlbmVyYXRpb25SZWYiJgoERmlsZRIMCgRwYXRoGAEgASgJEhAKCGNvbnRlbnRzGAIgASgMIn0KFUdldEdlbmVyYXRpb25SZXNwb25zZRI4CgpnZW5lcmF0aW9uGAEgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkdlbmVyYXRpb25SZWYSKgoFZmlsZXMYAiADKAsyGy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuRmlsZSKnAQoMV3JpdGVSZXF1ZXN0EjgKCW9wZXJhdGlvbhgBIAEoCzIlLmFjeWNsaWMuaGFybmVzcy52MS5PcGVyYXRpb25JZGVudGl0eRIyCgRiYXNlGAIgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkdlbmVyYXRpb25SZWYSKQoEZmlsZRgDIAEoCzIbLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5GaWxlInsKDVdyaXRlUmVzcG9uc2USMAoJYWRtaXNzaW9uGAEgASgLMh0uYWN5Y2xpYy5oYXJuZXNzLnYxLkFkbWlzc2lvbhI4CgpnZW5lcmF0aW9uGAIgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkdlbmVyYXRpb25SZWYiswEKC0pvaW5SZXF1ZXN0EjgKCW9wZXJhdGlvbhgBIAEoCzIlLmFjeWNsaWMuaGFybmVzcy52MS5PcGVyYXRpb25JZGVudGl0eRIyCgRiYXNlGAIgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkdlbmVyYXRpb25SZWYSNgoIY2hpbGRyZW4YAyADKAsyJC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuR2VuZXJhdGlvblJlZiJ6CgxKb2luUmVzcG9uc2USMAoJYWRtaXNzaW9uGAEgASgLMh0uYWN5Y2xpYy5oYXJuZXNzLnYxLkFkbWlzc2lvbhI4CgpnZW5lcmF0aW9uGAIgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkdlbmVyYXRpb25SZWYysQcKEUZpbGVzeXN0ZW1TZXJ2aWNlEn0KCUhhbmRzaGFrZRIkLmFjeWNsaWMuaGFybmVzcy52MS5IYW5kc2hha2VSZXF1ZXN0GiUuYWN5Y2xpYy5oYXJuZXNzLnYxLkhhbmRzaGFrZVJlc3BvbnNlIiOC0+STAh06ASoiGC92MS9maWxlc3lzdGVtOmhhbmRzaGFrZRKLAQoPQ3JlYXRlV29ya3NwYWNlEi0uYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkNyZWF0ZVdvcmtzcGFjZVJlcXVlc3QaLi5hY3ljbGljLmZpbGVzeXN0ZW0udjEuQ3JlYXRlV29ya3NwYWNlUmVzcG9uc2UiGYLT5JMCEzoBKiIOL3YxL3dvcmtzcGFjZXMSkwEKDUdldEdlbmVyYXRpb24SKy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuR2V0R2VuZXJhdGlvblJlcXVlc3QaLC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuR2V0R2VuZXJhdGlvblJlc3BvbnNlIieC0+STAiE6ASoiHC92MS9maWxlc3lzdGVtOmdldEdlbmVyYXRpb24ScwoFV3JpdGUSIy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuV3JpdGVSZXF1ZXN0GiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLldyaXRlUmVzcG9uc2UiH4LT5JMCGToBKiIUL3YxL2ZpbGVzeXN0ZW06d3JpdGUSbwoESm9pbhIiLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5Kb2luUmVxdWVzdBojLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5Kb2luUmVzcG9uc2UiHoLT5JMCGDoBKiITL3YxL2ZpbGVzeXN0ZW06am9pbhKEAQoHT2JzZXJ2ZRIiLmFjeWNsaWMuaGFybmVzcy52MS5PYnNlcnZlUmVxdWVzdBojLmFjeWNsaWMuaGFybmVzcy52MS5PcGVyYXRpb25TdGF0dXMiMILT5JMCKhIoL3YxL2ZpbGVzeXN0ZW0vb3BlcmF0aW9ucy97b3BlcmF0aW9uX2lkfRKLAQoGQ2FuY2VsEiEuYWN5Y2xpYy5oYXJuZXNzLnYxLkNhbmNlbFJlcXVlc3QaIi5hY3ljbGljLmhhcm5lc3MudjEuQ2FuY2VsUmVzcG9uc2UiOoLT5JMCNDoBKiIvL3YxL2ZpbGVzeXN0ZW0vb3BlcmF0aW9ucy97b3BlcmF0aW9uX2lkfTpjYW5jZWxCP1o9Z2l0aHViLmNvbS9hY3ljbGljLWxhYnMvc2RrL2dvL2dlbi9maWxlc3lzdGVtL3YxO2ZpbGVzeXN0ZW12MWIGcHJvdG8z", [file_google_api_annotations, file_harness_v1_harness]);
+  fileDesc("Ch5maWxlc3lzdGVtL3YxL2ZpbGVzeXN0ZW0ucHJvdG8SFWFjeWNsaWMuZmlsZXN5c3RlbS52MSIkCgxXb3Jrc3BhY2VSZWYSFAoMd29ya3NwYWNlX2lkGAEgASgMIjwKDUdlbmVyYXRpb25SZWYSFAoMd29ya3NwYWNlX2lkGAEgASgMEhUKDWdlbmVyYXRpb25faWQYAiABKAwiKwoQT3BlcmF0aW9uT3B0aW9ucxIXCg9pZGVtcG90ZW5jeV9rZXkYASABKAwiMwoLUGFnZU9wdGlvbnMSFQoNbWF4aW11bV9pdGVtcxgBIAEoDRINCgVhZnRlchgCIAEoDCIrCglCeXRlUmFuZ2USDgoGb2Zmc2V0GAEgASgEEg4KBmxlbmd0aBgCIAEoBCJACgtPcHRpb25hbFUzMhIRCgdwcmVzZW50GAEgASgNSAASFQoLdW5hdmFpbGFibGUYAiABKAhIAEIHCgV2YWx1ZSJACgtPcHRpb25hbFU2NBIRCgdwcmVzZW50GAEgASgESAASFQoLdW5hdmFpbGFibGUYAiABKAhIAEIHCgV2YWx1ZSJACgtPcHRpb25hbEk2NBIRCgdwcmVzZW50GAEgASgSSAASFQoLdW5hdmFpbGFibGUYAiABKAhIAEIHCgV2YWx1ZSLbBAoITWV0YWRhdGESNgoKcG9zaXhfbW9kZRgBIAEoCzIiLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5PcHRpb25hbFUzMhI1Cglwb3NpeF91aWQYAiABKAsyIi5hY3ljbGljLmZpbGVzeXN0ZW0udjEuT3B0aW9uYWxVMzISNQoJcG9zaXhfZ2lkGAMgASgLMiIuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLk9wdGlvbmFsVTMyEjcKC3Bvc2l4X2ZsYWdzGAQgASgLMiIuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLk9wdGlvbmFsVTY0Ej4KEndpbmRvd3NfYXR0cmlidXRlcxgFIAEoCzIiLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5PcHRpb25hbFUzMhI2CgpjcmVhdGVkX25zGAYgASgLMiIuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLk9wdGlvbmFsSTY0EjcKC21vZGlmaWVkX25zGAcgASgLMiIuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLk9wdGlvbmFsSTY0EjcKC2FjY2Vzc2VkX25zGAggASgLMiIuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLk9wdGlvbmFsSTY0EjYKCmNoYW5nZWRfbnMYCSABKAsyIi5hY3ljbGljLmZpbGVzeXN0ZW0udjEuT3B0aW9uYWxJNjQSHAoUaGFzX25hbWVkX2F0dHJpYnV0ZXMYCiABKAgSDwoHaGFzX2FjbBgLIAEoCBIfChdoYXNfc2VjdXJpdHlfZGVzY3JpcHRvchgMIAEoCCLMAQoIRmlsZVN0YXQSDwoHZmlsZV9pZBgBIAEoDBItCgRraW5kGAIgASgOMh8uYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkZpbGVLaW5kEhIKCmxpbmtfY291bnQYAyABKAQSOQoNbG9naWNhbF9ieXRlcxgEIAEoCzIiLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5PcHRpb25hbFU2NBIxCghtZXRhZGF0YRgFIAEoCzIfLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5NZXRhZGF0YSJNCg5EaXJlY3RvcnlFbnRyeRIMCgRuYW1lGAEgASgMEi0KBHN0YXQYAiABKAsyHy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuRmlsZVN0YXQiVQoNRGlyZWN0b3J5UGFnZRI2CgdlbnRyaWVzGAEgAygLMiUuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkRpcmVjdG9yeUVudHJ5EgwKBG5leHQYAiABKAwiagoGRXh0ZW50Ei8KBXJhbmdlGAEgASgLMiAuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkJ5dGVSYW5nZRIvCgRraW5kGAIgASgOMiEuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkV4dGVudEtpbmQivwIKDENhcGFiaWxpdGllcxIYChBjb250cmFjdF92ZXJzaW9uGAEgASgJEjoKCHByb2ZpbGVzGAIgAygOMiguYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkZpbGVzeXN0ZW1Qcm9maWxlEh0KFW1heGltdW1fcmVxdWVzdF9ieXRlcxgDIAEoBBIeChZtYXhpbXVtX3Jlc3BvbnNlX2J5dGVzGAQgASgEEiUKHW1heGltdW1fdHJhbnNhY3Rpb25fbXV0YXRpb25zGAUgASgNEhoKEm1heGltdW1fcGFnZV9pdGVtcxgGIAEoDRIgChhuYXRpdmVfbW91bnRfY3JlZGVudGlhbHMYByABKAgSFgoOczNfY3JlZGVudGlhbHMYCCABKAgSHQoVc291cmNlX3JlY29uY2lsaWF0aW9uGAkgASgIItEBCglXb3Jrc3BhY2USNgoJd29ya3NwYWNlGAEgASgLMiMuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLldvcmtzcGFjZVJlZhIMCgRuYW1lGAIgASgJEjkKB3Byb2ZpbGUYAyABKA4yKC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuRmlsZXN5c3RlbVByb2ZpbGUSMgoEaGVhZBgEIAEoCzIkLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5HZW5lcmF0aW9uUmVmEg8KB2RlbGV0ZWQYBSABKAgiSQoQSGFuZHNoYWtlUmVxdWVzdBI1CgdoYXJuZXNzGAEgASgLMiQuYWN5Y2xpYy5oYXJuZXNzLnYxLkhhbmRzaGFrZVJlcXVlc3QihgEKEUhhbmRzaGFrZVJlc3BvbnNlEjYKB2hhcm5lc3MYASABKAsyJS5hY3ljbGljLmhhcm5lc3MudjEuSGFuZHNoYWtlUmVzcG9uc2USOQoMY2FwYWJpbGl0aWVzGAIgASgLMiMuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkNhcGFiaWxpdGllcyKdAQoWQ3JlYXRlV29ya3NwYWNlUmVxdWVzdBIMCgRuYW1lGAEgASgJEjkKB3Byb2ZpbGUYAiABKA4yKC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuRmlsZXN5c3RlbVByb2ZpbGUSOgoJb3BlcmF0aW9uGAMgASgLMicuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLk9wZXJhdGlvbk9wdGlvbnMibAoUT3BlbldvcmtzcGFjZVJlcXVlc3QSOAoJd29ya3NwYWNlGAEgASgLMiMuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLldvcmtzcGFjZVJlZkgAEg4KBG5hbWUYAiABKAlIAEIKCghzZWxlY3RvciJ/ChFXb3Jrc3BhY2VSZXNwb25zZRIzCgl3b3Jrc3BhY2UYASABKAsyIC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuV29ya3NwYWNlEjUKBnN0YXR1cxgCIAEoDjIlLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5NdXRhdGlvblN0YXR1cyJiChVMaXN0V29ya3NwYWNlc1JlcXVlc3QSMAoEcGFnZRgBIAEoCzIiLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5QYWdlT3B0aW9ucxIXCg9pbmNsdWRlX2RlbGV0ZWQYAiABKAgiXAoWTGlzdFdvcmtzcGFjZXNSZXNwb25zZRI0Cgp3b3Jrc3BhY2VzGAEgAygLMiAuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLldvcmtzcGFjZRIMCgRuZXh0GAIgASgMIowBChZEZWxldGVXb3Jrc3BhY2VSZXF1ZXN0EjYKCXdvcmtzcGFjZRgBIAEoCzIjLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5Xb3Jrc3BhY2VSZWYSOgoJb3BlcmF0aW9uGAIgASgLMicuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLk9wZXJhdGlvbk9wdGlvbnMivgEKEE11dGF0aW9uUmVzcG9uc2USNQoGc3RhdHVzGAEgASgOMiUuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLk11dGF0aW9uU3RhdHVzEjgKCmdlbmVyYXRpb24YAiABKAsyJC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuR2VuZXJhdGlvblJlZhI5CgthY3R1YWxfaGVhZBgDIAEoCzIkLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5HZW5lcmF0aW9uUmVmIkgKDkdldEhlYWRSZXF1ZXN0EjYKCXdvcmtzcGFjZRgBIAEoCzIjLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5Xb3Jrc3BhY2VSZWYiUAoUR2V0R2VuZXJhdGlvblJlcXVlc3QSOAoKZ2VuZXJhdGlvbhgBIAEoCzIkLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5HZW5lcmF0aW9uUmVmIoUBChJHZW5lcmF0aW9uUmVzcG9uc2USOAoKZ2VuZXJhdGlvbhgBIAEoCzIkLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5HZW5lcmF0aW9uUmVmEjUKB3BhcmVudHMYAiADKAsyJC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuR2VuZXJhdGlvblJlZiKdAQoLUmVhZFJlcXVlc3QSOAoKZ2VuZXJhdGlvbhgBIAEoCzIkLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5HZW5lcmF0aW9uUmVmEgwKBHBhdGgYAiABKAkSLwoFcmFuZ2UYAyABKAsyIC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuQnl0ZVJhbmdlEhUKDW1heGltdW1fYnl0ZXMYBCABKAQiIAoMUmVhZFJlc3BvbnNlEhAKCGNvbnRlbnRzGAEgASgMIlUKC1N0YXRSZXF1ZXN0EjgKCmdlbmVyYXRpb24YASABKAsyJC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuR2VuZXJhdGlvblJlZhIMCgRwYXRoGAIgASgJIj0KDFN0YXRSZXNwb25zZRItCgRzdGF0GAEgASgLMh8uYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkZpbGVTdGF0IpABChRMaXN0RGlyZWN0b3J5UmVxdWVzdBI4CgpnZW5lcmF0aW9uGAEgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkdlbmVyYXRpb25SZWYSDAoEcGF0aBgCIAEoCRIwCgRwYWdlGAMgASgLMiIuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLlBhZ2VPcHRpb25zIksKFUxpc3REaXJlY3RvcnlSZXNwb25zZRIyCgRwYWdlGAEgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkRpcmVjdG9yeVBhZ2UicAoPUmVhZExpbmtSZXF1ZXN0EjgKCmdlbmVyYXRpb24YASABKAsyJC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuR2VuZXJhdGlvblJlZhIMCgRwYXRoGAIgASgJEhUKDW1heGltdW1fYnl0ZXMYAyABKAQipgEKElBsYW5FeHRlbnRzUmVxdWVzdBI4CgpnZW5lcmF0aW9uGAEgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkdlbmVyYXRpb25SZWYSDAoEcGF0aBgCIAEoCRIvCgVyYW5nZRgDIAEoCzIgLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5CeXRlUmFuZ2USFwoPbWF4aW11bV9leHRlbnRzGAQgASgNIlgKE1BsYW5FeHRlbnRzUmVzcG9uc2USLgoHZXh0ZW50cxgBIAMoCzIdLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5FeHRlbnQSEQoJdHJ1bmNhdGVkGAIgASgIIl8KCkNyZWF0ZUZpbGUSDAoEcGF0aBgBIAEoCRIQCghjb250ZW50cxgCIAEoDBIxCghtZXRhZGF0YRgDIAEoCzIfLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5NZXRhZGF0YSJSCg9DcmVhdGVEaXJlY3RvcnkSDAoEcGF0aBgBIAEoCRIxCghtZXRhZGF0YRgCIAEoCzIfLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5NZXRhZGF0YSJlChJDcmVhdGVTeW1ib2xpY0xpbmsSDAoEcGF0aBgBIAEoCRIOCgZ0YXJnZXQYAiABKAwSMQoIbWV0YWRhdGEYAyABKAsyHy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuTWV0YWRhdGEiFgoGUmVtb3ZlEgwKBHBhdGgYASABKAkiPgoGUmVuYW1lEg4KBnNvdXJjZRgBIAEoCRITCgtkZXN0aW5hdGlvbhgCIAEoCRIPCgdyZXBsYWNlGAMgASgIIi8KCEhhcmRMaW5rEg4KBnNvdXJjZRgBIAEoCRITCgtkZXN0aW5hdGlvbhgCIAEoCSI3CgVXcml0ZRIMCgRwYXRoGAEgASgJEg4KBm9mZnNldBgCIAEoBBIQCghjb250ZW50cxgDIAEoDCItCgZSZXNpemUSDAoEcGF0aBgBIAEoCRIVCg1sb2dpY2FsX2J5dGVzGAIgASgEIm0KCVplcm9SYW5nZRIMCgRwYXRoGAEgASgJEi8KBXJhbmdlGAIgASgLMiAuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkJ5dGVSYW5nZRIRCglhbGxvY2F0ZWQYAyABKAgSDgoGZXh0ZW5kGAQgASgIIl8KC1ByZWFsbG9jYXRlEgwKBHBhdGgYASABKAkSLwoFcmFuZ2UYAiABKAsyIC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuQnl0ZVJhbmdlEhEKCWtlZXBfc2l6ZRgDIAEoCCJ0CgpDbG9uZVJhbmdlEg4KBnNvdXJjZRgBIAEoCRIVCg1zb3VyY2Vfb2Zmc2V0GAIgASgEEhMKC2Rlc3RpbmF0aW9uGAMgASgJEhoKEmRlc3RpbmF0aW9uX29mZnNldBgEIAEoBBIOCgZsZW5ndGgYBSABKAQiTgoLU2V0TWV0YWRhdGESDAoEcGF0aBgBIAEoCRIxCghtZXRhZGF0YRgCIAEoCzIfLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5NZXRhZGF0YSLABQoITXV0YXRpb24SOAoLY3JlYXRlX2ZpbGUYASABKAsyIS5hY3ljbGljLmZpbGVzeXN0ZW0udjEuQ3JlYXRlRmlsZUgAEkIKEGNyZWF0ZV9kaXJlY3RvcnkYAiABKAsyJi5hY3ljbGljLmZpbGVzeXN0ZW0udjEuQ3JlYXRlRGlyZWN0b3J5SAASSQoUY3JlYXRlX3N5bWJvbGljX2xpbmsYAyABKAsyKS5hY3ljbGljLmZpbGVzeXN0ZW0udjEuQ3JlYXRlU3ltYm9saWNMaW5rSAASLwoGcmVtb3ZlGAQgASgLMh0uYWN5Y2xpYy5maWxlc3lzdGVtLnYxLlJlbW92ZUgAEi8KBnJlbmFtZRgFIAEoCzIdLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5SZW5hbWVIABI0CgloYXJkX2xpbmsYBiABKAsyHy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuSGFyZExpbmtIABItCgV3cml0ZRgHIAEoCzIcLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5Xcml0ZUgAEi8KBnJlc2l6ZRgIIAEoCzIdLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5SZXNpemVIABI2Cgp6ZXJvX3JhbmdlGAkgASgLMiAuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLlplcm9SYW5nZUgAEjkKC3ByZWFsbG9jYXRlGAogASgLMiIuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLlByZWFsbG9jYXRlSAASOAoLY2xvbmVfcmFuZ2UYCyABKAsyIS5hY3ljbGljLmZpbGVzeXN0ZW0udjEuQ2xvbmVSYW5nZUgAEjoKDHNldF9tZXRhZGF0YRgMIAEoCzIiLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5TZXRNZXRhZGF0YUgAQgoKCG11dGF0aW9uIsEBChdBcHBseVRyYW5zYWN0aW9uUmVxdWVzdBI2CghleHBlY3RlZBgBIAEoCzIkLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5HZW5lcmF0aW9uUmVmEjIKCW11dGF0aW9ucxgCIAMoCzIfLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5NdXRhdGlvbhI6CglvcGVyYXRpb24YAyABKAsyJy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuT3BlcmF0aW9uT3B0aW9ucyKiAQoURm9ya1dvcmtzcGFjZVJlcXVlc3QSNAoGc291cmNlGAEgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkdlbmVyYXRpb25SZWYSGAoQZGVzdGluYXRpb25fbmFtZRgCIAEoCRI6CglvcGVyYXRpb24YAyABKAsyJy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuT3BlcmF0aW9uT3B0aW9ucyKMAQoLRGlmZlJlcXVlc3QSMgoEZnJvbRgBIAEoCzIkLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5HZW5lcmF0aW9uUmVmEjAKAnRvGAIgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkdlbmVyYXRpb25SZWYSFwoPbWF4aW11bV9jaGFuZ2VzGAMgASgNIiwKC0NoYW5nZWRQYXRoEgwKBHBhdGgYASABKAkSDwoHZmlsZV9pZBgCIAEoDCJWCgxEaWZmUmVzcG9uc2USMwoHY2hhbmdlcxgBIAMoCzIiLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5DaGFuZ2VkUGF0aBIRCgl0cnVuY2F0ZWQYAiABKAgi0gEKDVJlYmFzZVJlcXVlc3QSNgoJd29ya3NwYWNlGAEgASgLMiMuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLldvcmtzcGFjZVJlZhIyCgRvbnRvGAIgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkdlbmVyYXRpb25SZWYSGQoRbWF4aW11bV9jb25mbGljdHMYAyABKA0SOgoJb3BlcmF0aW9uGAQgASgLMicuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLk9wZXJhdGlvbk9wdGlvbnMiWQoIQ29uZmxpY3QSDAoEcGF0aBgBIAEoCRIvCgVyYW5nZRgCIAEoCzIgLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5CeXRlUmFuZ2USDgoGcmVhc29uGAMgASgJIpEBCg5SZWJhc2VSZXNwb25zZRI4CgdvdXRjb21lGAEgASgLMicuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLk11dGF0aW9uUmVzcG9uc2USMgoJY29uZmxpY3RzGAIgAygLMh8uYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkNvbmZsaWN0EhEKCXRydW5jYXRlZBgDIAEoCCKxAQoPUGxhbkpvaW5SZXF1ZXN0EjQKBnNvdXJjZRgBIAEoCzIkLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5HZW5lcmF0aW9uUmVmEjQKBnRhcmdldBgCIAEoCzIkLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5HZW5lcmF0aW9uUmVmEhcKD21heGltdW1fY2hhbmdlcxgDIAEoDRIZChFtYXhpbXVtX2NvbmZsaWN0cxgEIAEoDSKMAgoISm9pblBsYW4SDwoHcGxhbl9pZBgBIAEoDBI0CgZzb3VyY2UYAiABKAsyJC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuR2VuZXJhdGlvblJlZhI9Cg9leHBlY3RlZF90YXJnZXQYAyABKAsyJC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuR2VuZXJhdGlvblJlZhIzCgdjaGFuZ2VzGAQgAygLMiIuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkNoYW5nZWRQYXRoEjIKCWNvbmZsaWN0cxgFIAMoCzIfLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5Db25mbGljdBIRCgl0cnVuY2F0ZWQYBiABKAgifQoQQXBwbHlKb2luUmVxdWVzdBItCgRwbGFuGAEgASgLMh8uYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkpvaW5QbGFuEjoKCW9wZXJhdGlvbhgCIAEoCzInLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5PcGVyYXRpb25PcHRpb25zIqEBChdSZXRhaW5HZW5lcmF0aW9uUmVxdWVzdBI4CgpnZW5lcmF0aW9uGAEgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkdlbmVyYXRpb25SZWYSEAoIaWRlbnRpdHkYAiABKAkSOgoJb3BlcmF0aW9uGAMgASgLMicuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLk9wZXJhdGlvbk9wdGlvbnMinQEKGFJldGFpbkdlbmVyYXRpb25SZXNwb25zZRI4CgpnZW5lcmF0aW9uGAEgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkdlbmVyYXRpb25SZWYSEAoIaWRlbnRpdHkYAiABKAkSNQoGc3RhdHVzGAMgASgOMiUuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLk11dGF0aW9uU3RhdHVzIs8BChNBdHRhY2hTb3VyY2VSZXF1ZXN0EhYKDndvcmtzcGFjZV9uYW1lGAEgASgJEhIKCnNvdXJjZV91cmkYAiABKAkSOQoHcHJvZmlsZRgDIAEoDjIoLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5GaWxlc3lzdGVtUHJvZmlsZRIVCg1tYXhpbXVtX3BhdGhzGAQgASgNEjoKCW9wZXJhdGlvbhgFIAEoCzInLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5PcGVyYXRpb25PcHRpb25zIkwKElNvdXJjZVN0YXRlUmVxdWVzdBI2Cgl3b3Jrc3BhY2UYASABKAsyIy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuV29ya3NwYWNlUmVmIl4KE1NvdXJjZVN0YXRlUmVzcG9uc2USDQoFc3RhdGUYASABKAkSOAoKZ2VuZXJhdGlvbhgCIAEoCzIkLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5HZW5lcmF0aW9uUmVmIqUBChZSZWNvbmNpbGVTb3VyY2VSZXF1ZXN0EjYKCXdvcmtzcGFjZRgBIAEoCzIjLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5Xb3Jrc3BhY2VSZWYSFwoPbWF4aW11bV9jaGFuZ2VzGAIgASgNEjoKCW9wZXJhdGlvbhgDIAEoCzInLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5PcGVyYXRpb25PcHRpb25zIocBChFTZWFsU291cmNlUmVxdWVzdBI2Cgl3b3Jrc3BhY2UYASABKAsyIy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuV29ya3NwYWNlUmVmEjoKCW9wZXJhdGlvbhgCIAEoCzInLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5PcGVyYXRpb25PcHRpb25zIogBCg1FeHBvcnRSZXF1ZXN0EjgKCmdlbmVyYXRpb24YASABKAsyJC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuR2VuZXJhdGlvblJlZhINCgVhZnRlchgCIAEoDBIXCg9tYXhpbXVtX29iamVjdHMYAyABKA0SFQoNbWF4aW11bV9ieXRlcxgEIAEoBCJUCgtFeHBvcnRDaHVuaxIOCgZjdXJzb3IYASABKAwSEQoJb2JqZWN0X2lkGAIgASgMEhAKCGNvbnRlbnRzGAMgASgMEhAKCHRlcm1pbmFsGAQgASgIIqIBCgtJbXBvcnRDaHVuaxI2Cgl3b3Jrc3BhY2UYASABKAsyIy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuV29ya3NwYWNlUmVmEhQKDG9wZXJhdGlvbl9pZBgCIAEoDBIOCgZjdXJzb3IYAyABKAwSEQoJb2JqZWN0X2lkGAQgASgMEhAKCGNvbnRlbnRzGAUgASgMEhAKCHRlcm1pbmFsGAYgASgIIkoKDkltcG9ydFJlc3BvbnNlEjgKB291dGNvbWUYASABKAsyJy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuTXV0YXRpb25SZXNwb25zZSLyAQoRQ3JlZGVudGlhbFJlcXVlc3QSNgoJd29ya3NwYWNlGAEgASgLMiMuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLldvcmtzcGFjZVJlZhI4CgpnZW5lcmF0aW9uGAIgASgLMiQuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkdlbmVyYXRpb25SZWYSEAoId3JpdGFibGUYAyABKAgSHQoVZXhwaXJlc19hZnRlcl9zZWNvbmRzGAQgASgEEjoKCW9wZXJhdGlvbhgFIAEoCzInLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5PcGVyYXRpb25PcHRpb25zIlYKEkNyZWRlbnRpYWxSZXNwb25zZRIQCghlbmRwb2ludBgBIAEoCRINCgV0b2tlbhgCIAEoCRIfChdleHBpcmVzX2F0X3VuaXhfc2Vjb25kcxgDIAEoAyImCg5PYnNlcnZlUmVxdWVzdBIUCgxvcGVyYXRpb25faWQYASABKAwiWgoPT2JzZXJ2ZVJlc3BvbnNlEg0KBXN0YXRlGAEgASgJEjgKB291dGNvbWUYAiABKAsyJy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuTXV0YXRpb25SZXNwb25zZSq2AQoRRmlsZXN5c3RlbVByb2ZpbGUSIgoeRklMRVNZU1RFTV9QUk9GSUxFX1VOU1BFQ0lGSUVEEAASHwobRklMRVNZU1RFTV9QUk9GSUxFX1BPUlRBQkxFEAESHAoYRklMRVNZU1RFTV9QUk9GSUxFX1BPU0lYEAISHgoaRklMRVNZU1RFTV9QUk9GSUxFX1dJTkRPV1MQAxIeChpGSUxFU1lTVEVNX1BST0ZJTEVfQlJPV1NFUhAEKpMCCghGaWxlS2luZBIZChVGSUxFX0tJTkRfVU5TUEVDSUZJRUQQABIVChFGSUxFX0tJTkRfUkVHVUxBUhABEhcKE0ZJTEVfS0lORF9ESVJFQ1RPUlkQAhIbChdGSUxFX0tJTkRfU1lNQk9MSUNfTElOSxADEhIKDkZJTEVfS0lORF9GSUZPEAQSFAoQRklMRV9LSU5EX1NPQ0tFVBAFEh4KGkZJTEVfS0lORF9DSEFSQUNURVJfREVWSUNFEAYSGgoWRklMRV9LSU5EX0JMT0NLX0RFVklDRRAHEhsKF0ZJTEVfS0lORF9SRVBBUlNFX1BPSU5UEAgSHAoYRklMRV9LSU5EX01PVU5UX0JPVU5EQVJZEAkq/gEKDk11dGF0aW9uU3RhdHVzEh8KG01VVEFUSU9OX1NUQVRVU19VTlNQRUNJRklFRBAAEh0KGU1VVEFUSU9OX1NUQVRVU19DT01NSVRURUQQARIlCiFNVVRBVElPTl9TVEFUVVNfQUxSRUFEWV9DT01NSVRURUQQAhIcChhNVVRBVElPTl9TVEFUVVNfQ09ORkxJQ1QQAxIaChZNVVRBVElPTl9TVEFUVVNfRkVOQ0VEEAQSKAokTVVUQVRJT05fU1RBVFVTX0lERU1QT1RFTkNZX0NPTkZMSUNUEAUSIQodTVVUQVRJT05fU1RBVFVTX0lOREVURVJNSU5BVEUQBip4CgpFeHRlbnRLaW5kEhsKF0VYVEVOVF9LSU5EX1VOU1BFQ0lGSUVEEAASFAoQRVhURU5UX0tJTkRfSE9MRRABEh4KGkVYVEVOVF9LSU5EX0FMTE9DQVRFRF9aRVJPEAISFwoTRVhURU5UX0tJTkRfQ09OVEVOVBADMvMfChFGaWxlc3lzdGVtU2VydmljZRKDAQoJSGFuZHNoYWtlEicuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkhhbmRzaGFrZVJlcXVlc3QaKC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuSGFuZHNoYWtlUmVzcG9uc2UiI4LT5JMCHToBKiIYL3YxL2ZpbGVzeXN0ZW06aGFuZHNoYWtlEoUBCg9DcmVhdGVXb3Jrc3BhY2USLS5hY3ljbGljLmZpbGVzeXN0ZW0udjEuQ3JlYXRlV29ya3NwYWNlUmVxdWVzdBooLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5Xb3Jrc3BhY2VSZXNwb25zZSIZgtPkkwITOgEqIg4vdjEvd29ya3NwYWNlcxKPAQoNT3BlbldvcmtzcGFjZRIrLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5PcGVuV29ya3NwYWNlUmVxdWVzdBooLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5Xb3Jrc3BhY2VSZXNwb25zZSIngtPkkwIhOgEqIhwvdjEvZmlsZXN5c3RlbTpvcGVuV29ya3NwYWNlEoUBCg5MaXN0V29ya3NwYWNlcxIsLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5MaXN0V29ya3NwYWNlc1JlcXVlc3QaLS5hY3ljbGljLmZpbGVzeXN0ZW0udjEuTGlzdFdvcmtzcGFjZXNSZXNwb25zZSIWgtPkkwIQEg4vdjEvd29ya3NwYWNlcxKUAQoPRGVsZXRlV29ya3NwYWNlEi0uYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkRlbGV0ZVdvcmtzcGFjZVJlcXVlc3QaJy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuTXV0YXRpb25SZXNwb25zZSIpgtPkkwIjOgEqIh4vdjEvZmlsZXN5c3RlbTpkZWxldGVXb3Jrc3BhY2USfgoHR2V0SGVhZBIlLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5HZXRIZWFkUmVxdWVzdBopLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5HZW5lcmF0aW9uUmVzcG9uc2UiIYLT5JMCGzoBKiIWL3YxL2ZpbGVzeXN0ZW06Z2V0SGVhZBKQAQoNR2V0R2VuZXJhdGlvbhIrLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5HZXRHZW5lcmF0aW9uUmVxdWVzdBopLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5HZW5lcmF0aW9uUmVzcG9uc2UiJ4LT5JMCIToBKiIcL3YxL2ZpbGVzeXN0ZW06Z2V0R2VuZXJhdGlvbhJvCgRSZWFkEiIuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLlJlYWRSZXF1ZXN0GiMuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLlJlYWRSZXNwb25zZSIegtPkkwIYOgEqIhMvdjEvZmlsZXN5c3RlbTpyZWFkEm8KBFN0YXQSIi5hY3ljbGljLmZpbGVzeXN0ZW0udjEuU3RhdFJlcXVlc3QaIy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuU3RhdFJlc3BvbnNlIh6C0+STAhg6ASoiEy92MS9maWxlc3lzdGVtOnN0YXQSkwEKDUxpc3REaXJlY3RvcnkSKy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuTGlzdERpcmVjdG9yeVJlcXVlc3QaLC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuTGlzdERpcmVjdG9yeVJlc3BvbnNlIieC0+STAiE6ASoiHC92MS9maWxlc3lzdGVtOmxpc3REaXJlY3RvcnkSewoIUmVhZExpbmsSJi5hY3ljbGljLmZpbGVzeXN0ZW0udjEuUmVhZExpbmtSZXF1ZXN0GiMuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLlJlYWRSZXNwb25zZSIigtPkkwIcOgEqIhcvdjEvZmlsZXN5c3RlbTpyZWFkTGluaxKLAQoLUGxhbkV4dGVudHMSKS5hY3ljbGljLmZpbGVzeXN0ZW0udjEuUGxhbkV4dGVudHNSZXF1ZXN0GiouYWN5Y2xpYy5maWxlc3lzdGVtLnYxLlBsYW5FeHRlbnRzUmVzcG9uc2UiJYLT5JMCHzoBKiIaL3YxL2ZpbGVzeXN0ZW06cGxhbkV4dGVudHMSlwEKEEFwcGx5VHJhbnNhY3Rpb24SLi5hY3ljbGljLmZpbGVzeXN0ZW0udjEuQXBwbHlUcmFuc2FjdGlvblJlcXVlc3QaJy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuTXV0YXRpb25SZXNwb25zZSIqgtPkkwIkOgEqIh8vdjEvZmlsZXN5c3RlbTphcHBseVRyYW5zYWN0aW9uEo8BCg1Gb3JrV29ya3NwYWNlEisuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkZvcmtXb3Jrc3BhY2VSZXF1ZXN0GiguYWN5Y2xpYy5maWxlc3lzdGVtLnYxLldvcmtzcGFjZVJlc3BvbnNlIieC0+STAiE6ASoiHC92MS9maWxlc3lzdGVtOmZvcmtXb3Jrc3BhY2USbwoERGlmZhIiLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5EaWZmUmVxdWVzdBojLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5EaWZmUmVzcG9uc2UiHoLT5JMCGDoBKiITL3YxL2ZpbGVzeXN0ZW06ZGlmZhJ3CgZSZWJhc2USJC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuUmViYXNlUmVxdWVzdBolLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5SZWJhc2VSZXNwb25zZSIggtPkkwIaOgEqIhUvdjEvZmlsZXN5c3RlbTpyZWJhc2USdwoIUGxhbkpvaW4SJi5hY3ljbGljLmZpbGVzeXN0ZW0udjEuUGxhbkpvaW5SZXF1ZXN0Gh8uYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkpvaW5QbGFuIiKC0+STAhw6ASoiFy92MS9maWxlc3lzdGVtOnBsYW5Kb2luEoIBCglBcHBseUpvaW4SJy5hY3ljbGljLmZpbGVzeXN0ZW0udjEuQXBwbHlKb2luUmVxdWVzdBonLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5NdXRhdGlvblJlc3BvbnNlIiOC0+STAh06ASoiGC92MS9maWxlc3lzdGVtOmFwcGx5Sm9pbhKTAQoKQ2hlY2twb2ludBIuLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5SZXRhaW5HZW5lcmF0aW9uUmVxdWVzdBovLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5SZXRhaW5HZW5lcmF0aW9uUmVzcG9uc2UiJILT5JMCHjoBKiIZL3YxL2ZpbGVzeXN0ZW06Y2hlY2twb2ludBKFAQoDUGluEi4uYWN5Y2xpYy5maWxlc3lzdGVtLnYxLlJldGFpbkdlbmVyYXRpb25SZXF1ZXN0Gi8uYWN5Y2xpYy5maWxlc3lzdGVtLnYxLlJldGFpbkdlbmVyYXRpb25SZXNwb25zZSIdgtPkkwIXOgEqIhIvdjEvZmlsZXN5c3RlbTpwaW4SjAEKDEF0dGFjaFNvdXJjZRIqLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5BdHRhY2hTb3VyY2VSZXF1ZXN0GiguYWN5Y2xpYy5maWxlc3lzdGVtLnYxLldvcmtzcGFjZVJlc3BvbnNlIiaC0+STAiA6ASoiGy92MS9maWxlc3lzdGVtOmF0dGFjaFNvdXJjZRKRAQoOR2V0U291cmNlU3RhdGUSKS5hY3ljbGljLmZpbGVzeXN0ZW0udjEuU291cmNlU3RhdGVSZXF1ZXN0GiouYWN5Y2xpYy5maWxlc3lzdGVtLnYxLlNvdXJjZVN0YXRlUmVzcG9uc2UiKILT5JMCIjoBKiIdL3YxL2ZpbGVzeXN0ZW06Z2V0U291cmNlU3RhdGUSlAEKD1JlY29uY2lsZVNvdXJjZRItLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5SZWNvbmNpbGVTb3VyY2VSZXF1ZXN0GicuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLk11dGF0aW9uUmVzcG9uc2UiKYLT5JMCIzoBKiIeL3YxL2ZpbGVzeXN0ZW06cmVjb25jaWxlU291cmNlEoUBCgpTZWFsU291cmNlEiguYWN5Y2xpYy5maWxlc3lzdGVtLnYxLlNlYWxTb3VyY2VSZXF1ZXN0GicuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLk11dGF0aW9uUmVzcG9uc2UiJILT5JMCHjoBKiIZL3YxL2ZpbGVzeXN0ZW06c2VhbFNvdXJjZRJ2CgZFeHBvcnQSJC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuRXhwb3J0UmVxdWVzdBoiLmFjeWNsaWMuZmlsZXN5c3RlbS52MS5FeHBvcnRDaHVuayIggtPkkwIaOgEqIhUvdjEvZmlsZXN5c3RlbTpleHBvcnQwARJ3CgZJbXBvcnQSIi5hY3ljbGljLmZpbGVzeXN0ZW0udjEuSW1wb3J0Q2h1bmsaJS5hY3ljbGljLmZpbGVzeXN0ZW0udjEuSW1wb3J0UmVzcG9uc2UiIILT5JMCGjoBKiIVL3YxL2ZpbGVzeXN0ZW06aW1wb3J0KAESmwEKFElzc3VlTW91bnRDcmVkZW50aWFsEiguYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkNyZWRlbnRpYWxSZXF1ZXN0GikuYWN5Y2xpYy5maWxlc3lzdGVtLnYxLkNyZWRlbnRpYWxSZXNwb25zZSIugtPkkwIoOgEqIiMvdjEvZmlsZXN5c3RlbTppc3N1ZU1vdW50Q3JlZGVudGlhbBKVAQoRSXNzdWVTM0NyZWRlbnRpYWwSKC5hY3ljbGljLmZpbGVzeXN0ZW0udjEuQ3JlZGVudGlhbFJlcXVlc3QaKS5hY3ljbGljLmZpbGVzeXN0ZW0udjEuQ3JlZGVudGlhbFJlc3BvbnNlIiuC0+STAiU6ASoiIC92MS9maWxlc3lzdGVtOmlzc3VlUzNDcmVkZW50aWFsEnsKB09ic2VydmUSJS5hY3ljbGljLmZpbGVzeXN0ZW0udjEuT2JzZXJ2ZVJlcXVlc3QaJi5hY3ljbGljLmZpbGVzeXN0ZW0udjEuT2JzZXJ2ZVJlc3BvbnNlIiGC0+STAhs6ASoiFi92MS9maWxlc3lzdGVtOm9ic2VydmUScQoGQ2FuY2VsEiEuYWN5Y2xpYy5oYXJuZXNzLnYxLkNhbmNlbFJlcXVlc3QaIi5hY3ljbGljLmhhcm5lc3MudjEuQ2FuY2VsUmVzcG9uc2UiIILT5JMCGjoBKiIVL3YxL2ZpbGVzeXN0ZW06Y2FuY2VsQj9aPWdpdGh1Yi5jb20vYWN5Y2xpYy1sYWJzL3Nkay9nby9nZW4vZmlsZXN5c3RlbS92MTtmaWxlc3lzdGVtdjFiBnByb3RvMw", [file_google_api_annotations, file_harness_v1_harness]);
+
+/**
+ * Describes the message acyclic.filesystem.v1.WorkspaceRef.
+ * Use `create(WorkspaceRefSchema)` to create a new message.
+ */
+export const WorkspaceRefSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 0);
 
 /**
  * Describes the message acyclic.filesystem.v1.GenerationRef.
  * Use `create(GenerationRefSchema)` to create a new message.
  */
 export const GenerationRefSchema = /*@__PURE__*/
-  messageDesc(file_filesystem_v1_filesystem, 0);
+  messageDesc(file_filesystem_v1_filesystem, 1);
+
+/**
+ * Describes the message acyclic.filesystem.v1.OperationOptions.
+ * Use `create(OperationOptionsSchema)` to create a new message.
+ */
+export const OperationOptionsSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 2);
+
+/**
+ * Describes the message acyclic.filesystem.v1.PageOptions.
+ * Use `create(PageOptionsSchema)` to create a new message.
+ */
+export const PageOptionsSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 3);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ByteRange.
+ * Use `create(ByteRangeSchema)` to create a new message.
+ */
+export const ByteRangeSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 4);
+
+/**
+ * Describes the message acyclic.filesystem.v1.OptionalU32.
+ * Use `create(OptionalU32Schema)` to create a new message.
+ */
+export const OptionalU32Schema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 5);
+
+/**
+ * Describes the message acyclic.filesystem.v1.OptionalU64.
+ * Use `create(OptionalU64Schema)` to create a new message.
+ */
+export const OptionalU64Schema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 6);
+
+/**
+ * Describes the message acyclic.filesystem.v1.OptionalI64.
+ * Use `create(OptionalI64Schema)` to create a new message.
+ */
+export const OptionalI64Schema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 7);
+
+/**
+ * Describes the message acyclic.filesystem.v1.Metadata.
+ * Use `create(MetadataSchema)` to create a new message.
+ */
+export const MetadataSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 8);
+
+/**
+ * Describes the message acyclic.filesystem.v1.FileStat.
+ * Use `create(FileStatSchema)` to create a new message.
+ */
+export const FileStatSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 9);
+
+/**
+ * Describes the message acyclic.filesystem.v1.DirectoryEntry.
+ * Use `create(DirectoryEntrySchema)` to create a new message.
+ */
+export const DirectoryEntrySchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 10);
+
+/**
+ * Describes the message acyclic.filesystem.v1.DirectoryPage.
+ * Use `create(DirectoryPageSchema)` to create a new message.
+ */
+export const DirectoryPageSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 11);
+
+/**
+ * Describes the message acyclic.filesystem.v1.Extent.
+ * Use `create(ExtentSchema)` to create a new message.
+ */
+export const ExtentSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 12);
+
+/**
+ * Describes the message acyclic.filesystem.v1.Capabilities.
+ * Use `create(CapabilitiesSchema)` to create a new message.
+ */
+export const CapabilitiesSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 13);
+
+/**
+ * Describes the message acyclic.filesystem.v1.Workspace.
+ * Use `create(WorkspaceSchema)` to create a new message.
+ */
+export const WorkspaceSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 14);
+
+/**
+ * Describes the message acyclic.filesystem.v1.HandshakeRequest.
+ * Use `create(HandshakeRequestSchema)` to create a new message.
+ */
+export const HandshakeRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 15);
+
+/**
+ * Describes the message acyclic.filesystem.v1.HandshakeResponse.
+ * Use `create(HandshakeResponseSchema)` to create a new message.
+ */
+export const HandshakeResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 16);
 
 /**
  * Describes the message acyclic.filesystem.v1.CreateWorkspaceRequest.
  * Use `create(CreateWorkspaceRequestSchema)` to create a new message.
  */
 export const CreateWorkspaceRequestSchema = /*@__PURE__*/
-  messageDesc(file_filesystem_v1_filesystem, 1);
+  messageDesc(file_filesystem_v1_filesystem, 17);
 
 /**
- * Describes the message acyclic.filesystem.v1.CreateWorkspaceResponse.
- * Use `create(CreateWorkspaceResponseSchema)` to create a new message.
+ * Describes the message acyclic.filesystem.v1.OpenWorkspaceRequest.
+ * Use `create(OpenWorkspaceRequestSchema)` to create a new message.
  */
-export const CreateWorkspaceResponseSchema = /*@__PURE__*/
-  messageDesc(file_filesystem_v1_filesystem, 2);
+export const OpenWorkspaceRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 18);
+
+/**
+ * Describes the message acyclic.filesystem.v1.WorkspaceResponse.
+ * Use `create(WorkspaceResponseSchema)` to create a new message.
+ */
+export const WorkspaceResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 19);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ListWorkspacesRequest.
+ * Use `create(ListWorkspacesRequestSchema)` to create a new message.
+ */
+export const ListWorkspacesRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 20);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ListWorkspacesResponse.
+ * Use `create(ListWorkspacesResponseSchema)` to create a new message.
+ */
+export const ListWorkspacesResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 21);
+
+/**
+ * Describes the message acyclic.filesystem.v1.DeleteWorkspaceRequest.
+ * Use `create(DeleteWorkspaceRequestSchema)` to create a new message.
+ */
+export const DeleteWorkspaceRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 22);
+
+/**
+ * Describes the message acyclic.filesystem.v1.MutationResponse.
+ * Use `create(MutationResponseSchema)` to create a new message.
+ */
+export const MutationResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 23);
+
+/**
+ * Describes the message acyclic.filesystem.v1.GetHeadRequest.
+ * Use `create(GetHeadRequestSchema)` to create a new message.
+ */
+export const GetHeadRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 24);
 
 /**
  * Describes the message acyclic.filesystem.v1.GetGenerationRequest.
  * Use `create(GetGenerationRequestSchema)` to create a new message.
  */
 export const GetGenerationRequestSchema = /*@__PURE__*/
-  messageDesc(file_filesystem_v1_filesystem, 3);
+  messageDesc(file_filesystem_v1_filesystem, 25);
 
 /**
- * Describes the message acyclic.filesystem.v1.File.
- * Use `create(FileSchema)` to create a new message.
+ * Describes the message acyclic.filesystem.v1.GenerationResponse.
+ * Use `create(GenerationResponseSchema)` to create a new message.
  */
-export const FileSchema = /*@__PURE__*/
-  messageDesc(file_filesystem_v1_filesystem, 4);
+export const GenerationResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 26);
 
 /**
- * Describes the message acyclic.filesystem.v1.GetGenerationResponse.
- * Use `create(GetGenerationResponseSchema)` to create a new message.
+ * Describes the message acyclic.filesystem.v1.ReadRequest.
+ * Use `create(ReadRequestSchema)` to create a new message.
  */
-export const GetGenerationResponseSchema = /*@__PURE__*/
-  messageDesc(file_filesystem_v1_filesystem, 5);
+export const ReadRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 27);
 
 /**
- * Describes the message acyclic.filesystem.v1.WriteRequest.
- * Use `create(WriteRequestSchema)` to create a new message.
+ * Describes the message acyclic.filesystem.v1.ReadResponse.
+ * Use `create(ReadResponseSchema)` to create a new message.
  */
-export const WriteRequestSchema = /*@__PURE__*/
-  messageDesc(file_filesystem_v1_filesystem, 6);
+export const ReadResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 28);
 
 /**
- * Describes the message acyclic.filesystem.v1.WriteResponse.
- * Use `create(WriteResponseSchema)` to create a new message.
+ * Describes the message acyclic.filesystem.v1.StatRequest.
+ * Use `create(StatRequestSchema)` to create a new message.
  */
-export const WriteResponseSchema = /*@__PURE__*/
-  messageDesc(file_filesystem_v1_filesystem, 7);
+export const StatRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 29);
 
 /**
- * Describes the message acyclic.filesystem.v1.JoinRequest.
- * Use `create(JoinRequestSchema)` to create a new message.
+ * Describes the message acyclic.filesystem.v1.StatResponse.
+ * Use `create(StatResponseSchema)` to create a new message.
  */
-export const JoinRequestSchema = /*@__PURE__*/
-  messageDesc(file_filesystem_v1_filesystem, 8);
+export const StatResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 30);
 
 /**
- * Describes the message acyclic.filesystem.v1.JoinResponse.
- * Use `create(JoinResponseSchema)` to create a new message.
+ * Describes the message acyclic.filesystem.v1.ListDirectoryRequest.
+ * Use `create(ListDirectoryRequestSchema)` to create a new message.
  */
-export const JoinResponseSchema = /*@__PURE__*/
-  messageDesc(file_filesystem_v1_filesystem, 9);
+export const ListDirectoryRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 31);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ListDirectoryResponse.
+ * Use `create(ListDirectoryResponseSchema)` to create a new message.
+ */
+export const ListDirectoryResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 32);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ReadLinkRequest.
+ * Use `create(ReadLinkRequestSchema)` to create a new message.
+ */
+export const ReadLinkRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 33);
+
+/**
+ * Describes the message acyclic.filesystem.v1.PlanExtentsRequest.
+ * Use `create(PlanExtentsRequestSchema)` to create a new message.
+ */
+export const PlanExtentsRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 34);
+
+/**
+ * Describes the message acyclic.filesystem.v1.PlanExtentsResponse.
+ * Use `create(PlanExtentsResponseSchema)` to create a new message.
+ */
+export const PlanExtentsResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 35);
+
+/**
+ * Describes the message acyclic.filesystem.v1.CreateFile.
+ * Use `create(CreateFileSchema)` to create a new message.
+ */
+export const CreateFileSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 36);
+
+/**
+ * Describes the message acyclic.filesystem.v1.CreateDirectory.
+ * Use `create(CreateDirectorySchema)` to create a new message.
+ */
+export const CreateDirectorySchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 37);
+
+/**
+ * Describes the message acyclic.filesystem.v1.CreateSymbolicLink.
+ * Use `create(CreateSymbolicLinkSchema)` to create a new message.
+ */
+export const CreateSymbolicLinkSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 38);
+
+/**
+ * Describes the message acyclic.filesystem.v1.Remove.
+ * Use `create(RemoveSchema)` to create a new message.
+ */
+export const RemoveSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 39);
+
+/**
+ * Describes the message acyclic.filesystem.v1.Rename.
+ * Use `create(RenameSchema)` to create a new message.
+ */
+export const RenameSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 40);
+
+/**
+ * Describes the message acyclic.filesystem.v1.HardLink.
+ * Use `create(HardLinkSchema)` to create a new message.
+ */
+export const HardLinkSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 41);
+
+/**
+ * Describes the message acyclic.filesystem.v1.Write.
+ * Use `create(WriteSchema)` to create a new message.
+ */
+export const WriteSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 42);
+
+/**
+ * Describes the message acyclic.filesystem.v1.Resize.
+ * Use `create(ResizeSchema)` to create a new message.
+ */
+export const ResizeSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 43);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ZeroRange.
+ * Use `create(ZeroRangeSchema)` to create a new message.
+ */
+export const ZeroRangeSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 44);
+
+/**
+ * Describes the message acyclic.filesystem.v1.Preallocate.
+ * Use `create(PreallocateSchema)` to create a new message.
+ */
+export const PreallocateSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 45);
+
+/**
+ * Describes the message acyclic.filesystem.v1.CloneRange.
+ * Use `create(CloneRangeSchema)` to create a new message.
+ */
+export const CloneRangeSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 46);
+
+/**
+ * Describes the message acyclic.filesystem.v1.SetMetadata.
+ * Use `create(SetMetadataSchema)` to create a new message.
+ */
+export const SetMetadataSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 47);
+
+/**
+ * Describes the message acyclic.filesystem.v1.Mutation.
+ * Use `create(MutationSchema)` to create a new message.
+ */
+export const MutationSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 48);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ApplyTransactionRequest.
+ * Use `create(ApplyTransactionRequestSchema)` to create a new message.
+ */
+export const ApplyTransactionRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 49);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ForkWorkspaceRequest.
+ * Use `create(ForkWorkspaceRequestSchema)` to create a new message.
+ */
+export const ForkWorkspaceRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 50);
+
+/**
+ * Describes the message acyclic.filesystem.v1.DiffRequest.
+ * Use `create(DiffRequestSchema)` to create a new message.
+ */
+export const DiffRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 51);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ChangedPath.
+ * Use `create(ChangedPathSchema)` to create a new message.
+ */
+export const ChangedPathSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 52);
+
+/**
+ * Describes the message acyclic.filesystem.v1.DiffResponse.
+ * Use `create(DiffResponseSchema)` to create a new message.
+ */
+export const DiffResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 53);
+
+/**
+ * Describes the message acyclic.filesystem.v1.RebaseRequest.
+ * Use `create(RebaseRequestSchema)` to create a new message.
+ */
+export const RebaseRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 54);
+
+/**
+ * Describes the message acyclic.filesystem.v1.Conflict.
+ * Use `create(ConflictSchema)` to create a new message.
+ */
+export const ConflictSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 55);
+
+/**
+ * Describes the message acyclic.filesystem.v1.RebaseResponse.
+ * Use `create(RebaseResponseSchema)` to create a new message.
+ */
+export const RebaseResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 56);
+
+/**
+ * Describes the message acyclic.filesystem.v1.PlanJoinRequest.
+ * Use `create(PlanJoinRequestSchema)` to create a new message.
+ */
+export const PlanJoinRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 57);
+
+/**
+ * Describes the message acyclic.filesystem.v1.JoinPlan.
+ * Use `create(JoinPlanSchema)` to create a new message.
+ */
+export const JoinPlanSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 58);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ApplyJoinRequest.
+ * Use `create(ApplyJoinRequestSchema)` to create a new message.
+ */
+export const ApplyJoinRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 59);
+
+/**
+ * Describes the message acyclic.filesystem.v1.RetainGenerationRequest.
+ * Use `create(RetainGenerationRequestSchema)` to create a new message.
+ */
+export const RetainGenerationRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 60);
+
+/**
+ * Describes the message acyclic.filesystem.v1.RetainGenerationResponse.
+ * Use `create(RetainGenerationResponseSchema)` to create a new message.
+ */
+export const RetainGenerationResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 61);
+
+/**
+ * Describes the message acyclic.filesystem.v1.AttachSourceRequest.
+ * Use `create(AttachSourceRequestSchema)` to create a new message.
+ */
+export const AttachSourceRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 62);
+
+/**
+ * Describes the message acyclic.filesystem.v1.SourceStateRequest.
+ * Use `create(SourceStateRequestSchema)` to create a new message.
+ */
+export const SourceStateRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 63);
+
+/**
+ * Describes the message acyclic.filesystem.v1.SourceStateResponse.
+ * Use `create(SourceStateResponseSchema)` to create a new message.
+ */
+export const SourceStateResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 64);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ReconcileSourceRequest.
+ * Use `create(ReconcileSourceRequestSchema)` to create a new message.
+ */
+export const ReconcileSourceRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 65);
+
+/**
+ * Describes the message acyclic.filesystem.v1.SealSourceRequest.
+ * Use `create(SealSourceRequestSchema)` to create a new message.
+ */
+export const SealSourceRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 66);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ExportRequest.
+ * Use `create(ExportRequestSchema)` to create a new message.
+ */
+export const ExportRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 67);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ExportChunk.
+ * Use `create(ExportChunkSchema)` to create a new message.
+ */
+export const ExportChunkSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 68);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ImportChunk.
+ * Use `create(ImportChunkSchema)` to create a new message.
+ */
+export const ImportChunkSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 69);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ImportResponse.
+ * Use `create(ImportResponseSchema)` to create a new message.
+ */
+export const ImportResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 70);
+
+/**
+ * Describes the message acyclic.filesystem.v1.CredentialRequest.
+ * Use `create(CredentialRequestSchema)` to create a new message.
+ */
+export const CredentialRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 71);
+
+/**
+ * Describes the message acyclic.filesystem.v1.CredentialResponse.
+ * Use `create(CredentialResponseSchema)` to create a new message.
+ */
+export const CredentialResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 72);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ObserveRequest.
+ * Use `create(ObserveRequestSchema)` to create a new message.
+ */
+export const ObserveRequestSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 73);
+
+/**
+ * Describes the message acyclic.filesystem.v1.ObserveResponse.
+ * Use `create(ObserveResponseSchema)` to create a new message.
+ */
+export const ObserveResponseSchema = /*@__PURE__*/
+  messageDesc(file_filesystem_v1_filesystem, 74);
+
+/**
+ * Describes the enum acyclic.filesystem.v1.FilesystemProfile.
+ */
+export const FilesystemProfileSchema = /*@__PURE__*/
+  enumDesc(file_filesystem_v1_filesystem, 0);
+
+/**
+ * @generated from enum acyclic.filesystem.v1.FilesystemProfile
+ */
+export const FilesystemProfile = /*@__PURE__*/
+  tsEnum(FilesystemProfileSchema);
+
+/**
+ * Describes the enum acyclic.filesystem.v1.FileKind.
+ */
+export const FileKindSchema = /*@__PURE__*/
+  enumDesc(file_filesystem_v1_filesystem, 1);
+
+/**
+ * @generated from enum acyclic.filesystem.v1.FileKind
+ */
+export const FileKind = /*@__PURE__*/
+  tsEnum(FileKindSchema);
+
+/**
+ * Describes the enum acyclic.filesystem.v1.MutationStatus.
+ */
+export const MutationStatusSchema = /*@__PURE__*/
+  enumDesc(file_filesystem_v1_filesystem, 2);
+
+/**
+ * @generated from enum acyclic.filesystem.v1.MutationStatus
+ */
+export const MutationStatus = /*@__PURE__*/
+  tsEnum(MutationStatusSchema);
+
+/**
+ * Describes the enum acyclic.filesystem.v1.ExtentKind.
+ */
+export const ExtentKindSchema = /*@__PURE__*/
+  enumDesc(file_filesystem_v1_filesystem, 3);
+
+/**
+ * @generated from enum acyclic.filesystem.v1.ExtentKind
+ */
+export const ExtentKind = /*@__PURE__*/
+  tsEnum(ExtentKindSchema);
 
 /**
  * @generated from service acyclic.filesystem.v1.FilesystemService

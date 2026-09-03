@@ -1,101 +1,169 @@
-//! Filesystem provider contract and deterministic in-memory implementation.
+#![deny(unsafe_code)]
+//! Canonical Rust SDK for immutable, independently configured filesystem volumes.
+//!
+//! This crate owns its public contracts and first-party embedded backends so a
+//! packaged consumer never depends on unpublished workspace crates. Optional
+//! processes and language bindings depend on this crate, not the reverse.
 
-use acyclic_contracts::{Error, Result};
-use async_trait::async_trait;
-use std::{collections::BTreeMap, sync::Arc};
-use tokio::sync::RwLock;
-use uuid::Uuid;
+pub mod async_storage;
+pub mod cache;
+pub mod cancellation;
+pub mod facade;
+pub mod foundation;
+pub mod kernel;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub mod local;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub mod local_authority;
+#[cfg(feature = "memory")]
+pub mod memory;
+pub mod model;
+pub mod mount;
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub mod native_capture;
+#[cfg(all(feature = "native-executor", not(target_arch = "wasm32")))]
+pub mod native_executor;
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub mod native_host;
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+pub mod native_mount;
+pub mod notification;
+pub mod path;
+pub mod performance;
+#[cfg(feature = "public-providers")]
+pub mod public_storage;
+pub mod s3;
+#[cfg(feature = "memory")]
+pub mod simulation;
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub mod source;
+pub mod speculation;
+pub mod storage;
+pub mod streams_record;
+#[cfg(all(test, feature = "memory"))]
+#[path = "tests/support.rs"]
+pub(crate) mod test_support;
+#[cfg(feature = "native-watch")]
+pub mod watch;
+pub mod workspace;
 
-/// An immutable filesystem generation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Generation {
-    /// Stable generation identity.
-    pub id: String,
-    /// Immutable path contents.
-    pub files: BTreeMap<String, Vec<u8>>,
-}
-
-/// Provider interface implemented by memory, customer, and Acyclic backends.
-#[async_trait]
-pub trait FilesystemProvider: Send + Sync {
-    /// Creates an empty workspace and returns its initial generation.
-    async fn create(&self) -> Result<Generation>;
-    /// Reads a known immutable generation.
-    async fn get(&self, id: &str) -> Result<Generation>;
-    /// Creates a derived immutable generation containing one write.
-    async fn write(&self, base: &str, path: String, value: Vec<u8>) -> Result<Generation>;
-    /// Joins non-conflicting changes relative to a common base.
-    async fn join(&self, base: &str, children: &[String]) -> Result<Generation>;
-}
-
-/// Process-local reference provider.
-#[derive(Clone, Default)]
-pub struct MemoryFilesystem {
-    generations: Arc<RwLock<BTreeMap<String, Generation>>>,
-}
-
-impl MemoryFilesystem {
-    fn next(files: BTreeMap<String, Vec<u8>>) -> Generation {
-        Generation {
-            id: Uuid::new_v4().to_string(),
-            files,
-        }
-    }
-}
-
-#[async_trait]
-impl FilesystemProvider for MemoryFilesystem {
-    async fn create(&self) -> Result<Generation> {
-        let generation = Self::next(BTreeMap::new());
-        self.generations
-            .write()
-            .await
-            .insert(generation.id.clone(), generation.clone());
-        Ok(generation)
-    }
-
-    async fn get(&self, id: &str) -> Result<Generation> {
-        self.generations
-            .read()
-            .await
-            .get(id)
-            .cloned()
-            .ok_or_else(|| Error::NotFound(id.into()))
-    }
-
-    async fn write(&self, base: &str, path: String, value: Vec<u8>) -> Result<Generation> {
-        let mut files = self.get(base).await?.files;
-        files.insert(path, value);
-        let generation = Self::next(files);
-        self.generations
-            .write()
-            .await
-            .insert(generation.id.clone(), generation.clone());
-        Ok(generation)
-    }
-
-    async fn join(&self, base: &str, children: &[String]) -> Result<Generation> {
-        let base_files = self.get(base).await?.files;
-        let mut joined = base_files.clone();
-        let mut changes: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-        for child_id in children {
-            for (path, value) in self.get(child_id).await?.files {
-                if base_files.get(&path) == Some(&value) {
-                    continue;
-                }
-                if let Some(previous) = changes.insert(path.clone(), value.clone())
-                    && previous != value
-                {
-                    return Err(Error::Conflict(path));
-                }
-                joined.insert(path, value);
-            }
-        }
-        let generation = Self::next(joined);
-        self.generations
-            .write()
-            .await
-            .insert(generation.id.clone(), generation.clone());
-        Ok(generation)
-    }
-}
+pub use async_storage::{
+    AsyncAuthorityStore, AsyncObjectStore, ImmediateAuthorityStore, ImmediateObjectStore,
+};
+pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
+pub use cancellation::{CancellationError, CancellationToken, Cancelled};
+pub use facade::{
+    AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
+    CheckoutCommitOutcome, DetachedFile, DirectoryBindingChange, DirectoryRecordEntry,
+    DirectoryRecordPage, EmbeddedCapabilities, FileCloneRequest, FileRecordChange, Fs, FsError,
+    FsReceipt, FsResult, GenerationDiff, LiveMutationOutcome, MergeConflict, MergePreparation,
+    NamedAttributeWriteMode, PathMetadataLookup, StagedContent, Volume,
+};
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub use facade::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions, LocalVolume};
+pub use foundation::{
+    AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, AuthorityId, CheckoutId, Digest, DurableCommit, Epoch,
+    FileId, GenerationId, Head, MountId, OperationId, ProposedCommit, Sequence, VolumeId, WatchId,
+    authority_commit_digest,
+};
+pub use kernel::{
+    GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
+    encode_generation_export_manifest,
+};
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub use local::{LocalGarbageCollection, LocalObjectStore};
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub use local_authority::{LocalAuthorityConfig, LocalAuthorityStore};
+#[cfg(feature = "memory")]
+pub use memory::{MemoryAuthorityStore, MemoryObjectStore};
+pub use mount::{
+    MountError, MountedCheckout, MountedGeneration, MountedView, MountedViewBuilder,
+    MountedViewSnapshot, RoutedCheckout,
+};
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub use native_capture::{
+    CaptureError, CaptureOptions, CaptureReceipt, WatchCaptureReceipt, capture_baseline,
+    capture_paths, capture_root_identity, capture_watch_batch,
+};
+#[cfg(all(feature = "native-executor", not(target_arch = "wasm32")))]
+pub use native_executor::{
+    NativeExecutionError, NativeExecutor, NativeExecutorConfig, NativeExecutorConfigError,
+    NativeStore,
+};
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+pub use native_mount::{
+    CheckoutMountSource, MaterializationReceipt, MaterializeError, MaterializeOptions, Mount,
+    MountAttributePage, MountDirectoryEntry, MountDirectoryPage, MountFilesystem,
+    MountLifecycleError, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountOptions,
+    MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
+    MountSparseRange, MountSparseSpan, NativeBlockCloneAccelerationEvidence,
+    NativeMountCapabilities, NativeMountError, NativeMountKind, NativeMountRequest,
+    NativeMountSession, NativeMountSessionIsolation, NativeSparseAccelerationEvidence,
+    NativeStorageAccelerationError, NativeStorageAccelerationEvidence, NativeStorageCapabilities,
+    NativeStorageCapabilityError, RoutedMountSource, SharedCheckout, SharedCheckoutState,
+    materialize_checkout, mount_native, probe_native_mount, probe_native_storage_accelerations,
+    probe_native_storage_capabilities, reclaim_native_mount_destination_fence,
+    reclaim_stale_native_mount_destination_fences, recover_native_mount_destination, seal_checkout,
+};
+#[cfg(all(feature = "native-mount", target_os = "windows"))]
+pub use native_mount::{
+    WindowsUsnCheckpoint, WindowsUsnContinuity, WindowsUsnDiscontinuity, WindowsUsnError,
+    capture_windows_usn_checkpoint, validate_windows_usn_checkpoint,
+};
+pub use notification::{
+    AsyncNotificationStore, ImmediateNotificationStore, MemoryNotificationStore, NotificationError,
+    NotificationPoll, NotificationResult, NotificationStore,
+};
+pub use performance::{
+    MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
+};
+#[cfg(feature = "public-providers")]
+pub use public_storage::{ProviderObjectStore, StreamAuthorityStore};
+pub use s3::{
+    S3Error, S3List, S3ListOptions, S3MultipartOptions, S3MultipartUpload, S3Object, S3ObjectHead,
+    S3Workspace,
+};
+#[cfg(feature = "memory")]
+pub use simulation::{
+    ScheduledSimulationFault, SimulatedAuthorityStore, SimulatedObjectStore, Simulation,
+    SimulationError, SimulationFault, SimulationOperation, SimulationOptions, SimulationTrace,
+};
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub use source::{ReconcileOutcome, Source, SourceError, SourceMode, SourceOptions, SourceState};
+pub use speculation::{
+    ObjectResidency, PromotionAdmission, PromotionCandidate, PromotionDestination,
+    PromotionExecutor, PromotionMetrics, PromotionPlan, PromotionRejection, PromotionSpeculator,
+    PromotionSpeculatorError, PromotionSpeculatorOptions, ResidencyAdmission, ResidencyCandidate,
+    ResidencyHint, ResidencyMetrics, ResidencyPermit, ResidencyReason, ResidencyRejection,
+    ResidencySpeculator, ResidencySpeculatorError, ResidencySpeculatorOptions,
+    SpeculationController, SpeculationControllerError, SpeculationMetrics, SpeculationOptions,
+    SpeculationPreemption, StorageLocationId, StorageTier, StorePromotionExecutor,
+    StorePromotionExecutorError, execute_promotion, execute_residency,
+};
+pub use storage::{
+    AppendOutcome, AuthorityFailure, AuthorityReceipt, AuthorityResult, AuthorityStore,
+    AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome,
+    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectKind, ObjectRead,
+    ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStore,
+    ObjectStoreError, ReplayLimit, object_digest,
+};
+pub use streams_record::{
+    STREAMS_AUTHORITY_RECORD_HEADER_BYTES, StreamsAuthorityRecord, StreamsAuthorityRecordError,
+    StreamsDurableRecord,
+};
+#[cfg(feature = "native-watch")]
+pub use watch::{
+    NativeRootIdentity, NativeWatch, NativeWatchBackend, NativeWatchCapabilities, NativeWatchError,
+    NativeWatchOptions, WatchBatch, WatchChange, WatchEpoch, WatchInvalidationReason,
+    WatchSequence, native_watch_capabilities,
+};
+pub use workspace::{
+    ApplyOptions, ChangeSet, Checkpoint, ForkOptions, Generation, GenerationPin, IdempotencyKey,
+    JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, Transaction, TransactionCommit,
+    TransactionConflict, TransactionConflictRegion, TransactionDependencyUse, TransactionRebase,
+    TransactionSparseSeek, Workspace, WorkspaceDelete, WorkspaceDirectoryEntry,
+    WorkspaceDirectoryPage, WorkspaceError, WorkspaceExtentKind, WorkspaceExtentPlan,
+    WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName, WorkspaceNameError,
+    WorkspaceRebase, WorkspaceStat, WorkspaceSync,
+};

@@ -1,0 +1,2 @@
+# wasm-pack writes a sibling .gitignore. Package assembly removes that file,
+# and this explicit npm policy keeps every generated runtime artifact eligible.

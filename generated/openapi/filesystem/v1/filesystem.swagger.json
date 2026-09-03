@@ -16,14 +16,14 @@
     "application/json"
   ],
   "paths": {
-    "/v1/filesystem/operations/{operationId}": {
-      "get": {
-        "operationId": "FilesystemService_Observe",
+    "/v1/filesystem:applyJoin": {
+      "post": {
+        "operationId": "FilesystemService_ApplyJoin",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/v1OperationStatus"
+              "$ref": "#/definitions/v1MutationResponse"
             }
           },
           "default": {
@@ -35,10 +35,12 @@
         },
         "parameters": [
           {
-            "name": "operationId",
-            "in": "path",
+            "name": "body",
+            "in": "body",
             "required": true,
-            "type": "string"
+            "schema": {
+              "$ref": "#/definitions/v1ApplyJoinRequest"
+            }
           }
         ],
         "tags": [
@@ -46,7 +48,71 @@
         ]
       }
     },
-    "/v1/filesystem/operations/{operationId}:cancel": {
+    "/v1/filesystem:applyTransaction": {
+      "post": {
+        "operationId": "FilesystemService_ApplyTransaction",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1MutationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1ApplyTransactionRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:attachSource": {
+      "post": {
+        "operationId": "FilesystemService_AttachSource",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1WorkspaceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1AttachSourceRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:cancel": {
       "post": {
         "operationId": "FilesystemService_Cancel",
         "responses": {
@@ -65,17 +131,180 @@
         },
         "parameters": [
           {
-            "name": "operationId",
-            "in": "path",
+            "name": "body",
+            "in": "body",
             "required": true,
-            "type": "string"
+            "schema": {
+              "$ref": "#/definitions/v1CancelRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:checkpoint": {
+      "post": {
+        "operationId": "FilesystemService_Checkpoint",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1RetainGenerationResponse"
+            }
           },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
           {
             "name": "body",
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/FilesystemServiceCancelBody"
+              "$ref": "#/definitions/v1RetainGenerationRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:deleteWorkspace": {
+      "post": {
+        "operationId": "FilesystemService_DeleteWorkspace",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1MutationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1DeleteWorkspaceRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:diff": {
+      "post": {
+        "operationId": "FilesystemService_Diff",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DiffResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1DiffRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:export": {
+      "post": {
+        "operationId": "FilesystemService_Export",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/v1ExportChunk"
+                },
+                "error": {
+                  "$ref": "#/definitions/rpcStatus"
+                }
+              },
+              "title": "Stream result of v1ExportChunk"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1ExportRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:forkWorkspace": {
+      "post": {
+        "operationId": "FilesystemService_ForkWorkspace",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1WorkspaceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1ForkWorkspaceRequest"
             }
           }
         ],
@@ -91,7 +320,7 @@
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/v1GetGenerationResponse"
+              "$ref": "#/definitions/v1GenerationResponse"
             }
           },
           "default": {
@@ -116,6 +345,70 @@
         ]
       }
     },
+    "/v1/filesystem:getHead": {
+      "post": {
+        "operationId": "FilesystemService_GetHead",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GenerationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1GetHeadRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:getSourceState": {
+      "post": {
+        "operationId": "FilesystemService_GetSourceState",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1SourceStateResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1SourceStateRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
     "/v1/filesystem:handshake": {
       "post": {
         "operationId": "FilesystemService_Handshake",
@@ -123,7 +416,7 @@
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/v1HandshakeResponse"
+              "$ref": "#/definitions/acyclicFilesystemV1HandshakeResponse"
             }
           },
           "default": {
@@ -139,7 +432,7 @@
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/v1HandshakeRequest"
+              "$ref": "#/definitions/acyclicFilesystemV1HandshakeRequest"
             }
           }
         ],
@@ -148,14 +441,14 @@
         ]
       }
     },
-    "/v1/filesystem:join": {
+    "/v1/filesystem:import": {
       "post": {
-        "operationId": "FilesystemService_Join",
+        "operationId": "FilesystemService_Import",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/v1JoinResponse"
+              "$ref": "#/definitions/v1ImportResponse"
             }
           },
           "default": {
@@ -168,10 +461,11 @@
         "parameters": [
           {
             "name": "body",
+            "description": " (streaming inputs)",
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/v1JoinRequest"
+              "$ref": "#/definitions/v1ImportChunk"
             }
           }
         ],
@@ -180,14 +474,14 @@
         ]
       }
     },
-    "/v1/filesystem:write": {
+    "/v1/filesystem:issueMountCredential": {
       "post": {
-        "operationId": "FilesystemService_Write",
+        "operationId": "FilesystemService_IssueMountCredential",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/v1WriteResponse"
+              "$ref": "#/definitions/v1CredentialResponse"
             }
           },
           "default": {
@@ -203,7 +497,423 @@
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/v1WriteRequest"
+              "$ref": "#/definitions/v1CredentialRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:issueS3Credential": {
+      "post": {
+        "operationId": "FilesystemService_IssueS3Credential",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CredentialResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1CredentialRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:listDirectory": {
+      "post": {
+        "operationId": "FilesystemService_ListDirectory",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListDirectoryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1ListDirectoryRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:observe": {
+      "post": {
+        "operationId": "FilesystemService_Observe",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ObserveResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1ObserveRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:openWorkspace": {
+      "post": {
+        "operationId": "FilesystemService_OpenWorkspace",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1WorkspaceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1OpenWorkspaceRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:pin": {
+      "post": {
+        "operationId": "FilesystemService_Pin",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1RetainGenerationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1RetainGenerationRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:planExtents": {
+      "post": {
+        "operationId": "FilesystemService_PlanExtents",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1PlanExtentsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1PlanExtentsRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:planJoin": {
+      "post": {
+        "operationId": "FilesystemService_PlanJoin",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1JoinPlan"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1PlanJoinRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:read": {
+      "post": {
+        "operationId": "FilesystemService_Read",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ReadResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1ReadRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:readLink": {
+      "post": {
+        "operationId": "FilesystemService_ReadLink",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ReadResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1ReadLinkRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:rebase": {
+      "post": {
+        "operationId": "FilesystemService_Rebase",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1RebaseResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1RebaseRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:reconcileSource": {
+      "post": {
+        "operationId": "FilesystemService_ReconcileSource",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1MutationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1ReconcileSourceRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:sealSource": {
+      "post": {
+        "operationId": "FilesystemService_SealSource",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1MutationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1SealSourceRequest"
+            }
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      }
+    },
+    "/v1/filesystem:stat": {
+      "post": {
+        "operationId": "FilesystemService_Stat",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1StatResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1StatRequest"
             }
           }
         ],
@@ -213,13 +923,55 @@
       }
     },
     "/v1/workspaces": {
+      "get": {
+        "operationId": "FilesystemService_ListWorkspaces",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListWorkspacesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "page.maximumItems",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "name": "page.after",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "byte"
+          },
+          {
+            "name": "includeDeleted",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "FilesystemService"
+        ]
+      },
       "post": {
         "operationId": "FilesystemService_CreateWorkspace",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/v1CreateWorkspaceResponse"
+              "$ref": "#/definitions/v1WorkspaceResponse"
             }
           },
           "default": {
@@ -246,8 +998,46 @@
     }
   },
   "definitions": {
-    "FilesystemServiceCancelBody": {
-      "type": "object"
+    "acyclicFilesystemV1HandshakeRequest": {
+      "type": "object",
+      "properties": {
+        "harness": {
+          "$ref": "#/definitions/acyclicHarnessV1HandshakeRequest"
+        }
+      }
+    },
+    "acyclicFilesystemV1HandshakeResponse": {
+      "type": "object",
+      "properties": {
+        "harness": {
+          "$ref": "#/definitions/acyclicHarnessV1HandshakeResponse"
+        },
+        "capabilities": {
+          "$ref": "#/definitions/v1Capabilities"
+        }
+      }
+    },
+    "acyclicHarnessV1HandshakeRequest": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "$ref": "#/definitions/v1ProtocolIdentity"
+        },
+        "required": {
+          "$ref": "#/definitions/v1CapabilitySet"
+        }
+      }
+    },
+    "acyclicHarnessV1HandshakeResponse": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "$ref": "#/definitions/v1ProtocolIdentity"
+        },
+        "supported": {
+          "$ref": "#/definitions/v1CapabilitySet"
+        }
+      }
     },
     "protobufAny": {
       "type": "object",
@@ -277,35 +1067,121 @@
         }
       }
     },
-    "v1Admission": {
+    "v1ApplyJoinRequest": {
       "type": "object",
       "properties": {
+        "plan": {
+          "$ref": "#/definitions/v1JoinPlan"
+        },
         "operation": {
-          "$ref": "#/definitions/v1OperationIdentity"
-        },
-        "state": {
-          "$ref": "#/definitions/v1AdmissionState"
-        },
-        "error": {
-          "$ref": "#/definitions/v1Error"
+          "$ref": "#/definitions/v1OperationOptions"
         }
       }
     },
-    "v1AdmissionState": {
-      "type": "string",
-      "enum": [
-        "ADMISSION_STATE_UNSPECIFIED",
-        "ADMISSION_STATE_ACCEPTED",
-        "ADMISSION_STATE_REJECTED",
-        "ADMISSION_STATE_INDETERMINATE"
-      ],
-      "default": "ADMISSION_STATE_UNSPECIFIED"
+    "v1ApplyTransactionRequest": {
+      "type": "object",
+      "properties": {
+        "expected": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "mutations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Mutation"
+          }
+        },
+        "operation": {
+          "$ref": "#/definitions/v1OperationOptions"
+        }
+      }
+    },
+    "v1AttachSourceRequest": {
+      "type": "object",
+      "properties": {
+        "workspaceName": {
+          "type": "string"
+        },
+        "sourceUri": {
+          "type": "string"
+        },
+        "profile": {
+          "$ref": "#/definitions/v1FilesystemProfile"
+        },
+        "maximumPaths": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "operation": {
+          "$ref": "#/definitions/v1OperationOptions"
+        }
+      }
+    },
+    "v1ByteRange": {
+      "type": "object",
+      "properties": {
+        "offset": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "length": {
+          "type": "string",
+          "format": "uint64"
+        }
+      }
+    },
+    "v1CancelRequest": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        }
+      }
     },
     "v1CancelResponse": {
       "type": "object",
       "properties": {
         "status": {
           "$ref": "#/definitions/v1OperationStatus"
+        }
+      }
+    },
+    "v1Capabilities": {
+      "type": "object",
+      "properties": {
+        "contractVersion": {
+          "type": "string"
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/v1FilesystemProfile"
+          }
+        },
+        "maximumRequestBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "maximumResponseBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "maximumTransactionMutations": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "maximumPageItems": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "nativeMountCredentials": {
+          "type": "boolean"
+        },
+        "s3Credentials": {
+          "type": "boolean"
+        },
+        "sourceReconciliation": {
+          "type": "boolean"
         }
       }
     },
@@ -332,6 +1208,41 @@
         }
       }
     },
+    "v1ChangedPath": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "fileId": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "v1CloneRange": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "sourceOffset": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "destination": {
+          "type": "string"
+        },
+        "destinationOffset": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "length": {
+          "type": "string",
+          "format": "uint64"
+        }
+      }
+    },
     "v1CompletionState": {
       "type": "string",
       "enum": [
@@ -344,22 +1255,177 @@
       ],
       "default": "COMPLETION_STATE_UNSPECIFIED"
     },
-    "v1CreateWorkspaceRequest": {
+    "v1Conflict": {
       "type": "object",
       "properties": {
-        "operation": {
-          "$ref": "#/definitions/v1OperationIdentity"
+        "path": {
+          "type": "string"
+        },
+        "range": {
+          "$ref": "#/definitions/v1ByteRange"
+        },
+        "reason": {
+          "type": "string"
         }
       }
     },
-    "v1CreateWorkspaceResponse": {
+    "v1CreateDirectory": {
       "type": "object",
       "properties": {
-        "admission": {
-          "$ref": "#/definitions/v1Admission"
+        "path": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/v1Metadata"
+        }
+      }
+    },
+    "v1CreateFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "contents": {
+          "type": "string",
+          "format": "byte"
+        },
+        "metadata": {
+          "$ref": "#/definitions/v1Metadata"
+        }
+      }
+    },
+    "v1CreateSymbolicLink": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string",
+          "format": "byte"
+        },
+        "metadata": {
+          "$ref": "#/definitions/v1Metadata"
+        }
+      }
+    },
+    "v1CreateWorkspaceRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "profile": {
+          "$ref": "#/definitions/v1FilesystemProfile"
+        },
+        "operation": {
+          "$ref": "#/definitions/v1OperationOptions"
+        }
+      }
+    },
+    "v1CredentialRequest": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "$ref": "#/definitions/v1WorkspaceRef"
         },
         "generation": {
           "$ref": "#/definitions/v1GenerationRef"
+        },
+        "writable": {
+          "type": "boolean"
+        },
+        "expiresAfterSeconds": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "operation": {
+          "$ref": "#/definitions/v1OperationOptions"
+        }
+      }
+    },
+    "v1CredentialResponse": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "expiresAtUnixSeconds": {
+          "type": "string",
+          "format": "int64"
+        }
+      }
+    },
+    "v1DeleteWorkspaceRequest": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "$ref": "#/definitions/v1WorkspaceRef"
+        },
+        "operation": {
+          "$ref": "#/definitions/v1OperationOptions"
+        }
+      }
+    },
+    "v1DiffRequest": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "to": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "maximumChanges": {
+          "type": "integer",
+          "format": "int64"
+        }
+      }
+    },
+    "v1DiffResponse": {
+      "type": "object",
+      "properties": {
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ChangedPath"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1DirectoryEntry": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "format": "byte"
+        },
+        "stat": {
+          "$ref": "#/definitions/v1FileStat"
+        }
+      }
+    },
+    "v1DirectoryPage": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1DirectoryEntry"
+          }
+        },
+        "next": {
+          "type": "string",
+          "format": "byte"
         }
       }
     },
@@ -386,15 +1452,127 @@
       ],
       "default": "ERROR_CODE_UNSPECIFIED"
     },
-    "v1File": {
+    "v1ExportChunk": {
       "type": "object",
       "properties": {
-        "path": {
-          "type": "string"
+        "cursor": {
+          "type": "string",
+          "format": "byte"
+        },
+        "objectId": {
+          "type": "string",
+          "format": "byte"
         },
         "contents": {
           "type": "string",
           "format": "byte"
+        },
+        "terminal": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1ExportRequest": {
+      "type": "object",
+      "properties": {
+        "generation": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "after": {
+          "type": "string",
+          "format": "byte"
+        },
+        "maximumObjects": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "maximumBytes": {
+          "type": "string",
+          "format": "uint64"
+        }
+      }
+    },
+    "v1Extent": {
+      "type": "object",
+      "properties": {
+        "range": {
+          "$ref": "#/definitions/v1ByteRange"
+        },
+        "kind": {
+          "$ref": "#/definitions/v1ExtentKind"
+        }
+      }
+    },
+    "v1ExtentKind": {
+      "type": "string",
+      "enum": [
+        "EXTENT_KIND_UNSPECIFIED",
+        "EXTENT_KIND_HOLE",
+        "EXTENT_KIND_ALLOCATED_ZERO",
+        "EXTENT_KIND_CONTENT"
+      ],
+      "default": "EXTENT_KIND_UNSPECIFIED"
+    },
+    "v1FileKind": {
+      "type": "string",
+      "enum": [
+        "FILE_KIND_UNSPECIFIED",
+        "FILE_KIND_REGULAR",
+        "FILE_KIND_DIRECTORY",
+        "FILE_KIND_SYMBOLIC_LINK",
+        "FILE_KIND_FIFO",
+        "FILE_KIND_SOCKET",
+        "FILE_KIND_CHARACTER_DEVICE",
+        "FILE_KIND_BLOCK_DEVICE",
+        "FILE_KIND_REPARSE_POINT",
+        "FILE_KIND_MOUNT_BOUNDARY"
+      ],
+      "default": "FILE_KIND_UNSPECIFIED"
+    },
+    "v1FileStat": {
+      "type": "object",
+      "properties": {
+        "fileId": {
+          "type": "string",
+          "format": "byte"
+        },
+        "kind": {
+          "$ref": "#/definitions/v1FileKind"
+        },
+        "linkCount": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "logicalBytes": {
+          "$ref": "#/definitions/v1OptionalU64"
+        },
+        "metadata": {
+          "$ref": "#/definitions/v1Metadata"
+        }
+      }
+    },
+    "v1FilesystemProfile": {
+      "type": "string",
+      "enum": [
+        "FILESYSTEM_PROFILE_UNSPECIFIED",
+        "FILESYSTEM_PROFILE_PORTABLE",
+        "FILESYSTEM_PROFILE_POSIX",
+        "FILESYSTEM_PROFILE_WINDOWS",
+        "FILESYSTEM_PROFILE_BROWSER"
+      ],
+      "default": "FILESYSTEM_PROFILE_UNSPECIFIED"
+    },
+    "v1ForkWorkspaceRequest": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "destinationName": {
+          "type": "string"
+        },
+        "operation": {
+          "$ref": "#/definitions/v1OperationOptions"
         }
       }
     },
@@ -402,10 +1580,27 @@
       "type": "object",
       "properties": {
         "workspaceId": {
-          "type": "string"
+          "type": "string",
+          "format": "byte"
         },
         "generationId": {
-          "type": "string"
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "v1GenerationResponse": {
+      "type": "object",
+      "properties": {
+        "generation": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "parents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1GenerationRef"
+          }
         }
       }
     },
@@ -417,69 +1612,267 @@
         }
       }
     },
-    "v1GetGenerationResponse": {
+    "v1GetHeadRequest": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "$ref": "#/definitions/v1WorkspaceRef"
+        }
+      }
+    },
+    "v1HardLink": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "destination": {
+          "type": "string"
+        }
+      }
+    },
+    "v1ImportChunk": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "$ref": "#/definitions/v1WorkspaceRef"
+        },
+        "operationId": {
+          "type": "string",
+          "format": "byte"
+        },
+        "cursor": {
+          "type": "string",
+          "format": "byte"
+        },
+        "objectId": {
+          "type": "string",
+          "format": "byte"
+        },
+        "contents": {
+          "type": "string",
+          "format": "byte"
+        },
+        "terminal": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1ImportResponse": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "$ref": "#/definitions/v1MutationResponse"
+        }
+      }
+    },
+    "v1JoinPlan": {
+      "type": "object",
+      "properties": {
+        "planId": {
+          "type": "string",
+          "format": "byte"
+        },
+        "source": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "expectedTarget": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ChangedPath"
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Conflict"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1ListDirectoryRequest": {
       "type": "object",
       "properties": {
         "generation": {
           "$ref": "#/definitions/v1GenerationRef"
         },
-        "files": {
+        "path": {
+          "type": "string"
+        },
+        "page": {
+          "$ref": "#/definitions/v1PageOptions"
+        }
+      }
+    },
+    "v1ListDirectoryResponse": {
+      "type": "object",
+      "properties": {
+        "page": {
+          "$ref": "#/definitions/v1DirectoryPage"
+        }
+      }
+    },
+    "v1ListWorkspacesResponse": {
+      "type": "object",
+      "properties": {
+        "workspaces": {
           "type": "array",
           "items": {
             "type": "object",
-            "$ref": "#/definitions/v1File"
+            "$ref": "#/definitions/v1Workspace"
           }
+        },
+        "next": {
+          "type": "string",
+          "format": "byte"
         }
       }
     },
-    "v1HandshakeRequest": {
+    "v1Metadata": {
       "type": "object",
       "properties": {
-        "protocol": {
-          "$ref": "#/definitions/v1ProtocolIdentity"
+        "posixMode": {
+          "$ref": "#/definitions/v1OptionalU32"
         },
-        "required": {
-          "$ref": "#/definitions/v1CapabilitySet"
+        "posixUid": {
+          "$ref": "#/definitions/v1OptionalU32"
+        },
+        "posixGid": {
+          "$ref": "#/definitions/v1OptionalU32"
+        },
+        "posixFlags": {
+          "$ref": "#/definitions/v1OptionalU64"
+        },
+        "windowsAttributes": {
+          "$ref": "#/definitions/v1OptionalU32"
+        },
+        "createdNs": {
+          "$ref": "#/definitions/v1OptionalI64"
+        },
+        "modifiedNs": {
+          "$ref": "#/definitions/v1OptionalI64"
+        },
+        "accessedNs": {
+          "$ref": "#/definitions/v1OptionalI64"
+        },
+        "changedNs": {
+          "$ref": "#/definitions/v1OptionalI64"
+        },
+        "hasNamedAttributes": {
+          "type": "boolean"
+        },
+        "hasAcl": {
+          "type": "boolean"
+        },
+        "hasSecurityDescriptor": {
+          "type": "boolean"
         }
       }
     },
-    "v1HandshakeResponse": {
+    "v1Mutation": {
       "type": "object",
       "properties": {
-        "protocol": {
-          "$ref": "#/definitions/v1ProtocolIdentity"
+        "createFile": {
+          "$ref": "#/definitions/v1CreateFile"
         },
-        "supported": {
-          "$ref": "#/definitions/v1CapabilitySet"
+        "createDirectory": {
+          "$ref": "#/definitions/v1CreateDirectory"
+        },
+        "createSymbolicLink": {
+          "$ref": "#/definitions/v1CreateSymbolicLink"
+        },
+        "remove": {
+          "$ref": "#/definitions/v1Remove"
+        },
+        "rename": {
+          "$ref": "#/definitions/v1Rename"
+        },
+        "hardLink": {
+          "$ref": "#/definitions/v1HardLink"
+        },
+        "write": {
+          "$ref": "#/definitions/v1Write"
+        },
+        "resize": {
+          "$ref": "#/definitions/v1Resize"
+        },
+        "zeroRange": {
+          "$ref": "#/definitions/v1ZeroRange"
+        },
+        "preallocate": {
+          "$ref": "#/definitions/v1Preallocate"
+        },
+        "cloneRange": {
+          "$ref": "#/definitions/v1CloneRange"
+        },
+        "setMetadata": {
+          "$ref": "#/definitions/v1SetMetadata"
         }
       }
     },
-    "v1JoinRequest": {
+    "v1MutationResponse": {
       "type": "object",
       "properties": {
-        "operation": {
-          "$ref": "#/definitions/v1OperationIdentity"
-        },
-        "base": {
-          "$ref": "#/definitions/v1GenerationRef"
-        },
-        "children": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "$ref": "#/definitions/v1GenerationRef"
-          }
-        }
-      }
-    },
-    "v1JoinResponse": {
-      "type": "object",
-      "properties": {
-        "admission": {
-          "$ref": "#/definitions/v1Admission"
+        "status": {
+          "$ref": "#/definitions/v1MutationStatus"
         },
         "generation": {
           "$ref": "#/definitions/v1GenerationRef"
+        },
+        "actualHead": {
+          "$ref": "#/definitions/v1GenerationRef"
+        }
+      }
+    },
+    "v1MutationStatus": {
+      "type": "string",
+      "enum": [
+        "MUTATION_STATUS_UNSPECIFIED",
+        "MUTATION_STATUS_COMMITTED",
+        "MUTATION_STATUS_ALREADY_COMMITTED",
+        "MUTATION_STATUS_CONFLICT",
+        "MUTATION_STATUS_FENCED",
+        "MUTATION_STATUS_IDEMPOTENCY_CONFLICT",
+        "MUTATION_STATUS_INDETERMINATE"
+      ],
+      "default": "MUTATION_STATUS_UNSPECIFIED"
+    },
+    "v1ObserveRequest": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "v1ObserveResponse": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/definitions/v1MutationResponse"
+        }
+      }
+    },
+    "v1OpenWorkspaceRequest": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "$ref": "#/definitions/v1WorkspaceRef"
+        },
+        "name": {
+          "type": "string"
         }
       }
     },
@@ -495,6 +1888,15 @@
       },
       "description": "Shared draft contract types. These become stable only in a tagged release."
     },
+    "v1OperationOptions": {
+      "type": "object",
+      "properties": {
+        "idempotencyKey": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
     "v1OperationStatus": {
       "type": "object",
       "properties": {
@@ -509,6 +1911,121 @@
         }
       }
     },
+    "v1OptionalI64": {
+      "type": "object",
+      "properties": {
+        "present": {
+          "type": "string",
+          "format": "int64"
+        },
+        "unavailable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1OptionalU32": {
+      "type": "object",
+      "properties": {
+        "present": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "unavailable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1OptionalU64": {
+      "type": "object",
+      "properties": {
+        "present": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "unavailable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1PageOptions": {
+      "type": "object",
+      "properties": {
+        "maximumItems": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "after": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "v1PlanExtentsRequest": {
+      "type": "object",
+      "properties": {
+        "generation": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "path": {
+          "type": "string"
+        },
+        "range": {
+          "$ref": "#/definitions/v1ByteRange"
+        },
+        "maximumExtents": {
+          "type": "integer",
+          "format": "int64"
+        }
+      }
+    },
+    "v1PlanExtentsResponse": {
+      "type": "object",
+      "properties": {
+        "extents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Extent"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1PlanJoinRequest": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "target": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "maximumChanges": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "maximumConflicts": {
+          "type": "integer",
+          "format": "int64"
+        }
+      }
+    },
+    "v1Preallocate": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "range": {
+          "$ref": "#/definitions/v1ByteRange"
+        },
+        "keepSize": {
+          "type": "boolean"
+        }
+      }
+    },
     "v1ProtocolIdentity": {
       "type": "object",
       "properties": {
@@ -520,28 +2037,291 @@
         }
       }
     },
-    "v1WriteRequest": {
+    "v1ReadLinkRequest": {
       "type": "object",
       "properties": {
-        "operation": {
-          "$ref": "#/definitions/v1OperationIdentity"
-        },
-        "base": {
+        "generation": {
           "$ref": "#/definitions/v1GenerationRef"
         },
-        "file": {
-          "$ref": "#/definitions/v1File"
+        "path": {
+          "type": "string"
+        },
+        "maximumBytes": {
+          "type": "string",
+          "format": "uint64"
         }
       }
     },
-    "v1WriteResponse": {
+    "v1ReadRequest": {
       "type": "object",
       "properties": {
-        "admission": {
-          "$ref": "#/definitions/v1Admission"
+        "generation": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "path": {
+          "type": "string"
+        },
+        "range": {
+          "$ref": "#/definitions/v1ByteRange"
+        },
+        "maximumBytes": {
+          "type": "string",
+          "format": "uint64"
+        }
+      }
+    },
+    "v1ReadResponse": {
+      "type": "object",
+      "properties": {
+        "contents": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "v1RebaseRequest": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "$ref": "#/definitions/v1WorkspaceRef"
+        },
+        "onto": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "maximumConflicts": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "operation": {
+          "$ref": "#/definitions/v1OperationOptions"
+        }
+      }
+    },
+    "v1RebaseResponse": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "$ref": "#/definitions/v1MutationResponse"
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Conflict"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1ReconcileSourceRequest": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "$ref": "#/definitions/v1WorkspaceRef"
+        },
+        "maximumChanges": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "operation": {
+          "$ref": "#/definitions/v1OperationOptions"
+        }
+      }
+    },
+    "v1Remove": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "v1Rename": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "destination": {
+          "type": "string"
+        },
+        "replace": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1Resize": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "logicalBytes": {
+          "type": "string",
+          "format": "uint64"
+        }
+      }
+    },
+    "v1RetainGenerationRequest": {
+      "type": "object",
+      "properties": {
+        "generation": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "identity": {
+          "type": "string"
+        },
+        "operation": {
+          "$ref": "#/definitions/v1OperationOptions"
+        }
+      }
+    },
+    "v1RetainGenerationResponse": {
+      "type": "object",
+      "properties": {
+        "generation": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "identity": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/v1MutationStatus"
+        }
+      }
+    },
+    "v1SealSourceRequest": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "$ref": "#/definitions/v1WorkspaceRef"
+        },
+        "operation": {
+          "$ref": "#/definitions/v1OperationOptions"
+        }
+      }
+    },
+    "v1SetMetadata": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/v1Metadata"
+        }
+      }
+    },
+    "v1SourceStateRequest": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "$ref": "#/definitions/v1WorkspaceRef"
+        }
+      }
+    },
+    "v1SourceStateResponse": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string"
         },
         "generation": {
           "$ref": "#/definitions/v1GenerationRef"
+        }
+      }
+    },
+    "v1StatRequest": {
+      "type": "object",
+      "properties": {
+        "generation": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "v1StatResponse": {
+      "type": "object",
+      "properties": {
+        "stat": {
+          "$ref": "#/definitions/v1FileStat"
+        }
+      }
+    },
+    "v1Workspace": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "$ref": "#/definitions/v1WorkspaceRef"
+        },
+        "name": {
+          "type": "string"
+        },
+        "profile": {
+          "$ref": "#/definitions/v1FilesystemProfile"
+        },
+        "head": {
+          "$ref": "#/definitions/v1GenerationRef"
+        },
+        "deleted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "v1WorkspaceRef": {
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "v1WorkspaceResponse": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "$ref": "#/definitions/v1Workspace"
+        },
+        "status": {
+          "$ref": "#/definitions/v1MutationStatus"
+        }
+      }
+    },
+    "v1Write": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "contents": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "v1ZeroRange": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "range": {
+          "$ref": "#/definitions/v1ByteRange"
+        },
+        "allocated": {
+          "type": "boolean"
+        },
+        "extend": {
+          "type": "boolean"
         }
       }
     }

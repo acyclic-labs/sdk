@@ -4,7 +4,12 @@
   "umbrellaVersion": "0.0.0",
   "families": {
     "harness": { "version": "0.0.0", "schemaDigest": "unreleased" },
-    "filesystem": { "version": "0.0.0", "schemaDigest": "unreleased" },
+    "filesystem": {
+      "version": "0.1.0-rc.1",
+      "schemaDigest": "sha256:6f148c2e82473a2a5d6f0a27da75d7258a6a52b9a39dee4045f2fa0580637415",
+      "descriptorDigest": "sha256:1b457ed95da87ca16a4ab948be3e9b3e90bf4d26cbf2ae03c7d0215100af4352",
+      "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
+    },
     "stream": {
       "version": "1.0.0",
       "schemaDigest": "sha256:f7311b8837ed712f1beae2feb4610b22e969968e71699f14760a9066ffc318de",

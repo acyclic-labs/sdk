@@ -1,0 +1,21 @@
+{
+  "name": "acyclic-fs-wasm",
+  "type": "module",
+  "description": "Browser and WebAssembly bindings for acyclic-fs",
+  "version": "0.1.0-rc.1",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/acyclic-labs/fs"
+  },
+  "files": [
+    "acyclic_fs_wasm_bg.wasm",
+    "acyclic_fs_wasm.js",
+    "acyclic_fs_wasm.d.ts"
+  ],
+  "main": "acyclic_fs_wasm.js",
+  "types": "acyclic_fs_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

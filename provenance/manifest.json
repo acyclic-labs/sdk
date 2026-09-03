@@ -18,14 +18,83 @@
       "license": "Apache-2.0",
       "auditResult": "approved",
       "reviewer": "Acyclic Labs Objects extraction audit"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/fs",
+      "sourceCommit": "e45723e9d4cf3c0caa364800060ecd916d5da648",
+      "sourcePath": "crates/sdk",
+      "destinationPath": "rust/crates/filesystem",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs Filesystem canonical ownership migration"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/fs",
+      "sourceCommit": "e45723e9d4cf3c0caa364800060ecd916d5da648",
+      "sourcePath": "crates/daemon",
+      "destinationPath": "rust/crates/filesystem-daemon",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs Filesystem canonical ownership migration"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/fs",
+      "sourceCommit": "e45723e9d4cf3c0caa364800060ecd916d5da648",
+      "sourcePath": "crates/wasm",
+      "destinationPath": "rust/crates/filesystem-wasm",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs Filesystem canonical ownership migration"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/fs",
+      "sourceCommit": "e45723e9d4cf3c0caa364800060ecd916d5da648",
+      "sourcePath": "crates/napi",
+      "destinationPath": "rust/crates/filesystem-napi",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs Filesystem canonical ownership migration"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/fs",
+      "sourceCommit": "e45723e9d4cf3c0caa364800060ecd916d5da648",
+      "sourcePath": "packages/fs",
+      "destinationPath": "typescript/packages/filesystem",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs Filesystem canonical ownership migration"
     }
   ],
   "references": [
     {
       "repository": "https://github.com/acyclic-labs/acyclic-website",
       "commit": "dce3e9fb4a4a5a0457b905191a17578293056a1d",
+      "paths": ["src/lib/harness-docs.ts", "src/routes/docs/machines"],
+      "purpose": "Normative customer-facing Machines contract; no source code imported"
+    },
+    {
+      "repository": "https://github.com/acyclic-labs/acyclic-website",
+      "commit": "dce3e9fb4a4a5a0457b905191a17578293056a1d",
       "paths": ["src/lib/harness-docs.ts", "src/routes/docs/objects"],
       "purpose": "Normative customer-facing Objects contract and compatibility surface"
+    },
+    {
+      "repository": "https://github.com/acyclic-labs/acyclic-website",
+      "commit": "dce3e9fb4a4a5a0457b905191a17578293056a1d",
+      "paths": ["src/lib/harness-docs.ts", "src/routes/docs/stream"],
+      "purpose": "Normative customer-facing hierarchical Stream contract"
+    },
+    {
+      "repository": "https://github.com/acyclic-labs/streams",
+      "commit": "f7ecbe75d08fb42c7e4cc455574c56f035106302",
+      "paths": ["crates/contract", "crates/sdk", "crates/protocol"],
+      "purpose": "Disclosure and behavior audit input; public implementation was independently rewritten without private distributed control, placement, or replication domains"
+    },
+    {
+      "repository": "https://github.com/acyclic-labs/acyclic-website",
+      "commit": "dce3e9fb4a4a5a0457b905191a17578293056a1d",
+      "paths": ["src/lib/harness-docs.ts", "src/routes/docs/filesystem"],
+      "purpose": "Normative customer-facing Filesystem behavior and API contract"
     }
   ]
 }

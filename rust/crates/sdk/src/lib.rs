@@ -1,7 +1,7 @@
 //! Umbrella package for one tested SDK combination.
 
 pub use acyclic_contracts as contracts;
-pub use acyclic_filesystem as filesystem;
+pub use acyclic_fs as filesystem;
 pub use acyclic_harness as harness;
 pub use acyclic_inference as inference;
 pub use acyclic_machines as machines;

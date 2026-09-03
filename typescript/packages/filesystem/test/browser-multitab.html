@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>acyclic fs multi-tab qualification</title>
+  </head>
+  <body>
+    <pre id="result">running</pre>
+    <script type="module">
+      import("./browser-multitab.js").catch((error) => {
+        const result = document.querySelector("#result");
+        result.dataset.status = "failed";
+        result.textContent = String(error.stack ?? error);
+      });
+    </script>
+  </body>
+</html>

@@ -1,1 +1,44 @@
-{"name":"@acyclic/filesystem","version":"0.0.0","private":true,"type":"module","exports":"./dist/index.js","types":"./dist/index.d.ts","scripts":{"build":"tsc -b","test":"tsc -b --pretty false"},"devDependencies":{"typescript":"7.0.2"}}
+{
+  "name": "@acyclic/fs",
+  "version": "0.1.0-rc.1",
+  "private": false,
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist", "generated", "examples"],
+  "exports": {
+    ".": {
+      "types": "./dist/browser.d.ts",
+      "default": "./dist/browser.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "default": "./dist/browser.js"
+    },
+    "./memory": {
+      "types": "./dist/memory.d.ts",
+      "node": "./dist/memory-node.js",
+      "default": "./dist/memory.js"
+    },
+    "./hosted": {
+      "types": "./dist/hosted.d.ts",
+      "default": "./dist/hosted.js"
+    },
+    "./native": {
+      "types": "./dist/native.d.ts",
+      "default": "./dist/native.js"
+    }
+  },
+  "scripts": {
+    "build": "bun run build:wasm && bunx tsc -p tsconfig.json",
+    "build:wasm": "cargo build --manifest-path ../../../Cargo.toml -p acyclic-fs-wasm --target wasm32-unknown-unknown --profile wasm-release --locked && wasm-bindgen ../../../target/wasm32-unknown-unknown/wasm-release/acyclic_fs_wasm.wasm --target web --out-dir generated/wasm --out-name acyclic_fs_wasm",
+    "check": "bunx tsc -p tsconfig.json --noEmit",
+    "test": "bun run test:composition && bun run test:hosted",
+    "test:composition": "bun test/node-memory.mjs",
+    "test:hosted": "cargo build --manifest-path ../../../Cargo.toml -p acyclic-fs-daemon --locked && bun test/hosted.mjs",
+    "pack:dry": "bun pm pack --dry-run"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.1",
+    "typescript": "7.0.2"
+  }
+}

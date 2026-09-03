@@ -19,6 +19,10 @@ for (const item of provenance.imports) if (item.auditResult !== "approved") thro
 
 const digest = async path => `sha256:${createHash("sha256").update(await readFile(new URL(path, root))).digest("hex")}`;
 const compatibility = await load("compatibility/manifest.json");
+const filesystem = compatibility.families.filesystem;
+if (filesystem.schemaDigest !== await digest("proto/filesystem/v1/filesystem.proto")) throw new Error("filesystem schema digest mismatch");
+if (filesystem.descriptorDigest !== await digest("generated/rust/acyclic/filesystem/v1/acyclic.filesystem.v1.rs")) throw new Error("filesystem descriptor digest mismatch");
+if (filesystem.conformanceDigest !== await digest("conformance/vectors/filesystem/dependency-content-range-v1.json")) throw new Error("filesystem conformance digest mismatch");
 const machines = compatibility.families.machines;
 if (machines.schemaDigest !== await digest("proto/machines/v1/machines.proto")) throw new Error("machines schema digest mismatch");
 if (machines.conformanceDigest !== await digest("conformance/vectors/machines.json")) throw new Error("machines conformance digest mismatch");

@@ -1,0 +1,35 @@
+[package]
+name = "acyclic-fs-wasm"
+version = "0.1.0-rc.1"
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../../../LICENSE"
+repository.workspace = true
+description = "Browser and WebAssembly bindings for acyclic-fs"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+acyclic-fs = { path = "../filesystem", default-features = false, features = ["memory"] }
+blake3.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_bytes.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+indexed_db_futures.workspace = true
+js-sys.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+serde-wasm-bindgen.workspace = true
+web-sys.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.67"
+
+[lints]
+workspace = true

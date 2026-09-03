@@ -1,8 +1,8 @@
-export * from "@acyclic/filesystem";
-export * from "@acyclic/stream";
-export * from "@acyclic/objects";
-export * from "@acyclic/machines";
-export * from "@acyclic/inference";
+export * as filesystem from "@acyclic/fs";
+export * as stream from "@acyclic/stream";
+export * as objects from "@acyclic/objects";
+export * as machines from "@acyclic/machines";
+export * as inference from "@acyclic/inference";
 
 /** Recursively reduces a balanced workload. */
 export async function recursiveSum(values: readonly number[], leafSize = 4): Promise<number> {

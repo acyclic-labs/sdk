@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 acyclic-contracts = { path = "../contracts" }
-acyclic-filesystem = { path = "../filesystem" }
+acyclic-fs = { path = "../filesystem" }
 acyclic-harness = { path = "../harness" }
 acyclic-inference = { path = "../inference" }
 acyclic-machines = { path = "../machines" }
