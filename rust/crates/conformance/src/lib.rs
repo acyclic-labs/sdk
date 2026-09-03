@@ -390,9 +390,7 @@ mod tests {
 
     #[tokio::test]
     async fn memory_profile_conforms() -> Result<(), String> {
-        let profile = MemoryProfile::new()
-            .await
-            .map_err(|error| error.to_string())?;
+        let profile = MemoryProfile::new();
         filesystem_smoke(&profile.filesystem).await?;
         stream(&profile.stream).await?;
         objects(&profile.objects).await?;

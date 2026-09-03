@@ -19,13 +19,37 @@ for (const item of provenance.imports) if (item.auditResult !== "approved") thro
 
 const digest = async path => `sha256:${createHash("sha256").update(await readFile(new URL(path, root))).digest("hex")}`;
 const compatibility = await load("compatibility/manifest.json");
-const filesystem = compatibility.families.filesystem;
-if (filesystem.schemaDigest !== await digest("proto/filesystem/v1/filesystem.proto")) throw new Error("filesystem schema digest mismatch");
-if (filesystem.descriptorDigest !== await digest("generated/rust/acyclic/filesystem/v1/acyclic.filesystem.v1.rs")) throw new Error("filesystem descriptor digest mismatch");
-if (filesystem.conformanceDigest !== await digest("conformance/vectors/filesystem/dependency-content-range-v1.json")) throw new Error("filesystem conformance digest mismatch");
-const machines = compatibility.families.machines;
-if (machines.schemaDigest !== await digest("proto/machines/v1/machines.proto")) throw new Error("machines schema digest mismatch");
-if (machines.conformanceDigest !== await digest("conformance/vectors/machines.json")) throw new Error("machines conformance digest mismatch");
+const familyArtifacts = {
+  filesystem: {
+    schemaDigest: "proto/filesystem/v1/filesystem.proto",
+    descriptorDigest: "generated/rust/acyclic/filesystem/v1/acyclic.filesystem.v1.rs",
+    conformanceDigest: "conformance/vectors/filesystem/dependency-content-range-v1.json",
+  },
+  stream: {
+    schemaDigest: "rust/crates/stream/proto/stream/v2/stream.proto",
+    conformanceDigest: "conformance/vectors/stream.json",
+  },
+  objects: {
+    schemaDigest: "proto/objects/v1/objects.proto",
+    conformanceDigest: "conformance/vectors/objects.json",
+  },
+  machines: {
+    schemaDigest: "proto/machines/v1/machines.proto",
+    conformanceDigest: "conformance/vectors/machines.json",
+  },
+  inference: {
+    schemaDigest: "proto/inference/v1/inference.proto",
+    descriptorDigest: "rust/crates/inference/inference_descriptor.bin",
+    conformanceDigest: "conformance/vectors/inference.json",
+  },
+};
+for (const [family, artifacts] of Object.entries(familyArtifacts)) {
+  for (const [field, path] of Object.entries(artifacts)) {
+    if (compatibility.families[family][field] !== await digest(path)) {
+      throw new Error(`${family} ${field} mismatch`);
+    }
+  }
+}
 
 const validateProvenance = new Ajv2020().compile(await load("compatibility/schemas/provenance.schema.json"));
 if (validateProvenance({ imports: [{ sourceCommit: "short" }] })) throw new Error("malformed provenance fixture was accepted");

@@ -31,8 +31,6 @@ pub mod native_mount;
 pub mod notification;
 pub mod path;
 pub mod performance;
-#[cfg(feature = "public-providers")]
-pub mod public_storage;
 pub mod s3;
 #[cfg(feature = "memory")]
 pub mod simulation;
@@ -118,8 +116,6 @@ pub use notification::{
 pub use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
-#[cfg(feature = "public-providers")]
-pub use public_storage::{ProviderObjectStore, StreamAuthorityStore};
 pub use s3::{
     S3Error, S3List, S3ListOptions, S3MultipartOptions, S3MultipartUpload, S3Object, S3ObjectHead,
     S3Workspace,

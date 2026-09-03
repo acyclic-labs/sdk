@@ -1,18 +1,15 @@
 //! A complete in-memory provider profile.
 
-use acyclic_fs::{ProviderObjectStore, StreamAuthorityStore};
 use acyclic_inference::DeterministicInference;
 use acyclic_machines::SimulatedMachines;
-use acyclic_objects::{MemoryObjects, ObjectsProvider};
+use acyclic_objects::MemoryObjects;
 use acyclic_stream::MemoryStream;
-use std::sync::Arc;
 
 /// All reference providers needed to run the local harness.
 #[derive(Clone)]
 pub struct MemoryProfile {
     /// In-memory filesystem provider.
-    pub filesystem:
-        acyclic_fs::Fs<StreamAuthorityStore<MemoryStream>, ProviderObjectStore<MemoryObjects>>,
+    pub filesystem: acyclic_fs::Fs<acyclic_fs::MemoryAuthorityStore, acyclic_fs::MemoryObjectStore>,
     /// In-memory ordered stream provider.
     pub stream: MemoryStream,
     /// In-memory immutable objects provider.
@@ -24,33 +21,23 @@ pub struct MemoryProfile {
 }
 
 impl MemoryProfile {
-    /// Creates one profile whose filesystem consumes these same public
-    /// in-memory Stream and Objects providers.
-    pub async fn new() -> Result<Self, acyclic_objects::ObjectsError> {
+    /// Creates one profile from each family's deterministic memory provider.
+    #[must_use]
+    pub fn new() -> Self {
         let stream = MemoryStream::default();
         let objects = MemoryObjects::default();
-        let bucket = objects
-            .create_bucket(
-                "filesystem".to_owned(),
-                Some("filesystem-bucket-v1".to_owned()),
-            )
-            .await?
-            .bucket
-            .ok_or(acyclic_objects::ObjectsError::Invalid(
-                "missing bucket identity",
-            ))?;
-        let filesystem = acyclic_fs::Fs::from_public_primitives(
-            Arc::new(stream.clone()),
-            Arc::new(objects.clone()),
-            bucket,
-            acyclic_fs::EmbeddedCapabilities::MEMORY,
-        );
-        Ok(Self {
-            filesystem,
+        Self {
+            filesystem: acyclic_fs::Fs::memory(),
             stream,
             objects,
             machines: SimulatedMachines::default(),
             inference: DeterministicInference::default(),
-        })
+        }
+    }
+}
+
+impl Default for MemoryProfile {
+    fn default() -> Self {
+        Self::new()
     }
 }

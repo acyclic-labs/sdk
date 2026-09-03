@@ -11,8 +11,6 @@ keywords = ["filesystem", "copy-on-write", "versioned", "storage"]
 categories = ["filesystem", "data-structures"]
 
 [dependencies]
-acyclic-objects = { version = "1.0.0", path = "../objects", optional = true }
-acyclic-stream = { version = "1.0.0", path = "../stream", optional = true }
 blake3.workspace = true
 bytes.workspace = true
 futures.workspace = true
@@ -55,13 +53,12 @@ windows = { version = "0.58.0", features = [
 ] }
 
 [features]
-default = ["local", "memory", "native-watch", "public-providers"]
+default = ["local", "memory", "native-watch"]
 local = ["dep:fs2", "dep:rusqlite", "native-executor"]
 memory = []
 native-watch = ["dep:notify", "dep:tokio"]
 native-executor = ["dep:tokio"]
 native-mount = ["native-watch", "native-executor", "dep:fs2", "dep:fuser"]
-public-providers = ["dep:acyclic-objects", "dep:acyclic-stream"]
 
 [lints]
 workspace = true

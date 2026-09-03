@@ -55,8 +55,6 @@ dependencies = [
 name = "acyclic-fs"
 version = "0.1.0-rc.1"
 dependencies = [
- "acyclic-objects",
- "acyclic-stream",
  "blake3",
  "bytes",
  "cap-primitives",
