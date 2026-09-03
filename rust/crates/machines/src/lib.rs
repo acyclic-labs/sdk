@@ -104,46 +104,37 @@ uuid_identity!(OperationId, "Address of one admitted operation.");
 uuid_identity!(MachineId, "Stable logical machine identity.");
 uuid_identity!(CheckpointId, "Stable immutable checkpoint identity.");
 
-/// Validated immutable OCI reference.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct ImmutableOciReference(String);
+/// Validated nonzero immutable image digest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "[u8; 32]", into = "[u8; 32]")]
+pub struct ImageDigest([u8; 32]);
 
-impl ImmutableOciReference {
-    /// Parses a reference containing an immutable SHA-256 digest.
-    pub fn parse(reference: impl Into<String>) -> Result<Self, ProviderError> {
-        let reference = reference.into();
-        let Some((name, digest)) = reference.rsplit_once("@sha256:") else {
-            return Err(ProviderError::Invalid(
-                "OCI image must contain @sha256:<digest>".into(),
-            ));
-        };
-        if name.is_empty()
-            || digest.len() != 64
-            || !digest.bytes().all(|value| value.is_ascii_hexdigit())
-        {
-            return Err(ProviderError::Invalid("OCI image digest is invalid".into()));
+impl ImageDigest {
+    /// Constructs a checked SHA-256 digest.
+    pub fn new(value: [u8; 32]) -> Result<Self, ProviderError> {
+        if value == [0; 32] {
+            return Err(ProviderError::Invalid("image digest cannot be zero".into()));
         }
-        Ok(Self(reference))
+        Ok(Self(value))
     }
 
-    /// Returns the canonical reference.
+    /// Returns the exact digest bytes.
     #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub const fn as_bytes(self) -> [u8; 32] {
+        self.0
     }
 }
 
-impl TryFrom<String> for ImmutableOciReference {
+impl TryFrom<[u8; 32]> for ImageDigest {
     type Error = ProviderError;
 
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::parse(value)
+    fn try_from(value: [u8; 32]) -> Result<Self, Self::Error> {
+        Self::new(value)
     }
 }
 
-impl From<ImmutableOciReference> for String {
-    fn from(value: ImmutableOciReference) -> Self {
+impl From<ImageDigest> for [u8; 32] {
+    fn from(value: ImageDigest) -> Self {
         value.0
     }
 }
@@ -151,10 +142,10 @@ impl From<ImmutableOciReference> for String {
 /// Immutable machine image selection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Image {
-    /// OCI reference containing an immutable `@sha256:` digest.
-    ManagedOci(ImmutableOciReference),
+    /// Digest parsed from an immutable OCI reference.
+    ManagedOci(ImageDigest),
     /// Customer image content digest.
-    Custom([u8; 32]),
+    Custom(ImageDigest),
     /// Existing immutable checkpoint.
     Checkpoint(CheckpointId),
 }
@@ -162,7 +153,31 @@ pub enum Image {
 impl Image {
     /// Creates a managed OCI image reference after checking immutable digest syntax.
     pub fn oci(reference: impl Into<String>) -> Result<Self, ProviderError> {
-        ImmutableOciReference::parse(reference).map(Self::ManagedOci)
+        let reference = reference.into();
+        let Some((name, digest)) = reference.rsplit_once("@sha256:") else {
+            return Err(ProviderError::Invalid(
+                "OCI image must contain @sha256:<digest>".into(),
+            ));
+        };
+        if name.is_empty() || digest.len() != 64 {
+            return Err(ProviderError::Invalid("OCI image digest is invalid".into()));
+        }
+        let bytes = hex::decode(digest)
+            .map_err(|_| ProviderError::Invalid("OCI image digest is invalid".into()))?;
+        let digest: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| ProviderError::Invalid("OCI image digest is invalid".into()))?;
+        ImageDigest::new(digest).map(Self::ManagedOci)
+    }
+
+    /// Creates a managed image from an already resolved digest.
+    pub fn managed(digest: [u8; 32]) -> Result<Self, ProviderError> {
+        ImageDigest::new(digest).map(Self::ManagedOci)
+    }
+
+    /// Creates a custom image from its content digest.
+    pub fn custom(digest: [u8; 32]) -> Result<Self, ProviderError> {
+        ImageDigest::new(digest).map(Self::Custom)
     }
 }
 
@@ -1375,7 +1390,11 @@ mod tests {
     use super::*;
 
     fn request(key: IdempotencyKey) -> CreateMachine {
-        CreateMachine::new(key, Image::Custom([7; 32]), [8; 32])
+        CreateMachine::new(
+            key,
+            Image::custom([7; 32]).unwrap_or_else(|_| unreachable!()),
+            [8; 32],
+        )
     }
 
     #[tokio::test]

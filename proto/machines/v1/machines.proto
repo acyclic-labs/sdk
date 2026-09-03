@@ -29,7 +29,7 @@ enum ImageKind {
 message Image {
   ImageKind kind = 1;
   oneof immutable_reference {
-    string oci_digest = 2;
+    bytes managed_digest = 2;
     bytes custom_digest = 3;
     CheckpointId checkpoint = 4;
   }

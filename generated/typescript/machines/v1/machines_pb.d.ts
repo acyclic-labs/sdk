@@ -109,10 +109,10 @@ export declare type Image = Message<"acyclic.machines.v1.Image"> & {
    */
   immutableReference: {
     /**
-     * @generated from field: string oci_digest = 2;
+     * @generated from field: bytes managed_digest = 2;
      */
-    value: string;
-    case: "ociDigest";
+    value: Uint8Array;
+    case: "managedDigest";
   } | {
     /**
      * @generated from field: bytes custom_digest = 3;

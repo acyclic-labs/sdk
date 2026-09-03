@@ -38,8 +38,8 @@ pub struct Image {
 pub mod image {
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum ImmutableReference {
-        #[prost(string, tag="2")]
-        OciDigest(::prost::alloc::string::String),
+        #[prost(bytes, tag="2")]
+        ManagedDigest(::prost::alloc::vec::Vec<u8>),
         #[prost(bytes, tag="3")]
         CustomDigest(::prost::alloc::vec::Vec<u8>),
         #[prost(message, tag="4")]

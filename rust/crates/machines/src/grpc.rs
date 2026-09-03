@@ -779,23 +779,18 @@ fn decode_checkpoint(value: Option<&wire::CheckpointId>) -> Result<CheckpointId,
 fn encode_image(value: &Image) -> Result<wire::Image, ProviderError> {
     use wire::image::ImmutableReference;
     let (kind, immutable_reference) = match value {
-        Image::ManagedOci(reference) => (
+        Image::ManagedOci(digest) => (
             wire::ImageKind::ManagedOci,
-            ImmutableReference::OciDigest(reference.as_str().into()),
+            ImmutableReference::ManagedDigest(digest.as_bytes().to_vec()),
         ),
-        Image::Custom(digest) if *digest != [0; 32] => (
+        Image::Custom(digest) => (
             wire::ImageKind::Custom,
-            ImmutableReference::CustomDigest(digest.to_vec()),
+            ImmutableReference::CustomDigest(digest.as_bytes().to_vec()),
         ),
         Image::Checkpoint(id) => (
             wire::ImageKind::Checkpoint,
             ImmutableReference::Checkpoint(encode_checkpoint(*id)),
         ),
-        Image::Custom(_) => {
-            return Err(ProviderError::Invalid(
-                "custom image digest cannot be zero".into(),
-            ));
-        }
     };
     Ok(wire::Image {
         kind: kind as i32,
@@ -810,8 +805,12 @@ fn decode_image(value: Option<&wire::Image>) -> Result<Image, ProviderError> {
             .map_err(|_| ProviderError::Rejected("image kind is invalid".into()))?,
         value.immutable_reference.as_ref(),
     ) {
-        (wire::ImageKind::ManagedOci, Some(ImmutableReference::OciDigest(reference))) => {
-            Image::oci(reference.clone())
+        (wire::ImageKind::ManagedOci, Some(ImmutableReference::ManagedDigest(digest))) => {
+            let digest: [u8; 32] = digest.as_slice().try_into().map_err(|_| {
+                ProviderError::Rejected("managed image digest width is invalid".into())
+            })?;
+            Image::managed(digest)
+                .map_err(|_| ProviderError::Rejected("managed image digest is invalid".into()))
         }
         (wire::ImageKind::Custom, Some(ImmutableReference::CustomDigest(digest))) => {
             let digest: [u8; 32] = digest.as_slice().try_into().map_err(|_| {
@@ -822,7 +821,8 @@ fn decode_image(value: Option<&wire::Image>) -> Result<Image, ProviderError> {
                     "custom image digest is zero".into(),
                 ));
             }
-            Ok(Image::Custom(digest))
+            Image::custom(digest)
+                .map_err(|_| ProviderError::Rejected("custom image digest is invalid".into()))
         }
         (wire::ImageKind::Checkpoint, Some(ImmutableReference::Checkpoint(id))) => {
             decode_checkpoint(Some(id)).map(Image::Checkpoint)

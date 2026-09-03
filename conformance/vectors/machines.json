@@ -2,7 +2,7 @@
   "version": 1,
   "providerAssurance": "declared-not-inferred",
   "cases": [
-    "immutable-image-qualification",
+    "immutable-image-digest-qualification",
     "shape-free-create",
     "exact-idempotent-create-replay",
     "idempotency-key-rebinding-rejected",

@@ -4,11 +4,8 @@ export type IdempotencyKey = string;
 export type MachineId = string;
 export type CheckpointId = string;
 export type OperationId = string;
-declare const immutableOciReference: unique symbol;
-export type ImmutableOciReference = string & { readonly [immutableOciReference]: true };
-
 export type Image =
-  | { readonly kind: "managed-oci"; readonly digestReference: ImmutableOciReference }
+  | { readonly kind: "managed-oci"; readonly digestHex: string }
   | { readonly kind: "custom"; readonly digestHex: string }
   | { readonly kind: "checkpoint"; readonly checkpointId: CheckpointId };
 
@@ -82,12 +79,11 @@ const canonicalIntent = (value: unknown): string => {
 /** Constructs a managed image only from an immutable OCI digest reference. */
 export function managedOci(reference: string): Image {
   if (!immutableOciPattern.test(reference)) throw new Error("OCI image must contain an immutable SHA-256 digest");
-  return { kind: "managed-oci", digestReference: reference as ImmutableOciReference };
+  return { kind: "managed-oci", digestHex: reference.slice(-64).toLowerCase() };
 }
 
 function validateImage(image: Image): void {
-  if (image.kind === "managed-oci" && !immutableOciPattern.test(image.digestReference)) throw new Error("managed OCI image is not immutable");
-  if (image.kind === "custom" && (!/^[0-9a-fA-F]{64}$/.test(image.digestHex) || /^0+$/.test(image.digestHex))) throw new Error("custom image digest is invalid");
+  if ((image.kind === "managed-oci" || image.kind === "custom") && (!/^[0-9a-f]{64}$/.test(image.digestHex) || /^0+$/.test(image.digestHex))) throw new Error("image digest is invalid");
   if (image.kind === "checkpoint" && image.checkpointId.length === 0) throw new Error("checkpoint identity is empty");
 }
 

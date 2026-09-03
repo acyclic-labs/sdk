@@ -19,9 +19,9 @@
     },
     "machines": {
       "version": "1.0.0",
-      "schemaDigest": "sha256:8f1bb3b080613e7d3242560c5751e7de2d144399eb920cbe5276788063f843bd",
-      "descriptorDigest": "sha256:2a8ae8a00e6d97b0291aff220506cbd99b8d770c24b636bfd5dc88bb4ef7d2f4",
-      "conformanceDigest": "sha256:9b2a71cb0781a0e17d0ec780e2ee8f33b256e13d560f7dec5d97552ef1b13296"
+      "schemaDigest": "sha256:eefa696e67e6343d0577cc1ca87b2f4089dff2e3418080a3239f4969fb99f887",
+      "descriptorDigest": "sha256:4257b05998e4b988f682bbaef3789e7eb50e9c85c0689e3462869dd6eed11ccb",
+      "conformanceDigest": "sha256:f51d232ae2f6c1bdc6ab283dcd18a2a31ce022ebcd5780c556c674a53aacda50"
     },
     "inference": {
       "version": "1.0.0",
