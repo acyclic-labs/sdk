@@ -2020,7 +2020,7 @@ mod tests {
         let tracked = include_str!(
             "../../../../conformance/vectors/filesystem/dependency-content-range-v1.json"
         );
-        assert_eq!(format!("{generated}\n"), tracked);
+        assert_eq!(format!("{generated}\n"), tracked.replace("\r\n", "\n"));
         Ok(())
     }
 
