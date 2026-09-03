@@ -20,7 +20,7 @@ tokio = { workspace = true, features = ["signal"] }
 thiserror.workspace = true
 bytes.workspace = true
 hex.workspace = true
-base64 = "0.22.1"
+base64 = "0.23.1"
 
 [lints]
 workspace = true
