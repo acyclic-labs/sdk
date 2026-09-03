@@ -1,5 +1,0 @@
-[registries]
-sdk = { index = "sparse+https://pkgs.dev.azure.com/var0245graphcoder/badd9fdd-5914-4ff1-b97f-6cc3232d3bfe/_packaging/sdk/Cargo/index/" }
-
-[registry]
-global-credential-providers = ["cargo:token"]

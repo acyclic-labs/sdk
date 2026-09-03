@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 acyclic-fs = { path = "../filesystem" }
-acyclic-inference = { package = "inference", path = "../inference" }
+acyclic-inference = { path = "../inference" }
 acyclic-machines = { path = "../machines" }
 acyclic-objects = { path = "../objects" }
 acyclic-stream = { path = "../stream" }
