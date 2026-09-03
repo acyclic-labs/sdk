@@ -20,6 +20,26 @@ The dependency graph is one way:
    on harness internals.
 7. `acyclic-sdk`, the CLI, and examples are composition leaves.
 
+## Consumption rules
+
+- A family may depend on `acyclic-contracts`, transport libraries, and ordinary
+  third-party libraries. It must not depend on a sibling family's implementation.
+- Cross-family values travel as public IDs, immutable references, or caller-owned
+  provider traits. A family never reaches through one client into another service.
+- The harness accepts family provider traits and composes them. Service clients
+  and providers never depend on the harness or umbrella SDK.
+- Applications depend on `acyclic-sdk` for a tested profile or on individual
+  family packages for a smaller surface. Switching providers changes bindings
+  and capability checks, not orchestration code.
+- Private services pin an exact public SDK commit or release, implement its public
+  contract, and run its black-box conformance suite. Customer contract changes
+  originate here; the private repository deletes its superseded copy.
+- Private services may call other private services only through authenticated,
+  versioned service or administration APIs. Fleet consumes immutable private
+  service releases and admin APIs; it never imports SDK or service source.
+- A runtime handshake binds protocol version, schema digest, and capabilities.
+  Unsupported combinations fail before work is admitted.
+
 The execution boundary determines ownership. All code shipped to or run on a
 customer machine is public here, including embedded and durable-local storage,
 browser backends, native mounts, local daemons and processes, language bindings,
