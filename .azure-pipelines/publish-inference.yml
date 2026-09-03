@@ -14,9 +14,9 @@ steps:
       rustup toolchain install 1.94.0 --profile minimal --component clippy,rustfmt
       rustup default 1.94.0
       cargo fmt --all --check
-      cargo clippy --locked -p acyclic-inference --all-targets -- -D warnings
-      cargo test --locked -p acyclic-inference
-      cargo package --locked -p acyclic-inference
+      cargo clippy --locked -p inference --all-targets -- -D warnings
+      cargo test --locked -p inference
+      cargo package --locked -p inference
     displayName: Qualify exact Inference SDK package
 
   - task: CargoAuthenticate@0
@@ -26,7 +26,7 @@ steps:
 
   - bash: |
       set -euo pipefail
-      cargo publish --locked -p acyclic-inference --registry sdk
+      cargo publish --locked -p inference --registry sdk
     displayName: Publish immutable Inference SDK
 
 variables:

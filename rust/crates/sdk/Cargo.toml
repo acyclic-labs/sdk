@@ -11,7 +11,7 @@ publish.workspace = true
 acyclic-contracts = { path = "../contracts" }
 acyclic-fs = { path = "../filesystem" }
 acyclic-harness = { path = "../harness" }
-acyclic-inference = { path = "../inference" }
+acyclic-inference = { package = "inference", path = "../inference" }
 acyclic-machines = { path = "../machines" }
 acyclic-memory = { path = "../memory" }
 acyclic-objects = { path = "../objects" }
