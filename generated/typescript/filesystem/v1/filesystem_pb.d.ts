@@ -19,6 +19,11 @@ export declare type WorkspaceRef = Message<"acyclic.filesystem.v1.WorkspaceRef">
    * @generated from field: bytes workspace_id = 1;
    */
   workspaceId: Uint8Array;
+
+  /**
+   * @generated from field: string name = 2;
+   */
+  name: string;
 };
 
 /**
@@ -563,48 +568,6 @@ export declare type WorkspaceResponse = Message<"acyclic.filesystem.v1.Workspace
  * Use `create(WorkspaceResponseSchema)` to create a new message.
  */
 export declare const WorkspaceResponseSchema: GenMessage<WorkspaceResponse>;
-
-/**
- * @generated from message acyclic.filesystem.v1.ListWorkspacesRequest
- */
-export declare type ListWorkspacesRequest = Message<"acyclic.filesystem.v1.ListWorkspacesRequest"> & {
-  /**
-   * @generated from field: acyclic.filesystem.v1.PageOptions page = 1;
-   */
-  page?: PageOptions | undefined;
-
-  /**
-   * @generated from field: bool include_deleted = 2;
-   */
-  includeDeleted: boolean;
-};
-
-/**
- * Describes the message acyclic.filesystem.v1.ListWorkspacesRequest.
- * Use `create(ListWorkspacesRequestSchema)` to create a new message.
- */
-export declare const ListWorkspacesRequestSchema: GenMessage<ListWorkspacesRequest>;
-
-/**
- * @generated from message acyclic.filesystem.v1.ListWorkspacesResponse
- */
-export declare type ListWorkspacesResponse = Message<"acyclic.filesystem.v1.ListWorkspacesResponse"> & {
-  /**
-   * @generated from field: repeated acyclic.filesystem.v1.Workspace workspaces = 1;
-   */
-  workspaces: Workspace[];
-
-  /**
-   * @generated from field: bytes next = 2;
-   */
-  next: Uint8Array;
-};
-
-/**
- * Describes the message acyclic.filesystem.v1.ListWorkspacesResponse.
- * Use `create(ListWorkspacesResponseSchema)` to create a new message.
- */
-export declare const ListWorkspacesResponseSchema: GenMessage<ListWorkspacesResponse>;
 
 /**
  * @generated from message acyclic.filesystem.v1.DeleteWorkspaceRequest
@@ -2178,14 +2141,6 @@ export declare const FilesystemService: GenService<{
     methodKind: "unary";
     input: typeof OpenWorkspaceRequestSchema;
     output: typeof WorkspaceResponseSchema;
-  },
-  /**
-   * @generated from rpc acyclic.filesystem.v1.FilesystemService.ListWorkspaces
-   */
-  listWorkspaces: {
-    methodKind: "unary";
-    input: typeof ListWorkspacesRequestSchema;
-    output: typeof ListWorkspacesResponseSchema;
   },
   /**
    * @generated from rpc acyclic.filesystem.v1.FilesystemService.DeleteWorkspace

@@ -7,6 +7,8 @@
 pub struct WorkspaceRef {
     #[prost(bytes="vec", tag="1")]
     pub workspace_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag="2")]
+    pub name: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GenerationRef {
@@ -216,20 +218,6 @@ pub struct WorkspaceResponse {
     pub workspace: ::core::option::Option<Workspace>,
     #[prost(enumeration="MutationStatus", tag="2")]
     pub status: i32,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ListWorkspacesRequest {
-    #[prost(message, optional, tag="1")]
-    pub page: ::core::option::Option<PageOptions>,
-    #[prost(bool, tag="2")]
-    pub include_deleted: bool,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ListWorkspacesResponse {
-    #[prost(message, repeated, tag="1")]
-    pub workspaces: ::prost::alloc::vec::Vec<Workspace>,
-    #[prost(bytes="vec", tag="2")]
-    pub next: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteWorkspaceRequest {

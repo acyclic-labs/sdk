@@ -11,6 +11,7 @@ option go_package = "github.com/acyclic-labs/sdk/go/gen/filesystem/v1;filesystem
 
 message WorkspaceRef {
   bytes workspace_id = 1;
+  string name = 2;
 }
 message GenerationRef {
   bytes workspace_id = 1;
@@ -162,14 +163,6 @@ message OpenWorkspaceRequest {
 message WorkspaceResponse {
   Workspace workspace = 1;
   MutationStatus status = 2;
-}
-message ListWorkspacesRequest {
-  PageOptions page = 1;
-  bool include_deleted = 2;
-}
-message ListWorkspacesResponse {
-  repeated Workspace workspaces = 1;
-  bytes next = 2;
 }
 message DeleteWorkspaceRequest {
   WorkspaceRef workspace = 1;
@@ -459,9 +452,6 @@ service FilesystemService {
       post: "/v1/filesystem:openWorkspace"
       body: "*"
     };
-  }
-  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse) {
-    option (google.api.http) = {get: "/v1/workspaces"};
   }
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (MutationResponse) {
     option (google.api.http) = {

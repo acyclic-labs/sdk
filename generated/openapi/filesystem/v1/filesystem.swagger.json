@@ -923,48 +923,6 @@
       }
     },
     "/v1/workspaces": {
-      "get": {
-        "operationId": "FilesystemService_ListWorkspaces",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/v1ListWorkspacesResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpcStatus"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "page.maximumItems",
-            "in": "query",
-            "required": false,
-            "type": "integer",
-            "format": "int64"
-          },
-          {
-            "name": "page.after",
-            "in": "query",
-            "required": false,
-            "type": "string",
-            "format": "byte"
-          },
-          {
-            "name": "includeDeleted",
-            "in": "query",
-            "required": false,
-            "type": "boolean"
-          }
-        ],
-        "tags": [
-          "FilesystemService"
-        ]
-      },
       "post": {
         "operationId": "FilesystemService_CreateWorkspace",
         "responses": {
@@ -1720,22 +1678,6 @@
         }
       }
     },
-    "v1ListWorkspacesResponse": {
-      "type": "object",
-      "properties": {
-        "workspaces": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "$ref": "#/definitions/v1Workspace"
-          }
-        },
-        "next": {
-          "type": "string",
-          "format": "byte"
-        }
-      }
-    },
     "v1Metadata": {
       "type": "object",
       "properties": {
@@ -2278,6 +2220,9 @@
         "workspaceId": {
           "type": "string",
           "format": "byte"
+        },
+        "name": {
+          "type": "string"
         }
       }
     },
