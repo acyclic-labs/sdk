@@ -1,0 +1,177 @@
+// Canonical provider-independent hierarchical Stream v2 contract.
+syntax = "proto3";
+package acyclic.stream.v2;
+
+option go_package = "github.com/acyclic-labs/sdk/go/gen/stream/v2;streamv2";
+
+message Record {
+  uint64 sequence = 1;
+  bytes value = 2;
+  bytes commit_id = 3;
+}
+
+message AppendRequest {
+  string path = 1;
+  repeated bytes records = 2;
+  optional uint64 if_tail = 3;
+  optional bytes idempotency_key = 4;
+}
+
+message AppendReceipt {
+  uint64 start = 1;
+  uint64 end = 2;
+  uint64 tail = 3;
+  bytes commit_id = 4;
+}
+
+message TailConflict { uint64 actual_tail = 1; }
+
+message AppendResponse {
+  oneof outcome {
+    AppendReceipt committed = 1;
+    TailConflict conflict = 2;
+  }
+}
+
+message TailRequest { string path = 1; }
+message TailResponse { uint64 tail = 1; }
+
+message ForkRequest {
+  string source = 1;
+  string destination = 2;
+  optional uint64 at_tail = 3;
+  optional bytes idempotency_key = 4;
+}
+
+message ForkReceipt {
+  string source = 1;
+  string destination = 2;
+  uint64 forked_at = 3;
+  uint64 tail = 4;
+  bytes commit_id = 5;
+}
+
+message ReadRequest {
+  string path = 1;
+  uint64 from = 2;
+  uint32 limit = 3;
+}
+
+message FollowRequest {
+  string path = 1;
+  uint64 from = 2;
+}
+
+message ReadResponse { Record record = 1; }
+
+message ChildrenRequest {
+  optional string parent = 1;
+  uint32 limit = 2;
+}
+
+message Child { string path = 1; }
+message ChildrenResponse { Child child = 1; }
+
+message TailCondition {
+  string path = 1;
+  uint64 expected = 2;
+}
+
+message AbsentCondition { string path = 1; }
+
+message CommitCondition {
+  oneof condition {
+    TailCondition tail = 1;
+    AbsentCondition absent = 2;
+  }
+}
+
+message AppendMutation {
+  string path = 1;
+  repeated bytes records = 2;
+}
+
+message ForkMutation {
+  string source = 1;
+  string destination = 2;
+  uint64 at_tail = 3;
+}
+
+message CommitMutation {
+  oneof mutation {
+    AppendMutation append = 1;
+    ForkMutation fork = 2;
+  }
+}
+
+message CommitRequest {
+  repeated CommitCondition conditions = 1;
+  repeated CommitMutation mutations = 2;
+  bytes idempotency_key = 3;
+}
+
+message CommittedAppend {
+  string path = 1;
+  uint64 start = 2;
+  uint64 end = 3;
+  uint64 tail = 4;
+  repeated Record records = 5;
+}
+
+message CommittedFork {
+  string source = 1;
+  string destination = 2;
+  uint64 forked_at = 3;
+  uint64 tail = 4;
+}
+
+message CommittedMutation {
+  oneof mutation {
+    CommittedAppend append = 1;
+    CommittedFork fork = 2;
+  }
+}
+
+message CommittedEnvelope {
+  bytes commit_id = 1;
+  repeated CommittedMutation mutations = 2;
+}
+
+message TailCommitConflict {
+  string path = 1;
+  uint64 expected = 2;
+  uint64 actual = 3;
+}
+
+message ExistsCommitConflict { string path = 1; }
+message RetiredCommitConflict { string path = 1; }
+
+message CommitConflict {
+  oneof conflict {
+    TailCommitConflict tail = 1;
+    ExistsCommitConflict exists = 2;
+    RetiredCommitConflict retired = 3;
+  }
+}
+
+message CommitConflicts { repeated CommitConflict conflicts = 1; }
+
+message CommitResponse {
+  oneof outcome {
+    CommittedEnvelope committed = 1;
+    CommitConflicts conflict = 2;
+  }
+}
+
+message ReadCommitRequest { bytes commit_id = 1; }
+
+service StreamService {
+  rpc Append(AppendRequest) returns (AppendResponse);
+  rpc Tail(TailRequest) returns (TailResponse);
+  rpc Fork(ForkRequest) returns (ForkReceipt);
+  rpc Read(ReadRequest) returns (stream ReadResponse);
+  rpc Follow(FollowRequest) returns (stream ReadResponse);
+  rpc Children(ChildrenRequest) returns (stream ChildrenResponse);
+  rpc Commit(CommitRequest) returns (CommitResponse);
+  rpc ReadCommit(ReadCommitRequest) returns (CommittedEnvelope);
+}

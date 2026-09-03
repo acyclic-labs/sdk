@@ -34,7 +34,7 @@
     },
     "typescript/packages/objects": {
       "name": "@acyclic/objects",
-      "version": "0.0.0",
+      "version": "1.0.0",
       "devDependencies": {
         "typescript": "7.0.2",
       },
@@ -47,15 +47,7 @@
         "@acyclic/inference": "0.0.0",
         "@acyclic/machines": "0.0.0",
         "@acyclic/objects": "0.0.0",
-        "@acyclic/stream": "0.0.0",
       },
-      "devDependencies": {
-        "typescript": "7.0.2",
-      },
-    },
-    "typescript/packages/stream": {
-      "name": "@acyclic/stream",
-      "version": "0.0.0",
       "devDependencies": {
         "typescript": "7.0.2",
       },
@@ -71,8 +63,6 @@
     "@acyclic/objects": ["@acyclic/objects@workspace:typescript/packages/objects"],
 
     "@acyclic/sdk": ["@acyclic/sdk@workspace:typescript/packages/sdk"],
-
-    "@acyclic/stream": ["@acyclic/stream@workspace:typescript/packages/stream"],
 
     "@bufbuild/buf": ["@bufbuild/buf@1.72.0", "", { "optionalDependencies": { "@bufbuild/buf-darwin-arm64": "1.72.0", "@bufbuild/buf-darwin-x64": "1.72.0", "@bufbuild/buf-linux-aarch64": "1.72.0", "@bufbuild/buf-linux-armv7": "1.72.0", "@bufbuild/buf-linux-x64": "1.72.0", "@bufbuild/buf-win32-arm64": "1.72.0", "@bufbuild/buf-win32-x64": "1.72.0" }, "bin": { "buf": "bin/buf", "protoc-gen-buf-lint": "bin/protoc-gen-buf-lint", "protoc-gen-buf-breaking": "bin/protoc-gen-buf-breaking" } }, "sha512-BwBKTX/WXkhAhqWJGrEKnqU03/4tK1O0OozSlwUMBCOEo8pLL3xu3M24RT3+umExEeM0wjlANO6axqGWMqtt4Q=="],
 

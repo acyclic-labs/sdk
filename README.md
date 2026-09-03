@@ -14,6 +14,9 @@ release is tagged.
   capabilities, protocol versions, and descriptor digests.
 - A Tokio-based recursive task harness with bounded concurrency.
 - In-memory Filesystem, Stream, Objects, Machines, and Inference providers.
+- A hierarchical Stream v2 Rust contract, bounded structural-sharing memory
+  provider, authenticated gRPC client/server adapter, exact retry semantics,
+  immutable-prefix forks, gapless follow, and atomic optimistic commits.
 - An Objects v1 Rust gRPC client and bounded reference provider with permanent
   versions, BLAKE3 validators, delete markers, conditions, exact idempotency,
   stable listing views, multipart publication, and whole-bucket snapshots/forks.
@@ -26,7 +29,7 @@ release is tagged.
   events, usage receipts, a mutual-TLS/Unix client, and one bounded deterministic
   simulator.
 - A complete recursive example and black-box provider conformance tests.
-- TypeScript contract facades for the same public concepts.
+- TypeScript contract facades for families whose public contract includes JavaScript.
 - Protobuf package boundaries ready for audited service schemas.
 
 ## Open-source boundary

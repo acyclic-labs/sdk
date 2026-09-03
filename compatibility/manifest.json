@@ -5,7 +5,12 @@
   "families": {
     "harness": { "version": "0.0.0", "schemaDigest": "unreleased" },
     "filesystem": { "version": "0.0.0", "schemaDigest": "unreleased" },
-    "stream": { "version": "0.0.0", "schemaDigest": "unreleased" },
+    "stream": {
+      "version": "1.0.0",
+      "schemaDigest": "sha256:f7311b8837ed712f1beae2feb4610b22e969968e71699f14760a9066ffc318de",
+      "descriptorDigest": "sha256:3ddafcace62cd7f7ae6462b2a13f192019b7c4eab3d82a473254f00220581a92",
+      "conformanceDigest": "sha256:bed6a354be40e60d35e1ffb255d30a22cef6a961087ce20e41bf0d51c7a11e7d"
+    },
     "objects": {
       "version": "1.0.0",
       "schemaDigest": "sha256:b17f7501036b2219b67219fdbf8237f1f5cd5452ab98be9bae6dcd841b83e403",
