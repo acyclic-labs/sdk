@@ -29,7 +29,10 @@ pub mod wire {
 #[cfg(not(target_arch = "wasm32"))]
 mod wire_service;
 #[cfg(not(target_arch = "wasm32"))]
-pub use wire_service::{FilesystemWireLimits, FilesystemWireService};
+pub use wire_service::{
+    CredentialGrant, CredentialGrantRequest, CredentialKind, FilesystemCredentialIssuer,
+    FilesystemWireLimits, FilesystemWireService,
+};
 
 /// Canonical public descriptor set used by compatibility and conformance gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-filesystem-v1.bin");

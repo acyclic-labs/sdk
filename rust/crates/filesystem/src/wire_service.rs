@@ -13,6 +13,7 @@ use bytes::Bytes;
 use futures::{StreamExt, stream};
 use prost::Message;
 use std::pin::Pin;
+use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 type WireStream<T> = Pin<Box<dyn futures::Stream<Item = Result<T, Status>> + Send + 'static>>;
@@ -28,6 +29,8 @@ pub struct FilesystemWireLimits {
     pub maximum_transaction_mutations: u32,
     /// Largest directory, diff, or transfer page.
     pub maximum_page_items: u32,
+    /// Longest accepted lifetime for a scoped deployment credential.
+    pub maximum_credential_seconds: u64,
 }
 
 impl Default for FilesystemWireLimits {
@@ -37,8 +40,61 @@ impl Default for FilesystemWireLimits {
             maximum_response_bytes: 16 * 1024 * 1024,
             maximum_transaction_mutations: 2_048,
             maximum_page_items: 1_024,
+            maximum_credential_seconds: 3_600,
         }
     }
+}
+
+/// Deployment-owned credential surface selected after SDK validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialKind {
+    /// Native mount transport credential.
+    Mount,
+    /// Filesystem S3 compatibility credential.
+    S3,
+}
+
+/// Fully validated scope passed to the authenticated deployment edge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CredentialGrantRequest {
+    /// Requested surface.
+    pub kind: CredentialKind,
+    /// Stable workspace identity.
+    pub workspace_id: crate::WorkspaceId,
+    /// Canonical workspace name.
+    pub workspace_name: crate::WorkspaceName,
+    /// Exact generation visible through the credential.
+    pub generation_id: GenerationId,
+    /// Whether mutation is requested.
+    pub writable: bool,
+    /// Requested bounded lifetime.
+    pub expires_after_seconds: u64,
+    /// Stable caller retry identity.
+    pub idempotency_key: IdempotencyKey,
+}
+
+/// Deployment-produced opaque scoped credential.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CredentialGrant {
+    /// Customer endpoint for the selected surface.
+    pub endpoint: String,
+    /// Opaque bearer capability.
+    pub token: String,
+    /// Absolute Unix expiry enforced by the endpoint.
+    pub expires_at_unix_seconds: i64,
+}
+
+/// Authenticated deployment extension for private credential issuance.
+#[tonic::async_trait]
+pub trait FilesystemCredentialIssuer: Send + Sync + 'static {
+    /// Whether native mount credentials are available.
+    fn mount_enabled(&self) -> bool;
+
+    /// Whether S3 credentials are available.
+    fn s3_enabled(&self) -> bool;
+
+    /// Issues one opaque credential for an already validated exact scope.
+    async fn issue(&self, request: CredentialGrantRequest) -> Result<CredentialGrant, Status>;
 }
 
 /// One SDK-owned protocol adapter over the canonical filesystem engine.
@@ -49,6 +105,7 @@ impl Default for FilesystemWireLimits {
 pub struct FilesystemWireService<A, O> {
     filesystem: Fs<A, O>,
     limits: FilesystemWireLimits,
+    credential_issuer: Option<Arc<dyn FilesystemCredentialIssuer>>,
 }
 
 impl<A, O> FilesystemWireService<A, O> {
@@ -62,18 +119,30 @@ impl<A, O> FilesystemWireService<A, O> {
             || limits.maximum_response_bytes == 0
             || limits.maximum_transaction_mutations == 0
             || limits.maximum_page_items == 0
+            || limits.maximum_credential_seconds == 0
         {
             return Err(Status::invalid_argument(
                 "filesystem wire bounds must be nonzero",
             ));
         }
-        Ok(Self { filesystem, limits })
+        Ok(Self {
+            filesystem,
+            limits,
+            credential_issuer: None,
+        })
     }
 
     /// Borrows the exact engine served by this adapter.
     #[must_use]
     pub const fn filesystem(&self) -> &Fs<A, O> {
         &self.filesystem
+    }
+
+    /// Installs the authenticated deployment's scoped credential issuer.
+    #[must_use]
+    pub fn with_credential_issuer(mut self, issuer: Arc<dyn FilesystemCredentialIssuer>) -> Self {
+        self.credential_issuer = Some(issuer);
+        self
     }
 }
 
@@ -166,8 +235,14 @@ where
                 maximum_response_bytes: self.limits.maximum_response_bytes,
                 maximum_transaction_mutations: self.limits.maximum_transaction_mutations,
                 maximum_page_items: self.limits.maximum_page_items,
-                native_mount_credentials: false,
-                s3_credentials: false,
+                native_mount_credentials: self
+                    .credential_issuer
+                    .as_ref()
+                    .is_some_and(|issuer| issuer.mount_enabled()),
+                s3_credentials: self
+                    .credential_issuer
+                    .as_ref()
+                    .is_some_and(|issuer| issuer.s3_enabled()),
                 source_reconciliation: false,
             }),
         }))
@@ -901,20 +976,16 @@ where
 
     async fn issue_mount_credential(
         &self,
-        _request: Request<wire::CredentialRequest>,
+        request: Request<wire::CredentialRequest>,
     ) -> Result<Response<wire::CredentialResponse>, Status> {
-        Err(Status::unimplemented(
-            "credential issuance belongs to the authenticated deployment edge",
-        ))
+        self.issue_credential(request, CredentialKind::Mount).await
     }
 
     async fn issue_s3_credential(
         &self,
-        _request: Request<wire::CredentialRequest>,
+        request: Request<wire::CredentialRequest>,
     ) -> Result<Response<wire::CredentialResponse>, Status> {
-        Err(Status::unimplemented(
-            "credential issuance belongs to the authenticated deployment edge",
-        ))
+        self.issue_credential(request, CredentialKind::S3).await
     }
 
     async fn observe(
@@ -937,6 +1008,69 @@ where
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
+    async fn issue_credential(
+        &self,
+        request: Request<wire::CredentialRequest>,
+        kind: CredentialKind,
+    ) -> Result<Response<wire::CredentialResponse>, Status> {
+        self.admit(&request)?;
+        let request = request.into_inner();
+        if request.expires_after_seconds == 0
+            || request.expires_after_seconds > self.limits.maximum_credential_seconds
+        {
+            return Err(Status::invalid_argument(
+                "credential lifetime exceeds the configured bound",
+            ));
+        }
+        let workspace = self.workspace(request.workspace).await?;
+        let generation = match request.generation {
+            Some(reference) => {
+                let generation = self.generation(Some(reference)).await?;
+                if generation.workspace.id() != workspace.id() {
+                    return Err(Status::failed_precondition(
+                        "credential generation belongs to another workspace",
+                    ));
+                }
+                generation
+            }
+            None => workspace.head().await.map_err(status)?,
+        };
+        let issuer = self.credential_issuer.as_ref().ok_or_else(|| {
+            Status::unimplemented("credential issuance is unavailable in this deployment")
+        })?;
+        let enabled = match kind {
+            CredentialKind::Mount => issuer.mount_enabled(),
+            CredentialKind::S3 => issuer.s3_enabled(),
+        };
+        if !enabled {
+            return Err(Status::unimplemented(
+                "requested credential surface is unavailable",
+            ));
+        }
+        let grant = issuer
+            .issue(CredentialGrantRequest {
+                kind,
+                workspace_id: workspace.id(),
+                workspace_name: workspace.name().clone(),
+                generation_id: generation.id(),
+                writable: request.writable,
+                expires_after_seconds: request.expires_after_seconds,
+                idempotency_key: operation(request.operation)?,
+            })
+            .await?;
+        if grant.endpoint.is_empty() || grant.token.is_empty() || grant.expires_at_unix_seconds <= 0
+        {
+            return Err(Status::internal(
+                "credential issuer returned an invalid grant",
+            ));
+        }
+        Ok(Response::new(wire::CredentialResponse {
+            endpoint: grant.endpoint,
+            token: grant.token,
+            expires_at_unix_seconds: grant.expires_at_unix_seconds,
+        }))
+    }
+
     async fn retain(
         &self,
         request: Request<wire::RetainGenerationRequest>,
@@ -1519,6 +1653,31 @@ mod tests {
     use super::*;
     use crate::wire::filesystem::v1::filesystem_service_server::FilesystemService as _;
 
+    struct TestIssuer;
+
+    #[tonic::async_trait]
+    impl FilesystemCredentialIssuer for TestIssuer {
+        fn mount_enabled(&self) -> bool {
+            true
+        }
+
+        fn s3_enabled(&self) -> bool {
+            true
+        }
+
+        async fn issue(&self, request: CredentialGrantRequest) -> Result<CredentialGrant, Status> {
+            Ok(CredentialGrant {
+                endpoint: match request.kind {
+                    CredentialKind::Mount => "mount://test",
+                    CredentialKind::S3 => "https://s3.test",
+                }
+                .to_owned(),
+                token: hex::encode(request.workspace_id.into_bytes()),
+                expires_at_unix_seconds: 1_900_000_000,
+            })
+        }
+    }
+
     fn operation(value: u8) -> Option<wire::OperationOptions> {
         let mut id = [0_u8; 16];
         id[15] = value;
@@ -1536,7 +1695,8 @@ mod tests {
     #[tokio::test]
     async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
     -> Result<(), Box<dyn std::error::Error>> {
-        let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
+        let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?
+            .with_credential_issuer(Arc::new(TestIssuer));
         let created = service
             .create_workspace(Request::new(wire::CreateWorkspaceRequest {
                 name: "main".to_owned(),
@@ -1549,6 +1709,19 @@ mod tests {
             .ok_or("missing workspace")?;
         let initial = created.head.ok_or("missing head")?;
         let workspace = created.workspace.ok_or("missing workspace ref")?;
+
+        let credential = service
+            .issue_mount_credential(Request::new(wire::CredentialRequest {
+                workspace: Some(workspace.clone()),
+                generation: Some(initial.clone()),
+                writable: false,
+                expires_after_seconds: 60,
+                operation: operation(8),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(credential.endpoint, "mount://test");
+        assert!(!credential.token.is_empty());
 
         let committed = service
             .apply_transaction(Request::new(wire::ApplyTransactionRequest {
