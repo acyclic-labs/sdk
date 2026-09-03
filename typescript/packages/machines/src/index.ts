@@ -70,6 +70,14 @@ const revision = "2b58d52764ff9f662ec12b1aa029526543852dd34a13db4c878cfe5e0f13fc
 const clone = <T>(value: T): T => structuredClone(value);
 const derivedId = (domain: string, key: string, index = 0): string => `${domain}:${key}:${index}`;
 const immutableOciPattern = /^.+@sha256:[0-9a-fA-F]{64}$/;
+const canonicalIntent = (value: unknown): string => {
+  if (typeof value === "bigint") return `{"$bigint":${JSON.stringify(value.toString())}}`;
+  if (Array.isArray(value)) return `[${value.map(canonicalIntent).join(",")}]`;
+  if (value !== null && typeof value === "object") return `{${Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0).map(([name, item]) => `${JSON.stringify(name)}:${canonicalIntent(item)}`).join(",")}}`;
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) throw new Error("intent contains an unsupported value");
+  return encoded;
+};
 
 /** Constructs a managed image only from an immutable OCI digest reference. */
 export function managedOci(reference: string): Image {
@@ -95,7 +103,7 @@ export class SimulatedMachines implements MachinesProvider {
   async qualifyImage(image: Image): Promise<ImageQualification> { validateImage(image); return clone({ image, capabilities, compatibilityRevisionHex: revision }); }
   async create(request: CreateMachine): Promise<MutationOutcome> {
     validateImage(request.image);
-    return this.#mutate(request.idempotencyKey, JSON.stringify(request, (_name, value: unknown) => typeof value === "bigint" ? value.toString() : value), () => {
+    return this.#mutate(request.idempotencyKey, canonicalIntent(request), () => {
       if (this.#machines.size >= 1024) throw new Error("simulation machine limit reached");
       if (request.compatibility.kind === "require" && request.compatibility.capabilities.some((value) => !capabilities.includes(value))) throw new Error("required capability is unavailable");
       const id = derivedId("machine", request.idempotencyKey); const now = this.#tick();
@@ -107,7 +115,7 @@ export class SimulatedMachines implements MachinesProvider {
   async inspectMachine(machineId: MachineId): Promise<MachineObservation> { return clone(this.#required(this.#machines, machineId)); }
   async listMachines(after: MachineId | null, limit: number): Promise<{ readonly machines: readonly MachineObservation[]; readonly next: MachineId | null }> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 256) throw new Error("machine page limit must be 1..=256");
-    const values = [...this.#machines.values()].filter((value) => after === null || value.id > after).sort((left, right) => left.id.localeCompare(right.id));
+    const values = [...this.#machines.values()].filter((value) => after === null || value.id > after).sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
     const machines = values.slice(0, limit); return clone({ machines, next: values.length > limit ? machines.at(-1)?.id ?? null : null });
   }
   async checkpoint(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome> { return this.#mutate(key, `checkpoint:${machineId}`, () => { const source = this.#required(this.#machines, machineId); if (source.state !== "running" && source.state !== "suspended") throw new Error("machine is not checkpointable"); const id = derivedId("checkpoint", key); const now = this.#tick(); const checkpoint = { id, source: machineId, contract: clone(source.contract), forkable: true, createdAtUnixMs: now }; this.#checkpoints.set(id, checkpoint); this.#machines.set(machineId, { ...source, lastCheckpoint: id, changedAtUnixMs: now }); return { kind: "checkpointed", checkpoint }; }); }
@@ -116,12 +124,12 @@ export class SimulatedMachines implements MachinesProvider {
   async suspend(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome> { return this.#transition(machineId, key, "running", "suspended", "suspended"); }
   async wake(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome> { return this.#transition(machineId, key, "suspended", "running", "woken"); }
   async setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, key: IdempotencyKey): Promise<MutationOutcome> { return this.#mutate(key, `policy:${machineId}:${JSON.stringify(policy)}`, () => { const value = this.#required(this.#machines, machineId); if (value.state === "destroyed") throw new Error("destroyed machine cannot change policy"); this.#machines.set(machineId, { ...value, contract: { ...value.contract, suspension: clone(policy) }, changedAtUnixMs: this.#tick() }); return { kind: "suspension-policy-set", machineId, policy }; }); }
-  async destroyMachine(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome> { return this.#mutate(key, `destroy-machine:${machineId}`, () => { const value = this.#required(this.#machines, machineId); const now = this.#tick(); this.#machines.set(machineId, { ...value, state: "destroyed", changedAtUnixMs: now }); this.#event(machineId, { kind: "state", state: "destroyed" }, now); return { kind: "machine-destroyed", machineId }; }); }
+  async destroyMachine(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome> { return this.#mutate(key, `destroy-machine:${machineId}`, () => { const value = this.#required(this.#machines, machineId); if (value.state === "destroyed") return { kind: "machine-destroyed", machineId }; const now = this.#tick(); this.#machines.set(machineId, { ...value, state: "destroyed", changedAtUnixMs: now }); this.#event(machineId, { kind: "state", state: "destroyed" }, now); return { kind: "machine-destroyed", machineId }; }); }
   async destroyCheckpoint(checkpointId: CheckpointId, key: IdempotencyKey): Promise<MutationOutcome> { return this.#mutate(key, `destroy-checkpoint:${checkpointId}`, () => { const value = this.#required(this.#checkpoints, checkpointId); this.#checkpoints.set(checkpointId, { ...value, forkable: false }); return { kind: "checkpoint-destroyed", checkpointId }; }); }
   async events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<{ readonly events: readonly MachineEvent[]; readonly nextSequence: number | null }> { this.#required(this.#machines, machineId); if (!Number.isInteger(limit) || limit < 1 || limit > 1024) throw new Error("event page limit must be 1..=1024"); const values = (this.#events.get(machineId) ?? []).filter((value) => afterSequence === null || value.sequence > afterSequence); const events = values.slice(0, limit); return clone({ events, nextSequence: values.length > limit ? events.at(-1)?.sequence ?? null : null }); }
   async usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { this.#required(this.#machines, machineId); if (!Number.isSafeInteger(startUnixMs) || !Number.isSafeInteger(endUnixMs) || startUnixMs >= endUnixMs) throw new Error("usage interval must be non-empty safe integers"); return { machine: machineId, startUnixMs, endUnixMs, elasticCpuNs: 0n, dedicatedCpuNs: 0n, privateResidentByteSeconds: 0n, durablePrivateBytes: 0n, lineageSharedBytes: 0n, egressBytes: 0n, receipt: new Uint8Array() }; }
   async recover(key: IdempotencyKey): Promise<MutationOutcome> { const value = this.#replays.get(key); if (value === undefined) throw new Error("operation not found"); return clone(value.outcome); }
-  async #transition(machineId: MachineId, key: IdempotencyKey, required: MachineState, target: MachineState, kind: "suspended" | "woken"): Promise<MutationOutcome> { return this.#mutate(key, `${kind}:${machineId}`, () => { const value = this.#required(this.#machines, machineId); if (value.state !== required && value.state !== target) throw new Error("machine cannot perform transition"); const now = this.#tick(); this.#machines.set(machineId, { ...value, state: target, changedAtUnixMs: now }); this.#event(machineId, { kind: "state", state: target }, now); return { kind, machineId }; }); }
+  async #transition(machineId: MachineId, key: IdempotencyKey, required: MachineState, target: MachineState, kind: "suspended" | "woken"): Promise<MutationOutcome> { return this.#mutate(key, `${kind}:${machineId}`, () => { const value = this.#required(this.#machines, machineId); if (value.state === target) return { kind, machineId }; if (value.state !== required) throw new Error("machine cannot perform transition"); const now = this.#tick(); this.#machines.set(machineId, { ...value, state: target, changedAtUnixMs: now }); this.#event(machineId, { kind: "state", state: target }, now); return { kind, machineId }; }); }
   #mutate(key: IdempotencyKey, intent: string, action: () => MutationOutcome): MutationOutcome { const replay = this.#replays.get(key); if (replay !== undefined) { if (replay.intent !== intent) throw new Error("idempotency key is bound to another intent"); return clone(replay.outcome); } if (this.#replays.size >= 4096) throw new Error("simulation operation limit reached"); const outcome = action(); this.#replays.set(key, { intent, outcome: clone(outcome) }); return clone(outcome); }
   #required<K, V>(values: Map<K, V>, id: K): V { const value = values.get(id); if (value === undefined) throw new Error("resource not found"); return value; }
   #event(machine: MachineId, fact: EventFact, observedAtUnixMs: number): void { const values = this.#events.get(machine) ?? []; if (values.length >= 4096) throw new Error("simulation event limit reached"); values.push({ machine, sequence: values.length + 1, observedAtUnixMs, fact }); this.#events.set(machine, values); }

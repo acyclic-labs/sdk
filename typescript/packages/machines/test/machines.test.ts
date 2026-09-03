@@ -20,6 +20,22 @@ describe("Machines simulation", () => {
     await expect(provider.create({ ...request("create-1"), performance: "dedicated" })).rejects.toThrow("bound to another intent");
   });
 
+  test("canonical replay ignores object insertion order", async () => {
+    const provider = new SimulatedMachines();
+    const original = request("canonical");
+    const reordered: CreateMachine = {
+      budgets: original.budgets,
+      networkPolicyDigestHex: original.networkPolicyDigestHex,
+      expiration: original.expiration,
+      suspension: original.suspension,
+      performance: original.performance,
+      compatibility: original.compatibility,
+      image: original.image,
+      idempotencyKey: original.idempotencyKey,
+    };
+    expect(await provider.create(reordered)).toEqual(await provider.create(original));
+  });
+
   test("checkpoint forks fresh machines without cascading lifetime", async () => {
     const provider = new SimulatedMachines();
     const created = await provider.create(request("create-2"));
@@ -39,5 +55,31 @@ describe("Machines simulation", () => {
     expect(() => managedOci("ghcr.io/acyclic/agent:latest")).toThrow();
     const image = managedOci(`ghcr.io/acyclic/agent@sha256:${"a".repeat(64)}`);
     expect((await provider.qualifyImage(image)).image).toEqual(image);
+  });
+
+  test("cursor walk returns every machine exactly once in canonical order", async () => {
+    const provider = new SimulatedMachines();
+    for (const key of ["a", "B", "ä", "Z"]) await provider.create(request(key));
+    const ids: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await provider.listMachines(cursor, 1);
+      ids.push(...page.machines.map((machine) => machine.id));
+      cursor = page.next;
+    } while (cursor !== null);
+    expect(new Set(ids).size).toBe(4);
+    expect(ids).toEqual([...ids].sort());
+  });
+
+  test("terminal no-op mutations preserve timestamps and event history", async () => {
+    const provider = new SimulatedMachines();
+    const created = await provider.create(request("no-op"));
+    if (created.kind !== "created") throw new Error("wrong create outcome");
+    await provider.destroyMachine(created.machine.id, "destroy-first");
+    const first = await provider.inspectMachine(created.machine.id);
+    const firstEvents = await provider.events(created.machine.id, null, 16);
+    await provider.destroyMachine(created.machine.id, "destroy-again");
+    expect(await provider.inspectMachine(created.machine.id)).toEqual(first);
+    expect(await provider.events(created.machine.id, null, 16)).toEqual(firstEvents);
   });
 });

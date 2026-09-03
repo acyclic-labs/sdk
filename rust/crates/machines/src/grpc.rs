@@ -646,13 +646,29 @@ async fn decode_recovered(
         }
         ResultKind::Fork(value) => {
             exact_operation(value.operation.as_ref(), outer)?;
-            let mut result = Vec::with_capacity(value.children.len());
+            if value.children.is_empty()
+                || value.children.len()
+                    > usize::try_from(MAX_FORK_CHILDREN)
+                        .map_err(|_| ProviderError::Invalid("invalid fork bound".into()))?
+            {
+                return Err(ProviderError::Rejected(
+                    "recovered fork child set is outside the public bound".into(),
+                ));
+            }
+            let mut seen = BTreeSet::new();
+            let mut children = Vec::with_capacity(value.children.len());
             for item in value.children {
-                result.push(
-                    provider
-                        .inspect_machine(decode_machine(Some(&item))?)
-                        .await?,
-                );
+                let child = decode_machine(Some(&item))?;
+                if !seen.insert(child) {
+                    return Err(ProviderError::Rejected(
+                        "recovered fork returned duplicate children".into(),
+                    ));
+                }
+                children.push(child);
+            }
+            let mut result = Vec::with_capacity(children.len());
+            for child in children {
+                result.push(provider.inspect_machine(child).await?);
             }
             Ok(MutationOutcome::Forked(result))
         }
@@ -1287,5 +1303,71 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn recovered_forks_reject_empty_and_duplicate_child_sets_before_fanout() {
+        let provider = GrpcProvider {
+            client: wire::machines_service_client::MachinesServiceClient::new(
+                TonicEndpoint::from_static("http://127.0.0.1:1").connect_lazy(),
+            ),
+        };
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000001")
+            .unwrap_or_else(|_| unreachable!());
+        let child = MachineId::parse("00000000-0000-0000-0000-000000000002")
+            .unwrap_or_else(|_| unreachable!());
+        let recovered = |children| wire::RecoveredAdmission {
+            operation: Some(wire::OperationId {
+                value: operation.as_bytes().to_vec(),
+            }),
+            result: Some(wire::recovered_admission::Result::Fork(
+                wire::ForkAdmission {
+                    checkpoint: Some(encode_checkpoint(
+                        CheckpointId::parse("00000000-0000-0000-0000-000000000003")
+                            .unwrap_or_else(|_| unreachable!()),
+                    )),
+                    children,
+                    operation: Some(wire::OperationId {
+                        value: operation.as_bytes().to_vec(),
+                    }),
+                    contract: None,
+                },
+            )),
+        };
+        assert!(
+            decode_recovered(&provider, recovered(Vec::new()))
+                .await
+                .is_err()
+        );
+        assert!(
+            decode_recovered(
+                &provider,
+                recovered(vec![encode_machine(child), encode_machine(child)])
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn local_socket_metadata_must_be_owner_private() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = std::env::temp_dir().join(format!("acyclic-machines-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory)?;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+        let path = directory.join("service.sock");
+        let listener = tokio::net::UnixListener::bind(&path)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        let uid = rustix::process::geteuid().as_raw();
+        assert!(owner_private_socket(&path, uid).is_ok());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))?;
+        assert!(owner_private_socket(&path, uid).is_err());
+        drop(listener);
+        std::fs::remove_file(&path)?;
+        std::fs::remove_dir(&directory)?;
+        Ok(())
     }
 }
