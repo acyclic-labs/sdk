@@ -1,0 +1,55 @@
+syntax = "proto3";
+package acyclic.objects.v1;
+
+import "google/api/annotations.proto";
+import "harness/v1/harness.proto";
+
+option go_package = "github.com/acyclic-labs/sdk/go/gen/objects/v1;objectsv1";
+
+message ObjectRef {
+  string version = 1;
+}
+message PutRequest {
+  acyclic.harness.v1.OperationIdentity operation = 1;
+  bytes value = 2;
+}
+message PutResponse {
+  acyclic.harness.v1.Admission admission = 1;
+  ObjectRef object = 2;
+}
+message GetRequest {
+  ObjectRef object = 1;
+}
+message GetResponse {
+  bytes value = 1;
+}
+
+service ObjectsService {
+  rpc Handshake(acyclic.harness.v1.HandshakeRequest) returns (acyclic.harness.v1.HandshakeResponse) {
+    option (google.api.http) = {
+      post: "/v1/objects:handshake"
+      body: "*"
+    };
+  }
+  rpc Put(PutRequest) returns (PutResponse) {
+    option (google.api.http) = {
+      post: "/v1/objects"
+      body: "*"
+    };
+  }
+  rpc Get(GetRequest) returns (GetResponse) {
+    option (google.api.http) = {
+      post: "/v1/objects:get"
+      body: "*"
+    };
+  }
+  rpc Observe(acyclic.harness.v1.ObserveRequest) returns (acyclic.harness.v1.OperationStatus) {
+    option (google.api.http) = {get: "/v1/objects/operations/{operation_id}"};
+  }
+  rpc Cancel(acyclic.harness.v1.CancelRequest) returns (acyclic.harness.v1.CancelResponse) {
+    option (google.api.http) = {
+      post: "/v1/objects/operations/{operation_id}:cancel"
+      body: "*"
+    };
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "$schema": "../compatibility/schemas/provenance.schema.json",
+  "imports": []
+}

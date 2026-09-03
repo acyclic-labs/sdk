@@ -1,0 +1,90 @@
+syntax = "proto3";
+package acyclic.filesystem.v1;
+
+import "google/api/annotations.proto";
+import "harness/v1/harness.proto";
+
+option go_package = "github.com/acyclic-labs/sdk/go/gen/filesystem/v1;filesystemv1";
+
+message GenerationRef {
+  string workspace_id = 1;
+  string generation_id = 2;
+}
+message CreateWorkspaceRequest {
+  acyclic.harness.v1.OperationIdentity operation = 1;
+}
+message CreateWorkspaceResponse {
+  acyclic.harness.v1.Admission admission = 1;
+  GenerationRef generation = 2;
+}
+message GetGenerationRequest {
+  GenerationRef generation = 1;
+}
+message File {
+  string path = 1;
+  bytes contents = 2;
+}
+message GetGenerationResponse {
+  GenerationRef generation = 1;
+  repeated File files = 2;
+}
+message WriteRequest {
+  acyclic.harness.v1.OperationIdentity operation = 1;
+  GenerationRef base = 2;
+  File file = 3;
+}
+message WriteResponse {
+  acyclic.harness.v1.Admission admission = 1;
+  GenerationRef generation = 2;
+}
+message JoinRequest {
+  acyclic.harness.v1.OperationIdentity operation = 1;
+  GenerationRef base = 2;
+  repeated GenerationRef children = 3;
+}
+message JoinResponse {
+  acyclic.harness.v1.Admission admission = 1;
+  GenerationRef generation = 2;
+}
+
+service FilesystemService {
+  rpc Handshake(acyclic.harness.v1.HandshakeRequest) returns (acyclic.harness.v1.HandshakeResponse) {
+    option (google.api.http) = {
+      post: "/v1/filesystem:handshake"
+      body: "*"
+    };
+  }
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse) {
+    option (google.api.http) = {
+      post: "/v1/workspaces"
+      body: "*"
+    };
+  }
+  rpc GetGeneration(GetGenerationRequest) returns (GetGenerationResponse) {
+    option (google.api.http) = {
+      post: "/v1/filesystem:getGeneration"
+      body: "*"
+    };
+  }
+  rpc Write(WriteRequest) returns (WriteResponse) {
+    option (google.api.http) = {
+      post: "/v1/filesystem:write"
+      body: "*"
+    };
+  }
+  rpc Join(JoinRequest) returns (JoinResponse) {
+    option (google.api.http) = {
+      post: "/v1/filesystem:join"
+      body: "*"
+    };
+  }
+  rpc Observe(acyclic.harness.v1.ObserveRequest) returns (acyclic.harness.v1.OperationStatus) {
+    option (google.api.http) = {get: "/v1/filesystem/operations/{operation_id}"};
+  }
+  rpc Cancel(acyclic.harness.v1.CancelRequest) returns (acyclic.harness.v1.CancelResponse) {
+    option (google.api.http) = {
+      post: "/v1/filesystem/operations/{operation_id}:cancel"
+      body: "*"
+    };
+  }
+}

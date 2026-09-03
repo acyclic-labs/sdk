@@ -1,0 +1,16 @@
+{
+  "$schema": "../compatibility/schemas/package-names.schema.json",
+  "families": {
+    "rust": { "registry": "crates.io", "umbrella": "acyclic-sdk", "implemented": true },
+    "typescript": { "registry": "npm", "umbrella": "@acyclic/sdk", "implemented": true },
+    "python": { "registry": "PyPI", "umbrella": "acyclic-sdk", "implemented": false },
+    "go": { "registry": "Go modules", "umbrella": "github.com/acyclic-labs/sdk/go", "implemented": false },
+    "jvm": { "registry": "Maven Central", "umbrella": "dev.acyclic:acyclic-sdk", "implemented": false },
+    "dotnet": { "registry": "NuGet", "umbrella": "Acyclic.Sdk", "implemented": false },
+    "swift": { "registry": "Swift Package Manager", "umbrella": "AcyclicSDK", "implemented": false },
+    "cpp": { "registry": "source package", "umbrella": "acyclic-sdk-cpp", "implemented": false },
+    "ruby": { "registry": "RubyGems", "umbrella": "acyclic-sdk", "implemented": false },
+    "php": { "registry": "Packagist", "umbrella": "acyclic/sdk", "implemented": false },
+    "dart": { "registry": "pub.dev", "umbrella": "acyclic_sdk", "implemented": false }
+  }
+}

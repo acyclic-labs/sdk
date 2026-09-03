@@ -1,0 +1,47 @@
+syntax = "proto3";
+package acyclic.inference.v1;
+
+import "google/api/annotations.proto";
+import "harness/v1/harness.proto";
+
+option go_package = "github.com/acyclic-labs/sdk/go/gen/inference/v1;inferencev1";
+
+message ContextRef {
+  string context_id = 1;
+  string revision_id = 2;
+}
+message InferenceRequest {
+  acyclic.harness.v1.OperationIdentity operation = 1;
+  string model = 2;
+  repeated string messages = 3;
+  ContextRef context = 4;
+}
+message InferenceResponse {
+  acyclic.harness.v1.Admission admission = 1;
+  string output = 2;
+  ContextRef context = 3;
+}
+
+service InferenceService {
+  rpc Handshake(acyclic.harness.v1.HandshakeRequest) returns (acyclic.harness.v1.HandshakeResponse) {
+    option (google.api.http) = {
+      post: "/v1/inference:handshake"
+      body: "*"
+    };
+  }
+  rpc Complete(InferenceRequest) returns (InferenceResponse) {
+    option (google.api.http) = {
+      post: "/v1/inference:complete"
+      body: "*"
+    };
+  }
+  rpc Observe(acyclic.harness.v1.ObserveRequest) returns (acyclic.harness.v1.OperationStatus) {
+    option (google.api.http) = {get: "/v1/inference/operations/{operation_id}"};
+  }
+  rpc Cancel(acyclic.harness.v1.CancelRequest) returns (acyclic.harness.v1.CancelResponse) {
+    option (google.api.http) = {
+      post: "/v1/inference/operations/{operation_id}:cancel"
+      body: "*"
+    };
+  }
+}

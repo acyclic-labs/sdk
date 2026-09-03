@@ -1,0 +1,21 @@
+[package]
+name = "acyclic-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+acyclic-contracts = { path = "../contracts" }
+acyclic-filesystem = { path = "../filesystem" }
+acyclic-harness = { path = "../harness" }
+acyclic-inference = { path = "../inference" }
+acyclic-machines = { path = "../machines" }
+acyclic-memory = { path = "../memory" }
+acyclic-objects = { path = "../objects" }
+acyclic-stream = { path = "../stream" }
+
+[lints]
+workspace = true

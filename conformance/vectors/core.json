@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "cases": [
+    { "name": "operation-identities-are-stable", "family": "harness" },
+    { "name": "join-preserves-input-order", "family": "harness" },
+    { "name": "filesystem-conflicts-are-explicit", "family": "filesystem" },
+    { "name": "stream-cas-rejects-stale-offset", "family": "stream" },
+    { "name": "objects-are-content-addressed", "family": "objects" }
+  ]
+}

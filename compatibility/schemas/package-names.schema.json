@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acyclic.dev/schemas/sdk-package-names.json",
+  "type": "object",
+  "required": ["families"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "families": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["registry", "umbrella", "implemented"],
+        "properties": { "registry": { "type": "string" }, "umbrella": { "type": "string" }, "implemented": { "type": "boolean" } },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

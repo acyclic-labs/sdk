@@ -1,0 +1,13 @@
+{
+  "$schema": "schemas/compatibility.schema.json",
+  "status": "staging",
+  "umbrellaVersion": "0.0.0",
+  "families": {
+    "harness": { "version": "0.0.0", "schemaDigest": "unreleased" },
+    "filesystem": { "version": "0.0.0", "schemaDigest": "unreleased" },
+    "stream": { "version": "0.0.0", "schemaDigest": "unreleased" },
+    "objects": { "version": "0.0.0", "schemaDigest": "unreleased" },
+    "machines": { "version": "0.0.0", "schemaDigest": "unreleased" },
+    "inference": { "version": "0.0.0", "schemaDigest": "unreleased" }
+  }
+}

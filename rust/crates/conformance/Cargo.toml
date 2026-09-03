@@ -1,0 +1,22 @@
+[package]
+name = "acyclic-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+acyclic-filesystem = { path = "../filesystem" }
+acyclic-inference = { path = "../inference" }
+acyclic-machines = { path = "../machines" }
+acyclic-objects = { path = "../objects" }
+acyclic-stream = { path = "../stream" }
+
+[dev-dependencies]
+acyclic-memory = { path = "../memory" }
+tokio.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acyclic.dev/schemas/sdk-provenance.json",
+  "type": "object",
+  "required": ["imports"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "imports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sourceRepository", "sourceCommit", "sourcePath", "destinationPath", "license", "auditResult", "reviewer"],
+        "properties": {
+          "sourceRepository": { "type": "string" }, "sourceCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+          "sourcePath": { "type": "string" }, "destinationPath": { "type": "string" }, "license": { "const": "Apache-2.0" },
+          "auditResult": { "enum": ["approved", "rejected", "pending"] }, "reviewer": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

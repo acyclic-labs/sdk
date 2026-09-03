@@ -1,0 +1,5 @@
+{
+  "profile": "memory",
+  "capabilities": ["ephemeral", "deterministic", "single-process"],
+  "excludes": ["crash-durable", "isolated", "distributed", "production-available"]
+}

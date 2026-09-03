@@ -1,0 +1,1 @@
+{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"composite":true,"declaration":true,"rootDir":"src","outDir":"dist"},"references":[{"path":"../filesystem"},{"path":"../stream"},{"path":"../objects"},{"path":"../machines"},{"path":"../inference"}],"include":["src/**/*.ts"]}

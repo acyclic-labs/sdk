@@ -1,0 +1,385 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "machines/v1/machines.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "MachinesService"
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/v1/executions": {
+      "post": {
+        "operationId": "MachinesService_Execute",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ExecuteResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1ExecutionRequest"
+            }
+          }
+        ],
+        "tags": [
+          "MachinesService"
+        ]
+      }
+    },
+    "/v1/executions/{operationId}": {
+      "get": {
+        "operationId": "MachinesService_Observe",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1OperationStatus"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "operationId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "MachinesService"
+        ]
+      }
+    },
+    "/v1/executions/{operationId}:cancel": {
+      "post": {
+        "operationId": "MachinesService_Cancel",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CancelResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "operationId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/MachinesServiceCancelBody"
+            }
+          }
+        ],
+        "tags": [
+          "MachinesService"
+        ]
+      }
+    },
+    "/v1/machines:handshake": {
+      "post": {
+        "operationId": "MachinesService_Handshake",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1HandshakeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1HandshakeRequest"
+            }
+          }
+        ],
+        "tags": [
+          "MachinesService"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "MachinesServiceCancelBody": {
+      "type": "object"
+    },
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "v1Admission": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "$ref": "#/definitions/v1OperationIdentity"
+        },
+        "state": {
+          "$ref": "#/definitions/v1AdmissionState"
+        },
+        "error": {
+          "$ref": "#/definitions/v1Error"
+        }
+      }
+    },
+    "v1AdmissionState": {
+      "type": "string",
+      "enum": [
+        "ADMISSION_STATE_UNSPECIFIED",
+        "ADMISSION_STATE_ACCEPTED",
+        "ADMISSION_STATE_REJECTED",
+        "ADMISSION_STATE_INDETERMINATE"
+      ],
+      "default": "ADMISSION_STATE_UNSPECIFIED"
+    },
+    "v1CancelResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/v1OperationStatus"
+        }
+      }
+    },
+    "v1Capability": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      }
+    },
+    "v1CapabilitySet": {
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Capability"
+          }
+        }
+      }
+    },
+    "v1CompletionState": {
+      "type": "string",
+      "enum": [
+        "COMPLETION_STATE_UNSPECIFIED",
+        "COMPLETION_STATE_RUNNING",
+        "COMPLETION_STATE_SUCCEEDED",
+        "COMPLETION_STATE_FAILED",
+        "COMPLETION_STATE_CANCELLED",
+        "COMPLETION_STATE_INDETERMINATE"
+      ],
+      "default": "COMPLETION_STATE_UNSPECIFIED"
+    },
+    "v1Error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/v1ErrorCode"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "v1ErrorCode": {
+      "type": "string",
+      "enum": [
+        "ERROR_CODE_UNSPECIFIED",
+        "ERROR_CODE_NOT_FOUND",
+        "ERROR_CODE_CONFLICT",
+        "ERROR_CODE_UNSUPPORTED",
+        "ERROR_CODE_INVALID",
+        "ERROR_CODE_UNAUTHORIZED"
+      ],
+      "default": "ERROR_CODE_UNSPECIFIED"
+    },
+    "v1ExecuteResponse": {
+      "type": "object",
+      "properties": {
+        "admission": {
+          "$ref": "#/definitions/v1Admission"
+        },
+        "result": {
+          "$ref": "#/definitions/v1ExecutionResult"
+        }
+      }
+    },
+    "v1ExecutionRequest": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "$ref": "#/definitions/v1OperationIdentity"
+        },
+        "program": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requiredCapabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "v1ExecutionResult": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "stdout": {
+          "type": "string",
+          "format": "byte"
+        },
+        "stderr": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "v1HandshakeRequest": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "$ref": "#/definitions/v1ProtocolIdentity"
+        },
+        "required": {
+          "$ref": "#/definitions/v1CapabilitySet"
+        }
+      }
+    },
+    "v1HandshakeResponse": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "$ref": "#/definitions/v1ProtocolIdentity"
+        },
+        "supported": {
+          "$ref": "#/definitions/v1CapabilitySet"
+        }
+      }
+    },
+    "v1OperationIdentity": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "type": "string"
+        }
+      },
+      "description": "Shared draft contract types. These become stable only in a tagged release."
+    },
+    "v1OperationStatus": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "$ref": "#/definitions/v1OperationIdentity"
+        },
+        "state": {
+          "$ref": "#/definitions/v1CompletionState"
+        },
+        "error": {
+          "$ref": "#/definitions/v1Error"
+        }
+      }
+    },
+    "v1ProtocolIdentity": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "descriptorDigest": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

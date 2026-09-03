@@ -1,0 +1,80 @@
+syntax = "proto3";
+package acyclic.harness.v1;
+
+option go_package = "github.com/acyclic-labs/sdk/go/gen/harness/v1;harnessv1";
+
+// Shared draft contract types. These become stable only in a tagged release.
+message OperationIdentity {
+  string operation_id = 1;
+  string idempotency_key = 2;
+}
+message ProtocolIdentity {
+  string version = 1;
+  string descriptor_digest = 2;
+}
+message Capability {
+  string name = 1;
+  string version = 2;
+}
+message CapabilitySet {
+  repeated Capability capabilities = 1;
+}
+message HandshakeRequest {
+  ProtocolIdentity protocol = 1;
+  CapabilitySet required = 2;
+}
+message HandshakeResponse {
+  ProtocolIdentity protocol = 1;
+  CapabilitySet supported = 2;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_NOT_FOUND = 1;
+  ERROR_CODE_CONFLICT = 2;
+  ERROR_CODE_UNSUPPORTED = 3;
+  ERROR_CODE_INVALID = 4;
+  ERROR_CODE_UNAUTHORIZED = 5;
+}
+message Error {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+enum AdmissionState {
+  ADMISSION_STATE_UNSPECIFIED = 0;
+  ADMISSION_STATE_ACCEPTED = 1;
+  ADMISSION_STATE_REJECTED = 2;
+  ADMISSION_STATE_INDETERMINATE = 3;
+}
+message Admission {
+  OperationIdentity operation = 1;
+  AdmissionState state = 2;
+  Error error = 3;
+}
+
+enum CompletionState {
+  COMPLETION_STATE_UNSPECIFIED = 0;
+  COMPLETION_STATE_RUNNING = 1;
+  COMPLETION_STATE_SUCCEEDED = 2;
+  COMPLETION_STATE_FAILED = 3;
+  COMPLETION_STATE_CANCELLED = 4;
+  COMPLETION_STATE_INDETERMINATE = 5;
+}
+message OperationStatus {
+  OperationIdentity operation = 1;
+  CompletionState state = 2;
+  Error error = 3;
+}
+message ObserveRequest {
+  string operation_id = 1;
+}
+message CancelRequest {
+  string operation_id = 1;
+}
+message CancelResponse {
+  OperationStatus status = 1;
+}
+message Cursor {
+  bytes opaque = 1;
+}

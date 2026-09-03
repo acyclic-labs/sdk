@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acyclic.dev/schemas/sdk-compatibility.json",
+  "type": "object",
+  "required": ["status", "umbrellaVersion", "families"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "status": { "enum": ["staging", "candidate", "released"] },
+    "umbrellaVersion": { "type": "string" },
+    "families": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["version", "schemaDigest"],
+        "properties": { "version": { "type": "string" }, "schemaDigest": { "type": "string" } },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

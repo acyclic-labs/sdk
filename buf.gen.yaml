@@ -1,0 +1,9 @@
+version: v2
+clean: true
+plugins:
+  - remote: buf.build/community/neoeinstein-prost:v0.5.0
+    out: generated/rust
+  - remote: buf.build/bufbuild/es:v2.14.1
+    out: generated/typescript
+  - remote: buf.build/grpc-ecosystem/openapiv2:v2.30.0
+    out: generated/openapi

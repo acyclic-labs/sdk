@@ -1,0 +1,18 @@
+[package]
+name = "acyclic-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+acyclic-filesystem = { path = "../filesystem" }
+acyclic-inference = { path = "../inference" }
+acyclic-machines = { path = "../machines" }
+acyclic-objects = { path = "../objects" }
+acyclic-stream = { path = "../stream" }
+
+[lints]
+workspace = true
