@@ -8,6 +8,8 @@
     "immutable-prefix-fork-and-independent-suffixes",
     "finite-read-and-gapless-follow-handoff",
     "fixed-snapshot-direct-child-listing",
+    "monotonic-logical-trim-and-exact-replay",
+    "permanent-path-deletion-and-name-retirement",
     "atomic-optimistic-multi-path-commit",
     "commit-conflict-mutates-nothing",
     "immutable-commit-envelope-read"

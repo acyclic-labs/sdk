@@ -106,6 +106,47 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     if live.sequence != 1 || live.value != Bytes::from_static(b"live") {
         return Err("follow returned a gap or duplicate".into());
     }
+    let trim_key = key(b"stream-trim")?;
+    let trimmed = provider
+        .trim(child.clone(), 1, trim_key.clone())
+        .await
+        .map_err(error)?;
+    if trimmed.trim_point != 1
+        || provider
+            .trim(child.clone(), 1, trim_key.clone())
+            .await
+            .map_err(error)?
+            != trimmed
+        || provider.trim(child.clone(), 2, trim_key).await != Err(StreamError::IdempotencyMismatch)
+    {
+        return Err("logical trim replay or mismatch semantics changed".into());
+    }
+    if !matches!(
+        provider
+            .read(ReadRequest {
+                path: child.clone(),
+                from: 0,
+                limit: 1,
+            })
+            .await,
+        Err(StreamError::OutOfRange)
+    ) {
+        return Err("trimmed history remained publicly readable".into());
+    }
+    let delete_key = key(b"stream-delete")?;
+    let deleted = provider
+        .delete(child.clone(), delete_key.clone())
+        .await
+        .map_err(error)?;
+    if provider
+        .delete(child.clone(), delete_key)
+        .await
+        .map_err(error)?
+        != deleted
+        || provider.tail(child.clone()).await != Err(StreamError::Retired)
+    {
+        return Err("permanent deletion or exact replay changed".into());
+    }
     let committed_path = path("conformance/committed")?;
     let request = CommitRequest {
         conditions: vec![

@@ -22,9 +22,9 @@ use tonic::{
 use crate::{
     AppendOutcome, AppendReceipt, AppendRequest, Child, ChildStream, ChildrenRequest,
     CommitCondition, CommitConflict, CommitId, CommitMutation, CommitOutcome, CommitRequest,
-    CommittedAppend, CommittedEnvelope, CommittedFork, CommittedMutation, ForkReceipt, ForkRequest,
-    IdempotencyKey, ReadRequest, Record, RecordStream, StreamError, StreamPath, StreamProvider,
-    wire,
+    CommittedAppend, CommittedDelete, CommittedEnvelope, CommittedFork, CommittedMutation,
+    CommittedTrim, DeleteReceipt, ForkReceipt, ForkRequest, IdempotencyKey, ReadRequest, Record,
+    RecordStream, StreamError, StreamPath, StreamProvider, TrimReceipt, wire,
 };
 
 const OPERATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -367,6 +367,49 @@ impl StreamProvider for Client {
         })
     }
 
+    async fn trim(
+        &self,
+        path: StreamPath,
+        before: u64,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<TrimReceipt, StreamError> {
+        let receipt = self
+            .unary(
+                wire::TrimRequest {
+                    path: path.to_string(),
+                    before,
+                    idempotency_key: Some(Bytes::copy_from_slice(idempotency_key.as_bytes())),
+                },
+                |mut service, request| Box::pin(async move { service.trim(request).await }),
+            )
+            .await?;
+        Ok(TrimReceipt {
+            path: crate::grpc::path(receipt.path)?,
+            trim_point: receipt.trim_point,
+            commit_id: commit_id(&receipt.commit_id)?,
+        })
+    }
+
+    async fn delete(
+        &self,
+        path: StreamPath,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<DeleteReceipt, StreamError> {
+        let receipt = self
+            .unary(
+                wire::DeleteRequest {
+                    path: path.to_string(),
+                    idempotency_key: Some(Bytes::copy_from_slice(idempotency_key.as_bytes())),
+                },
+                |mut service, request| Box::pin(async move { service.delete(request).await }),
+            )
+            .await?;
+        Ok(DeleteReceipt {
+            path: crate::grpc::path(receipt.path)?,
+            commit_id: commit_id(&receipt.commit_id)?,
+        })
+    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.records(request.path, request.from, Some(request.limit))
             .await
@@ -513,6 +556,39 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             .await
             .map_err(error_status)?;
         Ok(Response::new(fork_receipt_wire(receipt)))
+    }
+
+    async fn trim(
+        &self,
+        request: Request<wire::TrimRequest>,
+    ) -> Result<Response<wire::TrimReceipt>, Status> {
+        let request = request.into_inner();
+        let receipt = self
+            .provider
+            .trim(
+                path(request.path).map_err(error_status)?,
+                request.before,
+                required_key(request.idempotency_key).map_err(error_status)?,
+            )
+            .await
+            .map_err(error_status)?;
+        Ok(Response::new(trim_receipt_wire(receipt)))
+    }
+
+    async fn delete(
+        &self,
+        request: Request<wire::DeleteRequest>,
+    ) -> Result<Response<wire::DeleteReceipt>, Status> {
+        let request = request.into_inner();
+        let receipt = self
+            .provider
+            .delete(
+                path(request.path).map_err(error_status)?,
+                required_key(request.idempotency_key).map_err(error_status)?,
+            )
+            .await
+            .map_err(error_status)?;
+        Ok(Response::new(delete_receipt_wire(receipt)))
     }
 
     async fn read(
@@ -721,6 +797,12 @@ fn optional_key(value: Option<Bytes>) -> Result<Option<IdempotencyKey>, StreamEr
     value.map(IdempotencyKey::new).transpose()
 }
 
+fn required_key(value: Option<Bytes>) -> Result<IdempotencyKey, StreamError> {
+    value
+        .ok_or(StreamError::InvalidArgument)
+        .and_then(IdempotencyKey::new)
+}
+
 fn record_wire(value: Record) -> wire::Record {
     wire::Record {
         sequence: value.sequence,
@@ -744,6 +826,21 @@ fn fork_receipt_wire(value: ForkReceipt) -> wire::ForkReceipt {
         destination: value.destination.to_string(),
         forked_at: value.forked_at,
         tail: value.tail,
+        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
+    }
+}
+
+fn trim_receipt_wire(value: TrimReceipt) -> wire::TrimReceipt {
+    wire::TrimReceipt {
+        path: value.path.to_string(),
+        trim_point: value.trim_point,
+        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
+    }
+}
+
+fn delete_receipt_wire(value: DeleteReceipt) -> wire::DeleteReceipt {
+    wire::DeleteReceipt {
+        path: value.path.to_string(),
         commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
     }
 }
@@ -796,6 +893,17 @@ fn mutation_wire(value: CommitMutation) -> wire::CommitMutation {
             destination: destination.to_string(),
             at_tail,
         }),
+        CommitMutation::Trim { path, before } => {
+            wire::commit_mutation::Mutation::Trim(wire::TrimMutation {
+                path: path.to_string(),
+                before,
+            })
+        }
+        CommitMutation::Delete { path } => {
+            wire::commit_mutation::Mutation::Delete(wire::DeleteMutation {
+                path: path.to_string(),
+            })
+        }
     };
     wire::CommitMutation {
         mutation: Some(mutation),
@@ -812,6 +920,13 @@ fn mutation_from_wire(value: wire::CommitMutation) -> Result<CommitMutation, Str
             source: path(value.source)?,
             destination: path(value.destination)?,
             at_tail: value.at_tail,
+        }),
+        wire::commit_mutation::Mutation::Trim(value) => Ok(CommitMutation::Trim {
+            path: path(value.path)?,
+            before: value.before,
+        }),
+        wire::commit_mutation::Mutation::Delete(value) => Ok(CommitMutation::Delete {
+            path: path(value.path)?,
         }),
     }
 }
@@ -861,6 +976,17 @@ fn committed_mutation(value: wire::CommittedMutation) -> Result<CommittedMutatio
                 tail: value.tail,
             }))
         }
+        wire::committed_mutation::Mutation::Trim(value) => {
+            Ok(CommittedMutation::Trim(CommittedTrim {
+                path: path(value.path)?,
+                trim_point: value.trim_point,
+            }))
+        }
+        wire::committed_mutation::Mutation::Delete(value) => {
+            Ok(CommittedMutation::Delete(CommittedDelete {
+                path: path(value.path)?,
+            }))
+        }
     }
 }
 
@@ -881,6 +1007,17 @@ fn committed_mutation_wire(value: CommittedMutation) -> wire::CommittedMutation 
                 destination: value.destination.to_string(),
                 forked_at: value.forked_at,
                 tail: value.tail,
+            })
+        }
+        CommittedMutation::Trim(value) => {
+            wire::committed_mutation::Mutation::Trim(wire::CommittedTrim {
+                path: value.path.to_string(),
+                trim_point: value.trim_point,
+            })
+        }
+        CommittedMutation::Delete(value) => {
+            wire::committed_mutation::Mutation::Delete(wire::CommittedDelete {
+                path: value.path.to_string(),
             })
         }
     };

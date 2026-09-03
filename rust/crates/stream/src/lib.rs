@@ -199,6 +199,26 @@ pub struct ForkRequest {
     pub idempotency_key: Option<IdempotencyKey>,
 }
 
+/// Successful monotonic logical trim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrimReceipt {
+    /// Trimmed path.
+    pub path: StreamPath,
+    /// New earliest readable sequence.
+    pub trim_point: u64,
+    /// Immutable envelope identity.
+    pub commit_id: CommitId,
+}
+
+/// Successful permanent logical deletion.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeleteReceipt {
+    /// Retired permanent path.
+    pub path: StreamPath,
+    /// Immutable envelope identity.
+    pub commit_id: CommitId,
+}
+
 /// Required-bounds finite read.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadRequest {
@@ -254,6 +274,22 @@ pub struct CommittedFork {
     pub tail: u64,
 }
 
+/// Logical trim fact retained in a committed envelope.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommittedTrim {
+    /// Trimmed path.
+    pub path: StreamPath,
+    /// New earliest readable sequence.
+    pub trim_point: u64,
+}
+
+/// Permanent deletion fact retained in a committed envelope.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommittedDelete {
+    /// Retired path.
+    pub path: StreamPath,
+}
+
 /// Mutation in a successful immutable envelope.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommittedMutation {
@@ -261,6 +297,10 @@ pub enum CommittedMutation {
     Append(CommittedAppend),
     /// Immutable-prefix fork.
     Fork(CommittedFork),
+    /// Logical prefix trim.
+    Trim(CommittedTrim),
+    /// Permanent path retirement.
+    Delete(CommittedDelete),
 }
 
 /// Complete immutable successful mutation envelope.
@@ -307,6 +347,18 @@ pub enum CommitMutation {
         destination: StreamPath,
         /// Exact source prefix end.
         at_tail: u64,
+    },
+    /// Advance one path's logical trim point.
+    Trim {
+        /// Existing path.
+        path: StreamPath,
+        /// New earliest readable sequence.
+        before: u64,
+    },
+    /// Permanently retire one path.
+    Delete {
+        /// Existing path without live descendants.
+        path: StreamPath,
     },
 }
 
@@ -368,6 +420,19 @@ pub trait StreamProvider: Send + Sync + 'static {
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError>;
     /// Atomic immutable-prefix fork.
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError>;
+    /// Monotonically advances a path's logical trim point.
+    async fn trim(
+        &self,
+        path: StreamPath,
+        before: u64,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<TrimReceipt, StreamError>;
+    /// Permanently retires a path with no live descendants.
+    async fn delete(
+        &self,
+        path: StreamPath,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<DeleteReceipt, StreamError>;
     /// Opens a bounded finite read.
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError>;
     /// Replays and then remains live without a handoff gap.
@@ -505,6 +570,36 @@ impl<P: StreamProvider> Stream<P> {
                 at_tail,
                 idempotency_key: Some(idempotency_key.unwrap_or_else(new_idempotency_key)),
             })
+            .await
+    }
+
+    /// Monotonically advances the earliest readable sequence.
+    pub async fn trim(
+        &self,
+        before: u64,
+        idempotency_key: Option<IdempotencyKey>,
+    ) -> Result<TrimReceipt, StreamError> {
+        self.client
+            .provider
+            .trim(
+                self.path.clone(),
+                before,
+                idempotency_key.unwrap_or_else(new_idempotency_key),
+            )
+            .await
+    }
+
+    /// Permanently retires this path.
+    pub async fn delete(
+        &self,
+        idempotency_key: Option<IdempotencyKey>,
+    ) -> Result<DeleteReceipt, StreamError> {
+        self.client
+            .provider
+            .delete(
+                self.path.clone(),
+                idempotency_key.unwrap_or_else(new_idempotency_key),
+            )
             .await
     }
 

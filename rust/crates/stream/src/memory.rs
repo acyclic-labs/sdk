@@ -14,9 +14,10 @@ use tokio::sync::{RwLock, watch};
 use crate::{
     AppendOutcome, AppendReceipt, AppendRequest, Child, ChildStream, ChildrenRequest,
     CommitCondition, CommitConflict, CommitId, CommitMutation, CommitOutcome, CommitRequest,
-    CommittedAppend, CommittedEnvelope, CommittedFork, CommittedMutation, ForkReceipt, ForkRequest,
-    MAX_COMMAND_BYTES, MAX_ITEMS, MAX_RECORD_BYTES, ReadRequest, Record, RecordStream, StreamError,
-    StreamPath, StreamProvider,
+    CommittedAppend, CommittedDelete, CommittedEnvelope, CommittedFork, CommittedMutation,
+    CommittedTrim, DeleteReceipt, ForkReceipt, ForkRequest, IdempotencyKey, MAX_COMMAND_BYTES,
+    MAX_ITEMS, MAX_RECORD_BYTES, ReadRequest, Record, RecordStream, StreamError, StreamPath,
+    StreamProvider, TrimReceipt,
 };
 
 /// Explicit fail-closed process-memory ceilings.
@@ -89,6 +90,7 @@ struct State {
 struct PathState {
     history: Option<Arc<History>>,
     tail: u64,
+    trim_point: u64,
     changed: watch::Sender<u64>,
 }
 
@@ -113,6 +115,8 @@ struct Replay {
 enum ReplayResult {
     Append(AppendOutcome),
     Fork(ForkReceipt),
+    Trim(TrimReceipt),
+    Delete(DeleteReceipt),
     Commit(CommitOutcome),
 }
 
@@ -120,6 +124,7 @@ enum ReplayResult {
 impl StreamProvider for MemoryStream {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         let state = self.state.read().await;
+        reject_retired(&state, &path)?;
         state
             .paths
             .get(&path)
@@ -268,14 +273,106 @@ impl StreamProvider for MemoryStream {
         Ok(receipt)
     }
 
+    async fn trim(
+        &self,
+        path: StreamPath,
+        before: u64,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<TrimReceipt, StreamError> {
+        let digest = trim_digest(&path, before);
+        let mut state = self.state.write().await;
+        if let Some(result) = replay_trim(&state, &idempotency_key, digest)? {
+            return Ok(result);
+        }
+        admit_replay(&state, Some(&idempotency_key), self.limits)?;
+        reserve_commit(&state, self.limits)?;
+        let current = state.paths.get(&path).ok_or(StreamError::NotFound)?;
+        if before > current.tail {
+            return Err(StreamError::OutOfRange);
+        }
+        let trim_point = current.trim_point.max(before);
+        let commit_id = next_commit_id(&mut state, digest)?;
+        let stream = state.paths.get_mut(&path).ok_or(StreamError::Unavailable)?;
+        stream.trim_point = trim_point;
+        stream.changed.send_replace(stream.tail);
+        let receipt = TrimReceipt {
+            path: path.clone(),
+            trim_point,
+            commit_id,
+        };
+        state.commits.insert(
+            commit_id,
+            CommittedEnvelope {
+                commit_id,
+                mutations: vec![CommittedMutation::Trim(CommittedTrim { path, trim_point })],
+            },
+        );
+        retain_replay(
+            &mut state,
+            Some(idempotency_key),
+            digest,
+            ReplayResult::Trim(receipt.clone()),
+        );
+        Ok(receipt)
+    }
+
+    async fn delete(
+        &self,
+        path: StreamPath,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<DeleteReceipt, StreamError> {
+        let digest = delete_digest(&path);
+        let mut state = self.state.write().await;
+        if let Some(result) = replay_delete(&state, &idempotency_key, digest)? {
+            return Ok(result);
+        }
+        admit_replay(&state, Some(&idempotency_key), self.limits)?;
+        reserve_commit(&state, self.limits)?;
+        if !state.paths.contains_key(&path) {
+            return Err(StreamError::NotFound);
+        }
+        if state
+            .paths
+            .keys()
+            .any(|candidate| is_descendant(&path, candidate))
+        {
+            return Err(StreamError::InvalidArgument);
+        }
+        let commit_id = next_commit_id(&mut state, digest)?;
+        state.paths.remove(&path);
+        state.retired.insert(path.clone());
+        let receipt = DeleteReceipt {
+            path: path.clone(),
+            commit_id,
+        };
+        state.commits.insert(
+            commit_id,
+            CommittedEnvelope {
+                commit_id,
+                mutations: vec![CommittedMutation::Delete(CommittedDelete { path })],
+            },
+        );
+        retain_replay(
+            &mut state,
+            Some(idempotency_key),
+            digest,
+            ReplayResult::Delete(receipt.clone()),
+        );
+        Ok(receipt)
+    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         validate_limit(request.limit)?;
         let state = self.state.read().await;
+        reject_retired(&state, &request.path)?;
         let path = state
             .paths
             .get(&request.path)
             .ok_or(StreamError::NotFound)?;
         if request.from > path.tail {
+            return Err(StreamError::OutOfRange);
+        }
+        if request.from < path.trim_point {
             return Err(StreamError::OutOfRange);
         }
         let records = read_history(
@@ -290,8 +387,12 @@ impl StreamProvider for MemoryStream {
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
         let receiver = {
             let state = self.state.read().await;
+            reject_retired(&state, &path)?;
             let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
             if from > stream.tail {
+                return Err(StreamError::OutOfRange);
+            }
+            if from < stream.trim_point {
                 return Err(StreamError::OutOfRange);
             }
             stream.changed.subscribe()
@@ -303,19 +404,38 @@ impl StreamProvider for MemoryStream {
                 loop {
                     let record = {
                         let guard = state.read().await;
-                        let current = guard.paths.get(&path)?;
-                        read_history(current.history.as_ref(), current.tail, next, 1)
-                            .into_iter()
-                            .next()
+                        if reject_retired(&guard, &path).is_err() {
+                            Err(StreamError::Retired)
+                        } else if let Some(current) = guard.paths.get(&path) {
+                            if next < current.trim_point {
+                                Err(StreamError::OutOfRange)
+                            } else {
+                                Ok(
+                                    read_history(current.history.as_ref(), current.tail, next, 1)
+                                        .into_iter()
+                                        .next(),
+                                )
+                            }
+                        } else {
+                            Err(StreamError::NotFound)
+                        }
                     };
-                    if let Some(record) = record {
+                    let Some(record) = (match record {
+                        Ok(record) => record,
+                        Err(error) => {
+                            return Some((Err(error), (state, path, next, receiver)));
+                        }
+                    }) else {
+                        if receiver.changed().await.is_err() {
+                            return Some((
+                                Err(StreamError::Unavailable),
+                                (state, path, next, receiver),
+                            ));
+                        }
+                        continue;
+                    };
+                    {
                         return Some((Ok(record), (state, path, next + 1, receiver)));
-                    }
-                    if receiver.changed().await.is_err() {
-                        return Some((
-                            Err(StreamError::Unavailable),
-                            (state, path, next, receiver),
-                        ));
                     }
                 }
             },
@@ -373,7 +493,9 @@ impl StreamProvider for MemoryStream {
                     .paths
                     .get(source)
                     .map(|stream| (source.clone(), (stream.history.clone(), stream.tail))),
-                CommitMutation::Append { .. } => None,
+                CommitMutation::Append { .. }
+                | CommitMutation::Trim { .. }
+                | CommitMutation::Delete { .. } => None,
             })
             .collect::<BTreeMap<_, _>>();
         let mutations = apply_coordinated(&mut state, request.mutations, &before, commit_id)?;
@@ -566,6 +688,7 @@ fn ensure_path(state: &mut State, path: &StreamPath) {
             PathState {
                 history: None,
                 tail: 0,
+                trim_point: 0,
                 changed,
             },
         );
@@ -627,6 +750,13 @@ fn is_direct_child(parent: &StreamPath, candidate: &StreamPath) -> bool {
     candidate.parent().as_ref() == Some(parent)
 }
 
+fn is_descendant(parent: &StreamPath, candidate: &StreamPath) -> bool {
+    candidate
+        .as_str()
+        .strip_prefix(parent.as_str())
+        .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
 fn next_commit_id(state: &mut State, digest: [u8; 32]) -> Result<CommitId, StreamError> {
     state.decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
     let mut hash = Sha256::new();
@@ -670,6 +800,30 @@ fn replay_fork(
 ) -> Result<Option<ForkReceipt>, StreamError> {
     match replay(state, key, digest)? {
         Some(ReplayResult::Fork(result)) => Ok(Some(result)),
+        Some(_) => Err(StreamError::IdempotencyMismatch),
+        None => Ok(None),
+    }
+}
+
+fn replay_trim(
+    state: &State,
+    key: &IdempotencyKey,
+    digest: [u8; 32],
+) -> Result<Option<TrimReceipt>, StreamError> {
+    match replay(state, Some(key), digest)? {
+        Some(ReplayResult::Trim(result)) => Ok(Some(result)),
+        Some(_) => Err(StreamError::IdempotencyMismatch),
+        None => Ok(None),
+    }
+}
+
+fn replay_delete(
+    state: &State,
+    key: &IdempotencyKey,
+    digest: [u8; 32],
+) -> Result<Option<DeleteReceipt>, StreamError> {
+    match replay(state, Some(key), digest)? {
+        Some(ReplayResult::Delete(result)) => Ok(Some(result)),
         Some(_) => Err(StreamError::IdempotencyMismatch),
         None => Ok(None),
     }
@@ -729,6 +883,19 @@ fn fork_digest(request: &ForkRequest) -> [u8; 32] {
     hash.finalize().into()
 }
 
+fn trim_digest(path: &StreamPath, before: u64) -> [u8; 32] {
+    let mut hash = request_hasher(b"trim");
+    hash_path(&mut hash, path);
+    hash.update(before.to_le_bytes());
+    hash.finalize().into()
+}
+
+fn delete_digest(path: &StreamPath) -> [u8; 32] {
+    let mut hash = request_hasher(b"delete");
+    hash_path(&mut hash, path);
+    hash.finalize().into()
+}
+
 fn commit_digest(request: &CommitRequest) -> [u8; 32] {
     let mut hash = request_hasher(b"commit");
     for condition in &request.conditions {
@@ -760,6 +927,15 @@ fn commit_digest(request: &CommitRequest) -> [u8; 32] {
                 hash_path(&mut hash, source);
                 hash_path(&mut hash, destination);
                 hash.update(at_tail.to_le_bytes());
+            }
+            CommitMutation::Trim { path, before } => {
+                hash.update([3]);
+                hash_path(&mut hash, path);
+                hash.update(before.to_le_bytes());
+            }
+            CommitMutation::Delete { path } => {
+                hash.update([4]);
+                hash_path(&mut hash, path);
             }
         }
     }
@@ -796,6 +972,7 @@ fn mutation_path(mutation: &CommitMutation) -> &StreamPath {
     match mutation {
         CommitMutation::Append { path, .. } => path,
         CommitMutation::Fork { destination, .. } => destination,
+        CommitMutation::Trim { path, .. } | CommitMutation::Delete { path } => path,
     }
 }
 
@@ -860,6 +1037,11 @@ fn validate_commit_size(request: &CommitRequest) -> Result<(), StreamError> {
                 add_path_size(&mut total, destination)?;
                 add_size(&mut total, 8)?;
             }
+            CommitMutation::Trim { path, .. } => {
+                add_path_size(&mut total, path)?;
+                add_size(&mut total, 8)?;
+            }
+            CommitMutation::Delete { path } => add_path_size(&mut total, path)?,
         }
     }
     Ok(())
@@ -900,6 +1082,27 @@ fn validate_commit_authority(state: &State, request: &CommitRequest) -> Result<(
                         conditions.get(destination),
                         Some(CommitCondition::Absent { .. })
                     )
+                {
+                    return Err(StreamError::InvalidArgument);
+                }
+            }
+            CommitMutation::Trim { path, before } => {
+                let Some(stream) = state.paths.get(path) else {
+                    return Err(StreamError::NotFound);
+                };
+                if *before > stream.tail
+                    || !matches!(conditions.get(path), Some(CommitCondition::Tail { .. }))
+                {
+                    return Err(StreamError::InvalidArgument);
+                }
+            }
+            CommitMutation::Delete { path } => {
+                if !state.paths.contains_key(path)
+                    || !matches!(conditions.get(path), Some(CommitCondition::Tail { .. }))
+                    || state
+                        .paths
+                        .keys()
+                        .any(|candidate| is_descendant(path, candidate))
                 {
                     return Err(StreamError::InvalidArgument);
                 }
@@ -1031,6 +1234,20 @@ fn apply_coordinated(
                     forked_at: at_tail,
                     tail: at_tail,
                 }));
+            }
+            CommitMutation::Trim { path, before } => {
+                let stream = state.paths.get_mut(&path).ok_or(StreamError::NotFound)?;
+                stream.trim_point = stream.trim_point.max(before);
+                stream.changed.send_replace(stream.tail);
+                committed.push(CommittedMutation::Trim(CommittedTrim {
+                    path,
+                    trim_point: stream.trim_point,
+                }));
+            }
+            CommitMutation::Delete { path } => {
+                state.paths.remove(&path).ok_or(StreamError::NotFound)?;
+                state.retired.insert(path.clone());
+                committed.push(CommittedMutation::Delete(CommittedDelete { path }));
             }
         }
     }

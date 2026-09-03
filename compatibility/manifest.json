@@ -12,9 +12,9 @@
     },
     "stream": {
       "version": "1.0.0",
-      "schemaDigest": "sha256:f7311b8837ed712f1beae2feb4610b22e969968e71699f14760a9066ffc318de",
+      "schemaDigest": "sha256:edbac395fc19985c1c9d96a3d653562f371b438f313dfa1214b07c77286f1fd4",
       "descriptorDigest": "sha256:3ddafcace62cd7f7ae6462b2a13f192019b7c4eab3d82a473254f00220581a92",
-      "conformanceDigest": "sha256:bed6a354be40e60d35e1ffb255d30a22cef6a961087ce20e41bf0d51c7a11e7d"
+      "conformanceDigest": "sha256:2ab203585840ac9ea68eba312d83a7dd5f09d3116e23ff8d61930f54ea376193"
     },
     "objects": {
       "version": "1.0.0",

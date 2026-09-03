@@ -86,6 +86,38 @@ pub struct ForkReceipt {
     pub commit_id: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TrimRequest {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+    #[prost(uint64, tag="2")]
+    pub before: u64,
+    #[prost(bytes="vec", optional, tag="3")]
+    pub idempotency_key: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TrimReceipt {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+    #[prost(uint64, tag="2")]
+    pub trim_point: u64,
+    #[prost(bytes="vec", tag="3")]
+    pub commit_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteRequest {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+    #[prost(bytes="vec", optional, tag="2")]
+    pub idempotency_key: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteReceipt {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+    #[prost(bytes="vec", tag="2")]
+    pub commit_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ReadRequest {
     #[prost(string, tag="1")]
     pub path: ::prost::alloc::string::String,
@@ -167,8 +199,20 @@ pub struct ForkMutation {
     pub at_tail: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TrimMutation {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+    #[prost(uint64, tag="2")]
+    pub before: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteMutation {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CommitMutation {
-    #[prost(oneof="commit_mutation::Mutation", tags="1, 2")]
+    #[prost(oneof="commit_mutation::Mutation", tags="1, 2, 3, 4")]
     pub mutation: ::core::option::Option<commit_mutation::Mutation>,
 }
 /// Nested message and enum types in `CommitMutation`.
@@ -179,6 +223,10 @@ pub mod commit_mutation {
         Append(super::AppendMutation),
         #[prost(message, tag="2")]
         Fork(super::ForkMutation),
+        #[prost(message, tag="3")]
+        Trim(super::TrimMutation),
+        #[prost(message, tag="4")]
+        Delete(super::DeleteMutation),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -214,9 +262,21 @@ pub struct CommittedFork {
     #[prost(uint64, tag="4")]
     pub tail: u64,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CommittedTrim {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+    #[prost(uint64, tag="2")]
+    pub trim_point: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CommittedDelete {
+    #[prost(string, tag="1")]
+    pub path: ::prost::alloc::string::String,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CommittedMutation {
-    #[prost(oneof="committed_mutation::Mutation", tags="1, 2")]
+    #[prost(oneof="committed_mutation::Mutation", tags="1, 2, 3, 4")]
     pub mutation: ::core::option::Option<committed_mutation::Mutation>,
 }
 /// Nested message and enum types in `CommittedMutation`.
@@ -227,6 +287,10 @@ pub mod committed_mutation {
         Append(super::CommittedAppend),
         #[prost(message, tag="2")]
         Fork(super::CommittedFork),
+        #[prost(message, tag="3")]
+        Trim(super::CommittedTrim),
+        #[prost(message, tag="4")]
+        Delete(super::CommittedDelete),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
