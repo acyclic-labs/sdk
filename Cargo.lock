@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-cli"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "acyclic-contracts",
  "acyclic-harness",
@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-conformance"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "acyclic-fs",
  "acyclic-inference",
@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-contracts"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "serde",
  "thiserror",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-harness"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "acyclic-contracts",
  "futures",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-memory"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "acyclic-fs",
  "acyclic-inference",
@@ -208,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-sdk"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "acyclic-contracts",
  "acyclic-fs",

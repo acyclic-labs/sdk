@@ -13,7 +13,7 @@ name = "fsd"
 path = "src/main.rs"
 
 [dependencies]
-acyclic-fs = { path = "../filesystem", features = ["native-mount"] }
+acyclic-fs = { version = "0.1.0-rc.1", path = "../filesystem", features = ["native-mount"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["signal"] }

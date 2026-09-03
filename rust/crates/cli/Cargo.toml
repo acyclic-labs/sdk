@@ -8,8 +8,8 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-acyclic-contracts = { path = "../contracts" }
-acyclic-harness = { path = "../harness" }
+acyclic-contracts = { version = "0.1.0-rc.1", path = "../contracts" }
+acyclic-harness = { version = "0.1.0-rc.1", path = "../harness" }
 tokio.workspace = true
 
 [lints]

@@ -12,7 +12,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-acyclic-fs = { path = "../filesystem", default-features = false, features = ["memory"] }
+acyclic-fs = { version = "0.1.0-rc.1", path = "../filesystem", default-features = false, features = ["memory"] }
 blake3.workspace = true
 bytes.workspace = true
 serde.workspace = true

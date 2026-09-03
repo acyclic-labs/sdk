@@ -12,7 +12,7 @@ description = "N-API embedded engine for @acyclic/fs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-acyclic-fs = { path = "../filesystem", features = ["native-mount"] }
+acyclic-fs = { version = "0.1.0-rc.1", path = "../filesystem", features = ["native-mount"] }
 bytes.workspace = true
 napi.workspace = true
 napi-derive.workspace = true

@@ -8,11 +8,11 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-acyclic-fs = { path = "../filesystem" }
-acyclic-inference = { path = "../inference" }
-acyclic-machines = { path = "../machines" }
-acyclic-objects = { path = "../objects" }
-acyclic-stream = { path = "../stream" }
+acyclic-fs = { version = "0.1.0-rc.1", path = "../filesystem" }
+acyclic-inference = { version = "1.0.0", path = "../inference" }
+acyclic-machines = { version = "1.0.0", path = "../machines" }
+acyclic-objects = { version = "1.0.0", path = "../objects" }
+acyclic-stream = { version = "1.0.0", path = "../stream" }
 bytes.workspace = true
 futures.workspace = true
 blake3.workspace = true
@@ -22,7 +22,7 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-acyclic-memory = { path = "../memory" }
+acyclic-memory = { version = "0.1.0-rc.1", path = "../memory" }
 
 [lints]
 workspace = true
