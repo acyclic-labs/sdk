@@ -13,6 +13,6 @@
     "@bufbuild/buf": "1.72.0",
     "@types/bun": "1.4.0",
     "ajv": "8.20.0",
-    "typescript": "5.9.2"
+    "typescript": "7.0.2"
   }
 }
