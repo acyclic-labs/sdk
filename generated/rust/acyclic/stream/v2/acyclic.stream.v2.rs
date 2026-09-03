@@ -306,8 +306,8 @@ pub struct TailCommitConflict {
     pub path: ::prost::alloc::string::String,
     #[prost(uint64, tag="2")]
     pub expected: u64,
-    #[prost(uint64, tag="3")]
-    pub actual: u64,
+    #[prost(uint64, optional, tag="3")]
+    pub actual: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExistsCommitConflict {

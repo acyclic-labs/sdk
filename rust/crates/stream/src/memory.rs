@@ -465,13 +465,13 @@ impl StreamProvider for MemoryStream {
 
     async fn commit(&self, mut request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         normalize_commit(&mut request)?;
+        validate_commit_shape(&request)?;
         let digest = commit_digest(&request);
         let mut state = self.state.write().await;
         if let Some(result) = replay_commit(&state, &request.idempotency_key, digest)? {
             return Ok(result);
         }
         admit_replay(&state, Some(&request.idempotency_key), self.limits)?;
-        validate_commit_authority(&state, &request)?;
         let conflicts = commit_conflicts(&state, &request.conditions);
         if !conflicts.is_empty() {
             let result = CommitOutcome::Conflict(conflicts);
@@ -483,6 +483,7 @@ impl StreamProvider for MemoryStream {
             );
             return Ok(result);
         }
+        validate_commit_authority(&state, &request)?;
         reserve_coordinated(&state, &request, self.limits)?;
         let commit_id = next_commit_id(&mut state, digest)?;
         let before = request
@@ -1047,37 +1048,24 @@ fn validate_commit_size(request: &CommitRequest) -> Result<(), StreamError> {
     Ok(())
 }
 
-fn validate_commit_authority(state: &State, request: &CommitRequest) -> Result<(), StreamError> {
+fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {
     let conditions = request
         .conditions
         .iter()
         .map(|condition| (condition_path(condition), condition))
         .collect::<BTreeMap<_, _>>();
-    for condition in &request.conditions {
-        if matches!(condition, CommitCondition::Tail { path, .. } if !state.paths.contains_key(path))
-        {
-            return Err(StreamError::NotFound);
-        }
-    }
     for mutation in &request.mutations {
         match mutation {
-            CommitMutation::Append { path, .. } => {
-                match (state.paths.contains_key(path), conditions.get(path)) {
-                    (true, Some(CommitCondition::Tail { .. }))
-                    | (false, Some(CommitCondition::Absent { .. })) => {}
-                    _ => return Err(StreamError::InvalidArgument),
-                }
-            }
+            CommitMutation::Append { path, .. } => match conditions.get(path) {
+                Some(CommitCondition::Tail { .. } | CommitCondition::Absent { .. }) => {}
+                _ => return Err(StreamError::InvalidArgument),
+            },
             CommitMutation::Fork {
                 source,
                 destination,
-                at_tail,
+                at_tail: _,
             } => {
-                let Some(source_state) = state.paths.get(source) else {
-                    return Err(StreamError::NotFound);
-                };
-                if *at_tail > source_state.tail
-                    || !matches!(conditions.get(source), Some(CommitCondition::Tail { .. }))
+                if !matches!(conditions.get(source), Some(CommitCondition::Tail { .. }))
                     || !matches!(
                         conditions.get(destination),
                         Some(CommitCondition::Absent { .. })
@@ -1086,19 +1074,40 @@ fn validate_commit_authority(state: &State, request: &CommitRequest) -> Result<(
                     return Err(StreamError::InvalidArgument);
                 }
             }
+            CommitMutation::Trim { path, before: _ } | CommitMutation::Delete { path } => {
+                if !matches!(conditions.get(path), Some(CommitCondition::Tail { .. })) {
+                    return Err(StreamError::InvalidArgument);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_commit_authority(state: &State, request: &CommitRequest) -> Result<(), StreamError> {
+    for mutation in &request.mutations {
+        match mutation {
+            CommitMutation::Append { .. } => {}
+            CommitMutation::Fork {
+                source, at_tail, ..
+            } => {
+                let Some(source_state) = state.paths.get(source) else {
+                    return Err(StreamError::NotFound);
+                };
+                if *at_tail > source_state.tail {
+                    return Err(StreamError::InvalidArgument);
+                }
+            }
             CommitMutation::Trim { path, before } => {
                 let Some(stream) = state.paths.get(path) else {
                     return Err(StreamError::NotFound);
                 };
-                if *before > stream.tail
-                    || !matches!(conditions.get(path), Some(CommitCondition::Tail { .. }))
-                {
+                if *before > stream.tail {
                     return Err(StreamError::InvalidArgument);
                 }
             }
             CommitMutation::Delete { path } => {
                 if !state.paths.contains_key(path)
-                    || !matches!(conditions.get(path), Some(CommitCondition::Tail { .. }))
                     || state
                         .paths
                         .keys()
@@ -1116,13 +1125,19 @@ fn commit_conflicts(state: &State, conditions: &[CommitCondition]) -> Vec<Commit
     conditions
         .iter()
         .filter_map(|condition| match condition {
-            CommitCondition::Tail { path, expected } => state.paths.get(path).and_then(|stream| {
-                (stream.tail != *expected).then(|| CommitConflict::Tail {
+            CommitCondition::Tail { path, expected } => match state.paths.get(path) {
+                Some(stream) if stream.tail == *expected => None,
+                Some(stream) => Some(CommitConflict::Tail {
                     path: path.clone(),
                     expected: *expected,
-                    actual: stream.tail,
-                })
-            }),
+                    actual: Some(stream.tail),
+                }),
+                None => Some(CommitConflict::Tail {
+                    path: path.clone(),
+                    expected: *expected,
+                    actual: None,
+                }),
+            },
             CommitCondition::Absent { path } => {
                 if state.paths.contains_key(path) {
                     Some(CommitConflict::Exists { path: path.clone() })

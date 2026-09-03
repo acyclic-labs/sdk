@@ -848,9 +848,9 @@ export declare type TailCommitConflict = Message<"acyclic.stream.v2.TailCommitCo
   expected: bigint;
 
   /**
-   * @generated from field: uint64 actual = 3;
+   * @generated from field: optional uint64 actual = 3;
    */
-  actual: bigint;
+  actual?: bigint | undefined;
 };
 
 /**

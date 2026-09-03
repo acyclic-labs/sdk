@@ -198,7 +198,7 @@ message CommittedEnvelope {
 message TailCommitConflict {
   string path = 1;
   uint64 expected = 2;
-  uint64 actual = 3;
+  optional uint64 actual = 3;
 }
 
 message ExistsCommitConflict {

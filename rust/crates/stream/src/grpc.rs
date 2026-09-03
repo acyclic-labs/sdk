@@ -321,15 +321,17 @@ impl StreamProvider for Client {
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+        let idempotency_key = request.idempotency_key.map_or_else(
+            || Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
+            |key| Bytes::copy_from_slice(key.as_bytes()),
+        );
         let response = self
             .unary(
                 wire::AppendRequest {
                     path: request.path.to_string(),
                     records: request.records,
                     if_tail: request.if_tail,
-                    idempotency_key: request
-                        .idempotency_key
-                        .map(|key| Bytes::copy_from_slice(key.as_bytes())),
+                    idempotency_key: Some(idempotency_key),
                 },
                 |mut service, request| Box::pin(async move { service.append(request).await }),
             )
@@ -345,15 +347,17 @@ impl StreamProvider for Client {
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
+        let idempotency_key = request.idempotency_key.map_or_else(
+            || Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
+            |key| Bytes::copy_from_slice(key.as_bytes()),
+        );
         let receipt = self
             .unary(
                 wire::ForkRequest {
                     source: request.source.to_string(),
                     destination: request.destination.to_string(),
                     at_tail: request.at_tail,
-                    idempotency_key: request
-                        .idempotency_key
-                        .map(|key| Bytes::copy_from_slice(key.as_bytes())),
+                    idempotency_key: Some(idempotency_key),
                 },
                 |mut service, request| Box::pin(async move { service.fork(request).await }),
             )

@@ -384,8 +384,8 @@ pub enum CommitConflict {
         path: StreamPath,
         /// Required tail.
         expected: u64,
-        /// Observed tail.
-        actual: u64,
+        /// Observed tail, or absence when the path does not exist.
+        actual: Option<u64>,
     },
     /// Requested absent path exists.
     Exists {

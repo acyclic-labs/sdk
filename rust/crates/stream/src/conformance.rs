@@ -4,8 +4,9 @@ use bytes::Bytes;
 use futures::StreamExt as _;
 
 use crate::{
-    AppendOutcome, AppendRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
-    ForkRequest, IdempotencyKey, ReadRequest, StreamError, StreamPath, StreamProvider,
+    AppendOutcome, AppendRequest, CommitCondition, CommitConflict, CommitMutation, CommitOutcome,
+    CommitRequest, ForkRequest, IdempotencyKey, ReadRequest, StreamError, StreamPath,
+    StreamProvider,
 };
 
 /// Canonical language-neutral Stream conformance inventory.
@@ -180,6 +181,33 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             != *envelope
     {
         return Err("coordinated commit replay or envelope changed".into());
+    }
+    let absent = path("conformance/absent-tail")?;
+    let absent_request = CommitRequest {
+        conditions: vec![CommitCondition::Tail {
+            path: absent.clone(),
+            expected: 0,
+        }],
+        mutations: vec![CommitMutation::Append {
+            path: absent.clone(),
+            records: vec![Bytes::from_static(b"must-not-commit")],
+        }],
+        idempotency_key: key(b"stream-absent-tail")?,
+    };
+    let absent_conflict = CommitOutcome::Conflict(vec![CommitConflict::Tail {
+        path: absent.clone(),
+        expected: 0,
+        actual: None,
+    }]);
+    if provider
+        .commit(absent_request.clone())
+        .await
+        .map_err(error)?
+        != absent_conflict
+        || provider.commit(absent_request).await.map_err(error)? != absent_conflict
+        || provider.tail(absent).await != Err(StreamError::NotFound)
+    {
+        return Err("absent tail condition did not return one replayable conflict".into());
     }
     Ok(())
 }

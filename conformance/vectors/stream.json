@@ -12,6 +12,7 @@
     "permanent-path-deletion-and-name-retirement",
     "atomic-optimistic-multi-path-commit",
     "commit-conflict-mutates-nothing",
+    "absent-tail-condition-is-a-replayable-conflict",
     "immutable-commit-envelope-read"
   ]
 }
