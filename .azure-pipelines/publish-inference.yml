@@ -1,0 +1,33 @@
+trigger: none
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+    clean: true
+    fetchDepth: 1
+
+  - bash: |
+      set -euo pipefail
+      rustup toolchain install 1.94.0 --profile minimal --component clippy,rustfmt
+      rustup default 1.94.0
+      cargo fmt --all --check
+      cargo clippy --locked -p acyclic-inference --all-targets -- -D warnings
+      cargo test --locked -p acyclic-inference
+      cargo package --locked -p acyclic-inference
+    displayName: Qualify exact Inference SDK package
+
+  - bash: |
+      set -euo pipefail
+      cargo login --registry sdk "${SYSTEM_ACCESSTOKEN}"
+      cargo publish --locked -p acyclic-inference --registry sdk
+    displayName: Publish immutable Inference SDK
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+variables:
+  CARGO_TERM_COLOR: always
+  CARGO_REGISTRIES_SDK_INDEX: sparse+https://pkgs.dev.azure.com/var0245graphcoder/badd9fdd-5914-4ff1-b97f-6cc3232d3bfe/_packaging/sdk/Cargo/index/
+  CARGO_REGISTRY_GLOBAL_CREDENTIAL_PROVIDERS: cargo:token
