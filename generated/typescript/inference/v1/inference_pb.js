@@ -3,250 +3,329 @@
 /* eslint-disable */
 
 import { enumDesc, fileDesc, messageDesc, serviceDesc, tsEnum } from "@bufbuild/protobuf/codegenv2";
-import { file_harness_v1_harness } from "../../harness/v1/harness_pb";
 
 /**
  * Describes the file inference/v1/inference.proto.
  */
 export const file_inference_v1_inference = /*@__PURE__*/
-  fileDesc("ChxpbmZlcmVuY2UvdjEvaW5mZXJlbmNlLnByb3RvEhRhY3ljbGljLmluZmVyZW5jZS52MSImCgpDb250ZXh0UmVmEhIKCmNvbnRleHRfaWQYASABKAlKBAgCEAMirgEKBEl0ZW0SDwoHaXRlbV9pZBgBIAEoCRIsCgRraW5kGAIgASgOMh4uYWN5Y2xpYy5pbmZlcmVuY2UudjEuSXRlbUtpbmQSDwoHY29udGVudBgDIAEoDBIRCgRsaW5rGAQgASgJSACIAQESIQoUY29udGludWF0aW9uX3Byb2ZpbGUYBSABKAlIAYgBAUIHCgVfbGlua0IXChVfY29udGludWF0aW9uX3Byb2ZpbGUiawoRTW9kZWxDYXBhYmlsaXRpZXMSDQoFbW9kZWwYASABKAkSHQoVbWF4aW11bV9jb250ZXh0X2J5dGVzGAIgASgEEhYKDm1heGltdW1fb3V0cHV0GAMgASgEEhAKCGZlYXR1cmVzGAQgAygJIhMKEUxpc3RNb2RlbHNSZXF1ZXN0Ik0KEkxpc3RNb2RlbHNSZXNwb25zZRI3CgZtb2RlbHMYASADKAsyJy5hY3ljbGljLmluZmVyZW5jZS52MS5Nb2RlbENhcGFiaWxpdGllcyKKAQoUQ3JlYXRlQ29udGV4dFJlcXVlc3QSOAoJb3BlcmF0aW9uGAEgASgLMiUuYWN5Y2xpYy5oYXJuZXNzLnYxLk9wZXJhdGlvbklkZW50aXR5Eg0KBW1vZGVsGAIgASgJEikKBWl0ZW1zGAMgAygLMhouYWN5Y2xpYy5pbmZlcmVuY2UudjEuSXRlbSJKChVJbnNwZWN0Q29udGV4dFJlcXVlc3QSMQoHY29udGV4dBgBIAEoCzIgLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbnRleHRSZWYiSgoGSW5zZXJ0EhYKDnRhcmdldF9pdGVtX2lkGAEgASgJEigKBGl0ZW0YAiABKAsyGi5hY3ljbGljLmluZmVyZW5jZS52MS5JdGVtIjIKB1JlcGxhY2USFgoOdGFyZ2V0X2l0ZW1faWQYASABKAkSDwoHY29udGVudBgCIAEoDCL+AQoLQ29udGV4dEVkaXQSLAoGYXBwZW5kGAEgASgLMhouYWN5Y2xpYy5pbmZlcmVuY2UudjEuSXRlbUgAEjUKDWluc2VydF9iZWZvcmUYAiABKAsyHC5hY3ljbGljLmluZmVyZW5jZS52MS5JbnNlcnRIABI0CgxpbnNlcnRfYWZ0ZXIYAyABKAsyHC5hY3ljbGljLmluZmVyZW5jZS52MS5JbnNlcnRIABIwCgdyZXBsYWNlGAQgASgLMh0uYWN5Y2xpYy5pbmZlcmVuY2UudjEuUmVwbGFjZUgAEhgKDmRlbGV0ZV9pdGVtX2lkGAUgASgJSABCCAoGYWN0aW9uIj8KC0VkaXRDb250ZXh0EjAKBWVkaXRzGAEgAygLMiEuYWN5Y2xpYy5pbmZlcmVuY2UudjEuQ29udGV4dEVkaXQiQwoPVHJ1bmNhdGVDb250ZXh0EhwKD3Rocm91Z2hfaXRlbV9pZBgBIAEoCUgAiAEBQhIKEF90aHJvdWdoX2l0ZW1faWQiXAoOQ29tcGFjdENvbnRleHQSGQoRc2VsZWN0ZWRfaXRlbV9pZHMYASADKAkSLwoLcmVwbGFjZW1lbnQYAiADKAsyGi5hY3ljbGljLmluZmVyZW5jZS52MS5JdGVtIiAKD1RyYW5zZmVyQ29udGV4dBINCgVtb2RlbBgBIAEoCSKAAwoUTXV0YXRlQ29udGV4dFJlcXVlc3QSOAoJb3BlcmF0aW9uGAEgASgLMiUuYWN5Y2xpYy5oYXJuZXNzLnYxLk9wZXJhdGlvbklkZW50aXR5EjAKBnNvdXJjZRgCIAEoCzIgLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbnRleHRSZWYSDgoEZm9yaxgDIAEoCEgAEjEKBGVkaXQYBCABKAsyIS5hY3ljbGljLmluZmVyZW5jZS52MS5FZGl0Q29udGV4dEgAEjkKCHRydW5jYXRlGAUgASgLMiUuYWN5Y2xpYy5pbmZlcmVuY2UudjEuVHJ1bmNhdGVDb250ZXh0SAASNwoHY29tcGFjdBgGIAEoCzIkLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbXBhY3RDb250ZXh0SAASOQoIdHJhbnNmZXIYByABKAsyJS5hY3ljbGljLmluZmVyZW5jZS52MS5UcmFuc2ZlckNvbnRleHRIAEIKCghtdXRhdGlvbiJ2CglSZXRlbnRpb24SMQoEa2luZBgBIAEoDjIjLmFjeWNsaWMuaW5mZXJlbmNlLnYxLlJldGVudGlvbktpbmQSHwoSZXhwaXJlc19hdF91bml4X21zGAIgASgESACIAQFCFQoTX2V4cGlyZXNfYXRfdW5peF9tcyK3AQoUUmV0YWluQ29udGV4dFJlcXVlc3QSOAoJb3BlcmF0aW9uGAEgASgLMiUuYWN5Y2xpYy5oYXJuZXNzLnYxLk9wZXJhdGlvbklkZW50aXR5EjEKB2NvbnRleHQYAiABKAsyIC5hY3ljbGljLmluZmVyZW5jZS52MS5Db250ZXh0UmVmEjIKCXJldGVudGlvbhgDIAEoCzIfLmFjeWNsaWMuaW5mZXJlbmNlLnYxLlJldGVudGlvbiKDAQoURGVsZXRlQ29udGV4dFJlcXVlc3QSOAoJb3BlcmF0aW9uGAEgASgLMiUuYWN5Y2xpYy5oYXJuZXNzLnYxLk9wZXJhdGlvbklkZW50aXR5EjEKB2NvbnRleHQYAiABKAsyIC5hY3ljbGljLmluZmVyZW5jZS52MS5Db250ZXh0UmVmIloKFURlbGV0ZUNvbnRleHRSZXNwb25zZRIwCglhZG1pc3Npb24YASABKAsyHS5hY3ljbGljLmhhcm5lc3MudjEuQWRtaXNzaW9uEg8KB2RlbGV0ZWQYAiABKAgi0QEKEUNvbnRleHRQcm92ZW5hbmNlEjkKBGtpbmQYASABKA4yKy5hY3ljbGljLmluZmVyZW5jZS52MS5Db250ZXh0UHJvdmVuYW5jZUtpbmQSNQoGc291cmNlGAIgASgLMiAuYWN5Y2xpYy5pbmZlcmVuY2UudjEuQ29udGV4dFJlZkgAiAEBEhMKBnJ1bl9pZBgDIAEoCUgBiAEBEh8KF3JldXNlZF9jb21wYXRpYmxlX3N0YXRlGAQgASgIQgkKB19zb3VyY2VCCQoHX3J1bl9pZCK9AgoHQ29udGV4dBIxCgdjb250ZXh0GAEgASgLMiAuYWN5Y2xpYy5pbmZlcmVuY2UudjEuQ29udGV4dFJlZhISCgpsaW5lYWdlX2lkGAIgASgJEjUKBnBhcmVudBgDIAEoCzIgLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbnRleHRSZWZIAIgBARINCgVtb2RlbBgEIAEoCRIpCgVpdGVtcxgFIAMoCzIaLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkl0ZW0SMgoJcmV0ZW50aW9uGAYgASgLMh8uYWN5Y2xpYy5pbmZlcmVuY2UudjEuUmV0ZW50aW9uEjsKCnByb3ZlbmFuY2UYByABKAsyJy5hY3ljbGljLmluZmVyZW5jZS52MS5Db250ZXh0UHJvdmVuYW5jZUIJCgdfcGFyZW50InMKD0NvbnRleHRSZXNwb25zZRIwCglhZG1pc3Npb24YASABKAsyHS5hY3ljbGljLmhhcm5lc3MudjEuQWRtaXNzaW9uEi4KB2NvbnRleHQYAiABKAsyHS5hY3ljbGljLmluZmVyZW5jZS52MS5Db250ZXh0IkgKEkdlbmVyYXRpb25TZXR0aW5ncxIWCg5tYXhpbXVtX291dHB1dBgBIAEoBBIRCgRzZWVkGAIgASgESACIAQFCBwoFX3NlZWQi5QEKD0dlbmVyYXRlUmVxdWVzdBI4CglvcGVyYXRpb24YASABKAsyJS5hY3ljbGljLmhhcm5lc3MudjEuT3BlcmF0aW9uSWRlbnRpdHkSMQoHY29udGV4dBgCIAEoCzIgLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbnRleHRSZWYSKQoFaW5wdXQYAyABKAsyGi5hY3ljbGljLmluZmVyZW5jZS52MS5JdGVtEjoKCHNldHRpbmdzGAQgASgLMiguYWN5Y2xpYy5pbmZlcmVuY2UudjEuR2VuZXJhdGlvblNldHRpbmdzIhgKBlJ1blJlZhIOCgZydW5faWQYASABKAkidQoFVXNhZ2USEwoLbmV3X3ByZWZpbGwYASABKAQSGAoQZ2VuZXJhdGVkX291dHB1dBgCIAEoBBIfChdlZmZlY3RpdmVfY29udGV4dF9yZWFkcxgDIAEoBBIcChRyZXRhaW5lZF9ieXRlX21pbGxpcxgEIAEoBCJ1CgxVc2FnZVJlY2VpcHQSEgoKcmVjZWlwdF9pZBgBIAEoCRINCgVtb2RlbBgCIAEoCRIWCg5tZXRlcl9yZXZpc2lvbhgDIAEoCRIqCgV1c2FnZRgEIAEoCzIbLmFjeWNsaWMuaW5mZXJlbmNlLnYxLlVzYWdlIsYBCglSdW5SZXN1bHQSDgoGb3V0cHV0GAEgASgMEjMKB2NvbnRleHQYAiABKAsyHS5hY3ljbGljLmluZmVyZW5jZS52MS5Db250ZXh0SACIAQESMwoIdGVybWluYWwYAyABKA4yIS5hY3ljbGljLmluZmVyZW5jZS52MS5SdW5UZXJtaW5hbBIzCgdyZWNlaXB0GAQgASgLMiIuYWN5Y2xpYy5pbmZlcmVuY2UudjEuVXNhZ2VSZWNlaXB0QgoKCF9jb250ZXh0ItIBCgNSdW4SKQoDcnVuGAEgASgLMhwuYWN5Y2xpYy5pbmZlcmVuY2UudjEuUnVuUmVmEi8KBWlucHV0GAIgASgLMiAuYWN5Y2xpYy5pbmZlcmVuY2UudjEuQ29udGV4dFJlZhI0CgZyZXN1bHQYAyABKAsyHy5hY3ljbGljLmluZmVyZW5jZS52MS5SdW5SZXN1bHRIAIgBARIuCgZldmVudHMYBCADKAsyHi5hY3ljbGljLmluZmVyZW5jZS52MS5SdW5FdmVudEIJCgdfcmVzdWx0ImwKEEdlbmVyYXRlUmVzcG9uc2USMAoJYWRtaXNzaW9uGAEgASgLMh0uYWN5Y2xpYy5oYXJuZXNzLnYxLkFkbWlzc2lvbhImCgNydW4YAiABKAsyGS5hY3ljbGljLmluZmVyZW5jZS52MS5SdW4iPgoRSW5zcGVjdFJ1blJlcXVlc3QSKQoDcnVuGAEgASgLMhwuYWN5Y2xpYy5pbmZlcmVuY2UudjEuUnVuUmVmIlMKD1dhdGNoUnVuUmVxdWVzdBIpCgNydW4YASABKAsyHC5hY3ljbGljLmluZmVyZW5jZS52MS5SdW5SZWYSFQoNZnJvbV9zZXF1ZW5jZRgCIAEoBCKcAQoIUnVuRXZlbnQSEAoIc2VxdWVuY2UYASABKAQSEAoGb3V0cHV0GAIgASgMSAASLAoFdXNhZ2UYAyABKAsyGy5hY3ljbGljLmluZmVyZW5jZS52MS5Vc2FnZUgAEjUKCHRlcm1pbmFsGAQgASgOMiEuYWN5Y2xpYy5pbmZlcmVuY2UudjEuUnVuVGVybWluYWxIAEIHCgVldmVudCrJAgoISXRlbUtpbmQSGQoVSVRFTV9LSU5EX1VOU1BFQ0lGSUVEEAASGQoVSVRFTV9LSU5EX0lOU1RSVUNUSU9OEAESFAoQSVRFTV9LSU5EX1NZU1RFTRACEhcKE0lURU1fS0lORF9ERVZFTE9QRVIQAxISCg5JVEVNX0tJTkRfVVNFUhAEEhcKE0lURU1fS0lORF9BU1NJU1RBTlQQBRIdChlJVEVNX0tJTkRfVE9PTF9ERUZJTklUSU9OEAYSFwoTSVRFTV9LSU5EX1RPT0xfQ0FMTBAHEhkKFUlURU1fS0lORF9UT09MX1JFU1VMVBAIEhMKD0lURU1fS0lORF9JTUFHRRAJEhMKD0lURU1fS0lORF9BVURJTxAKEhIKDklURU1fS0lORF9GSUxFEAsSGgoWSVRFTV9LSU5EX0NPTlRJTlVBVElPThAMKmoKDVJldGVudGlvbktpbmQSHgoaUkVURU5USU9OX0tJTkRfVU5TUEVDSUZJRUQQABIaChZSRVRFTlRJT05fS0lORF9EVVJBQkxFEAESHQoZUkVURU5USU9OX0tJTkRfV0FSTV9VTlRJTBACKv4BChVDb250ZXh0UHJvdmVuYW5jZUtpbmQSJwojQ09OVEVYVF9QUk9WRU5BTkNFX0tJTkRfVU5TUEVDSUZJRUQQABIjCh9DT05URVhUX1BST1ZFTkFOQ0VfS0lORF9DUkVBVEVEEAESIwofQ09OVEVYVF9QUk9WRU5BTkNFX0tJTkRfREVSSVZFRBACEiIKHkNPTlRFWFRfUFJPVkVOQU5DRV9LSU5EX0ZPUktFRBADEicKI0NPTlRFWFRfUFJPVkVOQU5DRV9LSU5EX1RSQU5TRkVSUkVEEAQSJQohQ09OVEVYVF9QUk9WRU5BTkNFX0tJTkRfR0VORVJBVEVEEAUq8wEKC1J1blRlcm1pbmFsEhwKGFJVTl9URVJNSU5BTF9VTlNQRUNJRklFRBAAEhoKFlJVTl9URVJNSU5BTF9DT01QTEVURUQQARIfChtSVU5fVEVSTUlOQUxfT1VUUFVUX0xJTUlURUQQAhIaChZSVU5fVEVSTUlOQUxfVE9PTF9DQUxMEAMSGAoUUlVOX1RFUk1JTkFMX1JFRlVTQUwQBBIaChZSVU5fVEVSTUlOQUxfQ0FOQ0VMTEVEEAUSFwoTUlVOX1RFUk1JTkFMX0ZBSUxFRBAGEh4KGlJVTl9URVJNSU5BTF9JTkRFVEVSTUlOQVRFEAcylAgKEEluZmVyZW5jZVNlcnZpY2USWAoJSGFuZHNoYWtlEiQuYWN5Y2xpYy5oYXJuZXNzLnYxLkhhbmRzaGFrZVJlcXVlc3QaJS5hY3ljbGljLmhhcm5lc3MudjEuSGFuZHNoYWtlUmVzcG9uc2USXwoKTGlzdE1vZGVscxInLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkxpc3RNb2RlbHNSZXF1ZXN0GiguYWN5Y2xpYy5pbmZlcmVuY2UudjEuTGlzdE1vZGVsc1Jlc3BvbnNlEmIKDUNyZWF0ZUNvbnRleHQSKi5hY3ljbGljLmluZmVyZW5jZS52MS5DcmVhdGVDb250ZXh0UmVxdWVzdBolLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbnRleHRSZXNwb25zZRJcCg5JbnNwZWN0Q29udGV4dBIrLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkluc3BlY3RDb250ZXh0UmVxdWVzdBodLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbnRleHQSYgoNTXV0YXRlQ29udGV4dBIqLmFjeWNsaWMuaW5mZXJlbmNlLnYxLk11dGF0ZUNvbnRleHRSZXF1ZXN0GiUuYWN5Y2xpYy5pbmZlcmVuY2UudjEuQ29udGV4dFJlc3BvbnNlEmIKDVJldGFpbkNvbnRleHQSKi5hY3ljbGljLmluZmVyZW5jZS52MS5SZXRhaW5Db250ZXh0UmVxdWVzdBolLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbnRleHRSZXNwb25zZRJoCg1EZWxldGVDb250ZXh0EiouYWN5Y2xpYy5pbmZlcmVuY2UudjEuRGVsZXRlQ29udGV4dFJlcXVlc3QaKy5hY3ljbGljLmluZmVyZW5jZS52MS5EZWxldGVDb250ZXh0UmVzcG9uc2USWQoIR2VuZXJhdGUSJS5hY3ljbGljLmluZmVyZW5jZS52MS5HZW5lcmF0ZVJlcXVlc3QaJi5hY3ljbGljLmluZmVyZW5jZS52MS5HZW5lcmF0ZVJlc3BvbnNlElAKCkluc3BlY3RSdW4SJy5hY3ljbGljLmluZmVyZW5jZS52MS5JbnNwZWN0UnVuUmVxdWVzdBoZLmFjeWNsaWMuaW5mZXJlbmNlLnYxLlJ1bhJTCghXYXRjaFJ1bhIlLmFjeWNsaWMuaW5mZXJlbmNlLnYxLldhdGNoUnVuUmVxdWVzdBoeLmFjeWNsaWMuaW5mZXJlbmNlLnYxLlJ1bkV2ZW50MAESTwoJQ2FuY2VsUnVuEicuYWN5Y2xpYy5pbmZlcmVuY2UudjEuSW5zcGVjdFJ1blJlcXVlc3QaGS5hY3ljbGljLmluZmVyZW5jZS52MS5SdW5CPVo7Z2l0aHViLmNvbS9hY3ljbGljLWxhYnMvc2RrL2dvL2dlbi9pbmZlcmVuY2UvdjE7aW5mZXJlbmNldjFiBnByb3RvMw", [file_harness_v1_harness]);
+  fileDesc("ChxpbmZlcmVuY2UvdjEvaW5mZXJlbmNlLnByb3RvEhRhY3ljbGljLmluZmVyZW5jZS52MSJCChFPcGVyYXRpb25JZGVudGl0eRIUCgxvcGVyYXRpb25faWQYASABKAkSFwoPaWRlbXBvdGVuY3lfa2V5GAIgASgJIj4KEFByb3RvY29sSWRlbnRpdHkSDwoHdmVyc2lvbhgBIAEoCRIZChFkZXNjcmlwdG9yX2RpZ2VzdBgCIAEoCSIrCgpDYXBhYmlsaXR5EgwKBG5hbWUYASABKAkSDwoHdmVyc2lvbhgCIAEoCSJHCg1DYXBhYmlsaXR5U2V0EjYKDGNhcGFiaWxpdGllcxgBIAMoCzIgLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNhcGFiaWxpdHkigwEKEEhhbmRzaGFrZVJlcXVlc3QSOAoIcHJvdG9jb2wYASABKAsyJi5hY3ljbGljLmluZmVyZW5jZS52MS5Qcm90b2NvbElkZW50aXR5EjUKCHJlcXVpcmVkGAIgASgLMiMuYWN5Y2xpYy5pbmZlcmVuY2UudjEuQ2FwYWJpbGl0eVNldCKFAQoRSGFuZHNoYWtlUmVzcG9uc2USOAoIcHJvdG9jb2wYASABKAsyJi5hY3ljbGljLmluZmVyZW5jZS52MS5Qcm90b2NvbElkZW50aXR5EjYKCXN1cHBvcnRlZBgCIAEoCzIjLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNhcGFiaWxpdHlTZXQiRwoFRXJyb3ISLQoEY29kZRgBIAEoDjIfLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkVycm9yQ29kZRIPCgdtZXNzYWdlGAIgASgJIqgBCglBZG1pc3Npb24SOgoJb3BlcmF0aW9uGAEgASgLMicuYWN5Y2xpYy5pbmZlcmVuY2UudjEuT3BlcmF0aW9uSWRlbnRpdHkSMwoFc3RhdGUYAiABKA4yJC5hY3ljbGljLmluZmVyZW5jZS52MS5BZG1pc3Npb25TdGF0ZRIqCgVlcnJvchgDIAEoCzIbLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkVycm9yIiYKCkNvbnRleHRSZWYSEgoKY29udGV4dF9pZBgBIAEoCUoECAIQAyKuAQoESXRlbRIPCgdpdGVtX2lkGAEgASgJEiwKBGtpbmQYAiABKA4yHi5hY3ljbGljLmluZmVyZW5jZS52MS5JdGVtS2luZBIPCgdjb250ZW50GAMgASgMEhEKBGxpbmsYBCABKAlIAIgBARIhChRjb250aW51YXRpb25fcHJvZmlsZRgFIAEoCUgBiAEBQgcKBV9saW5rQhcKFV9jb250aW51YXRpb25fcHJvZmlsZSJrChFNb2RlbENhcGFiaWxpdGllcxINCgVtb2RlbBgBIAEoCRIdChVtYXhpbXVtX2NvbnRleHRfYnl0ZXMYAiABKAQSFgoObWF4aW11bV9vdXRwdXQYAyABKAQSEAoIZmVhdHVyZXMYBCADKAkiEwoRTGlzdE1vZGVsc1JlcXVlc3QiTQoSTGlzdE1vZGVsc1Jlc3BvbnNlEjcKBm1vZGVscxgBIAMoCzInLmFjeWNsaWMuaW5mZXJlbmNlLnYxLk1vZGVsQ2FwYWJpbGl0aWVzIowBChRDcmVhdGVDb250ZXh0UmVxdWVzdBI6CglvcGVyYXRpb24YASABKAsyJy5hY3ljbGljLmluZmVyZW5jZS52MS5PcGVyYXRpb25JZGVudGl0eRINCgVtb2RlbBgCIAEoCRIpCgVpdGVtcxgDIAMoCzIaLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkl0ZW0iSgoVSW5zcGVjdENvbnRleHRSZXF1ZXN0EjEKB2NvbnRleHQYASABKAsyIC5hY3ljbGljLmluZmVyZW5jZS52MS5Db250ZXh0UmVmIkoKBkluc2VydBIWCg50YXJnZXRfaXRlbV9pZBgBIAEoCRIoCgRpdGVtGAIgASgLMhouYWN5Y2xpYy5pbmZlcmVuY2UudjEuSXRlbSIyCgdSZXBsYWNlEhYKDnRhcmdldF9pdGVtX2lkGAEgASgJEg8KB2NvbnRlbnQYAiABKAwi/gEKC0NvbnRleHRFZGl0EiwKBmFwcGVuZBgBIAEoCzIaLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkl0ZW1IABI1Cg1pbnNlcnRfYmVmb3JlGAIgASgLMhwuYWN5Y2xpYy5pbmZlcmVuY2UudjEuSW5zZXJ0SAASNAoMaW5zZXJ0X2FmdGVyGAMgASgLMhwuYWN5Y2xpYy5pbmZlcmVuY2UudjEuSW5zZXJ0SAASMAoHcmVwbGFjZRgEIAEoCzIdLmFjeWNsaWMuaW5mZXJlbmNlLnYxLlJlcGxhY2VIABIYCg5kZWxldGVfaXRlbV9pZBgFIAEoCUgAQggKBmFjdGlvbiI/CgtFZGl0Q29udGV4dBIwCgVlZGl0cxgBIAMoCzIhLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbnRleHRFZGl0IkMKD1RydW5jYXRlQ29udGV4dBIcCg90aHJvdWdoX2l0ZW1faWQYASABKAlIAIgBAUISChBfdGhyb3VnaF9pdGVtX2lkIlwKDkNvbXBhY3RDb250ZXh0EhkKEXNlbGVjdGVkX2l0ZW1faWRzGAEgAygJEi8KC3JlcGxhY2VtZW50GAIgAygLMhouYWN5Y2xpYy5pbmZlcmVuY2UudjEuSXRlbSIgCg9UcmFuc2ZlckNvbnRleHQSDQoFbW9kZWwYASABKAkiggMKFE11dGF0ZUNvbnRleHRSZXF1ZXN0EjoKCW9wZXJhdGlvbhgBIAEoCzInLmFjeWNsaWMuaW5mZXJlbmNlLnYxLk9wZXJhdGlvbklkZW50aXR5EjAKBnNvdXJjZRgCIAEoCzIgLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbnRleHRSZWYSDgoEZm9yaxgDIAEoCEgAEjEKBGVkaXQYBCABKAsyIS5hY3ljbGljLmluZmVyZW5jZS52MS5FZGl0Q29udGV4dEgAEjkKCHRydW5jYXRlGAUgASgLMiUuYWN5Y2xpYy5pbmZlcmVuY2UudjEuVHJ1bmNhdGVDb250ZXh0SAASNwoHY29tcGFjdBgGIAEoCzIkLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbXBhY3RDb250ZXh0SAASOQoIdHJhbnNmZXIYByABKAsyJS5hY3ljbGljLmluZmVyZW5jZS52MS5UcmFuc2ZlckNvbnRleHRIAEIKCghtdXRhdGlvbiJ2CglSZXRlbnRpb24SMQoEa2luZBgBIAEoDjIjLmFjeWNsaWMuaW5mZXJlbmNlLnYxLlJldGVudGlvbktpbmQSHwoSZXhwaXJlc19hdF91bml4X21zGAIgASgESACIAQFCFQoTX2V4cGlyZXNfYXRfdW5peF9tcyK5AQoUUmV0YWluQ29udGV4dFJlcXVlc3QSOgoJb3BlcmF0aW9uGAEgASgLMicuYWN5Y2xpYy5pbmZlcmVuY2UudjEuT3BlcmF0aW9uSWRlbnRpdHkSMQoHY29udGV4dBgCIAEoCzIgLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbnRleHRSZWYSMgoJcmV0ZW50aW9uGAMgASgLMh8uYWN5Y2xpYy5pbmZlcmVuY2UudjEuUmV0ZW50aW9uIoUBChREZWxldGVDb250ZXh0UmVxdWVzdBI6CglvcGVyYXRpb24YASABKAsyJy5hY3ljbGljLmluZmVyZW5jZS52MS5PcGVyYXRpb25JZGVudGl0eRIxCgdjb250ZXh0GAIgASgLMiAuYWN5Y2xpYy5pbmZlcmVuY2UudjEuQ29udGV4dFJlZiJcChVEZWxldGVDb250ZXh0UmVzcG9uc2USMgoJYWRtaXNzaW9uGAEgASgLMh8uYWN5Y2xpYy5pbmZlcmVuY2UudjEuQWRtaXNzaW9uEg8KB2RlbGV0ZWQYAiABKAgi0QEKEUNvbnRleHRQcm92ZW5hbmNlEjkKBGtpbmQYASABKA4yKy5hY3ljbGljLmluZmVyZW5jZS52MS5Db250ZXh0UHJvdmVuYW5jZUtpbmQSNQoGc291cmNlGAIgASgLMiAuYWN5Y2xpYy5pbmZlcmVuY2UudjEuQ29udGV4dFJlZkgAiAEBEhMKBnJ1bl9pZBgDIAEoCUgBiAEBEh8KF3JldXNlZF9jb21wYXRpYmxlX3N0YXRlGAQgASgIQgkKB19zb3VyY2VCCQoHX3J1bl9pZCK9AgoHQ29udGV4dBIxCgdjb250ZXh0GAEgASgLMiAuYWN5Y2xpYy5pbmZlcmVuY2UudjEuQ29udGV4dFJlZhISCgpsaW5lYWdlX2lkGAIgASgJEjUKBnBhcmVudBgDIAEoCzIgLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbnRleHRSZWZIAIgBARINCgVtb2RlbBgEIAEoCRIpCgVpdGVtcxgFIAMoCzIaLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkl0ZW0SMgoJcmV0ZW50aW9uGAYgASgLMh8uYWN5Y2xpYy5pbmZlcmVuY2UudjEuUmV0ZW50aW9uEjsKCnByb3ZlbmFuY2UYByABKAsyJy5hY3ljbGljLmluZmVyZW5jZS52MS5Db250ZXh0UHJvdmVuYW5jZUIJCgdfcGFyZW50InUKD0NvbnRleHRSZXNwb25zZRIyCglhZG1pc3Npb24YASABKAsyHy5hY3ljbGljLmluZmVyZW5jZS52MS5BZG1pc3Npb24SLgoHY29udGV4dBgCIAEoCzIdLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbnRleHQiSAoSR2VuZXJhdGlvblNldHRpbmdzEhYKDm1heGltdW1fb3V0cHV0GAEgASgEEhEKBHNlZWQYAiABKARIAIgBAUIHCgVfc2VlZCLnAQoPR2VuZXJhdGVSZXF1ZXN0EjoKCW9wZXJhdGlvbhgBIAEoCzInLmFjeWNsaWMuaW5mZXJlbmNlLnYxLk9wZXJhdGlvbklkZW50aXR5EjEKB2NvbnRleHQYAiABKAsyIC5hY3ljbGljLmluZmVyZW5jZS52MS5Db250ZXh0UmVmEikKBWlucHV0GAMgASgLMhouYWN5Y2xpYy5pbmZlcmVuY2UudjEuSXRlbRI6CghzZXR0aW5ncxgEIAEoCzIoLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkdlbmVyYXRpb25TZXR0aW5ncyIYCgZSdW5SZWYSDgoGcnVuX2lkGAEgASgJInUKBVVzYWdlEhMKC25ld19wcmVmaWxsGAEgASgEEhgKEGdlbmVyYXRlZF9vdXRwdXQYAiABKAQSHwoXZWZmZWN0aXZlX2NvbnRleHRfcmVhZHMYAyABKAQSHAoUcmV0YWluZWRfYnl0ZV9taWxsaXMYBCABKAQidQoMVXNhZ2VSZWNlaXB0EhIKCnJlY2VpcHRfaWQYASABKAkSDQoFbW9kZWwYAiABKAkSFgoObWV0ZXJfcmV2aXNpb24YAyABKAkSKgoFdXNhZ2UYBCABKAsyGy5hY3ljbGljLmluZmVyZW5jZS52MS5Vc2FnZSLGAQoJUnVuUmVzdWx0Eg4KBm91dHB1dBgBIAEoDBIzCgdjb250ZXh0GAIgASgLMh0uYWN5Y2xpYy5pbmZlcmVuY2UudjEuQ29udGV4dEgAiAEBEjMKCHRlcm1pbmFsGAMgASgOMiEuYWN5Y2xpYy5pbmZlcmVuY2UudjEuUnVuVGVybWluYWwSMwoHcmVjZWlwdBgEIAEoCzIiLmFjeWNsaWMuaW5mZXJlbmNlLnYxLlVzYWdlUmVjZWlwdEIKCghfY29udGV4dCLSAQoDUnVuEikKA3J1bhgBIAEoCzIcLmFjeWNsaWMuaW5mZXJlbmNlLnYxLlJ1blJlZhIvCgVpbnB1dBgCIAEoCzIgLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbnRleHRSZWYSNAoGcmVzdWx0GAMgASgLMh8uYWN5Y2xpYy5pbmZlcmVuY2UudjEuUnVuUmVzdWx0SACIAQESLgoGZXZlbnRzGAQgAygLMh4uYWN5Y2xpYy5pbmZlcmVuY2UudjEuUnVuRXZlbnRCCQoHX3Jlc3VsdCJuChBHZW5lcmF0ZVJlc3BvbnNlEjIKCWFkbWlzc2lvbhgBIAEoCzIfLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkFkbWlzc2lvbhImCgNydW4YAiABKAsyGS5hY3ljbGljLmluZmVyZW5jZS52MS5SdW4iPgoRSW5zcGVjdFJ1blJlcXVlc3QSKQoDcnVuGAEgASgLMhwuYWN5Y2xpYy5pbmZlcmVuY2UudjEuUnVuUmVmIlMKD1dhdGNoUnVuUmVxdWVzdBIpCgNydW4YASABKAsyHC5hY3ljbGljLmluZmVyZW5jZS52MS5SdW5SZWYSFQoNZnJvbV9zZXF1ZW5jZRgCIAEoBCKcAQoIUnVuRXZlbnQSEAoIc2VxdWVuY2UYASABKAQSEAoGb3V0cHV0GAIgASgMSAASLAoFdXNhZ2UYAyABKAsyGy5hY3ljbGljLmluZmVyZW5jZS52MS5Vc2FnZUgAEjUKCHRlcm1pbmFsGAQgASgOMiEuYWN5Y2xpYy5pbmZlcmVuY2UudjEuUnVuVGVybWluYWxIAEIHCgVldmVudCqrAQoJRXJyb3JDb2RlEhoKFkVSUk9SX0NPREVfVU5TUEVDSUZJRUQQABIYChRFUlJPUl9DT0RFX05PVF9GT1VORBABEhcKE0VSUk9SX0NPREVfQ09ORkxJQ1QQAhIaChZFUlJPUl9DT0RFX1VOU1VQUE9SVEVEEAMSFgoSRVJST1JfQ09ERV9JTlZBTElEEAQSGwoXRVJST1JfQ09ERV9VTkFVVEhPUklaRUQQBSqQAQoOQWRtaXNzaW9uU3RhdGUSHwobQURNSVNTSU9OX1NUQVRFX1VOU1BFQ0lGSUVEEAASHAoYQURNSVNTSU9OX1NUQVRFX0FDQ0VQVEVEEAESHAoYQURNSVNTSU9OX1NUQVRFX1JFSkVDVEVEEAISIQodQURNSVNTSU9OX1NUQVRFX0lOREVURVJNSU5BVEUQAyrJAgoISXRlbUtpbmQSGQoVSVRFTV9LSU5EX1VOU1BFQ0lGSUVEEAASGQoVSVRFTV9LSU5EX0lOU1RSVUNUSU9OEAESFAoQSVRFTV9LSU5EX1NZU1RFTRACEhcKE0lURU1fS0lORF9ERVZFTE9QRVIQAxISCg5JVEVNX0tJTkRfVVNFUhAEEhcKE0lURU1fS0lORF9BU1NJU1RBTlQQBRIdChlJVEVNX0tJTkRfVE9PTF9ERUZJTklUSU9OEAYSFwoTSVRFTV9LSU5EX1RPT0xfQ0FMTBAHEhkKFUlURU1fS0lORF9UT09MX1JFU1VMVBAIEhMKD0lURU1fS0lORF9JTUFHRRAJEhMKD0lURU1fS0lORF9BVURJTxAKEhIKDklURU1fS0lORF9GSUxFEAsSGgoWSVRFTV9LSU5EX0NPTlRJTlVBVElPThAMKmoKDVJldGVudGlvbktpbmQSHgoaUkVURU5USU9OX0tJTkRfVU5TUEVDSUZJRUQQABIaChZSRVRFTlRJT05fS0lORF9EVVJBQkxFEAESHQoZUkVURU5USU9OX0tJTkRfV0FSTV9VTlRJTBACKv4BChVDb250ZXh0UHJvdmVuYW5jZUtpbmQSJwojQ09OVEVYVF9QUk9WRU5BTkNFX0tJTkRfVU5TUEVDSUZJRUQQABIjCh9DT05URVhUX1BST1ZFTkFOQ0VfS0lORF9DUkVBVEVEEAESIwofQ09OVEVYVF9QUk9WRU5BTkNFX0tJTkRfREVSSVZFRBACEiIKHkNPTlRFWFRfUFJPVkVOQU5DRV9LSU5EX0ZPUktFRBADEicKI0NPTlRFWFRfUFJPVkVOQU5DRV9LSU5EX1RSQU5TRkVSUkVEEAQSJQohQ09OVEVYVF9QUk9WRU5BTkNFX0tJTkRfR0VORVJBVEVEEAUq8wEKC1J1blRlcm1pbmFsEhwKGFJVTl9URVJNSU5BTF9VTlNQRUNJRklFRBAAEhoKFlJVTl9URVJNSU5BTF9DT01QTEVURUQQARIfChtSVU5fVEVSTUlOQUxfT1VUUFVUX0xJTUlURUQQAhIaChZSVU5fVEVSTUlOQUxfVE9PTF9DQUxMEAMSGAoUUlVOX1RFUk1JTkFMX1JFRlVTQUwQBBIaChZSVU5fVEVSTUlOQUxfQ0FOQ0VMTEVEEAUSFwoTUlVOX1RFUk1JTkFMX0ZBSUxFRBAGEh4KGlJVTl9URVJNSU5BTF9JTkRFVEVSTUlOQVRFEAcymAgKEEluZmVyZW5jZVNlcnZpY2USXAoJSGFuZHNoYWtlEiYuYWN5Y2xpYy5pbmZlcmVuY2UudjEuSGFuZHNoYWtlUmVxdWVzdBonLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkhhbmRzaGFrZVJlc3BvbnNlEl8KCkxpc3RNb2RlbHMSJy5hY3ljbGljLmluZmVyZW5jZS52MS5MaXN0TW9kZWxzUmVxdWVzdBooLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkxpc3RNb2RlbHNSZXNwb25zZRJiCg1DcmVhdGVDb250ZXh0EiouYWN5Y2xpYy5pbmZlcmVuY2UudjEuQ3JlYXRlQ29udGV4dFJlcXVlc3QaJS5hY3ljbGljLmluZmVyZW5jZS52MS5Db250ZXh0UmVzcG9uc2USXAoOSW5zcGVjdENvbnRleHQSKy5hY3ljbGljLmluZmVyZW5jZS52MS5JbnNwZWN0Q29udGV4dFJlcXVlc3QaHS5hY3ljbGljLmluZmVyZW5jZS52MS5Db250ZXh0EmIKDU11dGF0ZUNvbnRleHQSKi5hY3ljbGljLmluZmVyZW5jZS52MS5NdXRhdGVDb250ZXh0UmVxdWVzdBolLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkNvbnRleHRSZXNwb25zZRJiCg1SZXRhaW5Db250ZXh0EiouYWN5Y2xpYy5pbmZlcmVuY2UudjEuUmV0YWluQ29udGV4dFJlcXVlc3QaJS5hY3ljbGljLmluZmVyZW5jZS52MS5Db250ZXh0UmVzcG9uc2USaAoNRGVsZXRlQ29udGV4dBIqLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkRlbGV0ZUNvbnRleHRSZXF1ZXN0GisuYWN5Y2xpYy5pbmZlcmVuY2UudjEuRGVsZXRlQ29udGV4dFJlc3BvbnNlElkKCEdlbmVyYXRlEiUuYWN5Y2xpYy5pbmZlcmVuY2UudjEuR2VuZXJhdGVSZXF1ZXN0GiYuYWN5Y2xpYy5pbmZlcmVuY2UudjEuR2VuZXJhdGVSZXNwb25zZRJQCgpJbnNwZWN0UnVuEicuYWN5Y2xpYy5pbmZlcmVuY2UudjEuSW5zcGVjdFJ1blJlcXVlc3QaGS5hY3ljbGljLmluZmVyZW5jZS52MS5SdW4SUwoIV2F0Y2hSdW4SJS5hY3ljbGljLmluZmVyZW5jZS52MS5XYXRjaFJ1blJlcXVlc3QaHi5hY3ljbGljLmluZmVyZW5jZS52MS5SdW5FdmVudDABEk8KCUNhbmNlbFJ1bhInLmFjeWNsaWMuaW5mZXJlbmNlLnYxLkluc3BlY3RSdW5SZXF1ZXN0GhkuYWN5Y2xpYy5pbmZlcmVuY2UudjEuUnVuQj1aO2dpdGh1Yi5jb20vYWN5Y2xpYy1sYWJzL3Nkay9nby9nZW4vaW5mZXJlbmNlL3YxO2luZmVyZW5jZXYxYgZwcm90bzM");
+
+/**
+ * Describes the message acyclic.inference.v1.OperationIdentity.
+ * Use `create(OperationIdentitySchema)` to create a new message.
+ */
+export const OperationIdentitySchema = /*@__PURE__*/
+  messageDesc(file_inference_v1_inference, 0);
+
+/**
+ * Describes the message acyclic.inference.v1.ProtocolIdentity.
+ * Use `create(ProtocolIdentitySchema)` to create a new message.
+ */
+export const ProtocolIdentitySchema = /*@__PURE__*/
+  messageDesc(file_inference_v1_inference, 1);
+
+/**
+ * Describes the message acyclic.inference.v1.Capability.
+ * Use `create(CapabilitySchema)` to create a new message.
+ */
+export const CapabilitySchema = /*@__PURE__*/
+  messageDesc(file_inference_v1_inference, 2);
+
+/**
+ * Describes the message acyclic.inference.v1.CapabilitySet.
+ * Use `create(CapabilitySetSchema)` to create a new message.
+ */
+export const CapabilitySetSchema = /*@__PURE__*/
+  messageDesc(file_inference_v1_inference, 3);
+
+/**
+ * Describes the message acyclic.inference.v1.HandshakeRequest.
+ * Use `create(HandshakeRequestSchema)` to create a new message.
+ */
+export const HandshakeRequestSchema = /*@__PURE__*/
+  messageDesc(file_inference_v1_inference, 4);
+
+/**
+ * Describes the message acyclic.inference.v1.HandshakeResponse.
+ * Use `create(HandshakeResponseSchema)` to create a new message.
+ */
+export const HandshakeResponseSchema = /*@__PURE__*/
+  messageDesc(file_inference_v1_inference, 5);
+
+/**
+ * Describes the message acyclic.inference.v1.Error.
+ * Use `create(ErrorSchema)` to create a new message.
+ */
+export const ErrorSchema = /*@__PURE__*/
+  messageDesc(file_inference_v1_inference, 6);
+
+/**
+ * Describes the message acyclic.inference.v1.Admission.
+ * Use `create(AdmissionSchema)` to create a new message.
+ */
+export const AdmissionSchema = /*@__PURE__*/
+  messageDesc(file_inference_v1_inference, 7);
 
 /**
  * Describes the message acyclic.inference.v1.ContextRef.
  * Use `create(ContextRefSchema)` to create a new message.
  */
 export const ContextRefSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 0);
+  messageDesc(file_inference_v1_inference, 8);
 
 /**
  * Describes the message acyclic.inference.v1.Item.
  * Use `create(ItemSchema)` to create a new message.
  */
 export const ItemSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 1);
+  messageDesc(file_inference_v1_inference, 9);
 
 /**
  * Describes the message acyclic.inference.v1.ModelCapabilities.
  * Use `create(ModelCapabilitiesSchema)` to create a new message.
  */
 export const ModelCapabilitiesSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 2);
+  messageDesc(file_inference_v1_inference, 10);
 
 /**
  * Describes the message acyclic.inference.v1.ListModelsRequest.
  * Use `create(ListModelsRequestSchema)` to create a new message.
  */
 export const ListModelsRequestSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 3);
+  messageDesc(file_inference_v1_inference, 11);
 
 /**
  * Describes the message acyclic.inference.v1.ListModelsResponse.
  * Use `create(ListModelsResponseSchema)` to create a new message.
  */
 export const ListModelsResponseSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 4);
+  messageDesc(file_inference_v1_inference, 12);
 
 /**
  * Describes the message acyclic.inference.v1.CreateContextRequest.
  * Use `create(CreateContextRequestSchema)` to create a new message.
  */
 export const CreateContextRequestSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 5);
+  messageDesc(file_inference_v1_inference, 13);
 
 /**
  * Describes the message acyclic.inference.v1.InspectContextRequest.
  * Use `create(InspectContextRequestSchema)` to create a new message.
  */
 export const InspectContextRequestSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 6);
+  messageDesc(file_inference_v1_inference, 14);
 
 /**
  * Describes the message acyclic.inference.v1.Insert.
  * Use `create(InsertSchema)` to create a new message.
  */
 export const InsertSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 7);
+  messageDesc(file_inference_v1_inference, 15);
 
 /**
  * Describes the message acyclic.inference.v1.Replace.
  * Use `create(ReplaceSchema)` to create a new message.
  */
 export const ReplaceSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 8);
+  messageDesc(file_inference_v1_inference, 16);
 
 /**
  * Describes the message acyclic.inference.v1.ContextEdit.
  * Use `create(ContextEditSchema)` to create a new message.
  */
 export const ContextEditSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 9);
+  messageDesc(file_inference_v1_inference, 17);
 
 /**
  * Describes the message acyclic.inference.v1.EditContext.
  * Use `create(EditContextSchema)` to create a new message.
  */
 export const EditContextSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 10);
+  messageDesc(file_inference_v1_inference, 18);
 
 /**
  * Describes the message acyclic.inference.v1.TruncateContext.
  * Use `create(TruncateContextSchema)` to create a new message.
  */
 export const TruncateContextSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 11);
+  messageDesc(file_inference_v1_inference, 19);
 
 /**
  * Describes the message acyclic.inference.v1.CompactContext.
  * Use `create(CompactContextSchema)` to create a new message.
  */
 export const CompactContextSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 12);
+  messageDesc(file_inference_v1_inference, 20);
 
 /**
  * Describes the message acyclic.inference.v1.TransferContext.
  * Use `create(TransferContextSchema)` to create a new message.
  */
 export const TransferContextSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 13);
+  messageDesc(file_inference_v1_inference, 21);
 
 /**
  * Describes the message acyclic.inference.v1.MutateContextRequest.
  * Use `create(MutateContextRequestSchema)` to create a new message.
  */
 export const MutateContextRequestSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 14);
+  messageDesc(file_inference_v1_inference, 22);
 
 /**
  * Describes the message acyclic.inference.v1.Retention.
  * Use `create(RetentionSchema)` to create a new message.
  */
 export const RetentionSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 15);
+  messageDesc(file_inference_v1_inference, 23);
 
 /**
  * Describes the message acyclic.inference.v1.RetainContextRequest.
  * Use `create(RetainContextRequestSchema)` to create a new message.
  */
 export const RetainContextRequestSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 16);
+  messageDesc(file_inference_v1_inference, 24);
 
 /**
  * Describes the message acyclic.inference.v1.DeleteContextRequest.
  * Use `create(DeleteContextRequestSchema)` to create a new message.
  */
 export const DeleteContextRequestSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 17);
+  messageDesc(file_inference_v1_inference, 25);
 
 /**
  * Describes the message acyclic.inference.v1.DeleteContextResponse.
  * Use `create(DeleteContextResponseSchema)` to create a new message.
  */
 export const DeleteContextResponseSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 18);
+  messageDesc(file_inference_v1_inference, 26);
 
 /**
  * Describes the message acyclic.inference.v1.ContextProvenance.
  * Use `create(ContextProvenanceSchema)` to create a new message.
  */
 export const ContextProvenanceSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 19);
+  messageDesc(file_inference_v1_inference, 27);
 
 /**
  * Describes the message acyclic.inference.v1.Context.
  * Use `create(ContextSchema)` to create a new message.
  */
 export const ContextSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 20);
+  messageDesc(file_inference_v1_inference, 28);
 
 /**
  * Describes the message acyclic.inference.v1.ContextResponse.
  * Use `create(ContextResponseSchema)` to create a new message.
  */
 export const ContextResponseSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 21);
+  messageDesc(file_inference_v1_inference, 29);
 
 /**
  * Describes the message acyclic.inference.v1.GenerationSettings.
  * Use `create(GenerationSettingsSchema)` to create a new message.
  */
 export const GenerationSettingsSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 22);
+  messageDesc(file_inference_v1_inference, 30);
 
 /**
  * Describes the message acyclic.inference.v1.GenerateRequest.
  * Use `create(GenerateRequestSchema)` to create a new message.
  */
 export const GenerateRequestSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 23);
+  messageDesc(file_inference_v1_inference, 31);
 
 /**
  * Describes the message acyclic.inference.v1.RunRef.
  * Use `create(RunRefSchema)` to create a new message.
  */
 export const RunRefSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 24);
+  messageDesc(file_inference_v1_inference, 32);
 
 /**
  * Describes the message acyclic.inference.v1.Usage.
  * Use `create(UsageSchema)` to create a new message.
  */
 export const UsageSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 25);
+  messageDesc(file_inference_v1_inference, 33);
 
 /**
  * Describes the message acyclic.inference.v1.UsageReceipt.
  * Use `create(UsageReceiptSchema)` to create a new message.
  */
 export const UsageReceiptSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 26);
+  messageDesc(file_inference_v1_inference, 34);
 
 /**
  * Describes the message acyclic.inference.v1.RunResult.
  * Use `create(RunResultSchema)` to create a new message.
  */
 export const RunResultSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 27);
+  messageDesc(file_inference_v1_inference, 35);
 
 /**
  * Describes the message acyclic.inference.v1.Run.
  * Use `create(RunSchema)` to create a new message.
  */
 export const RunSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 28);
+  messageDesc(file_inference_v1_inference, 36);
 
 /**
  * Describes the message acyclic.inference.v1.GenerateResponse.
  * Use `create(GenerateResponseSchema)` to create a new message.
  */
 export const GenerateResponseSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 29);
+  messageDesc(file_inference_v1_inference, 37);
 
 /**
  * Describes the message acyclic.inference.v1.InspectRunRequest.
  * Use `create(InspectRunRequestSchema)` to create a new message.
  */
 export const InspectRunRequestSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 30);
+  messageDesc(file_inference_v1_inference, 38);
 
 /**
  * Describes the message acyclic.inference.v1.WatchRunRequest.
  * Use `create(WatchRunRequestSchema)` to create a new message.
  */
 export const WatchRunRequestSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 31);
+  messageDesc(file_inference_v1_inference, 39);
 
 /**
  * Describes the message acyclic.inference.v1.RunEvent.
  * Use `create(RunEventSchema)` to create a new message.
  */
 export const RunEventSchema = /*@__PURE__*/
-  messageDesc(file_inference_v1_inference, 32);
+  messageDesc(file_inference_v1_inference, 40);
+
+/**
+ * Describes the enum acyclic.inference.v1.ErrorCode.
+ */
+export const ErrorCodeSchema = /*@__PURE__*/
+  enumDesc(file_inference_v1_inference, 0);
+
+/**
+ * @generated from enum acyclic.inference.v1.ErrorCode
+ */
+export const ErrorCode = /*@__PURE__*/
+  tsEnum(ErrorCodeSchema);
+
+/**
+ * Describes the enum acyclic.inference.v1.AdmissionState.
+ */
+export const AdmissionStateSchema = /*@__PURE__*/
+  enumDesc(file_inference_v1_inference, 1);
+
+/**
+ * @generated from enum acyclic.inference.v1.AdmissionState
+ */
+export const AdmissionState = /*@__PURE__*/
+  tsEnum(AdmissionStateSchema);
 
 /**
  * Describes the enum acyclic.inference.v1.ItemKind.
  */
 export const ItemKindSchema = /*@__PURE__*/
-  enumDesc(file_inference_v1_inference, 0);
+  enumDesc(file_inference_v1_inference, 2);
 
 /**
  * @generated from enum acyclic.inference.v1.ItemKind
@@ -258,7 +337,7 @@ export const ItemKind = /*@__PURE__*/
  * Describes the enum acyclic.inference.v1.RetentionKind.
  */
 export const RetentionKindSchema = /*@__PURE__*/
-  enumDesc(file_inference_v1_inference, 1);
+  enumDesc(file_inference_v1_inference, 3);
 
 /**
  * @generated from enum acyclic.inference.v1.RetentionKind
@@ -270,7 +349,7 @@ export const RetentionKind = /*@__PURE__*/
  * Describes the enum acyclic.inference.v1.ContextProvenanceKind.
  */
 export const ContextProvenanceKindSchema = /*@__PURE__*/
-  enumDesc(file_inference_v1_inference, 2);
+  enumDesc(file_inference_v1_inference, 4);
 
 /**
  * @generated from enum acyclic.inference.v1.ContextProvenanceKind
@@ -282,7 +361,7 @@ export const ContextProvenanceKind = /*@__PURE__*/
  * Describes the enum acyclic.inference.v1.RunTerminal.
  */
 export const RunTerminalSchema = /*@__PURE__*/
-  enumDesc(file_inference_v1_inference, 3);
+  enumDesc(file_inference_v1_inference, 5);
 
 /**
  * @generated from enum acyclic.inference.v1.RunTerminal

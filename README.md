@@ -59,7 +59,7 @@ provider internals:
 ```rust,no_run
 use acyclic_inference::Inference;
 
-# async fn example() -> acyclic_contracts::Result<()> {
+# async fn example() -> acyclic_inference::Result<()> {
 let inference = Inference::connect("https://inference.example", "account-token").await?;
 let base = inference
     .context("model/revision")

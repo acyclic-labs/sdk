@@ -4,12 +4,179 @@
 
 import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
-import type { Admission, HandshakeRequestSchema, HandshakeResponseSchema, OperationIdentity } from "../../harness/v1/harness_pb";
 
 /**
  * Describes the file inference/v1/inference.proto.
  */
 export declare const file_inference_v1_inference: GenFile;
+
+/**
+ * @generated from message acyclic.inference.v1.OperationIdentity
+ */
+export declare type OperationIdentity = Message<"acyclic.inference.v1.OperationIdentity"> & {
+  /**
+   * @generated from field: string operation_id = 1;
+   */
+  operationId: string;
+
+  /**
+   * @generated from field: string idempotency_key = 2;
+   */
+  idempotencyKey: string;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.OperationIdentity.
+ * Use `create(OperationIdentitySchema)` to create a new message.
+ */
+export declare const OperationIdentitySchema: GenMessage<OperationIdentity>;
+
+/**
+ * @generated from message acyclic.inference.v1.ProtocolIdentity
+ */
+export declare type ProtocolIdentity = Message<"acyclic.inference.v1.ProtocolIdentity"> & {
+  /**
+   * @generated from field: string version = 1;
+   */
+  version: string;
+
+  /**
+   * @generated from field: string descriptor_digest = 2;
+   */
+  descriptorDigest: string;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.ProtocolIdentity.
+ * Use `create(ProtocolIdentitySchema)` to create a new message.
+ */
+export declare const ProtocolIdentitySchema: GenMessage<ProtocolIdentity>;
+
+/**
+ * @generated from message acyclic.inference.v1.Capability
+ */
+export declare type Capability = Message<"acyclic.inference.v1.Capability"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * @generated from field: string version = 2;
+   */
+  version: string;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.Capability.
+ * Use `create(CapabilitySchema)` to create a new message.
+ */
+export declare const CapabilitySchema: GenMessage<Capability>;
+
+/**
+ * @generated from message acyclic.inference.v1.CapabilitySet
+ */
+export declare type CapabilitySet = Message<"acyclic.inference.v1.CapabilitySet"> & {
+  /**
+   * @generated from field: repeated acyclic.inference.v1.Capability capabilities = 1;
+   */
+  capabilities: Capability[];
+};
+
+/**
+ * Describes the message acyclic.inference.v1.CapabilitySet.
+ * Use `create(CapabilitySetSchema)` to create a new message.
+ */
+export declare const CapabilitySetSchema: GenMessage<CapabilitySet>;
+
+/**
+ * @generated from message acyclic.inference.v1.HandshakeRequest
+ */
+export declare type HandshakeRequest = Message<"acyclic.inference.v1.HandshakeRequest"> & {
+  /**
+   * @generated from field: acyclic.inference.v1.ProtocolIdentity protocol = 1;
+   */
+  protocol?: ProtocolIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.CapabilitySet required = 2;
+   */
+  required?: CapabilitySet | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.HandshakeRequest.
+ * Use `create(HandshakeRequestSchema)` to create a new message.
+ */
+export declare const HandshakeRequestSchema: GenMessage<HandshakeRequest>;
+
+/**
+ * @generated from message acyclic.inference.v1.HandshakeResponse
+ */
+export declare type HandshakeResponse = Message<"acyclic.inference.v1.HandshakeResponse"> & {
+  /**
+   * @generated from field: acyclic.inference.v1.ProtocolIdentity protocol = 1;
+   */
+  protocol?: ProtocolIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.CapabilitySet supported = 2;
+   */
+  supported?: CapabilitySet | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.HandshakeResponse.
+ * Use `create(HandshakeResponseSchema)` to create a new message.
+ */
+export declare const HandshakeResponseSchema: GenMessage<HandshakeResponse>;
+
+/**
+ * @generated from message acyclic.inference.v1.Error
+ */
+export declare type Error = Message<"acyclic.inference.v1.Error"> & {
+  /**
+   * @generated from field: acyclic.inference.v1.ErrorCode code = 1;
+   */
+  code: ErrorCode;
+
+  /**
+   * @generated from field: string message = 2;
+   */
+  message: string;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.Error.
+ * Use `create(ErrorSchema)` to create a new message.
+ */
+export declare const ErrorSchema: GenMessage<Error>;
+
+/**
+ * @generated from message acyclic.inference.v1.Admission
+ */
+export declare type Admission = Message<"acyclic.inference.v1.Admission"> & {
+  /**
+   * @generated from field: acyclic.inference.v1.OperationIdentity operation = 1;
+   */
+  operation?: OperationIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.inference.v1.AdmissionState state = 2;
+   */
+  state: AdmissionState;
+
+  /**
+   * @generated from field: acyclic.inference.v1.Error error = 3;
+   */
+  error?: Error | undefined;
+};
+
+/**
+ * Describes the message acyclic.inference.v1.Admission.
+ * Use `create(AdmissionSchema)` to create a new message.
+ */
+export declare const AdmissionSchema: GenMessage<Admission>;
 
 /**
  * @generated from message acyclic.inference.v1.ContextRef
@@ -127,7 +294,7 @@ export declare const ListModelsResponseSchema: GenMessage<ListModelsResponse>;
  */
 export declare type CreateContextRequest = Message<"acyclic.inference.v1.CreateContextRequest"> & {
   /**
-   * @generated from field: acyclic.harness.v1.OperationIdentity operation = 1;
+   * @generated from field: acyclic.inference.v1.OperationIdentity operation = 1;
    */
   operation?: OperationIdentity | undefined;
 
@@ -326,7 +493,7 @@ export declare const TransferContextSchema: GenMessage<TransferContext>;
  */
 export declare type MutateContextRequest = Message<"acyclic.inference.v1.MutateContextRequest"> & {
   /**
-   * @generated from field: acyclic.harness.v1.OperationIdentity operation = 1;
+   * @generated from field: acyclic.inference.v1.OperationIdentity operation = 1;
    */
   operation?: OperationIdentity | undefined;
 
@@ -403,7 +570,7 @@ export declare const RetentionSchema: GenMessage<Retention>;
  */
 export declare type RetainContextRequest = Message<"acyclic.inference.v1.RetainContextRequest"> & {
   /**
-   * @generated from field: acyclic.harness.v1.OperationIdentity operation = 1;
+   * @generated from field: acyclic.inference.v1.OperationIdentity operation = 1;
    */
   operation?: OperationIdentity | undefined;
 
@@ -429,7 +596,7 @@ export declare const RetainContextRequestSchema: GenMessage<RetainContextRequest
  */
 export declare type DeleteContextRequest = Message<"acyclic.inference.v1.DeleteContextRequest"> & {
   /**
-   * @generated from field: acyclic.harness.v1.OperationIdentity operation = 1;
+   * @generated from field: acyclic.inference.v1.OperationIdentity operation = 1;
    */
   operation?: OperationIdentity | undefined;
 
@@ -450,7 +617,7 @@ export declare const DeleteContextRequestSchema: GenMessage<DeleteContextRequest
  */
 export declare type DeleteContextResponse = Message<"acyclic.inference.v1.DeleteContextResponse"> & {
   /**
-   * @generated from field: acyclic.harness.v1.Admission admission = 1;
+   * @generated from field: acyclic.inference.v1.Admission admission = 1;
    */
   admission?: Admission | undefined;
 
@@ -548,7 +715,7 @@ export declare const ContextSchema: GenMessage<Context>;
  */
 export declare type ContextResponse = Message<"acyclic.inference.v1.ContextResponse"> & {
   /**
-   * @generated from field: acyclic.harness.v1.Admission admission = 1;
+   * @generated from field: acyclic.inference.v1.Admission admission = 1;
    */
   admission?: Admission | undefined;
 
@@ -590,7 +757,7 @@ export declare const GenerationSettingsSchema: GenMessage<GenerationSettings>;
  */
 export declare type GenerateRequest = Message<"acyclic.inference.v1.GenerateRequest"> & {
   /**
-   * @generated from field: acyclic.harness.v1.OperationIdentity operation = 1;
+   * @generated from field: acyclic.inference.v1.OperationIdentity operation = 1;
    */
   operation?: OperationIdentity | undefined;
 
@@ -761,7 +928,7 @@ export declare const RunSchema: GenMessage<Run>;
  */
 export declare type GenerateResponse = Message<"acyclic.inference.v1.GenerateResponse"> & {
   /**
-   * @generated from field: acyclic.harness.v1.Admission admission = 1;
+   * @generated from field: acyclic.inference.v1.Admission admission = 1;
    */
   admission?: Admission | undefined;
 
@@ -852,6 +1019,76 @@ export declare type RunEvent = Message<"acyclic.inference.v1.RunEvent"> & {
  * Use `create(RunEventSchema)` to create a new message.
  */
 export declare const RunEventSchema: GenMessage<RunEvent>;
+
+/**
+ * @generated from enum acyclic.inference.v1.ErrorCode
+ */
+export enum ErrorCode {
+  /**
+   * @generated from enum value: ERROR_CODE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: ERROR_CODE_NOT_FOUND = 1;
+   */
+  NOT_FOUND = 1,
+
+  /**
+   * @generated from enum value: ERROR_CODE_CONFLICT = 2;
+   */
+  CONFLICT = 2,
+
+  /**
+   * @generated from enum value: ERROR_CODE_UNSUPPORTED = 3;
+   */
+  UNSUPPORTED = 3,
+
+  /**
+   * @generated from enum value: ERROR_CODE_INVALID = 4;
+   */
+  INVALID = 4,
+
+  /**
+   * @generated from enum value: ERROR_CODE_UNAUTHORIZED = 5;
+   */
+  UNAUTHORIZED = 5,
+}
+
+/**
+ * Describes the enum acyclic.inference.v1.ErrorCode.
+ */
+export declare const ErrorCodeSchema: GenEnum<ErrorCode>;
+
+/**
+ * @generated from enum acyclic.inference.v1.AdmissionState
+ */
+export enum AdmissionState {
+  /**
+   * @generated from enum value: ADMISSION_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: ADMISSION_STATE_ACCEPTED = 1;
+   */
+  ACCEPTED = 1,
+
+  /**
+   * @generated from enum value: ADMISSION_STATE_REJECTED = 2;
+   */
+  REJECTED = 2,
+
+  /**
+   * @generated from enum value: ADMISSION_STATE_INDETERMINATE = 3;
+   */
+  INDETERMINATE = 3,
+}
+
+/**
+ * Describes the enum acyclic.inference.v1.AdmissionState.
+ */
+export declare const AdmissionStateSchema: GenEnum<AdmissionState>;
 
 /**
  * @generated from enum acyclic.inference.v1.ItemKind

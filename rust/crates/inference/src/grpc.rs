@@ -1,11 +1,10 @@
 //! Authenticated gRPC adapter for managed and customer-hosted Inference services.
 
 use crate::{
-    ContextEdit, ContextMutation, ContextSnapshot, GenerateRequest, InferenceProvider, Item,
-    ItemKind, ModelCapabilities, MutateContextRequest, Provenance, Retention, RunEvent,
+    ContextEdit, ContextMutation, ContextSnapshot, Error, GenerateRequest, InferenceProvider, Item,
+    ItemKind, ModelCapabilities, MutateContextRequest, Provenance, Result, Retention, RunEvent,
     RunEventKind, RunResult, RunSnapshot, RunTerminal, Usage, UsageReceipt, wire,
 };
-use acyclic_contracts::{Error, Result};
 use async_trait::async_trait;
 use std::collections::BTreeSet;
 use tonic::{
@@ -14,7 +13,7 @@ use tonic::{
     transport::{Channel, Endpoint},
 };
 
-use wire::acyclic::{harness::v1 as harness, inference::v1 as protocol};
+use wire::acyclic::inference::v1 as protocol;
 
 /// Authenticated network provider implementing the same logical surface as local engines.
 #[derive(Clone)]
@@ -70,8 +69,8 @@ fn rpc(error: tonic::Status) -> Error {
     }
 }
 
-fn operation(request_id: String) -> harness::OperationIdentity {
-    harness::OperationIdentity {
+fn operation(request_id: String) -> protocol::OperationIdentity {
+    protocol::OperationIdentity {
         operation_id: request_id.clone(),
         idempotency_key: request_id,
     }
@@ -294,23 +293,23 @@ fn decode_run(run: protocol::Run) -> Result<RunSnapshot> {
     })
 }
 
-fn admitted(admission: Option<harness::Admission>) -> Result<()> {
+fn admitted(admission: Option<protocol::Admission>) -> Result<()> {
     let admission = admission.ok_or_else(|| Error::Invalid("missing admission".to_owned()))?;
-    match harness::AdmissionState::try_from(admission.state)
+    match protocol::AdmissionState::try_from(admission.state)
         .map_err(|_| Error::Invalid("unknown admission state".to_owned()))?
     {
-        harness::AdmissionState::Accepted => Ok(()),
-        harness::AdmissionState::Rejected => {
+        protocol::AdmissionState::Accepted => Ok(()),
+        protocol::AdmissionState::Rejected => {
             let message = admission
                 .error
                 .map(|error| error.message)
                 .unwrap_or_else(|| "request rejected".to_owned());
             Err(Error::Invalid(message))
         }
-        harness::AdmissionState::Indeterminate => Err(Error::Conflict(
+        protocol::AdmissionState::Indeterminate => Err(Error::Conflict(
             "admission is indeterminate; reconcile the same request identity".to_owned(),
         )),
-        harness::AdmissionState::Unspecified => {
+        protocol::AdmissionState::Unspecified => {
             Err(Error::Invalid("unspecified admission state".to_owned()))
         }
     }

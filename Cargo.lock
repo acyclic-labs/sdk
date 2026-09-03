@@ -140,11 +140,11 @@ dependencies = [
 name = "acyclic-inference"
 version = "1.0.0"
 dependencies = [
- "acyclic-contracts",
  "async-trait",
  "bytes",
  "prost",
- "protoc-bin-vendored",
+ "prost-types",
+ "thiserror",
  "tokio",
  "tonic",
  "tonic-prost",

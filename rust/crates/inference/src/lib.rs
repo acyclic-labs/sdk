@@ -3,7 +3,6 @@
 //! The public surface describes logical model work and retained Contexts. Placement,
 //! batching, physical caches, KV movement, workers, and rebalancing are provider internals.
 
-use acyclic_contracts::{Error, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,14 +15,6 @@ use uuid::Uuid;
 pub mod wire {
     /// Versioned public packages.
     pub mod acyclic {
-        /// Shared operation and admission messages.
-        pub mod harness {
-            /// Harness protocol revision 1.
-            pub mod v1 {
-                tonic::include_proto!("acyclic.harness.v1");
-            }
-        }
-
         /// Inference Context and Run messages.
         pub mod inference {
             /// Inference protocol revision 1.
@@ -33,6 +24,26 @@ pub mod wire {
         }
     }
 }
+
+/// Errors returned by the public Inference boundary.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum Error {
+    /// The requested resource does not exist.
+    #[error("resource not found: {0}")]
+    NotFound(String),
+    /// The request conflicts with an existing immutable identity or revision.
+    #[error("conflict: {0}")]
+    Conflict(String),
+    /// The selected model or service lacks a required capability.
+    #[error("unsupported capability: {0}")]
+    Unsupported(String),
+    /// The request is malformed or outside an advertised bound.
+    #[error("invalid request: {0}")]
+    Invalid(String),
+}
+
+/// Result returned by the public Inference SDK.
+pub type Result<T> = std::result::Result<T, Error>;
 
 mod grpc;
 pub use grpc::ManagedInference;
