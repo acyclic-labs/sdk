@@ -178,6 +178,28 @@ impl<A, O> Clone for Fs<A, O> {
 }
 
 impl<A, O> Fs<A, O> {
+    /// Deployment guarantees supplied when this engine was composed.
+    #[must_use]
+    pub fn capabilities(&self) -> EmbeddedCapabilities {
+        self.inner.capabilities
+    }
+
+    /// Derives the deployment-scoped stable identity for one canonical name.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid workspace name without storage access.
+    pub fn workspace_id(
+        &self,
+        name: impl AsRef<str>,
+    ) -> Result<crate::WorkspaceId, crate::WorkspaceNameError> {
+        let name = crate::WorkspaceName::new(name)?;
+        Ok(crate::WorkspaceId::derive(
+            self.inner.workspace_namespace,
+            &name,
+        ))
+    }
+
     pub(crate) fn same_deployment(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
@@ -191,8 +213,8 @@ impl<A, O> Fs<A, O> {
 /// One independently configured volume handle reconstructed from authority.
 pub struct Volume<A, O> {
     pub(crate) fs: Fs<A, O>,
-    id: VolumeId,
-    config: VolumeConfig,
+    pub(crate) id: VolumeId,
+    pub(crate) config: VolumeConfig,
 }
 
 impl<A, O> Clone for Volume<A, O> {
@@ -1289,6 +1311,30 @@ impl
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
+    pub(crate) async fn generation_parents(
+        &self,
+        volume: &Volume<A, O>,
+        generation: GenerationId,
+    ) -> Result<Vec<GenerationId>, crate::workspace::WorkspaceError> {
+        let object = ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: generation.digest(),
+        };
+        let (root, _) = read_generation_root(
+            &self.inner.objects,
+            object,
+            volume.config,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        if root.volume_id != volume.id {
+            return Err(crate::workspace::WorkspaceError::ForeignGeneration);
+        }
+        Ok(root.parents)
+    }
+
     /// Creates or recovers one canonical named workspace with deployment-
     /// appropriate portable defaults.
     ///
@@ -8843,7 +8889,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     }
 }
 
-async fn read_generation_root<O: AsyncObjectStore>(
+pub(crate) async fn read_generation_root<O: AsyncObjectStore>(
     objects: &O,
     generation_root: ObjectId,
     config: VolumeConfig,

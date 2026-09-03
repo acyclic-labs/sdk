@@ -181,6 +181,12 @@ impl<A, O> Workspace<A, O> {
     pub fn name(&self) -> &WorkspaceName {
         &self.name
     }
+
+    /// Exact immutable filesystem profile selected when this workspace was created.
+    #[must_use]
+    pub const fn profile(&self) -> crate::model::FilesystemProfile {
+        self.volume.config.profile
+    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
@@ -877,6 +883,27 @@ pub struct Transaction<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
+    /// Creates one new regular file and rejects an existing destination.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid or existing paths, unsupported metadata, size limits,
+    /// and authenticated engine failures.
+    pub async fn create_file(
+        &mut self,
+        path: &str,
+        bytes: Bytes,
+        metadata: FileMetadata,
+    ) -> Result<(), WorkspaceError> {
+        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        self.apply(vec![AuthoredMutation::CreateFile {
+            path,
+            bytes,
+            metadata,
+        }])
+        .await
+    }
+
     /// Streams bytes into immutable content without changing the transaction's
     /// candidate namespace. Unused content remains a safe collectible orphan.
     ///
@@ -1167,11 +1194,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ///
     /// Rejects invalid or missing paths and bounded engine failures.
     pub async fn rename(&mut self, source: &str, destination: &str) -> Result<(), WorkspaceError> {
+        self.rename_with_replace(source, destination, true).await
+    }
+
+    /// Atomically renames one namespace binding with an exact replacement policy.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid or missing paths, a disallowed existing destination,
+    /// and bounded engine failures.
+    pub async fn rename_with_replace(
+        &mut self,
+        source: &str,
+        destination: &str,
+        replace: bool,
+    ) -> Result<(), WorkspaceError> {
         let limits = self.checkout.volume_config().limits;
         self.apply(vec![AuthoredMutation::Rename {
             source: customer_path(source, limits)?,
             destination: customer_path(destination, limits)?,
-            replace: true,
+            replace,
         }])
         .await
     }
@@ -2115,6 +2157,19 @@ impl<A, O> Generation<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
+    /// Returns the exact immutable parent generation identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authenticated storage or identity failure for malformed state.
+    pub async fn parents(&self) -> Result<Vec<GenerationId>, WorkspaceError> {
+        self.workspace
+            .volume
+            .fs
+            .generation_parents(&self.workspace.volume, self.id)
+            .await
+    }
+
     /// Reads at most `maximum_bytes` from one complete file in this exact
     /// immutable generation.
     ///

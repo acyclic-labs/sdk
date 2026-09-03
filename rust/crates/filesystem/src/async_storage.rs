@@ -14,6 +14,33 @@ use std::mem::size_of;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
+/// Runtime-appropriate bound for storage futures.
+///
+/// Native service futures must move between executor workers. Browser futures
+/// may retain thread-affine JavaScript transaction handles.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait StorageFuture: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> StorageFuture for T {}
+
+/// Runtime-appropriate bound for storage futures.
+#[cfg(target_arch = "wasm32")]
+pub trait StorageFuture {}
+#[cfg(target_arch = "wasm32")]
+impl<T> StorageFuture for T {}
+
+/// Runtime-appropriate provider ownership bound.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait StorageProvider: Send + Sync {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + Sync + ?Sized> StorageProvider for T {}
+
+/// Runtime-appropriate provider ownership bound.
+#[cfg(target_arch = "wasm32")]
+pub trait StorageProvider {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> StorageProvider for T {}
+
 /// Exact identity of one authenticated decoded-object representation.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[doc(hidden)]
@@ -79,12 +106,9 @@ pub(crate) fn poll_immediate<F: Future>(future: F) -> F::Output {
     poll_ready(future).expect("immediate storage adapter suspended")
 }
 
-/// Nonblocking authority-store contract without a native-thread `Send` bound.
-///
-/// Browser implementations may retain JavaScript transaction handles inside
-/// returned futures. Native fleet implementations may choose stronger `Send`
-/// guarantees in their own adapters.
-pub trait AsyncAuthorityStore {
+/// Nonblocking authority-store contract. Futures are sendable on native
+/// targets and may remain JavaScript-thread-affine in browsers.
+pub trait AsyncAuthorityStore: StorageProvider {
     /// Asynchronously creates one authority.
     fn create_authority(
         &self,
@@ -92,7 +116,7 @@ pub trait AsyncAuthorityStore {
         genesis_epoch: Epoch,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = AuthorityResult<CreateAuthorityOutcome>>;
+    ) -> impl Future<Output = AuthorityResult<CreateAuthorityOutcome>> + StorageFuture;
 
     /// Asynchronously reads the linearizable head.
     fn head(
@@ -100,7 +124,7 @@ pub trait AsyncAuthorityStore {
         authority_id: AuthorityId,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = AuthorityResult<Head>>;
+    ) -> impl Future<Output = AuthorityResult<Head>> + StorageFuture;
 
     /// Asynchronously compares and appends one durable operation.
     fn compare_and_append(
@@ -111,7 +135,7 @@ pub trait AsyncAuthorityStore {
         commit: ProposedCommit,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = AuthorityResult<AppendOutcome>>;
+    ) -> impl Future<Output = AuthorityResult<AppendOutcome>> + StorageFuture;
 
     /// Asynchronously replays one bounded contiguous page.
     fn replay(
@@ -121,7 +145,7 @@ pub trait AsyncAuthorityStore {
         limit: ReplayLimit,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = AuthorityResult<Vec<crate::foundation::DurableCommit>>>;
+    ) -> impl Future<Output = AuthorityResult<Vec<crate::foundation::DurableCommit>>> + StorageFuture;
 
     /// Asynchronously advances a writer fence.
     fn fence(
@@ -130,7 +154,7 @@ pub trait AsyncAuthorityStore {
         expected: Head,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = AuthorityResult<FenceOutcome>>;
+    ) -> impl Future<Output = AuthorityResult<FenceOutcome>> + StorageFuture;
 
     /// Asynchronously resolves one idempotent operation identity.
     fn find_operation(
@@ -139,7 +163,7 @@ pub trait AsyncAuthorityStore {
         operation_id: OperationId,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = AuthorityResult<Option<crate::foundation::DurableCommit>>>;
+    ) -> impl Future<Output = AuthorityResult<Option<crate::foundation::DurableCommit>>> + StorageFuture;
 }
 
 /// Explicit opt-in for synchronous stores that are safe to complete inline.
@@ -152,7 +176,7 @@ pub trait ImmediateAuthorityStore: AuthorityStore {}
 impl<T: ImmediateAuthorityStore + ?Sized> ImmediateAuthorityStore for Arc<T> {}
 
 /// Nonblocking immutable-object contract suitable for `IndexedDB` and remote I/O.
-pub trait AsyncObjectStore {
+pub trait AsyncObjectStore: StorageProvider {
     /// Returns one exact decoded immutable representation when resident.
     ///
     /// # Errors
@@ -186,7 +210,7 @@ pub trait AsyncObjectStore {
         bytes: Bytes,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = ObjectResult<()>>;
+    ) -> impl Future<Output = ObjectResult<()>> + StorageFuture;
 
     /// Asynchronously reads one complete bounded object.
     fn read(
@@ -195,7 +219,7 @@ pub trait AsyncObjectStore {
         maximum_bytes: u64,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = ObjectResult<ObjectRead>>;
+    ) -> impl Future<Output = ObjectResult<ObjectRead>> + StorageFuture;
 
     /// Asynchronously reads an ordered batch of complete bounded objects.
     ///
@@ -208,7 +232,7 @@ pub trait AsyncObjectStore {
         requests: &[ObjectReadRequest],
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = ObjectResult<Vec<ObjectRead>>>;
+    ) -> impl Future<Output = ObjectResult<Vec<ObjectRead>>> + StorageFuture;
 
     /// Asynchronously probes one exact object identity.
     fn contains(
@@ -216,7 +240,7 @@ pub trait AsyncObjectStore {
         object_id: ObjectId,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = ObjectResult<bool>>;
+    ) -> impl Future<Output = ObjectResult<bool>> + StorageFuture;
 }
 
 /// Explicit opt-in for synchronous stores that are safe to complete inline.

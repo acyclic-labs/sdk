@@ -16,10 +16,7 @@ bytes.workspace = true
 futures.workspace = true
 hex.workspace = true
 notify = { workspace = true, optional = true }
-prost.workspace = true
 serde.workspace = true
-tonic.workspace = true
-tonic-prost.workspace = true
 unicode-normalization.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
@@ -42,8 +39,11 @@ pkg-config = "0.3.32"
 cap-primitives = "4.0.3"
 cap-std = "4.0.3"
 fs2 = { workspace = true, optional = true }
+prost.workspace = true
 rusqlite = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["sync"] }
+tonic.workspace = true
+tonic-prost.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58.0", features = [

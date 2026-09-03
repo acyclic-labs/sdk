@@ -6,6 +6,7 @@
 //! processes and language bindings depend on this crate, not the reverse.
 
 /// Generated public gRPC schema and client/server bindings.
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(missing_docs, clippy::all)]
 pub mod wire {
     /// Shared operation and capability messages used by Filesystem.
@@ -25,10 +26,15 @@ pub mod wire {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+mod wire_service;
+#[cfg(not(target_arch = "wasm32"))]
+pub use wire_service::{FilesystemWireLimits, FilesystemWireService};
+
 /// Canonical public descriptor set used by compatibility and conformance gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-filesystem-v1.bin");
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod public_contract_tests {
     use super::{FILE_DESCRIPTOR_SET, wire};
 
