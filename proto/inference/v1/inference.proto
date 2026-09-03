@@ -42,7 +42,9 @@ message ModelCapabilities {
 }
 
 message ListModelsRequest {}
-message ListModelsResponse { repeated ModelCapabilities models = 1; }
+message ListModelsResponse {
+  repeated ModelCapabilities models = 1;
+}
 
 message CreateContextRequest {
   acyclic.harness.v1.OperationIdentity operation = 1;
@@ -50,7 +52,9 @@ message CreateContextRequest {
   repeated Item items = 3;
 }
 
-message InspectContextRequest { ContextRef context = 1; }
+message InspectContextRequest {
+  ContextRef context = 1;
+}
 
 message Insert {
   string target_item_id = 1;
@@ -76,14 +80,18 @@ message EditContext {
   repeated ContextEdit edits = 1;
 }
 
-message TruncateContext { optional string through_item_id = 1; }
+message TruncateContext {
+  optional string through_item_id = 1;
+}
 
 message CompactContext {
   repeated string selected_item_ids = 1;
   repeated Item replacement = 2;
 }
 
-message TransferContext { string model = 1; }
+message TransferContext {
+  string model = 1;
+}
 
 message MutateContextRequest {
   acyclic.harness.v1.OperationIdentity operation = 1;
@@ -167,7 +175,9 @@ message GenerateRequest {
   GenerationSettings settings = 4;
 }
 
-message RunRef { string run_id = 1; }
+message RunRef {
+  string run_id = 1;
+}
 
 enum RunTerminal {
   RUN_TERMINAL_UNSPECIFIED = 0;
@@ -213,7 +223,9 @@ message GenerateResponse {
   Run run = 2;
 }
 
-message InspectRunRequest { RunRef run = 1; }
+message InspectRunRequest {
+  RunRef run = 1;
+}
 
 message WatchRunRequest {
   RunRef run = 1;
