@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc -b --force",
     "check": "tsc -b --force --pretty false",
-    "test": "bun run check && bun test typescript/packages/sdk/test",
+    "test": "bun run check && bun test typescript/packages/*/test",
     "licenses": "bun scripts/check-js-licenses.mjs"
   },
   "devDependencies": {
