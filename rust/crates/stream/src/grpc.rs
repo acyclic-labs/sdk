@@ -27,6 +27,9 @@ use crate::{
     wire,
 };
 
+const OPERATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(1);
+
 /// Connection configuration failure.
 #[derive(Debug, Error)]
 pub enum ConnectError {
@@ -182,20 +185,33 @@ impl Client {
             Request<T>,
         ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
     {
-        let start = self.preferred.load(Ordering::Relaxed) % self.channels.len();
+        let deadline = tokio::time::Instant::now() + OPERATION_DEADLINE;
         let mut last = None;
-        for offset in 0..self.channels.len() {
-            let index = (start + offset) % self.channels.len();
-            match call(self.service(index), self.request(body.clone())).await {
-                Ok(response) => {
-                    self.preferred.store(index, Ordering::Relaxed);
-                    return Ok(response.into_inner());
+        loop {
+            let start = self.preferred.load(Ordering::Relaxed) % self.channels.len();
+            for offset in 0..self.channels.len() {
+                let index = (start + offset) % self.channels.len();
+                match tokio::time::timeout_at(
+                    deadline,
+                    call(self.service(index), self.request(body.clone())),
+                )
+                .await
+                {
+                    Ok(Ok(response)) => {
+                        self.preferred.store(index, Ordering::Relaxed);
+                        return Ok(response.into_inner());
+                    }
+                    Ok(Err(error)) if retryable(&error) => last = Some(error),
+                    Ok(Err(error)) => return Err(status(error)),
+                    Err(_) => return Err(last.map_or(StreamError::Unavailable, status)),
                 }
-                Err(error) if retryable(&error) => last = Some(error),
-                Err(error) => return Err(status(error)),
+            }
+            tokio::time::sleep_until((tokio::time::Instant::now() + RETRY_DELAY).min(deadline))
+                .await;
+            if tokio::time::Instant::now() >= deadline {
+                return Err(last.map_or(StreamError::Unavailable, status));
             }
         }
-        Err(last.map_or(StreamError::Unavailable, status))
     }
 
     async fn records(
