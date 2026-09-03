@@ -9,7 +9,7 @@ use thiserror::Error;
 use tonic::{
     Code, Request, Response, Status,
     metadata::{Ascii, MetadataValue},
-    transport::{Channel, Endpoint},
+    transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
 };
 
 use crate::{
@@ -68,9 +68,38 @@ impl Client {
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, ConnectError> {
-        let endpoint = Endpoint::from_shared(endpoint.as_ref().to_owned())?;
+        Self::connect_with_tls(endpoint, bearer_token, None).await
+    }
+
+    /// Connects to a TLS endpoint augmented by one caller-pinned private CA certificate.
+    pub async fn connect_with_ca_certificate(
+        endpoint: impl AsRef<str>,
+        bearer_token: impl AsRef<str>,
+        certificate_pem: impl AsRef<[u8]>,
+    ) -> Result<Self, ConnectError> {
+        let certificate_pem = certificate_pem.as_ref();
+        if certificate_pem.is_empty() || certificate_pem.len() > 64 * 1024 {
+            return Err(ConnectError::InvalidCredential);
+        }
+        Self::connect_with_tls(
+            endpoint,
+            bearer_token,
+            Some(Certificate::from_pem(certificate_pem)),
+        )
+        .await
+    }
+
+    async fn connect_with_tls(
+        endpoint: impl AsRef<str>,
+        bearer_token: impl AsRef<str>,
+        certificate: Option<Certificate>,
+    ) -> Result<Self, ConnectError> {
+        let mut endpoint = Endpoint::from_shared(endpoint.as_ref().to_owned())?;
         if endpoint.uri().scheme_str() != Some("https") {
             return Err(ConnectError::InsecureEndpoint);
+        }
+        if let Some(certificate) = certificate {
+            endpoint = endpoint.tls_config(ClientTlsConfig::new().ca_certificate(certificate))?;
         }
         let authorization = format!("Bearer {}", bearer_token.as_ref())
             .parse::<MetadataValue<Ascii>>()

@@ -7,6 +7,7 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 use thiserror::Error;
 
+pub mod conformance;
 pub mod grpc;
 mod memory;
 
