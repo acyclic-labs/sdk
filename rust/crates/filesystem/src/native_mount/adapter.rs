@@ -2440,24 +2440,39 @@ mod tests {
     // in `FuseTSession::start`; it exists to make that race reproducible on
     // demand, not to gate CI.
     #[cfg(target_os = "macos")]
+    fn join_scoped<T>(
+        handle: std::thread::ScopedJoinHandle<'_, T>,
+    ) -> Result<T, Box<dyn std::error::Error>> {
+        handle.join().map_err(|panic_payload| {
+            let message = panic_payload
+                .downcast_ref::<&str>()
+                .map(|value| (*value).to_owned())
+                .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "thread panicked with a non-string payload".to_owned());
+            message.into()
+        })
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "mounts two live FUSE-T sessions concurrently in one process to reproduce a \
                 vendor startup race; run manually with \
                 `cargo test -p acyclic-fs-mount -- --ignored fuse_t_mount`"]
-    fn two_concurrent_fuse_t_mounts_in_one_process_both_become_visible() {
-        let source_a = Arc::new(source(FilesystemProfile::Posix).expect("volume a"));
-        let source_b = Arc::new(source(FilesystemProfile::Posix).expect("volume b"));
-        let temporary_a = tempfile::tempdir().expect("tempdir a");
-        let temporary_b = tempfile::tempdir().expect("tempdir b");
+    fn two_concurrent_fuse_t_mounts_in_one_process_both_become_visible()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source_a = Arc::new(source(FilesystemProfile::Posix)?);
+        let source_b = Arc::new(source(FilesystemProfile::Posix)?);
+        let temporary_a = tempfile::tempdir()?;
+        let temporary_b = tempfile::tempdir()?;
         let request_a = crate::NativeMountRequest {
             mount_id: crate::MountId::new(),
-            volume_id: source_a.volume_id().expect("volume id a"),
+            volume_id: source_a.volume_id()?,
             destination: temporary_a.path().to_path_buf(),
             writable: true,
         };
         let request_b = crate::NativeMountRequest {
             mount_id: crate::MountId::new(),
-            volume_id: source_b.volume_id().expect("volume id b"),
+            volume_id: source_b.volume_id()?,
             destination: temporary_b.path().to_path_buf(),
             writable: true,
         };
@@ -2467,11 +2482,10 @@ mod tests {
         let (result_a, result_b) = std::thread::scope(|scope| {
             let handle_a = scope.spawn(|| crate::mount_native(request_a, dyn_source_a));
             let handle_b = scope.spawn(|| crate::mount_native(request_b, dyn_source_b));
-            (
-                handle_a.join().expect("mount a thread panicked"),
-                handle_b.join().expect("mount b thread panicked"),
-            )
+            (join_scoped(handle_a), join_scoped(handle_b))
         });
+        let result_a = result_a?;
+        let result_b = result_b?;
 
         let a_ok = result_a.is_ok();
         let b_ok = result_b.is_ok();
@@ -2496,6 +2510,7 @@ mod tests {
             "expected both concurrent FUSE-T mounts to become visible; see BUGS.md's \
              go-nfsv4 startup-race note if this fails"
         );
+        Ok(())
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
