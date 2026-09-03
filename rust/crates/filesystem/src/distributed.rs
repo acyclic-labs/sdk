@@ -2,9 +2,10 @@
 
 use crate::cancellation::CancellationToken;
 use crate::foundation::{
-    AuthorityId, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
-    authority_commit_digest,
+    AuthorityId, Digest, DurableCommit, Epoch, GenerationId, Head, OperationId, ProposedCommit,
+    Sequence, authority_commit_digest,
 };
+use crate::kernel::{decode_published_generation, decode_volume_created};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters};
 use crate::storage::{
     AppendOutcome as FsAppendOutcome, AuthorityReceipt, AuthorityResult, AuthorityStoreError,
@@ -23,6 +24,8 @@ use std::sync::Arc;
 const STREAM_RECORD_LIMIT: u64 = acyclic_stream::MAX_RECORD_BYTES as u64;
 const GENESIS_DOMAIN: &[u8] = b"acyclic-fs-stream-genesis-v1\0";
 const EPOCH_DOMAIN: &[u8] = b"acyclic-fs-stream-epoch-v1\0";
+const LINEAGE_DOMAIN: &[u8] = b"acyclic-fs-stream-lineage-v1\0";
+const LINEAGE_TAIL_DOMAIN: &[u8] = b"acyclic-fs-stream-lineage-tail-v1\0";
 
 /// Filesystem authority over native hierarchical Streams.
 ///
@@ -123,6 +126,144 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
 }
 
 impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityStore<P> {
+    fn supports_native_generation_fork(&self) -> bool {
+        true
+    }
+
+    async fn fork_generation_authority(
+        &self,
+        source_authority: AuthorityId,
+        source_generation: GenerationId,
+        destination_authority: AuthorityId,
+        operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<CreateAuthorityOutcome> {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let source_lineage =
+            lineage_path(source_authority).map_err(OperationFailure::before_work)?;
+        let source_locator = generation_path(source_authority, source_generation)
+            .map_err(OperationFailure::before_work)?;
+        let locator_record = read_one(self.provider.as_ref(), source_locator, 0)
+            .await
+            .map_err(OperationFailure::before_work)?;
+        let forked_at =
+            decode_lineage_tail(&locator_record.value).map_err(OperationFailure::before_work)?;
+        if forked_at == 0 {
+            return Err(OperationFailure::before_work(AuthorityStoreError::Corrupt(
+                "generation locator selected an empty lineage".to_owned(),
+            )));
+        }
+        let selected = read_one(
+            self.provider.as_ref(),
+            source_lineage.clone(),
+            forked_at - 1,
+        )
+        .await
+        .map_err(OperationFailure::before_work)?;
+        if decode_lineage_generation(&selected.value).map_err(OperationFailure::before_work)?
+            != source_generation
+        {
+            return Err(OperationFailure::before_work(AuthorityStoreError::Corrupt(
+                "generation locator and lineage disagree".to_owned(),
+            )));
+        }
+        let destination_records =
+            records_path(destination_authority).map_err(OperationFailure::before_work)?;
+        let destination_epochs =
+            epochs_path(destination_authority).map_err(OperationFailure::before_work)?;
+        let destination_lineage =
+            lineage_path(destination_authority).map_err(OperationFailure::before_work)?;
+        let destination_locator = generation_path(destination_authority, source_generation)
+            .map_err(OperationFailure::before_work)?;
+        self.provider
+            .fork(acyclic_stream::ForkRequest {
+                source: source_lineage,
+                destination: destination_lineage,
+                at_tail: Some(forked_at),
+                idempotency_key: Some(
+                    stream_key(b"fork-lineage", &operation_id.into_bytes())
+                        .map_err(OperationFailure::before_work)?,
+                ),
+            })
+            .await
+            .map_err(|error| OperationFailure::before_work(map_stream_error(error)))?;
+        let request = acyclic_stream::CommitRequest {
+            conditions: vec![
+                acyclic_stream::CommitCondition::Absent {
+                    path: destination_records.clone(),
+                },
+                acyclic_stream::CommitCondition::Absent {
+                    path: destination_epochs.clone(),
+                },
+                acyclic_stream::CommitCondition::Absent {
+                    path: destination_locator.clone(),
+                },
+            ],
+            mutations: vec![
+                acyclic_stream::CommitMutation::Append {
+                    path: destination_records,
+                    records: vec![encode_epoch(GENESIS_DOMAIN, Epoch::GENESIS)],
+                },
+                acyclic_stream::CommitMutation::Append {
+                    path: destination_epochs,
+                    records: vec![encode_epoch(EPOCH_DOMAIN, Epoch::GENESIS)],
+                },
+                acyclic_stream::CommitMutation::Append {
+                    path: destination_locator,
+                    records: vec![encode_lineage_tail(forked_at)],
+                },
+            ],
+            idempotency_key: stream_key(b"fork-authority", &operation_id.into_bytes())
+                .map_err(OperationFailure::before_work)?,
+        };
+        let mut work = authority_write_work(3, 96);
+        work.authority_records_read = 2;
+        work.backend_read_operations = 2;
+        work.backend_write_operations = 2;
+        work.durability_operations = 2;
+        admit_authority(work, budget)?;
+        match self.provider.commit(request).await {
+            Ok(acyclic_stream::CommitOutcome::Committed(_)) => authority_success(
+                CreateAuthorityOutcome::Created(Head::genesis(Epoch::GENESIS)),
+                work,
+                budget,
+            ),
+            Ok(acyclic_stream::CommitOutcome::Conflict(_)) => {
+                let snapshot = self
+                    .snapshot(destination_authority)
+                    .await
+                    .map_err(|error| OperationFailure::new(error, work))?;
+                let locator = generation_path(destination_authority, source_generation)
+                    .map_err(|error| OperationFailure::new(error, work))?;
+                let record = read_one(self.provider.as_ref(), locator, 0)
+                    .await
+                    .map_err(|error| OperationFailure::new(error, work))?;
+                if snapshot.head == Head::genesis(Epoch::GENESIS)
+                    && decode_lineage_tail(&record.value)
+                        .map_err(|error| OperationFailure::new(error, work))?
+                        == forked_at
+                {
+                    authority_success(
+                        CreateAuthorityOutcome::Existing(snapshot.head),
+                        work,
+                        budget,
+                    )
+                } else {
+                    Err(OperationFailure::new(
+                        AuthorityStoreError::Rejected(
+                            "destination generation fork conflicts with existing state".to_owned(),
+                        ),
+                        work,
+                    ))
+                }
+            }
+            Err(error) => Err(OperationFailure::new(map_stream_error(error), work)),
+        }
+    }
+
     async fn create_authority(
         &self,
         authority_id: AuthorityId,
@@ -288,35 +429,113 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         let epochs = epochs_path(authority_id).map_err(OperationFailure::before_work)?;
         let operation = operation_path(authority_id, durable.operation_id)
             .map_err(OperationFailure::before_work)?;
+        let mut conditions = vec![
+            acyclic_stream::CommitCondition::Tail {
+                path: records.clone(),
+                expected: snapshot.record_tail,
+            },
+            acyclic_stream::CommitCondition::Tail {
+                path: epochs,
+                expected: snapshot.epoch_tail,
+            },
+            acyclic_stream::CommitCondition::Absent {
+                path: operation.clone(),
+            },
+        ];
+        let mut mutations = vec![
+            acyclic_stream::CommitMutation::Append {
+                path: records,
+                records: vec![encoded.clone()],
+            },
+            acyclic_stream::CommitMutation::Append {
+                path: operation,
+                records: vec![encoded],
+            },
+        ];
+        let mut authority_records = 2_u64;
+        let mut authority_bytes = u64::try_from(durable.payload.len()).unwrap_or(u64::MAX);
+        if let Some(generation) = generation_from_payload(&durable.payload) {
+            let lineage = lineage_path(authority_id).map_err(OperationFailure::before_work)?;
+            let locator =
+                generation_path(authority_id, generation).map_err(OperationFailure::before_work)?;
+            match self.provider.tail(locator.clone()).await {
+                Ok(1) => {
+                    let record = read_one(self.provider.as_ref(), locator, 0)
+                        .await
+                        .map_err(OperationFailure::before_work)?;
+                    let located_tail = decode_lineage_tail(&record.value)
+                        .map_err(OperationFailure::before_work)?;
+                    if located_tail == 0 {
+                        return Err(OperationFailure::before_work(AuthorityStoreError::Corrupt(
+                            "generation locator selected an empty lineage".to_owned(),
+                        )));
+                    }
+                    let lineage_record =
+                        read_one(self.provider.as_ref(), lineage, located_tail - 1)
+                            .await
+                            .map_err(OperationFailure::before_work)?;
+                    if decode_lineage_generation(&lineage_record.value)
+                        .map_err(OperationFailure::before_work)?
+                        != generation
+                    {
+                        return Err(OperationFailure::before_work(AuthorityStoreError::Corrupt(
+                            "generation locator does not identify its lineage record".to_owned(),
+                        )));
+                    }
+                }
+                Err(acyclic_stream::StreamError::NotFound) => {
+                    let lineage_tail = match self.provider.tail(lineage.clone()).await {
+                        Ok(tail) => tail,
+                        Err(acyclic_stream::StreamError::NotFound) => 0,
+                        Err(error) => {
+                            return Err(OperationFailure::before_work(map_stream_error(error)));
+                        }
+                    };
+                    conditions.push(if lineage_tail == 0 {
+                        acyclic_stream::CommitCondition::Absent {
+                            path: lineage.clone(),
+                        }
+                    } else {
+                        acyclic_stream::CommitCondition::Tail {
+                            path: lineage.clone(),
+                            expected: lineage_tail,
+                        }
+                    });
+                    conditions.push(acyclic_stream::CommitCondition::Absent {
+                        path: locator.clone(),
+                    });
+                    let lineage_record = encode_lineage_generation(generation);
+                    let locator_record = encode_lineage_tail(lineage_tail.saturating_add(1));
+                    authority_bytes = authority_bytes
+                        .saturating_add(u64::try_from(lineage_record.len()).unwrap_or(u64::MAX))
+                        .saturating_add(u64::try_from(locator_record.len()).unwrap_or(u64::MAX));
+                    mutations.push(acyclic_stream::CommitMutation::Append {
+                        path: lineage,
+                        records: vec![lineage_record],
+                    });
+                    mutations.push(acyclic_stream::CommitMutation::Append {
+                        path: locator,
+                        records: vec![locator_record],
+                    });
+                    authority_records = authority_records.saturating_add(2);
+                }
+                Ok(_) => {
+                    return Err(OperationFailure::before_work(AuthorityStoreError::Corrupt(
+                        "generation locator contains an invalid record count".to_owned(),
+                    )));
+                }
+                Err(error) => {
+                    return Err(OperationFailure::before_work(map_stream_error(error)));
+                }
+            }
+        }
         let request = acyclic_stream::CommitRequest {
-            conditions: vec![
-                acyclic_stream::CommitCondition::Tail {
-                    path: records.clone(),
-                    expected: snapshot.record_tail,
-                },
-                acyclic_stream::CommitCondition::Tail {
-                    path: epochs,
-                    expected: snapshot.epoch_tail,
-                },
-                acyclic_stream::CommitCondition::Absent {
-                    path: operation.clone(),
-                },
-            ],
-            mutations: vec![
-                acyclic_stream::CommitMutation::Append {
-                    path: records,
-                    records: vec![encoded.clone()],
-                },
-                acyclic_stream::CommitMutation::Append {
-                    path: operation,
-                    records: vec![encoded],
-                },
-            ],
+            conditions,
+            mutations,
             idempotency_key: stream_key(b"operation", &durable.operation_id.into_bytes())
                 .map_err(OperationFailure::before_work)?,
         };
-        let work =
-            authority_write_work(2, u64::try_from(durable.payload.len()).unwrap_or(u64::MAX));
+        let work = authority_write_work(authority_records, authority_bytes);
         admit_authority(work, budget)?;
         match self.provider.commit(request).await {
             Ok(acyclic_stream::CommitOutcome::Committed(_)) => {
@@ -787,6 +1006,25 @@ fn operation_path(
     .map_err(map_stream_error)
 }
 
+fn lineage_path(
+    authority_id: AuthorityId,
+) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
+    acyclic_stream::StreamPath::new(format!("{}/lineage", authority_prefix(authority_id)))
+        .map_err(map_stream_error)
+}
+
+fn generation_path(
+    authority_id: AuthorityId,
+    generation: GenerationId,
+) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
+    acyclic_stream::StreamPath::new(format!(
+        "{}/generations/{}",
+        authority_prefix(authority_id),
+        hex::encode(generation.digest().as_bytes())
+    ))
+    .map_err(map_stream_error)
+}
+
 fn stream_key(
     domain: &[u8],
     identity: &[u8],
@@ -808,6 +1046,60 @@ fn encode_epoch(domain: &[u8], epoch: Epoch) -> Bytes {
     value.extend_from_slice(domain);
     value.extend_from_slice(&epoch.get().to_le_bytes());
     Bytes::from(value)
+}
+
+fn generation_from_payload(payload: &[u8]) -> Option<GenerationId> {
+    if let Ok(created) = decode_volume_created(payload, STREAM_RECORD_LIMIT) {
+        return Some(GenerationId::new(created.initial_generation_root.digest));
+    }
+    decode_published_generation(payload, STREAM_RECORD_LIMIT)
+        .ok()
+        .map(|published| GenerationId::new(published.generation_root.digest))
+}
+
+fn encode_lineage_generation(generation: GenerationId) -> Bytes {
+    let mut value = Vec::with_capacity(LINEAGE_DOMAIN.len().saturating_add(32));
+    value.extend_from_slice(LINEAGE_DOMAIN);
+    value.extend_from_slice(generation.digest().as_bytes());
+    Bytes::from(value)
+}
+
+fn decode_lineage_generation(encoded: &[u8]) -> Result<GenerationId, AuthorityStoreError> {
+    if encoded.len() != LINEAGE_DOMAIN.len().saturating_add(32)
+        || !encoded.starts_with(LINEAGE_DOMAIN)
+    {
+        return Err(AuthorityStoreError::Corrupt(
+            "invalid Stream generation-lineage record".to_owned(),
+        ));
+    }
+    let digest = encoded[LINEAGE_DOMAIN.len()..]
+        .try_into()
+        .map(Digest::from_bytes)
+        .map_err(|_| {
+            AuthorityStoreError::Corrupt("truncated Stream generation-lineage record".to_owned())
+        })?;
+    Ok(GenerationId::new(digest))
+}
+
+fn encode_lineage_tail(tail: u64) -> Bytes {
+    let mut value = Vec::with_capacity(LINEAGE_TAIL_DOMAIN.len().saturating_add(8));
+    value.extend_from_slice(LINEAGE_TAIL_DOMAIN);
+    value.extend_from_slice(&tail.to_le_bytes());
+    Bytes::from(value)
+}
+
+fn decode_lineage_tail(encoded: &[u8]) -> Result<u64, AuthorityStoreError> {
+    if encoded.len() != LINEAGE_TAIL_DOMAIN.len().saturating_add(8)
+        || !encoded.starts_with(LINEAGE_TAIL_DOMAIN)
+    {
+        return Err(AuthorityStoreError::Corrupt(
+            "invalid Stream generation locator".to_owned(),
+        ));
+    }
+    let bytes: [u8; 8] = encoded[LINEAGE_TAIL_DOMAIN.len()..]
+        .try_into()
+        .map_err(|_| AuthorityStoreError::Corrupt("truncated generation locator".to_owned()))?;
+    Ok(u64::from_le_bytes(bytes))
 }
 
 fn decode_epoch(encoded: &[u8], domain: &[u8]) -> Result<Epoch, AuthorityStoreError> {

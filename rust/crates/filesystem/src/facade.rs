@@ -1530,6 +1530,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             hex::encode(destination_id.into_bytes()),
         )
         .await?;
+        if self.inner.authority.supports_native_generation_fork() {
+            let forked = self
+                .inner
+                .authority
+                .fork_generation_authority(
+                    volume_authority_id(source.workspace.volume.id),
+                    source.id,
+                    volume_authority_id(destination_id.volume_id()),
+                    idempotency_key.operation_id(),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(crate::workspace::WorkspaceError::engine)?;
+            work = add(work, forked.work).map_err(crate::workspace::WorkspaceError::engine)?;
+        }
         let volume = self
             .publish_volume_creation(
                 VolumeCreation {

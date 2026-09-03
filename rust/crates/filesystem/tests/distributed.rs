@@ -3,13 +3,15 @@
 
 use acyclic_fs::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, CancellationToken,
-    CreateAuthorityOutcome, Digest, Epoch, FenceOutcome, Head, ObjectId, ObjectKind, OperationId,
-    ProposedCommit, ReplayLimit, Sequence, WorkBudget, object_digest,
+    CreateAuthorityOutcome, Digest, EmbeddedCapabilities, Epoch, FenceOutcome, ForkOptions, Fs,
+    Head, IdempotencyKey, ObjectId, ObjectKind, OperationId, ProposedCommit, ReplayLimit, Sequence,
+    WorkBudget, object_digest,
 };
 use acyclic_fs::{ProviderObjectStore, StreamAuthorityStore};
 use acyclic_objects::{MemoryObjects, ObjectsProvider};
-use acyclic_stream::MemoryStream;
+use acyclic_stream::{MemoryStream, ReadRequest, StreamPath, StreamProvider};
 use bytes::Bytes;
+use futures::StreamExt;
 use std::sync::Arc;
 
 #[tokio::test]
@@ -163,5 +165,84 @@ async fn immutable_objects_use_the_exact_public_objects_provider()
             .await
             .is_err()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let streams = Arc::new(MemoryStream::default());
+    let objects = Arc::new(MemoryObjects::default());
+    let bucket = objects
+        .create_bucket(
+            "filesystem".to_owned(),
+            Some("create-filesystem".to_owned()),
+        )
+        .await?
+        .bucket
+        .ok_or("bucket identity missing")?;
+    let fs = Fs::new(
+        StreamAuthorityStore::new(Arc::clone(&streams)),
+        ProviderObjectStore::new(objects, bucket),
+        EmbeddedCapabilities::MEMORY,
+    );
+    let source = fs.create_workspace("source").await?;
+    source.write_text("/shared", "base").await?;
+    let selected = source.head().await?;
+    let child = source
+        .fork(
+            "child",
+            ForkOptions::from_generation(selected.clone(), IdempotencyKey::from_bytes([0x51; 16])),
+        )
+        .await?;
+
+    let lineage = |workspace: acyclic_fs::WorkspaceId| {
+        StreamPath::new(format!(
+            "fs/authorities/{}/lineage",
+            hex::encode(workspace.into_bytes())
+        ))
+    };
+    let source_lineage = lineage(source.id())?;
+    let child_lineage = lineage(child.id())?;
+    let inherited = streams.tail(source_lineage.clone()).await?;
+    let mut source_records = streams
+        .read(ReadRequest {
+            path: source_lineage,
+            from: 0,
+            limit: u32::try_from(inherited)?,
+        })
+        .await?;
+    let mut child_records = streams
+        .read(ReadRequest {
+            path: child_lineage,
+            from: 0,
+            limit: u32::try_from(inherited)?,
+        })
+        .await?;
+    while let Some(source_record) = source_records.next().await {
+        let source_record = source_record?;
+        let child_record = child_records
+            .next()
+            .await
+            .ok_or("native fork omitted an inherited record")??;
+        assert_eq!(child_record, source_record);
+    }
+    assert!(child_records.next().await.is_none());
+    assert_eq!(
+        child.read("/shared", 16).await?,
+        Bytes::from_static(b"base")
+    );
+
+    source.write_text("/source-only", "source").await?;
+    let retry = source
+        .fork(
+            "child",
+            ForkOptions::from_generation(selected, IdempotencyKey::from_bytes([0x51; 16])),
+        )
+        .await?;
+    assert_eq!(retry.id(), child.id());
+    child.write_text("/child-only", "child").await?;
+    assert!(child.read("/source-only", 16).await.is_err());
+    assert!(source.read("/child-only", 16).await.is_err());
     Ok(())
 }

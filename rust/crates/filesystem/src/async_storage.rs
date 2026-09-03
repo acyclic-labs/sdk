@@ -1,8 +1,10 @@
 //! Runtime-neutral asynchronous storage contracts for browser and remote use.
 
 use crate::cancellation::CancellationToken;
-use crate::foundation::{AuthorityId, Epoch, Head, OperationId, ProposedCommit, Sequence};
-use crate::performance::WorkBudget;
+use crate::foundation::{
+    AuthorityId, Epoch, GenerationId, Head, OperationId, ProposedCommit, Sequence,
+};
+use crate::performance::{OperationFailure, WorkBudget};
 use crate::storage::{
     AppendOutcome, AuthorityResult, AuthorityStore, CreateAuthorityOutcome, FenceOutcome, ObjectId,
     ObjectRead, ObjectReadRequest, ObjectResult, ObjectStore, ReplayLimit,
@@ -109,6 +111,40 @@ pub(crate) fn poll_immediate<F: Future>(future: F) -> F::Output {
 /// Nonblocking authority-store contract. Futures are sendable on native
 /// targets and may remain JavaScript-thread-affine in browsers.
 pub trait AsyncAuthorityStore: StorageProvider {
+    /// Whether this authority can create a workspace by natively forking an
+    /// immutable generation-publication prefix.
+    fn supports_native_generation_fork(&self) -> bool {
+        false
+    }
+
+    /// Creates a destination authority whose canonical generation lineage is
+    /// an immutable native prefix of `source_authority`.
+    fn fork_generation_authority(
+        &self,
+        source_authority: AuthorityId,
+        source_generation: GenerationId,
+        destination_authority: AuthorityId,
+        operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<CreateAuthorityOutcome>> + StorageFuture {
+        let _ = (
+            source_authority,
+            source_generation,
+            destination_authority,
+            operation_id,
+            budget,
+            cancellation,
+        );
+        async {
+            Err(OperationFailure::before_work(
+                crate::storage::AuthorityStoreError::Rejected(
+                    "native generation-prefix fork is unavailable".to_owned(),
+                ),
+            ))
+        }
+    }
+
     /// Asynchronously creates one authority.
     fn create_authority(
         &self,
