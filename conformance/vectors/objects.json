@@ -1,0 +1,21 @@
+{
+  "family": "objects",
+  "version": 1,
+  "cases": [
+    "bucket-identities-survive-name-reuse",
+    "every-put-creates-an-immutable-version",
+    "unqualified-delete-always-creates-a-marker",
+    "unknown-exact-delete-creates-nothing",
+    "conditions-are-exclusive-and-side-effect-free",
+    "idempotency-replays-exact-outcomes-and-rejects-rebinding",
+    "current-listings-are-lexical-and-stable",
+    "version-listings-are-newest-first-per-key",
+    "continuations-are-bound-to-the-captured-view-and-arguments",
+    "metadata-is-immutable-with-its-version",
+    "single-ranges-and-etag-conditions-are-exact",
+    "multipart-publishes-only-an-exact-completion",
+    "snapshots-capture-the-complete-bucket",
+    "forks-are-independent-after-atomic-publication",
+    "destroying-a-snapshot-does-not-change-existing-forks"
+  ]
+}

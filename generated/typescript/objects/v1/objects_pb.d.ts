@@ -2,9 +2,9 @@
 // @generated from file objects/v1/objects.proto (package acyclic.objects.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
-import type { Admission, CancelRequestSchema, CancelResponseSchema, HandshakeRequestSchema, HandshakeResponseSchema, ObserveRequestSchema, OperationIdentity, OperationStatusSchema } from "../../harness/v1/harness_pb";
+import type { Timestamp } from "@bufbuild/protobuf/wkt";
 
 /**
  * Describes the file objects/v1/objects.proto.
@@ -12,138 +12,1303 @@ import type { Admission, CancelRequestSchema, CancelResponseSchema, HandshakeReq
 export declare const file_objects_v1_objects: GenFile;
 
 /**
- * @generated from message acyclic.objects.v1.ObjectRef
+ * @generated from message acyclic.objects.v1.BucketRef
  */
-export declare type ObjectRef = Message<"acyclic.objects.v1.ObjectRef"> & {
+export declare type BucketRef = Message<"acyclic.objects.v1.BucketRef"> & {
   /**
-   * @generated from field: string version = 1;
+   * @generated from field: string bucket_id = 1;
    */
-  version: string;
+  bucketId: string;
+
+  /**
+   * @generated from field: string name = 2;
+   */
+  name: string;
 };
 
 /**
- * Describes the message acyclic.objects.v1.ObjectRef.
- * Use `create(ObjectRefSchema)` to create a new message.
+ * Describes the message acyclic.objects.v1.BucketRef.
+ * Use `create(BucketRefSchema)` to create a new message.
  */
-export declare const ObjectRefSchema: GenMessage<ObjectRef>;
+export declare const BucketRefSchema: GenMessage<BucketRef>;
 
 /**
- * @generated from message acyclic.objects.v1.PutRequest
+ * @generated from message acyclic.objects.v1.SnapshotRef
  */
-export declare type PutRequest = Message<"acyclic.objects.v1.PutRequest"> & {
+export declare type SnapshotRef = Message<"acyclic.objects.v1.SnapshotRef"> & {
   /**
-   * @generated from field: acyclic.harness.v1.OperationIdentity operation = 1;
+   * @generated from field: string snapshot_id = 1;
    */
-  operation?: OperationIdentity | undefined;
+  snapshotId: string;
 
   /**
-   * @generated from field: bytes value = 2;
+   * @generated from field: string source_bucket_id = 2;
    */
-  value: Uint8Array;
+  sourceBucketId: string;
 };
 
 /**
- * Describes the message acyclic.objects.v1.PutRequest.
- * Use `create(PutRequestSchema)` to create a new message.
+ * Describes the message acyclic.objects.v1.SnapshotRef.
+ * Use `create(SnapshotRefSchema)` to create a new message.
  */
-export declare const PutRequestSchema: GenMessage<PutRequest>;
+export declare const SnapshotRefSchema: GenMessage<SnapshotRef>;
 
 /**
- * @generated from message acyclic.objects.v1.PutResponse
+ * @generated from message acyclic.objects.v1.ReadTarget
  */
-export declare type PutResponse = Message<"acyclic.objects.v1.PutResponse"> & {
+export declare type ReadTarget = Message<"acyclic.objects.v1.ReadTarget"> & {
   /**
-   * @generated from field: acyclic.harness.v1.Admission admission = 1;
+   * @generated from oneof acyclic.objects.v1.ReadTarget.target
    */
-  admission?: Admission | undefined;
-
-  /**
-   * @generated from field: acyclic.objects.v1.ObjectRef object = 2;
-   */
-  object?: ObjectRef | undefined;
+  target: {
+    /**
+     * @generated from field: acyclic.objects.v1.BucketRef bucket = 1;
+     */
+    value: BucketRef;
+    case: "bucket";
+  } | {
+    /**
+     * @generated from field: acyclic.objects.v1.SnapshotRef snapshot = 2;
+     */
+    value: SnapshotRef;
+    case: "snapshot";
+  } | { case: undefined; value?: undefined };
 };
 
 /**
- * Describes the message acyclic.objects.v1.PutResponse.
- * Use `create(PutResponseSchema)` to create a new message.
+ * Describes the message acyclic.objects.v1.ReadTarget.
+ * Use `create(ReadTargetSchema)` to create a new message.
  */
-export declare const PutResponseSchema: GenMessage<PutResponse>;
+export declare const ReadTargetSchema: GenMessage<ReadTarget>;
 
 /**
- * @generated from message acyclic.objects.v1.GetRequest
+ * @generated from message acyclic.objects.v1.ObjectMetadata
  */
-export declare type GetRequest = Message<"acyclic.objects.v1.GetRequest"> & {
+export declare type ObjectMetadata = Message<"acyclic.objects.v1.ObjectMetadata"> & {
   /**
-   * @generated from field: acyclic.objects.v1.ObjectRef object = 1;
+   * @generated from field: string content_type = 1;
    */
-  object?: ObjectRef | undefined;
+  contentType: string;
+
+  /**
+   * @generated from field: map<string, string> user = 2;
+   */
+  user: { [key: string]: string };
+
+  /**
+   * @generated from field: string content_encoding = 3;
+   */
+  contentEncoding: string;
+
+  /**
+   * @generated from field: string cache_control = 4;
+   */
+  cacheControl: string;
+
+  /**
+   * @generated from field: string content_disposition = 5;
+   */
+  contentDisposition: string;
+
+  /**
+   * @generated from field: string content_language = 6;
+   */
+  contentLanguage: string;
+
+  /**
+   * @generated from field: optional int64 expires_unix_seconds = 7;
+   */
+  expiresUnixSeconds?: bigint | undefined;
 };
 
 /**
- * Describes the message acyclic.objects.v1.GetRequest.
- * Use `create(GetRequestSchema)` to create a new message.
+ * Describes the message acyclic.objects.v1.ObjectMetadata.
+ * Use `create(ObjectMetadataSchema)` to create a new message.
  */
-export declare const GetRequestSchema: GenMessage<GetRequest>;
+export declare const ObjectMetadataSchema: GenMessage<ObjectMetadata>;
 
 /**
- * @generated from message acyclic.objects.v1.GetResponse
+ * @generated from message acyclic.objects.v1.Preconditions
  */
-export declare type GetResponse = Message<"acyclic.objects.v1.GetResponse"> & {
+export declare type Preconditions = Message<"acyclic.objects.v1.Preconditions"> & {
   /**
-   * @generated from field: bytes value = 1;
+   * @generated from oneof acyclic.objects.v1.Preconditions.condition
    */
-  value: Uint8Array;
+  condition: {
+    /**
+     * @generated from field: bool if_absent = 1;
+     */
+    value: boolean;
+    case: "ifAbsent";
+  } | {
+    /**
+     * @generated from field: string if_match = 2;
+     */
+    value: string;
+    case: "ifMatch";
+  } | {
+    /**
+     * @generated from field: string if_version = 3;
+     */
+    value: string;
+    case: "ifVersion";
+  } | { case: undefined; value?: undefined };
 };
 
 /**
- * Describes the message acyclic.objects.v1.GetResponse.
- * Use `create(GetResponseSchema)` to create a new message.
+ * Describes the message acyclic.objects.v1.Preconditions.
+ * Use `create(PreconditionsSchema)` to create a new message.
  */
-export declare const GetResponseSchema: GenMessage<GetResponse>;
+export declare const PreconditionsSchema: GenMessage<Preconditions>;
+
+/**
+ * @generated from message acyclic.objects.v1.MutationIdentity
+ */
+export declare type MutationIdentity = Message<"acyclic.objects.v1.MutationIdentity"> & {
+  /**
+   * @generated from field: string idempotency_key = 1;
+   */
+  idempotencyKey: string;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.MutationIdentity.
+ * Use `create(MutationIdentitySchema)` to create a new message.
+ */
+export declare const MutationIdentitySchema: GenMessage<MutationIdentity>;
+
+/**
+ * @generated from message acyclic.objects.v1.Bucket
+ */
+export declare type Bucket = Message<"acyclic.objects.v1.Bucket"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.BucketRef bucket = 1;
+   */
+  bucket?: BucketRef | undefined;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp created_at = 2;
+   */
+  createdAt?: Timestamp | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.Bucket.
+ * Use `create(BucketSchema)` to create a new message.
+ */
+export declare const BucketSchema: GenMessage<Bucket>;
+
+/**
+ * @generated from message acyclic.objects.v1.CreateBucketRequest
+ */
+export declare type CreateBucketRequest = Message<"acyclic.objects.v1.CreateBucketRequest"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * @generated from field: acyclic.objects.v1.MutationIdentity mutation = 2;
+   */
+  mutation?: MutationIdentity | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.CreateBucketRequest.
+ * Use `create(CreateBucketRequestSchema)` to create a new message.
+ */
+export declare const CreateBucketRequestSchema: GenMessage<CreateBucketRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.HeadBucketRequest
+ */
+export declare type HeadBucketRequest = Message<"acyclic.objects.v1.HeadBucketRequest"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.BucketRef bucket = 1;
+   */
+  bucket?: BucketRef | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.HeadBucketRequest.
+ * Use `create(HeadBucketRequestSchema)` to create a new message.
+ */
+export declare const HeadBucketRequestSchema: GenMessage<HeadBucketRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.DeleteBucketRequest
+ */
+export declare type DeleteBucketRequest = Message<"acyclic.objects.v1.DeleteBucketRequest"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.BucketRef bucket = 1;
+   */
+  bucket?: BucketRef | undefined;
+
+  /**
+   * @generated from field: acyclic.objects.v1.MutationIdentity mutation = 2;
+   */
+  mutation?: MutationIdentity | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.DeleteBucketRequest.
+ * Use `create(DeleteBucketRequestSchema)` to create a new message.
+ */
+export declare const DeleteBucketRequestSchema: GenMessage<DeleteBucketRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.DeleteBucketResponse
+ */
+export declare type DeleteBucketResponse = Message<"acyclic.objects.v1.DeleteBucketResponse"> & {
+  /**
+   * @generated from field: bool existed = 1;
+   */
+  existed: boolean;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.DeleteBucketResponse.
+ * Use `create(DeleteBucketResponseSchema)` to create a new message.
+ */
+export declare const DeleteBucketResponseSchema: GenMessage<DeleteBucketResponse>;
+
+/**
+ * @generated from message acyclic.objects.v1.PutObjectHeader
+ */
+export declare type PutObjectHeader = Message<"acyclic.objects.v1.PutObjectHeader"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.BucketRef bucket = 1;
+   */
+  bucket?: BucketRef | undefined;
+
+  /**
+   * @generated from field: string object_key = 2;
+   */
+  objectKey: string;
+
+  /**
+   * @generated from field: acyclic.objects.v1.ObjectMetadata metadata = 3;
+   */
+  metadata?: ObjectMetadata | undefined;
+
+  /**
+   * @generated from field: acyclic.objects.v1.Preconditions preconditions = 4;
+   */
+  preconditions?: Preconditions | undefined;
+
+  /**
+   * @generated from field: acyclic.objects.v1.MutationIdentity mutation = 5;
+   */
+  mutation?: MutationIdentity | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.PutObjectHeader.
+ * Use `create(PutObjectHeaderSchema)` to create a new message.
+ */
+export declare const PutObjectHeaderSchema: GenMessage<PutObjectHeader>;
+
+/**
+ * @generated from message acyclic.objects.v1.PutObjectRequest
+ */
+export declare type PutObjectRequest = Message<"acyclic.objects.v1.PutObjectRequest"> & {
+  /**
+   * @generated from oneof acyclic.objects.v1.PutObjectRequest.frame
+   */
+  frame: {
+    /**
+     * @generated from field: acyclic.objects.v1.PutObjectHeader header = 1;
+     */
+    value: PutObjectHeader;
+    case: "header";
+  } | {
+    /**
+     * @generated from field: bytes body = 2;
+     */
+    value: Uint8Array;
+    case: "body";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message acyclic.objects.v1.PutObjectRequest.
+ * Use `create(PutObjectRequestSchema)` to create a new message.
+ */
+export declare const PutObjectRequestSchema: GenMessage<PutObjectRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.ObjectVersion
+ */
+export declare type ObjectVersion = Message<"acyclic.objects.v1.ObjectVersion"> & {
+  /**
+   * @generated from field: string version_id = 1;
+   */
+  versionId: string;
+
+  /**
+   * @generated from field: string etag = 2;
+   */
+  etag: string;
+
+  /**
+   * @generated from field: uint64 size = 3;
+   */
+  size: bigint;
+
+  /**
+   * @generated from field: bool delete_marker = 4;
+   */
+  deleteMarker: boolean;
+
+  /**
+   * @generated from field: acyclic.objects.v1.ObjectMetadata metadata = 5;
+   */
+  metadata?: ObjectMetadata | undefined;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp created_at = 6;
+   */
+  createdAt?: Timestamp | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.ObjectVersion.
+ * Use `create(ObjectVersionSchema)` to create a new message.
+ */
+export declare const ObjectVersionSchema: GenMessage<ObjectVersion>;
+
+/**
+ * @generated from message acyclic.objects.v1.GetObjectRequest
+ */
+export declare type GetObjectRequest = Message<"acyclic.objects.v1.GetObjectRequest"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.ReadTarget target = 1;
+   */
+  target?: ReadTarget | undefined;
+
+  /**
+   * @generated from field: string object_key = 2;
+   */
+  objectKey: string;
+
+  /**
+   * @generated from field: string version_id = 3;
+   */
+  versionId: string;
+
+  /**
+   * @generated from field: uint64 range_start = 4;
+   */
+  rangeStart: bigint;
+
+  /**
+   * @generated from field: optional uint64 range_end_inclusive = 5;
+   */
+  rangeEndInclusive?: bigint | undefined;
+
+  /**
+   * @generated from field: string if_match = 6;
+   */
+  ifMatch: string;
+
+  /**
+   * @generated from field: string if_none_match = 7;
+   */
+  ifNoneMatch: string;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.GetObjectRequest.
+ * Use `create(GetObjectRequestSchema)` to create a new message.
+ */
+export declare const GetObjectRequestSchema: GenMessage<GetObjectRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.GetObjectResponse
+ */
+export declare type GetObjectResponse = Message<"acyclic.objects.v1.GetObjectResponse"> & {
+  /**
+   * @generated from oneof acyclic.objects.v1.GetObjectResponse.frame
+   */
+  frame: {
+    /**
+     * @generated from field: acyclic.objects.v1.ObjectVersion version = 1;
+     */
+    value: ObjectVersion;
+    case: "version";
+  } | {
+    /**
+     * @generated from field: bytes body = 2;
+     */
+    value: Uint8Array;
+    case: "body";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message acyclic.objects.v1.GetObjectResponse.
+ * Use `create(GetObjectResponseSchema)` to create a new message.
+ */
+export declare const GetObjectResponseSchema: GenMessage<GetObjectResponse>;
+
+/**
+ * @generated from message acyclic.objects.v1.HeadObjectRequest
+ */
+export declare type HeadObjectRequest = Message<"acyclic.objects.v1.HeadObjectRequest"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.ReadTarget target = 1;
+   */
+  target?: ReadTarget | undefined;
+
+  /**
+   * @generated from field: string object_key = 2;
+   */
+  objectKey: string;
+
+  /**
+   * @generated from field: string version_id = 3;
+   */
+  versionId: string;
+
+  /**
+   * @generated from field: string if_match = 4;
+   */
+  ifMatch: string;
+
+  /**
+   * @generated from field: string if_none_match = 5;
+   */
+  ifNoneMatch: string;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.HeadObjectRequest.
+ * Use `create(HeadObjectRequestSchema)` to create a new message.
+ */
+export declare const HeadObjectRequestSchema: GenMessage<HeadObjectRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.HeadObjectResponse
+ */
+export declare type HeadObjectResponse = Message<"acyclic.objects.v1.HeadObjectResponse"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.ObjectVersion version = 1;
+   */
+  version?: ObjectVersion | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.HeadObjectResponse.
+ * Use `create(HeadObjectResponseSchema)` to create a new message.
+ */
+export declare const HeadObjectResponseSchema: GenMessage<HeadObjectResponse>;
+
+/**
+ * @generated from message acyclic.objects.v1.DeleteObjectRequest
+ */
+export declare type DeleteObjectRequest = Message<"acyclic.objects.v1.DeleteObjectRequest"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.BucketRef bucket = 1;
+   */
+  bucket?: BucketRef | undefined;
+
+  /**
+   * @generated from field: string object_key = 2;
+   */
+  objectKey: string;
+
+  /**
+   * @generated from field: string version_id = 3;
+   */
+  versionId: string;
+
+  /**
+   * @generated from field: acyclic.objects.v1.Preconditions preconditions = 4;
+   */
+  preconditions?: Preconditions | undefined;
+
+  /**
+   * @generated from field: acyclic.objects.v1.MutationIdentity mutation = 5;
+   */
+  mutation?: MutationIdentity | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.DeleteObjectRequest.
+ * Use `create(DeleteObjectRequestSchema)` to create a new message.
+ */
+export declare const DeleteObjectRequestSchema: GenMessage<DeleteObjectRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.DeleteObjectResponse
+ */
+export declare type DeleteObjectResponse = Message<"acyclic.objects.v1.DeleteObjectResponse"> & {
+  /**
+   * @generated from field: bool existed = 1;
+   */
+  existed: boolean;
+
+  /**
+   * @generated from field: acyclic.objects.v1.ObjectVersion version = 2;
+   */
+  version?: ObjectVersion | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.DeleteObjectResponse.
+ * Use `create(DeleteObjectResponseSchema)` to create a new message.
+ */
+export declare const DeleteObjectResponseSchema: GenMessage<DeleteObjectResponse>;
+
+/**
+ * @generated from message acyclic.objects.v1.ListObjectsRequest
+ */
+export declare type ListObjectsRequest = Message<"acyclic.objects.v1.ListObjectsRequest"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.ReadTarget target = 1;
+   */
+  target?: ReadTarget | undefined;
+
+  /**
+   * @generated from field: string prefix = 2;
+   */
+  prefix: string;
+
+  /**
+   * @generated from field: string delimiter = 3;
+   */
+  delimiter: string;
+
+  /**
+   * @generated from field: acyclic.objects.v1.ListingMode mode = 4;
+   */
+  mode: ListingMode;
+
+  /**
+   * @generated from field: uint32 page_size = 5;
+   */
+  pageSize: number;
+
+  /**
+   * @generated from field: string continuation_token = 6;
+   */
+  continuationToken: string;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.ListObjectsRequest.
+ * Use `create(ListObjectsRequestSchema)` to create a new message.
+ */
+export declare const ListObjectsRequestSchema: GenMessage<ListObjectsRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.ListEntry
+ */
+export declare type ListEntry = Message<"acyclic.objects.v1.ListEntry"> & {
+  /**
+   * @generated from field: string object_key = 1;
+   */
+  objectKey: string;
+
+  /**
+   * @generated from field: acyclic.objects.v1.ObjectVersion version = 2;
+   */
+  version?: ObjectVersion | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.ListEntry.
+ * Use `create(ListEntrySchema)` to create a new message.
+ */
+export declare const ListEntrySchema: GenMessage<ListEntry>;
+
+/**
+ * @generated from message acyclic.objects.v1.ListObjectsResponse
+ */
+export declare type ListObjectsResponse = Message<"acyclic.objects.v1.ListObjectsResponse"> & {
+  /**
+   * @generated from field: repeated acyclic.objects.v1.ListEntry entries = 1;
+   */
+  entries: ListEntry[];
+
+  /**
+   * @generated from field: repeated string common_prefixes = 2;
+   */
+  commonPrefixes: string[];
+
+  /**
+   * @generated from field: string continuation_token = 3;
+   */
+  continuationToken: string;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.ListObjectsResponse.
+ * Use `create(ListObjectsResponseSchema)` to create a new message.
+ */
+export declare const ListObjectsResponseSchema: GenMessage<ListObjectsResponse>;
+
+/**
+ * @generated from message acyclic.objects.v1.CreateMultipartRequest
+ */
+export declare type CreateMultipartRequest = Message<"acyclic.objects.v1.CreateMultipartRequest"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.BucketRef bucket = 1;
+   */
+  bucket?: BucketRef | undefined;
+
+  /**
+   * @generated from field: string object_key = 2;
+   */
+  objectKey: string;
+
+  /**
+   * @generated from field: acyclic.objects.v1.ObjectMetadata metadata = 3;
+   */
+  metadata?: ObjectMetadata | undefined;
+
+  /**
+   * @generated from field: acyclic.objects.v1.Preconditions preconditions = 4;
+   */
+  preconditions?: Preconditions | undefined;
+
+  /**
+   * @generated from field: acyclic.objects.v1.MutationIdentity mutation = 5;
+   */
+  mutation?: MutationIdentity | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.CreateMultipartRequest.
+ * Use `create(CreateMultipartRequestSchema)` to create a new message.
+ */
+export declare const CreateMultipartRequestSchema: GenMessage<CreateMultipartRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.MultipartUpload
+ */
+export declare type MultipartUpload = Message<"acyclic.objects.v1.MultipartUpload"> & {
+  /**
+   * @generated from field: string upload_id = 1;
+   */
+  uploadId: string;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.MultipartUpload.
+ * Use `create(MultipartUploadSchema)` to create a new message.
+ */
+export declare const MultipartUploadSchema: GenMessage<MultipartUpload>;
+
+/**
+ * @generated from message acyclic.objects.v1.UploadPartHeader
+ */
+export declare type UploadPartHeader = Message<"acyclic.objects.v1.UploadPartHeader"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.BucketRef bucket = 1;
+   */
+  bucket?: BucketRef | undefined;
+
+  /**
+   * @generated from field: string object_key = 2;
+   */
+  objectKey: string;
+
+  /**
+   * @generated from field: string upload_id = 3;
+   */
+  uploadId: string;
+
+  /**
+   * @generated from field: uint32 part_number = 4;
+   */
+  partNumber: number;
+
+  /**
+   * @generated from field: acyclic.objects.v1.MutationIdentity mutation = 5;
+   */
+  mutation?: MutationIdentity | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.UploadPartHeader.
+ * Use `create(UploadPartHeaderSchema)` to create a new message.
+ */
+export declare const UploadPartHeaderSchema: GenMessage<UploadPartHeader>;
+
+/**
+ * @generated from message acyclic.objects.v1.UploadPartRequest
+ */
+export declare type UploadPartRequest = Message<"acyclic.objects.v1.UploadPartRequest"> & {
+  /**
+   * @generated from oneof acyclic.objects.v1.UploadPartRequest.frame
+   */
+  frame: {
+    /**
+     * @generated from field: acyclic.objects.v1.UploadPartHeader header = 1;
+     */
+    value: UploadPartHeader;
+    case: "header";
+  } | {
+    /**
+     * @generated from field: bytes body = 2;
+     */
+    value: Uint8Array;
+    case: "body";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message acyclic.objects.v1.UploadPartRequest.
+ * Use `create(UploadPartRequestSchema)` to create a new message.
+ */
+export declare const UploadPartRequestSchema: GenMessage<UploadPartRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.UploadedPart
+ */
+export declare type UploadedPart = Message<"acyclic.objects.v1.UploadedPart"> & {
+  /**
+   * @generated from field: uint32 part_number = 1;
+   */
+  partNumber: number;
+
+  /**
+   * @generated from field: string etag = 2;
+   */
+  etag: string;
+
+  /**
+   * @generated from field: uint64 size = 3;
+   */
+  size: bigint;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.UploadedPart.
+ * Use `create(UploadedPartSchema)` to create a new message.
+ */
+export declare const UploadedPartSchema: GenMessage<UploadedPart>;
+
+/**
+ * @generated from message acyclic.objects.v1.ListPartsRequest
+ */
+export declare type ListPartsRequest = Message<"acyclic.objects.v1.ListPartsRequest"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.BucketRef bucket = 1;
+   */
+  bucket?: BucketRef | undefined;
+
+  /**
+   * @generated from field: string object_key = 2;
+   */
+  objectKey: string;
+
+  /**
+   * @generated from field: string upload_id = 3;
+   */
+  uploadId: string;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.ListPartsRequest.
+ * Use `create(ListPartsRequestSchema)` to create a new message.
+ */
+export declare const ListPartsRequestSchema: GenMessage<ListPartsRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.ListPartsResponse
+ */
+export declare type ListPartsResponse = Message<"acyclic.objects.v1.ListPartsResponse"> & {
+  /**
+   * @generated from field: repeated acyclic.objects.v1.UploadedPart parts = 1;
+   */
+  parts: UploadedPart[];
+};
+
+/**
+ * Describes the message acyclic.objects.v1.ListPartsResponse.
+ * Use `create(ListPartsResponseSchema)` to create a new message.
+ */
+export declare const ListPartsResponseSchema: GenMessage<ListPartsResponse>;
+
+/**
+ * @generated from message acyclic.objects.v1.CompleteMultipartRequest
+ */
+export declare type CompleteMultipartRequest = Message<"acyclic.objects.v1.CompleteMultipartRequest"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.BucketRef bucket = 1;
+   */
+  bucket?: BucketRef | undefined;
+
+  /**
+   * @generated from field: string object_key = 2;
+   */
+  objectKey: string;
+
+  /**
+   * @generated from field: string upload_id = 3;
+   */
+  uploadId: string;
+
+  /**
+   * @generated from field: repeated acyclic.objects.v1.UploadedPart parts = 4;
+   */
+  parts: UploadedPart[];
+
+  /**
+   * @generated from field: acyclic.objects.v1.MutationIdentity mutation = 5;
+   */
+  mutation?: MutationIdentity | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.CompleteMultipartRequest.
+ * Use `create(CompleteMultipartRequestSchema)` to create a new message.
+ */
+export declare const CompleteMultipartRequestSchema: GenMessage<CompleteMultipartRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.AbortMultipartRequest
+ */
+export declare type AbortMultipartRequest = Message<"acyclic.objects.v1.AbortMultipartRequest"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.BucketRef bucket = 1;
+   */
+  bucket?: BucketRef | undefined;
+
+  /**
+   * @generated from field: string object_key = 2;
+   */
+  objectKey: string;
+
+  /**
+   * @generated from field: string upload_id = 3;
+   */
+  uploadId: string;
+
+  /**
+   * @generated from field: acyclic.objects.v1.MutationIdentity mutation = 4;
+   */
+  mutation?: MutationIdentity | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.AbortMultipartRequest.
+ * Use `create(AbortMultipartRequestSchema)` to create a new message.
+ */
+export declare const AbortMultipartRequestSchema: GenMessage<AbortMultipartRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.AbortMultipartResponse
+ */
+export declare type AbortMultipartResponse = Message<"acyclic.objects.v1.AbortMultipartResponse"> & {
+  /**
+   * @generated from field: bool existed = 1;
+   */
+  existed: boolean;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.AbortMultipartResponse.
+ * Use `create(AbortMultipartResponseSchema)` to create a new message.
+ */
+export declare const AbortMultipartResponseSchema: GenMessage<AbortMultipartResponse>;
+
+/**
+ * @generated from message acyclic.objects.v1.Snapshot
+ */
+export declare type Snapshot = Message<"acyclic.objects.v1.Snapshot"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.SnapshotRef snapshot = 1;
+   */
+  snapshot?: SnapshotRef | undefined;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp created_at = 2;
+   */
+  createdAt?: Timestamp | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.Snapshot.
+ * Use `create(SnapshotSchema)` to create a new message.
+ */
+export declare const SnapshotSchema: GenMessage<Snapshot>;
+
+/**
+ * @generated from message acyclic.objects.v1.CreateSnapshotRequest
+ */
+export declare type CreateSnapshotRequest = Message<"acyclic.objects.v1.CreateSnapshotRequest"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.BucketRef bucket = 1;
+   */
+  bucket?: BucketRef | undefined;
+
+  /**
+   * @generated from field: acyclic.objects.v1.MutationIdentity mutation = 2;
+   */
+  mutation?: MutationIdentity | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.CreateSnapshotRequest.
+ * Use `create(CreateSnapshotRequestSchema)` to create a new message.
+ */
+export declare const CreateSnapshotRequestSchema: GenMessage<CreateSnapshotRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.DestroySnapshotRequest
+ */
+export declare type DestroySnapshotRequest = Message<"acyclic.objects.v1.DestroySnapshotRequest"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.SnapshotRef snapshot = 1;
+   */
+  snapshot?: SnapshotRef | undefined;
+
+  /**
+   * @generated from field: acyclic.objects.v1.MutationIdentity mutation = 2;
+   */
+  mutation?: MutationIdentity | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.DestroySnapshotRequest.
+ * Use `create(DestroySnapshotRequestSchema)` to create a new message.
+ */
+export declare const DestroySnapshotRequestSchema: GenMessage<DestroySnapshotRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.DestroySnapshotResponse
+ */
+export declare type DestroySnapshotResponse = Message<"acyclic.objects.v1.DestroySnapshotResponse"> & {
+  /**
+   * @generated from field: bool existed = 1;
+   */
+  existed: boolean;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.DestroySnapshotResponse.
+ * Use `create(DestroySnapshotResponseSchema)` to create a new message.
+ */
+export declare const DestroySnapshotResponseSchema: GenMessage<DestroySnapshotResponse>;
+
+/**
+ * @generated from message acyclic.objects.v1.ForkSnapshotRequest
+ */
+export declare type ForkSnapshotRequest = Message<"acyclic.objects.v1.ForkSnapshotRequest"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.SnapshotRef snapshot = 1;
+   */
+  snapshot?: SnapshotRef | undefined;
+
+  /**
+   * @generated from field: string destination_name = 2;
+   */
+  destinationName: string;
+
+  /**
+   * @generated from field: acyclic.objects.v1.MutationIdentity mutation = 3;
+   */
+  mutation?: MutationIdentity | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.ForkSnapshotRequest.
+ * Use `create(ForkSnapshotRequestSchema)` to create a new message.
+ */
+export declare const ForkSnapshotRequestSchema: GenMessage<ForkSnapshotRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.ForkBucketRequest
+ */
+export declare type ForkBucketRequest = Message<"acyclic.objects.v1.ForkBucketRequest"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.BucketRef source = 1;
+   */
+  source?: BucketRef | undefined;
+
+  /**
+   * @generated from field: string destination_name = 2;
+   */
+  destinationName: string;
+
+  /**
+   * @generated from field: acyclic.objects.v1.MutationIdentity mutation = 3;
+   */
+  mutation?: MutationIdentity | undefined;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.ForkBucketRequest.
+ * Use `create(ForkBucketRequestSchema)` to create a new message.
+ */
+export declare const ForkBucketRequestSchema: GenMessage<ForkBucketRequest>;
+
+/**
+ * @generated from message acyclic.objects.v1.ErrorDetail
+ */
+export declare type ErrorDetail = Message<"acyclic.objects.v1.ErrorDetail"> & {
+  /**
+   * @generated from field: acyclic.objects.v1.ErrorCode code = 1;
+   */
+  code: ErrorCode;
+
+  /**
+   * @generated from field: string request_id = 2;
+   */
+  requestId: string;
+};
+
+/**
+ * Describes the message acyclic.objects.v1.ErrorDetail.
+ * Use `create(ErrorDetailSchema)` to create a new message.
+ */
+export declare const ErrorDetailSchema: GenMessage<ErrorDetail>;
+
+/**
+ * @generated from enum acyclic.objects.v1.ListingMode
+ */
+export enum ListingMode {
+  /**
+   * @generated from enum value: LISTING_MODE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: LISTING_MODE_CURRENT = 1;
+   */
+  CURRENT = 1,
+
+  /**
+   * @generated from enum value: LISTING_MODE_VERSIONS = 2;
+   */
+  VERSIONS = 2,
+}
+
+/**
+ * Describes the enum acyclic.objects.v1.ListingMode.
+ */
+export declare const ListingModeSchema: GenEnum<ListingMode>;
+
+/**
+ * @generated from enum acyclic.objects.v1.ErrorCode
+ */
+export enum ErrorCode {
+  /**
+   * @generated from enum value: ERROR_CODE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: ERROR_CODE_INVALID_ARGUMENT = 1;
+   */
+  INVALID_ARGUMENT = 1,
+
+  /**
+   * @generated from enum value: ERROR_CODE_NOT_FOUND = 2;
+   */
+  NOT_FOUND = 2,
+
+  /**
+   * @generated from enum value: ERROR_CODE_ALREADY_EXISTS = 3;
+   */
+  ALREADY_EXISTS = 3,
+
+  /**
+   * @generated from enum value: ERROR_CODE_PRECONDITION_FAILED = 4;
+   */
+  PRECONDITION_FAILED = 4,
+
+  /**
+   * @generated from enum value: ERROR_CODE_IDEMPOTENCY_MISMATCH = 5;
+   */
+  IDEMPOTENCY_MISMATCH = 5,
+
+  /**
+   * @generated from enum value: ERROR_CODE_TOKEN_EXPIRED = 6;
+   */
+  TOKEN_EXPIRED = 6,
+
+  /**
+   * @generated from enum value: ERROR_CODE_QUOTA_EXCEEDED = 7;
+   */
+  QUOTA_EXCEEDED = 7,
+
+  /**
+   * @generated from enum value: ERROR_CODE_UNSUPPORTED = 8;
+   */
+  UNSUPPORTED = 8,
+
+  /**
+   * @generated from enum value: ERROR_CODE_UNAVAILABLE = 9;
+   */
+  UNAVAILABLE = 9,
+}
+
+/**
+ * Describes the enum acyclic.objects.v1.ErrorCode.
+ */
+export declare const ErrorCodeSchema: GenEnum<ErrorCode>;
+
+/**
+ * @generated from service acyclic.objects.v1.BucketsService
+ */
+export declare const BucketsService: GenService<{
+  /**
+   * @generated from rpc acyclic.objects.v1.BucketsService.CreateBucket
+   */
+  createBucket: {
+    methodKind: "unary";
+    input: typeof CreateBucketRequestSchema;
+    output: typeof BucketSchema;
+  },
+  /**
+   * @generated from rpc acyclic.objects.v1.BucketsService.HeadBucket
+   */
+  headBucket: {
+    methodKind: "unary";
+    input: typeof HeadBucketRequestSchema;
+    output: typeof BucketSchema;
+  },
+  /**
+   * @generated from rpc acyclic.objects.v1.BucketsService.DeleteBucket
+   */
+  deleteBucket: {
+    methodKind: "unary";
+    input: typeof DeleteBucketRequestSchema;
+    output: typeof DeleteBucketResponseSchema;
+  },
+}>;
 
 /**
  * @generated from service acyclic.objects.v1.ObjectsService
  */
 export declare const ObjectsService: GenService<{
   /**
-   * @generated from rpc acyclic.objects.v1.ObjectsService.Handshake
+   * @generated from rpc acyclic.objects.v1.ObjectsService.PutObject
    */
-  handshake: {
-    methodKind: "unary";
-    input: typeof HandshakeRequestSchema;
-    output: typeof HandshakeResponseSchema;
+  putObject: {
+    methodKind: "client_streaming";
+    input: typeof PutObjectRequestSchema;
+    output: typeof ObjectVersionSchema;
   },
   /**
-   * @generated from rpc acyclic.objects.v1.ObjectsService.Put
+   * @generated from rpc acyclic.objects.v1.ObjectsService.GetObject
    */
-  put: {
-    methodKind: "unary";
-    input: typeof PutRequestSchema;
-    output: typeof PutResponseSchema;
+  getObject: {
+    methodKind: "server_streaming";
+    input: typeof GetObjectRequestSchema;
+    output: typeof GetObjectResponseSchema;
   },
   /**
-   * @generated from rpc acyclic.objects.v1.ObjectsService.Get
+   * @generated from rpc acyclic.objects.v1.ObjectsService.HeadObject
    */
-  get: {
+  headObject: {
     methodKind: "unary";
-    input: typeof GetRequestSchema;
-    output: typeof GetResponseSchema;
+    input: typeof HeadObjectRequestSchema;
+    output: typeof HeadObjectResponseSchema;
   },
   /**
-   * @generated from rpc acyclic.objects.v1.ObjectsService.Observe
+   * @generated from rpc acyclic.objects.v1.ObjectsService.DeleteObject
    */
-  observe: {
+  deleteObject: {
     methodKind: "unary";
-    input: typeof ObserveRequestSchema;
-    output: typeof OperationStatusSchema;
+    input: typeof DeleteObjectRequestSchema;
+    output: typeof DeleteObjectResponseSchema;
   },
   /**
-   * @generated from rpc acyclic.objects.v1.ObjectsService.Cancel
+   * @generated from rpc acyclic.objects.v1.ObjectsService.ListObjects
    */
-  cancel: {
+  listObjects: {
     methodKind: "unary";
-    input: typeof CancelRequestSchema;
-    output: typeof CancelResponseSchema;
+    input: typeof ListObjectsRequestSchema;
+    output: typeof ListObjectsResponseSchema;
+  },
+}>;
+
+/**
+ * @generated from service acyclic.objects.v1.MultipartService
+ */
+export declare const MultipartService: GenService<{
+  /**
+   * @generated from rpc acyclic.objects.v1.MultipartService.CreateMultipart
+   */
+  createMultipart: {
+    methodKind: "unary";
+    input: typeof CreateMultipartRequestSchema;
+    output: typeof MultipartUploadSchema;
+  },
+  /**
+   * @generated from rpc acyclic.objects.v1.MultipartService.UploadPart
+   */
+  uploadPart: {
+    methodKind: "client_streaming";
+    input: typeof UploadPartRequestSchema;
+    output: typeof UploadedPartSchema;
+  },
+  /**
+   * @generated from rpc acyclic.objects.v1.MultipartService.ListParts
+   */
+  listParts: {
+    methodKind: "unary";
+    input: typeof ListPartsRequestSchema;
+    output: typeof ListPartsResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.objects.v1.MultipartService.CompleteMultipart
+   */
+  completeMultipart: {
+    methodKind: "unary";
+    input: typeof CompleteMultipartRequestSchema;
+    output: typeof ObjectVersionSchema;
+  },
+  /**
+   * @generated from rpc acyclic.objects.v1.MultipartService.AbortMultipart
+   */
+  abortMultipart: {
+    methodKind: "unary";
+    input: typeof AbortMultipartRequestSchema;
+    output: typeof AbortMultipartResponseSchema;
+  },
+}>;
+
+/**
+ * @generated from service acyclic.objects.v1.SnapshotsService
+ */
+export declare const SnapshotsService: GenService<{
+  /**
+   * @generated from rpc acyclic.objects.v1.SnapshotsService.CreateSnapshot
+   */
+  createSnapshot: {
+    methodKind: "unary";
+    input: typeof CreateSnapshotRequestSchema;
+    output: typeof SnapshotSchema;
+  },
+  /**
+   * @generated from rpc acyclic.objects.v1.SnapshotsService.DestroySnapshot
+   */
+  destroySnapshot: {
+    methodKind: "unary";
+    input: typeof DestroySnapshotRequestSchema;
+    output: typeof DestroySnapshotResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.objects.v1.SnapshotsService.ForkSnapshot
+   */
+  forkSnapshot: {
+    methodKind: "unary";
+    input: typeof ForkSnapshotRequestSchema;
+    output: typeof BucketSchema;
+  },
+  /**
+   * @generated from rpc acyclic.objects.v1.SnapshotsService.ForkBucket
+   */
+  forkBucket: {
+    methodKind: "unary";
+    input: typeof ForkBucketRequestSchema;
+    output: typeof BucketSchema;
   },
 }>;
 

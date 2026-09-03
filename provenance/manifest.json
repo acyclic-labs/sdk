@@ -1,4 +1,31 @@
 {
   "$schema": "../compatibility/schemas/provenance.schema.json",
-  "imports": []
+  "imports": [
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/objects",
+      "sourceCommit": "9e19a3401a27c67dbb863d5e25a784840b1c4a1b",
+      "sourcePath": "crates/protocol/proto/objects/v1/objects.proto",
+      "destinationPath": "proto/objects/v1/objects.proto",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs Objects extraction audit"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/objects",
+      "sourceCommit": "9e19a3401a27c67dbb863d5e25a784840b1c4a1b",
+      "sourcePath": "crates/sdk/src/lib.rs",
+      "destinationPath": "rust/crates/objects/src/grpc.rs",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs Objects extraction audit"
+    }
+  ],
+  "references": [
+    {
+      "repository": "https://github.com/acyclic-labs/acyclic-website",
+      "commit": "dce3e9fb4a4a5a0457b905191a17578293056a1d",
+      "paths": ["src/lib/harness-docs.ts", "src/routes/docs/objects"],
+      "purpose": "Normative customer-facing Objects contract and compatibility surface"
+    }
+  ]
 }

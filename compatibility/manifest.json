@@ -6,7 +6,12 @@
     "harness": { "version": "0.0.0", "schemaDigest": "unreleased" },
     "filesystem": { "version": "0.0.0", "schemaDigest": "unreleased" },
     "stream": { "version": "0.0.0", "schemaDigest": "unreleased" },
-    "objects": { "version": "0.0.0", "schemaDigest": "unreleased" },
+    "objects": {
+      "version": "1.0.0",
+      "schemaDigest": "sha256:b17f7501036b2219b67219fdbf8237f1f5cd5452ab98be9bae6dcd841b83e403",
+      "descriptorDigest": "sha256:3d6d2b2e7c9120b8effbad0969ec8b63824e495e879495ccf00420cb9457cbf5",
+      "conformanceDigest": "sha256:a473cb36590f3d05d7c749f2e35c13e9783c2cbc8ef0bb569b91b2e88dbaad7b"
+    },
     "machines": { "version": "0.0.0", "schemaDigest": "unreleased" },
     "inference": {
       "version": "1.0.0",

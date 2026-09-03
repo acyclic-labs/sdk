@@ -3,8 +3,11 @@
 use acyclic_filesystem::FilesystemProvider;
 use acyclic_inference::InferenceProvider;
 use acyclic_machines::{ExecutionRequest, MachinesProvider};
-use acyclic_objects::ObjectsProvider;
+use acyclic_objects::{GetRequest, ObjectsProvider, PutRequest, ReadTarget, wire};
 use acyclic_stream::StreamProvider;
+
+/// Canonical language-neutral Objects conformance inventory.
+pub const OBJECTS_SUITE: &[u8] = include_bytes!("../../../../conformance/vectors/objects.json");
 
 /// Exercises the minimum filesystem semantics.
 pub async fn filesystem(provider: &dyn FilesystemProvider) -> Result<(), String> {
@@ -37,19 +40,53 @@ pub async fn stream(provider: &dyn StreamProvider) -> Result<(), String> {
         .ok_or_else(|| "stream ordering mismatch".into())
 }
 
-/// Exercises immutable round-trip semantics.
+/// Exercises permanent versioning, exact reads, and delete-marker semantics.
 pub async fn objects(provider: &dyn ObjectsProvider) -> Result<(), String> {
-    let reference = provider
-        .put(b"value".to_vec())
+    if OBJECTS_SUITE.is_empty() {
+        return Err("Objects conformance inventory is empty".into());
+    }
+    let created = provider
+        .create_bucket("conformance".into(), Some("create-1".into()))
+        .await
+        .map_err(|error| error.to_string())?;
+    let bucket = created
+        .bucket
+        .ok_or_else(|| "created bucket has no identity".to_owned())?;
+    let version = provider
+        .put(PutRequest {
+            bucket: bucket.clone(),
+            object_key: "answer".into(),
+            body: b"42".to_vec(),
+            metadata: wire::ObjectMetadata {
+                content_type: "text/plain".into(),
+                ..Default::default()
+            },
+            condition: None,
+            idempotency_key: Some("put-1".into()),
+        })
         .await
         .map_err(|error| error.to_string())?;
     let value = provider
-        .get(&reference)
+        .get(GetRequest {
+            target: ReadTarget::Bucket(bucket.clone()),
+            object_key: "answer".into(),
+            version_id: Some(version.version_id),
+            range: None,
+            if_match: Some(version.etag),
+            if_none_match: None,
+        })
         .await
         .map_err(|error| error.to_string())?;
-    (value == b"value")
+    if value.body != b"42" {
+        return Err("object body mismatch".into());
+    }
+    let deletion = provider
+        .delete(bucket, "absent".into(), None, None, Some("delete-1".into()))
+        .await
+        .map_err(|error| error.to_string())?;
+    (deletion.existed && deletion.marker.is_some())
         .then_some(())
-        .ok_or_else(|| "object mismatch".into())
+        .ok_or_else(|| "delete did not publish a marker".into())
 }
 
 /// Exercises portable execution request semantics.

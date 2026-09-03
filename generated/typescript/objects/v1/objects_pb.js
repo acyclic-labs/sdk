@@ -2,54 +2,340 @@
 // @generated from file objects/v1/objects.proto (package acyclic.objects.v1, syntax proto3)
 /* eslint-disable */
 
-import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
-import { file_google_api_annotations } from "../../google/api/annotations_pb";
-import { file_harness_v1_harness } from "../../harness/v1/harness_pb";
+import { enumDesc, fileDesc, messageDesc, serviceDesc, tsEnum } from "@bufbuild/protobuf/codegenv2";
+import { file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
 
 /**
  * Describes the file objects/v1/objects.proto.
  */
 export const file_objects_v1_objects = /*@__PURE__*/
-  fileDesc("ChhvYmplY3RzL3YxL29iamVjdHMucHJvdG8SEmFjeWNsaWMub2JqZWN0cy52MSIcCglPYmplY3RSZWYSDwoHdmVyc2lvbhgBIAEoCSJVCgpQdXRSZXF1ZXN0EjgKCW9wZXJhdGlvbhgBIAEoCzIlLmFjeWNsaWMuaGFybmVzcy52MS5PcGVyYXRpb25JZGVudGl0eRINCgV2YWx1ZRgCIAEoDCJuCgtQdXRSZXNwb25zZRIwCglhZG1pc3Npb24YASABKAsyHS5hY3ljbGljLmhhcm5lc3MudjEuQWRtaXNzaW9uEi0KBm9iamVjdBgCIAEoCzIdLmFjeWNsaWMub2JqZWN0cy52MS5PYmplY3RSZWYiOwoKR2V0UmVxdWVzdBItCgZvYmplY3QYASABKAsyHS5hY3ljbGljLm9iamVjdHMudjEuT2JqZWN0UmVmIhwKC0dldFJlc3BvbnNlEg0KBXZhbHVlGAEgASgMMt8ECg5PYmplY3RzU2VydmljZRJ6CglIYW5kc2hha2USJC5hY3ljbGljLmhhcm5lc3MudjEuSGFuZHNoYWtlUmVxdWVzdBolLmFjeWNsaWMuaGFybmVzcy52MS5IYW5kc2hha2VSZXNwb25zZSIggtPkkwIaOgEqIhUvdjEvb2JqZWN0czpoYW5kc2hha2USXgoDUHV0Eh4uYWN5Y2xpYy5vYmplY3RzLnYxLlB1dFJlcXVlc3QaHy5hY3ljbGljLm9iamVjdHMudjEuUHV0UmVzcG9uc2UiFoLT5JMCEDoBKiILL3YxL29iamVjdHMSYgoDR2V0Eh4uYWN5Y2xpYy5vYmplY3RzLnYxLkdldFJlcXVlc3QaHy5hY3ljbGljLm9iamVjdHMudjEuR2V0UmVzcG9uc2UiGoLT5JMCFDoBKiIPL3YxL29iamVjdHM6Z2V0EoEBCgdPYnNlcnZlEiIuYWN5Y2xpYy5oYXJuZXNzLnYxLk9ic2VydmVSZXF1ZXN0GiMuYWN5Y2xpYy5oYXJuZXNzLnYxLk9wZXJhdGlvblN0YXR1cyItgtPkkwInEiUvdjEvb2JqZWN0cy9vcGVyYXRpb25zL3tvcGVyYXRpb25faWR9EogBCgZDYW5jZWwSIS5hY3ljbGljLmhhcm5lc3MudjEuQ2FuY2VsUmVxdWVzdBoiLmFjeWNsaWMuaGFybmVzcy52MS5DYW5jZWxSZXNwb25zZSI3gtPkkwIxOgEqIiwvdjEvb2JqZWN0cy9vcGVyYXRpb25zL3tvcGVyYXRpb25faWR9OmNhbmNlbEI5WjdnaXRodWIuY29tL2FjeWNsaWMtbGFicy9zZGsvZ28vZ2VuL29iamVjdHMvdjE7b2JqZWN0c3YxYgZwcm90bzM", [file_google_api_annotations, file_harness_v1_harness]);
+  fileDesc("ChhvYmplY3RzL3YxL29iamVjdHMucHJvdG8SEmFjeWNsaWMub2JqZWN0cy52MSIsCglCdWNrZXRSZWYSEQoJYnVja2V0X2lkGAEgASgJEgwKBG5hbWUYAiABKAkiPAoLU25hcHNob3RSZWYSEwoLc25hcHNob3RfaWQYASABKAkSGAoQc291cmNlX2J1Y2tldF9pZBgCIAEoCSJ8CgpSZWFkVGFyZ2V0Ei8KBmJ1Y2tldBgBIAEoCzIdLmFjeWNsaWMub2JqZWN0cy52MS5CdWNrZXRSZWZIABIzCghzbmFwc2hvdBgCIAEoCzIfLmFjeWNsaWMub2JqZWN0cy52MS5TbmFwc2hvdFJlZkgAQggKBnRhcmdldCKzAgoOT2JqZWN0TWV0YWRhdGESFAoMY29udGVudF90eXBlGAEgASgJEjoKBHVzZXIYAiADKAsyLC5hY3ljbGljLm9iamVjdHMudjEuT2JqZWN0TWV0YWRhdGEuVXNlckVudHJ5EhgKEGNvbnRlbnRfZW5jb2RpbmcYAyABKAkSFQoNY2FjaGVfY29udHJvbBgEIAEoCRIbChNjb250ZW50X2Rpc3Bvc2l0aW9uGAUgASgJEhgKEGNvbnRlbnRfbGFuZ3VhZ2UYBiABKAkSIQoUZXhwaXJlc191bml4X3NlY29uZHMYByABKANIAIgBARorCglVc2VyRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4AUIXChVfZXhwaXJlc191bml4X3NlY29uZHMiWwoNUHJlY29uZGl0aW9ucxITCglpZl9hYnNlbnQYASABKAhIABISCghpZl9tYXRjaBgCIAEoCUgAEhQKCmlmX3ZlcnNpb24YAyABKAlIAEILCgljb25kaXRpb24iKwoQTXV0YXRpb25JZGVudGl0eRIXCg9pZGVtcG90ZW5jeV9rZXkYASABKAkiZwoGQnVja2V0Ei0KBmJ1Y2tldBgBIAEoCzIdLmFjeWNsaWMub2JqZWN0cy52MS5CdWNrZXRSZWYSLgoKY3JlYXRlZF9hdBgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiWwoTQ3JlYXRlQnVja2V0UmVxdWVzdBIMCgRuYW1lGAEgASgJEjYKCG11dGF0aW9uGAIgASgLMiQuYWN5Y2xpYy5vYmplY3RzLnYxLk11dGF0aW9uSWRlbnRpdHkiQgoRSGVhZEJ1Y2tldFJlcXVlc3QSLQoGYnVja2V0GAEgASgLMh0uYWN5Y2xpYy5vYmplY3RzLnYxLkJ1Y2tldFJlZiJ8ChNEZWxldGVCdWNrZXRSZXF1ZXN0Ei0KBmJ1Y2tldBgBIAEoCzIdLmFjeWNsaWMub2JqZWN0cy52MS5CdWNrZXRSZWYSNgoIbXV0YXRpb24YAiABKAsyJC5hY3ljbGljLm9iamVjdHMudjEuTXV0YXRpb25JZGVudGl0eSInChREZWxldGVCdWNrZXRSZXNwb25zZRIPCgdleGlzdGVkGAEgASgIIvwBCg9QdXRPYmplY3RIZWFkZXISLQoGYnVja2V0GAEgASgLMh0uYWN5Y2xpYy5vYmplY3RzLnYxLkJ1Y2tldFJlZhISCgpvYmplY3Rfa2V5GAIgASgJEjQKCG1ldGFkYXRhGAMgASgLMiIuYWN5Y2xpYy5vYmplY3RzLnYxLk9iamVjdE1ldGFkYXRhEjgKDXByZWNvbmRpdGlvbnMYBCABKAsyIS5hY3ljbGljLm9iamVjdHMudjEuUHJlY29uZGl0aW9ucxI2CghtdXRhdGlvbhgFIAEoCzIkLmFjeWNsaWMub2JqZWN0cy52MS5NdXRhdGlvbklkZW50aXR5ImIKEFB1dE9iamVjdFJlcXVlc3QSNQoGaGVhZGVyGAEgASgLMiMuYWN5Y2xpYy5vYmplY3RzLnYxLlB1dE9iamVjdEhlYWRlckgAEg4KBGJvZHkYAiABKAxIAEIHCgVmcmFtZSK8AQoNT2JqZWN0VmVyc2lvbhISCgp2ZXJzaW9uX2lkGAEgASgJEgwKBGV0YWcYAiABKAkSDAoEc2l6ZRgDIAEoBBIVCg1kZWxldGVfbWFya2VyGAQgASgIEjQKCG1ldGFkYXRhGAUgASgLMiIuYWN5Y2xpYy5vYmplY3RzLnYxLk9iamVjdE1ldGFkYXRhEi4KCmNyZWF0ZWRfYXQYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIuIBChBHZXRPYmplY3RSZXF1ZXN0Ei4KBnRhcmdldBgBIAEoCzIeLmFjeWNsaWMub2JqZWN0cy52MS5SZWFkVGFyZ2V0EhIKCm9iamVjdF9rZXkYAiABKAkSEgoKdmVyc2lvbl9pZBgDIAEoCRITCgtyYW5nZV9zdGFydBgEIAEoBBIgChNyYW5nZV9lbmRfaW5jbHVzaXZlGAUgASgESACIAQESEAoIaWZfbWF0Y2gYBiABKAkSFQoNaWZfbm9uZV9tYXRjaBgHIAEoCUIWChRfcmFuZ2VfZW5kX2luY2x1c2l2ZSJiChFHZXRPYmplY3RSZXNwb25zZRI0Cgd2ZXJzaW9uGAEgASgLMiEuYWN5Y2xpYy5vYmplY3RzLnYxLk9iamVjdFZlcnNpb25IABIOCgRib2R5GAIgASgMSABCBwoFZnJhbWUilAEKEUhlYWRPYmplY3RSZXF1ZXN0Ei4KBnRhcmdldBgBIAEoCzIeLmFjeWNsaWMub2JqZWN0cy52MS5SZWFkVGFyZ2V0EhIKCm9iamVjdF9rZXkYAiABKAkSEgoKdmVyc2lvbl9pZBgDIAEoCRIQCghpZl9tYXRjaBgEIAEoCRIVCg1pZl9ub25lX21hdGNoGAUgASgJIkgKEkhlYWRPYmplY3RSZXNwb25zZRIyCgd2ZXJzaW9uGAEgASgLMiEuYWN5Y2xpYy5vYmplY3RzLnYxLk9iamVjdFZlcnNpb24i3gEKE0RlbGV0ZU9iamVjdFJlcXVlc3QSLQoGYnVja2V0GAEgASgLMh0uYWN5Y2xpYy5vYmplY3RzLnYxLkJ1Y2tldFJlZhISCgpvYmplY3Rfa2V5GAIgASgJEhIKCnZlcnNpb25faWQYAyABKAkSOAoNcHJlY29uZGl0aW9ucxgEIAEoCzIhLmFjeWNsaWMub2JqZWN0cy52MS5QcmVjb25kaXRpb25zEjYKCG11dGF0aW9uGAUgASgLMiQuYWN5Y2xpYy5vYmplY3RzLnYxLk11dGF0aW9uSWRlbnRpdHkiWwoURGVsZXRlT2JqZWN0UmVzcG9uc2USDwoHZXhpc3RlZBgBIAEoCBIyCgd2ZXJzaW9uGAIgASgLMiEuYWN5Y2xpYy5vYmplY3RzLnYxLk9iamVjdFZlcnNpb24ixQEKEkxpc3RPYmplY3RzUmVxdWVzdBIuCgZ0YXJnZXQYASABKAsyHi5hY3ljbGljLm9iamVjdHMudjEuUmVhZFRhcmdldBIOCgZwcmVmaXgYAiABKAkSEQoJZGVsaW1pdGVyGAMgASgJEi0KBG1vZGUYBCABKA4yHy5hY3ljbGljLm9iamVjdHMudjEuTGlzdGluZ01vZGUSEQoJcGFnZV9zaXplGAUgASgNEhoKEmNvbnRpbnVhdGlvbl90b2tlbhgGIAEoCSJTCglMaXN0RW50cnkSEgoKb2JqZWN0X2tleRgBIAEoCRIyCgd2ZXJzaW9uGAIgASgLMiEuYWN5Y2xpYy5vYmplY3RzLnYxLk9iamVjdFZlcnNpb24iegoTTGlzdE9iamVjdHNSZXNwb25zZRIuCgdlbnRyaWVzGAEgAygLMh0uYWN5Y2xpYy5vYmplY3RzLnYxLkxpc3RFbnRyeRIXCg9jb21tb25fcHJlZml4ZXMYAiADKAkSGgoSY29udGludWF0aW9uX3Rva2VuGAMgASgJIoMCChZDcmVhdGVNdWx0aXBhcnRSZXF1ZXN0Ei0KBmJ1Y2tldBgBIAEoCzIdLmFjeWNsaWMub2JqZWN0cy52MS5CdWNrZXRSZWYSEgoKb2JqZWN0X2tleRgCIAEoCRI0CghtZXRhZGF0YRgDIAEoCzIiLmFjeWNsaWMub2JqZWN0cy52MS5PYmplY3RNZXRhZGF0YRI4Cg1wcmVjb25kaXRpb25zGAQgASgLMiEuYWN5Y2xpYy5vYmplY3RzLnYxLlByZWNvbmRpdGlvbnMSNgoIbXV0YXRpb24YBSABKAsyJC5hY3ljbGljLm9iamVjdHMudjEuTXV0YXRpb25JZGVudGl0eSIkCg9NdWx0aXBhcnRVcGxvYWQSEQoJdXBsb2FkX2lkGAEgASgJIrUBChBVcGxvYWRQYXJ0SGVhZGVyEi0KBmJ1Y2tldBgBIAEoCzIdLmFjeWNsaWMub2JqZWN0cy52MS5CdWNrZXRSZWYSEgoKb2JqZWN0X2tleRgCIAEoCRIRCgl1cGxvYWRfaWQYAyABKAkSEwoLcGFydF9udW1iZXIYBCABKA0SNgoIbXV0YXRpb24YBSABKAsyJC5hY3ljbGljLm9iamVjdHMudjEuTXV0YXRpb25JZGVudGl0eSJkChFVcGxvYWRQYXJ0UmVxdWVzdBI2CgZoZWFkZXIYASABKAsyJC5hY3ljbGljLm9iamVjdHMudjEuVXBsb2FkUGFydEhlYWRlckgAEg4KBGJvZHkYAiABKAxIAEIHCgVmcmFtZSI/CgxVcGxvYWRlZFBhcnQSEwoLcGFydF9udW1iZXIYASABKA0SDAoEZXRhZxgCIAEoCRIMCgRzaXplGAMgASgEImgKEExpc3RQYXJ0c1JlcXVlc3QSLQoGYnVja2V0GAEgASgLMh0uYWN5Y2xpYy5vYmplY3RzLnYxLkJ1Y2tldFJlZhISCgpvYmplY3Rfa2V5GAIgASgJEhEKCXVwbG9hZF9pZBgDIAEoCSJEChFMaXN0UGFydHNSZXNwb25zZRIvCgVwYXJ0cxgBIAMoCzIgLmFjeWNsaWMub2JqZWN0cy52MS5VcGxvYWRlZFBhcnQi2QEKGENvbXBsZXRlTXVsdGlwYXJ0UmVxdWVzdBItCgZidWNrZXQYASABKAsyHS5hY3ljbGljLm9iamVjdHMudjEuQnVja2V0UmVmEhIKCm9iamVjdF9rZXkYAiABKAkSEQoJdXBsb2FkX2lkGAMgASgJEi8KBXBhcnRzGAQgAygLMiAuYWN5Y2xpYy5vYmplY3RzLnYxLlVwbG9hZGVkUGFydBI2CghtdXRhdGlvbhgFIAEoCzIkLmFjeWNsaWMub2JqZWN0cy52MS5NdXRhdGlvbklkZW50aXR5IqUBChVBYm9ydE11bHRpcGFydFJlcXVlc3QSLQoGYnVja2V0GAEgASgLMh0uYWN5Y2xpYy5vYmplY3RzLnYxLkJ1Y2tldFJlZhISCgpvYmplY3Rfa2V5GAIgASgJEhEKCXVwbG9hZF9pZBgDIAEoCRI2CghtdXRhdGlvbhgEIAEoCzIkLmFjeWNsaWMub2JqZWN0cy52MS5NdXRhdGlvbklkZW50aXR5IikKFkFib3J0TXVsdGlwYXJ0UmVzcG9uc2USDwoHZXhpc3RlZBgBIAEoCCJtCghTbmFwc2hvdBIxCghzbmFwc2hvdBgBIAEoCzIfLmFjeWNsaWMub2JqZWN0cy52MS5TbmFwc2hvdFJlZhIuCgpjcmVhdGVkX2F0GAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJ+ChVDcmVhdGVTbmFwc2hvdFJlcXVlc3QSLQoGYnVja2V0GAEgASgLMh0uYWN5Y2xpYy5vYmplY3RzLnYxLkJ1Y2tldFJlZhI2CghtdXRhdGlvbhgCIAEoCzIkLmFjeWNsaWMub2JqZWN0cy52MS5NdXRhdGlvbklkZW50aXR5IoMBChZEZXN0cm95U25hcHNob3RSZXF1ZXN0EjEKCHNuYXBzaG90GAEgASgLMh8uYWN5Y2xpYy5vYmplY3RzLnYxLlNuYXBzaG90UmVmEjYKCG11dGF0aW9uGAIgASgLMiQuYWN5Y2xpYy5vYmplY3RzLnYxLk11dGF0aW9uSWRlbnRpdHkiKgoXRGVzdHJveVNuYXBzaG90UmVzcG9uc2USDwoHZXhpc3RlZBgBIAEoCCKaAQoTRm9ya1NuYXBzaG90UmVxdWVzdBIxCghzbmFwc2hvdBgBIAEoCzIfLmFjeWNsaWMub2JqZWN0cy52MS5TbmFwc2hvdFJlZhIYChBkZXN0aW5hdGlvbl9uYW1lGAIgASgJEjYKCG11dGF0aW9uGAMgASgLMiQuYWN5Y2xpYy5vYmplY3RzLnYxLk11dGF0aW9uSWRlbnRpdHkilAEKEUZvcmtCdWNrZXRSZXF1ZXN0Ei0KBnNvdXJjZRgBIAEoCzIdLmFjeWNsaWMub2JqZWN0cy52MS5CdWNrZXRSZWYSGAoQZGVzdGluYXRpb25fbmFtZRgCIAEoCRI2CghtdXRhdGlvbhgDIAEoCzIkLmFjeWNsaWMub2JqZWN0cy52MS5NdXRhdGlvbklkZW50aXR5Ik4KC0Vycm9yRGV0YWlsEisKBGNvZGUYASABKA4yHS5hY3ljbGljLm9iamVjdHMudjEuRXJyb3JDb2RlEhIKCnJlcXVlc3RfaWQYAiABKAkqYAoLTGlzdGluZ01vZGUSHAoYTElTVElOR19NT0RFX1VOU1BFQ0lGSUVEEAASGAoUTElTVElOR19NT0RFX0NVUlJFTlQQARIZChVMSVNUSU5HX01PREVfVkVSU0lPTlMQAiq/AgoJRXJyb3JDb2RlEhoKFkVSUk9SX0NPREVfVU5TUEVDSUZJRUQQABIfChtFUlJPUl9DT0RFX0lOVkFMSURfQVJHVU1FTlQQARIYChRFUlJPUl9DT0RFX05PVF9GT1VORBACEh0KGUVSUk9SX0NPREVfQUxSRUFEWV9FWElTVFMQAxIiCh5FUlJPUl9DT0RFX1BSRUNPTkRJVElPTl9GQUlMRUQQBBIjCh9FUlJPUl9DT0RFX0lERU1QT1RFTkNZX01JU01BVENIEAUSHAoYRVJST1JfQ09ERV9UT0tFTl9FWFBJUkVEEAYSHQoZRVJST1JfQ09ERV9RVU9UQV9FWENFRURFRBAHEhoKFkVSUk9SX0NPREVfVU5TVVBQT1JURUQQCBIaChZFUlJPUl9DT0RFX1VOQVZBSUxBQkxFEAkymQIKDkJ1Y2tldHNTZXJ2aWNlElMKDENyZWF0ZUJ1Y2tldBInLmFjeWNsaWMub2JqZWN0cy52MS5DcmVhdGVCdWNrZXRSZXF1ZXN0GhouYWN5Y2xpYy5vYmplY3RzLnYxLkJ1Y2tldBJPCgpIZWFkQnVja2V0EiUuYWN5Y2xpYy5vYmplY3RzLnYxLkhlYWRCdWNrZXRSZXF1ZXN0GhouYWN5Y2xpYy5vYmplY3RzLnYxLkJ1Y2tldBJhCgxEZWxldGVCdWNrZXQSJy5hY3ljbGljLm9iamVjdHMudjEuRGVsZXRlQnVja2V0UmVxdWVzdBooLmFjeWNsaWMub2JqZWN0cy52MS5EZWxldGVCdWNrZXRSZXNwb25zZTLkAwoOT2JqZWN0c1NlcnZpY2USVgoJUHV0T2JqZWN0EiQuYWN5Y2xpYy5vYmplY3RzLnYxLlB1dE9iamVjdFJlcXVlc3QaIS5hY3ljbGljLm9iamVjdHMudjEuT2JqZWN0VmVyc2lvbigBEloKCUdldE9iamVjdBIkLmFjeWNsaWMub2JqZWN0cy52MS5HZXRPYmplY3RSZXF1ZXN0GiUuYWN5Y2xpYy5vYmplY3RzLnYxLkdldE9iamVjdFJlc3BvbnNlMAESWwoKSGVhZE9iamVjdBIlLmFjeWNsaWMub2JqZWN0cy52MS5IZWFkT2JqZWN0UmVxdWVzdBomLmFjeWNsaWMub2JqZWN0cy52MS5IZWFkT2JqZWN0UmVzcG9uc2USYQoMRGVsZXRlT2JqZWN0EicuYWN5Y2xpYy5vYmplY3RzLnYxLkRlbGV0ZU9iamVjdFJlcXVlc3QaKC5hY3ljbGljLm9iamVjdHMudjEuRGVsZXRlT2JqZWN0UmVzcG9uc2USXgoLTGlzdE9iamVjdHMSJi5hY3ljbGljLm9iamVjdHMudjEuTGlzdE9iamVjdHNSZXF1ZXN0GicuYWN5Y2xpYy5vYmplY3RzLnYxLkxpc3RPYmplY3RzUmVzcG9uc2Uy+AMKEE11bHRpcGFydFNlcnZpY2USYgoPQ3JlYXRlTXVsdGlwYXJ0EiouYWN5Y2xpYy5vYmplY3RzLnYxLkNyZWF0ZU11bHRpcGFydFJlcXVlc3QaIy5hY3ljbGljLm9iamVjdHMudjEuTXVsdGlwYXJ0VXBsb2FkElcKClVwbG9hZFBhcnQSJS5hY3ljbGljLm9iamVjdHMudjEuVXBsb2FkUGFydFJlcXVlc3QaIC5hY3ljbGljLm9iamVjdHMudjEuVXBsb2FkZWRQYXJ0KAESWAoJTGlzdFBhcnRzEiQuYWN5Y2xpYy5vYmplY3RzLnYxLkxpc3RQYXJ0c1JlcXVlc3QaJS5hY3ljbGljLm9iamVjdHMudjEuTGlzdFBhcnRzUmVzcG9uc2USZAoRQ29tcGxldGVNdWx0aXBhcnQSLC5hY3ljbGljLm9iamVjdHMudjEuQ29tcGxldGVNdWx0aXBhcnRSZXF1ZXN0GiEuYWN5Y2xpYy5vYmplY3RzLnYxLk9iamVjdFZlcnNpb24SZwoOQWJvcnRNdWx0aXBhcnQSKS5hY3ljbGljLm9iamVjdHMudjEuQWJvcnRNdWx0aXBhcnRSZXF1ZXN0GiouYWN5Y2xpYy5vYmplY3RzLnYxLkFib3J0TXVsdGlwYXJ0UmVzcG9uc2Uy/wIKEFNuYXBzaG90c1NlcnZpY2USWQoOQ3JlYXRlU25hcHNob3QSKS5hY3ljbGljLm9iamVjdHMudjEuQ3JlYXRlU25hcHNob3RSZXF1ZXN0GhwuYWN5Y2xpYy5vYmplY3RzLnYxLlNuYXBzaG90EmoKD0Rlc3Ryb3lTbmFwc2hvdBIqLmFjeWNsaWMub2JqZWN0cy52MS5EZXN0cm95U25hcHNob3RSZXF1ZXN0GisuYWN5Y2xpYy5vYmplY3RzLnYxLkRlc3Ryb3lTbmFwc2hvdFJlc3BvbnNlElMKDEZvcmtTbmFwc2hvdBInLmFjeWNsaWMub2JqZWN0cy52MS5Gb3JrU25hcHNob3RSZXF1ZXN0GhouYWN5Y2xpYy5vYmplY3RzLnYxLkJ1Y2tldBJPCgpGb3JrQnVja2V0EiUuYWN5Y2xpYy5vYmplY3RzLnYxLkZvcmtCdWNrZXRSZXF1ZXN0GhouYWN5Y2xpYy5vYmplY3RzLnYxLkJ1Y2tldEI5WjdnaXRodWIuY29tL2FjeWNsaWMtbGFicy9zZGsvZ28vZ2VuL29iamVjdHMvdjE7b2JqZWN0c3YxYgZwcm90bzM", [file_google_protobuf_timestamp]);
 
 /**
- * Describes the message acyclic.objects.v1.ObjectRef.
- * Use `create(ObjectRefSchema)` to create a new message.
+ * Describes the message acyclic.objects.v1.BucketRef.
+ * Use `create(BucketRefSchema)` to create a new message.
  */
-export const ObjectRefSchema = /*@__PURE__*/
+export const BucketRefSchema = /*@__PURE__*/
   messageDesc(file_objects_v1_objects, 0);
 
 /**
- * Describes the message acyclic.objects.v1.PutRequest.
- * Use `create(PutRequestSchema)` to create a new message.
+ * Describes the message acyclic.objects.v1.SnapshotRef.
+ * Use `create(SnapshotRefSchema)` to create a new message.
  */
-export const PutRequestSchema = /*@__PURE__*/
+export const SnapshotRefSchema = /*@__PURE__*/
   messageDesc(file_objects_v1_objects, 1);
 
 /**
- * Describes the message acyclic.objects.v1.PutResponse.
- * Use `create(PutResponseSchema)` to create a new message.
+ * Describes the message acyclic.objects.v1.ReadTarget.
+ * Use `create(ReadTargetSchema)` to create a new message.
  */
-export const PutResponseSchema = /*@__PURE__*/
+export const ReadTargetSchema = /*@__PURE__*/
   messageDesc(file_objects_v1_objects, 2);
 
 /**
- * Describes the message acyclic.objects.v1.GetRequest.
- * Use `create(GetRequestSchema)` to create a new message.
+ * Describes the message acyclic.objects.v1.ObjectMetadata.
+ * Use `create(ObjectMetadataSchema)` to create a new message.
  */
-export const GetRequestSchema = /*@__PURE__*/
+export const ObjectMetadataSchema = /*@__PURE__*/
   messageDesc(file_objects_v1_objects, 3);
 
 /**
- * Describes the message acyclic.objects.v1.GetResponse.
- * Use `create(GetResponseSchema)` to create a new message.
+ * Describes the message acyclic.objects.v1.Preconditions.
+ * Use `create(PreconditionsSchema)` to create a new message.
  */
-export const GetResponseSchema = /*@__PURE__*/
+export const PreconditionsSchema = /*@__PURE__*/
   messageDesc(file_objects_v1_objects, 4);
+
+/**
+ * Describes the message acyclic.objects.v1.MutationIdentity.
+ * Use `create(MutationIdentitySchema)` to create a new message.
+ */
+export const MutationIdentitySchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 5);
+
+/**
+ * Describes the message acyclic.objects.v1.Bucket.
+ * Use `create(BucketSchema)` to create a new message.
+ */
+export const BucketSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 6);
+
+/**
+ * Describes the message acyclic.objects.v1.CreateBucketRequest.
+ * Use `create(CreateBucketRequestSchema)` to create a new message.
+ */
+export const CreateBucketRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 7);
+
+/**
+ * Describes the message acyclic.objects.v1.HeadBucketRequest.
+ * Use `create(HeadBucketRequestSchema)` to create a new message.
+ */
+export const HeadBucketRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 8);
+
+/**
+ * Describes the message acyclic.objects.v1.DeleteBucketRequest.
+ * Use `create(DeleteBucketRequestSchema)` to create a new message.
+ */
+export const DeleteBucketRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 9);
+
+/**
+ * Describes the message acyclic.objects.v1.DeleteBucketResponse.
+ * Use `create(DeleteBucketResponseSchema)` to create a new message.
+ */
+export const DeleteBucketResponseSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 10);
+
+/**
+ * Describes the message acyclic.objects.v1.PutObjectHeader.
+ * Use `create(PutObjectHeaderSchema)` to create a new message.
+ */
+export const PutObjectHeaderSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 11);
+
+/**
+ * Describes the message acyclic.objects.v1.PutObjectRequest.
+ * Use `create(PutObjectRequestSchema)` to create a new message.
+ */
+export const PutObjectRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 12);
+
+/**
+ * Describes the message acyclic.objects.v1.ObjectVersion.
+ * Use `create(ObjectVersionSchema)` to create a new message.
+ */
+export const ObjectVersionSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 13);
+
+/**
+ * Describes the message acyclic.objects.v1.GetObjectRequest.
+ * Use `create(GetObjectRequestSchema)` to create a new message.
+ */
+export const GetObjectRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 14);
+
+/**
+ * Describes the message acyclic.objects.v1.GetObjectResponse.
+ * Use `create(GetObjectResponseSchema)` to create a new message.
+ */
+export const GetObjectResponseSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 15);
+
+/**
+ * Describes the message acyclic.objects.v1.HeadObjectRequest.
+ * Use `create(HeadObjectRequestSchema)` to create a new message.
+ */
+export const HeadObjectRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 16);
+
+/**
+ * Describes the message acyclic.objects.v1.HeadObjectResponse.
+ * Use `create(HeadObjectResponseSchema)` to create a new message.
+ */
+export const HeadObjectResponseSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 17);
+
+/**
+ * Describes the message acyclic.objects.v1.DeleteObjectRequest.
+ * Use `create(DeleteObjectRequestSchema)` to create a new message.
+ */
+export const DeleteObjectRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 18);
+
+/**
+ * Describes the message acyclic.objects.v1.DeleteObjectResponse.
+ * Use `create(DeleteObjectResponseSchema)` to create a new message.
+ */
+export const DeleteObjectResponseSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 19);
+
+/**
+ * Describes the message acyclic.objects.v1.ListObjectsRequest.
+ * Use `create(ListObjectsRequestSchema)` to create a new message.
+ */
+export const ListObjectsRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 20);
+
+/**
+ * Describes the message acyclic.objects.v1.ListEntry.
+ * Use `create(ListEntrySchema)` to create a new message.
+ */
+export const ListEntrySchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 21);
+
+/**
+ * Describes the message acyclic.objects.v1.ListObjectsResponse.
+ * Use `create(ListObjectsResponseSchema)` to create a new message.
+ */
+export const ListObjectsResponseSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 22);
+
+/**
+ * Describes the message acyclic.objects.v1.CreateMultipartRequest.
+ * Use `create(CreateMultipartRequestSchema)` to create a new message.
+ */
+export const CreateMultipartRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 23);
+
+/**
+ * Describes the message acyclic.objects.v1.MultipartUpload.
+ * Use `create(MultipartUploadSchema)` to create a new message.
+ */
+export const MultipartUploadSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 24);
+
+/**
+ * Describes the message acyclic.objects.v1.UploadPartHeader.
+ * Use `create(UploadPartHeaderSchema)` to create a new message.
+ */
+export const UploadPartHeaderSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 25);
+
+/**
+ * Describes the message acyclic.objects.v1.UploadPartRequest.
+ * Use `create(UploadPartRequestSchema)` to create a new message.
+ */
+export const UploadPartRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 26);
+
+/**
+ * Describes the message acyclic.objects.v1.UploadedPart.
+ * Use `create(UploadedPartSchema)` to create a new message.
+ */
+export const UploadedPartSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 27);
+
+/**
+ * Describes the message acyclic.objects.v1.ListPartsRequest.
+ * Use `create(ListPartsRequestSchema)` to create a new message.
+ */
+export const ListPartsRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 28);
+
+/**
+ * Describes the message acyclic.objects.v1.ListPartsResponse.
+ * Use `create(ListPartsResponseSchema)` to create a new message.
+ */
+export const ListPartsResponseSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 29);
+
+/**
+ * Describes the message acyclic.objects.v1.CompleteMultipartRequest.
+ * Use `create(CompleteMultipartRequestSchema)` to create a new message.
+ */
+export const CompleteMultipartRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 30);
+
+/**
+ * Describes the message acyclic.objects.v1.AbortMultipartRequest.
+ * Use `create(AbortMultipartRequestSchema)` to create a new message.
+ */
+export const AbortMultipartRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 31);
+
+/**
+ * Describes the message acyclic.objects.v1.AbortMultipartResponse.
+ * Use `create(AbortMultipartResponseSchema)` to create a new message.
+ */
+export const AbortMultipartResponseSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 32);
+
+/**
+ * Describes the message acyclic.objects.v1.Snapshot.
+ * Use `create(SnapshotSchema)` to create a new message.
+ */
+export const SnapshotSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 33);
+
+/**
+ * Describes the message acyclic.objects.v1.CreateSnapshotRequest.
+ * Use `create(CreateSnapshotRequestSchema)` to create a new message.
+ */
+export const CreateSnapshotRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 34);
+
+/**
+ * Describes the message acyclic.objects.v1.DestroySnapshotRequest.
+ * Use `create(DestroySnapshotRequestSchema)` to create a new message.
+ */
+export const DestroySnapshotRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 35);
+
+/**
+ * Describes the message acyclic.objects.v1.DestroySnapshotResponse.
+ * Use `create(DestroySnapshotResponseSchema)` to create a new message.
+ */
+export const DestroySnapshotResponseSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 36);
+
+/**
+ * Describes the message acyclic.objects.v1.ForkSnapshotRequest.
+ * Use `create(ForkSnapshotRequestSchema)` to create a new message.
+ */
+export const ForkSnapshotRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 37);
+
+/**
+ * Describes the message acyclic.objects.v1.ForkBucketRequest.
+ * Use `create(ForkBucketRequestSchema)` to create a new message.
+ */
+export const ForkBucketRequestSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 38);
+
+/**
+ * Describes the message acyclic.objects.v1.ErrorDetail.
+ * Use `create(ErrorDetailSchema)` to create a new message.
+ */
+export const ErrorDetailSchema = /*@__PURE__*/
+  messageDesc(file_objects_v1_objects, 39);
+
+/**
+ * Describes the enum acyclic.objects.v1.ListingMode.
+ */
+export const ListingModeSchema = /*@__PURE__*/
+  enumDesc(file_objects_v1_objects, 0);
+
+/**
+ * @generated from enum acyclic.objects.v1.ListingMode
+ */
+export const ListingMode = /*@__PURE__*/
+  tsEnum(ListingModeSchema);
+
+/**
+ * Describes the enum acyclic.objects.v1.ErrorCode.
+ */
+export const ErrorCodeSchema = /*@__PURE__*/
+  enumDesc(file_objects_v1_objects, 1);
+
+/**
+ * @generated from enum acyclic.objects.v1.ErrorCode
+ */
+export const ErrorCode = /*@__PURE__*/
+  tsEnum(ErrorCodeSchema);
+
+/**
+ * @generated from service acyclic.objects.v1.BucketsService
+ */
+export const BucketsService = /*@__PURE__*/
+  serviceDesc(file_objects_v1_objects, 0);
 
 /**
  * @generated from service acyclic.objects.v1.ObjectsService
  */
 export const ObjectsService = /*@__PURE__*/
-  serviceDesc(file_objects_v1_objects, 0);
+  serviceDesc(file_objects_v1_objects, 1);
+
+/**
+ * @generated from service acyclic.objects.v1.MultipartService
+ */
+export const MultipartService = /*@__PURE__*/
+  serviceDesc(file_objects_v1_objects, 2);
+
+/**
+ * @generated from service acyclic.objects.v1.SnapshotsService
+ */
+export const SnapshotsService = /*@__PURE__*/
+  serviceDesc(file_objects_v1_objects, 3);
 

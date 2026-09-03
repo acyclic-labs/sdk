@@ -12,7 +12,12 @@
       "additionalProperties": {
         "type": "object",
         "required": ["version", "schemaDigest"],
-        "properties": { "version": { "type": "string" }, "schemaDigest": { "type": "string" } },
+        "properties": {
+          "version": { "type": "string" },
+          "schemaDigest": { "type": "string" },
+          "descriptorDigest": { "type": "string" },
+          "conformanceDigest": { "type": "string" }
+        },
         "additionalProperties": false
       }
     }
