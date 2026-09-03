@@ -22,7 +22,7 @@ const compatibility = await load("compatibility/manifest.json");
 const familyArtifacts = {
   filesystem: {
     schemaDigest: "proto/filesystem/v1/filesystem.proto",
-    descriptorDigest: "generated/rust/acyclic/filesystem/v1/acyclic.filesystem.v1.rs",
+    descriptorDigest: "rust/crates/filesystem/src/generated/acyclic-filesystem-v1.bin",
     conformanceDigest: "conformance/vectors/filesystem/dependency-content-range-v1.json",
   },
   stream: {

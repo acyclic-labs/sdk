@@ -212,7 +212,7 @@ pub async fn objects(provider: &dyn ObjectsProvider) -> Result<(), String> {
         .put(PutRequest {
             bucket: bucket.clone(),
             object_key: "answer".into(),
-            body: b"42".to_vec(),
+            body: bytes::Bytes::from_static(b"42"),
             metadata: wire::ObjectMetadata {
                 content_type: "text/plain".into(),
                 ..Default::default()
@@ -230,10 +230,11 @@ pub async fn objects(provider: &dyn ObjectsProvider) -> Result<(), String> {
             range: None,
             if_match: Some(version.etag),
             if_none_match: None,
+            maximum_bytes: 2,
         })
         .await
         .map_err(|error| error.to_string())?;
-    if value.body != b"42" {
+    if value.body.as_ref() != b"42" {
         return Err("object body mismatch".into());
     }
     let deletion = provider

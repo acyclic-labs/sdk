@@ -5,6 +5,44 @@
 //! packaged consumer never depends on unpublished workspace crates. Optional
 //! processes and language bindings depend on this crate, not the reverse.
 
+/// Generated public gRPC schema and client/server bindings.
+#[allow(missing_docs, clippy::all)]
+pub mod wire {
+    /// Shared operation and capability messages used by Filesystem.
+    pub mod harness {
+        /// Version 1 of the shared harness contract.
+        pub mod v1 {
+            include!("generated/acyclic.harness.v1.rs");
+        }
+    }
+
+    /// Filesystem messages and service definitions.
+    pub mod filesystem {
+        /// Version 1 of the public Filesystem contract.
+        pub mod v1 {
+            include!("generated/acyclic.filesystem.v1.rs");
+        }
+    }
+}
+
+/// Canonical public descriptor set used by compatibility and conformance gates.
+pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-filesystem-v1.bin");
+
+#[cfg(test)]
+mod public_contract_tests {
+    use super::{FILE_DESCRIPTOR_SET, wire};
+
+    #[test]
+    fn generated_transport_and_descriptor_are_packaged() {
+        assert!(!FILE_DESCRIPTOR_SET.is_empty());
+        let _ = std::any::TypeId::of::<
+            wire::filesystem::v1::filesystem_service_client::FilesystemServiceClient<
+                tonic::transport::Channel,
+            >,
+        >();
+    }
+}
+
 pub mod async_storage;
 pub mod cache;
 pub mod cancellation;

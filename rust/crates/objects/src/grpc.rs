@@ -267,12 +267,25 @@ impl PutOptions {
 }
 
 /// Options for an object read or head.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct GetOptions {
     version_id: String,
     range: Option<(u64, Option<u64>)>,
     if_match: String,
     if_none_match: String,
+    maximum_bytes: u64,
+}
+
+impl Default for GetOptions {
+    fn default() -> Self {
+        Self {
+            version_id: String::new(),
+            range: None,
+            if_match: String::new(),
+            if_none_match: String::new(),
+            maximum_bytes: crate::limits::OBJECT_BYTES,
+        }
+    }
 }
 
 impl GetOptions {
@@ -301,6 +314,13 @@ impl GetOptions {
     #[must_use]
     pub fn if_none_match(mut self, value: impl Into<String>) -> Self {
         self.if_none_match = value.into();
+        self
+    }
+
+    /// Bound the selected response body before any body frame is decoded.
+    #[must_use]
+    pub fn maximum_bytes(mut self, value: u64) -> Self {
+        self.maximum_bytes = value;
         self
     }
 }
@@ -963,7 +983,13 @@ async fn get_from(
 ) -> Result<StoredObject> {
     let requested_range = options.range;
     let (range_start, range_end_inclusive) = requested_range.unwrap_or((0, None));
-    let mut client = wire::objects_service_client::ObjectsServiceClient::new(channel.clone());
+    let frame_body_limit = usize::try_from(options.maximum_bytes.min(BODY_FRAME_BYTES as u64))
+        .map_err(|_| Error::Protocol("object response bound is not representable"))?;
+    let decoding_limit = frame_body_limit
+        .checked_add(256)
+        .ok_or(Error::Protocol("object response bound overflowed"))?;
+    let mut client = wire::objects_service_client::ObjectsServiceClient::new(channel.clone())
+        .max_decoding_message_size(decoding_limit);
     let mut stream = client
         .get_object(authenticated(
             authorization,
@@ -1000,6 +1026,9 @@ async fn get_from(
             end - start + 1
         }
     };
+    if remaining > options.maximum_bytes {
+        return Err(Error::Protocol("object body exceeds requested bound"));
+    }
     Ok(StoredObject {
         version,
         stream,
@@ -1085,9 +1114,479 @@ fn snapshot_target(reference: &wire::SnapshotRef) -> wire::ReadTarget {
     }
 }
 
+fn mutation_options(
+    idempotency_key: Option<String>,
+) -> std::result::Result<MutationOptions, crate::ObjectsError> {
+    if idempotency_key
+        .as_ref()
+        .is_some_and(|key| key.is_empty() || key.len() > 256)
+    {
+        return Err(crate::ObjectsError::Invalid("invalid idempotency key"));
+    }
+    Ok(MutationOptions {
+        idempotency_key: idempotency_key.unwrap_or_default(),
+    })
+}
+
+fn validate_bucket(
+    bucket: wire::Bucket,
+    expected: Option<&wire::BucketRef>,
+    expected_name: Option<&str>,
+) -> std::result::Result<wire::Bucket, crate::ObjectsError> {
+    let reference = bucket
+        .bucket
+        .as_ref()
+        .ok_or(crate::ObjectsError::Unavailable)?;
+    if reference.bucket_id.is_empty()
+        || reference.name.is_empty()
+        || expected.is_some_and(|value| value != reference)
+        || expected_name.is_some_and(|value| value != reference.name)
+        || bucket.created_at.is_none()
+    {
+        return Err(crate::ObjectsError::Unavailable);
+    }
+    Ok(bucket)
+}
+
+fn validate_snapshot(
+    snapshot: wire::Snapshot,
+    source: &wire::BucketRef,
+) -> std::result::Result<wire::Snapshot, crate::ObjectsError> {
+    let reference = snapshot
+        .snapshot
+        .as_ref()
+        .ok_or(crate::ObjectsError::Unavailable)?;
+    if reference.snapshot_id.is_empty()
+        || reference.source_bucket_id != source.bucket_id
+        || snapshot.created_at.is_none()
+    {
+        return Err(crate::ObjectsError::Unavailable);
+    }
+    Ok(snapshot)
+}
+
+fn provider_target(target: crate::ReadTarget) -> wire::ReadTarget {
+    match target {
+        crate::ReadTarget::Bucket(reference) => bucket_target(&reference),
+        crate::ReadTarget::Snapshot(reference) => snapshot_target(&reference),
+    }
+}
+
+fn provider_error(error: Error) -> crate::ObjectsError {
+    match error {
+        Error::Rejected { code, .. } => match code {
+            wire::ErrorCode::InvalidArgument => {
+                crate::ObjectsError::Invalid("service rejected the request")
+            }
+            wire::ErrorCode::TokenExpired => crate::ObjectsError::Unauthorized,
+            wire::ErrorCode::NotFound => crate::ObjectsError::NotFound,
+            wire::ErrorCode::AlreadyExists => crate::ObjectsError::AlreadyExists,
+            wire::ErrorCode::PreconditionFailed => crate::ObjectsError::PreconditionFailed,
+            wire::ErrorCode::IdempotencyMismatch => crate::ObjectsError::IdempotencyMismatch,
+            wire::ErrorCode::QuotaExceeded => crate::ObjectsError::Capacity,
+            wire::ErrorCode::Unsupported => crate::ObjectsError::Unsupported,
+            wire::ErrorCode::Unavailable | wire::ErrorCode::Unspecified => {
+                crate::ObjectsError::Unavailable
+            }
+        },
+        Error::InvalidEndpoint(_) | Error::InsecureEndpoint | Error::InvalidCredential => {
+            crate::ObjectsError::Invalid("invalid provider configuration")
+        }
+        Error::Transport(status)
+            if matches!(
+                status.code(),
+                tonic::Code::Unauthenticated | tonic::Code::PermissionDenied
+            ) =>
+        {
+            crate::ObjectsError::Unauthorized
+        }
+        Error::Transport(_) | Error::Protocol(_) => crate::ObjectsError::Unavailable,
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::ObjectsProvider for Client {
+    async fn create_bucket(
+        &self,
+        name: String,
+        idempotency_key: Option<String>,
+    ) -> std::result::Result<wire::Bucket, crate::ObjectsError> {
+        let expected_name = name.clone();
+        let mut client =
+            wire::buckets_service_client::BucketsServiceClient::new(self.channel.clone());
+        let bucket = client
+            .create_bucket(authenticated(
+                &self.authorization,
+                wire::CreateBucketRequest {
+                    name,
+                    mutation: mutation_options(idempotency_key)?.wire(),
+                },
+            ))
+            .await
+            .map(tonic::Response::into_inner)
+            .map_err(Error::from)
+            .map_err(provider_error)?;
+        validate_bucket(bucket, None, Some(&expected_name))
+    }
+
+    async fn head_bucket(
+        &self,
+        bucket: &wire::BucketRef,
+    ) -> std::result::Result<wire::Bucket, crate::ObjectsError> {
+        let mut client =
+            wire::buckets_service_client::BucketsServiceClient::new(self.channel.clone());
+        let response = client
+            .head_bucket(authenticated(
+                &self.authorization,
+                wire::HeadBucketRequest {
+                    bucket: Some(bucket.clone()),
+                },
+            ))
+            .await
+            .map(tonic::Response::into_inner)
+            .map_err(Error::from)
+            .map_err(provider_error)?;
+        validate_bucket(response, Some(bucket), None)
+    }
+
+    async fn delete_bucket(
+        &self,
+        bucket: &wire::BucketRef,
+        idempotency_key: Option<String>,
+    ) -> std::result::Result<bool, crate::ObjectsError> {
+        Bucket::new(self, bucket.clone())
+            .destroy(mutation_options(idempotency_key)?)
+            .await
+            .map_err(provider_error)
+    }
+
+    async fn put(
+        &self,
+        request: crate::PutRequest,
+    ) -> std::result::Result<wire::ObjectVersion, crate::ObjectsError> {
+        let bucket = Bucket::new(self, request.bucket);
+        bucket
+            .put(
+                request.object_key,
+                request.body,
+                PutOptions {
+                    metadata: request.metadata,
+                    mutation: mutation_options(request.idempotency_key)?,
+                    condition: request.condition,
+                },
+            )
+            .await
+            .map_err(provider_error)
+    }
+
+    async fn get(
+        &self,
+        request: crate::GetRequest,
+    ) -> std::result::Result<crate::BufferedObject, crate::ObjectsError> {
+        let mut object = get_from(
+            &self.channel,
+            &self.authorization,
+            provider_target(request.target),
+            request.object_key,
+            GetOptions {
+                version_id: request.version_id.unwrap_or_default(),
+                range: request.range,
+                if_match: request.if_match.unwrap_or_default(),
+                if_none_match: request.if_none_match.unwrap_or_default(),
+                maximum_bytes: request.maximum_bytes,
+            },
+        )
+        .await
+        .map_err(provider_error)?;
+        let version = object.version.clone();
+        if object.remaining > request.maximum_bytes {
+            return Err(crate::ObjectsError::Capacity);
+        }
+        let capacity =
+            usize::try_from(object.remaining).map_err(|_| crate::ObjectsError::Capacity)?;
+        let mut body = Vec::with_capacity(capacity);
+        while let Some(chunk) = object.next_chunk().await.map_err(provider_error)? {
+            body.extend_from_slice(&chunk);
+        }
+        Ok(crate::BufferedObject {
+            version,
+            body: Bytes::from(body),
+        })
+    }
+
+    async fn delete(
+        &self,
+        bucket: wire::BucketRef,
+        object_key: String,
+        version_id: Option<String>,
+        condition: Option<Condition>,
+        idempotency_key: Option<String>,
+    ) -> std::result::Result<crate::DeleteResult, crate::ObjectsError> {
+        let response = Bucket::new(self, bucket)
+            .delete(
+                object_key,
+                DeleteOptions {
+                    version_id: version_id.unwrap_or_default(),
+                    mutation: mutation_options(idempotency_key)?,
+                    condition,
+                },
+            )
+            .await
+            .map_err(provider_error)?;
+        Ok(crate::DeleteResult {
+            existed: response.existed,
+            marker: response.version,
+        })
+    }
+
+    async fn list(
+        &self,
+        target: crate::ReadTarget,
+        prefix: String,
+        delimiter: Option<String>,
+        versions: bool,
+        page_size: u32,
+        continuation: Option<String>,
+    ) -> std::result::Result<crate::ProviderListPage, crate::ObjectsError> {
+        let page = list_from(
+            &self.channel,
+            &self.authorization,
+            provider_target(target),
+            ListOptions {
+                prefix,
+                delimiter: delimiter.unwrap_or_default(),
+                versions,
+                page_size,
+                continuation: continuation.unwrap_or_default(),
+            },
+        )
+        .await
+        .map_err(provider_error)?;
+        Ok(crate::ProviderListPage {
+            entries: page.entries,
+            common_prefixes: page.common_prefixes,
+            continuation: page.continuation,
+        })
+    }
+
+    async fn snapshot(
+        &self,
+        bucket: wire::BucketRef,
+        idempotency_key: Option<String>,
+    ) -> std::result::Result<wire::Snapshot, crate::ObjectsError> {
+        let mut client =
+            wire::snapshots_service_client::SnapshotsServiceClient::new(self.channel.clone());
+        let snapshot = client
+            .create_snapshot(authenticated(
+                &self.authorization,
+                wire::CreateSnapshotRequest {
+                    bucket: Some(bucket.clone()),
+                    mutation: mutation_options(idempotency_key)?.wire(),
+                },
+            ))
+            .await
+            .map(tonic::Response::into_inner)
+            .map_err(Error::from)
+            .map_err(provider_error)?;
+        validate_snapshot(snapshot, &bucket)
+    }
+
+    async fn destroy_snapshot(
+        &self,
+        snapshot: wire::SnapshotRef,
+        idempotency_key: Option<String>,
+    ) -> std::result::Result<bool, crate::ObjectsError> {
+        Snapshot::new(self, snapshot)
+            .destroy(mutation_options(idempotency_key)?)
+            .await
+            .map_err(provider_error)
+    }
+
+    async fn fork(
+        &self,
+        source: crate::ReadTarget,
+        destination_name: String,
+        idempotency_key: Option<String>,
+    ) -> std::result::Result<wire::Bucket, crate::ObjectsError> {
+        let mut client =
+            wire::snapshots_service_client::SnapshotsServiceClient::new(self.channel.clone());
+        let mutation = mutation_options(idempotency_key)?.wire();
+        let expected_name = destination_name.clone();
+        let response = match source {
+            crate::ReadTarget::Bucket(source) => {
+                client
+                    .fork_bucket(authenticated(
+                        &self.authorization,
+                        wire::ForkBucketRequest {
+                            source: Some(source),
+                            destination_name: destination_name.clone(),
+                            mutation,
+                        },
+                    ))
+                    .await
+            }
+            crate::ReadTarget::Snapshot(snapshot) => {
+                client
+                    .fork_snapshot(authenticated(
+                        &self.authorization,
+                        wire::ForkSnapshotRequest {
+                            snapshot: Some(snapshot),
+                            destination_name,
+                            mutation,
+                        },
+                    ))
+                    .await
+            }
+        };
+        let bucket = response
+            .map(tonic::Response::into_inner)
+            .map_err(Error::from)
+            .map_err(provider_error)?;
+        validate_bucket(bucket, None, Some(&expected_name))
+    }
+
+    async fn create_multipart(
+        &self,
+        bucket: wire::BucketRef,
+        object_key: String,
+        metadata: wire::ObjectMetadata,
+        condition: Option<Condition>,
+        idempotency_key: Option<String>,
+    ) -> std::result::Result<wire::MultipartUpload, crate::ObjectsError> {
+        let upload = Bucket::new(self, bucket)
+            .create_multipart(
+                object_key,
+                PutOptions {
+                    metadata,
+                    mutation: mutation_options(idempotency_key)?,
+                    condition,
+                },
+            )
+            .await
+            .map_err(provider_error)?;
+        Ok(wire::MultipartUpload {
+            upload_id: upload.upload_id,
+        })
+    }
+
+    async fn upload_part(
+        &self,
+        bucket: wire::BucketRef,
+        object_key: String,
+        upload_id: String,
+        part_number: u32,
+        body: Bytes,
+        idempotency_key: Option<String>,
+    ) -> std::result::Result<wire::UploadedPart, crate::ObjectsError> {
+        MultipartUpload {
+            bucket: Bucket::new(self, bucket),
+            object_key,
+            upload_id,
+        }
+        .upload_part(part_number, body, mutation_options(idempotency_key)?)
+        .await
+        .map_err(provider_error)
+    }
+
+    async fn list_parts(
+        &self,
+        bucket: wire::BucketRef,
+        object_key: String,
+        upload_id: String,
+    ) -> std::result::Result<Vec<wire::UploadedPart>, crate::ObjectsError> {
+        MultipartUpload {
+            bucket: Bucket::new(self, bucket),
+            object_key,
+            upload_id,
+        }
+        .list_parts()
+        .await
+        .map_err(provider_error)
+    }
+
+    async fn complete_multipart(
+        &self,
+        bucket: wire::BucketRef,
+        object_key: String,
+        upload_id: String,
+        parts: Vec<wire::UploadedPart>,
+        idempotency_key: Option<String>,
+    ) -> std::result::Result<wire::ObjectVersion, crate::ObjectsError> {
+        MultipartUpload {
+            bucket: Bucket::new(self, bucket),
+            object_key,
+            upload_id,
+        }
+        .complete(parts, mutation_options(idempotency_key)?)
+        .await
+        .map_err(provider_error)
+    }
+
+    async fn abort_multipart(
+        &self,
+        bucket: wire::BucketRef,
+        object_key: String,
+        upload_id: String,
+        idempotency_key: Option<String>,
+    ) -> std::result::Result<bool, crate::ObjectsError> {
+        MultipartUpload {
+            bucket: Bucket::new(self, bucket),
+            object_key,
+            upload_id,
+        }
+        .abort(mutation_options(idempotency_key)?)
+        .await
+        .map_err(provider_error)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_provider<T: crate::ObjectsProvider>() {}
+
+    #[test]
+    fn remote_client_implements_the_public_provider_boundary() {
+        assert_provider::<Client>();
+    }
+
+    #[test]
+    fn provider_idempotency_keys_match_memory_validation() {
+        assert!(matches!(
+            mutation_options(Some(String::new())),
+            Err(crate::ObjectsError::Invalid(_))
+        ));
+        assert!(matches!(
+            mutation_options(Some("x".repeat(257))),
+            Err(crate::ObjectsError::Invalid(_))
+        ));
+        assert!(mutation_options(None).is_ok());
+        assert!(mutation_options(Some("key".into())).is_ok());
+    }
+
+    #[test]
+    fn provider_rejects_malformed_and_substituted_identities() {
+        let expected = wire::BucketRef {
+            bucket_id: "bucket-1".into(),
+            name: "expected".into(),
+        };
+        assert!(matches!(
+            validate_bucket(wire::Bucket::default(), Some(&expected), None),
+            Err(crate::ObjectsError::Unavailable)
+        ));
+        let substituted = wire::Bucket {
+            bucket: Some(wire::BucketRef {
+                bucket_id: "bucket-2".into(),
+                name: "expected".into(),
+            }),
+            created_at: Some(prost_types::Timestamp::default()),
+        };
+        assert!(matches!(
+            validate_bucket(substituted, Some(&expected), None),
+            Err(crate::ObjectsError::Unavailable)
+        ));
+    }
 
     #[tokio::test]
     async fn plaintext_customer_endpoint_fails_before_connecting() {

@@ -16,7 +16,10 @@ bytes.workspace = true
 futures.workspace = true
 hex.workspace = true
 notify = { workspace = true, optional = true }
+prost.workspace = true
 serde.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
 unicode-normalization.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

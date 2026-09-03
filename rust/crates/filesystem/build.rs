@@ -1,20 +1,24 @@
 //! Builds the reviewed high-level FUSE-T bridge on macOS only.
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_NATIVE_MOUNT");
 
     if std::env::var_os("CARGO_FEATURE_NATIVE_MOUNT").is_none() {
-        return;
+        return Ok(());
     }
 
     println!("cargo:rerun-if-changed=src/native_mount/fuse_t_bridge.c");
 
     #[cfg(target_os = "macos")]
     if let Err(error) = build_fuse_t_bridge() {
-        eprintln!("FUSE-T libfuse3 development package is required on macOS: {error}");
-        std::process::exit(1);
+        return Err(std::io::Error::other(format!(
+            "FUSE-T libfuse3 development package is required on macOS: {error}"
+        ))
+        .into());
     }
+
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

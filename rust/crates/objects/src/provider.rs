@@ -30,7 +30,7 @@ pub struct PutRequest {
     /// UTF-8 object key.
     pub object_key: String,
     /// Complete body bytes.
-    pub body: Vec<u8>,
+    pub body: bytes::Bytes,
     /// Immutable metadata for the new version.
     pub metadata: wire::ObjectMetadata,
     /// Optional current-version precondition.
@@ -54,6 +54,8 @@ pub struct GetRequest {
     pub if_match: Option<String>,
     /// Optional representation validator that must not match.
     pub if_none_match: Option<String>,
+    /// Maximum selected body bytes the provider may allocate or return.
+    pub maximum_bytes: u64,
 }
 
 /// One immutable descriptor and its selected body bytes.
@@ -62,7 +64,7 @@ pub struct BufferedObject {
     /// Immutable version descriptor.
     pub version: wire::ObjectVersion,
     /// Complete body or requested range.
-    pub body: Vec<u8>,
+    pub body: bytes::Bytes,
 }
 
 /// Result of an unqualified marker creation or exact-version deletion.
@@ -106,6 +108,15 @@ pub enum ObjectsError {
     /// A fixed or provider-specific bound was exhausted.
     #[error("objects capacity exhausted")]
     Capacity,
+    /// The provider does not implement the requested capability.
+    #[error("objects capability is unsupported")]
+    Unsupported,
+    /// Authentication or authorization was rejected.
+    #[error("objects provider rejected authorization")]
+    Unauthorized,
+    /// The provider could not be reached or returned an invalid response.
+    #[error("objects provider is unavailable")]
+    Unavailable,
 }
 
 /// Public semantic provider implemented by memory, customer-hosted, and Acyclic adapters.
@@ -183,7 +194,7 @@ pub trait ObjectsProvider: Send + Sync {
         object_key: String,
         upload_id: String,
         part_number: u32,
-        body: Vec<u8>,
+        body: bytes::Bytes,
         idempotency_key: Option<String>,
     ) -> Result<wire::UploadedPart, ObjectsError>;
     /// List staged parts in ascending part-number order.
@@ -215,7 +226,7 @@ pub trait ObjectsProvider: Send + Sync {
 #[derive(Clone)]
 struct Version {
     descriptor: wire::ObjectVersion,
-    body: Option<Arc<[u8]>>,
+    body: Option<bytes::Bytes>,
 }
 
 #[derive(Clone)]
@@ -236,7 +247,7 @@ struct MultipartState {
     object_key: String,
     metadata: wire::ObjectMetadata,
     condition: Option<Condition>,
-    parts: BTreeMap<u32, (wire::UploadedPart, Arc<[u8]>)>,
+    parts: BTreeMap<u32, (wire::UploadedPart, bytes::Bytes)>,
 }
 
 #[derive(Clone)]
@@ -776,7 +787,7 @@ impl ObjectsProvider for MemoryObjects {
                     .or_default()
                     .push(Version {
                         descriptor: descriptor.clone(),
-                        body: Some(request.body.into()),
+                        body: Some(request.body),
                     });
                 state.bytes += size;
                 Ok(descriptor)
@@ -802,7 +813,7 @@ impl ObjectsProvider for MemoryObjects {
         }
         let body = version.body.as_ref().ok_or(ObjectsError::NotFound)?;
         let selected = match request.range {
-            None => body.to_vec(),
+            None => body.clone(),
             Some((start, end)) => {
                 let start =
                     usize::try_from(start).map_err(|_| ObjectsError::Invalid("invalid range"))?;
@@ -811,9 +822,12 @@ impl ObjectsProvider for MemoryObjects {
                 if start > end || end >= body.len() {
                     return Err(ObjectsError::Invalid("invalid range"));
                 }
-                body[start..=end].to_vec()
+                body.slice(start..=end)
             }
         };
+        if selected.len() as u64 > request.maximum_bytes {
+            return Err(ObjectsError::Capacity);
+        }
         Ok(BufferedObject {
             version: version.descriptor.clone(),
             body: selected,
@@ -1162,7 +1176,7 @@ impl ObjectsProvider for MemoryObjects {
         object_key: String,
         upload_id: String,
         part_number: u32,
-        body: Vec<u8>,
+        body: bytes::Bytes,
         idempotency_key: Option<String>,
     ) -> Result<wire::UploadedPart, ObjectsError> {
         if !(1..=limits::MULTIPART_PARTS).contains(&part_number)
@@ -1221,7 +1235,7 @@ impl ObjectsProvider for MemoryObjects {
                     .get_mut(&upload_id)
                     .ok_or(ObjectsError::NotFound)?
                     .parts
-                    .insert(part_number, (part.clone(), body.into()));
+                    .insert(part_number, (part.clone(), body));
                 state.bytes = projected;
                 Ok(part)
             },
@@ -1406,7 +1420,7 @@ mod tests {
             .put(PutRequest {
                 bucket: bucket.clone(),
                 object_key: object_key.into(),
-                body: body.to_vec(),
+                body: bytes::Bytes::copy_from_slice(body),
                 metadata: metadata(),
                 condition,
                 idempotency_key: None,
@@ -1457,14 +1471,29 @@ mod tests {
             .get(GetRequest {
                 target: ReadTarget::Bucket(bucket.clone()),
                 object_key: "a".into(),
-                version_id: Some(first.version_id),
+                version_id: Some(first.version_id.clone()),
                 range: None,
                 if_match: None,
                 if_none_match: None,
+                maximum_bytes: u64::MAX,
             })
             .await
             .unwrap_or_else(|_| unreachable!());
-        assert_eq!(first_body.body, b"one");
+        assert_eq!(first_body.body.as_ref(), b"one");
+        assert_eq!(
+            store
+                .get(GetRequest {
+                    target: ReadTarget::Bucket(bucket),
+                    object_key: "a".into(),
+                    version_id: Some(first.version_id),
+                    range: None,
+                    if_match: None,
+                    if_none_match: None,
+                    maximum_bytes: 2,
+                })
+                .await,
+            Err(ObjectsError::Capacity)
+        );
     }
 
     #[tokio::test]
@@ -1477,7 +1506,7 @@ mod tests {
                 .put(PutRequest {
                     bucket: bucket.clone(),
                     object_key: "a".into(),
-                    body: b"two".to_vec(),
+                    body: bytes::Bytes::from_static(b"two"),
                     metadata: metadata(),
                     condition: Some(Condition::IfAbsent),
                     idempotency_key: None
@@ -1516,7 +1545,7 @@ mod tests {
         let request = PutRequest {
             bucket: bucket.clone(),
             object_key: "a".into(),
-            body: b"one".to_vec(),
+            body: bytes::Bytes::from_static(b"one"),
             metadata: metadata(),
             condition: Some(Condition::IfAbsent),
             idempotency_key: Some("put-key".into()),
@@ -1531,7 +1560,7 @@ mod tests {
                 .put(PutRequest {
                     bucket,
                     object_key: "a".into(),
-                    body: b"different".to_vec(),
+                    body: bytes::Bytes::from_static(b"different"),
                     metadata: metadata(),
                     condition: Some(Condition::IfAbsent),
                     idempotency_key: Some("put-key".into()),
@@ -1602,10 +1631,11 @@ mod tests {
                 range: None,
                 if_match: None,
                 if_none_match: None,
+                maximum_bytes: u64::MAX,
             })
             .await
             .unwrap_or_else(|_| unreachable!());
-        assert_eq!(read.body, b"before");
+        assert_eq!(read.body.as_ref(), b"before");
         assert!(
             store
                 .destroy_snapshot(snapshot_ref, None)
@@ -1630,7 +1660,8 @@ mod tests {
                     version_id: None,
                     range: None,
                     if_match: None,
-                    if_none_match: None
+                    if_none_match: None,
+                    maximum_bytes: u64::MAX
                 })
                 .await,
             Err(ObjectsError::NotFound)
@@ -1641,7 +1672,7 @@ mod tests {
                 "a".into(),
                 upload.upload_id.clone(),
                 1,
-                b"body".to_vec(),
+                bytes::Bytes::from_static(b"body"),
                 None,
             )
             .await
@@ -1665,9 +1696,10 @@ mod tests {
                 range: None,
                 if_match: None,
                 if_none_match: None,
+                maximum_bytes: u64::MAX,
             })
             .await
             .unwrap_or_else(|_| unreachable!());
-        assert_eq!(read.body, b"body");
+        assert_eq!(read.body.as_ref(), b"body");
     }
 }
