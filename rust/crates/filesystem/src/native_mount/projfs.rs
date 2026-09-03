@@ -18,7 +18,6 @@ use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
-use windows::Win32::Foundation::BOOLEAN;
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
 };
@@ -380,7 +379,7 @@ fn basic(node: MountNode, metadata: Option<FileMetadata>) -> Option<PRJ_FILE_BAS
         }
     });
     Some(PRJ_FILE_BASIC_INFO {
-        IsDirectory: BOOLEAN(u8::from(directory)),
+        IsDirectory: directory,
         FileSize: i64::try_from(size).ok()?,
         CreationTime: metadata
             .and_then(|value| windows_time(value.created_ns))
@@ -399,7 +398,7 @@ fn basic(node: MountNode, metadata: Option<FileMetadata>) -> Option<PRJ_FILE_BAS
 }
 
 fn symlink_extended(target: &[u8]) -> Option<(HSTRING, PRJ_EXTENDED_INFO)> {
-    let target = HSTRING::from_wide(&decode_utf16_name(target)?).ok()?;
+    let target = HSTRING::from_wide(&decode_utf16_name(target)?);
     let extended = PRJ_EXTENDED_INFO {
         InfoType: PRJ_EXT_INFO_TYPE_SYMLINK,
         NextInfoOffset: 0,
@@ -513,9 +512,7 @@ unsafe extern "system" fn get_directory(
         let Some(wide) = decode_utf16_name(&entry.name) else {
             return HR_INVALID_DATA;
         };
-        let Ok(wide) = HSTRING::from_wide(&wide) else {
-            return HR_INVALID_DATA;
-        };
+        let wide = HSTRING::from_wide(&wide);
         let symlink = if entry.node.kind == MountNodeKind::SymbolicLink {
             let child = lock_recover(&state).path.child(entry.name.clone());
             let Ok(target) = runtime.source.read_link(&child) else {
@@ -660,7 +657,7 @@ unsafe extern "system" fn query_name(callback_data: *const PRJ_CALLBACK_DATA) ->
 
 unsafe extern "system" fn notification(
     callback_data: *const PRJ_CALLBACK_DATA,
-    is_directory: BOOLEAN,
+    is_directory: bool,
     notification: PRJ_NOTIFICATION,
     destination_filename: PCWSTR,
     operation_parameters: *mut PRJ_NOTIFICATION_PARAMETERS,
