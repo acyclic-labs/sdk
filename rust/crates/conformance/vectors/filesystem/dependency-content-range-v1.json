@@ -1,0 +1,36 @@
+{
+  "algorithm": "BLAKE3-256",
+  "cases": [
+    {
+      "bytes_hashed": 48,
+      "digest_hex": "1e94064f6ecf44edf257e2c4c9fc4b75c715898bec3ced2b7c42e21b67cb4a9d",
+      "logical_bytes_hex": "00",
+      "logical_length": 1,
+      "name": "single-zero"
+    },
+    {
+      "bytes_hashed": 52,
+      "digest_hex": "e06aee566a0811dd9212ffd2d478c71bcc6fab338bfe63af1bc0ddc513366f64",
+      "logical_bytes_hex": "68656c6c6f",
+      "logical_length": 5,
+      "name": "hello-utf8"
+    },
+    {
+      "bytes_hashed": 57,
+      "digest_hex": "512c3dfa76f6c1c47cfa4d0327852173c82a47b04484aa3ccc0c9db34f41bace",
+      "logical_bytes_hex": "6c656674007269676874",
+      "logical_length": 10,
+      "name": "embedded-zero"
+    },
+    {
+      "bytes_hashed": 79,
+      "digest_hex": "82b2e57a133ce9e3d1cd555e88eff23d0cbfb19b2e627fe8e3aae5f635e38dfd",
+      "logical_bytes_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "logical_length": 32,
+      "name": "byte-sequence-0-31"
+    }
+  ],
+  "domain_utf8_hex": "616379636c69632d66732d646570656e64656e63792d636f6e74656e742d72616e67652d763100",
+  "length_encoding": "u64-le",
+  "schema": "acyclic-fs-dependency-content-range-v1"
+}

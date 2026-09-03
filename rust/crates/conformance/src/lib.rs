@@ -20,13 +20,13 @@ use futures::StreamExt;
 use std::num::NonZeroU32;
 
 /// Canonical language-neutral Objects conformance inventory.
-pub const OBJECTS_SUITE: &[u8] = include_bytes!("../../../../conformance/vectors/objects.json");
+pub const OBJECTS_SUITE: &[u8] = include_bytes!("../vectors/objects.json");
 
 /// Canonical language-neutral Machines conformance inventory.
-pub const MACHINES_SUITE: &[u8] = include_bytes!("../../../../conformance/vectors/machines.json");
+pub const MACHINES_SUITE: &[u8] = include_bytes!("../vectors/machines.json");
 
 /// Canonical language-neutral Stream conformance inventory.
-pub const STREAM_SUITE: &[u8] = include_bytes!("../../../../conformance/vectors/stream.json");
+pub const STREAM_SUITE: &[u8] = include_bytes!("../vectors/stream.json");
 
 /// Exercises the minimum customer-level filesystem semantics.
 pub async fn filesystem_smoke<A: AsyncAuthorityStore, O: AsyncObjectStore>(

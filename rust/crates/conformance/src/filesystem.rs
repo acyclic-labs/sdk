@@ -2017,9 +2017,7 @@ mod tests {
     fn dependency_vectors_are_locked_to_the_canonical_kernel()
     -> Result<(), Box<dyn std::error::Error>> {
         let generated = dependency_vectors_json()?;
-        let tracked = include_str!(
-            "../../../../conformance/vectors/filesystem/dependency-content-range-v1.json"
-        );
+        let tracked = include_str!("../vectors/filesystem/dependency-content-range-v1.json");
         assert_eq!(format!("{generated}\n"), tracked.replace("\r\n", "\n"));
         Ok(())
     }

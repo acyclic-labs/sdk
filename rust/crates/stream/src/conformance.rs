@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// Canonical language-neutral Stream conformance inventory.
-pub const SUITE: &[u8] = include_bytes!("../../../../conformance/vectors/stream.json");
+pub const SUITE: &[u8] = include_bytes!("../conformance/stream.json");
 
 /// Exercises the complete provider-independent hierarchical Stream contract.
 pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {

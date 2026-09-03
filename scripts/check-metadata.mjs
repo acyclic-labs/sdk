@@ -57,5 +57,17 @@ for (const [family, artifacts] of Object.entries(familyArtifacts)) {
   }
 }
 
+for (const [canonical, packaged] of [
+  ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],
+  ["conformance/vectors/stream.json", "rust/crates/conformance/vectors/stream.json"],
+  ["conformance/vectors/objects.json", "rust/crates/conformance/vectors/objects.json"],
+  ["conformance/vectors/machines.json", "rust/crates/conformance/vectors/machines.json"],
+  ["conformance/vectors/filesystem/dependency-content-range-v1.json", "rust/crates/conformance/vectors/filesystem/dependency-content-range-v1.json"],
+]) {
+  if (await digest(canonical) !== await digest(packaged)) {
+    throw new Error(`packaged conformance vector drift: ${packaged}`);
+  }
+}
+
 const validateProvenance = new Ajv2020().compile(await load("compatibility/schemas/provenance.schema.json"));
 if (validateProvenance({ imports: [{ sourceCommit: "short" }] })) throw new Error("malformed provenance fixture was accepted");
