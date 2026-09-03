@@ -1,8 +1,8 @@
 # Acyclic SDK
 
 The Acyclic SDK is the open contract and composition layer for building recursive,
-fork-join agent systems. It contains a Rust harness, public service interfaces,
-in-memory reference providers, conformance suites, and TypeScript packages.
+fork-join agent systems. It contains the Rust harness, public service interfaces,
+customer-machine implementations, conformance suites, and TypeScript packages.
 
 This repository is **staged privately for disclosure review**. Nothing here is a
 published API or package until the repository passes its disclosure gate and a
@@ -17,6 +17,20 @@ release is tagged.
 - A complete recursive example and black-box provider conformance tests.
 - TypeScript contract facades for the same public concepts.
 - Protobuf package boundaries ready for audited service schemas.
+
+## Open-source boundary
+
+Everything shipped to or executed on a customer's machine belongs in this
+Apache-2.0 repository. That includes embedded and durable-local engines, local
+daemons and processes, browser implementations, native mounts, language
+bindings, local recovery, model adapters, and customer-hosted providers. Each
+component has one public source of truth; private repositories consume released
+SDK contracts and code instead of keeping copies.
+
+Private repositories contain only Acyclic-operated infrastructure such as
+multi-tenant control planes, distributed replication and consensus, cloud
+placement and scheduling, internal administration, billing, and private
+qualification evidence.
 
 Run the local profile without an Acyclic account:
 

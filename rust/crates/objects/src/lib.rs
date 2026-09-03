@@ -31,7 +31,10 @@ pub struct MemoryObjects {
 #[async_trait]
 impl ObjectsProvider for MemoryObjects {
     async fn put(&self, value: Vec<u8>) -> Result<ObjectRef> {
-        let version = format!("{:x}", Sha256::digest(&value));
+        let version: String = Sha256::digest(&value)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         self.values.write().await.insert(version.clone(), value);
         Ok(ObjectRef { version })
     }
