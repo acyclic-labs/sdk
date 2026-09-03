@@ -12,7 +12,12 @@
       "descriptorDigest": "sha256:3d6d2b2e7c9120b8effbad0969ec8b63824e495e879495ccf00420cb9457cbf5",
       "conformanceDigest": "sha256:a473cb36590f3d05d7c749f2e35c13e9783c2cbc8ef0bb569b91b2e88dbaad7b"
     },
-    "machines": { "version": "0.0.0", "schemaDigest": "unreleased" },
+    "machines": {
+      "version": "1.0.0",
+      "schemaDigest": "sha256:8f1bb3b080613e7d3242560c5751e7de2d144399eb920cbe5276788063f843bd",
+      "descriptorDigest": "sha256:2a8ae8a00e6d97b0291aff220506cbd99b8d770c24b636bfd5dc88bb4ef7d2f4",
+      "conformanceDigest": "sha256:9b2a71cb0781a0e17d0ec780e2ee8f33b256e13d560f7dec5d97552ef1b13296"
+    },
     "inference": {
       "version": "1.0.0",
       "schemaDigest": "sha256:a23c97c6be108259199f27fc13ea29140bf4f85bbc83b8cf319901503b762fe2",

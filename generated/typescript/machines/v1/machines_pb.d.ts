@@ -2,9 +2,8 @@
 // @generated from file machines/v1/machines.proto (package acyclic.machines.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
-import type { Admission, CancelRequestSchema, CancelResponseSchema, HandshakeRequestSchema, HandshakeResponseSchema, ObserveRequestSchema, OperationIdentity, OperationStatusSchema } from "../../harness/v1/harness_pb";
 
 /**
  * Describes the file machines/v1/machines.proto.
@@ -12,118 +11,1640 @@ import type { Admission, CancelRequestSchema, CancelResponseSchema, HandshakeReq
 export declare const file_machines_v1_machines: GenFile;
 
 /**
- * @generated from message acyclic.machines.v1.ExecutionRequest
+ * @generated from message acyclic.machines.v1.ProtocolVersion
  */
-export declare type ExecutionRequest = Message<"acyclic.machines.v1.ExecutionRequest"> & {
+export declare type ProtocolVersion = Message<"acyclic.machines.v1.ProtocolVersion"> & {
   /**
-   * @generated from field: acyclic.harness.v1.OperationIdentity operation = 1;
+   * @generated from field: uint32 major = 1;
    */
-  operation?: OperationIdentity | undefined;
+  major: number;
 
   /**
-   * @generated from field: string program = 2;
+   * @generated from field: uint32 minor = 2;
    */
-  program: string;
-
-  /**
-   * @generated from field: repeated string args = 3;
-   */
-  args: string[];
-
-  /**
-   * @generated from field: repeated string required_capabilities = 4;
-   */
-  requiredCapabilities: string[];
+  minor: number;
 };
 
 /**
- * Describes the message acyclic.machines.v1.ExecutionRequest.
- * Use `create(ExecutionRequestSchema)` to create a new message.
+ * Describes the message acyclic.machines.v1.ProtocolVersion.
+ * Use `create(ProtocolVersionSchema)` to create a new message.
  */
-export declare const ExecutionRequestSchema: GenMessage<ExecutionRequest>;
+export declare const ProtocolVersionSchema: GenMessage<ProtocolVersion>;
 
 /**
- * @generated from message acyclic.machines.v1.ExecutionResult
+ * @generated from message acyclic.machines.v1.OperationId
  */
-export declare type ExecutionResult = Message<"acyclic.machines.v1.ExecutionResult"> & {
+export declare type OperationId = Message<"acyclic.machines.v1.OperationId"> & {
   /**
-   * @generated from field: int32 code = 1;
+   * @generated from field: bytes value = 1;
    */
-  code: number;
-
-  /**
-   * @generated from field: bytes stdout = 2;
-   */
-  stdout: Uint8Array;
-
-  /**
-   * @generated from field: bytes stderr = 3;
-   */
-  stderr: Uint8Array;
+  value: Uint8Array;
 };
 
 /**
- * Describes the message acyclic.machines.v1.ExecutionResult.
- * Use `create(ExecutionResultSchema)` to create a new message.
+ * Describes the message acyclic.machines.v1.OperationId.
+ * Use `create(OperationIdSchema)` to create a new message.
  */
-export declare const ExecutionResultSchema: GenMessage<ExecutionResult>;
+export declare const OperationIdSchema: GenMessage<OperationId>;
 
 /**
- * @generated from message acyclic.machines.v1.ExecuteResponse
+ * @generated from message acyclic.machines.v1.IdempotencyKey
  */
-export declare type ExecuteResponse = Message<"acyclic.machines.v1.ExecuteResponse"> & {
+export declare type IdempotencyKey = Message<"acyclic.machines.v1.IdempotencyKey"> & {
   /**
-   * @generated from field: acyclic.harness.v1.Admission admission = 1;
+   * @generated from field: bytes value = 1;
    */
-  admission?: Admission | undefined;
-
-  /**
-   * @generated from field: acyclic.machines.v1.ExecutionResult result = 2;
-   */
-  result?: ExecutionResult | undefined;
+  value: Uint8Array;
 };
 
 /**
- * Describes the message acyclic.machines.v1.ExecuteResponse.
- * Use `create(ExecuteResponseSchema)` to create a new message.
+ * Describes the message acyclic.machines.v1.IdempotencyKey.
+ * Use `create(IdempotencyKeySchema)` to create a new message.
  */
-export declare const ExecuteResponseSchema: GenMessage<ExecuteResponse>;
+export declare const IdempotencyKeySchema: GenMessage<IdempotencyKey>;
+
+/**
+ * @generated from message acyclic.machines.v1.MachineId
+ */
+export declare type MachineId = Message<"acyclic.machines.v1.MachineId"> & {
+  /**
+   * @generated from field: bytes value = 1;
+   */
+  value: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.MachineId.
+ * Use `create(MachineIdSchema)` to create a new message.
+ */
+export declare const MachineIdSchema: GenMessage<MachineId>;
+
+/**
+ * @generated from message acyclic.machines.v1.CheckpointId
+ */
+export declare type CheckpointId = Message<"acyclic.machines.v1.CheckpointId"> & {
+  /**
+   * @generated from field: bytes value = 1;
+   */
+  value: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.CheckpointId.
+ * Use `create(CheckpointIdSchema)` to create a new message.
+ */
+export declare const CheckpointIdSchema: GenMessage<CheckpointId>;
+
+/**
+ * @generated from message acyclic.machines.v1.Image
+ */
+export declare type Image = Message<"acyclic.machines.v1.Image"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ImageKind kind = 1;
+   */
+  kind: ImageKind;
+
+  /**
+   * @generated from oneof acyclic.machines.v1.Image.immutable_reference
+   */
+  immutableReference: {
+    /**
+     * @generated from field: string oci_digest = 2;
+     */
+    value: string;
+    case: "ociDigest";
+  } | {
+    /**
+     * @generated from field: bytes custom_digest = 3;
+     */
+    value: Uint8Array;
+    case: "customDigest";
+  } | {
+    /**
+     * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 4;
+     */
+    value: CheckpointId;
+    case: "checkpoint";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message acyclic.machines.v1.Image.
+ * Use `create(ImageSchema)` to create a new message.
+ */
+export declare const ImageSchema: GenMessage<Image>;
+
+/**
+ * @generated from message acyclic.machines.v1.CompatibilityPolicy
+ */
+export declare type CompatibilityPolicy = Message<"acyclic.machines.v1.CompatibilityPolicy"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.CompatibilityMode mode = 1;
+   */
+  mode: CompatibilityMode;
+
+  /**
+   * @generated from field: repeated acyclic.machines.v1.Capability required = 2;
+   */
+  required: Capability[];
+};
+
+/**
+ * Describes the message acyclic.machines.v1.CompatibilityPolicy.
+ * Use `create(CompatibilityPolicySchema)` to create a new message.
+ */
+export declare const CompatibilityPolicySchema: GenMessage<CompatibilityPolicy>;
+
+/**
+ * @generated from message acyclic.machines.v1.ImageQualification
+ */
+export declare type ImageQualification = Message<"acyclic.machines.v1.ImageQualification"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.Image image = 1;
+   */
+  image?: Image | undefined;
+
+  /**
+   * @generated from field: repeated acyclic.machines.v1.Capability capabilities = 2;
+   */
+  capabilities: Capability[];
+
+  /**
+   * @generated from field: bytes compatibility_revision = 3;
+   */
+  compatibilityRevision: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.ImageQualification.
+ * Use `create(ImageQualificationSchema)` to create a new message.
+ */
+export declare const ImageQualificationSchema: GenMessage<ImageQualification>;
+
+/**
+ * @generated from message acyclic.machines.v1.SuspensionPolicy
+ */
+export declare type SuspensionPolicy = Message<"acyclic.machines.v1.SuspensionPolicy"> & {
+  /**
+   * @generated from oneof acyclic.machines.v1.SuspensionPolicy.policy
+   */
+  policy: {
+    /**
+     * @generated from field: bool manual = 1;
+     */
+    value: boolean;
+    case: "manual";
+  } | {
+    /**
+     * @generated from field: uint64 after_idle_ms = 2;
+     */
+    value: bigint;
+    case: "afterIdleMs";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message acyclic.machines.v1.SuspensionPolicy.
+ * Use `create(SuspensionPolicySchema)` to create a new message.
+ */
+export declare const SuspensionPolicySchema: GenMessage<SuspensionPolicy>;
+
+/**
+ * @generated from message acyclic.machines.v1.ExpirationPolicy
+ */
+export declare type ExpirationPolicy = Message<"acyclic.machines.v1.ExpirationPolicy"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ExpirationKind kind = 1;
+   */
+  kind: ExpirationKind;
+
+  /**
+   * @generated from field: uint64 value_ms = 2;
+   */
+  valueMs: bigint;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.ExpirationPolicy.
+ * Use `create(ExpirationPolicySchema)` to create a new message.
+ */
+export declare const ExpirationPolicySchema: GenMessage<ExpirationPolicy>;
+
+/**
+ * @generated from message acyclic.machines.v1.Budgets
+ */
+export declare type Budgets = Message<"acyclic.machines.v1.Budgets"> & {
+  /**
+   * @generated from field: uint64 spend_micros = 1;
+   */
+  spendMicros: bigint;
+
+  /**
+   * @generated from field: uint32 concurrency = 2;
+   */
+  concurrency: number;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.Budgets.
+ * Use `create(BudgetsSchema)` to create a new message.
+ */
+export declare const BudgetsSchema: GenMessage<Budgets>;
+
+/**
+ * @generated from message acyclic.machines.v1.MachineContract
+ */
+export declare type MachineContract = Message<"acyclic.machines.v1.MachineContract"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.Image image = 1;
+   */
+  image?: Image | undefined;
+
+  /**
+   * @generated from field: repeated acyclic.machines.v1.Capability capabilities = 2;
+   */
+  capabilities: Capability[];
+
+  /**
+   * @generated from field: acyclic.machines.v1.CompatibilityPolicy compatibility = 3;
+   */
+  compatibility?: CompatibilityPolicy | undefined;
+
+  /**
+   * @generated from field: bytes compatibility_revision = 4;
+   */
+  compatibilityRevision: Uint8Array;
+
+  /**
+   * @generated from field: acyclic.machines.v1.Performance performance = 5;
+   */
+  performance: Performance;
+
+  /**
+   * @generated from field: acyclic.machines.v1.SuspensionPolicy suspension = 6;
+   */
+  suspension?: SuspensionPolicy | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.ExpirationPolicy expiration = 7;
+   */
+  expiration?: ExpirationPolicy | undefined;
+
+  /**
+   * @generated from field: bytes network_policy_digest = 8;
+   */
+  networkPolicyDigest: Uint8Array;
+
+  /**
+   * @generated from field: acyclic.machines.v1.Budgets budgets = 9;
+   */
+  budgets?: Budgets | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.MachineContract.
+ * Use `create(MachineContractSchema)` to create a new message.
+ */
+export declare const MachineContractSchema: GenMessage<MachineContract>;
+
+/**
+ * @generated from message acyclic.machines.v1.QualifyImageRequest
+ */
+export declare type QualifyImageRequest = Message<"acyclic.machines.v1.QualifyImageRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.Image image = 2;
+   */
+  image?: Image | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.QualifyImageRequest.
+ * Use `create(QualifyImageRequestSchema)` to create a new message.
+ */
+export declare const QualifyImageRequestSchema: GenMessage<QualifyImageRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.CreateMachineRequest
+ */
+export declare type CreateMachineRequest = Message<"acyclic.machines.v1.CreateMachineRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
+   */
+  idempotencyKey?: IdempotencyKey | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.Image image = 3;
+   */
+  image?: Image | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.CompatibilityPolicy compatibility = 4;
+   */
+  compatibility?: CompatibilityPolicy | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.Performance performance = 5;
+   */
+  performance: Performance;
+
+  /**
+   * @generated from field: acyclic.machines.v1.SuspensionPolicy suspension = 6;
+   */
+  suspension?: SuspensionPolicy | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.ExpirationPolicy expiration = 7;
+   */
+  expiration?: ExpirationPolicy | undefined;
+
+  /**
+   * @generated from field: bytes network_policy_digest = 8;
+   */
+  networkPolicyDigest: Uint8Array;
+
+  /**
+   * @generated from field: acyclic.machines.v1.Budgets budgets = 9;
+   */
+  budgets?: Budgets | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.CreateMachineRequest.
+ * Use `create(CreateMachineRequestSchema)` to create a new message.
+ */
+export declare const CreateMachineRequestSchema: GenMessage<CreateMachineRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.MachineMutationRequest
+ */
+export declare type MachineMutationRequest = Message<"acyclic.machines.v1.MachineMutationRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
+   */
+  idempotencyKey?: IdempotencyKey | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 3;
+   */
+  machine?: MachineId | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.MachineMutationRequest.
+ * Use `create(MachineMutationRequestSchema)` to create a new message.
+ */
+export declare const MachineMutationRequestSchema: GenMessage<MachineMutationRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.CheckpointMachineRequest
+ */
+export declare type CheckpointMachineRequest = Message<"acyclic.machines.v1.CheckpointMachineRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
+   */
+  idempotencyKey?: IdempotencyKey | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 3;
+   */
+  machine?: MachineId | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.CheckpointMachineRequest.
+ * Use `create(CheckpointMachineRequestSchema)` to create a new message.
+ */
+export declare const CheckpointMachineRequestSchema: GenMessage<CheckpointMachineRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.ForkCheckpointRequest
+ */
+export declare type ForkCheckpointRequest = Message<"acyclic.machines.v1.ForkCheckpointRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
+   */
+  idempotencyKey?: IdempotencyKey | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 3;
+   */
+  checkpoint?: CheckpointId | undefined;
+
+  /**
+   * @generated from field: uint32 count = 4;
+   */
+  count: number;
+
+  /**
+   * @generated from field: acyclic.machines.v1.Performance performance = 5;
+   */
+  performance: Performance;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.ForkCheckpointRequest.
+ * Use `create(ForkCheckpointRequestSchema)` to create a new message.
+ */
+export declare const ForkCheckpointRequestSchema: GenMessage<ForkCheckpointRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.SetSuspensionPolicyRequest
+ */
+export declare type SetSuspensionPolicyRequest = Message<"acyclic.machines.v1.SetSuspensionPolicyRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
+   */
+  idempotencyKey?: IdempotencyKey | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 3;
+   */
+  machine?: MachineId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.SuspensionPolicy policy = 4;
+   */
+  policy?: SuspensionPolicy | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.SetSuspensionPolicyRequest.
+ * Use `create(SetSuspensionPolicyRequestSchema)` to create a new message.
+ */
+export declare const SetSuspensionPolicyRequestSchema: GenMessage<SetSuspensionPolicyRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.CheckpointMutationRequest
+ */
+export declare type CheckpointMutationRequest = Message<"acyclic.machines.v1.CheckpointMutationRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
+   */
+  idempotencyKey?: IdempotencyKey | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 3;
+   */
+  checkpoint?: CheckpointId | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.CheckpointMutationRequest.
+ * Use `create(CheckpointMutationRequestSchema)` to create a new message.
+ */
+export declare const CheckpointMutationRequestSchema: GenMessage<CheckpointMutationRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.RecoverRequest
+ */
+export declare type RecoverRequest = Message<"acyclic.machines.v1.RecoverRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
+   */
+  idempotencyKey?: IdempotencyKey | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.RecoverRequest.
+ * Use `create(RecoverRequestSchema)` to create a new message.
+ */
+export declare const RecoverRequestSchema: GenMessage<RecoverRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.InspectMachineRequest
+ */
+export declare type InspectMachineRequest = Message<"acyclic.machines.v1.InspectMachineRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 2;
+   */
+  machine?: MachineId | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.InspectMachineRequest.
+ * Use `create(InspectMachineRequestSchema)` to create a new message.
+ */
+export declare const InspectMachineRequestSchema: GenMessage<InspectMachineRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.InspectCheckpointRequest
+ */
+export declare type InspectCheckpointRequest = Message<"acyclic.machines.v1.InspectCheckpointRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 2;
+   */
+  checkpoint?: CheckpointId | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.InspectCheckpointRequest.
+ * Use `create(InspectCheckpointRequestSchema)` to create a new message.
+ */
+export declare const InspectCheckpointRequestSchema: GenMessage<InspectCheckpointRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.ListMachinesRequest
+ */
+export declare type ListMachinesRequest = Message<"acyclic.machines.v1.ListMachinesRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId after = 2;
+   */
+  after?: MachineId | undefined;
+
+  /**
+   * @generated from field: uint32 limit = 3;
+   */
+  limit: number;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.ListMachinesRequest.
+ * Use `create(ListMachinesRequestSchema)` to create a new message.
+ */
+export declare const ListMachinesRequestSchema: GenMessage<ListMachinesRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.OperationRequest
+ */
+export declare type OperationRequest = Message<"acyclic.machines.v1.OperationRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.OperationId operation = 2;
+   */
+  operation?: OperationId | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.OperationRequest.
+ * Use `create(OperationRequestSchema)` to create a new message.
+ */
+export declare const OperationRequestSchema: GenMessage<OperationRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.OperationState
+ */
+export declare type OperationState = Message<"acyclic.machines.v1.OperationState"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.OperationId operation = 1;
+   */
+  operation?: OperationId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.OperationStatus status = 2;
+   */
+  status: OperationStatus;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.OperationState.
+ * Use `create(OperationStateSchema)` to create a new message.
+ */
+export declare const OperationStateSchema: GenMessage<OperationState>;
+
+/**
+ * @generated from message acyclic.machines.v1.Endpoint
+ */
+export declare type Endpoint = Message<"acyclic.machines.v1.Endpoint"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * @generated from field: string uri = 2;
+   */
+  uri: string;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.Endpoint.
+ * Use `create(EndpointSchema)` to create a new message.
+ */
+export declare const EndpointSchema: GenMessage<Endpoint>;
+
+/**
+ * @generated from message acyclic.machines.v1.MachineState
+ */
+export declare type MachineState = Message<"acyclic.machines.v1.MachineState"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 1;
+   */
+  machine?: MachineId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineStatus status = 2;
+   */
+  status: MachineStatus;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineContract contract = 3;
+   */
+  contract?: MachineContract | undefined;
+
+  /**
+   * @generated from field: repeated acyclic.machines.v1.Endpoint endpoints = 4;
+   */
+  endpoints: Endpoint[];
+
+  /**
+   * @generated from field: acyclic.machines.v1.CheckpointId last_checkpoint = 5;
+   */
+  lastCheckpoint?: CheckpointId | undefined;
+
+  /**
+   * @generated from field: uint64 created_at_unix_ms = 6;
+   */
+  createdAtUnixMs: bigint;
+
+  /**
+   * @generated from field: uint64 changed_at_unix_ms = 7;
+   */
+  changedAtUnixMs: bigint;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.MachineState.
+ * Use `create(MachineStateSchema)` to create a new message.
+ */
+export declare const MachineStateSchema: GenMessage<MachineState>;
+
+/**
+ * @generated from message acyclic.machines.v1.MachinePage
+ */
+export declare type MachinePage = Message<"acyclic.machines.v1.MachinePage"> & {
+  /**
+   * @generated from field: repeated acyclic.machines.v1.MachineState machines = 1;
+   */
+  machines: MachineState[];
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId next = 2;
+   */
+  next?: MachineId | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.MachinePage.
+ * Use `create(MachinePageSchema)` to create a new message.
+ */
+export declare const MachinePageSchema: GenMessage<MachinePage>;
+
+/**
+ * @generated from message acyclic.machines.v1.CheckpointState
+ */
+export declare type CheckpointState = Message<"acyclic.machines.v1.CheckpointState"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 1;
+   */
+  checkpoint?: CheckpointId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId source = 2;
+   */
+  source?: MachineId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineContract contract = 3;
+   */
+  contract?: MachineContract | undefined;
+
+  /**
+   * @generated from field: bool forkable = 4;
+   */
+  forkable: boolean;
+
+  /**
+   * @generated from field: uint64 created_at_unix_ms = 5;
+   */
+  createdAtUnixMs: bigint;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.CheckpointState.
+ * Use `create(CheckpointStateSchema)` to create a new message.
+ */
+export declare const CheckpointStateSchema: GenMessage<CheckpointState>;
+
+/**
+ * @generated from message acyclic.machines.v1.MachineAdmission
+ */
+export declare type MachineAdmission = Message<"acyclic.machines.v1.MachineAdmission"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 1;
+   */
+  machine?: MachineId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.OperationId operation = 2;
+   */
+  operation?: OperationId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineContract contract = 3;
+   */
+  contract?: MachineContract | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.MachineAdmission.
+ * Use `create(MachineAdmissionSchema)` to create a new message.
+ */
+export declare const MachineAdmissionSchema: GenMessage<MachineAdmission>;
+
+/**
+ * @generated from message acyclic.machines.v1.CheckpointAdmission
+ */
+export declare type CheckpointAdmission = Message<"acyclic.machines.v1.CheckpointAdmission"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 1;
+   */
+  checkpoint?: CheckpointId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId source = 2;
+   */
+  source?: MachineId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.OperationId operation = 3;
+   */
+  operation?: OperationId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineContract contract = 4;
+   */
+  contract?: MachineContract | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.CheckpointAdmission.
+ * Use `create(CheckpointAdmissionSchema)` to create a new message.
+ */
+export declare const CheckpointAdmissionSchema: GenMessage<CheckpointAdmission>;
+
+/**
+ * @generated from message acyclic.machines.v1.ForkAdmission
+ */
+export declare type ForkAdmission = Message<"acyclic.machines.v1.ForkAdmission"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 1;
+   */
+  checkpoint?: CheckpointId | undefined;
+
+  /**
+   * @generated from field: repeated acyclic.machines.v1.MachineId children = 2;
+   */
+  children: MachineId[];
+
+  /**
+   * @generated from field: acyclic.machines.v1.OperationId operation = 3;
+   */
+  operation?: OperationId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineContract contract = 4;
+   */
+  contract?: MachineContract | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.ForkAdmission.
+ * Use `create(ForkAdmissionSchema)` to create a new message.
+ */
+export declare const ForkAdmissionSchema: GenMessage<ForkAdmission>;
+
+/**
+ * @generated from message acyclic.machines.v1.PolicyAdmission
+ */
+export declare type PolicyAdmission = Message<"acyclic.machines.v1.PolicyAdmission"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 1;
+   */
+  machine?: MachineId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.OperationId operation = 2;
+   */
+  operation?: OperationId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.SuspensionPolicy policy = 3;
+   */
+  policy?: SuspensionPolicy | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.PolicyAdmission.
+ * Use `create(PolicyAdmissionSchema)` to create a new message.
+ */
+export declare const PolicyAdmissionSchema: GenMessage<PolicyAdmission>;
+
+/**
+ * @generated from message acyclic.machines.v1.MutationAdmission
+ */
+export declare type MutationAdmission = Message<"acyclic.machines.v1.MutationAdmission"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.OperationId operation = 1;
+   */
+  operation?: OperationId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 2;
+   */
+  machine?: MachineId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 3;
+   */
+  checkpoint?: CheckpointId | undefined;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.MutationAdmission.
+ * Use `create(MutationAdmissionSchema)` to create a new message.
+ */
+export declare const MutationAdmissionSchema: GenMessage<MutationAdmission>;
+
+/**
+ * @generated from message acyclic.machines.v1.RecoveredAdmission
+ */
+export declare type RecoveredAdmission = Message<"acyclic.machines.v1.RecoveredAdmission"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.OperationId operation = 1;
+   */
+  operation?: OperationId | undefined;
+
+  /**
+   * @generated from oneof acyclic.machines.v1.RecoveredAdmission.result
+   */
+  result: {
+    /**
+     * @generated from field: acyclic.machines.v1.MachineAdmission create = 2;
+     */
+    value: MachineAdmission;
+    case: "create";
+  } | {
+    /**
+     * @generated from field: acyclic.machines.v1.CheckpointAdmission checkpoint = 3;
+     */
+    value: CheckpointAdmission;
+    case: "checkpoint";
+  } | {
+    /**
+     * @generated from field: acyclic.machines.v1.ForkAdmission fork = 4;
+     */
+    value: ForkAdmission;
+    case: "fork";
+  } | {
+    /**
+     * @generated from field: acyclic.machines.v1.MutationAdmission suspend = 5;
+     */
+    value: MutationAdmission;
+    case: "suspend";
+  } | {
+    /**
+     * @generated from field: acyclic.machines.v1.MutationAdmission wake = 6;
+     */
+    value: MutationAdmission;
+    case: "wake";
+  } | {
+    /**
+     * @generated from field: acyclic.machines.v1.MutationAdmission destroy_machine = 7;
+     */
+    value: MutationAdmission;
+    case: "destroyMachine";
+  } | {
+    /**
+     * @generated from field: acyclic.machines.v1.PolicyAdmission set_suspension_policy = 8;
+     */
+    value: PolicyAdmission;
+    case: "setSuspensionPolicy";
+  } | {
+    /**
+     * @generated from field: acyclic.machines.v1.MutationAdmission destroy_checkpoint = 9;
+     */
+    value: MutationAdmission;
+    case: "destroyCheckpoint";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message acyclic.machines.v1.RecoveredAdmission.
+ * Use `create(RecoveredAdmissionSchema)` to create a new message.
+ */
+export declare const RecoveredAdmissionSchema: GenMessage<RecoveredAdmission>;
+
+/**
+ * @generated from message acyclic.machines.v1.MachineEvent
+ */
+export declare type MachineEvent = Message<"acyclic.machines.v1.MachineEvent"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 1;
+   */
+  machine?: MachineId | undefined;
+
+  /**
+   * @generated from field: uint64 sequence = 2;
+   */
+  sequence: bigint;
+
+  /**
+   * @generated from field: uint64 observed_at_unix_ms = 3;
+   */
+  observedAtUnixMs: bigint;
+
+  /**
+   * @generated from field: acyclic.machines.v1.EventKind kind = 4;
+   */
+  kind: EventKind;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineStatus state = 5;
+   */
+  state: MachineStatus;
+
+  /**
+   * @generated from field: acyclic.machines.v1.PressureKind pressure = 6;
+   */
+  pressure: PressureKind;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.MachineEvent.
+ * Use `create(MachineEventSchema)` to create a new message.
+ */
+export declare const MachineEventSchema: GenMessage<MachineEvent>;
+
+/**
+ * @generated from message acyclic.machines.v1.EventsRequest
+ */
+export declare type EventsRequest = Message<"acyclic.machines.v1.EventsRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 2;
+   */
+  machine?: MachineId | undefined;
+
+  /**
+   * @generated from field: uint64 after_sequence = 3;
+   */
+  afterSequence: bigint;
+
+  /**
+   * @generated from field: uint32 limit = 4;
+   */
+  limit: number;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.EventsRequest.
+ * Use `create(EventsRequestSchema)` to create a new message.
+ */
+export declare const EventsRequestSchema: GenMessage<EventsRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.EventPage
+ */
+export declare type EventPage = Message<"acyclic.machines.v1.EventPage"> & {
+  /**
+   * @generated from field: repeated acyclic.machines.v1.MachineEvent events = 1;
+   */
+  events: MachineEvent[];
+
+  /**
+   * @generated from field: uint64 next_sequence = 2;
+   */
+  nextSequence: bigint;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.EventPage.
+ * Use `create(EventPageSchema)` to create a new message.
+ */
+export declare const EventPageSchema: GenMessage<EventPage>;
+
+/**
+ * @generated from message acyclic.machines.v1.UsageRequest
+ */
+export declare type UsageRequest = Message<"acyclic.machines.v1.UsageRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 2;
+   */
+  machine?: MachineId | undefined;
+
+  /**
+   * @generated from field: uint64 start_unix_ms = 3;
+   */
+  startUnixMs: bigint;
+
+  /**
+   * @generated from field: uint64 end_unix_ms = 4;
+   */
+  endUnixMs: bigint;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.UsageRequest.
+ * Use `create(UsageRequestSchema)` to create a new message.
+ */
+export declare const UsageRequestSchema: GenMessage<UsageRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.UsageReceipt
+ */
+export declare type UsageReceipt = Message<"acyclic.machines.v1.UsageReceipt"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 1;
+   */
+  machine?: MachineId | undefined;
+
+  /**
+   * @generated from field: uint64 start_unix_ms = 2;
+   */
+  startUnixMs: bigint;
+
+  /**
+   * @generated from field: uint64 end_unix_ms = 3;
+   */
+  endUnixMs: bigint;
+
+  /**
+   * @generated from field: uint64 elastic_cpu_ns = 4;
+   */
+  elasticCpuNs: bigint;
+
+  /**
+   * @generated from field: uint64 dedicated_cpu_ns = 5;
+   */
+  dedicatedCpuNs: bigint;
+
+  /**
+   * @generated from field: uint64 private_resident_byte_seconds = 6;
+   */
+  privateResidentByteSeconds: bigint;
+
+  /**
+   * @generated from field: uint64 durable_private_bytes = 7;
+   */
+  durablePrivateBytes: bigint;
+
+  /**
+   * @generated from field: uint64 lineage_shared_bytes = 8;
+   */
+  lineageSharedBytes: bigint;
+
+  /**
+   * @generated from field: uint64 egress_bytes = 9;
+   */
+  egressBytes: bigint;
+
+  /**
+   * @generated from field: bytes receipt = 10;
+   */
+  receipt: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.UsageReceipt.
+ * Use `create(UsageReceiptSchema)` to create a new message.
+ */
+export declare const UsageReceiptSchema: GenMessage<UsageReceipt>;
+
+/**
+ * @generated from enum acyclic.machines.v1.ImageKind
+ */
+export enum ImageKind {
+  /**
+   * @generated from enum value: IMAGE_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: IMAGE_KIND_MANAGED_OCI = 1;
+   */
+  MANAGED_OCI = 1,
+
+  /**
+   * @generated from enum value: IMAGE_KIND_CUSTOM = 2;
+   */
+  CUSTOM = 2,
+
+  /**
+   * @generated from enum value: IMAGE_KIND_CHECKPOINT = 3;
+   */
+  CHECKPOINT = 3,
+}
+
+/**
+ * Describes the enum acyclic.machines.v1.ImageKind.
+ */
+export declare const ImageKindSchema: GenEnum<ImageKind>;
+
+/**
+ * @generated from enum acyclic.machines.v1.Capability
+ */
+export enum Capability {
+  /**
+   * @generated from enum value: CAPABILITY_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: CAPABILITY_ELASTIC_CPU = 1;
+   */
+  ELASTIC_CPU = 1,
+
+  /**
+   * @generated from enum value: CAPABILITY_ELASTIC_MEMORY = 2;
+   */
+  ELASTIC_MEMORY = 2,
+
+  /**
+   * @generated from enum value: CAPABILITY_LIVE_CHECKPOINT = 3;
+   */
+  LIVE_CHECKPOINT = 3,
+
+  /**
+   * @generated from enum value: CAPABILITY_LIVE_FORK = 4;
+   */
+  LIVE_FORK = 4,
+
+  /**
+   * @generated from enum value: CAPABILITY_SUSPEND_RESUME = 5;
+   */
+  SUSPEND_RESUME = 5,
+
+  /**
+   * @generated from enum value: CAPABILITY_LIVE_MOVEMENT = 6;
+   */
+  LIVE_MOVEMENT = 6,
+}
+
+/**
+ * Describes the enum acyclic.machines.v1.Capability.
+ */
+export declare const CapabilitySchema: GenEnum<Capability>;
+
+/**
+ * @generated from enum acyclic.machines.v1.CompatibilityMode
+ */
+export enum CompatibilityMode {
+  /**
+   * @generated from enum value: COMPATIBILITY_MODE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: COMPATIBILITY_MODE_BEST_EFFORT = 1;
+   */
+  BEST_EFFORT = 1,
+
+  /**
+   * @generated from enum value: COMPATIBILITY_MODE_REQUIRE = 2;
+   */
+  REQUIRE = 2,
+}
+
+/**
+ * Describes the enum acyclic.machines.v1.CompatibilityMode.
+ */
+export declare const CompatibilityModeSchema: GenEnum<CompatibilityMode>;
+
+/**
+ * @generated from enum acyclic.machines.v1.Performance
+ */
+export enum Performance {
+  /**
+   * @generated from enum value: PERFORMANCE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: PERFORMANCE_ELASTIC = 1;
+   */
+  ELASTIC = 1,
+
+  /**
+   * @generated from enum value: PERFORMANCE_DEDICATED = 2;
+   */
+  DEDICATED = 2,
+}
+
+/**
+ * Describes the enum acyclic.machines.v1.Performance.
+ */
+export declare const PerformanceSchema: GenEnum<Performance>;
+
+/**
+ * @generated from enum acyclic.machines.v1.ExpirationKind
+ */
+export enum ExpirationKind {
+  /**
+   * @generated from enum value: EXPIRATION_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: EXPIRATION_KIND_NEVER = 1;
+   */
+  NEVER = 1,
+
+  /**
+   * @generated from enum value: EXPIRATION_KIND_MAX_AGE = 2;
+   */
+  MAX_AGE = 2,
+
+  /**
+   * @generated from enum value: EXPIRATION_KIND_AT = 3;
+   */
+  AT = 3,
+
+  /**
+   * @generated from enum value: EXPIRATION_KIND_IDLE = 4;
+   */
+  IDLE = 4,
+}
+
+/**
+ * Describes the enum acyclic.machines.v1.ExpirationKind.
+ */
+export declare const ExpirationKindSchema: GenEnum<ExpirationKind>;
+
+/**
+ * @generated from enum acyclic.machines.v1.OperationStatus
+ */
+export enum OperationStatus {
+  /**
+   * @generated from enum value: OPERATION_STATUS_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: OPERATION_STATUS_PENDING = 1;
+   */
+  PENDING = 1,
+
+  /**
+   * @generated from enum value: OPERATION_STATUS_SUCCEEDED = 2;
+   */
+  SUCCEEDED = 2,
+
+  /**
+   * @generated from enum value: OPERATION_STATUS_CANCELLED = 3;
+   */
+  CANCELLED = 3,
+
+  /**
+   * @generated from enum value: OPERATION_STATUS_INDETERMINATE = 4;
+   */
+  INDETERMINATE = 4,
+
+  /**
+   * @generated from enum value: OPERATION_STATUS_FAILED = 5;
+   */
+  FAILED = 5,
+}
+
+/**
+ * Describes the enum acyclic.machines.v1.OperationStatus.
+ */
+export declare const OperationStatusSchema: GenEnum<OperationStatus>;
+
+/**
+ * @generated from enum acyclic.machines.v1.MachineStatus
+ */
+export enum MachineStatus {
+  /**
+   * @generated from enum value: MACHINE_STATUS_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: MACHINE_STATUS_STARTING = 1;
+   */
+  STARTING = 1,
+
+  /**
+   * @generated from enum value: MACHINE_STATUS_RUNNING = 2;
+   */
+  RUNNING = 2,
+
+  /**
+   * @generated from enum value: MACHINE_STATUS_SUSPENDING = 3;
+   */
+  SUSPENDING = 3,
+
+  /**
+   * @generated from enum value: MACHINE_STATUS_SUSPENDED = 4;
+   */
+  SUSPENDED = 4,
+
+  /**
+   * @generated from enum value: MACHINE_STATUS_WAKING = 5;
+   */
+  WAKING = 5,
+
+  /**
+   * @generated from enum value: MACHINE_STATUS_DESTROYING = 6;
+   */
+  DESTROYING = 6,
+
+  /**
+   * @generated from enum value: MACHINE_STATUS_DESTROYED = 7;
+   */
+  DESTROYED = 7,
+
+  /**
+   * @generated from enum value: MACHINE_STATUS_FAILED = 8;
+   */
+  FAILED = 8,
+
+  /**
+   * @generated from enum value: MACHINE_STATUS_INDETERMINATE = 9;
+   */
+  INDETERMINATE = 9,
+}
+
+/**
+ * Describes the enum acyclic.machines.v1.MachineStatus.
+ */
+export declare const MachineStatusSchema: GenEnum<MachineStatus>;
+
+/**
+ * @generated from enum acyclic.machines.v1.PressureKind
+ */
+export enum PressureKind {
+  /**
+   * @generated from enum value: PRESSURE_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: PRESSURE_KIND_CUSTOMER_BUDGET = 1;
+   */
+  CUSTOMER_BUDGET = 1,
+
+  /**
+   * @generated from enum value: PRESSURE_KIND_MACHINE_LIMIT = 2;
+   */
+  MACHINE_LIMIT = 2,
+
+  /**
+   * @generated from enum value: PRESSURE_KIND_SERVICE_SATURATION = 3;
+   */
+  SERVICE_SATURATION = 3,
+}
+
+/**
+ * Describes the enum acyclic.machines.v1.PressureKind.
+ */
+export declare const PressureKindSchema: GenEnum<PressureKind>;
+
+/**
+ * @generated from enum acyclic.machines.v1.EventKind
+ */
+export enum EventKind {
+  /**
+   * @generated from enum value: EVENT_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: EVENT_KIND_STATE = 1;
+   */
+  STATE = 1,
+
+  /**
+   * @generated from enum value: EVENT_KIND_PRESSURE = 2;
+   */
+  PRESSURE = 2,
+
+  /**
+   * @generated from enum value: EVENT_KIND_CAPACITY = 3;
+   */
+  CAPACITY = 3,
+}
+
+/**
+ * Describes the enum acyclic.machines.v1.EventKind.
+ */
+export declare const EventKindSchema: GenEnum<EventKind>;
 
 /**
  * @generated from service acyclic.machines.v1.MachinesService
  */
 export declare const MachinesService: GenService<{
   /**
-   * @generated from rpc acyclic.machines.v1.MachinesService.Handshake
+   * @generated from rpc acyclic.machines.v1.MachinesService.QualifyImage
    */
-  handshake: {
+  qualifyImage: {
     methodKind: "unary";
-    input: typeof HandshakeRequestSchema;
-    output: typeof HandshakeResponseSchema;
+    input: typeof QualifyImageRequestSchema;
+    output: typeof ImageQualificationSchema;
   },
   /**
-   * @generated from rpc acyclic.machines.v1.MachinesService.Execute
+   * @generated from rpc acyclic.machines.v1.MachinesService.Create
    */
-  execute: {
+  create: {
     methodKind: "unary";
-    input: typeof ExecutionRequestSchema;
-    output: typeof ExecuteResponseSchema;
+    input: typeof CreateMachineRequestSchema;
+    output: typeof MachineAdmissionSchema;
   },
   /**
-   * @generated from rpc acyclic.machines.v1.MachinesService.Observe
+   * @generated from rpc acyclic.machines.v1.MachinesService.Checkpoint
    */
-  observe: {
+  checkpoint: {
     methodKind: "unary";
-    input: typeof ObserveRequestSchema;
-    output: typeof OperationStatusSchema;
+    input: typeof CheckpointMachineRequestSchema;
+    output: typeof CheckpointAdmissionSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.Fork
+   */
+  fork: {
+    methodKind: "unary";
+    input: typeof ForkCheckpointRequestSchema;
+    output: typeof ForkAdmissionSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.Suspend
+   */
+  suspend: {
+    methodKind: "unary";
+    input: typeof MachineMutationRequestSchema;
+    output: typeof MutationAdmissionSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.Wake
+   */
+  wake: {
+    methodKind: "unary";
+    input: typeof MachineMutationRequestSchema;
+    output: typeof MutationAdmissionSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.SetSuspensionPolicy
+   */
+  setSuspensionPolicy: {
+    methodKind: "unary";
+    input: typeof SetSuspensionPolicyRequestSchema;
+    output: typeof PolicyAdmissionSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.DestroyMachine
+   */
+  destroyMachine: {
+    methodKind: "unary";
+    input: typeof MachineMutationRequestSchema;
+    output: typeof MutationAdmissionSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.DestroyCheckpoint
+   */
+  destroyCheckpoint: {
+    methodKind: "unary";
+    input: typeof CheckpointMutationRequestSchema;
+    output: typeof MutationAdmissionSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.Recover
+   */
+  recover: {
+    methodKind: "unary";
+    input: typeof RecoverRequestSchema;
+    output: typeof RecoveredAdmissionSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.InspectMachine
+   */
+  inspectMachine: {
+    methodKind: "unary";
+    input: typeof InspectMachineRequestSchema;
+    output: typeof MachineStateSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.InspectCheckpoint
+   */
+  inspectCheckpoint: {
+    methodKind: "unary";
+    input: typeof InspectCheckpointRequestSchema;
+    output: typeof CheckpointStateSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.ListMachines
+   */
+  listMachines: {
+    methodKind: "unary";
+    input: typeof ListMachinesRequestSchema;
+    output: typeof MachinePageSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.Events
+   */
+  events: {
+    methodKind: "unary";
+    input: typeof EventsRequestSchema;
+    output: typeof EventPageSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.Usage
+   */
+  usage: {
+    methodKind: "unary";
+    input: typeof UsageRequestSchema;
+    output: typeof UsageReceiptSchema;
   },
   /**
    * @generated from rpc acyclic.machines.v1.MachinesService.Cancel
    */
   cancel: {
     methodKind: "unary";
-    input: typeof CancelRequestSchema;
-    output: typeof CancelResponseSchema;
+    input: typeof OperationRequestSchema;
+    output: typeof OperationStateSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.InspectOperation
+   */
+  inspectOperation: {
+    methodKind: "unary";
+    input: typeof OperationRequestSchema;
+    output: typeof OperationStateSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.WatchOperation
+   */
+  watchOperation: {
+    methodKind: "server_streaming";
+    input: typeof OperationRequestSchema;
+    output: typeof OperationStateSchema;
   },
 }>;
 

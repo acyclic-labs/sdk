@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "providerAssurance": "declared-not-inferred",
+  "cases": [
+    "immutable-image-qualification",
+    "shape-free-create",
+    "exact-idempotent-create-replay",
+    "idempotency-key-rebinding-rejected",
+    "stable-logical-endpoint",
+    "checkpoint-retains-source-lifetime",
+    "fork-returns-exact-fresh-child-set",
+    "checkpoint-destruction-does-not-cascade",
+    "suspend-wake-state-events-are-ordered",
+    "bounded-stable-machine-pages",
+    "bounded-stable-event-pages",
+    "usage-interval-is-half-open",
+    "destroy-retains-terminal-observation",
+    "indeterminate-recovery-never-redispatches"
+  ]
+}

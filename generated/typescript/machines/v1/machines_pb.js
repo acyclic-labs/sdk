@@ -2,36 +2,401 @@
 // @generated from file machines/v1/machines.proto (package acyclic.machines.v1, syntax proto3)
 /* eslint-disable */
 
-import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
-import { file_google_api_annotations } from "../../google/api/annotations_pb";
-import { file_harness_v1_harness } from "../../harness/v1/harness_pb";
+import { enumDesc, fileDesc, messageDesc, serviceDesc, tsEnum } from "@bufbuild/protobuf/codegenv2";
 
 /**
  * Describes the file machines/v1/machines.proto.
  */
 export const file_machines_v1_machines = /*@__PURE__*/
-  fileDesc("ChptYWNoaW5lcy92MS9tYWNoaW5lcy5wcm90bxITYWN5Y2xpYy5tYWNoaW5lcy52MSKKAQoQRXhlY3V0aW9uUmVxdWVzdBI4CglvcGVyYXRpb24YASABKAsyJS5hY3ljbGljLmhhcm5lc3MudjEuT3BlcmF0aW9uSWRlbnRpdHkSDwoHcHJvZ3JhbRgCIAEoCRIMCgRhcmdzGAMgAygJEh0KFXJlcXVpcmVkX2NhcGFiaWxpdGllcxgEIAMoCSI/Cg9FeGVjdXRpb25SZXN1bHQSDAoEY29kZRgBIAEoBRIOCgZzdGRvdXQYAiABKAwSDgoGc3RkZXJyGAMgASgMInkKD0V4ZWN1dGVSZXNwb25zZRIwCglhZG1pc3Npb24YASABKAsyHS5hY3ljbGljLmhhcm5lc3MudjEuQWRtaXNzaW9uEjQKBnJlc3VsdBgCIAEoCzIkLmFjeWNsaWMubWFjaGluZXMudjEuRXhlY3V0aW9uUmVzdWx0Mv8DCg9NYWNoaW5lc1NlcnZpY2USewoJSGFuZHNoYWtlEiQuYWN5Y2xpYy5oYXJuZXNzLnYxLkhhbmRzaGFrZVJlcXVlc3QaJS5hY3ljbGljLmhhcm5lc3MudjEuSGFuZHNoYWtlUmVzcG9uc2UiIYLT5JMCGzoBKiIWL3YxL21hY2hpbmVzOmhhbmRzaGFrZRJxCgdFeGVjdXRlEiUuYWN5Y2xpYy5tYWNoaW5lcy52MS5FeGVjdXRpb25SZXF1ZXN0GiQuYWN5Y2xpYy5tYWNoaW5lcy52MS5FeGVjdXRlUmVzcG9uc2UiGYLT5JMCEzoBKiIOL3YxL2V4ZWN1dGlvbnMSeQoHT2JzZXJ2ZRIiLmFjeWNsaWMuaGFybmVzcy52MS5PYnNlcnZlUmVxdWVzdBojLmFjeWNsaWMuaGFybmVzcy52MS5PcGVyYXRpb25TdGF0dXMiJYLT5JMCHxIdL3YxL2V4ZWN1dGlvbnMve29wZXJhdGlvbl9pZH0SgAEKBkNhbmNlbBIhLmFjeWNsaWMuaGFybmVzcy52MS5DYW5jZWxSZXF1ZXN0GiIuYWN5Y2xpYy5oYXJuZXNzLnYxLkNhbmNlbFJlc3BvbnNlIi+C0+STAik6ASoiJC92MS9leGVjdXRpb25zL3tvcGVyYXRpb25faWR9OmNhbmNlbEI7WjlnaXRodWIuY29tL2FjeWNsaWMtbGFicy9zZGsvZ28vZ2VuL21hY2hpbmVzL3YxO21hY2hpbmVzdjFiBnByb3RvMw", [file_google_api_annotations, file_harness_v1_harness]);
+  fileDesc("ChptYWNoaW5lcy92MS9tYWNoaW5lcy5wcm90bxITYWN5Y2xpYy5tYWNoaW5lcy52MSIvCg9Qcm90b2NvbFZlcnNpb24SDQoFbWFqb3IYASABKA0SDQoFbWlub3IYAiABKA0iHAoLT3BlcmF0aW9uSWQSDQoFdmFsdWUYASABKAwiHwoOSWRlbXBvdGVuY3lLZXkSDQoFdmFsdWUYASABKAwiGgoJTWFjaGluZUlkEg0KBXZhbHVlGAEgASgMIh0KDENoZWNrcG9pbnRJZBINCgV2YWx1ZRgBIAEoDCK0AQoFSW1hZ2USLAoEa2luZBgBIAEoDjIeLmFjeWNsaWMubWFjaGluZXMudjEuSW1hZ2VLaW5kEhQKCm9jaV9kaWdlc3QYAiABKAlIABIXCg1jdXN0b21fZGlnZXN0GAMgASgMSAASNwoKY2hlY2twb2ludBgEIAEoCzIhLmFjeWNsaWMubWFjaGluZXMudjEuQ2hlY2twb2ludElkSABCFQoTaW1tdXRhYmxlX3JlZmVyZW5jZSJ+ChNDb21wYXRpYmlsaXR5UG9saWN5EjQKBG1vZGUYASABKA4yJi5hY3ljbGljLm1hY2hpbmVzLnYxLkNvbXBhdGliaWxpdHlNb2RlEjEKCHJlcXVpcmVkGAIgAygOMh8uYWN5Y2xpYy5tYWNoaW5lcy52MS5DYXBhYmlsaXR5IpYBChJJbWFnZVF1YWxpZmljYXRpb24SKQoFaW1hZ2UYASABKAsyGi5hY3ljbGljLm1hY2hpbmVzLnYxLkltYWdlEjUKDGNhcGFiaWxpdGllcxgCIAMoDjIfLmFjeWNsaWMubWFjaGluZXMudjEuQ2FwYWJpbGl0eRIeChZjb21wYXRpYmlsaXR5X3JldmlzaW9uGAMgASgMIkcKEFN1c3BlbnNpb25Qb2xpY3kSEAoGbWFudWFsGAEgASgISAASFwoNYWZ0ZXJfaWRsZV9tcxgCIAEoBEgAQggKBnBvbGljeSJXChBFeHBpcmF0aW9uUG9saWN5EjEKBGtpbmQYASABKA4yIy5hY3ljbGljLm1hY2hpbmVzLnYxLkV4cGlyYXRpb25LaW5kEhAKCHZhbHVlX21zGAIgASgEIjQKB0J1ZGdldHMSFAoMc3BlbmRfbWljcm9zGAEgASgEEhMKC2NvbmN1cnJlbmN5GAIgASgNIs8DCg9NYWNoaW5lQ29udHJhY3QSKQoFaW1hZ2UYASABKAsyGi5hY3ljbGljLm1hY2hpbmVzLnYxLkltYWdlEjUKDGNhcGFiaWxpdGllcxgCIAMoDjIfLmFjeWNsaWMubWFjaGluZXMudjEuQ2FwYWJpbGl0eRI/Cg1jb21wYXRpYmlsaXR5GAMgASgLMiguYWN5Y2xpYy5tYWNoaW5lcy52MS5Db21wYXRpYmlsaXR5UG9saWN5Eh4KFmNvbXBhdGliaWxpdHlfcmV2aXNpb24YBCABKAwSNQoLcGVyZm9ybWFuY2UYBSABKA4yIC5hY3ljbGljLm1hY2hpbmVzLnYxLlBlcmZvcm1hbmNlEjkKCnN1c3BlbnNpb24YBiABKAsyJS5hY3ljbGljLm1hY2hpbmVzLnYxLlN1c3BlbnNpb25Qb2xpY3kSOQoKZXhwaXJhdGlvbhgHIAEoCzIlLmFjeWNsaWMubWFjaGluZXMudjEuRXhwaXJhdGlvblBvbGljeRIdChVuZXR3b3JrX3BvbGljeV9kaWdlc3QYCCABKAwSLQoHYnVkZ2V0cxgJIAEoCzIcLmFjeWNsaWMubWFjaGluZXMudjEuQnVkZ2V0cyJ4ChNRdWFsaWZ5SW1hZ2VSZXF1ZXN0EjYKCHByb3RvY29sGAEgASgLMiQuYWN5Y2xpYy5tYWNoaW5lcy52MS5Qcm90b2NvbFZlcnNpb24SKQoFaW1hZ2UYAiABKAsyGi5hY3ljbGljLm1hY2hpbmVzLnYxLkltYWdlIvMDChRDcmVhdGVNYWNoaW5lUmVxdWVzdBI2Cghwcm90b2NvbBgBIAEoCzIkLmFjeWNsaWMubWFjaGluZXMudjEuUHJvdG9jb2xWZXJzaW9uEjwKD2lkZW1wb3RlbmN5X2tleRgCIAEoCzIjLmFjeWNsaWMubWFjaGluZXMudjEuSWRlbXBvdGVuY3lLZXkSKQoFaW1hZ2UYAyABKAsyGi5hY3ljbGljLm1hY2hpbmVzLnYxLkltYWdlEj8KDWNvbXBhdGliaWxpdHkYBCABKAsyKC5hY3ljbGljLm1hY2hpbmVzLnYxLkNvbXBhdGliaWxpdHlQb2xpY3kSNQoLcGVyZm9ybWFuY2UYBSABKA4yIC5hY3ljbGljLm1hY2hpbmVzLnYxLlBlcmZvcm1hbmNlEjkKCnN1c3BlbnNpb24YBiABKAsyJS5hY3ljbGljLm1hY2hpbmVzLnYxLlN1c3BlbnNpb25Qb2xpY3kSOQoKZXhwaXJhdGlvbhgHIAEoCzIlLmFjeWNsaWMubWFjaGluZXMudjEuRXhwaXJhdGlvblBvbGljeRIdChVuZXR3b3JrX3BvbGljeV9kaWdlc3QYCCABKAwSLQoHYnVkZ2V0cxgJIAEoCzIcLmFjeWNsaWMubWFjaGluZXMudjEuQnVkZ2V0cyK/AQoWTWFjaGluZU11dGF0aW9uUmVxdWVzdBI2Cghwcm90b2NvbBgBIAEoCzIkLmFjeWNsaWMubWFjaGluZXMudjEuUHJvdG9jb2xWZXJzaW9uEjwKD2lkZW1wb3RlbmN5X2tleRgCIAEoCzIjLmFjeWNsaWMubWFjaGluZXMudjEuSWRlbXBvdGVuY3lLZXkSLwoHbWFjaGluZRgDIAEoCzIeLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZUlkIsEBChhDaGVja3BvaW50TWFjaGluZVJlcXVlc3QSNgoIcHJvdG9jb2wYASABKAsyJC5hY3ljbGljLm1hY2hpbmVzLnYxLlByb3RvY29sVmVyc2lvbhI8Cg9pZGVtcG90ZW5jeV9rZXkYAiABKAsyIy5hY3ljbGljLm1hY2hpbmVzLnYxLklkZW1wb3RlbmN5S2V5Ei8KB21hY2hpbmUYAyABKAsyHi5hY3ljbGljLm1hY2hpbmVzLnYxLk1hY2hpbmVJZCKKAgoVRm9ya0NoZWNrcG9pbnRSZXF1ZXN0EjYKCHByb3RvY29sGAEgASgLMiQuYWN5Y2xpYy5tYWNoaW5lcy52MS5Qcm90b2NvbFZlcnNpb24SPAoPaWRlbXBvdGVuY3lfa2V5GAIgASgLMiMuYWN5Y2xpYy5tYWNoaW5lcy52MS5JZGVtcG90ZW5jeUtleRI1CgpjaGVja3BvaW50GAMgASgLMiEuYWN5Y2xpYy5tYWNoaW5lcy52MS5DaGVja3BvaW50SWQSDQoFY291bnQYBCABKA0SNQoLcGVyZm9ybWFuY2UYBSABKA4yIC5hY3ljbGljLm1hY2hpbmVzLnYxLlBlcmZvcm1hbmNlIvoBChpTZXRTdXNwZW5zaW9uUG9saWN5UmVxdWVzdBI2Cghwcm90b2NvbBgBIAEoCzIkLmFjeWNsaWMubWFjaGluZXMudjEuUHJvdG9jb2xWZXJzaW9uEjwKD2lkZW1wb3RlbmN5X2tleRgCIAEoCzIjLmFjeWNsaWMubWFjaGluZXMudjEuSWRlbXBvdGVuY3lLZXkSLwoHbWFjaGluZRgDIAEoCzIeLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZUlkEjUKBnBvbGljeRgEIAEoCzIlLmFjeWNsaWMubWFjaGluZXMudjEuU3VzcGVuc2lvblBvbGljeSLIAQoZQ2hlY2twb2ludE11dGF0aW9uUmVxdWVzdBI2Cghwcm90b2NvbBgBIAEoCzIkLmFjeWNsaWMubWFjaGluZXMudjEuUHJvdG9jb2xWZXJzaW9uEjwKD2lkZW1wb3RlbmN5X2tleRgCIAEoCzIjLmFjeWNsaWMubWFjaGluZXMudjEuSWRlbXBvdGVuY3lLZXkSNQoKY2hlY2twb2ludBgDIAEoCzIhLmFjeWNsaWMubWFjaGluZXMudjEuQ2hlY2twb2ludElkIoYBCg5SZWNvdmVyUmVxdWVzdBI2Cghwcm90b2NvbBgBIAEoCzIkLmFjeWNsaWMubWFjaGluZXMudjEuUHJvdG9jb2xWZXJzaW9uEjwKD2lkZW1wb3RlbmN5X2tleRgCIAEoCzIjLmFjeWNsaWMubWFjaGluZXMudjEuSWRlbXBvdGVuY3lLZXkigAEKFUluc3BlY3RNYWNoaW5lUmVxdWVzdBI2Cghwcm90b2NvbBgBIAEoCzIkLmFjeWNsaWMubWFjaGluZXMudjEuUHJvdG9jb2xWZXJzaW9uEi8KB21hY2hpbmUYAiABKAsyHi5hY3ljbGljLm1hY2hpbmVzLnYxLk1hY2hpbmVJZCKJAQoYSW5zcGVjdENoZWNrcG9pbnRSZXF1ZXN0EjYKCHByb3RvY29sGAEgASgLMiQuYWN5Y2xpYy5tYWNoaW5lcy52MS5Qcm90b2NvbFZlcnNpb24SNQoKY2hlY2twb2ludBgCIAEoCzIhLmFjeWNsaWMubWFjaGluZXMudjEuQ2hlY2twb2ludElkIosBChNMaXN0TWFjaGluZXNSZXF1ZXN0EjYKCHByb3RvY29sGAEgASgLMiQuYWN5Y2xpYy5tYWNoaW5lcy52MS5Qcm90b2NvbFZlcnNpb24SLQoFYWZ0ZXIYAiABKAsyHi5hY3ljbGljLm1hY2hpbmVzLnYxLk1hY2hpbmVJZBINCgVsaW1pdBgDIAEoDSJ/ChBPcGVyYXRpb25SZXF1ZXN0EjYKCHByb3RvY29sGAEgASgLMiQuYWN5Y2xpYy5tYWNoaW5lcy52MS5Qcm90b2NvbFZlcnNpb24SMwoJb3BlcmF0aW9uGAIgASgLMiAuYWN5Y2xpYy5tYWNoaW5lcy52MS5PcGVyYXRpb25JZCJ7Cg5PcGVyYXRpb25TdGF0ZRIzCglvcGVyYXRpb24YASABKAsyIC5hY3ljbGljLm1hY2hpbmVzLnYxLk9wZXJhdGlvbklkEjQKBnN0YXR1cxgCIAEoDjIkLmFjeWNsaWMubWFjaGluZXMudjEuT3BlcmF0aW9uU3RhdHVzIiUKCEVuZHBvaW50EgwKBG5hbWUYASABKAkSCwoDdXJpGAIgASgJItECCgxNYWNoaW5lU3RhdGUSLwoHbWFjaGluZRgBIAEoCzIeLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZUlkEjIKBnN0YXR1cxgCIAEoDjIiLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZVN0YXR1cxI2Cghjb250cmFjdBgDIAEoCzIkLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZUNvbnRyYWN0EjAKCWVuZHBvaW50cxgEIAMoCzIdLmFjeWNsaWMubWFjaGluZXMudjEuRW5kcG9pbnQSOgoPbGFzdF9jaGVja3BvaW50GAUgASgLMiEuYWN5Y2xpYy5tYWNoaW5lcy52MS5DaGVja3BvaW50SWQSGgoSY3JlYXRlZF9hdF91bml4X21zGAYgASgEEhoKEmNoYW5nZWRfYXRfdW5peF9tcxgHIAEoBCJwCgtNYWNoaW5lUGFnZRIzCghtYWNoaW5lcxgBIAMoCzIhLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZVN0YXRlEiwKBG5leHQYAiABKAsyHi5hY3ljbGljLm1hY2hpbmVzLnYxLk1hY2hpbmVJZCLeAQoPQ2hlY2twb2ludFN0YXRlEjUKCmNoZWNrcG9pbnQYASABKAsyIS5hY3ljbGljLm1hY2hpbmVzLnYxLkNoZWNrcG9pbnRJZBIuCgZzb3VyY2UYAiABKAsyHi5hY3ljbGljLm1hY2hpbmVzLnYxLk1hY2hpbmVJZBI2Cghjb250cmFjdBgDIAEoCzIkLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZUNvbnRyYWN0EhAKCGZvcmthYmxlGAQgASgIEhoKEmNyZWF0ZWRfYXRfdW5peF9tcxgFIAEoBCKwAQoQTWFjaGluZUFkbWlzc2lvbhIvCgdtYWNoaW5lGAEgASgLMh4uYWN5Y2xpYy5tYWNoaW5lcy52MS5NYWNoaW5lSWQSMwoJb3BlcmF0aW9uGAIgASgLMiAuYWN5Y2xpYy5tYWNoaW5lcy52MS5PcGVyYXRpb25JZBI2Cghjb250cmFjdBgDIAEoCzIkLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZUNvbnRyYWN0IukBChNDaGVja3BvaW50QWRtaXNzaW9uEjUKCmNoZWNrcG9pbnQYASABKAsyIS5hY3ljbGljLm1hY2hpbmVzLnYxLkNoZWNrcG9pbnRJZBIuCgZzb3VyY2UYAiABKAsyHi5hY3ljbGljLm1hY2hpbmVzLnYxLk1hY2hpbmVJZBIzCglvcGVyYXRpb24YAyABKAsyIC5hY3ljbGljLm1hY2hpbmVzLnYxLk9wZXJhdGlvbklkEjYKCGNvbnRyYWN0GAQgASgLMiQuYWN5Y2xpYy5tYWNoaW5lcy52MS5NYWNoaW5lQ29udHJhY3Qi5QEKDUZvcmtBZG1pc3Npb24SNQoKY2hlY2twb2ludBgBIAEoCzIhLmFjeWNsaWMubWFjaGluZXMudjEuQ2hlY2twb2ludElkEjAKCGNoaWxkcmVuGAIgAygLMh4uYWN5Y2xpYy5tYWNoaW5lcy52MS5NYWNoaW5lSWQSMwoJb3BlcmF0aW9uGAMgASgLMiAuYWN5Y2xpYy5tYWNoaW5lcy52MS5PcGVyYXRpb25JZBI2Cghjb250cmFjdBgEIAEoCzIkLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZUNvbnRyYWN0Iq4BCg9Qb2xpY3lBZG1pc3Npb24SLwoHbWFjaGluZRgBIAEoCzIeLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZUlkEjMKCW9wZXJhdGlvbhgCIAEoCzIgLmFjeWNsaWMubWFjaGluZXMudjEuT3BlcmF0aW9uSWQSNQoGcG9saWN5GAMgASgLMiUuYWN5Y2xpYy5tYWNoaW5lcy52MS5TdXNwZW5zaW9uUG9saWN5IrABChFNdXRhdGlvbkFkbWlzc2lvbhIzCglvcGVyYXRpb24YASABKAsyIC5hY3ljbGljLm1hY2hpbmVzLnYxLk9wZXJhdGlvbklkEi8KB21hY2hpbmUYAiABKAsyHi5hY3ljbGljLm1hY2hpbmVzLnYxLk1hY2hpbmVJZBI1CgpjaGVja3BvaW50GAMgASgLMiEuYWN5Y2xpYy5tYWNoaW5lcy52MS5DaGVja3BvaW50SWQiwwQKElJlY292ZXJlZEFkbWlzc2lvbhIzCglvcGVyYXRpb24YASABKAsyIC5hY3ljbGljLm1hY2hpbmVzLnYxLk9wZXJhdGlvbklkEjcKBmNyZWF0ZRgCIAEoCzIlLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZUFkbWlzc2lvbkgAEj4KCmNoZWNrcG9pbnQYAyABKAsyKC5hY3ljbGljLm1hY2hpbmVzLnYxLkNoZWNrcG9pbnRBZG1pc3Npb25IABIyCgRmb3JrGAQgASgLMiIuYWN5Y2xpYy5tYWNoaW5lcy52MS5Gb3JrQWRtaXNzaW9uSAASOQoHc3VzcGVuZBgFIAEoCzImLmFjeWNsaWMubWFjaGluZXMudjEuTXV0YXRpb25BZG1pc3Npb25IABI2CgR3YWtlGAYgASgLMiYuYWN5Y2xpYy5tYWNoaW5lcy52MS5NdXRhdGlvbkFkbWlzc2lvbkgAEkEKD2Rlc3Ryb3lfbWFjaGluZRgHIAEoCzImLmFjeWNsaWMubWFjaGluZXMudjEuTXV0YXRpb25BZG1pc3Npb25IABJFChVzZXRfc3VzcGVuc2lvbl9wb2xpY3kYCCABKAsyJC5hY3ljbGljLm1hY2hpbmVzLnYxLlBvbGljeUFkbWlzc2lvbkgAEkQKEmRlc3Ryb3lfY2hlY2twb2ludBgJIAEoCzImLmFjeWNsaWMubWFjaGluZXMudjEuTXV0YXRpb25BZG1pc3Npb25IAEIICgZyZXN1bHQihAIKDE1hY2hpbmVFdmVudBIvCgdtYWNoaW5lGAEgASgLMh4uYWN5Y2xpYy5tYWNoaW5lcy52MS5NYWNoaW5lSWQSEAoIc2VxdWVuY2UYAiABKAQSGwoTb2JzZXJ2ZWRfYXRfdW5peF9tcxgDIAEoBBIsCgRraW5kGAQgASgOMh4uYWN5Y2xpYy5tYWNoaW5lcy52MS5FdmVudEtpbmQSMQoFc3RhdGUYBSABKA4yIi5hY3ljbGljLm1hY2hpbmVzLnYxLk1hY2hpbmVTdGF0dXMSMwoIcHJlc3N1cmUYBiABKA4yIS5hY3ljbGljLm1hY2hpbmVzLnYxLlByZXNzdXJlS2luZCKfAQoNRXZlbnRzUmVxdWVzdBI2Cghwcm90b2NvbBgBIAEoCzIkLmFjeWNsaWMubWFjaGluZXMudjEuUHJvdG9jb2xWZXJzaW9uEi8KB21hY2hpbmUYAiABKAsyHi5hY3ljbGljLm1hY2hpbmVzLnYxLk1hY2hpbmVJZBIWCg5hZnRlcl9zZXF1ZW5jZRgDIAEoBBINCgVsaW1pdBgEIAEoDSJVCglFdmVudFBhZ2USMQoGZXZlbnRzGAEgAygLMiEuYWN5Y2xpYy5tYWNoaW5lcy52MS5NYWNoaW5lRXZlbnQSFQoNbmV4dF9zZXF1ZW5jZRgCIAEoBCKjAQoMVXNhZ2VSZXF1ZXN0EjYKCHByb3RvY29sGAEgASgLMiQuYWN5Y2xpYy5tYWNoaW5lcy52MS5Qcm90b2NvbFZlcnNpb24SLwoHbWFjaGluZRgCIAEoCzIeLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZUlkEhUKDXN0YXJ0X3VuaXhfbXMYAyABKAQSEwoLZW5kX3VuaXhfbXMYBCABKAQiqAIKDFVzYWdlUmVjZWlwdBIvCgdtYWNoaW5lGAEgASgLMh4uYWN5Y2xpYy5tYWNoaW5lcy52MS5NYWNoaW5lSWQSFQoNc3RhcnRfdW5peF9tcxgCIAEoBBITCgtlbmRfdW5peF9tcxgDIAEoBBIWCg5lbGFzdGljX2NwdV9ucxgEIAEoBBIYChBkZWRpY2F0ZWRfY3B1X25zGAUgASgEEiUKHXByaXZhdGVfcmVzaWRlbnRfYnl0ZV9zZWNvbmRzGAYgASgEEh0KFWR1cmFibGVfcHJpdmF0ZV9ieXRlcxgHIAEoBBIcChRsaW5lYWdlX3NoYXJlZF9ieXRlcxgIIAEoBBIUCgxlZ3Jlc3NfYnl0ZXMYCSABKAQSDwoHcmVjZWlwdBgKIAEoDCp1CglJbWFnZUtpbmQSGgoWSU1BR0VfS0lORF9VTlNQRUNJRklFRBAAEhoKFklNQUdFX0tJTkRfTUFOQUdFRF9PQ0kQARIVChFJTUFHRV9LSU5EX0NVU1RPTRACEhkKFUlNQUdFX0tJTkRfQ0hFQ0tQT0lOVBADKtoBCgpDYXBhYmlsaXR5EhoKFkNBUEFCSUxJVFlfVU5TUEVDSUZJRUQQABIaChZDQVBBQklMSVRZX0VMQVNUSUNfQ1BVEAESHQoZQ0FQQUJJTElUWV9FTEFTVElDX01FTU9SWRACEh4KGkNBUEFCSUxJVFlfTElWRV9DSEVDS1BPSU5UEAMSGAoUQ0FQQUJJTElUWV9MSVZFX0ZPUksQBBIdChlDQVBBQklMSVRZX1NVU1BFTkRfUkVTVU1FEAUSHAoYQ0FQQUJJTElUWV9MSVZFX01PVkVNRU5UEAYqewoRQ29tcGF0aWJpbGl0eU1vZGUSIgoeQ09NUEFUSUJJTElUWV9NT0RFX1VOU1BFQ0lGSUVEEAASIgoeQ09NUEFUSUJJTElUWV9NT0RFX0JFU1RfRUZGT1JUEAESHgoaQ09NUEFUSUJJTElUWV9NT0RFX1JFUVVJUkUQAipeCgtQZXJmb3JtYW5jZRIbChdQRVJGT1JNQU5DRV9VTlNQRUNJRklFRBAAEhcKE1BFUkZPUk1BTkNFX0VMQVNUSUMQARIZChVQRVJGT1JNQU5DRV9ERURJQ0FURUQQAiqbAQoORXhwaXJhdGlvbktpbmQSHwobRVhQSVJBVElPTl9LSU5EX1VOU1BFQ0lGSUVEEAASGQoVRVhQSVJBVElPTl9LSU5EX05FVkVSEAESGwoXRVhQSVJBVElPTl9LSU5EX01BWF9BR0UQAhIWChJFWFBJUkFUSU9OX0tJTkRfQVQQAxIYChRFWFBJUkFUSU9OX0tJTkRfSURMRRAEKtIBCg9PcGVyYXRpb25TdGF0dXMSIAocT1BFUkFUSU9OX1NUQVRVU19VTlNQRUNJRklFRBAAEhwKGE9QRVJBVElPTl9TVEFUVVNfUEVORElORxABEh4KGk9QRVJBVElPTl9TVEFUVVNfU1VDQ0VFREVEEAISHgoaT1BFUkFUSU9OX1NUQVRVU19DQU5DRUxMRUQQAxIiCh5PUEVSQVRJT05fU1RBVFVTX0lOREVURVJNSU5BVEUQBBIbChdPUEVSQVRJT05fU1RBVFVTX0ZBSUxFRBAFKroCCg1NYWNoaW5lU3RhdHVzEh4KGk1BQ0hJTkVfU1RBVFVTX1VOU1BFQ0lGSUVEEAASGwoXTUFDSElORV9TVEFUVVNfU1RBUlRJTkcQARIaChZNQUNISU5FX1NUQVRVU19SVU5OSU5HEAISHQoZTUFDSElORV9TVEFUVVNfU1VTUEVORElORxADEhwKGE1BQ0hJTkVfU1RBVFVTX1NVU1BFTkRFRBAEEhkKFU1BQ0hJTkVfU1RBVFVTX1dBS0lORxAFEh0KGU1BQ0hJTkVfU1RBVFVTX0RFU1RST1lJTkcQBhIcChhNQUNISU5FX1NUQVRVU19ERVNUUk9ZRUQQBxIZChVNQUNISU5FX1NUQVRVU19GQUlMRUQQCBIgChxNQUNISU5FX1NUQVRVU19JTkRFVEVSTUlOQVRFEAkqlwEKDFByZXNzdXJlS2luZBIdChlQUkVTU1VSRV9LSU5EX1VOU1BFQ0lGSUVEEAASIQodUFJFU1NVUkVfS0lORF9DVVNUT01FUl9CVURHRVQQARIfChtQUkVTU1VSRV9LSU5EX01BQ0hJTkVfTElNSVQQAhIkCiBQUkVTU1VSRV9LSU5EX1NFUlZJQ0VfU0FUVVJBVElPThADKm8KCUV2ZW50S2luZBIaChZFVkVOVF9LSU5EX1VOU1BFQ0lGSUVEEAASFAoQRVZFTlRfS0lORF9TVEFURRABEhcKE0VWRU5UX0tJTkRfUFJFU1NVUkUQAhIXChNFVkVOVF9LSU5EX0NBUEFDSVRZEAMywQ0KD01hY2hpbmVzU2VydmljZRJhCgxRdWFsaWZ5SW1hZ2USKC5hY3ljbGljLm1hY2hpbmVzLnYxLlF1YWxpZnlJbWFnZVJlcXVlc3QaJy5hY3ljbGljLm1hY2hpbmVzLnYxLkltYWdlUXVhbGlmaWNhdGlvbhJaCgZDcmVhdGUSKS5hY3ljbGljLm1hY2hpbmVzLnYxLkNyZWF0ZU1hY2hpbmVSZXF1ZXN0GiUuYWN5Y2xpYy5tYWNoaW5lcy52MS5NYWNoaW5lQWRtaXNzaW9uEmUKCkNoZWNrcG9pbnQSLS5hY3ljbGljLm1hY2hpbmVzLnYxLkNoZWNrcG9pbnRNYWNoaW5lUmVxdWVzdBooLmFjeWNsaWMubWFjaGluZXMudjEuQ2hlY2twb2ludEFkbWlzc2lvbhJWCgRGb3JrEiouYWN5Y2xpYy5tYWNoaW5lcy52MS5Gb3JrQ2hlY2twb2ludFJlcXVlc3QaIi5hY3ljbGljLm1hY2hpbmVzLnYxLkZvcmtBZG1pc3Npb24SXgoHU3VzcGVuZBIrLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZU11dGF0aW9uUmVxdWVzdBomLmFjeWNsaWMubWFjaGluZXMudjEuTXV0YXRpb25BZG1pc3Npb24SWwoEV2FrZRIrLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZU11dGF0aW9uUmVxdWVzdBomLmFjeWNsaWMubWFjaGluZXMudjEuTXV0YXRpb25BZG1pc3Npb24SbAoTU2V0U3VzcGVuc2lvblBvbGljeRIvLmFjeWNsaWMubWFjaGluZXMudjEuU2V0U3VzcGVuc2lvblBvbGljeVJlcXVlc3QaJC5hY3ljbGljLm1hY2hpbmVzLnYxLlBvbGljeUFkbWlzc2lvbhJlCg5EZXN0cm95TWFjaGluZRIrLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZU11dGF0aW9uUmVxdWVzdBomLmFjeWNsaWMubWFjaGluZXMudjEuTXV0YXRpb25BZG1pc3Npb24SawoRRGVzdHJveUNoZWNrcG9pbnQSLi5hY3ljbGljLm1hY2hpbmVzLnYxLkNoZWNrcG9pbnRNdXRhdGlvblJlcXVlc3QaJi5hY3ljbGljLm1hY2hpbmVzLnYxLk11dGF0aW9uQWRtaXNzaW9uElcKB1JlY292ZXISIy5hY3ljbGljLm1hY2hpbmVzLnYxLlJlY292ZXJSZXF1ZXN0GicuYWN5Y2xpYy5tYWNoaW5lcy52MS5SZWNvdmVyZWRBZG1pc3Npb24SXwoOSW5zcGVjdE1hY2hpbmUSKi5hY3ljbGljLm1hY2hpbmVzLnYxLkluc3BlY3RNYWNoaW5lUmVxdWVzdBohLmFjeWNsaWMubWFjaGluZXMudjEuTWFjaGluZVN0YXRlEmgKEUluc3BlY3RDaGVja3BvaW50Ei0uYWN5Y2xpYy5tYWNoaW5lcy52MS5JbnNwZWN0Q2hlY2twb2ludFJlcXVlc3QaJC5hY3ljbGljLm1hY2hpbmVzLnYxLkNoZWNrcG9pbnRTdGF0ZRJaCgxMaXN0TWFjaGluZXMSKC5hY3ljbGljLm1hY2hpbmVzLnYxLkxpc3RNYWNoaW5lc1JlcXVlc3QaIC5hY3ljbGljLm1hY2hpbmVzLnYxLk1hY2hpbmVQYWdlEkwKBkV2ZW50cxIiLmFjeWNsaWMubWFjaGluZXMudjEuRXZlbnRzUmVxdWVzdBoeLmFjeWNsaWMubWFjaGluZXMudjEuRXZlbnRQYWdlEk0KBVVzYWdlEiEuYWN5Y2xpYy5tYWNoaW5lcy52MS5Vc2FnZVJlcXVlc3QaIS5hY3ljbGljLm1hY2hpbmVzLnYxLlVzYWdlUmVjZWlwdBJUCgZDYW5jZWwSJS5hY3ljbGljLm1hY2hpbmVzLnYxLk9wZXJhdGlvblJlcXVlc3QaIy5hY3ljbGljLm1hY2hpbmVzLnYxLk9wZXJhdGlvblN0YXRlEl4KEEluc3BlY3RPcGVyYXRpb24SJS5hY3ljbGljLm1hY2hpbmVzLnYxLk9wZXJhdGlvblJlcXVlc3QaIy5hY3ljbGljLm1hY2hpbmVzLnYxLk9wZXJhdGlvblN0YXRlEl4KDldhdGNoT3BlcmF0aW9uEiUuYWN5Y2xpYy5tYWNoaW5lcy52MS5PcGVyYXRpb25SZXF1ZXN0GiMuYWN5Y2xpYy5tYWNoaW5lcy52MS5PcGVyYXRpb25TdGF0ZTABQjtaOWdpdGh1Yi5jb20vYWN5Y2xpYy1sYWJzL3Nkay9nby9nZW4vbWFjaGluZXMvdjE7bWFjaGluZXN2MWIGcHJvdG8z");
 
 /**
- * Describes the message acyclic.machines.v1.ExecutionRequest.
- * Use `create(ExecutionRequestSchema)` to create a new message.
+ * Describes the message acyclic.machines.v1.ProtocolVersion.
+ * Use `create(ProtocolVersionSchema)` to create a new message.
  */
-export const ExecutionRequestSchema = /*@__PURE__*/
+export const ProtocolVersionSchema = /*@__PURE__*/
   messageDesc(file_machines_v1_machines, 0);
 
 /**
- * Describes the message acyclic.machines.v1.ExecutionResult.
- * Use `create(ExecutionResultSchema)` to create a new message.
+ * Describes the message acyclic.machines.v1.OperationId.
+ * Use `create(OperationIdSchema)` to create a new message.
  */
-export const ExecutionResultSchema = /*@__PURE__*/
+export const OperationIdSchema = /*@__PURE__*/
   messageDesc(file_machines_v1_machines, 1);
 
 /**
- * Describes the message acyclic.machines.v1.ExecuteResponse.
- * Use `create(ExecuteResponseSchema)` to create a new message.
+ * Describes the message acyclic.machines.v1.IdempotencyKey.
+ * Use `create(IdempotencyKeySchema)` to create a new message.
  */
-export const ExecuteResponseSchema = /*@__PURE__*/
+export const IdempotencyKeySchema = /*@__PURE__*/
   messageDesc(file_machines_v1_machines, 2);
+
+/**
+ * Describes the message acyclic.machines.v1.MachineId.
+ * Use `create(MachineIdSchema)` to create a new message.
+ */
+export const MachineIdSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 3);
+
+/**
+ * Describes the message acyclic.machines.v1.CheckpointId.
+ * Use `create(CheckpointIdSchema)` to create a new message.
+ */
+export const CheckpointIdSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 4);
+
+/**
+ * Describes the message acyclic.machines.v1.Image.
+ * Use `create(ImageSchema)` to create a new message.
+ */
+export const ImageSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 5);
+
+/**
+ * Describes the message acyclic.machines.v1.CompatibilityPolicy.
+ * Use `create(CompatibilityPolicySchema)` to create a new message.
+ */
+export const CompatibilityPolicySchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 6);
+
+/**
+ * Describes the message acyclic.machines.v1.ImageQualification.
+ * Use `create(ImageQualificationSchema)` to create a new message.
+ */
+export const ImageQualificationSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 7);
+
+/**
+ * Describes the message acyclic.machines.v1.SuspensionPolicy.
+ * Use `create(SuspensionPolicySchema)` to create a new message.
+ */
+export const SuspensionPolicySchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 8);
+
+/**
+ * Describes the message acyclic.machines.v1.ExpirationPolicy.
+ * Use `create(ExpirationPolicySchema)` to create a new message.
+ */
+export const ExpirationPolicySchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 9);
+
+/**
+ * Describes the message acyclic.machines.v1.Budgets.
+ * Use `create(BudgetsSchema)` to create a new message.
+ */
+export const BudgetsSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 10);
+
+/**
+ * Describes the message acyclic.machines.v1.MachineContract.
+ * Use `create(MachineContractSchema)` to create a new message.
+ */
+export const MachineContractSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 11);
+
+/**
+ * Describes the message acyclic.machines.v1.QualifyImageRequest.
+ * Use `create(QualifyImageRequestSchema)` to create a new message.
+ */
+export const QualifyImageRequestSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 12);
+
+/**
+ * Describes the message acyclic.machines.v1.CreateMachineRequest.
+ * Use `create(CreateMachineRequestSchema)` to create a new message.
+ */
+export const CreateMachineRequestSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 13);
+
+/**
+ * Describes the message acyclic.machines.v1.MachineMutationRequest.
+ * Use `create(MachineMutationRequestSchema)` to create a new message.
+ */
+export const MachineMutationRequestSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 14);
+
+/**
+ * Describes the message acyclic.machines.v1.CheckpointMachineRequest.
+ * Use `create(CheckpointMachineRequestSchema)` to create a new message.
+ */
+export const CheckpointMachineRequestSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 15);
+
+/**
+ * Describes the message acyclic.machines.v1.ForkCheckpointRequest.
+ * Use `create(ForkCheckpointRequestSchema)` to create a new message.
+ */
+export const ForkCheckpointRequestSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 16);
+
+/**
+ * Describes the message acyclic.machines.v1.SetSuspensionPolicyRequest.
+ * Use `create(SetSuspensionPolicyRequestSchema)` to create a new message.
+ */
+export const SetSuspensionPolicyRequestSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 17);
+
+/**
+ * Describes the message acyclic.machines.v1.CheckpointMutationRequest.
+ * Use `create(CheckpointMutationRequestSchema)` to create a new message.
+ */
+export const CheckpointMutationRequestSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 18);
+
+/**
+ * Describes the message acyclic.machines.v1.RecoverRequest.
+ * Use `create(RecoverRequestSchema)` to create a new message.
+ */
+export const RecoverRequestSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 19);
+
+/**
+ * Describes the message acyclic.machines.v1.InspectMachineRequest.
+ * Use `create(InspectMachineRequestSchema)` to create a new message.
+ */
+export const InspectMachineRequestSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 20);
+
+/**
+ * Describes the message acyclic.machines.v1.InspectCheckpointRequest.
+ * Use `create(InspectCheckpointRequestSchema)` to create a new message.
+ */
+export const InspectCheckpointRequestSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 21);
+
+/**
+ * Describes the message acyclic.machines.v1.ListMachinesRequest.
+ * Use `create(ListMachinesRequestSchema)` to create a new message.
+ */
+export const ListMachinesRequestSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 22);
+
+/**
+ * Describes the message acyclic.machines.v1.OperationRequest.
+ * Use `create(OperationRequestSchema)` to create a new message.
+ */
+export const OperationRequestSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 23);
+
+/**
+ * Describes the message acyclic.machines.v1.OperationState.
+ * Use `create(OperationStateSchema)` to create a new message.
+ */
+export const OperationStateSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 24);
+
+/**
+ * Describes the message acyclic.machines.v1.Endpoint.
+ * Use `create(EndpointSchema)` to create a new message.
+ */
+export const EndpointSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 25);
+
+/**
+ * Describes the message acyclic.machines.v1.MachineState.
+ * Use `create(MachineStateSchema)` to create a new message.
+ */
+export const MachineStateSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 26);
+
+/**
+ * Describes the message acyclic.machines.v1.MachinePage.
+ * Use `create(MachinePageSchema)` to create a new message.
+ */
+export const MachinePageSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 27);
+
+/**
+ * Describes the message acyclic.machines.v1.CheckpointState.
+ * Use `create(CheckpointStateSchema)` to create a new message.
+ */
+export const CheckpointStateSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 28);
+
+/**
+ * Describes the message acyclic.machines.v1.MachineAdmission.
+ * Use `create(MachineAdmissionSchema)` to create a new message.
+ */
+export const MachineAdmissionSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 29);
+
+/**
+ * Describes the message acyclic.machines.v1.CheckpointAdmission.
+ * Use `create(CheckpointAdmissionSchema)` to create a new message.
+ */
+export const CheckpointAdmissionSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 30);
+
+/**
+ * Describes the message acyclic.machines.v1.ForkAdmission.
+ * Use `create(ForkAdmissionSchema)` to create a new message.
+ */
+export const ForkAdmissionSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 31);
+
+/**
+ * Describes the message acyclic.machines.v1.PolicyAdmission.
+ * Use `create(PolicyAdmissionSchema)` to create a new message.
+ */
+export const PolicyAdmissionSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 32);
+
+/**
+ * Describes the message acyclic.machines.v1.MutationAdmission.
+ * Use `create(MutationAdmissionSchema)` to create a new message.
+ */
+export const MutationAdmissionSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 33);
+
+/**
+ * Describes the message acyclic.machines.v1.RecoveredAdmission.
+ * Use `create(RecoveredAdmissionSchema)` to create a new message.
+ */
+export const RecoveredAdmissionSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 34);
+
+/**
+ * Describes the message acyclic.machines.v1.MachineEvent.
+ * Use `create(MachineEventSchema)` to create a new message.
+ */
+export const MachineEventSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 35);
+
+/**
+ * Describes the message acyclic.machines.v1.EventsRequest.
+ * Use `create(EventsRequestSchema)` to create a new message.
+ */
+export const EventsRequestSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 36);
+
+/**
+ * Describes the message acyclic.machines.v1.EventPage.
+ * Use `create(EventPageSchema)` to create a new message.
+ */
+export const EventPageSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 37);
+
+/**
+ * Describes the message acyclic.machines.v1.UsageRequest.
+ * Use `create(UsageRequestSchema)` to create a new message.
+ */
+export const UsageRequestSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 38);
+
+/**
+ * Describes the message acyclic.machines.v1.UsageReceipt.
+ * Use `create(UsageReceiptSchema)` to create a new message.
+ */
+export const UsageReceiptSchema = /*@__PURE__*/
+  messageDesc(file_machines_v1_machines, 39);
+
+/**
+ * Describes the enum acyclic.machines.v1.ImageKind.
+ */
+export const ImageKindSchema = /*@__PURE__*/
+  enumDesc(file_machines_v1_machines, 0);
+
+/**
+ * @generated from enum acyclic.machines.v1.ImageKind
+ */
+export const ImageKind = /*@__PURE__*/
+  tsEnum(ImageKindSchema);
+
+/**
+ * Describes the enum acyclic.machines.v1.Capability.
+ */
+export const CapabilitySchema = /*@__PURE__*/
+  enumDesc(file_machines_v1_machines, 1);
+
+/**
+ * @generated from enum acyclic.machines.v1.Capability
+ */
+export const Capability = /*@__PURE__*/
+  tsEnum(CapabilitySchema);
+
+/**
+ * Describes the enum acyclic.machines.v1.CompatibilityMode.
+ */
+export const CompatibilityModeSchema = /*@__PURE__*/
+  enumDesc(file_machines_v1_machines, 2);
+
+/**
+ * @generated from enum acyclic.machines.v1.CompatibilityMode
+ */
+export const CompatibilityMode = /*@__PURE__*/
+  tsEnum(CompatibilityModeSchema);
+
+/**
+ * Describes the enum acyclic.machines.v1.Performance.
+ */
+export const PerformanceSchema = /*@__PURE__*/
+  enumDesc(file_machines_v1_machines, 3);
+
+/**
+ * @generated from enum acyclic.machines.v1.Performance
+ */
+export const Performance = /*@__PURE__*/
+  tsEnum(PerformanceSchema);
+
+/**
+ * Describes the enum acyclic.machines.v1.ExpirationKind.
+ */
+export const ExpirationKindSchema = /*@__PURE__*/
+  enumDesc(file_machines_v1_machines, 4);
+
+/**
+ * @generated from enum acyclic.machines.v1.ExpirationKind
+ */
+export const ExpirationKind = /*@__PURE__*/
+  tsEnum(ExpirationKindSchema);
+
+/**
+ * Describes the enum acyclic.machines.v1.OperationStatus.
+ */
+export const OperationStatusSchema = /*@__PURE__*/
+  enumDesc(file_machines_v1_machines, 5);
+
+/**
+ * @generated from enum acyclic.machines.v1.OperationStatus
+ */
+export const OperationStatus = /*@__PURE__*/
+  tsEnum(OperationStatusSchema);
+
+/**
+ * Describes the enum acyclic.machines.v1.MachineStatus.
+ */
+export const MachineStatusSchema = /*@__PURE__*/
+  enumDesc(file_machines_v1_machines, 6);
+
+/**
+ * @generated from enum acyclic.machines.v1.MachineStatus
+ */
+export const MachineStatus = /*@__PURE__*/
+  tsEnum(MachineStatusSchema);
+
+/**
+ * Describes the enum acyclic.machines.v1.PressureKind.
+ */
+export const PressureKindSchema = /*@__PURE__*/
+  enumDesc(file_machines_v1_machines, 7);
+
+/**
+ * @generated from enum acyclic.machines.v1.PressureKind
+ */
+export const PressureKind = /*@__PURE__*/
+  tsEnum(PressureKindSchema);
+
+/**
+ * Describes the enum acyclic.machines.v1.EventKind.
+ */
+export const EventKindSchema = /*@__PURE__*/
+  enumDesc(file_machines_v1_machines, 8);
+
+/**
+ * @generated from enum acyclic.machines.v1.EventKind
+ */
+export const EventKind = /*@__PURE__*/
+  tsEnum(EventKindSchema);
 
 /**
  * @generated from service acyclic.machines.v1.MachinesService

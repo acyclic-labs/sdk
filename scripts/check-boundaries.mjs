@@ -11,12 +11,15 @@ const forbiddenContent = [
   /(?:aws_secret_access_key|github_token|authorization:)\s*[=:]\s*[^\s${][^\s]*/i,
 ];
 const forbiddenPath = /(?:^|[\\/])(?:proto|rust|typescript)[\\/](?:.*[\\/])?(?:internal|private)(?:[\\/]|$)/i;
+const machinesPath = /(?:^|[\\/])(?:proto[\\/]machines|rust[\\/]crates[\\/]machines|typescript[\\/]packages[\\/]machines|generated[\\/](?:rust|typescript|openapi)[\\/](?:acyclic[\\/])?machines)(?:[\\/]|$)/i;
+const forbiddenMachinesContent = /\b(?:vmm|fleet|scheduler|daemon|placement)\b|host_profile|guest_control|qualification_release/i;
 const failures = [];
 
 function inspect(path, content) {
   const relativePath = relative(root, path);
   if (forbiddenPath.test(relativePath)) failures.push(`${relativePath}: forbidden private path`);
   for (const pattern of forbiddenContent) if (pattern.test(content)) failures.push(`${relativePath}: ${pattern}`);
+  if (machinesPath.test(relativePath) && forbiddenMachinesContent.test(content)) failures.push(`${relativePath}: forbidden managed-service implementation domain`);
 }
 
 async function visit(directory) {
@@ -39,6 +42,7 @@ for (const [path, content] of [
   ["proto/private/admin.proto", "syntax = \"proto3\";"],
   ["example.rs", "use acyclic_" + "internal::scheduler;"],
   ["credential.txt", "-----BEGIN " + "PRIVATE KEY-----"],
+  ["proto/machines/v1/leak.proto", "package vmm.fleet.v1;"],
 ]) {
   const before = failures.length;
   inspect(join(root, path), content);

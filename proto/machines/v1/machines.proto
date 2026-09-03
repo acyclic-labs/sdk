@@ -1,47 +1,322 @@
 syntax = "proto3";
 package acyclic.machines.v1;
 
-import "google/api/annotations.proto";
-import "harness/v1/harness.proto";
-
 option go_package = "github.com/acyclic-labs/sdk/go/gen/machines/v1;machinesv1";
 
-message ExecutionRequest {
-  acyclic.harness.v1.OperationIdentity operation = 1;
-  string program = 2;
-  repeated string args = 3;
-  repeated string required_capabilities = 4;
+message ProtocolVersion {
+  uint32 major = 1;
+  uint32 minor = 2;
 }
-message ExecutionResult {
-  int32 code = 1;
-  bytes stdout = 2;
-  bytes stderr = 3;
+message OperationId {
+  bytes value = 1;
 }
-message ExecuteResponse {
-  acyclic.harness.v1.Admission admission = 1;
-  ExecutionResult result = 2;
+message IdempotencyKey {
+  bytes value = 1;
+}
+message MachineId {
+  bytes value = 1;
+}
+message CheckpointId {
+  bytes value = 1;
+}
+
+enum ImageKind {
+  IMAGE_KIND_UNSPECIFIED = 0;
+  IMAGE_KIND_MANAGED_OCI = 1;
+  IMAGE_KIND_CUSTOM = 2;
+  IMAGE_KIND_CHECKPOINT = 3;
+}
+message Image {
+  ImageKind kind = 1;
+  oneof immutable_reference {
+    string oci_digest = 2;
+    bytes custom_digest = 3;
+    CheckpointId checkpoint = 4;
+  }
+}
+
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+  CAPABILITY_ELASTIC_CPU = 1;
+  CAPABILITY_ELASTIC_MEMORY = 2;
+  CAPABILITY_LIVE_CHECKPOINT = 3;
+  CAPABILITY_LIVE_FORK = 4;
+  CAPABILITY_SUSPEND_RESUME = 5;
+  CAPABILITY_LIVE_MOVEMENT = 6;
+}
+enum CompatibilityMode {
+  COMPATIBILITY_MODE_UNSPECIFIED = 0;
+  COMPATIBILITY_MODE_BEST_EFFORT = 1;
+  COMPATIBILITY_MODE_REQUIRE = 2;
+}
+message CompatibilityPolicy {
+  CompatibilityMode mode = 1;
+  repeated Capability required = 2;
+}
+message ImageQualification {
+  Image image = 1;
+  repeated Capability capabilities = 2;
+  bytes compatibility_revision = 3;
+}
+
+enum Performance {
+  PERFORMANCE_UNSPECIFIED = 0;
+  PERFORMANCE_ELASTIC = 1;
+  PERFORMANCE_DEDICATED = 2;
+}
+message SuspensionPolicy {
+  oneof policy {
+    bool manual = 1;
+    uint64 after_idle_ms = 2;
+  }
+}
+enum ExpirationKind {
+  EXPIRATION_KIND_UNSPECIFIED = 0;
+  EXPIRATION_KIND_NEVER = 1;
+  EXPIRATION_KIND_MAX_AGE = 2;
+  EXPIRATION_KIND_AT = 3;
+  EXPIRATION_KIND_IDLE = 4;
+}
+message ExpirationPolicy {
+  ExpirationKind kind = 1;
+  uint64 value_ms = 2;
+}
+message Budgets {
+  uint64 spend_micros = 1;
+  uint32 concurrency = 2;
+}
+
+message MachineContract {
+  Image image = 1;
+  repeated Capability capabilities = 2;
+  CompatibilityPolicy compatibility = 3;
+  bytes compatibility_revision = 4;
+  Performance performance = 5;
+  SuspensionPolicy suspension = 6;
+  ExpirationPolicy expiration = 7;
+  bytes network_policy_digest = 8;
+  Budgets budgets = 9;
+}
+message QualifyImageRequest {
+  ProtocolVersion protocol = 1;
+  Image image = 2;
+}
+message CreateMachineRequest {
+  ProtocolVersion protocol = 1;
+  IdempotencyKey idempotency_key = 2;
+  Image image = 3;
+  CompatibilityPolicy compatibility = 4;
+  Performance performance = 5;
+  SuspensionPolicy suspension = 6;
+  ExpirationPolicy expiration = 7;
+  bytes network_policy_digest = 8;
+  Budgets budgets = 9;
+}
+message MachineMutationRequest {
+  ProtocolVersion protocol = 1;
+  IdempotencyKey idempotency_key = 2;
+  MachineId machine = 3;
+}
+message CheckpointMachineRequest {
+  ProtocolVersion protocol = 1;
+  IdempotencyKey idempotency_key = 2;
+  MachineId machine = 3;
+}
+message ForkCheckpointRequest {
+  ProtocolVersion protocol = 1;
+  IdempotencyKey idempotency_key = 2;
+  CheckpointId checkpoint = 3;
+  uint32 count = 4;
+  Performance performance = 5;
+}
+message SetSuspensionPolicyRequest {
+  ProtocolVersion protocol = 1;
+  IdempotencyKey idempotency_key = 2;
+  MachineId machine = 3;
+  SuspensionPolicy policy = 4;
+}
+message CheckpointMutationRequest {
+  ProtocolVersion protocol = 1;
+  IdempotencyKey idempotency_key = 2;
+  CheckpointId checkpoint = 3;
+}
+message RecoverRequest {
+  ProtocolVersion protocol = 1;
+  IdempotencyKey idempotency_key = 2;
+}
+message InspectMachineRequest {
+  ProtocolVersion protocol = 1;
+  MachineId machine = 2;
+}
+message InspectCheckpointRequest {
+  ProtocolVersion protocol = 1;
+  CheckpointId checkpoint = 2;
+}
+message ListMachinesRequest {
+  ProtocolVersion protocol = 1;
+  MachineId after = 2;
+  uint32 limit = 3;
+}
+message OperationRequest {
+  ProtocolVersion protocol = 1;
+  OperationId operation = 2;
+}
+
+enum OperationStatus {
+  OPERATION_STATUS_UNSPECIFIED = 0;
+  OPERATION_STATUS_PENDING = 1;
+  OPERATION_STATUS_SUCCEEDED = 2;
+  OPERATION_STATUS_CANCELLED = 3;
+  OPERATION_STATUS_INDETERMINATE = 4;
+  OPERATION_STATUS_FAILED = 5;
+}
+message OperationState {
+  OperationId operation = 1;
+  OperationStatus status = 2;
+}
+enum MachineStatus {
+  MACHINE_STATUS_UNSPECIFIED = 0;
+  MACHINE_STATUS_STARTING = 1;
+  MACHINE_STATUS_RUNNING = 2;
+  MACHINE_STATUS_SUSPENDING = 3;
+  MACHINE_STATUS_SUSPENDED = 4;
+  MACHINE_STATUS_WAKING = 5;
+  MACHINE_STATUS_DESTROYING = 6;
+  MACHINE_STATUS_DESTROYED = 7;
+  MACHINE_STATUS_FAILED = 8;
+  MACHINE_STATUS_INDETERMINATE = 9;
+}
+message Endpoint {
+  string name = 1;
+  string uri = 2;
+}
+message MachineState {
+  MachineId machine = 1;
+  MachineStatus status = 2;
+  MachineContract contract = 3;
+  repeated Endpoint endpoints = 4;
+  CheckpointId last_checkpoint = 5;
+  uint64 created_at_unix_ms = 6;
+  uint64 changed_at_unix_ms = 7;
+}
+message MachinePage {
+  repeated MachineState machines = 1;
+  MachineId next = 2;
+}
+message CheckpointState {
+  CheckpointId checkpoint = 1;
+  MachineId source = 2;
+  MachineContract contract = 3;
+  bool forkable = 4;
+  uint64 created_at_unix_ms = 5;
+}
+message MachineAdmission {
+  MachineId machine = 1;
+  OperationId operation = 2;
+  MachineContract contract = 3;
+}
+message CheckpointAdmission {
+  CheckpointId checkpoint = 1;
+  MachineId source = 2;
+  OperationId operation = 3;
+  MachineContract contract = 4;
+}
+message ForkAdmission {
+  CheckpointId checkpoint = 1;
+  repeated MachineId children = 2;
+  OperationId operation = 3;
+  MachineContract contract = 4;
+}
+message PolicyAdmission {
+  MachineId machine = 1;
+  OperationId operation = 2;
+  SuspensionPolicy policy = 3;
+}
+message MutationAdmission {
+  OperationId operation = 1;
+  MachineId machine = 2;
+  CheckpointId checkpoint = 3;
+}
+message RecoveredAdmission {
+  OperationId operation = 1;
+  oneof result {
+    MachineAdmission create = 2;
+    CheckpointAdmission checkpoint = 3;
+    ForkAdmission fork = 4;
+    MutationAdmission suspend = 5;
+    MutationAdmission wake = 6;
+    MutationAdmission destroy_machine = 7;
+    PolicyAdmission set_suspension_policy = 8;
+    MutationAdmission destroy_checkpoint = 9;
+  }
+}
+
+enum PressureKind {
+  PRESSURE_KIND_UNSPECIFIED = 0;
+  PRESSURE_KIND_CUSTOMER_BUDGET = 1;
+  PRESSURE_KIND_MACHINE_LIMIT = 2;
+  PRESSURE_KIND_SERVICE_SATURATION = 3;
+}
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  EVENT_KIND_STATE = 1;
+  EVENT_KIND_PRESSURE = 2;
+  EVENT_KIND_CAPACITY = 3;
+}
+message MachineEvent {
+  MachineId machine = 1;
+  uint64 sequence = 2;
+  uint64 observed_at_unix_ms = 3;
+  EventKind kind = 4;
+  MachineStatus state = 5;
+  PressureKind pressure = 6;
+}
+message EventsRequest {
+  ProtocolVersion protocol = 1;
+  MachineId machine = 2;
+  uint64 after_sequence = 3;
+  uint32 limit = 4;
+}
+message EventPage {
+  repeated MachineEvent events = 1;
+  uint64 next_sequence = 2;
+}
+message UsageRequest {
+  ProtocolVersion protocol = 1;
+  MachineId machine = 2;
+  uint64 start_unix_ms = 3;
+  uint64 end_unix_ms = 4;
+}
+message UsageReceipt {
+  MachineId machine = 1;
+  uint64 start_unix_ms = 2;
+  uint64 end_unix_ms = 3;
+  uint64 elastic_cpu_ns = 4;
+  uint64 dedicated_cpu_ns = 5;
+  uint64 private_resident_byte_seconds = 6;
+  uint64 durable_private_bytes = 7;
+  uint64 lineage_shared_bytes = 8;
+  uint64 egress_bytes = 9;
+  bytes receipt = 10;
 }
 
 service MachinesService {
-  rpc Handshake(acyclic.harness.v1.HandshakeRequest) returns (acyclic.harness.v1.HandshakeResponse) {
-    option (google.api.http) = {
-      post: "/v1/machines:handshake"
-      body: "*"
-    };
-  }
-  rpc Execute(ExecutionRequest) returns (ExecuteResponse) {
-    option (google.api.http) = {
-      post: "/v1/executions"
-      body: "*"
-    };
-  }
-  rpc Observe(acyclic.harness.v1.ObserveRequest) returns (acyclic.harness.v1.OperationStatus) {
-    option (google.api.http) = {get: "/v1/executions/{operation_id}"};
-  }
-  rpc Cancel(acyclic.harness.v1.CancelRequest) returns (acyclic.harness.v1.CancelResponse) {
-    option (google.api.http) = {
-      post: "/v1/executions/{operation_id}:cancel"
-      body: "*"
-    };
-  }
+  rpc QualifyImage(QualifyImageRequest) returns (ImageQualification);
+  rpc Create(CreateMachineRequest) returns (MachineAdmission);
+  rpc Checkpoint(CheckpointMachineRequest) returns (CheckpointAdmission);
+  rpc Fork(ForkCheckpointRequest) returns (ForkAdmission);
+  rpc Suspend(MachineMutationRequest) returns (MutationAdmission);
+  rpc Wake(MachineMutationRequest) returns (MutationAdmission);
+  rpc SetSuspensionPolicy(SetSuspensionPolicyRequest) returns (PolicyAdmission);
+  rpc DestroyMachine(MachineMutationRequest) returns (MutationAdmission);
+  rpc DestroyCheckpoint(CheckpointMutationRequest) returns (MutationAdmission);
+  rpc Recover(RecoverRequest) returns (RecoveredAdmission);
+  rpc InspectMachine(InspectMachineRequest) returns (MachineState);
+  rpc InspectCheckpoint(InspectCheckpointRequest) returns (CheckpointState);
+  rpc ListMachines(ListMachinesRequest) returns (MachinePage);
+  rpc Events(EventsRequest) returns (EventPage);
+  rpc Usage(UsageRequest) returns (UsageReceipt);
+  rpc Cancel(OperationRequest) returns (OperationState);
+  rpc InspectOperation(OperationRequest) returns (OperationState);
+  rpc WatchOperation(OperationRequest) returns (stream OperationState);
 }
