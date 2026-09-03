@@ -12,8 +12,8 @@ pub struct WorkspaceRef {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GenerationRef {
-    #[prost(bytes="vec", tag="1")]
-    pub workspace_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag="1")]
+    pub workspace: ::core::option::Option<WorkspaceRef>,
     #[prost(bytes="vec", tag="2")]
     pub generation_id: ::prost::alloc::vec::Vec<u8>,
 }
@@ -686,7 +686,9 @@ pub struct CredentialResponse {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ObserveRequest {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(message, optional, tag="1")]
+    pub workspace: ::core::option::Option<WorkspaceRef>,
+    #[prost(bytes="vec", tag="2")]
     pub operation_id: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -695,6 +697,18 @@ pub struct ObserveResponse {
     pub state: ::prost::alloc::string::String,
     #[prost(message, optional, tag="2")]
     pub outcome: ::core::option::Option<MutationResponse>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CancelRequest {
+    #[prost(message, optional, tag="1")]
+    pub workspace: ::core::option::Option<WorkspaceRef>,
+    #[prost(bytes="vec", tag="2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CancelResponse {
+    #[prost(message, optional, tag="1")]
+    pub operation: ::core::option::Option<ObserveResponse>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

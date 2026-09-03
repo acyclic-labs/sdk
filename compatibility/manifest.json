@@ -6,8 +6,8 @@
     "harness": { "version": "0.0.0", "schemaDigest": "unreleased" },
     "filesystem": {
       "version": "0.1.0-rc.1",
-      "schemaDigest": "sha256:6d5090693343472a1aea7e0ecbbabce8ac1eb102ddf4493c5b6afd629596d181",
-      "descriptorDigest": "sha256:3ef7a8a2c29717ae5034ee9997f082d8334d4423f7448aa73645ba35a2973518",
+      "schemaDigest": "sha256:ab745d2da0b9047949be983435851293bd7a5e155742e0186d91e7b99163c045",
+      "descriptorDigest": "sha256:892d0ebe801355248aa180a74ccbf5e85b893d38eefda78f93ff8a1711835f9b",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {

@@ -14,7 +14,7 @@ message WorkspaceRef {
   string name = 2;
 }
 message GenerationRef {
-  bytes workspace_id = 1;
+  WorkspaceRef workspace = 1;
   bytes generation_id = 2;
 }
 message OperationOptions {
@@ -427,11 +427,19 @@ message CredentialResponse {
   int64 expires_at_unix_seconds = 3;
 }
 message ObserveRequest {
-  bytes operation_id = 1;
+  WorkspaceRef workspace = 1;
+  bytes operation_id = 2;
 }
 message ObserveResponse {
   string state = 1;
   MutationResponse outcome = 2;
+}
+message CancelRequest {
+  WorkspaceRef workspace = 1;
+  bytes operation_id = 2;
+}
+message CancelResponse {
+  ObserveResponse operation = 1;
 }
 
 service FilesystemService {
@@ -603,7 +611,7 @@ service FilesystemService {
       body: "*"
     };
   }
-  rpc Cancel(acyclic.harness.v1.CancelRequest) returns (acyclic.harness.v1.CancelResponse) {
+  rpc Cancel(CancelRequest) returns (CancelResponse) {
     option (google.api.http) = {
       post: "/v1/filesystem:cancel"
       body: "*"

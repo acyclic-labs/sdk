@@ -2320,7 +2320,7 @@ mod tests {
         assert_eq!(opened["workspaceId"].as_str(), Some(workspace_id));
         assert_eq!(opened["generationId"].as_str(), Some(initial_generation));
 
-        let idempotency_key = "00112233445566778899aabbccddeeff";
+        let idempotency_key = "00000000000000000000000000000001";
         let write = json!({
             "id": "write-source",
             "method": "workspace_write",
@@ -2747,7 +2747,7 @@ mod tests {
             "id": "delete",
             "method": "workspace_delete",
             "workspace": "delete-me",
-            "idempotency_key": "fedcba0987654321fedcba0987654321"
+            "idempotency_key": "00000000000000000000000000000002"
         });
         let deleted = state
             .handle(serde_json::from_value(delete_request.clone())?)
@@ -2824,7 +2824,7 @@ mod tests {
                 "id": "rebase",
                 "method": "workspace_live_rebase",
                 "workspace": "fork",
-                "idempotency_key": "1234567890abcdef1234567890abcdef",
+                "idempotency_key": "00000000000000000000000000000003",
                 "maximum_generations": 32,
                 "maximum_changes": 32,
                 "maximum_conflicts": 8
@@ -3006,7 +3006,7 @@ mod tests {
                 "workspace": "source",
                 "source_key": "artifacts/value.bin",
                 "destination_key": "published/value.bin",
-                "idempotency_key": "0123456789abcdef0123456789abcdef"
+                "idempotency_key": "00000000000000000000000000000004"
             }))?)
             .await;
         assert!(s3_copy.ok, "S3 copy failed: {:?}", s3_copy.error);

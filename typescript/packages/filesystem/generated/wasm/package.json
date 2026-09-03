@@ -6,7 +6,7 @@
   "license": "SEE LICENSE IN ../../LICENSE",
   "repository": {
     "type": "git",
-    "url": "https://github.com/acyclic-labs/fs"
+    "url": "https://github.com/acyclic-labs/sdk"
   },
   "files": [
     "acyclic_fs_wasm_bg.wasm",

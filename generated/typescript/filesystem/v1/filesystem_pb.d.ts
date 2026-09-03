@@ -4,7 +4,7 @@
 
 import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
-import type { CancelRequestSchema, CancelResponseSchema, HandshakeRequest as HandshakeRequest$1, HandshakeResponse as HandshakeResponse$1 } from "../../harness/v1/harness_pb";
+import type { HandshakeRequest as HandshakeRequest$1, HandshakeResponse as HandshakeResponse$1 } from "../../harness/v1/harness_pb";
 
 /**
  * Describes the file filesystem/v1/filesystem.proto.
@@ -37,9 +37,9 @@ export declare const WorkspaceRefSchema: GenMessage<WorkspaceRef>;
  */
 export declare type GenerationRef = Message<"acyclic.filesystem.v1.GenerationRef"> & {
   /**
-   * @generated from field: bytes workspace_id = 1;
+   * @generated from field: acyclic.filesystem.v1.WorkspaceRef workspace = 1;
    */
-  workspaceId: Uint8Array;
+  workspace?: WorkspaceRef | undefined;
 
   /**
    * @generated from field: bytes generation_id = 2;
@@ -1912,7 +1912,12 @@ export declare const CredentialResponseSchema: GenMessage<CredentialResponse>;
  */
 export declare type ObserveRequest = Message<"acyclic.filesystem.v1.ObserveRequest"> & {
   /**
-   * @generated from field: bytes operation_id = 1;
+   * @generated from field: acyclic.filesystem.v1.WorkspaceRef workspace = 1;
+   */
+  workspace?: WorkspaceRef | undefined;
+
+  /**
+   * @generated from field: bytes operation_id = 2;
    */
   operationId: Uint8Array;
 };
@@ -1943,6 +1948,43 @@ export declare type ObserveResponse = Message<"acyclic.filesystem.v1.ObserveResp
  * Use `create(ObserveResponseSchema)` to create a new message.
  */
 export declare const ObserveResponseSchema: GenMessage<ObserveResponse>;
+
+/**
+ * @generated from message acyclic.filesystem.v1.CancelRequest
+ */
+export declare type CancelRequest = Message<"acyclic.filesystem.v1.CancelRequest"> & {
+  /**
+   * @generated from field: acyclic.filesystem.v1.WorkspaceRef workspace = 1;
+   */
+  workspace?: WorkspaceRef | undefined;
+
+  /**
+   * @generated from field: bytes operation_id = 2;
+   */
+  operationId: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.filesystem.v1.CancelRequest.
+ * Use `create(CancelRequestSchema)` to create a new message.
+ */
+export declare const CancelRequestSchema: GenMessage<CancelRequest>;
+
+/**
+ * @generated from message acyclic.filesystem.v1.CancelResponse
+ */
+export declare type CancelResponse = Message<"acyclic.filesystem.v1.CancelResponse"> & {
+  /**
+   * @generated from field: acyclic.filesystem.v1.ObserveResponse operation = 1;
+   */
+  operation?: ObserveResponse | undefined;
+};
+
+/**
+ * Describes the message acyclic.filesystem.v1.CancelResponse.
+ * Use `create(CancelResponseSchema)` to create a new message.
+ */
+export declare const CancelResponseSchema: GenMessage<CancelResponse>;
 
 /**
  * @generated from enum acyclic.filesystem.v1.FilesystemProfile
