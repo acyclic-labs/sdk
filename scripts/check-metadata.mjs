@@ -27,14 +27,17 @@ const familyArtifacts = {
   },
   stream: {
     schemaDigest: "rust/crates/stream/proto/stream/v2/stream.proto",
+    descriptorDigest: "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
     conformanceDigest: "conformance/vectors/stream.json",
   },
   objects: {
     schemaDigest: "proto/objects/v1/objects.proto",
+    descriptorDigest: "rust/crates/objects/src/generated/acyclic-objects-v1.bin",
     conformanceDigest: "conformance/vectors/objects.json",
   },
   machines: {
     schemaDigest: "proto/machines/v1/machines.proto",
+    descriptorDigest: "rust/crates/machines/src/generated/acyclic-machines-v1.bin",
     conformanceDigest: "conformance/vectors/machines.json",
   },
   inference: {

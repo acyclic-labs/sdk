@@ -29,11 +29,11 @@ pub use grpc::Tls;
 pub mod wire {
     #![allow(missing_docs, reason = "generated from the documented public schema")]
     #![allow(clippy::all, clippy::pedantic, reason = "generated protobuf bindings")]
-    tonic::include_proto!("acyclic.machines.v1");
+    include!("generated/acyclic.machines.v1.rs");
 }
 
 /// Canonical public descriptor set.
-pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("acyclic-machines-v1");
+pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-machines-v1.bin");
 /// Current public protocol major.
 pub const PROTOCOL_MAJOR: u32 = 1;
 /// Current public protocol minor.

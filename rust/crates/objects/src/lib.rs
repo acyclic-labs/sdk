@@ -3,11 +3,11 @@
 /// Generated public gRPC schema and client/server bindings.
 #[allow(missing_docs, clippy::all)]
 pub mod wire {
-    tonic::include_proto!("acyclic.objects.v1");
+    include!("generated/acyclic.objects.v1.rs");
 }
 
 /// Canonical public descriptor set used by compatibility and conformance gates.
-pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("acyclic-objects-v1");
+pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-objects-v1.bin");
 
 /// Fixed public compatibility limits.
 pub mod limits {

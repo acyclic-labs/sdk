@@ -6,6 +6,7 @@ rust-version = "1.92"
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+description = "Machines contract, authenticated client, and deterministic simulator"
 
 [dependencies]
 async-trait.workspace = true
@@ -22,11 +23,6 @@ tonic.workspace = true
 tonic-prost.workspace = true
 tower.workspace = true
 uuid.workspace = true
-
-[build-dependencies]
-prost-build.workspace = true
-protoc-bin-vendored.workspace = true
-tonic-prost-build.workspace = true
 
 [lints]
 workspace = true

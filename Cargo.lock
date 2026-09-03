@@ -161,8 +161,6 @@ dependencies = [
  "hex",
  "hyper-util",
  "prost",
- "prost-build",
- "protoc-bin-vendored",
  "rustix",
  "serde",
  "serde_json",
@@ -171,7 +169,6 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
  "tower",
  "uuid",
 ]
@@ -196,14 +193,11 @@ dependencies = [
  "bytes",
  "futures",
  "prost",
- "prost-build",
  "prost-types",
- "protoc-bin-vendored",
  "thiserror",
  "tokio",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
 ]
 
 [[package]]

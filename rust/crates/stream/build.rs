@@ -5,6 +5,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let include = protoc_bin_vendored::include_path()?;
     let mut prost = tonic_prost_build::Config::new();
     prost.protoc_executable(protoc);
+    let output = std::path::PathBuf::from(
+        std::env::var_os("OUT_DIR").ok_or("Cargo did not provide OUT_DIR")?,
+    );
+    prost.file_descriptor_set_path(output.join("acyclic-stream-v2.bin"));
     prost.bytes([".acyclic.stream.v2"]);
     tonic_prost_build::configure()
         .build_server(true)

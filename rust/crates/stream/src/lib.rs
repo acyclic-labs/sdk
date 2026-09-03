@@ -16,6 +16,8 @@ mod memory;
 pub mod wire {
     tonic::include_proto!("acyclic.stream.v2");
 }
+/// Canonical public descriptor set used by compatibility gates.
+pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v2/stream_descriptor.bin");
 pub use memory::{MemoryLimits, MemoryStream};
 
 /// Maximum opaque record body.

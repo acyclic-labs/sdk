@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = true
-build = "build.rs"
+description = "Immutable Objects contract, gRPC client, and bounded in-memory provider"
 
 [dependencies]
 async-trait.workspace = true
@@ -19,11 +19,6 @@ thiserror.workspace = true
 tokio.workspace = true
 tonic = { version = "0.14.6", features = ["tls-ring", "tls-webpki-roots"] }
 tonic-prost.workspace = true
-
-[build-dependencies]
-prost-build = "0.14.4"
-protoc-bin-vendored.workspace = true
-tonic-prost-build.workspace = true
 
 [lints]
 workspace = true
