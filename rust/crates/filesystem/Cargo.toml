@@ -36,6 +36,8 @@ cc = "1.2.56"
 pkg-config = "0.3.32"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-objects = { version = "1.0.0", path = "../objects", optional = true }
+acyclic-stream = { version = "1.0.0", path = "../stream", optional = true }
 cap-primitives = "4.0.3"
 cap-std = "4.0.3"
 fs2 = { workspace = true, optional = true }
@@ -62,6 +64,7 @@ memory = []
 native-watch = ["dep:notify", "dep:tokio"]
 native-executor = ["dep:tokio"]
 native-mount = ["native-watch", "native-executor", "dep:fs2", "dep:fuser"]
+distributed = ["dep:acyclic-objects", "dep:acyclic-stream"]
 
 [lints]
 workspace = true

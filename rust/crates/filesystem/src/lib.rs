@@ -52,6 +52,8 @@ mod public_contract_tests {
 pub mod async_storage;
 pub mod cache;
 pub mod cancellation;
+#[cfg(all(feature = "distributed", not(target_arch = "wasm32")))]
+pub mod distributed;
 pub mod facade;
 pub mod foundation;
 pub mod kernel;
@@ -95,6 +97,8 @@ pub use async_storage::{
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
+#[cfg(all(feature = "distributed", not(target_arch = "wasm32")))]
+pub use distributed::{ProviderObjectStore, StreamAuthorityStore};
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
     CheckoutCommitOutcome, DetachedFile, DirectoryBindingChange, DirectoryRecordEntry,
