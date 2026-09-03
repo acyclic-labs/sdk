@@ -121,16 +121,19 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     {
         return Err("logical trim replay or mismatch semantics changed".into());
     }
-    if !matches!(
-        provider
-            .read(ReadRequest {
-                path: child.clone(),
-                from: 0,
-                limit: 1,
-            })
-            .await,
-        Err(StreamError::OutOfRange)
-    ) {
+    let trimmed_read = provider
+        .read(ReadRequest {
+            path: child.clone(),
+            from: 0,
+            limit: 1,
+        })
+        .await;
+    let trimmed = match trimmed_read {
+        Err(StreamError::OutOfRange) => true,
+        Ok(mut records) => matches!(records.next().await, Some(Err(StreamError::OutOfRange))),
+        _ => false,
+    };
+    if !trimmed {
         return Err("trimmed history remained publicly readable".into());
     }
     let delete_key = key(b"stream-delete")?;
