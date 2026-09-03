@@ -3,6 +3,11 @@ updates:
   - package-ecosystem: cargo
     directory: /
     schedule: { interval: weekly }
+    ignore:
+      # fuser 0.17 changes the Filesystem trait and handle/error types. Upgrade
+      # it with the Linux adapter port and native mount qualification.
+      - dependency-name: fuser
+        versions: [">= 0.17, < 0.18"]
   - package-ecosystem: bun
     directory: /
     schedule: { interval: weekly }
