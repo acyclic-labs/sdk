@@ -65,8 +65,6 @@ jobs:
       - run: bun scripts/check-metadata.mjs
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b
         with:
-          tool: cargo-deny
+          tool: cargo-deny,gitleaks
       - run: cargo deny check licenses
-      - uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: gitleaks detect --source . --no-banner --redact
