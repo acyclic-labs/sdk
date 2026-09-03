@@ -40,6 +40,6 @@ not claim crash durability, isolation, distributed consistency, or production
 availability. Applications can bind conforming customer providers or Acyclic
 services without changing orchestration code.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
+See [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
 [provenance/README.md](provenance/README.md) before importing source.
 Open-source Acyclic SDK and in-memory reference providers

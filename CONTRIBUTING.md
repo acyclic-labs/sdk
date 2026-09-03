@@ -9,3 +9,7 @@ an entry to `provenance/manifest.json` before it is merged.
 
 Public contracts originate here. A service implementation may validate a
 candidate commit, but it must not maintain a competing customer schema.
+
+Every extraction must follow [ARCHITECTURE.md](ARCHITECTURE.md) and include a
+deletion summary for the private repository. Copying code without centralizing
+ownership is not accepted.
