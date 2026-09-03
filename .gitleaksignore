@@ -1,0 +1,7 @@
+# Reviewed deterministic idempotency fixtures from the private staging history.
+# Current source uses low-entropy test identifiers; retain these fingerprints so
+# the full-history disclosure scan remains exact without weakening any rule.
+d9dfa5ec6fdf313afa67e25cb585082a6a744ea9:rust/crates/filesystem-daemon/src/protocol.rs:generic-api-key:2323
+d9dfa5ec6fdf313afa67e25cb585082a6a744ea9:rust/crates/filesystem-daemon/src/protocol.rs:generic-api-key:2750
+d9dfa5ec6fdf313afa67e25cb585082a6a744ea9:rust/crates/filesystem-daemon/src/protocol.rs:generic-api-key:2827
+d9dfa5ec6fdf313afa67e25cb585082a6a744ea9:rust/crates/filesystem-daemon/src/protocol.rs:generic-api-key:3009
