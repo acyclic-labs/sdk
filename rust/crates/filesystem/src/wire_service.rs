@@ -10,7 +10,7 @@ use crate::{
     WorkspaceExtentKind, WorkspaceMetadata, WorkspaceRebase,
 };
 use bytes::Bytes;
-use futures::stream;
+use futures::{StreamExt, stream};
 use prost::Message;
 use std::pin::Pin;
 use tonic::{Request, Response, Status};
@@ -736,7 +736,7 @@ where
             .value;
         let encoded = crate::encode_generation_export_manifest(&manifest)
             .map_err(|error| Status::data_loss(error.to_string()))?;
-        let mut retained = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
+        let retained = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
         if retained > request.maximum_bytes {
             return Err(Status::resource_exhausted(
                 "export manifest exceeds byte bound",
@@ -748,49 +748,62 @@ where
         if start_index > manifest.objects.len() {
             return Err(Status::invalid_argument("export cursor is out of range"));
         }
-        let mut chunks = Vec::new();
-        if start == 0 {
-            chunks.push(Ok(wire::ExportChunk {
-                cursor: 0_u64.to_le_bytes().to_vec(),
-                object_id: Vec::new(),
-                contents: encoded,
-                terminal: manifest.objects.is_empty(),
-            }));
-        }
-        for (offset, object) in manifest
-            .objects
-            .iter()
-            .copied()
-            .skip(start_index)
-            .take(request.maximum_objects as usize)
-            .enumerate()
-        {
-            let remaining = request.maximum_bytes.saturating_sub(retained);
-            if remaining == 0 {
-                break;
-            }
-            let body = self
-                .filesystem
-                .export_object(
-                    object,
-                    remaining,
-                    crate::WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .await
-                .map_err(|failure| Status::unavailable(failure.error.to_string()))?
-                .value
-                .bytes;
-            retained = retained.saturating_add(u64::try_from(body.len()).unwrap_or(u64::MAX));
-            let next = start.saturating_add(offset as u64).saturating_add(1);
-            chunks.push(Ok(wire::ExportChunk {
-                cursor: next.to_le_bytes().to_vec(),
-                object_id: encode_object_id(object),
-                contents: body.to_vec(),
-                terminal: usize::try_from(next).ok() == Some(manifest.objects.len()),
-            }));
-        }
-        Ok(Response::new(Box::pin(stream::iter(chunks))))
+        let manifest_chunk = (start == 0).then(|| wire::ExportChunk {
+            cursor: 0_u64.to_le_bytes().to_vec(),
+            object_id: Vec::new(),
+            contents: encoded,
+            terminal: manifest.objects.is_empty(),
+        });
+        let filesystem = self.filesystem.clone();
+        let objects = manifest.objects;
+        let maximum_objects = request.maximum_objects;
+        let maximum_bytes = request.maximum_bytes;
+        let object_stream = stream::try_unfold(
+            (filesystem, objects, start_index, start, retained, 0_u32),
+            move |(filesystem, objects, index, cursor, retained, emitted)| async move {
+                if index == objects.len() || emitted == maximum_objects || retained == maximum_bytes
+                {
+                    return Ok(None);
+                }
+                let object = objects[index];
+                let remaining = maximum_bytes.saturating_sub(retained);
+                let body = filesystem
+                    .export_object(
+                        object,
+                        remaining,
+                        crate::WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(|failure| Status::resource_exhausted(failure.error.to_string()))?
+                    .value
+                    .bytes;
+                let retained = retained
+                    .checked_add(u64::try_from(body.len()).unwrap_or(u64::MAX))
+                    .ok_or_else(|| Status::resource_exhausted("export byte count overflow"))?;
+                let next_index = index.saturating_add(1);
+                let next_cursor = cursor.saturating_add(1);
+                let chunk = wire::ExportChunk {
+                    cursor: next_cursor.to_le_bytes().to_vec(),
+                    object_id: encode_object_id(object),
+                    contents: body.to_vec(),
+                    terminal: next_index == objects.len(),
+                };
+                Ok(Some((
+                    chunk,
+                    (
+                        filesystem,
+                        objects,
+                        next_index,
+                        next_cursor,
+                        retained,
+                        emitted.saturating_add(1),
+                    ),
+                )))
+            },
+        );
+        let output = stream::iter(manifest_chunk.map(Ok)).chain(object_stream);
+        Ok(Response::new(Box::pin(output)))
     }
 
     async fn import(
@@ -1505,7 +1518,6 @@ fn status(error: WorkspaceError) -> Status {
 mod tests {
     use super::*;
     use crate::wire::filesystem::v1::filesystem_service_server::FilesystemService as _;
-    use futures::StreamExt as _;
 
     fn operation(value: u8) -> Option<wire::OperationOptions> {
         let mut id = [0_u8; 16];
