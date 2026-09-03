@@ -1,6 +1,5 @@
-#![cfg(feature = "distributed")]
-
 //! Black-box conformance for canonical distributed adapters over public memory providers.
+#![cfg(feature = "distributed")]
 
 use acyclic_fs::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, CancellationToken,
