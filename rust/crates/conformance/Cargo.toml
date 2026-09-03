@@ -10,10 +10,10 @@ description = "Public black-box conformance suites for Acyclic service providers
 
 [dependencies]
 acyclic-fs = { version = "0.1.0-rc.1", path = "../filesystem" }
-acyclic-inference = { version = "1.0.0", path = "../inference" }
-acyclic-machines = { version = "1.0.0", path = "../machines" }
-acyclic-objects = { version = "1.0.0", path = "../objects" }
-acyclic-stream = { version = "1.0.0", path = "../stream" }
+acyclic-inference = { version = "1.0.0-rc.1", path = "../inference" }
+acyclic-machines = { version = "1.0.0-rc.1", path = "../machines" }
+acyclic-objects = { version = "1.0.0-rc.1", path = "../objects" }
+acyclic-stream = { version = "1.0.0-rc.1", path = "../stream" }
 bytes.workspace = true
 futures.workspace = true
 blake3.workspace = true

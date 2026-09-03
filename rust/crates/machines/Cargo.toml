@@ -1,6 +1,6 @@
 [package]
 name = "acyclic-machines"
-version = "1.0.0"
+version = "1.0.0-rc.1"
 edition.workspace = true
 rust-version = "1.92"
 license.workspace = true

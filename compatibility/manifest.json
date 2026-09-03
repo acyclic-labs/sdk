@@ -14,25 +14,25 @@
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {
-      "version": "1.0.0",
+      "version": "1.0.0-rc.1",
       "schemaDigest": "sha256:1efb0ea5396ad5707b17c24b35c0039640882c7e3e81a6ce5f01f05197792fff",
       "descriptorDigest": "sha256:1d0f8c263673070655a527d160bf27d7dc1b3f82d95895ad3e20b7f4582583c7",
       "conformanceDigest": "sha256:377d550296852fc98a820404f31c5d9324397a685caf2f92b04e90cc0b3f529b"
     },
     "objects": {
-      "version": "1.0.0",
+      "version": "1.0.0-rc.1",
       "schemaDigest": "sha256:b17f7501036b2219b67219fdbf8237f1f5cd5452ab98be9bae6dcd841b83e403",
       "descriptorDigest": "sha256:3d6d2b2e7c9120b8effbad0969ec8b63824e495e879495ccf00420cb9457cbf5",
       "conformanceDigest": "sha256:a473cb36590f3d05d7c749f2e35c13e9783c2cbc8ef0bb569b91b2e88dbaad7b"
     },
     "machines": {
-      "version": "1.0.0",
+      "version": "1.0.0-rc.1",
       "schemaDigest": "sha256:eefa696e67e6343d0577cc1ca87b2f4089dff2e3418080a3239f4969fb99f887",
       "descriptorDigest": "sha256:4257b05998e4b988f682bbaef3789e7eb50e9c85c0689e3462869dd6eed11ccb",
       "conformanceDigest": "sha256:f51d232ae2f6c1bdc6ab283dcd18a2a31ce022ebcd5780c556c674a53aacda50"
     },
     "inference": {
-      "version": "1.0.0",
+      "version": "1.0.0-rc.1",
       "schemaDigest": "sha256:054010878db5862e13c8fb33af0e5934a99c14b242065f9421dc4f7f702c342f",
       "descriptorDigest": "sha256:006d5e33c8c9176ff7f31627388f76dfa23959f60932dca1a24537cfe132d9ca",
       "conformanceDigest": "sha256:651937f5419c70f9f035de57d5f80025464795c036f77edf1589dcfce17808a3"

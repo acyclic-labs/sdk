@@ -12,11 +12,11 @@ description = "Umbrella SDK for the Acyclic harness and infrastructure provider 
 acyclic-contracts = { version = "0.1.0-rc.1", path = "../contracts" }
 acyclic-fs = { version = "0.1.0-rc.1", path = "../filesystem" }
 acyclic-harness = { version = "0.1.0-rc.1", path = "../harness" }
-acyclic-inference = { version = "1.0.0", path = "../inference" }
-acyclic-machines = { version = "1.0.0", path = "../machines" }
+acyclic-inference = { version = "1.0.0-rc.1", path = "../inference" }
+acyclic-machines = { version = "1.0.0-rc.1", path = "../machines" }
 acyclic-memory = { version = "0.1.0-rc.1", path = "../memory" }
-acyclic-objects = { version = "1.0.0", path = "../objects" }
-acyclic-stream = { version = "1.0.0", path = "../stream" }
+acyclic-objects = { version = "1.0.0-rc.1", path = "../objects" }
+acyclic-stream = { version = "1.0.0-rc.1", path = "../stream" }
 
 [lints]
 workspace = true

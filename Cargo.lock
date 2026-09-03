@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-inference"
-version = "1.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -157,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-machines"
-version = "1.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-trait",
  "hex",
@@ -188,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-objects"
-version = "1.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-trait",
  "blake3",
@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-stream"
-version = "1.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-trait",
  "bytes",
