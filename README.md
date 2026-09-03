@@ -8,7 +8,7 @@ This repository is **staged privately for disclosure review**. Nothing here is a
 published API or package until the repository passes its disclosure gate and a
 release is tagged.
 
-## What works in the scaffold
+## What works in this release candidate
 
 - Rust contracts for operation identity, admission, completion, cancellation,
   capabilities, protocol versions, and descriptor digests.
@@ -28,7 +28,7 @@ release is tagged.
   idempotency, checkpoints, fork sets, lifecycle recovery, stable endpoints,
   events, usage receipts, a mutual-TLS/Unix client, and one bounded deterministic
   simulator.
-- A complete recursive example and black-box provider conformance tests.
+- An executable bounded recursive workload and black-box provider conformance tests.
 - TypeScript contract facades for families whose public contract includes JavaScript.
 - Protobuf package boundaries ready for audited service schemas.
 

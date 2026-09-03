@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+description = "Public black-box conformance suites for Acyclic service providers"
 
 [dependencies]
 acyclic-fs = { version = "0.1.0-rc.1", path = "../filesystem" }

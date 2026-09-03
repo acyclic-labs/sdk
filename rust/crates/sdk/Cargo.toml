@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+description = "Umbrella SDK for the Acyclic harness and infrastructure provider families"
 
 [dependencies]
 acyclic-contracts = { version = "0.1.0-rc.1", path = "../contracts" }

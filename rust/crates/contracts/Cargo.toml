@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+description = "Shared operation, admission, capability, and error contracts for Acyclic SDKs"
 
 [dependencies]
 serde.workspace = true

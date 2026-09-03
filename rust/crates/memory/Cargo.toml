@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+description = "Deterministic in-memory provider profile for the Acyclic SDK"
 
 [dependencies]
 acyclic-fs = { version = "0.1.0-rc.1", path = "../filesystem" }
