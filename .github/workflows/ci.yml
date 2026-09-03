@@ -9,6 +9,29 @@ permissions:
   contents: read
 
 jobs:
+  dco:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Verify Developer Certificate of Origin
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$BASE_SHA" =~ ^0+$ ]]; then
+            BASE_SHA="${HEAD_SHA}^"
+          fi
+          while read -r commit; do
+            if ! git show --quiet --format=%B "$commit" | grep --quiet --ignore-case '^Signed-off-by: .\+ <.\+>$'; then
+              echo "Commit $commit lacks a Signed-off-by trailer." >&2
+              exit 1
+            fi
+          done < <(git rev-list --reverse "$BASE_SHA..$HEAD_SHA")
+
   rust:
     runs-on: ubuntu-latest
     steps:
