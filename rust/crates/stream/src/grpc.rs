@@ -1,10 +1,17 @@
 //! Authenticated gRPC adapter for the canonical Stream provider contract.
 
-use std::sync::Arc;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::StreamExt;
+use futures::{StreamExt, stream};
 use thiserror::Error;
 use tonic::{
     Code, Request, Response, Status,
@@ -32,13 +39,17 @@ pub enum ConnectError {
     /// Bearer credential cannot be represented as HTTP metadata.
     #[error("invalid Stream bearer credential")]
     InvalidCredential,
+    /// At least one independently reachable endpoint is required.
+    #[error("at least one Stream endpoint is required")]
+    NoEndpoints,
 }
 
 /// Authenticated remote provider.
 #[derive(Clone)]
 pub struct Client {
-    channel: Channel,
+    channels: Arc<[Channel]>,
     authorization: MetadataValue<Ascii>,
+    preferred: Arc<AtomicUsize>,
 }
 
 /// Thin server adapter from the canonical wire service to one provider.
@@ -68,7 +79,19 @@ impl Client {
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, ConnectError> {
-        Self::connect_with_tls(endpoint, bearer_token, None).await
+        Self::connect_endpoints([endpoint], bearer_token).await
+    }
+
+    /// Connects to independently reachable TLS endpoints with transparent failover.
+    pub async fn connect_endpoints<I, S>(
+        endpoints: I,
+        bearer_token: impl AsRef<str>,
+    ) -> Result<Self, ConnectError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self::connect_with_tls(endpoints, bearer_token, None)
     }
 
     /// Connects to a TLS endpoint augmented by one caller-pinned private CA certificate.
@@ -81,37 +104,66 @@ impl Client {
         if certificate_pem.is_empty() || certificate_pem.len() > 64 * 1024 {
             return Err(ConnectError::InvalidCredential);
         }
-        Self::connect_with_tls(
-            endpoint,
-            bearer_token,
-            Some(Certificate::from_pem(certificate_pem)),
-        )
-        .await
+        Self::connect_endpoints_with_ca_certificate([endpoint], bearer_token, certificate_pem).await
     }
 
-    async fn connect_with_tls(
-        endpoint: impl AsRef<str>,
+    /// Connects to independently reachable endpoints using one caller-pinned private CA.
+    pub async fn connect_endpoints_with_ca_certificate<I, S>(
+        endpoints: I,
         bearer_token: impl AsRef<str>,
-        certificate: Option<Certificate>,
-    ) -> Result<Self, ConnectError> {
-        let mut endpoint = Endpoint::from_shared(endpoint.as_ref().to_owned())?;
-        if endpoint.uri().scheme_str() != Some("https") {
-            return Err(ConnectError::InsecureEndpoint);
+        certificate_pem: impl AsRef<[u8]>,
+    ) -> Result<Self, ConnectError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let certificate_pem = certificate_pem.as_ref();
+        if certificate_pem.is_empty() || certificate_pem.len() > 64 * 1024 {
+            return Err(ConnectError::InvalidCredential);
         }
-        if let Some(certificate) = certificate {
-            endpoint = endpoint.tls_config(ClientTlsConfig::new().ca_certificate(certificate))?;
+        Self::connect_with_tls(endpoints, bearer_token, Some(certificate_pem))
+    }
+
+    fn connect_with_tls<I, S>(
+        endpoints: I,
+        bearer_token: impl AsRef<str>,
+        certificate_pem: Option<&[u8]>,
+    ) -> Result<Self, ConnectError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let channels = endpoints
+            .into_iter()
+            .map(|endpoint| {
+                let mut endpoint = Endpoint::from_shared(endpoint.as_ref().to_owned())?;
+                if endpoint.uri().scheme_str() != Some("https") {
+                    return Err(ConnectError::InsecureEndpoint);
+                }
+                if let Some(certificate_pem) = certificate_pem {
+                    endpoint = endpoint.tls_config(
+                        ClientTlsConfig::new()
+                            .ca_certificate(Certificate::from_pem(certificate_pem)),
+                    )?;
+                }
+                Ok(endpoint.connect_lazy())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if channels.is_empty() {
+            return Err(ConnectError::NoEndpoints);
         }
         let authorization = format!("Bearer {}", bearer_token.as_ref())
             .parse::<MetadataValue<Ascii>>()
             .map_err(|_| ConnectError::InvalidCredential)?;
         Ok(Self {
-            channel: endpoint.connect().await?,
+            channels: channels.into(),
             authorization,
+            preferred: Arc::new(AtomicUsize::new(0)),
         })
     }
 
-    fn service(&self) -> wire::stream_service_client::StreamServiceClient<Channel> {
-        wire::stream_service_client::StreamServiceClient::new(self.channel.clone())
+    fn service(&self, index: usize) -> wire::stream_service_client::StreamServiceClient<Channel> {
+        wire::stream_service_client::StreamServiceClient::new(self.channels[index].clone())
     }
 
     fn request<T>(&self, body: T) -> Request<T> {
@@ -121,36 +173,151 @@ impl Client {
             .insert("authorization", self.authorization.clone());
         request
     }
+
+    async fn unary<T, U, F>(&self, body: T, mut call: F) -> Result<U, StreamError>
+    where
+        T: Clone,
+        F: FnMut(
+            wire::stream_service_client::StreamServiceClient<Channel>,
+            Request<T>,
+        ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
+    {
+        let start = self.preferred.load(Ordering::Relaxed) % self.channels.len();
+        let mut last = None;
+        for offset in 0..self.channels.len() {
+            let index = (start + offset) % self.channels.len();
+            match call(self.service(index), self.request(body.clone())).await {
+                Ok(response) => {
+                    self.preferred.store(index, Ordering::Relaxed);
+                    return Ok(response.into_inner());
+                }
+                Err(error) if retryable(&error) => last = Some(error),
+                Err(error) => return Err(status(error)),
+            }
+        }
+        Err(last.map_or(StreamError::Unavailable, status))
+    }
+
+    async fn records(
+        &self,
+        path: StreamPath,
+        from: u64,
+        limit: Option<u32>,
+    ) -> Result<RecordStream, StreamError> {
+        let client = self.clone();
+        Ok(stream::unfold(
+            RecordCursor {
+                client,
+                path,
+                next: from,
+                remaining: limit,
+                active: None,
+            },
+            |mut cursor| async move {
+                loop {
+                    if cursor.remaining == Some(0) {
+                        return None;
+                    }
+                    if cursor.active.is_none() {
+                        match cursor.open().await {
+                            Ok(active) => cursor.active = Some(active),
+                            Err(error) => return Some((Err(error), cursor)),
+                        }
+                    }
+                    let Some(active) = cursor.active.as_mut() else {
+                        return Some((Err(StreamError::Unavailable), cursor));
+                    };
+                    match active.next().await {
+                        Some(Ok(response)) => match read_response(response) {
+                            Ok(record) if record.sequence == cursor.next => {
+                                cursor.next = cursor.next.saturating_add(1);
+                                if let Some(remaining) = &mut cursor.remaining {
+                                    *remaining = remaining.saturating_sub(1);
+                                }
+                                return Some((Ok(record), cursor));
+                            }
+                            Ok(record) if record.sequence < cursor.next => continue,
+                            Ok(_) => return Some((Err(StreamError::Unavailable), cursor)),
+                            Err(error) => return Some((Err(error), cursor)),
+                        },
+                        Some(Err(error)) if retryable(&error) => cursor.active = None,
+                        Some(Err(error)) => return Some((Err(status(error)), cursor)),
+                        None if cursor.remaining.is_none() => cursor.active = None,
+                        None => return None,
+                    }
+                }
+            },
+        )
+        .boxed())
+    }
+}
+
+struct RecordCursor {
+    client: Client,
+    path: StreamPath,
+    next: u64,
+    remaining: Option<u32>,
+    active: Option<tonic::Streaming<wire::ReadResponse>>,
+}
+
+impl RecordCursor {
+    async fn open(&self) -> Result<tonic::Streaming<wire::ReadResponse>, StreamError> {
+        if let Some(limit) = self.remaining {
+            self.client
+                .unary(
+                    wire::ReadRequest {
+                        path: self.path.to_string(),
+                        from: self.next,
+                        limit,
+                    },
+                    |mut service, request| Box::pin(async move { service.read(request).await }),
+                )
+                .await
+        } else {
+            self.client
+                .unary(
+                    wire::FollowRequest {
+                        path: self.path.to_string(),
+                        from: self.next,
+                    },
+                    |mut service, request| Box::pin(async move { service.follow(request).await }),
+                )
+                .await
+        }
+    }
+}
+
+fn retryable(error: &Status) -> bool {
+    matches!(error.code(), Code::Unavailable | Code::DeadlineExceeded)
 }
 
 #[async_trait]
 impl StreamProvider for Client {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.service()
-            .tail(self.request(wire::TailRequest {
+        self.unary(
+            wire::TailRequest {
                 path: path.to_string(),
-            }))
-            .await
-            .map(|response| response.into_inner().tail)
-            .map_err(status)
+            },
+            |mut service, request| Box::pin(async move { service.tail(request).await }),
+        )
+        .await
+        .map(|response| response.tail)
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         let response = self
-            .service()
-            .append(
-                self.request(wire::AppendRequest {
+            .unary(
+                wire::AppendRequest {
                     path: request.path.to_string(),
                     records: request.records,
                     if_tail: request.if_tail,
                     idempotency_key: request
                         .idempotency_key
                         .map(|key| Bytes::copy_from_slice(key.as_bytes())),
-                }),
+                },
+                |mut service, request| Box::pin(async move { service.append(request).await }),
             )
-            .await
-            .map_err(status)?
-            .into_inner();
+            .await?;
         match response.outcome.ok_or(StreamError::Unavailable)? {
             wire::append_response::Outcome::Committed(receipt) => {
                 Ok(AppendOutcome::Committed(append_receipt(receipt)?))
@@ -163,20 +330,18 @@ impl StreamProvider for Client {
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let receipt = self
-            .service()
-            .fork(
-                self.request(wire::ForkRequest {
+            .unary(
+                wire::ForkRequest {
                     source: request.source.to_string(),
                     destination: request.destination.to_string(),
                     at_tail: request.at_tail,
                     idempotency_key: request
                         .idempotency_key
                         .map(|key| Bytes::copy_from_slice(key.as_bytes())),
-                }),
+                },
+                |mut service, request| Box::pin(async move { service.fork(request).await }),
             )
-            .await
-            .map_err(status)?
-            .into_inner();
+            .await?;
         Ok(ForkReceipt {
             source: path(receipt.source)?,
             destination: path(receipt.destination)?,
@@ -187,70 +352,64 @@ impl StreamProvider for Client {
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        let response = self
-            .service()
-            .read(self.request(wire::ReadRequest {
-                path: request.path.to_string(),
-                from: request.from,
-                limit: request.limit,
-            }))
+        self.records(request.path, request.from, Some(request.limit))
             .await
-            .map_err(status)?;
-        Ok(response
-            .into_inner()
-            .map(|item| item.map_err(status).and_then(read_response))
-            .boxed())
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        let response = self
-            .service()
-            .follow(self.request(wire::FollowRequest {
-                path: path.to_string(),
-                from,
-            }))
-            .await
-            .map_err(status)?;
-        Ok(response
-            .into_inner()
-            .map(|item| item.map_err(status).and_then(read_response))
-            .boxed())
+        self.records(path, from, None).await
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        let response = self
-            .service()
-            .children(self.request(wire::ChildrenRequest {
-                parent: request.parent.map(|path| path.to_string()),
-                limit: request.limit,
-            }))
-            .await
-            .map_err(status)?;
-        Ok(response
-            .into_inner()
-            .map(|item| {
-                let child = item
-                    .map_err(status)?
-                    .child
-                    .ok_or(StreamError::Unavailable)?;
-                Ok(Child {
-                    path: path(child.path)?,
+        let body = wire::ChildrenRequest {
+            parent: request.parent.map(|path| path.to_string()),
+            limit: request.limit,
+        };
+        let mut last = None;
+        for _ in 0..self.channels.len() {
+            let response = self
+                .unary(body.clone(), |mut service, request| {
+                    Box::pin(async move { service.children(request).await })
                 })
-            })
-            .boxed())
+                .await?;
+            let collected = response
+                .map(|item| {
+                    let child = item
+                        .map_err(status)?
+                        .child
+                        .ok_or(StreamError::Unavailable)?;
+                    Ok(Child {
+                        path: path(child.path)?,
+                    })
+                })
+                .collect::<Vec<_>>()
+                .await;
+            if collected.iter().all(Result::is_ok) {
+                return Ok(stream::iter(collected).boxed());
+            }
+            let error = collected
+                .into_iter()
+                .find_map(Result::err)
+                .unwrap_or(StreamError::Unavailable);
+            if error != StreamError::Unavailable {
+                return Err(error);
+            }
+            last = Some(error);
+        }
+        Err(last.unwrap_or(StreamError::Unavailable))
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         let response = self
-            .service()
-            .commit(self.request(wire::CommitRequest {
-                conditions: request.conditions.into_iter().map(condition_wire).collect(),
-                mutations: request.mutations.into_iter().map(mutation_wire).collect(),
-                idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
-            }))
-            .await
-            .map_err(status)?
-            .into_inner();
+            .unary(
+                wire::CommitRequest {
+                    conditions: request.conditions.into_iter().map(condition_wire).collect(),
+                    mutations: request.mutations.into_iter().map(mutation_wire).collect(),
+                    idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
+                },
+                |mut service, request| Box::pin(async move { service.commit(request).await }),
+            )
+            .await?;
         match response.outcome.ok_or(StreamError::Unavailable)? {
             wire::commit_response::Outcome::Committed(envelope) => {
                 Ok(CommitOutcome::Committed(envelope_from_wire(envelope)?))
@@ -267,13 +426,13 @@ impl StreamProvider for Client {
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let envelope = self
-            .service()
-            .read_commit(self.request(wire::ReadCommitRequest {
-                commit_id: Bytes::copy_from_slice(commit_id.as_bytes()),
-            }))
-            .await
-            .map_err(status)?
-            .into_inner();
+            .unary(
+                wire::ReadCommitRequest {
+                    commit_id: Bytes::copy_from_slice(commit_id.as_bytes()),
+                },
+                |mut service, request| Box::pin(async move { service.read_commit(request).await }),
+            )
+            .await?;
         envelope_from_wire(envelope)
     }
 }

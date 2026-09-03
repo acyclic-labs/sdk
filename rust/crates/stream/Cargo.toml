@@ -19,6 +19,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
+uuid.workspace = true
 
 [build-dependencies]
 protoc-bin-vendored.workspace = true

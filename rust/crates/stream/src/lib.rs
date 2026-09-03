@@ -485,7 +485,7 @@ impl<P: StreamProvider> Stream<P> {
                 path: self.path.clone(),
                 records,
                 if_tail,
-                idempotency_key,
+                idempotency_key: Some(idempotency_key.unwrap_or_else(new_idempotency_key)),
             })
             .await
     }
@@ -503,7 +503,7 @@ impl<P: StreamProvider> Stream<P> {
                 source: self.path.clone(),
                 destination: StreamPath::new(destination)?,
                 at_tail,
-                idempotency_key,
+                idempotency_key: Some(idempotency_key.unwrap_or_else(new_idempotency_key)),
             })
             .await
     }
@@ -524,6 +524,10 @@ impl<P: StreamProvider> Stream<P> {
     pub async fn follow(&self, from: u64) -> Result<RecordStream, StreamError> {
         self.client.provider.follow(self.path.clone(), from).await
     }
+}
+
+fn new_idempotency_key() -> IdempotencyKey {
+    IdempotencyKey(Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()))
 }
 
 /// Stable public failures. CAS and absence conflicts are values instead.
