@@ -291,7 +291,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let destination = WorkspaceName::new(destination)?;
         self.volume
             .fs
-            .fork_workspace(destination, &options.generation)
+            .fork_workspace(destination, &options.generation, options.idempotency_key)
             .await
     }
 
@@ -2306,13 +2306,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
 #[derive(Clone)]
 pub struct ForkOptions<A, O> {
     pub(crate) generation: Generation<A, O>,
+    pub(crate) idempotency_key: IdempotencyKey,
 }
 
 impl<A, O> ForkOptions<A, O> {
     /// Forks from one exact immutable generation.
     #[must_use]
-    pub fn from_generation(generation: Generation<A, O>) -> Self {
-        Self { generation }
+    pub fn from_generation(generation: Generation<A, O>, idempotency_key: IdempotencyKey) -> Self {
+        Self {
+            generation,
+            idempotency_key,
+        }
     }
 }
 

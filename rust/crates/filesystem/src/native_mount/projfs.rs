@@ -697,7 +697,7 @@ unsafe extern "system" fn notification(
                         | PRJ_NOTIFY_HARDLINK_CREATED;
             }
         }
-        if bool::from(is_directory) {
+        if is_directory {
             runtime.source.capture_host_path(&runtime.root, &path)
         } else {
             Ok(())

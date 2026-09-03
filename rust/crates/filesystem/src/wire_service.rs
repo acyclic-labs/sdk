@@ -551,7 +551,7 @@ where
     ) -> Result<Response<wire::WorkspaceResponse>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        let _ = operation(request.operation)?;
+        let idempotency_key = operation(request.operation)?;
         let source = self.generation(request.source).await?;
         let source_workspace = self
             .workspace(Some(
@@ -563,7 +563,7 @@ where
         let destination = source_workspace
             .fork(
                 request.destination_name,
-                ForkOptions::from_generation(source),
+                ForkOptions::from_generation(source, idempotency_key),
             )
             .await
             .map_err(status)?;

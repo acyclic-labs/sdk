@@ -270,6 +270,7 @@ enum Command {
         workspace: String,
         destination: String,
         generation_id: Option<String>,
+        idempotency_key: Option<String>,
     },
     WorkspaceLiveRebase {
         workspace: String,
@@ -1360,6 +1361,7 @@ impl DaemonState {
                     workspace,
                     destination,
                     generation_id,
+                    idempotency_key,
                 } => {
                     let workspace = self
                         .fs
@@ -1367,8 +1369,12 @@ impl DaemonState {
                         .await
                         .map_err(RpcError::engine)?;
                     let generation = select_workspace_generation(&workspace, generation_id).await?;
+                    let idempotency_key = parse_idempotency_key(idempotency_key.as_deref())?;
                     let fork = workspace
-                        .fork(destination, ForkOptions::from_generation(generation))
+                        .fork(
+                            destination,
+                            ForkOptions::from_generation(generation, idempotency_key),
+                        )
                         .await
                         .map_err(RpcError::engine)?;
                     workspace_value(&fork).await

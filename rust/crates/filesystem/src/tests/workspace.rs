@@ -35,12 +35,32 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
     let fs = Fs::memory();
     let main = fs.create_workspace("repo").await?;
     let base = main.head().await?;
+    let fork_key = IdempotencyKey::from_bytes([0x42; 16]);
     let fork = main
-        .fork("agent-42", ForkOptions::from_generation(base.clone()))
+        .fork(
+            "agent-42",
+            ForkOptions::from_generation(base.clone(), fork_key),
+        )
+        .await?;
+    let retried = main
+        .fork(
+            "agent-42",
+            ForkOptions::from_generation(base.clone(), fork_key),
+        )
         .await?;
     assert_eq!(fs.open_workspace("repo").await?.id(), main.id());
     assert_ne!(fork.id(), main.id());
     assert_ne!(fork.head().await?.id(), base.id());
+    assert_eq!(retried.id(), fork.id());
+    assert_eq!(retried.head().await?.id(), fork.head().await?.id());
+    assert!(
+        main.fork(
+            "agent-42",
+            ForkOptions::from_generation(base, IdempotencyKey::from_bytes([0x43; 16])),
+        )
+        .await
+        .is_err()
+    );
     Ok(())
 }
 
@@ -67,7 +87,10 @@ async fn transaction_is_atomic_idempotent_and_visible_to_forks() -> Result<(), B
         Bytes::from_static(b"ready")
     );
     let fork = workspace
-        .fork("copy", ForkOptions::from_generation(generation.clone()))
+        .fork(
+            "copy",
+            ForkOptions::from_generation(generation.clone(), IdempotencyKey::new()),
+        )
         .await?;
     assert_eq!(
         fork.read("/output/nested/status", 64).await?,
@@ -357,7 +380,10 @@ async fn deletion_is_terminal_and_does_not_invalidate_a_fork() -> Result<(), Box
     let workspace = fs.create_workspace("repo").await?;
     let generation = workspace.head().await?;
     let fork = workspace
-        .fork("survivor", ForkOptions::from_generation(generation))
+        .fork(
+            "survivor",
+            ForkOptions::from_generation(generation, IdempotencyKey::new()),
+        )
         .await?;
     let key = IdempotencyKey::new();
     assert_eq!(workspace.delete(key).await?, WorkspaceDelete::Deleted);
@@ -383,7 +409,10 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     main.write_text("/base", "base").await?;
     let base = main.head().await?;
     let agent = main
-        .fork("agent", ForkOptions::from_generation(base))
+        .fork(
+            "agent",
+            ForkOptions::from_generation(base, IdempotencyKey::new()),
+        )
         .await?;
     agent.write_text("/agent", "agent").await?;
     main.write_text("/main", "main").await?;
@@ -428,7 +457,7 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
     let agent = main
         .fork(
             "agent-rebase",
-            ForkOptions::from_generation(main.head().await?),
+            ForkOptions::from_generation(main.head().await?, IdempotencyKey::new()),
         )
         .await?;
     agent.write_text("/agent", "local").await?;
@@ -477,7 +506,7 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
     let agent = main
         .fork(
             "agent-conflict",
-            ForkOptions::from_generation(main.head().await?),
+            ForkOptions::from_generation(main.head().await?, IdempotencyKey::new()),
         )
         .await?;
     agent.write_text("/shared", "local").await?;
@@ -513,7 +542,7 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
     let agent = main
         .fork(
             "agent-ranges",
-            ForkOptions::from_generation(main.head().await?),
+            ForkOptions::from_generation(main.head().await?, IdempotencyKey::new()),
         )
         .await?;
     let mut local = agent.begin_transaction(IdempotencyKey::new()).await?;
@@ -557,7 +586,10 @@ async fn join_rejects_a_stale_target_without_mutation() -> Result<(), Box<dyn Er
     let main = fs.create_workspace("main").await?;
     let base = main.head().await?;
     let agent = main
-        .fork("agent", ForkOptions::from_generation(base))
+        .fork(
+            "agent",
+            ForkOptions::from_generation(base, IdempotencyKey::new()),
+        )
         .await?;
     agent.write_text("/agent", "agent").await?;
     let plan = agent.join_into(&main).plan().await?;
@@ -585,7 +617,10 @@ async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<
     main.write_text("/shared", "base").await?;
     let base = main.head().await?;
     let agent = main
-        .fork("agent", ForkOptions::from_generation(base))
+        .fork(
+            "agent",
+            ForkOptions::from_generation(base, IdempotencyKey::new()),
+        )
         .await?;
     let agent_base = agent.head().await?;
     agent.write_text("/shared", "agent").await?;

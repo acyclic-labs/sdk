@@ -1720,10 +1720,18 @@ impl NativeWorkspace {
     ///
     /// Returns name, generation, authority, or storage failures.
     #[napi]
-    pub async fn fork(&self, destination: String) -> Result<NativeWorkspace> {
+    pub async fn fork(
+        &self,
+        destination: String,
+        idempotency_key: Option<Buffer>,
+    ) -> Result<NativeWorkspace> {
+        let idempotency_key = native_idempotency_key(idempotency_key)?;
         let generation = self.inner.head().await.map_err(napi_error)?;
         self.inner
-            .fork(destination, ForkOptions::from_generation(generation))
+            .fork(
+                destination,
+                ForkOptions::from_generation(generation, idempotency_key),
+            )
             .await
             .map(|inner| NativeWorkspace { inner })
             .map_err(napi_error)
@@ -1739,11 +1747,13 @@ impl NativeWorkspace {
         &self,
         destination: String,
         generation: &NativeGeneration,
+        idempotency_key: Option<Buffer>,
     ) -> Result<NativeWorkspace> {
+        let idempotency_key = native_idempotency_key(idempotency_key)?;
         self.inner
             .fork(
                 destination,
-                ForkOptions::from_generation(generation.inner.clone()),
+                ForkOptions::from_generation(generation.inner.clone(), idempotency_key),
             )
             .await
             .map(|inner| NativeWorkspace { inner })
@@ -7032,14 +7042,16 @@ mod tests {
                 .await
                 .is_err()
         );
-        let exact_fork = workspace.fork_at("exact-agent".to_owned(), &exact).await?;
+        let exact_fork = workspace
+            .fork_at("exact-agent".to_owned(), &exact, None)
+            .await?;
         assert!(
             exact_fork
                 .read("/output/status".to_owned(), bigint(5))
                 .await
                 .is_err()
         );
-        let fork = workspace.fork("agent".to_owned()).await?;
+        let fork = workspace.fork("agent".to_owned(), None).await?;
         assert_eq!(
             fork.read("/value.bin".to_owned(), bigint(16))
                 .await?
@@ -7141,7 +7153,7 @@ mod tests {
         let main = fs.create_workspace("main".to_owned()).await?;
         main.write("/base".to_owned(), Buffer::from(vec![1_u8]))
             .await?;
-        let agent = main.fork("agent".to_owned()).await?;
+        let agent = main.fork("agent".to_owned(), None).await?;
         let base = agent.sync().await?;
         agent
             .write("/first".to_owned(), Buffer::from(vec![2_u8]))

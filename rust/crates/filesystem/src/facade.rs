@@ -251,6 +251,14 @@ struct LastCommit {
     head: Head,
 }
 
+#[derive(Clone, Copy)]
+struct VolumeCreation {
+    volume_id: VolumeId,
+    config: VolumeConfig,
+    generation_root: ObjectId,
+    operation_id: Option<OperationId>,
+}
+
 /// Durable local authority backend with nonblocking native storage dispatch.
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub type LocalAuthorityBackend =
@@ -1460,6 +1468,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         destination: crate::WorkspaceName,
         source: &crate::Generation<A, O>,
+        idempotency_key: crate::IdempotencyKey,
     ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
         if !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner) {
             return Err(crate::workspace::WorkspaceError::ForeignGeneration);
@@ -1523,9 +1532,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .await?;
         let volume = self
             .publish_volume_creation(
-                destination_id.volume_id(),
-                config,
-                generation_root,
+                VolumeCreation {
+                    volume_id: destination_id.volume_id(),
+                    config,
+                    generation_root,
+                    operation_id: Some(idempotency_key.operation_id()),
+                },
                 work,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
@@ -2192,9 +2204,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
         work = add(work, proof.work)?;
         self.publish_volume_creation(
-            volume_id,
-            config,
-            generation_root,
+            VolumeCreation {
+                volume_id,
+                config,
+                generation_root,
+                operation_id: None,
+            },
             work,
             budget,
             cancellation,
@@ -2380,9 +2395,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })?;
         let work = proof.work;
         self.publish_volume_creation(
-            manifest.volume_id,
-            manifest.config,
-            manifest.generation_root,
+            VolumeCreation {
+                volume_id: manifest.volume_id,
+                config: manifest.config,
+                generation_root: manifest.generation_root,
+                operation_id: None,
+            },
             work,
             budget,
             cancellation,
@@ -2392,13 +2410,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
     async fn publish_volume_creation(
         &self,
-        volume_id: VolumeId,
-        config: VolumeConfig,
-        generation_root: ObjectId,
+        creation: VolumeCreation,
         mut work: WorkCounters,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Volume<A, O>> {
+        let VolumeCreation {
+            volume_id,
+            config,
+            generation_root,
+            operation_id,
+        } = creation;
         let authority_id = volume_authority_id(volume_id);
         let created = self
             .inner
@@ -2421,8 +2443,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             initial_generation_root: generation_root,
         })
         .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let (operation_id, identity_work) = derived_operation_id(volume_id);
-        work = add(work, identity_work)?;
+        let operation_id = match operation_id {
+            Some(operation_id) => operation_id,
+            None => {
+                let (operation_id, identity_work) = derived_operation_id(volume_id);
+                work = add(work, identity_work)?;
+                operation_id
+            }
+        };
         let (commit, encoding_work) = creation_commit(operation_id, event);
         work = add(work, encoding_work)?;
         work.verify(budget)

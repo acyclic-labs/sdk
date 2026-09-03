@@ -602,13 +602,24 @@ mod bindings {
 
         /// Forks the current generation into an independent named workspace.
         #[wasm_bindgen]
-        pub async fn fork(&self, destination: String) -> Result<BrowserWorkspace, JsValue> {
+        pub async fn fork(
+            &self,
+            destination: String,
+            idempotency_key: Option<Vec<u8>>,
+        ) -> Result<BrowserWorkspace, JsValue> {
+            let idempotency_key = idempotency_key.map_or_else(
+                || Ok(IdempotencyKey::new()),
+                |value| fixed_16_owned(value).map(IdempotencyKey::from_bytes),
+            )?;
             let engine = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => {
                     let generation = value.head().await.map_err(js_error)?;
                     BrowserWorkspaceEngine::IndexedDb(
                         value
-                            .fork(destination, ForkOptions::from_generation(generation))
+                            .fork(
+                                destination,
+                                ForkOptions::from_generation(generation, idempotency_key),
+                            )
                             .await
                             .map_err(js_error)?,
                     )
@@ -617,7 +628,10 @@ mod bindings {
                     let generation = value.head().await.map_err(js_error)?;
                     BrowserWorkspaceEngine::IndexedDbOpfs(
                         value
-                            .fork(destination, ForkOptions::from_generation(generation))
+                            .fork(
+                                destination,
+                                ForkOptions::from_generation(generation, idempotency_key),
+                            )
                             .await
                             .map_err(js_error)?,
                     )
@@ -626,7 +640,10 @@ mod bindings {
                     let generation = value.head().await.map_err(js_error)?;
                     BrowserWorkspaceEngine::Memory(
                         value
-                            .fork(destination, ForkOptions::from_generation(generation))
+                            .fork(
+                                destination,
+                                ForkOptions::from_generation(generation, idempotency_key),
+                            )
                             .await
                             .map_err(js_error)?,
                     )
@@ -641,7 +658,12 @@ mod bindings {
             &self,
             destination: String,
             generation: &BrowserGeneration,
+            idempotency_key: Option<Vec<u8>>,
         ) -> Result<BrowserWorkspace, JsValue> {
+            let idempotency_key = idempotency_key.map_or_else(
+                || Ok(IdempotencyKey::new()),
+                |value| fixed_16_owned(value).map(IdempotencyKey::from_bytes),
+            )?;
             let engine = match (&self.engine, &generation.engine) {
                 (
                     BrowserWorkspaceEngine::IndexedDb(value),
@@ -650,7 +672,7 @@ mod bindings {
                     value
                         .fork(
                             destination,
-                            ForkOptions::from_generation(generation.clone()),
+                            ForkOptions::from_generation(generation.clone(), idempotency_key),
                         )
                         .await
                         .map_err(js_error)?,
@@ -662,7 +684,7 @@ mod bindings {
                     value
                         .fork(
                             destination,
-                            ForkOptions::from_generation(generation.clone()),
+                            ForkOptions::from_generation(generation.clone(), idempotency_key),
                         )
                         .await
                         .map_err(js_error)?,
@@ -674,7 +696,7 @@ mod bindings {
                     value
                         .fork(
                             destination,
-                            ForkOptions::from_generation(generation.clone()),
+                            ForkOptions::from_generation(generation.clone(), idempotency_key),
                         )
                         .await
                         .map_err(js_error)?,
