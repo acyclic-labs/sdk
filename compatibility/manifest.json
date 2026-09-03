@@ -1,9 +1,12 @@
 {
   "$schema": "schemas/compatibility.schema.json",
-  "status": "staging",
-  "umbrellaVersion": "0.0.0",
+  "status": "candidate",
+  "umbrellaVersion": "0.1.0-rc.1",
   "families": {
-    "harness": { "version": "0.0.0", "schemaDigest": "unreleased" },
+    "harness": {
+      "version": "0.1.0-rc.1",
+      "schemaDigest": "sha256:2e1def2b7c28ac359d7014f301c2751ebbd8162d9568d1ccc44574032410d0e2"
+    },
     "filesystem": {
       "version": "0.1.0-rc.1",
       "schemaDigest": "sha256:ab745d2da0b9047949be983435851293bd7a5e155742e0186d91e7b99163c045",

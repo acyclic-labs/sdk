@@ -20,6 +20,9 @@ for (const item of provenance.imports) if (item.auditResult !== "approved") thro
 const digest = async path => `sha256:${createHash("sha256").update(await readFile(new URL(path, root))).digest("hex")}`;
 const compatibility = await load("compatibility/manifest.json");
 const familyArtifacts = {
+  harness: {
+    schemaDigest: "proto/harness/v1/harness.proto",
+  },
   filesystem: {
     schemaDigest: "proto/filesystem/v1/filesystem.proto",
     descriptorDigest: "rust/crates/filesystem/src/generated/acyclic-filesystem-v1.bin",

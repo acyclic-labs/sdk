@@ -4,9 +4,8 @@ The Acyclic SDK is the open contract and composition layer for building recursiv
 fork-join agent systems. It contains the Rust harness, public service interfaces,
 customer-machine implementations, conformance suites, and TypeScript packages.
 
-This repository is **staged privately for disclosure review**. Nothing here is a
-published API or package until the repository passes its disclosure gate and a
-release is tagged.
+This repository contains a public release candidate. APIs remain pre-release
+until their family version is published and tagged.
 
 ## What works in this release candidate
 
