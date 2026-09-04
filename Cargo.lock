@@ -28,7 +28,6 @@ name = "acyclic-conformance"
 version = "0.1.0-rc.1"
 dependencies = [
  "acyclic-fs",
- "acyclic-inference",
  "acyclic-machines",
  "acyclic-memory",
  "acyclic-objects",
@@ -142,22 +141,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "acyclic-inference"
-version = "1.0.0-rc.1"
-dependencies = [
- "async-trait",
- "bytes",
- "prost",
- "prost-types",
- "thiserror",
- "tokio",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
- "uuid",
-]
-
-[[package]]
 name = "acyclic-machines"
 version = "1.0.0-rc.1"
 dependencies = [
@@ -182,10 +165,12 @@ name = "acyclic-memory"
 version = "0.1.0-rc.1"
 dependencies = [
  "acyclic-fs",
- "acyclic-inference",
  "acyclic-machines",
  "acyclic-objects",
  "acyclic-stream",
+ "bytes",
+ "futures",
+ "tokio",
 ]
 
 [[package]]
@@ -211,11 +196,11 @@ dependencies = [
  "acyclic-contracts",
  "acyclic-fs",
  "acyclic-harness",
- "acyclic-inference",
  "acyclic-machines",
  "acyclic-memory",
  "acyclic-objects",
  "acyclic-stream",
+ "inference-sdk",
 ]
 
 [[package]]
@@ -224,10 +209,12 @@ version = "1.0.0-rc.2"
 dependencies = [
  "async-trait",
  "bytes",
+ "fs2",
  "futures",
  "prost",
  "protoc-bin-vendored",
  "sha2",
+ "tempfile",
  "thiserror",
  "tokio",
  "tonic",
@@ -1029,6 +1016,22 @@ checksum = "07aa2048142242915a31d35844fb311e0e53fcca590c3a0a40dcf1b841fa09eb"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
+]
+
+[[package]]
+name = "inference-sdk"
+version = "1.0.0-rc.2"
+dependencies = [
+ "prost",
+ "prost-types",
+ "protoc-bin-vendored",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]

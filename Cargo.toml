@@ -25,6 +25,7 @@ napi-derive = "3.3.3"
 notify = "8.2.0"
 prost = "0.14.4"
 prost-build = "0.14.4"
+prost-types = "0.14.4"
 protoc-bin-vendored = "3.2.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 rustix = { version = "1.1.4", features = ["process"] }
@@ -41,6 +42,7 @@ tonic-prost-build = "0.14.6"
 tower = "0.5.3"
 unicode-normalization = "0.1.25"
 uuid = { version = "1.25.0", features = ["js", "serde", "v4", "v7"] }
+zeroize = "1.8.2"
 wasm-bindgen = "=0.2.117"
 wasm-bindgen-futures = "0.4.67"
 web-sys = { version = "0.3.94", features = [

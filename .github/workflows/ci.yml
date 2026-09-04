@@ -5,137 +5,141 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: sdk-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  dco:
-    runs-on: ubuntu-latest
+  linux:
+    name: Linux x64, web, and policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - name: Verify Developer Certificate of Origin
-        shell: bash
-        env:
-          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          if [[ "$BASE_SHA" =~ ^0+$ ]]; then
-            BASE_SHA="${HEAD_SHA}^"
-          fi
-          while read -r commit; do
-            if ! git show --quiet --format=%B "$commit" | grep --quiet --ignore-case '^Signed-off-by: .\+ <.\+>$'; then
-              echo "Commit $commit lacks a Signed-off-by trailer." >&2
-              exit 1
-            fi
-          done < <(git rev-list --reverse "$BASE_SHA..$HEAD_SHA")
-
-  rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           toolchain: 1.94.0
           components: clippy,rustfmt
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: cargo run -p acyclic-cli
-
-  windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
-        with:
-          toolchain: 1.94.0
-      - run: cargo test --workspace
-
-  macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
-        with:
-          toolchain: 1.94.0
-      - run: cargo test -p acyclic-fs --no-default-features --features local,memory,native-watch,native-executor
-      - run: cargo test -p acyclic-harness -p acyclic-inference -p acyclic-machines -p acyclic-objects -p acyclic-stream
-
-  wasm:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
-        with:
-          toolchain: 1.94.0
           targets: wasm32-unknown-unknown
+      - name: Restore bounded Cargo dependency outputs
+        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7
+        with:
+          cache-bin: false
+      - name: Preserve incremental compilation
+        shell: bash
+        run: echo 'CARGO_INCREMENTAL=1' >> "$GITHUB_ENV"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.14
+      - name: Restore Bun downloads
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
+      - run: bun install --frozen-lockfile
+      - name: Verify Developer Certificate of Origin
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$BASE_SHA" =~ ^0+$ ]]; then BASE_SHA="${HEAD_SHA}^"; fi
+          while read -r commit; do
+            git show --quiet --format=%B "$commit" | grep --quiet --ignore-case '^Signed-off-by: .\+ <.\+>$' || {
+              echo "Commit $commit lacks a Signed-off-by trailer." >&2
+              exit 1
+            }
+          done < <(git rev-list --reverse "$BASE_SHA..$HEAD_SHA")
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --all-features --locked
+      - run: cargo run --locked -p acyclic-cli
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b
         with:
           tool: wasm-bindgen-cli@0.2.117
-      - name: Browser filesystem in Chromium
-        run: |
-          export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
-          export CHROMEDRIVER="$(command -v chromedriver)"
-          cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
-      - name: Browser filesystem in Firefox
-        run: |
-          export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
-          export GECKODRIVER="$(command -v geckodriver)"
-          cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
-
-  typescript:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
-        with:
-          bun-version: 1.3.14
-      - run: bun install --frozen-lockfile
-      - run: bun run check
-      - run: bun test
+      - name: Filesystem WASM in Chromium
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: CHROMEDRIVER="$CHROMEWEBDRIVER/chromedriver" cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
+      - name: Filesystem WASM in Firefox
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: GECKODRIVER="$GECKOWEBDRIVER/geckodriver" cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
+      - run: bun run test
       - run: bun run licenses
-
-  protobuf:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
-        with:
-          bun-version: 1.3.14
-      - run: bun install --frozen-lockfile
       - run: bunx buf format -d --exit-code
       - run: bunx buf lint
       - run: bunx buf generate
       - run: git diff --exit-code -- generated
       - if: github.event_name == 'pull_request'
-        run: bunx buf breaking --against ".git#branch=${{ github.base_ref }}"
-
-  disclosure:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
-        with:
-          bun-version: 1.3.14
-      - run: bun install --frozen-lockfile
+        # The pre-release Inference family intentionally replaced its unpublished
+        # wire package. Its exact schema/descriptor/vector digests are gated above;
+        # stable families retain Buf breaking enforcement here.
+        run: bunx buf breaking --against ".git#ref=origin/${{ github.base_ref }}" --exclude-path proto/inference/v1/inference.proto
       - run: bun scripts/check-boundaries.mjs
       - run: bun scripts/check-metadata.mjs
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b
         with:
           tool: cargo-deny
       - run: cargo deny check licenses
-      - name: Install pinned Gitleaks CLI
+      - name: Verify repository contains no committed secrets
         run: |
           curl --fail --silent --show-error --location \
             https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
             --output /tmp/gitleaks.tar.gz
           echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz" | sha256sum --check
           tar --extract --gzip --file /tmp/gitleaks.tar.gz --directory /tmp gitleaks
-      - run: /tmp/gitleaks detect --source . --no-banner --redact
+          /tmp/gitleaks detect --source . --no-banner --redact
+
+  native:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            command: cargo test --workspace --all-features --locked
+            target: ''
+          - name: Windows x64 and ARM64 compile
+            runner: windows-latest
+            command: cargo test --workspace --all-features --locked
+            target: aarch64-pc-windows-msvc
+          - name: macOS ARM64
+            runner: macos-15
+            command: cargo test -p acyclic-fs --no-default-features --features local,memory,native-watch,native-executor --locked && cargo test -p acyclic-harness -p inference-sdk -p acyclic-machines -p acyclic-objects -p acyclic-stream --locked
+            target: ''
+          - name: macOS x64
+            runner: macos-15-intel
+            command: cargo test -p acyclic-fs --no-default-features --features local,memory,native-watch,native-executor --locked && cargo test -p acyclic-harness -p inference-sdk -p acyclic-machines -p acyclic-objects -p acyclic-stream --locked
+            target: ''
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.94.0
+          targets: ${{ matrix.target }}
+      - name: Restore bounded Cargo dependency outputs
+        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7
+        with:
+          cache-bin: false
+      - name: Preserve incremental compilation
+        shell: bash
+        run: echo 'CARGO_INCREMENTAL=1' >> "$GITHUB_ENV"
+      - shell: bash
+        run: ${{ matrix.command }}
+      - if: runner.os == 'Windows'
+        run: cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked

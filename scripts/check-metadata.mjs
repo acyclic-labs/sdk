@@ -19,6 +19,14 @@ for (const item of provenance.imports) if (item.auditResult !== "approved") thro
 
 const digest = async path => `sha256:${createHash("sha256").update(await readFile(new URL(path, root))).digest("hex")}`;
 const compatibility = await load("compatibility/manifest.json");
+const inferenceIndex = (await readFile(new URL("registry/in/fe/inference-sdk", root), "utf8"))
+  .trim()
+  .split("\n")
+  .map(line => JSON.parse(line));
+const inferenceRelease = inferenceIndex.find(item => item.vers === compatibility.families.inference.version);
+if (!inferenceRelease || inferenceRelease.name !== "inference-sdk" || !/^[0-9a-f]{64}$/.test(inferenceRelease.cksum) || inferenceRelease.yanked) {
+  throw new Error("current Inference family has no immutable sparse-registry package entry");
+}
 const familyArtifacts = {
   harness: {
     schemaDigest: "proto/harness/v1/harness.proto",

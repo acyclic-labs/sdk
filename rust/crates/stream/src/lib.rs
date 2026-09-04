@@ -10,6 +10,8 @@ use thiserror::Error;
 pub mod conformance;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(feature = "local")]
+mod local;
 mod memory;
 
 /// Generated canonical Stream v2 protocol.
@@ -19,6 +21,8 @@ pub mod wire {
 }
 /// Canonical public descriptor set used by compatibility gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v2/stream_descriptor.bin");
+#[cfg(feature = "local")]
+pub use local::{LocalStream, LocalStreamError, LocalStreamLimits};
 pub use memory::{MemoryLimits, MemoryStream};
 
 /// Maximum opaque record body.

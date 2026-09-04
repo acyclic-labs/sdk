@@ -1,6 +1,5 @@
 //! A complete in-memory provider profile.
 
-use acyclic_inference::DeterministicInference;
 use acyclic_machines::SimulatedMachines;
 use acyclic_objects::MemoryObjects;
 use acyclic_stream::MemoryStream;
@@ -19,8 +18,6 @@ pub struct MemoryProfile {
     pub filesystem_bucket: acyclic_objects::wire::BucketRef,
     /// Deterministic execution simulator.
     pub machines: SimulatedMachines,
-    /// Deterministic model provider.
-    pub inference: DeterministicInference,
 }
 
 impl MemoryProfile {
@@ -40,7 +37,6 @@ impl MemoryProfile {
             objects,
             filesystem_bucket,
             machines: SimulatedMachines::default(),
-            inference: DeterministicInference::default(),
         }
     }
 }
@@ -48,5 +44,50 @@ impl MemoryProfile {
 impl Default for MemoryProfile {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MemoryProfile;
+    use acyclic_objects::{ObjectsProvider as _, ReadTarget};
+    use acyclic_stream::{ChildrenRequest, StreamProvider as _};
+    use bytes::Bytes;
+    use futures::StreamExt as _;
+
+    #[tokio::test]
+    async fn filesystem_uses_the_profiles_exact_public_provider_instances()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let profile = MemoryProfile::new();
+        let workspace = profile.filesystem.create_workspace("shared-state").await?;
+        workspace
+            .write("/answer", Bytes::from_static(b"42"))
+            .await?;
+
+        assert_eq!(
+            workspace.read("/answer", 2).await?,
+            Bytes::from_static(b"42")
+        );
+        let mut stream_children = profile
+            .stream
+            .children(ChildrenRequest {
+                parent: None,
+                limit: 16,
+            })
+            .await?;
+        assert!(stream_children.next().await.transpose()?.is_some());
+        let objects = profile
+            .objects
+            .list(
+                ReadTarget::Bucket(profile.filesystem_bucket),
+                "fs/v1/".to_owned(),
+                None,
+                false,
+                128,
+                None,
+            )
+            .await?;
+        assert!(!objects.entries.is_empty());
+        Ok(())
     }
 }

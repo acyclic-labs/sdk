@@ -1,0 +1,1025 @@
+//! Bounded crash-recoverable local Stream provider.
+
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use fs2::FileExt as _;
+use futures::{StreamExt as _, stream};
+use sha2::{Digest as _, Sha256};
+use thiserror::Error;
+use tokio::sync::{RwLock, watch};
+
+use crate::{
+    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitCondition, CommitMutation,
+    CommitOutcome, CommitRequest, CommittedEnvelope, DeleteReceipt, ForkReceipt, ForkRequest,
+    IdempotencyKey, MAX_COMMAND_BYTES, MAX_ITEMS, MemoryLimits, MemoryStream, ReadRequest,
+    RecordStream, StreamError, StreamPath, StreamProvider, TrimReceipt,
+};
+
+const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
+const HEADER_BYTES: usize = HEADER_MAGIC.len() + 8 * 8;
+const FRAME_CHECKSUM_BYTES: usize = 32;
+
+/// Explicit local retention and recovery bounds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LocalStreamLimits {
+    /// Canonical in-memory semantic-state limits.
+    pub memory: MemoryLimits,
+    /// Maximum durable commands replayed at startup.
+    pub journal_operations: u64,
+    /// Maximum journal bytes, including framing.
+    pub journal_bytes: u64,
+}
+
+impl Default for LocalStreamLimits {
+    fn default() -> Self {
+        Self {
+            memory: MemoryLimits::default(),
+            journal_operations: 1_000_000,
+            journal_bytes: 1024 * 1024 * 1024,
+        }
+    }
+}
+
+/// Local provider initialization or durable-publication failure.
+#[derive(Debug, Error)]
+pub enum LocalStreamError {
+    /// Filesystem operation failed.
+    #[error("local Stream I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+    /// Another process owns the local provider root.
+    #[error("local Stream root is already open")]
+    AlreadyOpen,
+    /// Stored bytes or configuration do not match the canonical local format.
+    #[error("local Stream journal is corrupt or incompatible")]
+    Corrupt,
+    /// Configured bounds are zero or cannot represent the canonical format.
+    #[error("local Stream limits are invalid")]
+    InvalidLimits,
+    /// Durable history cannot be reconstructed through the canonical state machine.
+    #[error("local Stream replay failed: {0}")]
+    Replay(StreamError),
+    /// Native blocking execution could not complete.
+    #[error("local Stream executor is unavailable")]
+    Executor,
+}
+
+/// Exclusive-process durable local provider backed by a checksummed command journal.
+///
+/// The journal is synchronized before a mutation becomes observable. Startup replays every
+/// complete frame through the same bounded [`MemoryStream`] state machine used by conformance.
+/// A torn final frame is removed; corruption in a complete frame fails closed.
+#[derive(Clone)]
+pub struct LocalStream {
+    inner: Arc<LocalInner>,
+}
+
+struct LocalInner {
+    provider: MemoryStream,
+    journal: Arc<Mutex<Journal>>,
+    visibility: RwLock<()>,
+    changed: watch::Sender<u64>,
+    poisoned: AtomicBool,
+}
+
+impl LocalStream {
+    /// Opens or creates one exclusive durable provider below `root`.
+    pub async fn open(
+        root: impl AsRef<Path>,
+        limits: LocalStreamLimits,
+    ) -> Result<Self, LocalStreamError> {
+        validate_limits(limits)?;
+        let root = root.as_ref().to_path_buf();
+        let loaded = tokio::task::spawn_blocking(move || Journal::open(&root, limits))
+            .await
+            .map_err(|_| LocalStreamError::Executor)??;
+        let provider = MemoryStream::new(limits.memory);
+        for command in loaded.commands {
+            replay(&provider, command)
+                .await
+                .map_err(LocalStreamError::Replay)?;
+        }
+        let (changed, _) = watch::channel(0_u64);
+        Ok(Self {
+            inner: Arc::new(LocalInner {
+                provider,
+                journal: Arc::new(Mutex::new(loaded.journal)),
+                visibility: RwLock::new(()),
+                changed,
+                poisoned: AtomicBool::new(false),
+            }),
+        })
+    }
+
+    fn check_available(&self) -> Result<(), StreamError> {
+        if self.inner.poisoned.load(Ordering::Acquire) {
+            Err(StreamError::Unavailable)
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn prepare(&self, command: Command) -> Result<PreparedFrame, StreamError> {
+        let journal = Arc::clone(&self.inner.journal);
+        tokio::task::spawn_blocking(move || {
+            journal
+                .lock()
+                .map_err(|_| LocalStreamError::Corrupt)?
+                .prepare(command)
+        })
+        .await
+        .map_err(|_| LocalStreamError::Executor)
+        .and_then(|result| result)
+        .map_err(|error| match error {
+            LocalStreamError::InvalidLimits => StreamError::Capacity,
+            _ => StreamError::Unavailable,
+        })
+    }
+
+    async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
+        let journal = Arc::clone(&self.inner.journal);
+        let result = tokio::task::spawn_blocking(move || {
+            journal
+                .lock()
+                .map_err(|_| LocalStreamError::Corrupt)?
+                .append(frame)
+        })
+        .await
+        .map_err(|_| LocalStreamError::Executor)
+        .and_then(|result| result);
+        if result.is_err() {
+            self.inner.poisoned.store(true, Ordering::Release);
+            return Err(StreamError::Unavailable);
+        }
+        self.inner.changed.send_modify(|revision| {
+            *revision = revision.saturating_add(1);
+        });
+        Ok(())
+    }
+
+    async fn read_visible(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.read().await;
+        self.check_available()?;
+        self.inner.provider.read(request).await
+    }
+}
+
+#[async_trait]
+impl StreamProvider for LocalStream {
+    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.read().await;
+        self.check_available()?;
+        self.inner.provider.tail(path).await
+    }
+
+    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.write().await;
+        self.check_available()?;
+        let command = Command::Append(request.clone());
+        let frame = self.prepare(command).await?;
+        let retain_conflict = request.idempotency_key.is_some();
+        let outcome = self.inner.provider.append(request).await?;
+        if matches!(outcome, AppendOutcome::Committed(_)) || retain_conflict {
+            self.persist(frame).await?;
+        }
+        Ok(outcome)
+    }
+
+    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.write().await;
+        self.check_available()?;
+        let command = Command::Fork(request.clone());
+        let frame = self.prepare(command).await?;
+        let outcome = self.inner.provider.fork(request).await?;
+        self.persist(frame).await?;
+        Ok(outcome)
+    }
+
+    async fn trim(
+        &self,
+        path: StreamPath,
+        before: u64,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<TrimReceipt, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.write().await;
+        self.check_available()?;
+        let command = Command::Trim {
+            path: path.clone(),
+            before,
+            idempotency_key: idempotency_key.clone(),
+        };
+        let frame = self.prepare(command).await?;
+        let outcome = self
+            .inner
+            .provider
+            .trim(path, before, idempotency_key)
+            .await?;
+        self.persist(frame).await?;
+        Ok(outcome)
+    }
+
+    async fn delete(
+        &self,
+        path: StreamPath,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<DeleteReceipt, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.write().await;
+        self.check_available()?;
+        let command = Command::Delete {
+            path: path.clone(),
+            idempotency_key: idempotency_key.clone(),
+        };
+        let frame = self.prepare(command).await?;
+        let outcome = self.inner.provider.delete(path, idempotency_key).await?;
+        self.persist(frame).await?;
+        Ok(outcome)
+    }
+
+    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+        self.read_visible(request).await
+    }
+
+    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
+        self.tail(path.clone()).await?;
+        let state = FollowState {
+            provider: self.clone(),
+            path,
+            next: from,
+            changed: self.inner.changed.subscribe(),
+            done: false,
+        };
+        Ok(stream::unfold(state, |mut state| async move {
+            if state.done {
+                return None;
+            }
+            loop {
+                match state
+                    .provider
+                    .read_visible(ReadRequest {
+                        path: state.path.clone(),
+                        from: state.next,
+                        limit: 1,
+                    })
+                    .await
+                {
+                    Ok(mut records) => match records.next().await {
+                        Some(Ok(record)) => {
+                            state.next = record.sequence.saturating_add(1);
+                            return Some((Ok(record), state));
+                        }
+                        Some(Err(error)) => {
+                            state.done = true;
+                            return Some((Err(error), state));
+                        }
+                        None => {}
+                    },
+                    Err(error) => {
+                        state.done = true;
+                        return Some((Err(error), state));
+                    }
+                }
+                if state.changed.changed().await.is_err() {
+                    state.done = true;
+                    return Some((Err(StreamError::Unavailable), state));
+                }
+            }
+        })
+        .boxed())
+    }
+
+    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.read().await;
+        self.check_available()?;
+        self.inner.provider.children(request).await
+    }
+
+    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.write().await;
+        self.check_available()?;
+        let command = Command::Commit(request.clone());
+        let frame = self.prepare(command).await?;
+        let outcome = self.inner.provider.commit(request).await?;
+        self.persist(frame).await?;
+        Ok(outcome)
+    }
+
+    async fn read_commit(
+        &self,
+        commit_id: crate::CommitId,
+    ) -> Result<CommittedEnvelope, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.read().await;
+        self.check_available()?;
+        self.inner.provider.read_commit(commit_id).await
+    }
+}
+
+struct FollowState {
+    provider: LocalStream,
+    path: StreamPath,
+    next: u64,
+    changed: watch::Receiver<u64>,
+    done: bool,
+}
+
+struct LoadedJournal {
+    journal: Journal,
+    commands: Vec<Command>,
+}
+
+struct Journal {
+    file: File,
+    operations: u64,
+    bytes: u64,
+    limits: LocalStreamLimits,
+    _root: PathBuf,
+}
+
+struct PreparedFrame {
+    length: [u8; 4],
+    command: Vec<u8>,
+    checksum: [u8; FRAME_CHECKSUM_BYTES],
+    bytes: u64,
+}
+
+impl Journal {
+    fn open(root: &Path, limits: LocalStreamLimits) -> Result<LoadedJournal, LocalStreamError> {
+        std::fs::create_dir_all(root)?;
+        let path = root.join("stream.journal");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        file.try_lock_exclusive()
+            .map_err(|_| LocalStreamError::AlreadyOpen)?;
+        let length = file.metadata()?.len();
+        if length == 0 {
+            let header = encode_header(limits)?;
+            file.write_all(&header)?;
+            file.sync_all()?;
+            sync_directory(root)?;
+        } else {
+            let mut header = vec![0_u8; HEADER_BYTES];
+            file.read_exact(&mut header)
+                .map_err(|_| LocalStreamError::Corrupt)?;
+            if header != encode_header(limits)? {
+                return Err(LocalStreamError::Corrupt);
+            }
+        }
+        let mut commands = Vec::new();
+        let mut valid_length =
+            u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
+        let total_length = file.metadata()?.len();
+        file.seek(SeekFrom::Start(valid_length))?;
+        while valid_length < total_length {
+            let frame_start = valid_length;
+            let remaining = total_length.saturating_sub(frame_start);
+            if remaining < 4 {
+                truncate_torn_tail(&mut file, frame_start)?;
+                valid_length = frame_start;
+                break;
+            }
+            let mut length_bytes = [0_u8; 4];
+            file.read_exact(&mut length_bytes)?;
+            let command_length = u64::from(u32::from_le_bytes(length_bytes));
+            let frame_length = 4_u64
+                .checked_add(command_length)
+                .and_then(|value| value.checked_add(u64::try_from(FRAME_CHECKSUM_BYTES).ok()?))
+                .ok_or(LocalStreamError::Corrupt)?;
+            if remaining < frame_length {
+                truncate_torn_tail(&mut file, frame_start)?;
+                valid_length = frame_start;
+                break;
+            }
+            if command_length == 0
+                || command_length
+                    > u64::try_from(MAX_COMMAND_BYTES)
+                        .map_err(|_| LocalStreamError::InvalidLimits)?
+            {
+                return Err(LocalStreamError::Corrupt);
+            }
+            let command_length =
+                usize::try_from(command_length).map_err(|_| LocalStreamError::Corrupt)?;
+            let mut encoded = vec![0_u8; command_length];
+            file.read_exact(&mut encoded)?;
+            let mut checksum = [0_u8; FRAME_CHECKSUM_BYTES];
+            file.read_exact(&mut checksum)?;
+            if frame_checksum(&length_bytes, &encoded) != checksum {
+                return Err(LocalStreamError::Corrupt);
+            }
+            commands.push(decode_command(&encoded).map_err(|_| LocalStreamError::Corrupt)?);
+            if u64::try_from(commands.len()).map_err(|_| LocalStreamError::Corrupt)?
+                > limits.journal_operations
+            {
+                return Err(LocalStreamError::Corrupt);
+            }
+            valid_length = valid_length
+                .checked_add(frame_length)
+                .ok_or(LocalStreamError::Corrupt)?;
+        }
+        if valid_length > limits.journal_bytes {
+            return Err(LocalStreamError::InvalidLimits);
+        }
+        file.seek(SeekFrom::End(0))?;
+        Ok(LoadedJournal {
+            journal: Self {
+                file,
+                operations: u64::try_from(commands.len()).map_err(|_| LocalStreamError::Corrupt)?,
+                bytes: valid_length,
+                limits,
+                _root: root.to_path_buf(),
+            },
+            commands,
+        })
+    }
+
+    fn prepare(&self, command: Command) -> Result<PreparedFrame, LocalStreamError> {
+        let encoded = encode_command(&command)?;
+        let command_length =
+            u32::try_from(encoded.len()).map_err(|_| LocalStreamError::InvalidLimits)?;
+        let length_bytes = command_length.to_le_bytes();
+        let checksum = frame_checksum(&length_bytes, &encoded);
+        let frame_bytes = 4_u64
+            .checked_add(u64::from(command_length))
+            .and_then(|value| value.checked_add(u64::try_from(FRAME_CHECKSUM_BYTES).ok()?))
+            .ok_or(LocalStreamError::InvalidLimits)?;
+        if self.operations >= self.limits.journal_operations
+            || self
+                .bytes
+                .checked_add(frame_bytes)
+                .is_none_or(|value| value > self.limits.journal_bytes)
+        {
+            return Err(LocalStreamError::InvalidLimits);
+        }
+        Ok(PreparedFrame {
+            length: length_bytes,
+            command: encoded,
+            checksum,
+            bytes: frame_bytes,
+        })
+    }
+
+    fn append(&mut self, frame: PreparedFrame) -> Result<(), LocalStreamError> {
+        self.file.write_all(&frame.length)?;
+        self.file.write_all(&frame.command)?;
+        self.file.write_all(&frame.checksum)?;
+        self.file.sync_data()?;
+        self.operations += 1;
+        self.bytes += frame.bytes;
+        Ok(())
+    }
+}
+
+fn truncate_torn_tail(file: &mut File, valid_length: u64) -> Result<(), LocalStreamError> {
+    file.set_len(valid_length)?;
+    file.sync_all()?;
+    file.seek(SeekFrom::Start(valid_length))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<(), LocalStreamError> {
+    File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn sync_directory(_path: &Path) -> Result<(), LocalStreamError> {
+    // `FlushFileBuffers` on the newly created journal durably admits both its contents and
+    // directory entry on supported Windows filesystems. Windows does not expose a portable
+    // flush operation for directory handles.
+    Ok(())
+}
+
+fn validate_limits(limits: LocalStreamLimits) -> Result<(), LocalStreamError> {
+    let memory = limits.memory;
+    if memory.paths == 0
+        || memory.path_bytes == 0
+        || memory.records == 0
+        || memory.payload_bytes == 0
+        || memory.commits == 0
+        || memory.idempotency_results == 0
+        || limits.journal_operations == 0
+        || limits.journal_bytes
+            < u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?
+    {
+        Err(LocalStreamError::InvalidLimits)
+    } else {
+        Ok(())
+    }
+}
+
+fn encode_header(limits: LocalStreamLimits) -> Result<Vec<u8>, LocalStreamError> {
+    let mut encoded = Vec::with_capacity(HEADER_BYTES);
+    encoded.extend_from_slice(HEADER_MAGIC);
+    for value in [
+        limits.memory.paths,
+        limits.memory.path_bytes,
+        limits.memory.records,
+        limits.memory.payload_bytes,
+        limits.memory.commits,
+        limits.memory.idempotency_results,
+    ] {
+        encoded.extend_from_slice(
+            &u64::try_from(value)
+                .map_err(|_| LocalStreamError::InvalidLimits)?
+                .to_le_bytes(),
+        );
+    }
+    encoded.extend_from_slice(&limits.journal_operations.to_le_bytes());
+    encoded.extend_from_slice(&limits.journal_bytes.to_le_bytes());
+    Ok(encoded)
+}
+
+fn frame_checksum(length: &[u8; 4], command: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"acyclic-stream-local-frame-v1\0");
+    hasher.update(length);
+    hasher.update(command);
+    hasher.finalize().into()
+}
+
+#[derive(Clone)]
+enum Command {
+    Append(AppendRequest),
+    Fork(ForkRequest),
+    Trim {
+        path: StreamPath,
+        before: u64,
+        idempotency_key: IdempotencyKey,
+    },
+    Delete {
+        path: StreamPath,
+        idempotency_key: IdempotencyKey,
+    },
+    Commit(CommitRequest),
+}
+
+async fn replay(provider: &MemoryStream, command: Command) -> Result<(), StreamError> {
+    match command {
+        Command::Append(request) => provider.append(request).await.map(|_| ()),
+        Command::Fork(request) => provider.fork(request).await.map(|_| ()),
+        Command::Trim {
+            path,
+            before,
+            idempotency_key,
+        } => provider
+            .trim(path, before, idempotency_key)
+            .await
+            .map(|_| ()),
+        Command::Delete {
+            path,
+            idempotency_key,
+        } => provider.delete(path, idempotency_key).await.map(|_| ()),
+        Command::Commit(request) => provider.commit(request).await.map(|_| ()),
+    }
+}
+
+fn encode_command(command: &Command) -> Result<Vec<u8>, LocalStreamError> {
+    let mut encoded = Vec::new();
+    match command {
+        Command::Append(request) => {
+            encoded.push(1);
+            put_path(&mut encoded, &request.path)?;
+            put_bytes_many(&mut encoded, &request.records)?;
+            put_optional_u64(&mut encoded, request.if_tail);
+            put_optional_key(&mut encoded, request.idempotency_key.as_ref())?;
+        }
+        Command::Fork(request) => {
+            encoded.push(2);
+            put_path(&mut encoded, &request.source)?;
+            put_path(&mut encoded, &request.destination)?;
+            put_optional_u64(&mut encoded, request.at_tail);
+            put_optional_key(&mut encoded, request.idempotency_key.as_ref())?;
+        }
+        Command::Trim {
+            path,
+            before,
+            idempotency_key,
+        } => {
+            encoded.push(3);
+            put_path(&mut encoded, path)?;
+            encoded.extend_from_slice(&before.to_le_bytes());
+            put_key(&mut encoded, idempotency_key)?;
+        }
+        Command::Delete {
+            path,
+            idempotency_key,
+        } => {
+            encoded.push(4);
+            put_path(&mut encoded, path)?;
+            put_key(&mut encoded, idempotency_key)?;
+        }
+        Command::Commit(request) => {
+            encoded.push(5);
+            put_count(&mut encoded, request.conditions.len())?;
+            for condition in &request.conditions {
+                match condition {
+                    CommitCondition::Tail { path, expected } => {
+                        encoded.push(1);
+                        put_path(&mut encoded, path)?;
+                        encoded.extend_from_slice(&expected.to_le_bytes());
+                    }
+                    CommitCondition::Absent { path } => {
+                        encoded.push(2);
+                        put_path(&mut encoded, path)?;
+                    }
+                }
+            }
+            put_count(&mut encoded, request.mutations.len())?;
+            for mutation in &request.mutations {
+                match mutation {
+                    CommitMutation::Append { path, records } => {
+                        encoded.push(1);
+                        put_path(&mut encoded, path)?;
+                        put_bytes_many(&mut encoded, records)?;
+                    }
+                    CommitMutation::Fork {
+                        source,
+                        destination,
+                        at_tail,
+                    } => {
+                        encoded.push(2);
+                        put_path(&mut encoded, source)?;
+                        put_path(&mut encoded, destination)?;
+                        encoded.extend_from_slice(&at_tail.to_le_bytes());
+                    }
+                    CommitMutation::Trim { path, before } => {
+                        encoded.push(3);
+                        put_path(&mut encoded, path)?;
+                        encoded.extend_from_slice(&before.to_le_bytes());
+                    }
+                    CommitMutation::Delete { path } => {
+                        encoded.push(4);
+                        put_path(&mut encoded, path)?;
+                    }
+                }
+            }
+            put_key(&mut encoded, &request.idempotency_key)?;
+        }
+    }
+    if encoded.len() > MAX_COMMAND_BYTES {
+        return Err(LocalStreamError::InvalidLimits);
+    }
+    Ok(encoded)
+}
+
+fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
+    let mut decoder = Decoder::new(encoded);
+    let command = match decoder.byte()? {
+        1 => Command::Append(AppendRequest {
+            path: decoder.path()?,
+            records: decoder.bytes_many()?,
+            if_tail: decoder.optional_u64()?,
+            idempotency_key: decoder.optional_key()?,
+        }),
+        2 => Command::Fork(ForkRequest {
+            source: decoder.path()?,
+            destination: decoder.path()?,
+            at_tail: decoder.optional_u64()?,
+            idempotency_key: decoder.optional_key()?,
+        }),
+        3 => Command::Trim {
+            path: decoder.path()?,
+            before: decoder.u64()?,
+            idempotency_key: decoder.key()?,
+        },
+        4 => Command::Delete {
+            path: decoder.path()?,
+            idempotency_key: decoder.key()?,
+        },
+        5 => {
+            let condition_count = decoder.count()?;
+            let mut conditions = Vec::new();
+            conditions
+                .try_reserve_exact(condition_count)
+                .map_err(|_| StreamError::LimitExceeded)?;
+            for _ in 0..condition_count {
+                conditions.push(match decoder.byte()? {
+                    1 => CommitCondition::Tail {
+                        path: decoder.path()?,
+                        expected: decoder.u64()?,
+                    },
+                    2 => CommitCondition::Absent {
+                        path: decoder.path()?,
+                    },
+                    _ => return Err(StreamError::InvalidArgument),
+                });
+            }
+            let mutation_count = decoder.count()?;
+            let mut mutations = Vec::new();
+            mutations
+                .try_reserve_exact(mutation_count)
+                .map_err(|_| StreamError::LimitExceeded)?;
+            for _ in 0..mutation_count {
+                mutations.push(match decoder.byte()? {
+                    1 => CommitMutation::Append {
+                        path: decoder.path()?,
+                        records: decoder.bytes_many()?,
+                    },
+                    2 => CommitMutation::Fork {
+                        source: decoder.path()?,
+                        destination: decoder.path()?,
+                        at_tail: decoder.u64()?,
+                    },
+                    3 => CommitMutation::Trim {
+                        path: decoder.path()?,
+                        before: decoder.u64()?,
+                    },
+                    4 => CommitMutation::Delete {
+                        path: decoder.path()?,
+                    },
+                    _ => return Err(StreamError::InvalidArgument),
+                });
+            }
+            Command::Commit(CommitRequest {
+                conditions,
+                mutations,
+                idempotency_key: decoder.key()?,
+            })
+        }
+        _ => return Err(StreamError::InvalidArgument),
+    };
+    decoder.finish()?;
+    Ok(command)
+}
+
+fn put_count(output: &mut Vec<u8>, count: usize) -> Result<(), LocalStreamError> {
+    let count = u32::try_from(count).map_err(|_| LocalStreamError::InvalidLimits)?;
+    output.extend_from_slice(&count.to_le_bytes());
+    Ok(())
+}
+
+fn put_path(output: &mut Vec<u8>, path: &StreamPath) -> Result<(), LocalStreamError> {
+    put_slice(output, path.as_str().as_bytes())
+}
+
+fn put_slice(output: &mut Vec<u8>, value: &[u8]) -> Result<(), LocalStreamError> {
+    let length = u32::try_from(value.len()).map_err(|_| LocalStreamError::InvalidLimits)?;
+    output.extend_from_slice(&length.to_le_bytes());
+    output.extend_from_slice(value);
+    Ok(())
+}
+
+fn put_bytes_many(output: &mut Vec<u8>, values: &[Bytes]) -> Result<(), LocalStreamError> {
+    put_count(output, values.len())?;
+    for value in values {
+        put_slice(output, value)?;
+    }
+    Ok(())
+}
+
+fn put_key(output: &mut Vec<u8>, key: &IdempotencyKey) -> Result<(), LocalStreamError> {
+    put_slice(output, key.as_bytes())
+}
+
+fn put_optional_key(
+    output: &mut Vec<u8>,
+    key: Option<&IdempotencyKey>,
+) -> Result<(), LocalStreamError> {
+    output.push(u8::from(key.is_some()));
+    if let Some(key) = key {
+        put_key(output, key)?;
+    }
+    Ok(())
+}
+
+fn put_optional_u64(output: &mut Vec<u8>, value: Option<u64>) {
+    output.push(u8::from(value.is_some()));
+    if let Some(value) = value {
+        output.extend_from_slice(&value.to_le_bytes());
+    }
+}
+
+struct Decoder<'a> {
+    encoded: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> Decoder<'a> {
+    const fn new(encoded: &'a [u8]) -> Self {
+        Self { encoded, offset: 0 }
+    }
+
+    fn take(&mut self, length: usize) -> Result<&'a [u8], StreamError> {
+        let end = self
+            .offset
+            .checked_add(length)
+            .ok_or(StreamError::InvalidArgument)?;
+        let value = self
+            .encoded
+            .get(self.offset..end)
+            .ok_or(StreamError::InvalidArgument)?;
+        self.offset = end;
+        Ok(value)
+    }
+
+    fn byte(&mut self) -> Result<u8, StreamError> {
+        self.take(1)?
+            .first()
+            .copied()
+            .ok_or(StreamError::InvalidArgument)
+    }
+
+    fn u32(&mut self) -> Result<u32, StreamError> {
+        let bytes: [u8; 4] = self
+            .take(4)?
+            .try_into()
+            .map_err(|_| StreamError::InvalidArgument)?;
+        Ok(u32::from_le_bytes(bytes))
+    }
+
+    fn u64(&mut self) -> Result<u64, StreamError> {
+        let bytes: [u8; 8] = self
+            .take(8)?
+            .try_into()
+            .map_err(|_| StreamError::InvalidArgument)?;
+        Ok(u64::from_le_bytes(bytes))
+    }
+
+    fn count(&mut self) -> Result<usize, StreamError> {
+        let count = usize::try_from(self.u32()?).map_err(|_| StreamError::LimitExceeded)?;
+        if count > MAX_ITEMS {
+            Err(StreamError::LimitExceeded)
+        } else {
+            Ok(count)
+        }
+    }
+
+    fn slice(&mut self) -> Result<&'a [u8], StreamError> {
+        let length = usize::try_from(self.u32()?).map_err(|_| StreamError::LimitExceeded)?;
+        self.take(length)
+    }
+
+    fn path(&mut self) -> Result<StreamPath, StreamError> {
+        let value = std::str::from_utf8(self.slice()?).map_err(|_| StreamError::InvalidPath)?;
+        StreamPath::new(value)
+    }
+
+    fn key(&mut self) -> Result<IdempotencyKey, StreamError> {
+        IdempotencyKey::new(Bytes::copy_from_slice(self.slice()?))
+    }
+
+    fn optional_key(&mut self) -> Result<Option<IdempotencyKey>, StreamError> {
+        match self.byte()? {
+            0 => Ok(None),
+            1 => self.key().map(Some),
+            _ => Err(StreamError::InvalidArgument),
+        }
+    }
+
+    fn optional_u64(&mut self) -> Result<Option<u64>, StreamError> {
+        match self.byte()? {
+            0 => Ok(None),
+            1 => self.u64().map(Some),
+            _ => Err(StreamError::InvalidArgument),
+        }
+    }
+
+    fn bytes_many(&mut self) -> Result<Vec<Bytes>, StreamError> {
+        let count = self.count()?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| StreamError::LimitExceeded)?;
+        for _ in 0..count {
+            values.push(Bytes::copy_from_slice(self.slice()?));
+        }
+        Ok(values)
+    }
+
+    fn finish(self) -> Result<(), StreamError> {
+        if self.offset == self.encoded.len() {
+            Ok(())
+        } else {
+            Err(StreamError::InvalidArgument)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::conformance;
+
+    #[tokio::test]
+    async fn local_provider_reopens_and_passes_public_conformance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        conformance::verify(&provider)
+            .await
+            .map_err(std::io::Error::other)?;
+        drop(provider);
+        let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        assert_eq!(
+            reopened
+                .tail(StreamPath::new("conformance/source")?)
+                .await?,
+            2
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn local_provider_excludes_a_second_process_owner_and_repairs_a_torn_tail()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        assert!(matches!(
+            LocalStream::open(directory.path(), LocalStreamLimits::default()).await,
+            Err(LocalStreamError::AlreadyOpen)
+        ));
+        provider
+            .append(AppendRequest {
+                path: StreamPath::new("durable")?,
+                records: vec![Bytes::from_static(b"one")],
+                if_tail: Some(0),
+                idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"append"))?),
+            })
+            .await?;
+        drop(provider);
+        let journal = directory.path().join("stream.journal");
+        let valid_length = std::fs::metadata(&journal)?.len();
+        OpenOptions::new()
+            .append(true)
+            .open(&journal)?
+            .write_all(&[9, 8, 7])?;
+        let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        assert_eq!(reopened.tail(StreamPath::new("durable")?).await?, 1);
+        drop(reopened);
+        assert_eq!(std::fs::metadata(journal)?.len(), valid_length);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn journal_capacity_rejects_before_mutating_visible_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let limits = LocalStreamLimits {
+            journal_bytes: u64::try_from(HEADER_BYTES).map_err(std::io::Error::other)?,
+            ..LocalStreamLimits::default()
+        };
+        let provider = LocalStream::open(directory.path(), limits).await?;
+        assert!(matches!(
+            provider
+                .append(AppendRequest {
+                    path: StreamPath::new("capacity")?,
+                    records: vec![Bytes::from_static(b"must-not-appear")],
+                    if_tail: Some(0),
+                    idempotency_key: None,
+                })
+                .await,
+            Err(StreamError::Capacity)
+        ));
+        assert!(matches!(
+            provider.tail(StreamPath::new("capacity")?).await,
+            Err(StreamError::NotFound)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn complete_frame_corruption_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        provider
+            .append(AppendRequest {
+                path: StreamPath::new("authenticated")?,
+                records: vec![Bytes::from_static(b"body")],
+                if_tail: Some(0),
+                idempotency_key: None,
+            })
+            .await?;
+        drop(provider);
+
+        let journal = directory.path().join("stream.journal");
+        let mut file = OpenOptions::new().read(true).write(true).open(journal)?;
+        let body_offset = u64::try_from(HEADER_BYTES + 5).map_err(std::io::Error::other)?;
+        file.seek(SeekFrom::Start(body_offset))?;
+        file.write_all(&[0xff])?;
+        file.sync_all()?;
+        drop(file);
+
+        assert!(matches!(
+            LocalStream::open(directory.path(), LocalStreamLimits::default()).await,
+            Err(LocalStreamError::Corrupt)
+        ));
+        Ok(())
+    }
+}

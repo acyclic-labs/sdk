@@ -4,7 +4,6 @@
 pub mod filesystem;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs};
-use acyclic_inference::InferenceProvider;
 use acyclic_machines::{
     CreateMachine, IdempotencyKey, Image, MachineState, MachinesProvider, MutationOutcome,
     Performance,
@@ -379,11 +378,6 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
     Ok(())
 }
 
-/// Exercises immutable Context, fork, Run, replay, receipt, and lifetime semantics.
-pub async fn inference(provider: &dyn InferenceProvider) -> Result<(), String> {
-    acyclic_inference::conformance(provider).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,7 +426,6 @@ mod tests {
         stream(&profile.stream).await?;
         objects(&profile.objects).await?;
         machines(&profile.machines).await?;
-        inference(&profile.inference).await?;
         Ok(())
     }
 }
