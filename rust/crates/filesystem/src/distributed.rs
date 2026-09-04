@@ -26,6 +26,7 @@ const GENESIS_DOMAIN: &[u8] = b"acyclic-fs-stream-genesis-v1\0";
 const EPOCH_DOMAIN: &[u8] = b"acyclic-fs-stream-epoch-v1\0";
 const LINEAGE_DOMAIN: &[u8] = b"acyclic-fs-stream-lineage-v1\0";
 const LINEAGE_TAIL_DOMAIN: &[u8] = b"acyclic-fs-stream-lineage-tail-v1\0";
+const AUTHORITY_MARKER: &[u8] = b"acyclic-fs-authority-v1\0";
 
 /// Filesystem authority over native hierarchical Streams.
 ///
@@ -43,6 +44,17 @@ impl<P> StreamAuthorityStore<P> {
     pub fn new(provider: Arc<P>) -> Self {
         Self { provider }
     }
+
+    /// Returns the exact public Stream provider that supplies this authority.
+    ///
+    /// Higher-level protocol adapters use this only for filesystem-adjacent
+    /// durable state machines, such as S3 multipart upload sessions. The
+    /// filesystem authority itself remains represented by canonical Stream
+    /// records and never by an adapter-local database.
+    #[must_use]
+    pub fn provider(&self) -> Arc<P> {
+        Arc::clone(&self.provider)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -53,6 +65,55 @@ struct AuthoritySnapshot {
 }
 
 impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+    /// Lists a bounded snapshot of exact filesystem authority identities.
+    ///
+    /// Authorities are native direct children in Stream; no filesystem record or object is read.
+    pub async fn authorities(&self, maximum: u32) -> Result<Vec<AuthorityId>, AuthorityStoreError> {
+        let request_limit = maximum.checked_add(1).ok_or_else(|| {
+            AuthorityStoreError::Rejected("authority listing bound is too large".to_owned())
+        })?;
+        let parent = acyclic_stream::StreamPath::new("fs/authorities").map_err(map_stream_error)?;
+        let mut children = self
+            .provider
+            .children(acyclic_stream::ChildrenRequest {
+                parent: Some(parent),
+                limit: request_limit,
+            })
+            .await
+            .map_err(map_stream_error)?;
+        let mut authorities = Vec::new();
+        while let Some(child) = children.next().await {
+            let child = child.map_err(map_stream_error)?;
+            let encoded = child
+                .path
+                .as_str()
+                .strip_prefix("fs/authorities/")
+                .ok_or_else(|| {
+                    AuthorityStoreError::Corrupt(
+                        "Stream authority child escaped its parent".to_owned(),
+                    )
+                })?;
+            if encoded.len() != 32 || encoded.contains('/') {
+                return Err(AuthorityStoreError::Corrupt(
+                    "Stream authority child has a noncanonical identity".to_owned(),
+                ));
+            }
+            let mut bytes = [0_u8; 16];
+            hex::decode_to_slice(encoded, &mut bytes).map_err(|_| {
+                AuthorityStoreError::Corrupt(
+                    "Stream authority child has a noncanonical identity".to_owned(),
+                )
+            })?;
+            authorities.push(AuthorityId::from_bytes(bytes));
+        }
+        if authorities.len() > maximum as usize {
+            return Err(AuthorityStoreError::Rejected(
+                "authority listing bound exceeded".to_owned(),
+            ));
+        }
+        Ok(authorities)
+    }
+
     async fn snapshot(
         &self,
         authority_id: AuthorityId,
@@ -212,6 +273,8 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         }
         let destination_records =
             records_path(destination_authority).map_err(OperationFailure::before_work)?;
+        let destination_root =
+            authority_path(destination_authority).map_err(OperationFailure::before_work)?;
         let destination_epochs =
             epochs_path(destination_authority).map_err(OperationFailure::before_work)?;
         let destination_lineage =
@@ -232,6 +295,9 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         let request = acyclic_stream::CommitRequest {
             conditions: vec![
                 acyclic_stream::CommitCondition::Absent {
+                    path: destination_root.clone(),
+                },
+                acyclic_stream::CommitCondition::Absent {
                     path: destination_records.clone(),
                 },
                 acyclic_stream::CommitCondition::Absent {
@@ -245,6 +311,10 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 },
             ],
             mutations: vec![
+                acyclic_stream::CommitMutation::Append {
+                    path: destination_root,
+                    records: vec![Bytes::from_static(AUTHORITY_MARKER)],
+                },
                 acyclic_stream::CommitMutation::Fork {
                     source: source_lineage,
                     destination: destination_lineage.clone(),
@@ -322,8 +392,10 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         }
         let records = records_path(authority_id).map_err(OperationFailure::before_work)?;
         let epochs = epochs_path(authority_id).map_err(OperationFailure::before_work)?;
+        let root = authority_path(authority_id).map_err(OperationFailure::before_work)?;
         let request = acyclic_stream::CommitRequest {
             conditions: vec![
+                acyclic_stream::CommitCondition::Absent { path: root.clone() },
                 acyclic_stream::CommitCondition::Absent {
                     path: records.clone(),
                 },
@@ -332,6 +404,10 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 },
             ],
             mutations: vec![
+                acyclic_stream::CommitMutation::Append {
+                    path: root,
+                    records: vec![Bytes::from_static(AUTHORITY_MARKER)],
+                },
                 acyclic_stream::CommitMutation::Append {
                     path: records,
                     records: vec![encode_epoch(GENESIS_DOMAIN, genesis_epoch)],
@@ -807,6 +883,12 @@ impl<P> ProviderObjectStore<P> {
     pub fn bucket(&self) -> &wire::BucketRef {
         &self.bucket
     }
+
+    /// Returns the exact public provider used by this stateless adapter.
+    #[must_use]
+    pub fn provider(&self) -> &Arc<P> {
+        &self.provider
+    }
 }
 
 impl<P: ObjectsProvider> AsyncObjectStore for ProviderObjectStore<P> {
@@ -1001,7 +1083,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for ProviderObjectStore<P> {
     }
 }
 
-fn object_key(object_id: ObjectId) -> String {
+pub(crate) fn object_key(object_id: ObjectId) -> String {
     format!(
         "fs/v1/{}/{}",
         object_id.kind.canonical_tag(),
@@ -1011,6 +1093,12 @@ fn object_key(object_id: ObjectId) -> String {
 
 fn authority_prefix(authority_id: AuthorityId) -> String {
     format!("fs/authorities/{}", hex::encode(authority_id.into_bytes()))
+}
+
+fn authority_path(
+    authority_id: AuthorityId,
+) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
+    acyclic_stream::StreamPath::new(authority_prefix(authority_id)).map_err(map_stream_error)
 }
 
 fn records_path(

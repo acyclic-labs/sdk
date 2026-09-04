@@ -7225,7 +7225,7 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
     let mut durable = config();
     durable.lifecycle = Lifecycle::Durable;
     {
-        let fs = Fs::local(LocalOptions::new(directory.path()))?;
+        let fs = Fs::local(LocalOptions::new(directory.path())).await?;
         let created = fs
             .create_volume_with_id(volume_id, durable, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
@@ -7240,7 +7240,14 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
             .await?;
         generation_id = checkout.value.generation_id();
     }
-    let reopened = Fs::local(LocalOptions::new(directory.path()))?;
+    let objects_journal = directory.path().join("objects").join("mutations.log");
+    let journal_bytes_before_reopen = std::fs::metadata(&objects_journal)?.len();
+    let reopened = Fs::local(LocalOptions::new(directory.path())).await?;
+    assert_eq!(
+        std::fs::metadata(objects_journal)?.len(),
+        journal_bytes_before_reopen,
+        "read-only reopen must not append an idempotent bucket mutation"
+    );
     let volume = reopened
         .open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation)
         .await?;
@@ -7266,7 +7273,7 @@ async fn local_facade_shares_bounded_object_acceleration_across_handles()
     let cancellation = CancellationToken::new();
     let mut durable = config();
     durable.lifecycle = Lifecycle::Durable;
-    let fs = Fs::local(LocalOptions::new(directory.path()))?;
+    let fs = Fs::local(LocalOptions::new(directory.path())).await?;
     let volume = fs
         .create_volume(durable, WorkBudget::UNBOUNDED, &cancellation)
         .await?
@@ -7750,7 +7757,7 @@ async fn local_garbage_collection_authenticates_heads_and_excludes_live_engines(
     let file = path("retained.txt")?;
     let mut durable = config();
     durable.lifecycle = Lifecycle::Durable;
-    let fs = Fs::local(options.clone())?;
+    let fs = Fs::local(options.clone()).await?;
     let volume = fs
         .create_volume_with_id(volume_id, durable, WorkBudget::UNBOUNDED, &cancellation)
         .await?
@@ -7799,14 +7806,35 @@ async fn local_garbage_collection_authenticates_heads_and_excludes_live_engines(
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &orphan_bytes),
     };
-    let objects = crate::local::LocalObjectStore::open(directory.path(), 64 * 1024 * 1024)?;
-    ObjectStore::put(&objects, orphan, orphan_bytes, WorkBudget::UNBOUNDED)?;
+    let objects = acyclic_objects::LocalObjects::open(
+        directory.path().join("objects"),
+        acyclic_objects::LocalObjectsLimits::default(),
+    )
+    .await?;
+    let bucket = objects
+        .bucket_named("filesystem-objects")
+        .await?
+        .ok_or("filesystem Objects bucket missing")?;
+    acyclic_objects::ObjectsProvider::put(
+        &objects,
+        acyclic_objects::PutRequest {
+            bucket,
+            object_key: crate::distributed::object_key(orphan),
+            body: orphan_bytes,
+            metadata: acyclic_objects::wire::ObjectMetadata::default(),
+            condition: Some(acyclic_objects::Condition::IfAbsent),
+            idempotency_key: Some("orphan-object".to_owned()),
+        },
+    )
+    .await?;
     drop(objects);
     let collected =
         Fs::collect_local_garbage(options, 8, 1_024, WorkBudget::UNBOUNDED, &cancellation).await?;
     assert!(collected.value.removed >= 1);
+    assert!(collected.value.manifests_removed >= 1);
+    assert!(collected.value.chunks_removed >= 1);
 
-    let reopened = Fs::local(LocalOptions::new(directory.path()))?;
+    let reopened = Fs::local(LocalOptions::new(directory.path())).await?;
     let volume = reopened
         .open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation)
         .await?;
@@ -7832,6 +7860,26 @@ async fn local_garbage_collection_authenticates_heads_and_excludes_live_engines(
         )
         .await?;
     assert_eq!(retained.value.bytes.as_ref(), b"retained");
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_facade_centralizes_same_process_owners_and_rejects_option_drift()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let options = LocalOptions::new(directory.path());
+    let first = Fs::local(options.clone()).await?;
+    let second = Fs::local(options.clone()).await?;
+    assert!(first.same_deployment(&second));
+
+    let mut conflicting = options;
+    conflicting.object_cache.maximum_entries =
+        conflicting.object_cache.maximum_entries.saturating_add(1);
+    assert!(matches!(
+        Fs::local(conflicting).await,
+        Err(FsError::LocalOptionsConflict)
+    ));
     Ok(())
 }
 

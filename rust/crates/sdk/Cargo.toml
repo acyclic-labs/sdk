@@ -10,7 +10,7 @@ description = "Umbrella SDK for the Acyclic harness and infrastructure provider 
 
 [dependencies]
 acyclic-contracts = { version = "0.1.0-rc.1", path = "../contracts" }
-acyclic-fs = { version = "0.1.0-rc.1", path = "../filesystem" }
+acyclic-fs = { version = "0.2.0-rc.1", path = "../filesystem" }
 acyclic-harness = { version = "0.1.0-rc.1", path = "../harness" }
 inference-sdk = { version = "1.0.0-rc.2", path = "../inference" }
 acyclic-machines = { version = "1.0.0-rc.1", path = "../machines" }

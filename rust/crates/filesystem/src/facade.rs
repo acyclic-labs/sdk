@@ -62,12 +62,16 @@ use crate::storage::{
     OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRequest, ObjectReadRetention,
     ObjectStoreError, ReplayLimit, object_digest,
 };
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+use acyclic_objects::ObjectsProvider as _;
 use bytes::Bytes;
 use std::collections::{BTreeSet, VecDeque};
 use std::mem::size_of;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+use std::sync::{OnceLock, Weak};
 use thiserror::Error;
 
 const MAXIMUM_VOLUME_EVENT_BYTES: u64 = 4 * 1024;
@@ -127,18 +131,30 @@ impl EmbeddedCapabilities {
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalOptions {
-    /// Durable root containing `objects/` and `authorities/`.
+    /// Durable root containing canonical Stream and Objects provider state.
     pub root: PathBuf,
-    /// Maximum canonical bytes admitted for one immutable object.
-    pub maximum_object_bytes: u64,
-    /// Maximum canonical payload bytes admitted for one authority fact.
-    pub maximum_authority_payload_bytes: u32,
-    /// `SQLite` WAL pages between automatic bounded checkpoints.
-    pub authority_checkpoint_pages: u32,
-    /// Bounded worker pool used for all synchronous native storage calls.
-    pub native_executor: crate::native_executor::NativeExecutorConfig,
+    /// Durable hierarchical Stream provider limits.
+    pub stream: acyclic_stream::LocalStreamLimits,
+    /// Durable immutable Objects provider limits.
+    pub objects: acyclic_objects::LocalObjectsLimits,
     /// Bounded disposable immutable-object accelerator shared by every handle.
     pub object_cache: crate::cache::ObjectCacheOptions,
+}
+
+/// Bounded reclamation result for the canonical local Stream/Objects composition.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LocalGarbageCollection {
+    /// Immutable filesystem object versions examined.
+    pub examined: u64,
+    /// Unreachable immutable filesystem object versions removed.
+    pub removed: u64,
+    /// Physical body manifests removed after logical reclamation.
+    pub manifests_removed: u64,
+    /// Physical body chunks removed after logical reclamation.
+    pub chunks_removed: u64,
+    /// Crash-left temporary body publications removed.
+    pub temporary_files_removed: u64,
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -148,10 +164,8 @@ impl LocalOptions {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
-            maximum_object_bytes: 64 * 1024 * 1024,
-            maximum_authority_payload_bytes: crate::local_authority::DEFAULT_MAX_PAYLOAD_BYTES,
-            authority_checkpoint_pages: crate::local_authority::DEFAULT_CHECKPOINT_PAGES,
-            native_executor: crate::native_executor::NativeExecutorConfig::default(),
+            stream: acyclic_stream::LocalStreamLimits::default(),
+            objects: acyclic_objects::LocalObjectsLimits::default(),
             object_cache: crate::cache::ObjectCacheOptions::default(),
         }
     }
@@ -204,9 +218,14 @@ impl<A, O> Fs<A, O> {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
-    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn authority(&self) -> &A {
         &self.inner.authority
+    }
+
+    #[cfg(all(test, feature = "s3-http"))]
+    pub(crate) fn objects(&self) -> &O {
+        &self.inner.objects
     }
 }
 
@@ -236,6 +255,7 @@ pub struct Checkout<A, O> {
     base_root: GenerationRoot,
     root: GenerationRoot,
     authority_head: Option<Head>,
+    authored_operation_id: Option<OperationId>,
     pending_operations: Vec<Mutation>,
     live_operation_id: Option<OperationId>,
     last_commit: Option<LastCommit>,
@@ -262,12 +282,12 @@ struct VolumeCreation {
 /// Durable local authority backend with nonblocking native storage dispatch.
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub type LocalAuthorityBackend =
-    crate::native_executor::NativeStore<crate::local_authority::LocalAuthorityStore>;
+    crate::distributed::StreamAuthorityStore<acyclic_stream::LocalStream>;
 
 /// Durable local immutable-object backend with nonblocking native storage dispatch.
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub type LocalObjectBackend = crate::cache::CachedObjectStore<
-    crate::native_executor::NativeStore<crate::local::LocalObjectStore>,
+    crate::distributed::ProviderObjectStore<acyclic_objects::LocalObjects>,
 >;
 
 /// Durable local filesystem composition with nonblocking native storage dispatch.
@@ -595,6 +615,14 @@ pub struct StagedContent {
 }
 
 impl StagedContent {
+    #[cfg(feature = "s3-http")]
+    pub(crate) const fn from_canonical_parts(root: ObjectId, logical_bytes: u64) -> Self {
+        Self {
+            root,
+            logical_bytes,
+        }
+    }
+
     /// Authenticated immutable blob-root identity created by this SDK.
     #[must_use]
     pub const fn root(&self) -> ObjectId {
@@ -747,14 +775,30 @@ pub enum FsError {
     /// Volume configuration is invalid.
     #[error(transparent)]
     Config(#[from] VolumeConfigError),
-    /// Native blocking storage execution could not be configured.
+    /// Durable local Stream initialization or recovery failed.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[error(transparent)]
-    NativeExecutor(#[from] crate::native_executor::NativeExecutorConfigError),
-    /// Native storage execution failed before a backend receipt was available.
+    LocalStream(#[from] acyclic_stream::LocalStreamError),
+    /// Durable local Objects initialization or recovery failed.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[error(transparent)]
-    NativeExecution(#[from] crate::native_executor::NativeExecutionError),
+    LocalObjects(#[from] acyclic_objects::LocalObjectsError),
+    /// The canonical filesystem Objects bucket could not be opened.
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[error("local filesystem Objects bucket initialization failed: {0}")]
+    LocalObjectsBucket(acyclic_objects::ObjectsError),
+    /// Local provider root setup failed before either canonical provider opened.
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[error("local filesystem root setup failed: {0}")]
+    LocalRoot(std::io::Error),
+    /// A live process-local engine already owns this root with different limits.
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[error("local filesystem root is already open with different options")]
+    LocalOptionsConflict,
+    /// The bounded local root initialization worker could not complete.
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[error("local filesystem initialization worker is unavailable")]
+    LocalInitializationWorker,
     /// Immutable-object accelerator bounds are invalid.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[error(transparent)]
@@ -1056,9 +1100,9 @@ impl
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 impl
     Fs<
-        crate::native_executor::NativeStore<crate::local_authority::LocalAuthorityStore>,
+        crate::distributed::StreamAuthorityStore<acyclic_stream::LocalStream>,
         crate::cache::CachedObjectStore<
-            crate::native_executor::NativeStore<crate::local::LocalObjectStore>,
+            crate::distributed::ProviderObjectStore<acyclic_objects::LocalObjects>,
         >,
     >
 {
@@ -1067,30 +1111,80 @@ impl
     /// # Errors
     ///
     /// Fails if limits are invalid or either durable backend cannot initialize.
-    pub fn local(options: LocalOptions) -> Result<Self, FsError> {
+    pub async fn local(options: LocalOptions) -> Result<Self, FsError> {
+        type Registry = std::collections::BTreeMap<
+            PathBuf,
+            (
+                LocalOptions,
+                Weak<FsInner<LocalAuthorityBackend, LocalObjectBackend>>,
+            ),
+        >;
+        static REGISTRY: OnceLock<tokio::sync::Mutex<Registry>> = OnceLock::new();
+        let requested_root = options.root.clone();
+        let root = tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&requested_root)?;
+            std::fs::canonicalize(requested_root)
+        })
+        .await
+        .map_err(|_| FsError::LocalInitializationWorker)?
+        .map_err(FsError::LocalRoot)?;
+        let mut options = options;
+        options.root = root.clone();
+        let mut registry = REGISTRY
+            .get_or_init(|| tokio::sync::Mutex::new(Registry::new()))
+            .lock()
+            .await;
+        if let Some((existing_options, existing)) = registry.get(&root)
+            && let Some(inner) = existing.upgrade()
+        {
+            if existing_options != &options {
+                return Err(FsError::LocalOptionsConflict);
+            }
+            return Ok(Self { inner });
+        }
+        registry.remove(&root);
+        let fs = Self::open_local_unshared(options.clone()).await?;
+        registry.insert(root, (options, Arc::downgrade(&fs.inner)));
+        Ok(fs)
+    }
+
+    async fn open_local_unshared(options: LocalOptions) -> Result<Self, FsError> {
         let LocalOptions {
             root,
-            maximum_object_bytes,
-            maximum_authority_payload_bytes,
-            authority_checkpoint_pages,
-            native_executor,
+            stream,
+            objects,
             object_cache,
         } = options;
-        let executor = crate::native_executor::NativeExecutor::new(native_executor)?;
-        let authority = crate::local_authority::LocalAuthorityStore::open(
-            &root,
-            crate::local_authority::LocalAuthorityConfig {
-                max_payload_bytes: maximum_authority_payload_bytes,
-                checkpoint_pages: authority_checkpoint_pages,
-            },
-        )?;
-        let objects = crate::local::LocalObjectStore::open(&root, maximum_object_bytes)?;
+        let stream = std::sync::Arc::new(
+            acyclic_stream::LocalStream::open(root.join("stream"), stream).await?,
+        );
+        let objects = std::sync::Arc::new(
+            acyclic_objects::LocalObjects::open(root.join("objects"), objects).await?,
+        );
+        let bucket = match objects
+            .bucket_named("filesystem-objects")
+            .await
+            .map_err(FsError::LocalObjectsBucket)?
+        {
+            Some(bucket) => bucket,
+            None => objects
+                .create_bucket(
+                    "filesystem-objects".to_owned(),
+                    Some("filesystem-objects-v1".to_owned()),
+                )
+                .await
+                .map_err(FsError::LocalObjectsBucket)?
+                .bucket
+                .ok_or(FsError::LocalObjectsBucket(
+                    acyclic_objects::ObjectsError::Unavailable,
+                ))?,
+        };
         let objects = crate::cache::CachedObjectStore::new(
-            crate::native_executor::NativeStore::new(objects, executor.clone()),
+            crate::distributed::ProviderObjectStore::new(objects, bucket),
             object_cache,
         )?;
         Ok(Self::new(
-            crate::native_executor::NativeStore::new(authority, executor),
+            crate::distributed::StreamAuthorityStore::new(stream),
             objects,
             EmbeddedCapabilities {
                 durable: cfg!(any(unix, windows)),
@@ -1117,44 +1211,13 @@ impl
         maximum_candidates: u64,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> FsResult<crate::local::LocalGarbageCollection> {
+    ) -> FsResult<LocalGarbageCollection> {
         cancellation
             .check()
             .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let executor = crate::native_executor::NativeExecutor::new(options.native_executor)
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let root = options.root;
-        let maximum_object_bytes = options.maximum_object_bytes;
-        let object_cache = options.object_cache;
-        let authority_config = crate::local_authority::LocalAuthorityConfig {
-            max_payload_bytes: options.maximum_authority_payload_bytes,
-            checkpoint_pages: options.authority_checkpoint_pages,
-        };
-        let (authority, objects) = executor
-            .execute(cancellation, move || {
-                let objects = crate::local::LocalObjectStore::open_for_maintenance(
-                    &root,
-                    maximum_object_bytes,
-                )?;
-                let authority =
-                    crate::local_authority::LocalAuthorityStore::open(&root, authority_config)?;
-                Ok::<_, FsError>((authority, objects))
-            })
+        let fs = Self::open_local_unshared(options)
             .await
-            .map_err(|error| OperationFailure::before_work(error.into()))?
             .map_err(OperationFailure::before_work)?;
-        let objects = crate::cache::CachedObjectStore::new(
-            crate::native_executor::NativeStore::new(objects, executor.clone()),
-            object_cache,
-        )
-        .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let fs = Self::new(
-            crate::native_executor::NativeStore::new(authority, executor.clone()),
-            objects,
-            EmbeddedCapabilities {
-                durable: cfg!(any(unix, windows)),
-            },
-        );
         fs.collect_local_garbage_exclusive(
             maximum_authorities,
             maximum_candidates,
@@ -1170,24 +1233,30 @@ impl
         maximum_candidates: u64,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> FsResult<crate::local::LocalGarbageCollection> {
+    ) -> FsResult<LocalGarbageCollection> {
         let authorities = self
             .inner
             .authority
-            .execute_backend(cancellation, move |authority| {
-                authority.list_authorities(maximum_authorities, budget)
-            })
+            .authorities(maximum_authorities)
             .await
-            .map_err(|error| OperationFailure::before_work(error.into()))?
-            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-        let authority_live_bytes = u64::try_from(authorities.value.capacity())
+            .map_err(|error| OperationFailure::before_work(error.into()))?;
+        let authority_live_bytes = u64::try_from(authorities.capacity())
             .unwrap_or(u64::MAX)
             .saturating_mul(
                 u64::try_from(size_of::<crate::foundation::AuthorityId>()).unwrap_or(u64::MAX),
             );
-        let mut work = authorities.work;
+        let mut work = WorkCounters {
+            backend_read_operations: 1,
+            items_examined: u64::try_from(authorities.len()).unwrap_or(u64::MAX),
+            items_returned: u64::try_from(authorities.len()).unwrap_or(u64::MAX),
+            allocation_operations: u64::from(!authorities.is_empty()),
+            peak_allocation_bytes: authority_live_bytes,
+            ..WorkCounters::default()
+        };
+        work.verify(budget)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
         let mut reachable = Vec::<ObjectId>::new();
-        for authority_id in authorities.value {
+        for authority_id in authorities {
             let Some((generation_root, config, next_work)) = self
                 .local_authority_generation(
                     authority_id,
@@ -1222,27 +1291,190 @@ impl
                 budget,
             )?;
         }
-        let collection_budget = remaining(work, budget)?;
-        let collection_live_bytes = object_vec_bytes(&reachable);
-        let collected = self
-            .inner
-            .objects
-            .inner()
-            .execute_backend(cancellation, move |objects| {
-                objects.collect_garbage(&reachable, maximum_candidates, collection_budget)
-            })
+        #[cfg(feature = "s3-http")]
+        {
+            let multipart = crate::active_s3_multipart_objects(
+                self.inner.authority.provider().as_ref(),
+                &self.inner.objects,
+                crate::FilesystemS3Limits::default(),
+                crate::S3MultipartRetentionLimits {
+                    maximum_uploads: maximum_candidates.max(1),
+                    ..crate::S3MultipartRetentionLimits::default()
+                },
+                remaining(work, budget)?,
+                cancellation,
+            )
             .await
-            .map_err(|error| OperationFailure::before_work(error.into()))?
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = merge_simultaneous_work(
-            work,
-            collected.work,
-            authority_live_bytes.saturating_add(collection_live_bytes),
-            budget,
-        )?;
+            .map_err(|_| {
+                OperationFailure::new(
+                    FsError::Object(ObjectStoreError::Rejected(
+                        "active S3 multipart retention scan failed".to_owned(),
+                    )),
+                    work,
+                )
+            })?;
+            work = merge_simultaneous_work(
+                work,
+                multipart.work,
+                authority_live_bytes.saturating_add(object_vec_bytes(&reachable)),
+                budget,
+            )?;
+            let incoming_bytes = object_vec_bytes(&multipart.value);
+            merge_sorted_object_ids(
+                &mut reachable,
+                &multipart.value,
+                incoming_bytes,
+                authority_live_bytes,
+                &mut work,
+                budget,
+            )?;
+        }
+        let collected = self
+            .collect_unreachable_local_objects(
+                &reachable,
+                maximum_candidates,
+                authority_live_bytes,
+                &mut work,
+                budget,
+                cancellation,
+            )
+            .await?;
         Ok(FsReceipt {
-            value: collected.value,
+            value: collected,
             work,
+        })
+    }
+
+    async fn collect_unreachable_local_objects(
+        &self,
+        reachable: &[ObjectId],
+        maximum_candidates: u64,
+        retained_bytes: u64,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<LocalGarbageCollection, OperationFailure<FsError>> {
+        if maximum_candidates == 0 {
+            return Err(OperationFailure::new(
+                FsError::Object(ObjectStoreError::Rejected(
+                    "garbage-collection candidate bound must be positive".to_owned(),
+                )),
+                *work,
+            ));
+        }
+        let reachable_keys = reachable
+            .iter()
+            .copied()
+            .map(crate::distributed::object_key)
+            .collect::<BTreeSet<_>>();
+        let provider = self.inner.objects.inner().provider();
+        let bucket = self.inner.objects.inner().bucket().clone();
+        let mut continuation = None;
+        let mut candidates = Vec::new();
+        let mut examined = 0_u64;
+        loop {
+            cancellation
+                .check()
+                .map_err(|error| OperationFailure::new(error.into(), *work))?;
+            let remaining_candidates = maximum_candidates.saturating_sub(examined);
+            if remaining_candidates == 0 && continuation.is_some() {
+                return Err(OperationFailure::new(
+                    FsError::Object(ObjectStoreError::Rejected(
+                        "garbage-collection candidate bound exceeded".to_owned(),
+                    )),
+                    *work,
+                ));
+            }
+            let page_size = u32::try_from(remaining_candidates.min(256)).unwrap_or(256);
+            let page = provider
+                .list(
+                    acyclic_objects::ReadTarget::Bucket(bucket.clone()),
+                    "fs/v1/".to_owned(),
+                    None,
+                    true,
+                    page_size,
+                    continuation,
+                )
+                .await
+                .map_err(|error| {
+                    OperationFailure::new(FsError::LocalObjectsBucket(error), *work)
+                })?;
+            let page_items = u64::try_from(page.entries.len()).unwrap_or(u64::MAX);
+            examined = examined
+                .checked_add(page_items)
+                .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), *work))?;
+            if examined > maximum_candidates {
+                return Err(OperationFailure::new(
+                    FsError::Object(ObjectStoreError::Rejected(
+                        "garbage-collection candidate bound exceeded".to_owned(),
+                    )),
+                    *work,
+                ));
+            }
+            for entry in page.entries {
+                let version = entry.version.ok_or_else(|| {
+                    OperationFailure::new(FsError::Object(ObjectStoreError::Corrupt), *work)
+                })?;
+                if !reachable_keys.contains(&entry.object_key) {
+                    candidates.push((entry.object_key, version.version_id));
+                }
+            }
+            *work = work
+                .checked_add(WorkCounters {
+                    backend_read_operations: 1,
+                    items_examined: page_items,
+                    allocation_operations: u64::from(!candidates.is_empty()),
+                    peak_allocation_bytes: retained_bytes
+                        .saturating_add(object_slice_bytes(reachable)),
+                    ..WorkCounters::default()
+                })
+                .map_err(|error| OperationFailure::new(error.into(), *work))?;
+            work.verify(budget)
+                .map_err(|error| OperationFailure::new(error.into(), *work))?;
+            continuation = page.continuation;
+            if continuation.is_none() {
+                break;
+            }
+        }
+        let mut removed = 0_u64;
+        for (object_key, version_id) in candidates {
+            cancellation
+                .check()
+                .map_err(|error| OperationFailure::new(error.into(), *work))?;
+            let identity = blake3::hash(format!("{object_key}\0{version_id}").as_bytes());
+            provider
+                .delete(
+                    bucket.clone(),
+                    object_key,
+                    Some(version_id),
+                    None,
+                    Some(format!("fs-gc-{}", identity.to_hex())),
+                )
+                .await
+                .map_err(|error| {
+                    OperationFailure::new(FsError::LocalObjectsBucket(error), *work)
+                })?;
+            removed = removed.saturating_add(1);
+            *work = work
+                .checked_add(WorkCounters {
+                    backend_write_operations: 1,
+                    items_examined: 1,
+                    ..WorkCounters::default()
+                })
+                .map_err(|error| OperationFailure::new(error.into(), *work))?;
+            work.verify(budget)
+                .map_err(|error| OperationFailure::new(error.into(), *work))?;
+        }
+        let physical = provider
+            .collect_garbage(maximum_candidates)
+            .await
+            .map_err(|error| OperationFailure::new(FsError::LocalObjects(error), *work))?;
+        Ok(LocalGarbageCollection {
+            examined,
+            removed,
+            manifests_removed: physical.manifests_removed,
+            chunks_removed: physical.chunks_removed,
+            temporary_files_removed: physical.temporary_files_removed,
         })
     }
 
@@ -2916,17 +3148,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         let mut work = WorkCounters::default();
         let (generation_root, mut authority_head) = match selector {
             GenerationSelector::Exact(generation_id) => {
-                if mode.access == AccessMode::ReadWrite {
-                    return Err(OperationFailure::before_work(
-                        FsError::WritableCheckoutRequiresHead,
-                    ));
-                }
+                let authority_head = if mode.access == AccessMode::ReadWrite {
+                    if mode.consistency != ConsistencyMode::TrackingSafe
+                        || mode.mutations != MutationMode::PrivateOverlay
+                    {
+                        return Err(OperationFailure::before_work(
+                            FsError::WritableCheckoutRequiresHead,
+                        ));
+                    }
+                    let resolved = self
+                        .resolve_head_generation(remaining(work, budget)?, cancellation)
+                        .await
+                        .map_err(|failure| {
+                            failure.map_with_prior_work(work, std::convert::identity)
+                        })?;
+                    work = add(work, resolved.2)?;
+                    Some(resolved.1)
+                } else {
+                    None
+                };
                 (
                     ObjectId {
                         kind: ObjectKind::GenerationRoot,
                         digest: generation_id.digest(),
                     },
-                    None,
+                    authority_head,
                 )
             }
             GenerationSelector::Head => {
@@ -2995,6 +3241,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 base_root: root.clone(),
                 root,
                 authority_head,
+                authored_operation_id: None,
                 pending_operations: Vec::new(),
                 live_operation_id: None,
                 last_commit: None,
@@ -4636,7 +4883,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         failure.map_with_prior_work(*work, std::convert::identity)
                     })?;
                 *work = add(*work, metadata.work)?;
-                let file_id = FileId::new();
+                let file_id = self.authored_file_id(FileKind::Regular, &path);
                 if bytes.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {
                     operations.push(Mutation::Create {
                         path,
@@ -4694,7 +4941,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         failure.map_with_prior_work(*work, std::convert::identity)
                     })?;
                 *work = add(*work, metadata.work)?;
-                let file_id = FileId::new();
+                let file_id = self.authored_file_id(FileKind::Regular, &path);
                 operations.push(Mutation::Create {
                     path: path.clone(),
                     record: FileRecord {
@@ -5018,7 +5265,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .await
             .map_err(|failure| failure.map_with_prior_work(*work, std::convert::identity))?;
         *work = add(*work, staged.work)?;
-        let file_id = FileId::new();
+        let file_id = self.authored_file_id(kind, &path);
         operations.push(Mutation::Create {
             path,
             record: FileRecord {
@@ -5030,6 +5277,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             },
         });
         Ok(file_id)
+    }
+
+    pub(crate) fn bind_authored_operation(&mut self, operation_id: OperationId) {
+        self.authored_operation_id = Some(operation_id);
+    }
+
+    fn authored_file_id(&self, kind: FileKind, path: &NamespacePath) -> FileId {
+        let Some(operation_id) = self.authored_operation_id else {
+            return FileId::new();
+        };
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"acyclic-fs-authored-file-id-v1\0");
+        hasher.update(&operation_id.into_bytes());
+        hasher.update(&[kind.tag()]);
+        for component in path.components() {
+            hasher.update(&[component.encoding().tag()]);
+            hasher.update(
+                &u64::try_from(component.as_bytes().len())
+                    .unwrap_or(u64::MAX)
+                    .to_le_bytes(),
+            );
+            hasher.update(component.as_bytes());
+        }
+        let digest = hasher.finalize();
+        let mut bytes = [0_u8; 16];
+        bytes.copy_from_slice(&digest.as_bytes()[..16]);
+        FileId::from_bytes(bytes)
     }
 
     async fn stage_metadata(
@@ -6964,6 +7238,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let expected = self
             .authority_head
             .ok_or_else(|| OperationFailure::before_work(FsError::WritableCheckoutRequiresHead))?;
+        self.publish_pending_against(operation_id, expected, budget, cancellation)
+            .await
+    }
+
+    async fn publish_pending_against(
+        &mut self,
+        operation_id: OperationId,
+        expected: Head,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<CheckoutCommitOutcome> {
         cancellation
             .check()
             .map_err(|error| OperationFailure::before_work(error.into()))?;
@@ -7045,6 +7330,61 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(FsReceipt {
             value: outcome,
             work,
+        })
+    }
+
+    pub(crate) async fn retry_stale_commit(
+        &mut self,
+        operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Option<CheckoutCommitOutcome>> {
+        cancellation
+            .check()
+            .map_err(|error| OperationFailure::before_work(error.into()))?;
+        let resolved = self
+            .volume
+            .fs
+            .inner
+            .authority
+            .find_operation(
+                volume_authority_id(self.volume.id),
+                operation_id,
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| {
+                OperationFailure::new(FsError::Authority(failure.error), *failure.work)
+            })?;
+        let Some(commit) = resolved.value else {
+            return Ok(FsReceipt {
+                value: None,
+                work: resolved.work,
+            });
+        };
+        let previous_sequence = commit.sequence.get().checked_sub(1).ok_or_else(|| {
+            OperationFailure::new(FsError::InvalidAuthorityHistory, resolved.work)
+        })?;
+        let expected = Head {
+            epoch: commit.epoch,
+            sequence: Sequence::new(previous_sequence),
+            digest: commit.previous_digest,
+        };
+        let retried = self
+            .publish_pending_against(
+                operation_id,
+                expected,
+                remaining(resolved.work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| {
+                failure.map_with_prior_work(resolved.work, std::convert::identity)
+            })?;
+        Ok(FsReceipt {
+            value: Some(retried.value),
+            work: add(resolved.work, retried.work)?,
         })
     }
 
@@ -9679,6 +10019,13 @@ fn map_transfer_error(error: GenerationTransferError) -> FsError {
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 fn object_vec_bytes(objects: &Vec<ObjectId>) -> u64 {
     u64::try_from(objects.capacity())
+        .unwrap_or(u64::MAX)
+        .saturating_mul(u64::try_from(size_of::<ObjectId>()).unwrap_or(u64::MAX))
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+fn object_slice_bytes(objects: &[ObjectId]) -> u64 {
+    u64::try_from(objects.len())
         .unwrap_or(u64::MAX)
         .saturating_mul(u64::try_from(size_of::<ObjectId>()).unwrap_or(u64::MAX))
 }

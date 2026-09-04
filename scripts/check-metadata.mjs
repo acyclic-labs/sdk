@@ -19,6 +19,26 @@ for (const item of provenance.imports) if (item.auditResult !== "approved") thro
 
 const digest = async path => `sha256:${createHash("sha256").update(await readFile(new URL(path, root))).digest("hex")}`;
 const compatibility = await load("compatibility/manifest.json");
+const filesystemVersion = compatibility.families.filesystem.version;
+for (const path of [
+  "typescript/packages/filesystem/package.json",
+  "typescript/packages/filesystem/generated/wasm/package.json",
+]) {
+  if ((await load(path)).version !== filesystemVersion) {
+    throw new Error(`filesystem package version mismatch: ${path}`);
+  }
+}
+for (const path of [
+  "rust/crates/filesystem/Cargo.toml",
+  "rust/crates/filesystem-daemon/Cargo.toml",
+  "rust/crates/filesystem-napi/Cargo.toml",
+  "rust/crates/filesystem-wasm/Cargo.toml",
+]) {
+  const manifest = await readFile(new URL(path, root), "utf8");
+  if (!manifest.includes(`\nversion = "${filesystemVersion}"\n`)) {
+    throw new Error(`filesystem package version mismatch: ${path}`);
+  }
+}
 const inferenceIndex = (await readFile(new URL("registry/in/fe/inference-sdk", root), "utf8"))
   .trim()
   .split("\n")
@@ -32,8 +52,8 @@ const familyArtifacts = {
     schemaDigest: "proto/harness/v1/harness.proto",
   },
   filesystem: {
-    schemaDigest: "proto/filesystem/v1/filesystem.proto",
-    descriptorDigest: "rust/crates/filesystem/src/generated/acyclic-filesystem-v1.bin",
+    schemaDigest: "proto/filesystem/v2/filesystem.proto",
+    descriptorDigest: "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin",
     conformanceDigest: "conformance/vectors/filesystem/dependency-content-range-v1.json",
   },
   stream: {

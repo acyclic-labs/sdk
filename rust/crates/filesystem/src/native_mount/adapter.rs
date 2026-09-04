@@ -2376,27 +2376,13 @@ mod tests {
         MountPath::root().child(value.encode_utf16().flat_map(u16::to_le_bytes).collect())
     }
 
-    // Two independent volumes, mounted one after the other by fully
-    // sequential Rust calls (`mount_native(a)` returns before
-    // `mount_native(b)` is even called). Written to be a control for the
-    // concurrent-start test below, on the assumption that only literal
-    // thread-level concurrency could trigger the vendor race in BUGS.md.
-    // That assumption is false: a live run of this exact test reproduced
-    // the race anyway (`fuse-t.log`, 2026-08-31T15:35:18+01:00 — the second
-    // `go-nfsv4` helper hit "Failed to listen: 52100" once, immediately
-    // after the first helper's own `mount [-o port=52100,...]` line, and
-    // never advanced to 52101 before dying 10s later at "receiveRequest
-    // error: EOF"), even though this call sequence has no thread overlap
-    // and ports 52101-52105 were free. So the trigger is proximity of
-    // `go-nfsv4` *process* start time, not concurrency in this crate's own
-    // Rust call graph — this test is not a reliable pass/fail control and
-    // is expected to be flaky until `FuseTSession::start` staggers/gates
-    // session starts (see BUGS.md's go-nfsv4 startup-race note).
-    #[cfg(target_os = "macos")]
+    // Every Unix backend must support independent sequential sessions. On
+    // macOS this also proves that each loopback NFS server receives its own
+    // kernel-assigned port; on Linux it exercises two distinct FUSE sessions.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    #[ignore = "mounts two live FUSE-T sessions in one process; run manually with \
-                `cargo test -p acyclic-fs-mount -- --ignored fuse_t_mount`"]
-    fn two_sequential_fuse_t_mounts_in_one_process_both_stay_independently_writable()
+    #[ignore = "mounts two live Unix sessions; requires the host's native mount capability"]
+    fn two_sequential_unix_mounts_in_one_process_both_stay_independently_writable()
     -> Result<(), Box<dyn std::error::Error>> {
         let source_a = Arc::new(source(FilesystemProfile::Posix)?);
         let source_b = Arc::new(source(FilesystemProfile::Posix)?);
@@ -2432,35 +2418,26 @@ mod tests {
         Ok(())
     }
 
-    // Reproduces the vendor-level FUSE-T race documented in BUGS.md: two
-    // `go-nfsv4` helpers launched milliseconds apart in the same process can
-    // both probe the shared 52100-52105 port pool from stale state, so the
-    // second helper reports "Failed to listen: 52100" once and never walks
-    // to 52101, leaving its mount to die silently at FUSE_INIT until this
-    // driver's own 10-second visibility deadline expires. Unlike the
-    // sequential test above, this one starting both mounts from the same
-    // instant is expected to be flaky pending a same-process staggering fix
-    // in `FuseTSession::start`; it exists to make that race reproducible on
-    // demand, not to gate CI.
-    #[cfg(target_os = "macos")]
+    // Simultaneous callers must receive independent servers, callback state,
+    // kernel mounts, and teardown lifecycles.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    #[ignore = "mounts two live FUSE-T sessions concurrently in one process to reproduce a \
-                vendor startup race; run manually with \
-                `cargo test -p acyclic-fs-mount -- --ignored fuse_t_mount`"]
-    fn two_concurrent_fuse_t_mounts_in_one_process_both_become_visible() {
-        let source_a = Arc::new(source(FilesystemProfile::Posix).expect("volume a"));
-        let source_b = Arc::new(source(FilesystemProfile::Posix).expect("volume b"));
-        let temporary_a = tempfile::tempdir().expect("tempdir a");
-        let temporary_b = tempfile::tempdir().expect("tempdir b");
+    #[ignore = "mounts two live Unix sessions concurrently; requires the host's native mount capability"]
+    fn two_concurrent_unix_mounts_in_one_process_remain_independent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source_a = Arc::new(source(FilesystemProfile::Posix)?);
+        let source_b = Arc::new(source(FilesystemProfile::Posix)?);
+        let temporary_a = tempfile::tempdir()?;
+        let temporary_b = tempfile::tempdir()?;
         let request_a = crate::NativeMountRequest {
             mount_id: crate::MountId::new(),
-            volume_id: source_a.volume_id().expect("volume id a"),
+            volume_id: source_a.volume_id()?,
             destination: temporary_a.path().to_path_buf(),
             writable: true,
         };
         let request_b = crate::NativeMountRequest {
             mount_id: crate::MountId::new(),
-            volume_id: source_b.volume_id().expect("volume id b"),
+            volume_id: source_b.volume_id()?,
             destination: temporary_b.path().to_path_buf(),
             writable: true,
         };
@@ -2470,35 +2447,151 @@ mod tests {
         let (result_a, result_b) = std::thread::scope(|scope| {
             let handle_a = scope.spawn(|| crate::mount_native(request_a, dyn_source_a));
             let handle_b = scope.spawn(|| crate::mount_native(request_b, dyn_source_b));
-            (
-                handle_a.join().expect("mount a thread panicked"),
-                handle_b.join().expect("mount b thread panicked"),
-            )
-        });
+            Ok::<_, &'static str>((
+                handle_a.join().map_err(|_| "mount a thread panicked")?,
+                handle_b.join().map_err(|_| "mount b thread panicked")?,
+            ))
+        })?;
 
-        let a_ok = result_a.is_ok();
-        let b_ok = result_b.is_ok();
-        if let Err(error) = &result_a {
-            eprintln!("mount a failed: {error}");
-        }
-        if let Err(error) = &result_b {
-            eprintln!("mount b failed: {error}");
-        }
-        let mut sessions = Vec::new();
-        if let Ok(session) = result_a {
-            sessions.push(session);
-        }
-        if let Ok(session) = result_b {
-            sessions.push(session);
-        }
-        for mut session in sessions {
-            let _ = session.stop();
-        }
-        assert!(
-            a_ok && b_ok,
-            "expected both concurrent FUSE-T mounts to become visible; see BUGS.md's \
-             go-nfsv4 startup-race note if this fails"
+        let mut mount_a = result_a?;
+        let mut mount_b = result_b?;
+        std::fs::write(temporary_a.path().join("a.txt"), b"concurrent-a")?;
+        std::fs::write(temporary_b.path().join("b.txt"), b"concurrent-b")?;
+        assert_eq!(
+            std::fs::read(temporary_a.path().join("a.txt"))?,
+            b"concurrent-a"
         );
+        assert_eq!(
+            std::fs::read(temporary_b.path().join("b.txt"))?,
+            b"concurrent-b"
+        );
+        assert!(!temporary_a.path().join("b.txt").exists());
+        assert!(!temporary_b.path().join("a.txt").exists());
+        assert!(mount_a.stop()?);
+        assert!(mount_b.stop()?);
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn run_unix_mount_cross_process_worker() -> Result<(), Box<dyn std::error::Error>> {
+        let destination =
+            std::env::var_os("ACYCLIC_FS_UNIX_CHILD_MOUNT").ok_or("child mount path is absent")?;
+        let ready =
+            std::env::var_os("ACYCLIC_FS_UNIX_CHILD_READY").ok_or("child ready path is absent")?;
+        let release = std::env::var_os("ACYCLIC_FS_UNIX_CHILD_RELEASE")
+            .ok_or("child release path is absent")?;
+        let identity = std::env::var("ACYCLIC_FS_UNIX_CHILD_ID")?;
+        let source = Arc::new(source(FilesystemProfile::Posix)?);
+        let mut mount = crate::mount_native(
+            crate::NativeMountRequest {
+                mount_id: crate::MountId::new(),
+                volume_id: source.volume_id()?,
+                destination: destination.clone().into(),
+                writable: true,
+            },
+            source as Arc<dyn MountFilesystem>,
+        )?;
+        let filename = format!("{identity}.txt");
+        std::fs::write(
+            std::path::Path::new(&destination).join(filename),
+            identity.as_bytes(),
+        )?;
+        std::fs::write(&ready, identity.as_bytes())?;
+        wait_for_path(
+            std::path::Path::new(&release),
+            std::time::Duration::from_secs(10),
+        )?;
+        assert!(mount.stop()?);
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    #[ignore = "starts two real mount-owning processes; requires the host's native mount capability"]
+    fn unix_mounts_in_distinct_processes_remain_independent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var_os("ACYCLIC_FS_UNIX_CHILD_MOUNT").is_some() {
+            return run_unix_mount_cross_process_worker();
+        }
+        let temporary = tempfile::tempdir()?;
+        let mount_a = temporary.path().join("mount-a");
+        let mount_b = temporary.path().join("mount-b");
+        std::fs::create_dir(&mount_a)?;
+        std::fs::create_dir(&mount_b)?;
+        let ready_a = temporary.path().join("ready-a");
+        let ready_b = temporary.path().join("ready-b");
+        let release = temporary.path().join("release");
+        let executable = std::env::current_exe()?;
+        let worker =
+            "native_mount::adapter::tests::unix_mounts_in_distinct_processes_remain_independent";
+        let mut child_a = std::process::Command::new(&executable)
+            .args(["--ignored", "--exact", worker, "--test-threads=1"])
+            .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_a)
+            .env("ACYCLIC_FS_UNIX_CHILD_READY", &ready_a)
+            .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
+            .env("ACYCLIC_FS_UNIX_CHILD_ID", "a")
+            .spawn()?;
+        let mut child_b = std::process::Command::new(&executable)
+            .args(["--ignored", "--exact", worker, "--test-threads=1"])
+            .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_b)
+            .env("ACYCLIC_FS_UNIX_CHILD_READY", &ready_b)
+            .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
+            .env("ACYCLIC_FS_UNIX_CHILD_ID", "b")
+            .spawn()?;
+
+        let validation = (|| -> Result<(), Box<dyn std::error::Error>> {
+            wait_for_path(&ready_a, std::time::Duration::from_secs(10))?;
+            wait_for_path(&ready_b, std::time::Duration::from_secs(10))?;
+            assert_eq!(std::fs::read(mount_a.join("a.txt"))?, b"a");
+            assert_eq!(std::fs::read(mount_b.join("b.txt"))?, b"b");
+            assert!(!mount_a.join("b.txt").exists());
+            assert!(!mount_b.join("a.txt").exists());
+            Ok(())
+        })();
+        std::fs::write(&release, b"release")?;
+        let status_a = wait_for_child(&mut child_a, std::time::Duration::from_secs(10))?;
+        let status_b = wait_for_child(&mut child_b, std::time::Duration::from_secs(10))?;
+        validation?;
+        assert!(status_a.success(), "first mount process failed: {status_a}");
+        assert!(
+            status_b.success(),
+            "second mount process failed: {status_b}"
+        );
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn wait_for_path(
+        path: &std::path::Path,
+        timeout: std::time::Duration,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let deadline = std::time::Instant::now() + timeout;
+        while !path.exists() {
+            if std::time::Instant::now() >= deadline {
+                return Err(format!("timed out waiting for {}", path.display()).into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn wait_for_child(
+        child: &mut std::process::Child,
+        timeout: std::time::Duration,
+    ) -> Result<std::process::ExitStatus, Box<dyn std::error::Error>> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill()?;
+                let _ = child.wait();
+                return Err("mount child did not terminate within the bounded deadline".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

@@ -10,15 +10,17 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use fs2::FileExt as _;
 use futures::{StreamExt as _, stream};
+use prost::Message as _;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use tokio::sync::{RwLock, watch};
 
+use crate::wire_codec::{condition_from_wire, mutation_from_wire, optional_key, required_key};
 use crate::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitCondition, CommitMutation,
-    CommitOutcome, CommitRequest, CommittedEnvelope, DeleteReceipt, ForkReceipt, ForkRequest,
-    IdempotencyKey, IdempotencyObservation, MAX_COMMAND_BYTES, MAX_ITEMS, MemoryLimits,
-    MemoryStream, ReadRequest, RecordStream, StreamError, StreamPath, StreamProvider, TrimReceipt,
+    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitOutcome, CommitRequest,
+    CommittedEnvelope, DeleteReceipt, ForkReceipt, ForkRequest, IdempotencyKey,
+    IdempotencyObservation, MAX_COMMAND_BYTES, MAX_ITEMS, MemoryLimits, MemoryStream, ReadRequest,
+    RecordStream, StreamError, StreamPath, StreamProvider, TrimReceipt,
 };
 
 const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
@@ -604,88 +606,31 @@ async fn replay(provider: &MemoryStream, command: Command) -> Result<(), StreamE
 }
 
 fn encode_command(command: &Command) -> Result<Vec<u8>, LocalStreamError> {
-    let mut encoded = Vec::new();
-    match command {
-        Command::Append(request) => {
-            encoded.push(1);
-            put_path(&mut encoded, &request.path)?;
-            put_bytes_many(&mut encoded, &request.records)?;
-            put_optional_u64(&mut encoded, request.if_tail);
-            put_optional_key(&mut encoded, request.idempotency_key.as_ref())?;
-        }
-        Command::Fork(request) => {
-            encoded.push(2);
-            put_path(&mut encoded, &request.source)?;
-            put_path(&mut encoded, &request.destination)?;
-            put_optional_u64(&mut encoded, request.at_tail);
-            put_optional_key(&mut encoded, request.idempotency_key.as_ref())?;
-        }
+    let operation = match command {
+        Command::Append(request) => journal_command::Operation::Append(wire_append(request)),
+        Command::Fork(request) => journal_command::Operation::Fork(wire_fork(request)),
         Command::Trim {
             path,
             before,
             idempotency_key,
-        } => {
-            encoded.push(3);
-            put_path(&mut encoded, path)?;
-            encoded.extend_from_slice(&before.to_le_bytes());
-            put_key(&mut encoded, idempotency_key)?;
-        }
+        } => journal_command::Operation::Trim(crate::wire::TrimRequest {
+            path: path.to_string(),
+            before: *before,
+            idempotency_key: Some(Bytes::copy_from_slice(idempotency_key.as_bytes())),
+        }),
         Command::Delete {
             path,
             idempotency_key,
-        } => {
-            encoded.push(4);
-            put_path(&mut encoded, path)?;
-            put_key(&mut encoded, idempotency_key)?;
-        }
-        Command::Commit(request) => {
-            encoded.push(5);
-            put_count(&mut encoded, request.conditions.len())?;
-            for condition in &request.conditions {
-                match condition {
-                    CommitCondition::Tail { path, expected } => {
-                        encoded.push(1);
-                        put_path(&mut encoded, path)?;
-                        encoded.extend_from_slice(&expected.to_le_bytes());
-                    }
-                    CommitCondition::Absent { path } => {
-                        encoded.push(2);
-                        put_path(&mut encoded, path)?;
-                    }
-                }
-            }
-            put_count(&mut encoded, request.mutations.len())?;
-            for mutation in &request.mutations {
-                match mutation {
-                    CommitMutation::Append { path, records } => {
-                        encoded.push(1);
-                        put_path(&mut encoded, path)?;
-                        put_bytes_many(&mut encoded, records)?;
-                    }
-                    CommitMutation::Fork {
-                        source,
-                        destination,
-                        at_tail,
-                    } => {
-                        encoded.push(2);
-                        put_path(&mut encoded, source)?;
-                        put_path(&mut encoded, destination)?;
-                        encoded.extend_from_slice(&at_tail.to_le_bytes());
-                    }
-                    CommitMutation::Trim { path, before } => {
-                        encoded.push(3);
-                        put_path(&mut encoded, path)?;
-                        encoded.extend_from_slice(&before.to_le_bytes());
-                    }
-                    CommitMutation::Delete { path } => {
-                        encoded.push(4);
-                        put_path(&mut encoded, path)?;
-                    }
-                }
-            }
-            put_key(&mut encoded, &request.idempotency_key)?;
-        }
+        } => journal_command::Operation::Delete(crate::wire::DeleteRequest {
+            path: path.to_string(),
+            idempotency_key: Some(Bytes::copy_from_slice(idempotency_key.as_bytes())),
+        }),
+        Command::Commit(request) => journal_command::Operation::Commit(wire_commit(request)),
+    };
+    let encoded = JournalCommand {
+        operation: Some(operation),
     }
+    .encode_to_vec();
     if encoded.len() > MAX_COMMAND_BYTES {
         return Err(LocalStreamError::InvalidLimits);
     }
@@ -693,236 +638,122 @@ fn encode_command(command: &Command) -> Result<Vec<u8>, LocalStreamError> {
 }
 
 fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
-    let mut decoder = Decoder::new(encoded);
-    let command = match decoder.byte()? {
-        1 => Command::Append(AppendRequest {
-            path: decoder.path()?,
-            records: decoder.bytes_many()?,
-            if_tail: decoder.optional_u64()?,
-            idempotency_key: decoder.optional_key()?,
+    let journal = JournalCommand::decode(encoded).map_err(|_| StreamError::InvalidArgument)?;
+    match journal.operation.ok_or(StreamError::InvalidArgument)? {
+        journal_command::Operation::Append(request) => domain_append(request).map(Command::Append),
+        journal_command::Operation::Fork(request) => domain_fork(request).map(Command::Fork),
+        journal_command::Operation::Trim(request) => Ok(Command::Trim {
+            path: StreamPath::new(request.path)?,
+            before: request.before,
+            idempotency_key: required_key(request.idempotency_key)?,
         }),
-        2 => Command::Fork(ForkRequest {
-            source: decoder.path()?,
-            destination: decoder.path()?,
-            at_tail: decoder.optional_u64()?,
-            idempotency_key: decoder.optional_key()?,
+        journal_command::Operation::Delete(request) => Ok(Command::Delete {
+            path: StreamPath::new(request.path)?,
+            idempotency_key: required_key(request.idempotency_key)?,
         }),
-        3 => Command::Trim {
-            path: decoder.path()?,
-            before: decoder.u64()?,
-            idempotency_key: decoder.key()?,
-        },
-        4 => Command::Delete {
-            path: decoder.path()?,
-            idempotency_key: decoder.key()?,
-        },
-        5 => {
-            let condition_count = decoder.count()?;
-            let mut conditions = Vec::new();
-            conditions
-                .try_reserve_exact(condition_count)
-                .map_err(|_| StreamError::LimitExceeded)?;
-            for _ in 0..condition_count {
-                conditions.push(match decoder.byte()? {
-                    1 => CommitCondition::Tail {
-                        path: decoder.path()?,
-                        expected: decoder.u64()?,
-                    },
-                    2 => CommitCondition::Absent {
-                        path: decoder.path()?,
-                    },
-                    _ => return Err(StreamError::InvalidArgument),
-                });
-            }
-            let mutation_count = decoder.count()?;
-            let mut mutations = Vec::new();
-            mutations
-                .try_reserve_exact(mutation_count)
-                .map_err(|_| StreamError::LimitExceeded)?;
-            for _ in 0..mutation_count {
-                mutations.push(match decoder.byte()? {
-                    1 => CommitMutation::Append {
-                        path: decoder.path()?,
-                        records: decoder.bytes_many()?,
-                    },
-                    2 => CommitMutation::Fork {
-                        source: decoder.path()?,
-                        destination: decoder.path()?,
-                        at_tail: decoder.u64()?,
-                    },
-                    3 => CommitMutation::Trim {
-                        path: decoder.path()?,
-                        before: decoder.u64()?,
-                    },
-                    4 => CommitMutation::Delete {
-                        path: decoder.path()?,
-                    },
-                    _ => return Err(StreamError::InvalidArgument),
-                });
-            }
-            Command::Commit(CommitRequest {
-                conditions,
-                mutations,
-                idempotency_key: decoder.key()?,
-            })
-        }
-        _ => return Err(StreamError::InvalidArgument),
-    };
-    decoder.finish()?;
-    Ok(command)
-}
-
-fn put_count(output: &mut Vec<u8>, count: usize) -> Result<(), LocalStreamError> {
-    let count = u32::try_from(count).map_err(|_| LocalStreamError::InvalidLimits)?;
-    output.extend_from_slice(&count.to_le_bytes());
-    Ok(())
-}
-
-fn put_path(output: &mut Vec<u8>, path: &StreamPath) -> Result<(), LocalStreamError> {
-    put_slice(output, path.as_str().as_bytes())
-}
-
-fn put_slice(output: &mut Vec<u8>, value: &[u8]) -> Result<(), LocalStreamError> {
-    let length = u32::try_from(value.len()).map_err(|_| LocalStreamError::InvalidLimits)?;
-    output.extend_from_slice(&length.to_le_bytes());
-    output.extend_from_slice(value);
-    Ok(())
-}
-
-fn put_bytes_many(output: &mut Vec<u8>, values: &[Bytes]) -> Result<(), LocalStreamError> {
-    put_count(output, values.len())?;
-    for value in values {
-        put_slice(output, value)?;
-    }
-    Ok(())
-}
-
-fn put_key(output: &mut Vec<u8>, key: &IdempotencyKey) -> Result<(), LocalStreamError> {
-    put_slice(output, key.as_bytes())
-}
-
-fn put_optional_key(
-    output: &mut Vec<u8>,
-    key: Option<&IdempotencyKey>,
-) -> Result<(), LocalStreamError> {
-    output.push(u8::from(key.is_some()));
-    if let Some(key) = key {
-        put_key(output, key)?;
-    }
-    Ok(())
-}
-
-fn put_optional_u64(output: &mut Vec<u8>, value: Option<u64>) {
-    output.push(u8::from(value.is_some()));
-    if let Some(value) = value {
-        output.extend_from_slice(&value.to_le_bytes());
+        journal_command::Operation::Commit(request) => domain_commit(request).map(Command::Commit),
     }
 }
 
-struct Decoder<'a> {
-    encoded: &'a [u8],
-    offset: usize,
+#[derive(Clone, PartialEq, prost::Message)]
+struct JournalCommand {
+    #[prost(oneof = "journal_command::Operation", tags = "1, 2, 3, 4, 5")]
+    operation: Option<journal_command::Operation>,
 }
 
-impl<'a> Decoder<'a> {
-    const fn new(encoded: &'a [u8]) -> Self {
-        Self { encoded, offset: 0 }
+mod journal_command {
+    #[derive(Clone, PartialEq, prost::Oneof)]
+    pub(super) enum Operation {
+        #[prost(message, tag = "1")]
+        Append(crate::wire::AppendRequest),
+        #[prost(message, tag = "2")]
+        Fork(crate::wire::ForkRequest),
+        #[prost(message, tag = "3")]
+        Trim(crate::wire::TrimRequest),
+        #[prost(message, tag = "4")]
+        Delete(crate::wire::DeleteRequest),
+        #[prost(message, tag = "5")]
+        Commit(crate::wire::CommitRequest),
     }
+}
 
-    fn take(&mut self, length: usize) -> Result<&'a [u8], StreamError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(StreamError::InvalidArgument)?;
-        let value = self
-            .encoded
-            .get(self.offset..end)
-            .ok_or(StreamError::InvalidArgument)?;
-        self.offset = end;
-        Ok(value)
+fn wire_append(request: &AppendRequest) -> crate::wire::AppendRequest {
+    crate::wire::AppendRequest {
+        path: request.path.to_string(),
+        records: request.records.clone(),
+        if_tail: request.if_tail,
+        idempotency_key: request
+            .idempotency_key
+            .as_ref()
+            .map(|key| Bytes::copy_from_slice(key.as_bytes())),
     }
+}
 
-    fn byte(&mut self) -> Result<u8, StreamError> {
-        self.take(1)?
-            .first()
-            .copied()
-            .ok_or(StreamError::InvalidArgument)
-    }
+fn domain_append(request: crate::wire::AppendRequest) -> Result<AppendRequest, StreamError> {
+    Ok(AppendRequest {
+        path: StreamPath::new(request.path)?,
+        records: request.records,
+        if_tail: request.if_tail,
+        idempotency_key: optional_key(request.idempotency_key)?,
+    })
+}
 
-    fn u32(&mut self) -> Result<u32, StreamError> {
-        let bytes: [u8; 4] = self
-            .take(4)?
-            .try_into()
-            .map_err(|_| StreamError::InvalidArgument)?;
-        Ok(u32::from_le_bytes(bytes))
+fn wire_fork(request: &ForkRequest) -> crate::wire::ForkRequest {
+    crate::wire::ForkRequest {
+        source: request.source.to_string(),
+        destination: request.destination.to_string(),
+        at_tail: request.at_tail,
+        idempotency_key: request
+            .idempotency_key
+            .as_ref()
+            .map(|key| Bytes::copy_from_slice(key.as_bytes())),
     }
+}
 
-    fn u64(&mut self) -> Result<u64, StreamError> {
-        let bytes: [u8; 8] = self
-            .take(8)?
-            .try_into()
-            .map_err(|_| StreamError::InvalidArgument)?;
-        Ok(u64::from_le_bytes(bytes))
-    }
+fn domain_fork(request: crate::wire::ForkRequest) -> Result<ForkRequest, StreamError> {
+    Ok(ForkRequest {
+        source: StreamPath::new(request.source)?,
+        destination: StreamPath::new(request.destination)?,
+        at_tail: request.at_tail,
+        idempotency_key: optional_key(request.idempotency_key)?,
+    })
+}
 
-    fn count(&mut self) -> Result<usize, StreamError> {
-        let count = usize::try_from(self.u32()?).map_err(|_| StreamError::LimitExceeded)?;
-        if count > MAX_ITEMS {
-            Err(StreamError::LimitExceeded)
-        } else {
-            Ok(count)
-        }
+fn wire_commit(request: &CommitRequest) -> crate::wire::CommitRequest {
+    crate::wire::CommitRequest {
+        conditions: request
+            .conditions
+            .iter()
+            .cloned()
+            .map(crate::wire_codec::condition_wire)
+            .collect(),
+        mutations: request
+            .mutations
+            .iter()
+            .cloned()
+            .map(crate::wire_codec::mutation_wire)
+            .collect(),
+        idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
     }
+}
 
-    fn slice(&mut self) -> Result<&'a [u8], StreamError> {
-        let length = usize::try_from(self.u32()?).map_err(|_| StreamError::LimitExceeded)?;
-        self.take(length)
+fn domain_commit(request: crate::wire::CommitRequest) -> Result<CommitRequest, StreamError> {
+    if request.conditions.len() > MAX_ITEMS || request.mutations.len() > MAX_ITEMS {
+        return Err(StreamError::LimitExceeded);
     }
-
-    fn path(&mut self) -> Result<StreamPath, StreamError> {
-        let value = std::str::from_utf8(self.slice()?).map_err(|_| StreamError::InvalidPath)?;
-        StreamPath::new(value)
-    }
-
-    fn key(&mut self) -> Result<IdempotencyKey, StreamError> {
-        IdempotencyKey::new(Bytes::copy_from_slice(self.slice()?))
-    }
-
-    fn optional_key(&mut self) -> Result<Option<IdempotencyKey>, StreamError> {
-        match self.byte()? {
-            0 => Ok(None),
-            1 => self.key().map(Some),
-            _ => Err(StreamError::InvalidArgument),
-        }
-    }
-
-    fn optional_u64(&mut self) -> Result<Option<u64>, StreamError> {
-        match self.byte()? {
-            0 => Ok(None),
-            1 => self.u64().map(Some),
-            _ => Err(StreamError::InvalidArgument),
-        }
-    }
-
-    fn bytes_many(&mut self) -> Result<Vec<Bytes>, StreamError> {
-        let count = self.count()?;
-        let mut values = Vec::new();
-        values
-            .try_reserve_exact(count)
-            .map_err(|_| StreamError::LimitExceeded)?;
-        for _ in 0..count {
-            values.push(Bytes::copy_from_slice(self.slice()?));
-        }
-        Ok(values)
-    }
-
-    fn finish(self) -> Result<(), StreamError> {
-        if self.offset == self.encoded.len() {
-            Ok(())
-        } else {
-            Err(StreamError::InvalidArgument)
-        }
-    }
+    Ok(CommitRequest {
+        conditions: request
+            .conditions
+            .into_iter()
+            .map(condition_from_wire)
+            .collect::<Result<_, _>>()?,
+        mutations: request
+            .mutations
+            .into_iter()
+            .map(mutation_from_wire)
+            .collect::<Result<_, _>>()?,
+        idempotency_key: IdempotencyKey::new(request.idempotency_key)?,
+    })
 }
 
 #[cfg(test)]

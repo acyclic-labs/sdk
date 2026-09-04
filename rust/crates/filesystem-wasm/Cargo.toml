@@ -1,6 +1,6 @@
 [package]
 name = "acyclic-fs-wasm"
-version = "0.1.0-rc.1"
+version = "0.2.0-rc.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -12,7 +12,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-acyclic-fs = { version = "0.1.0-rc.1", path = "../filesystem", default-features = false, features = ["memory"] }
+acyclic-fs = { version = "0.2.0-rc.1", path = "../filesystem", default-features = false, features = ["memory"] }
 acyclic-objects = { version = "1.0.0-rc.1", path = "../objects", default-features = false }
 acyclic-stream = { version = "1.0.0-rc.1", path = "../stream", default-features = false }
 blake3.workspace = true

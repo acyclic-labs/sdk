@@ -1,0 +1,50 @@
+syntax = "proto3";
+package acyclic.filesystem.daemon.v2;
+
+import "filesystem/v2/filesystem.proto";
+
+option go_package = "github.com/acyclic-labs/sdk/go/gen/filesystem/daemon/v2;filesystemdaemonv2";
+
+// Process-local lifecycle and native-host operations. Filesystem semantics use
+// acyclic.filesystem.v2.FilesystemService directly and are never repeated here.
+
+enum MountPublication {
+  MOUNT_PUBLICATION_UNSPECIFIED = 0;
+  MOUNT_PUBLICATION_CLOSE_AND_SYNC = 1;
+  MOUNT_PUBLICATION_PER_MUTATION = 2;
+  MOUNT_PUBLICATION_MANUAL = 3;
+}
+
+message HealthRequest {}
+message HealthResponse {
+  string status = 1;
+  uint32 active_mounts = 2;
+  uint32 recovered_mount_intents = 3;
+}
+
+message MountRequest {
+  acyclic.filesystem.v2.WorkspaceRef workspace = 1;
+  string destination = 2;
+  bool writable = 3;
+  string subdirectory = 4;
+  MountPublication publication = 5;
+}
+message MountResponse {
+  bytes mount_id = 1;
+  string destination = 2;
+}
+message MountRef {
+  bytes mount_id = 1;
+}
+message SyncMountResponse {}
+message UnmountResponse {}
+message ShutdownRequest {}
+message ShutdownResponse {}
+
+service FilesystemDaemonService {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc Mount(MountRequest) returns (MountResponse);
+  rpc SyncMount(MountRef) returns (SyncMountResponse);
+  rpc Unmount(MountRef) returns (UnmountResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+}

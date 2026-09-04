@@ -1,5 +1,7 @@
 //! Immutable, permanently versioned Objects contract and reference providers.
 
+pub mod conformance;
+
 /// Generated public gRPC schema and client/server bindings.
 #[allow(missing_docs, clippy::all)]
 pub mod wire {
@@ -39,6 +41,11 @@ pub mod limits {
 mod grpc;
 #[cfg(feature = "grpc")]
 pub use grpc::*;
+
+#[cfg(feature = "local")]
+mod local;
+#[cfg(feature = "local")]
+pub use local::*;
 
 mod provider;
 pub use provider::*;

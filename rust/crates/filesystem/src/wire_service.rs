@@ -1,13 +1,18 @@
 //! Canonical generated-wire translation for every remote filesystem deployment.
 
-use crate::kernel::{FileKind as EngineFileKind, FileMetadata, MetadataField, NameEncoding};
+use crate::kernel::{
+    FileKind as EngineFileKind, FileMetadata, FilePayload, LogicalName, MetadataField,
+    NameEncoding, TreeEntry,
+};
 use crate::model::{FilesystemProfile as EngineProfile, Lifecycle, VolumeConfig};
-use crate::wire::{filesystem::v1 as wire, harness::v1 as harness};
+use crate::wire::{filesystem::v2 as wire, harness::v1 as harness};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Digest,
     DurableCommit, ForkOptions, Fs, Generation, GenerationId, IdempotencyKey, JoinHistory,
-    JoinOutcome, ObjectId, ObjectKind, Transaction, TransactionCommit, Workspace, WorkspaceDelete,
-    WorkspaceError, WorkspaceExtentKind, WorkspaceMetadata, WorkspaceRebase,
+    JoinOutcome, MergeConflict, ObjectId, ObjectKind, Transaction, TransactionCommit,
+    TransactionConflict, TransactionConflictRegion, TransactionDependencyUse, TransactionRebase,
+    TransactionSparseSeek, Workspace, WorkspaceDelete, WorkspaceError, WorkspaceExtentKind,
+    WorkspaceMetadata, WorkspaceRebase,
 };
 use bytes::Bytes;
 use futures::{StreamExt, stream};
@@ -73,15 +78,35 @@ pub struct CredentialGrantRequest {
     pub idempotency_key: IdempotencyKey,
 }
 
-/// Deployment-produced opaque scoped credential.
+/// Deployment-produced scoped credential material.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CredentialGrant {
-    /// Customer endpoint for the selected surface.
-    pub endpoint: String,
-    /// Opaque bearer capability.
-    pub token: String,
-    /// Absolute Unix expiry enforced by the endpoint.
-    pub expires_at_unix_seconds: i64,
+pub enum CredentialGrant {
+    /// Opaque bearer capability for the native mount transport.
+    Bearer {
+        /// Customer endpoint for the mount transport.
+        endpoint: String,
+        /// Opaque bearer capability.
+        token: String,
+        /// Absolute Unix expiry enforced by the endpoint.
+        expires_at_unix_seconds: i64,
+    },
+    /// Standard S3 SigV4 coordinates scoped to one workspace.
+    S3 {
+        /// Customer S3 endpoint.
+        endpoint: String,
+        /// Opaque bucket coordinate.
+        bucket: String,
+        /// Signing region.
+        region: String,
+        /// Scoped access-key identity.
+        access_key_id: String,
+        /// Scoped secret access key.
+        secret_access_key: String,
+        /// Optional STS-compatible session token; empty when unused.
+        session_token: String,
+        /// Absolute Unix expiry enforced by the endpoint.
+        expires_at_unix_seconds: i64,
+    },
 }
 
 /// Authenticated deployment extension for private credential issuance.
@@ -399,26 +424,15 @@ where
             return Err(Status::invalid_argument("directory page bound is invalid"));
         }
         let generation = self.generation(request.generation).await?;
-        let after = if page.after.is_empty() {
-            None
-        } else {
-            Some(
-                crate::kernel::LogicalName::new(NameEncoding::Utf8, page.after, 255)
-                    .map_err(|error| Status::invalid_argument(error.to_string()))?,
-            )
-        };
+        let after = page.after.map(input_logical_name).transpose()?;
         let listed = generation
             .list_directory(&request.path, after.as_ref(), page.maximum_items)
             .await
             .map_err(status)?;
-        let next = if listed.has_more {
-            listed
-                .entries
-                .last()
-                .map_or_else(Vec::new, |entry| entry.name.as_bytes().to_vec())
-        } else {
-            Vec::new()
-        };
+        let next = listed
+            .has_more
+            .then(|| listed.entries.last().map(|entry| logical_name(&entry.name)))
+            .flatten();
         let mut entries = Vec::new();
         entries
             .try_reserve_exact(listed.entries.len())
@@ -438,7 +452,7 @@ where
                 ));
             }
             entries.push(wire::DirectoryEntry {
-                name: entry.name.as_bytes().to_vec(),
+                name: Some(logical_name(&entry.name)),
                 stat: Some(stat_message(stat)),
             });
         }
@@ -531,27 +545,91 @@ where
                 "transaction mutation count is invalid",
             ));
         }
-        let expected = required(request.expected, "expected generation")?;
-        let workspace = self.workspace(expected.workspace.clone()).await?;
-        let expected_id = generation_id(&expected.generation_id)?;
-        let actual = workspace.head().await.map_err(status)?;
-        if actual.id() != expected_id {
-            return Ok(Response::new(mutation(
-                wire::MutationStatus::Conflict,
-                None,
-                Some(generation_ref(&actual)),
-            )));
+        if request.maximum_conflicts == 0
+            || request.maximum_conflicts > self.limits.maximum_page_items
+        {
+            return Err(Status::invalid_argument(
+                "transaction conflict bound is invalid",
+            ));
         }
+        let base = self.generation(request.base).await?;
+        let workspace = self.workspace(generation_ref(&base).workspace).await?;
         let mut transaction = workspace
-            .begin_transaction(operation(request.operation)?)
+            .begin_transaction_at(&base, operation(request.operation)?)
             .await
             .map_err(status)?;
         for mutation in request.mutations {
             apply_mutation(&mut transaction, mutation).await?;
         }
-        Ok(Response::new(commit_message(
-            transaction.commit().await.map_err(status)?,
-        )))
+        let first = transaction.commit().await.map_err(status)?;
+        if !matches!(first, TransactionCommit::Conflict { .. }) {
+            return Ok(Response::new(commit_message(first)));
+        }
+        match transaction
+            .rebase(request.maximum_conflicts)
+            .await
+            .map_err(status)?
+        {
+            TransactionRebase::Rebased(_) => Ok(Response::new(commit_message(
+                transaction.commit().await.map_err(status)?,
+            ))),
+            TransactionRebase::Conflicted {
+                conflicts,
+                truncated,
+            } => Ok(Response::new(mutation_with_conflicts(
+                wire::MutationStatus::Conflict,
+                conflicts.into_iter().map(transaction_conflict).collect(),
+                truncated,
+            ))),
+        }
+    }
+
+    async fn rebase_transaction(
+        &self,
+        request: Request<wire::RebaseTransactionRequest>,
+    ) -> Result<Response<wire::RebaseTransactionResponse>, Status> {
+        self.admit(&request)?;
+        let request = request.into_inner();
+        if request.mutations.is_empty()
+            || u32::try_from(request.mutations.len()).unwrap_or(u32::MAX)
+                > self.limits.maximum_transaction_mutations
+            || request.maximum_conflicts == 0
+            || request.maximum_conflicts > self.limits.maximum_page_items
+        {
+            return Err(Status::invalid_argument(
+                "transaction rebase bounds are invalid",
+            ));
+        }
+        let base = self.generation(request.base).await?;
+        let workspace = self.workspace(generation_ref(&base).workspace).await?;
+        let mut transaction = workspace
+            .begin_transaction_at(&base, operation(request.operation)?)
+            .await
+            .map_err(status)?;
+        for mutation in request.mutations {
+            apply_mutation(&mut transaction, mutation).await?;
+        }
+        match transaction
+            .rebase(request.maximum_conflicts)
+            .await
+            .map_err(status)?
+        {
+            TransactionRebase::Rebased(generation) => {
+                Ok(Response::new(wire::RebaseTransactionResponse {
+                    base: Some(generation_ref(&generation)),
+                    conflicts: Vec::new(),
+                    truncated: false,
+                }))
+            }
+            TransactionRebase::Conflicted {
+                conflicts,
+                truncated,
+            } => Ok(Response::new(wire::RebaseTransactionResponse {
+                base: Some(generation_ref(&base)),
+                conflicts: conflicts.into_iter().map(transaction_conflict).collect(),
+                truncated,
+            })),
+        }
     }
 
     async fn fork_workspace(
@@ -599,10 +677,23 @@ where
             .diff(&from, &to, request.maximum_changes)
             .await
             .map_err(status)?;
-        let (values, truncated) = diff_changes(changes.changes(), request.maximum_changes);
         Ok(Response::new(wire::DiffResponse {
-            changes: values,
-            truncated,
+            from: Some(generation_ref(changes.from())),
+            to: Some(generation_ref(changes.to())),
+            files: changes
+                .changes()
+                .files
+                .iter()
+                .map(file_record_change)
+                .collect(),
+            bindings: changes
+                .changes()
+                .bindings
+                .iter()
+                .map(directory_binding_change)
+                .collect(),
+            truncated: changes.changes().truncated,
+            work: Some(work_counters(changes.work())),
         }))
     }
 
@@ -612,24 +703,21 @@ where
     ) -> Result<Response<wire::RebaseResponse>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
+        if request.maximum_generations == 0
+            || request.maximum_generations > self.limits.maximum_page_items
+            || request.maximum_changes == 0
+            || request.maximum_changes > self.limits.maximum_page_items
+            || request.maximum_conflicts == 0
+            || request.maximum_conflicts > self.limits.maximum_page_items
+        {
+            return Err(Status::invalid_argument("rebase bounds are invalid"));
+        }
         let workspace = self.workspace(request.workspace).await?;
-        let onto = self.generation(request.onto).await?;
-        let source_workspace = self.workspace(generation_ref(&onto).workspace).await?;
-        if source_workspace.id() == workspace.id() {
-            return Err(Status::invalid_argument(
-                "rebase source must be the fork source",
-            ));
-        }
-        if source_workspace.head().await.map_err(status)?.id() != onto.id() {
-            return Err(Status::failed_precondition(
-                "rebase source generation is not current",
-            ));
-        }
         let outcome = workspace
             .live_rebase(
                 operation(request.operation)?,
-                self.limits.maximum_page_items,
-                self.limits.maximum_page_items,
+                request.maximum_generations,
+                request.maximum_changes,
                 request.maximum_conflicts,
             )
             .await
@@ -643,13 +731,16 @@ where
     ) -> Result<Response<wire::JoinPlan>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        if request.maximum_changes == 0
+        if request.maximum_generations == 0
+            || request.maximum_generations > self.limits.maximum_page_items
+            || request.maximum_changes == 0
             || request.maximum_changes > self.limits.maximum_page_items
             || request.maximum_conflicts == 0
             || request.maximum_conflicts > self.limits.maximum_page_items
         {
             return Err(Status::invalid_argument("join bounds are invalid"));
         }
+        let history = join_history(request.history)?;
         let source = self.generation(request.source).await?;
         let target = self.generation(request.target).await?;
         let source_workspace = self.workspace(generation_ref(&source).workspace).await?;
@@ -663,9 +754,9 @@ where
         }
         let plan = source_workspace
             .join_into(&target_workspace)
-            .history(JoinHistory::Merge)
+            .history(history)
             .bounds(
-                self.limits.maximum_page_items,
+                request.maximum_generations,
                 request.maximum_changes,
                 request.maximum_conflicts,
             )
@@ -674,60 +765,112 @@ where
             .map_err(status)?;
         let source_ref = generation_ref(&source);
         let target_ref = generation_ref(&target);
-        let plan_id = join_plan_id(&source_ref, &target_ref);
         let base = source_workspace
             .generation(plan.common_ancestor())
             .await
             .map_err(status)?;
+        let base_ref = generation_ref(&base);
+        let plan_id = join_plan_id(
+            &source_ref,
+            &target_ref,
+            &base_ref,
+            history,
+            request.maximum_generations,
+            request.maximum_changes,
+            request.maximum_conflicts,
+        );
         let changes = source_workspace
             .diff(&base, &source, request.maximum_changes)
             .await
             .map_err(status)?;
-        let (changes, truncated) = diff_changes(changes.changes(), request.maximum_changes);
+        let file_changes = changes
+            .changes()
+            .files
+            .iter()
+            .map(file_record_change)
+            .collect();
+        let binding_changes = changes
+            .changes()
+            .bindings
+            .iter()
+            .map(directory_binding_change)
+            .collect();
         Ok(Response::new(wire::JoinPlan {
             plan_id: plan_id.to_vec(),
             source: Some(source_ref),
             expected_target: Some(target_ref),
-            changes,
+            file_changes,
             conflicts: Vec::new(),
-            truncated,
+            truncated: changes.changes().truncated,
+            common_ancestor: Some(base_ref),
+            maximum_generations: request.maximum_generations,
+            maximum_changes: request.maximum_changes,
+            maximum_conflicts: request.maximum_conflicts,
+            history: request.history,
+            binding_changes,
         }))
     }
 
     async fn apply_join(
         &self,
         request: Request<wire::ApplyJoinRequest>,
-    ) -> Result<Response<wire::MutationResponse>, Status> {
+    ) -> Result<Response<wire::JoinResponse>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
         let supplied = required(request.plan, "join plan")?;
-        let source_ref = required(supplied.source, "join source")?;
-        let target_ref = required(supplied.expected_target, "join target")?;
-        if supplied.plan_id != join_plan_id(&source_ref, &target_ref) {
+        let source_ref = required(supplied.source.clone(), "join source")?;
+        let target_ref = required(supplied.expected_target.clone(), "join target")?;
+        let base_ref = required(supplied.common_ancestor.clone(), "join common ancestor")?;
+        let history = join_history(supplied.history)?;
+        if supplied.maximum_generations == 0
+            || supplied.maximum_generations > self.limits.maximum_page_items
+            || supplied.maximum_changes == 0
+            || supplied.maximum_changes > self.limits.maximum_page_items
+            || supplied.maximum_conflicts == 0
+            || supplied.maximum_conflicts > self.limits.maximum_page_items
+        {
+            return Err(Status::invalid_argument("join bounds are invalid"));
+        }
+        if supplied.plan_id
+            != join_plan_id(
+                &source_ref,
+                &target_ref,
+                &base_ref,
+                history,
+                supplied.maximum_generations,
+                supplied.maximum_changes,
+                supplied.maximum_conflicts,
+            )
+        {
             return Err(Status::invalid_argument("join plan identity mismatch"));
         }
         let source = self.generation(Some(source_ref)).await?;
         let target = self.generation(Some(target_ref)).await?;
+        let base = self.generation(Some(base_ref)).await?;
         let source_workspace = self.workspace(generation_ref(&source).workspace).await?;
         let target_workspace = self.workspace(generation_ref(&target).workspace).await?;
         let plan = source_workspace
             .join_into(&target_workspace)
-            .history(JoinHistory::Merge)
+            .history(history)
             .bounds(
-                self.limits.maximum_page_items,
-                self.limits.maximum_page_items,
-                self.limits.maximum_page_items,
+                supplied.maximum_generations,
+                supplied.maximum_changes,
+                supplied.maximum_conflicts,
             )
             .plan()
             .await
             .map_err(status)?;
-        if plan.source_head() != source.id() || plan.target_head() != target.id() {
+        if plan.source_head() != source.id()
+            || plan.target_head() != target.id()
+            || plan.common_ancestor() != base.id()
+        {
             let actual = target_workspace.head().await.map_err(status)?;
-            return Ok(Response::new(mutation(
-                wire::MutationStatus::Conflict,
-                None,
-                Some(generation_ref(&actual)),
-            )));
+            return Ok(Response::new(wire::JoinResponse {
+                status: wire::JoinStatus::StaleTarget as i32,
+                generation: Some(generation_ref(&actual)),
+                conflicts: Vec::new(),
+                truncated: false,
+            }));
         }
         let outcome = plan
             .apply(ApplyOptions {
@@ -751,42 +894,6 @@ where
         request: Request<wire::RetainGenerationRequest>,
     ) -> Result<Response<wire::RetainGenerationResponse>, Status> {
         self.retain(request, false).await
-    }
-
-    async fn attach_source(
-        &self,
-        _request: Request<wire::AttachSourceRequest>,
-    ) -> Result<Response<wire::WorkspaceResponse>, Status> {
-        Err(Status::unimplemented(
-            "host source attachment is an embedded native capability",
-        ))
-    }
-
-    async fn get_source_state(
-        &self,
-        _request: Request<wire::SourceStateRequest>,
-    ) -> Result<Response<wire::SourceStateResponse>, Status> {
-        Err(Status::unimplemented(
-            "host source attachment is an embedded native capability",
-        ))
-    }
-
-    async fn reconcile_source(
-        &self,
-        _request: Request<wire::ReconcileSourceRequest>,
-    ) -> Result<Response<wire::MutationResponse>, Status> {
-        Err(Status::unimplemented(
-            "host source attachment is an embedded native capability",
-        ))
-    }
-
-    async fn seal_source(
-        &self,
-        _request: Request<wire::SealSourceRequest>,
-    ) -> Result<Response<wire::MutationResponse>, Status> {
-        Err(Status::unimplemented(
-            "host source attachment is an embedded native capability",
-        ))
     }
 
     type ExportStream = WireStream<wire::ExportChunk>;
@@ -1107,17 +1214,59 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 idempotency_key: operation(request.operation)?,
             })
             .await?;
-        if grant.endpoint.is_empty() || grant.token.is_empty() || grant.expires_at_unix_seconds <= 0
-        {
-            return Err(Status::internal(
-                "credential issuer returned an invalid grant",
-            ));
-        }
-        Ok(Response::new(wire::CredentialResponse {
-            endpoint: grant.endpoint,
-            token: grant.token,
-            expires_at_unix_seconds: grant.expires_at_unix_seconds,
-        }))
+        let response = match grant {
+            CredentialGrant::Bearer {
+                endpoint,
+                token,
+                expires_at_unix_seconds,
+            } if kind == CredentialKind::Mount
+                && !endpoint.is_empty()
+                && !token.is_empty()
+                && expires_at_unix_seconds > 0 =>
+            {
+                wire::CredentialResponse {
+                    endpoint,
+                    expires_at_unix_seconds,
+                    credential: Some(wire::credential_response::Credential::BearerToken(token)),
+                }
+            }
+            CredentialGrant::S3 {
+                endpoint,
+                bucket,
+                region,
+                access_key_id,
+                secret_access_key,
+                session_token,
+                expires_at_unix_seconds,
+            } if kind == CredentialKind::S3
+                && !endpoint.is_empty()
+                && !bucket.is_empty()
+                && !region.is_empty()
+                && !access_key_id.is_empty()
+                && !secret_access_key.is_empty()
+                && expires_at_unix_seconds > 0 =>
+            {
+                wire::CredentialResponse {
+                    endpoint,
+                    expires_at_unix_seconds,
+                    credential: Some(wire::credential_response::Credential::S3(
+                        wire::S3Credential {
+                            bucket,
+                            region,
+                            access_key_id,
+                            secret_access_key,
+                            session_token,
+                        },
+                    )),
+                }
+            }
+            _ => {
+                return Err(Status::internal(
+                    "credential issuer returned an invalid grant",
+                ));
+            }
+        };
+        Ok(Response::new(response))
     }
 
     async fn retain(
@@ -1247,6 +1396,13 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .set_metadata(&value.path, metadata(value.metadata)?)
                 .await
         }
+        Mutation::CreateDirectories(value) => transaction.create_dir_all(&value.path).await,
+        Mutation::PutFile(value) => {
+            transaction
+                .write(&value.path, Bytes::from(value.contents))
+                .await
+        }
+        Mutation::CopyFile(value) => transaction.copy(&value.source, &value.destination).await,
     }
     .map_err(status)
 }
@@ -1464,65 +1620,200 @@ fn commit_message<A, O>(value: TransactionCommit<A, O>) -> wire::MutationRespons
     }
 }
 
-fn join_message<A, O>(value: JoinOutcome<A, O>) -> wire::MutationResponse {
+fn join_message<A, O>(value: JoinOutcome<A, O>) -> wire::JoinResponse {
     match value {
-        JoinOutcome::Applied(generation) => mutation(
-            wire::MutationStatus::Committed,
-            Some(generation_ref(&generation)),
-            None,
-        ),
-        JoinOutcome::AlreadyApplied(generation) | JoinOutcome::NoChanges(generation) => mutation(
-            wire::MutationStatus::AlreadyCommitted,
-            Some(generation_ref(&generation)),
-            None,
-        ),
-        JoinOutcome::StaleTarget(actual) => mutation(
-            wire::MutationStatus::Conflict,
-            None,
-            Some(generation_ref(&actual)),
-        ),
-        JoinOutcome::Conflicted { .. } => mutation(wire::MutationStatus::Conflict, None, None),
-        JoinOutcome::Fenced => mutation(wire::MutationStatus::Fenced, None, None),
+        JoinOutcome::Applied(generation) => {
+            join_response(wire::JoinStatus::Applied, Some(&generation))
+        }
+        JoinOutcome::AlreadyApplied(generation) => {
+            join_response(wire::JoinStatus::AlreadyApplied, Some(&generation))
+        }
+        JoinOutcome::NoChanges(generation) => {
+            join_response(wire::JoinStatus::NoChanges, Some(&generation))
+        }
+        JoinOutcome::StaleTarget(actual) => {
+            join_response(wire::JoinStatus::StaleTarget, Some(&actual))
+        }
+        JoinOutcome::Conflicted {
+            conflicts,
+            truncated,
+        } => wire::JoinResponse {
+            status: wire::JoinStatus::Conflicted as i32,
+            generation: None,
+            conflicts: conflicts.into_iter().map(merge_conflict).collect(),
+            truncated,
+        },
+        JoinOutcome::Fenced => join_response::<A, O>(wire::JoinStatus::Fenced, None),
         JoinOutcome::IdempotencyConflict => {
-            mutation(wire::MutationStatus::IdempotencyConflict, None, None)
+            join_response::<A, O>(wire::JoinStatus::IdempotencyConflict, None)
         }
     }
 }
 
-fn diff_changes(
-    changes: &crate::GenerationDiff,
-    maximum_changes: u32,
-) -> (Vec<wire::ChangedPath>, bool) {
-    let mut values = Vec::new();
-    for change in &changes.files {
-        values.push(wire::ChangedPath {
-            path: format!("@file/{}", hex::encode(change.file_id.into_bytes())),
-            file_id: change.file_id.into_bytes().to_vec(),
-        });
+fn join_response<A, O>(
+    status: wire::JoinStatus,
+    generation: Option<&Generation<A, O>>,
+) -> wire::JoinResponse {
+    wire::JoinResponse {
+        status: status as i32,
+        generation: generation.map(generation_ref),
+        conflicts: Vec::new(),
+        truncated: false,
     }
-    for change in &changes.bindings {
-        values.push(wire::ChangedPath {
-            path: format!(
-                "@directory/{}/{}",
-                hex::encode(change.directory_id.into_bytes()),
-                hex::encode(change.name.as_bytes())
-            ),
-            file_id: change
-                .after
-                .as_ref()
-                .or(change.before.as_ref())
-                .map_or_else(Vec::new, |entry| entry.file_id.into_bytes().to_vec()),
-        });
-    }
-    let over_bound = values.len() > maximum_changes as usize;
-    values.truncate(maximum_changes as usize);
-    (values, changes.truncated || over_bound)
 }
 
-fn join_plan_id(source: &wire::GenerationRef, target: &wire::GenerationRef) -> [u8; 32] {
+fn file_record_change(change: &crate::FileRecordChange) -> wire::FileRecordChange {
+    wire::FileRecordChange {
+        file_id: change.file_id.into_bytes().to_vec(),
+        before: change.before.map(file_record_snapshot),
+        after: change.after.map(file_record_snapshot),
+    }
+}
+
+fn file_record_snapshot(record: crate::kernel::FileRecord) -> wire::FileRecordSnapshot {
+    let mut value = wire::FileRecordSnapshot {
+        file_id: record.file_id.into_bytes().to_vec(),
+        file_kind: file_kind(record.kind),
+        link_count: record.link_count,
+        metadata_object: encode_object_id(record.metadata),
+        payload_kind: String::new(),
+        logical_bytes: None,
+        payload_object: Vec::new(),
+        inline_bytes: Vec::new(),
+        device_major: None,
+        device_minor: None,
+    };
+    match record.payload {
+        FilePayload::InlineRegular(bytes) => {
+            value.payload_kind = "inline-regular".to_owned();
+            value.logical_bytes = Some(output_u64(Some(
+                u64::try_from(bytes.as_bytes().len()).unwrap_or(u64::MAX),
+            )));
+            value.inline_bytes = bytes.as_bytes().to_vec();
+        }
+        FilePayload::Regular {
+            logical_bytes,
+            extents,
+        } => {
+            value.payload_kind = "regular".to_owned();
+            value.logical_bytes = Some(output_u64(Some(logical_bytes)));
+            value.payload_object = encode_object_id(extents);
+        }
+        FilePayload::Directory { entries } => {
+            value.payload_kind = "directory".to_owned();
+            value.payload_object = encode_object_id(entries);
+        }
+        FilePayload::SymbolicLink {
+            target_bytes,
+            target,
+        } => {
+            value.payload_kind = "symbolic-link".to_owned();
+            value.logical_bytes = Some(output_u64(Some(target_bytes)));
+            value.payload_object = encode_object_id(target);
+        }
+        FilePayload::Empty => value.payload_kind = "empty".to_owned(),
+        FilePayload::Device { major, minor } => {
+            value.payload_kind = "device".to_owned();
+            value.device_major = Some(output_u32(Some(major)));
+            value.device_minor = Some(output_u32(Some(minor)));
+        }
+        FilePayload::ReparsePoint {
+            payload_bytes,
+            payload,
+        } => {
+            value.payload_kind = "reparse-point".to_owned();
+            value.logical_bytes = Some(output_u64(Some(payload_bytes)));
+            value.payload_object = encode_object_id(payload);
+        }
+    }
+    value
+}
+
+fn directory_binding_change(
+    change: &crate::DirectoryBindingChange,
+) -> wire::DirectoryBindingChange {
+    wire::DirectoryBindingChange {
+        directory_id: change.directory_id.into_bytes().to_vec(),
+        name: Some(logical_name(&change.name)),
+        before: change.before.as_ref().map(tree_entry_snapshot),
+        after: change.after.as_ref().map(tree_entry_snapshot),
+    }
+}
+
+fn tree_entry_snapshot(entry: &TreeEntry) -> wire::TreeEntrySnapshot {
+    wire::TreeEntrySnapshot {
+        name: Some(logical_name(&entry.name)),
+        file_id: entry.file_id.into_bytes().to_vec(),
+        file_kind: file_kind(entry.kind),
+    }
+}
+
+fn logical_name(name: &LogicalName) -> wire::LogicalName {
+    let encoding = match name.encoding() {
+        NameEncoding::Utf8 => wire::NameEncoding::Utf8,
+        NameEncoding::PosixBytes => wire::NameEncoding::PosixBytes,
+        NameEncoding::WindowsUtf16Le => wire::NameEncoding::WindowsUtf16le,
+    };
+    wire::LogicalName {
+        encoding: encoding as i32,
+        bytes: name.as_bytes().to_vec(),
+    }
+}
+
+fn input_logical_name(name: wire::LogicalName) -> Result<LogicalName, Status> {
+    let encoding = match wire::NameEncoding::try_from(name.encoding)
+        .map_err(|_| Status::invalid_argument("name encoding is invalid"))?
+    {
+        wire::NameEncoding::Utf8 => NameEncoding::Utf8,
+        wire::NameEncoding::PosixBytes => NameEncoding::PosixBytes,
+        wire::NameEncoding::WindowsUtf16le => NameEncoding::WindowsUtf16Le,
+        wire::NameEncoding::Unspecified => {
+            return Err(Status::invalid_argument("name encoding is required"));
+        }
+    };
+    LogicalName::new(encoding, name.bytes, 255)
+        .map_err(|error| Status::invalid_argument(error.to_string()))
+}
+
+fn work_counters(work: crate::WorkCounters) -> wire::WorkCounters {
+    wire::WorkCounters {
+        authority_records_read: work.authority_records_read,
+        authority_records_appended: work.authority_records_appended,
+        authority_bytes_read: work.authority_bytes_read,
+        authority_bytes_written: work.authority_bytes_written,
+        object_probes: work.object_probes,
+        backend_read_operations: work.backend_read_operations,
+        backend_write_operations: work.backend_write_operations,
+        durability_operations: work.durability_operations,
+        page_reads: work.page_reads,
+        page_writes: work.page_writes,
+        object_bytes_read: work.object_bytes_read,
+        object_bytes_written: work.object_bytes_written,
+        bytes_hashed: work.bytes_hashed,
+        bytes_copied: work.bytes_copied,
+        bytes_encoded: work.bytes_encoded,
+        source_bytes_read: work.source_bytes_read,
+        output_bytes: work.output_bytes,
+        items_examined: work.items_examined,
+        items_returned: work.items_returned,
+        allocation_operations: work.allocation_operations,
+        peak_allocation_bytes: work.peak_allocation_bytes,
+        materializations: work.materializations,
+    }
+}
+
+fn join_plan_id(
+    source: &wire::GenerationRef,
+    target: &wire::GenerationRef,
+    base: &wire::GenerationRef,
+    history: JoinHistory,
+    maximum_generations: u32,
+    maximum_changes: u32,
+    maximum_conflicts: u32,
+) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"acyclic-fs-wire-join-plan-v1\0");
-    for reference in [source, target] {
+    hasher.update(b"acyclic-fs-wire-join-plan-v2\0");
+    for reference in [source, target, base] {
         if let Some(workspace) = &reference.workspace {
             hasher.update(&(workspace.workspace_id.len() as u64).to_le_bytes());
             hasher.update(&workspace.workspace_id);
@@ -1535,7 +1826,34 @@ fn join_plan_id(source: &wire::GenerationRef, target: &wire::GenerationRef) -> [
         hasher.update(&(reference.generation_id.len() as u64).to_le_bytes());
         hasher.update(&reference.generation_id);
     }
+    hasher.update(&[join_history_code(history)]);
+    hasher.update(&maximum_generations.to_le_bytes());
+    hasher.update(&maximum_changes.to_le_bytes());
+    hasher.update(&maximum_conflicts.to_le_bytes());
     *hasher.finalize().as_bytes()
+}
+
+fn join_history(value: i32) -> Result<JoinHistory, Status> {
+    match wire::JoinHistory::try_from(value)
+        .map_err(|_| Status::invalid_argument("join history is invalid"))?
+    {
+        wire::JoinHistory::Merge => Ok(JoinHistory::Merge),
+        wire::JoinHistory::Rebase => Ok(JoinHistory::Rebase),
+        wire::JoinHistory::Squash => Ok(JoinHistory::Squash),
+        wire::JoinHistory::CherryPick => Ok(JoinHistory::CherryPick),
+        wire::JoinHistory::Unspecified => {
+            Err(Status::invalid_argument("join history must be specified"))
+        }
+    }
+}
+
+const fn join_history_code(value: JoinHistory) -> u8 {
+    match value {
+        JoinHistory::Merge => 1,
+        JoinHistory::Rebase => 2,
+        JoinHistory::Squash => 3,
+        JoinHistory::CherryPick => 4,
+    }
 }
 
 fn encode_object_id(object: ObjectId) -> Vec<u8> {
@@ -1581,37 +1899,134 @@ fn mutation(
         status: status as i32,
         generation,
         actual_head,
+        conflicts: Vec::new(),
+        truncated: false,
+    }
+}
+
+fn mutation_with_conflicts(
+    status: wire::MutationStatus,
+    conflicts: Vec<wire::Conflict>,
+    truncated: bool,
+) -> wire::MutationResponse {
+    wire::MutationResponse {
+        status: status as i32,
+        generation: None,
+        actual_head: None,
+        conflicts,
+        truncated,
+    }
+}
+
+fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
+    use wire::conflict::Region;
+    let region = match value.region {
+        TransactionConflictRegion::FileRecord(file_id) => Region::FileRecord(wire::FileConflict {
+            file_id: file_id.into_bytes().to_vec(),
+        }),
+        TransactionConflictRegion::Metadata(file_id) => Region::Metadata(wire::FileConflict {
+            file_id: file_id.into_bytes().to_vec(),
+        }),
+        TransactionConflictRegion::FileLength(file_id) => Region::FileLength(wire::FileConflict {
+            file_id: file_id.into_bytes().to_vec(),
+        }),
+        TransactionConflictRegion::ContentRange {
+            file_id,
+            offset,
+            length,
+        } => Region::ContentRange(wire::ContentConflict {
+            file_id: file_id.into_bytes().to_vec(),
+            range: Some(wire::ByteRange { offset, length }),
+        }),
+        TransactionConflictRegion::SparseSeek {
+            file_id,
+            offset,
+            target,
+        } => Region::SparseSeek(wire::SparseConflict {
+            file_id: file_id.into_bytes().to_vec(),
+            offset,
+            target: match target {
+                TransactionSparseSeek::Data => wire::SparseTarget::Data as i32,
+                TransactionSparseSeek::Hole => wire::SparseTarget::Hole as i32,
+            },
+        }),
+        TransactionConflictRegion::DirectoryName { directory_id, name } => {
+            Region::DirectoryName(wire::DirectoryNameConflict {
+                directory_id: directory_id.into_bytes().to_vec(),
+                name: Some(logical_name(&name)),
+            })
+        }
+        TransactionConflictRegion::DirectoryRange {
+            directory_id,
+            after,
+            maximum_entries,
+        } => Region::DirectoryRange(wire::DirectoryRangeConflict {
+            directory_id: directory_id.into_bytes().to_vec(),
+            after: after.as_ref().map(logical_name),
+            maximum_entries,
+        }),
+    };
+    wire::Conflict {
+        region: Some(region),
+        r#use: match value.usage {
+            TransactionDependencyUse::Observation => wire::ConflictUse::Observation as i32,
+            TransactionDependencyUse::Mutation => wire::ConflictUse::Mutation as i32,
+            TransactionDependencyUse::ObservationAndMutation => {
+                wire::ConflictUse::ObservationAndMutation as i32
+            }
+        },
+        expected_digest: value
+            .expected
+            .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
+        actual_digest: value
+            .actual
+            .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
+    }
+}
+
+fn merge_conflict(value: MergeConflict) -> wire::Conflict {
+    let region = match value {
+        MergeConflict::File(file_id) => wire::conflict::Region::FileRecord(wire::FileConflict {
+            file_id: file_id.into_bytes().to_vec(),
+        }),
+        MergeConflict::Binding { directory_id, name } => {
+            wire::conflict::Region::DirectoryName(wire::DirectoryNameConflict {
+                directory_id: directory_id.into_bytes().to_vec(),
+                name: Some(logical_name(&name)),
+            })
+        }
+    };
+    wire::Conflict {
+        region: Some(region),
+        r#use: wire::ConflictUse::Unspecified as i32,
+        expected_digest: Vec::new(),
+        actual_digest: Vec::new(),
     }
 }
 
 fn rebase_message<A, O>(value: WorkspaceRebase<A, O>) -> wire::RebaseResponse {
     match value {
         WorkspaceRebase::Rebased(generation) => wire::RebaseResponse {
-            outcome: Some(mutation(
-                wire::MutationStatus::Committed,
-                Some(generation_ref(&generation)),
-                None,
-            )),
+            status: wire::RebaseStatus::Rebased as i32,
+            generation: Some(generation_ref(&generation)),
             conflicts: Vec::new(),
             truncated: false,
         },
-        WorkspaceRebase::AlreadyRebased(generation) | WorkspaceRebase::Current(generation) => {
-            wire::RebaseResponse {
-                outcome: Some(mutation(
-                    wire::MutationStatus::AlreadyCommitted,
-                    Some(generation_ref(&generation)),
-                    None,
-                )),
-                conflicts: Vec::new(),
-                truncated: false,
-            }
-        }
+        WorkspaceRebase::AlreadyRebased(generation) => wire::RebaseResponse {
+            status: wire::RebaseStatus::AlreadyRebased as i32,
+            generation: Some(generation_ref(&generation)),
+            conflicts: Vec::new(),
+            truncated: false,
+        },
+        WorkspaceRebase::Current(generation) => wire::RebaseResponse {
+            status: wire::RebaseStatus::Current as i32,
+            generation: Some(generation_ref(&generation)),
+            conflicts: Vec::new(),
+            truncated: false,
+        },
         WorkspaceRebase::Stale(generation) => wire::RebaseResponse {
-            outcome: Some(mutation(
-                wire::MutationStatus::Conflict,
-                None,
-                Some(generation_ref(&generation)),
-            )),
+            status: wire::RebaseStatus::Stale as i32,
+            generation: Some(generation_ref(&generation)),
             conflicts: Vec::new(),
             truncated: false,
         },
@@ -1619,28 +2034,20 @@ fn rebase_message<A, O>(value: WorkspaceRebase<A, O>) -> wire::RebaseResponse {
             conflicts,
             truncated,
         } => wire::RebaseResponse {
-            outcome: Some(mutation(wire::MutationStatus::Conflict, None, None)),
-            conflicts: conflicts
-                .into_iter()
-                .map(|conflict| wire::Conflict {
-                    path: String::new(),
-                    range: None,
-                    reason: format!("{conflict:?}"),
-                })
-                .collect(),
+            status: wire::RebaseStatus::Conflicted as i32,
+            generation: None,
+            conflicts: conflicts.into_iter().map(merge_conflict).collect(),
             truncated,
         },
         WorkspaceRebase::Fenced => wire::RebaseResponse {
-            outcome: Some(mutation(wire::MutationStatus::Fenced, None, None)),
+            status: wire::RebaseStatus::Fenced as i32,
+            generation: None,
             conflicts: Vec::new(),
             truncated: false,
         },
         WorkspaceRebase::IdempotencyConflict => wire::RebaseResponse {
-            outcome: Some(mutation(
-                wire::MutationStatus::IdempotencyConflict,
-                None,
-                None,
-            )),
+            status: wire::RebaseStatus::IdempotencyConflict as i32,
+            generation: None,
             conflicts: Vec::new(),
             truncated: false,
         },
@@ -1750,7 +2157,7 @@ fn status(error: WorkspaceError) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::filesystem::v1::filesystem_service_server::FilesystemService as _;
+    use crate::wire::filesystem::v2::filesystem_service_server::FilesystemService as _;
 
     struct TestIssuer;
 
@@ -1765,14 +2172,21 @@ mod tests {
         }
 
         async fn issue(&self, request: CredentialGrantRequest) -> Result<CredentialGrant, Status> {
-            Ok(CredentialGrant {
-                endpoint: match request.kind {
-                    CredentialKind::Mount => "mount://test",
-                    CredentialKind::S3 => "https://s3.test",
-                }
-                .to_owned(),
-                token: hex::encode(request.workspace_id.into_bytes()),
-                expires_at_unix_seconds: 1_900_000_000,
+            Ok(match request.kind {
+                CredentialKind::Mount => CredentialGrant::Bearer {
+                    endpoint: "mount://test".to_owned(),
+                    token: hex::encode(request.workspace_id.into_bytes()),
+                    expires_at_unix_seconds: 1_900_000_000,
+                },
+                CredentialKind::S3 => CredentialGrant::S3 {
+                    endpoint: "https://s3.test".to_owned(),
+                    bucket: "opaque-bucket".to_owned(),
+                    region: "auto".to_owned(),
+                    access_key_id: "access".to_owned(),
+                    secret_access_key: "secret".to_owned(),
+                    session_token: String::new(),
+                    expires_at_unix_seconds: 1_900_000_000,
+                },
             })
         }
     }
@@ -1869,11 +2283,14 @@ mod tests {
             .await?
             .into_inner();
         assert_eq!(credential.endpoint, "mount://test");
-        assert!(!credential.token.is_empty());
+        assert!(matches!(
+            credential.credential,
+            Some(wire::credential_response::Credential::BearerToken(token)) if !token.is_empty()
+        ));
 
         let committed = service
             .apply_transaction(Request::new(wire::ApplyTransactionRequest {
-                expected: Some(initial),
+                base: Some(initial),
                 mutations: vec![
                     mutation(wire::mutation::Mutation::CreateDirectory(
                         wire::CreateDirectory {
@@ -1888,6 +2305,7 @@ mod tests {
                     })),
                 ],
                 operation: operation(2),
+                maximum_conflicts: 32,
             }))
             .await?
             .into_inner();
@@ -1936,7 +2354,7 @@ mod tests {
                 path: "/dir".to_owned(),
                 page: Some(wire::PageOptions {
                     maximum_items: 8,
-                    after: Vec::new(),
+                    after: None,
                 }),
             }))
             .await?
@@ -1944,7 +2362,13 @@ mod tests {
             .page
             .ok_or("missing directory page")?;
         assert_eq!(listed.entries.len(), 1);
-        assert_eq!(listed.entries[0].name, b"value");
+        assert_eq!(
+            listed.entries[0]
+                .name
+                .as_ref()
+                .map(|name| name.bytes.as_slice()),
+            Some(b"value".as_slice())
+        );
 
         let pinned = service
             .pin(Request::new(wire::RetainGenerationRequest {
@@ -1985,13 +2409,14 @@ mod tests {
             .ok_or("missing main head")?;
         let changed = service
             .apply_transaction(Request::new(wire::ApplyTransactionRequest {
-                expected: Some(main_head),
+                base: Some(main_head),
                 mutations: vec![mutation(wire::mutation::Mutation::Write(wire::Write {
                     path: "/dir/value".to_owned(),
                     offset: 0,
                     contents: b"new!!".to_vec(),
                 }))],
                 operation: operation(5),
+                maximum_conflicts: 32,
             }))
             .await?
             .into_inner()
@@ -2004,6 +2429,8 @@ mod tests {
                 target: Some(fork_head),
                 maximum_changes: 32,
                 maximum_conflicts: 8,
+                maximum_generations: 32,
+                history: wire::JoinHistory::Merge as i32,
             }))
             .await?
             .into_inner();

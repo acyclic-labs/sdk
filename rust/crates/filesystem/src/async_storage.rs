@@ -206,7 +206,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
 ///
 /// Implementing this marker makes the synchronous authority methods satisfy
 /// [`AsyncAuthorityStore`] without yielding. Blocking native backends must use
-/// [`crate::NativeStore`] instead.
+/// a provider-owned bounded blocking executor instead.
 pub trait ImmediateAuthorityStore: AuthorityStore {}
 
 impl<T: ImmediateAuthorityStore + ?Sized> ImmediateAuthorityStore for Arc<T> {}
@@ -282,7 +282,7 @@ pub trait AsyncObjectStore: StorageProvider {
 /// Explicit opt-in for synchronous stores that are safe to complete inline.
 ///
 /// This marker also admits the synchronous kernel convenience functions.
-/// Blocking native backends must use [`crate::NativeStore`] for async access.
+/// Blocking native backends must own bounded async dispatch internally.
 pub trait ImmediateObjectStore: ObjectStore {}
 
 impl<T: ImmediateObjectStore + ?Sized> ImmediateObjectStore for Arc<T> {}

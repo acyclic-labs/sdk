@@ -13,12 +13,22 @@ until their family version is published and tagged.
   capabilities, protocol versions, and descriptor digests.
 - A Tokio-based recursive task harness with bounded concurrency.
 - In-memory Filesystem, Stream, Objects, Machines, and Inference providers.
+- A single canonical Filesystem engine over the public Stream and Objects
+  provider traits, with memory and durable-local compositions, sparse
+  content-addressed generations, source capture, safe rebase and join,
+  S3 workspace views, native watchers and mounts, an optional local daemon,
+  browser WASM persistence, a TypeScript facade, and an N-API embedded engine.
 - A hierarchical Stream v2 Rust contract, bounded structural-sharing memory
-  provider, authenticated gRPC client/server adapter, exact retry semantics,
-  immutable-prefix forks, gapless follow, and atomic optimistic commits.
-- An Objects v1 Rust gRPC client and bounded reference provider with permanent
-  versions, BLAKE3 validators, delete markers, conditions, exact idempotency,
-  stable listing views, multipart publication, and whole-bucket snapshots/forks.
+  provider, checksummed crash-recoverable local provider, authenticated gRPC
+  client/server adapter, exact retry semantics, immutable-prefix forks, gapless
+  follow, and atomic optimistic commits. The memory and local providers execute
+  the same semantic state machine; the local feature adds only bounded durable
+  publication and recovery.
+- An Objects v1 Rust gRPC client plus bounded memory and durable-local providers
+  with permanent versions, BLAKE3 validators, delete markers, conditions, exact
+  idempotency, stable listing views, multipart publication, and whole-bucket
+  snapshots/forks. Local bodies use authenticated digest-sharded chunks;
+  range reads touch only intersecting chunks and shared bodies are never copied.
 - An Inference v1 Rust client with immutable item-addressed Context revisions,
   independent forks, exact edit/compact/transfer, recoverable Runs, inclusive
   event replay, cancellation, four work meters, and admitted warm commitments.
@@ -48,6 +58,28 @@ Run the local profile without an Acyclic account:
 
 ```sh
 cargo run -p acyclic-cli
+```
+
+The Filesystem API keeps the same workspace, generation, and sparse transaction
+shape when its execution boundary moves to the hosted service:
+
+```rust,no_run
+use acyclic_fs::{Fs, HostedFsOptions, IdempotencyKey};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let filesystem = Fs::hosted(HostedFsOptions::new(
+    "https://fs.example",
+    "account-token",
+)).await?;
+let workspace = filesystem.open_workspace("project").await?;
+let base = workspace.head().await?;
+let mut transaction = workspace.begin_transaction(IdempotencyKey::new());
+transaction.put_file("/README.md", b"canonical\n".to_vec());
+let outcome = transaction.commit(32).await?;
+let exact = workspace.generation(base.id().to_vec()).await?;
+# let _ = (outcome, exact);
+# Ok(())
+# }
 ```
 
 Use the same high-level Inference API with either a local provider or an
@@ -82,9 +114,9 @@ let events = recovered.watch(0).await?;
 Run all implemented checks:
 
 ```sh
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-features --locked
 bun install --frozen-lockfile
 bun run check
 bun test

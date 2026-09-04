@@ -2,7 +2,7 @@
   "name": "acyclic-fs-wasm",
   "type": "module",
   "description": "Browser and WebAssembly bindings for acyclic-fs",
-  "version": "0.1.0-rc.1",
+  "version": "0.2.0-rc.1",
   "license": "SEE LICENSE IN ../../LICENSE",
   "repository": {
     "type": "git",

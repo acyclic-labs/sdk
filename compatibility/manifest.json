@@ -8,9 +8,9 @@
       "schemaDigest": "sha256:2e1def2b7c28ac359d7014f301c2751ebbd8162d9568d1ccc44574032410d0e2"
     },
     "filesystem": {
-      "version": "0.1.0-rc.1",
-      "schemaDigest": "sha256:ab745d2da0b9047949be983435851293bd7a5e155742e0186d91e7b99163c045",
-      "descriptorDigest": "sha256:892d0ebe801355248aa180a74ccbf5e85b893d38eefda78f93ff8a1711835f9b",
+      "version": "0.2.0-rc.1",
+      "schemaDigest": "sha256:c7806fb6fbef07e47e157fdd3ef18dc17883c266e2a8eecd52a723ee05d810b0",
+      "descriptorDigest": "sha256:b6eb0c300c3525b5894243b978404d238a7f786cee0826245b529ea0c35fc89b",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {

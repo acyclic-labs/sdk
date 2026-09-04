@@ -5,120 +5,120 @@ pub struct ListModelsRequest {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListModelsResponse {
-    #[prost(message, repeated, tag="1")]
+    #[prost(message, repeated, tag = "1")]
     pub models: ::prost::alloc::vec::Vec<ModelCapability>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ModelCapability {
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub model: ::prost::alloc::string::String,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub execution_profile: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag="3")]
+    #[prost(uint64, tag = "3")]
     pub maximum_context: u64,
-    #[prost(uint64, tag="4")]
+    #[prost(uint64, tag = "4")]
     pub maximum_output: u64,
-    #[prost(string, repeated, tag="5")]
+    #[prost(string, repeated, tag = "5")]
     pub features: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    #[prost(message, repeated, tag="6")]
+    #[prost(message, repeated, tag = "6")]
     pub retention_profiles: ::prost::alloc::vec::Vec<RetentionProfile>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RetentionProfile {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub profile: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag="2")]
+    #[prost(uint64, tag = "2")]
     pub minimum_duration_ms: u64,
-    #[prost(uint64, tag="3")]
+    #[prost(uint64, tag = "3")]
     pub maximum_duration_ms: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RetainWarmRequest {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub identity: ::core::option::Option<RequestIdentity>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub context: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="3")]
+    #[prost(bytes = "vec", tag = "3")]
     pub latency_profile: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag="4")]
+    #[prost(uint64, tag = "4")]
     pub expires_at_ms: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct InspectWarmRequest {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub commitment: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RenewWarmRequest {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub identity: ::core::option::Option<RequestIdentity>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub commitment: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag="3")]
+    #[prost(uint64, tag = "3")]
     pub expires_at_ms: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ReleaseWarmRequest {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub identity: ::core::option::Option<RequestIdentity>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub commitment: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WarmView {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub commitment: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub context: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="3")]
+    #[prost(bytes = "vec", tag = "3")]
     pub model_profile: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="4")]
+    #[prost(bytes = "vec", tag = "4")]
     pub latency_profile: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag="5")]
+    #[prost(uint64, tag = "5")]
     pub expires_at_ms: u64,
-    #[prost(enumeration="WarmState", tag="6")]
+    #[prost(enumeration = "WarmState", tag = "6")]
     pub state: i32,
-    #[prost(bytes="vec", tag="7")]
+    #[prost(bytes = "vec", tag = "7")]
     pub evidence_digest: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="8")]
+    #[prost(bytes = "vec", tag = "8")]
     pub admission_receipt_id: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag="9")]
+    #[prost(uint64, tag = "9")]
     pub sequence: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RequestIdentity {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub client_instance: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub request_id: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Item {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub id: ::prost::alloc::vec::Vec<u8>,
-    #[prost(enumeration="ItemKind", tag="2")]
+    #[prost(enumeration = "ItemKind", tag = "2")]
     pub kind: i32,
-    #[prost(bytes="vec", tag="3")]
+    #[prost(bytes = "vec", tag = "3")]
     pub payload: ::prost::alloc::vec::Vec<u8>,
     /// Exactly one logical link for tool call/result; absent for all other kinds.
-    #[prost(bytes="vec", tag="4")]
+    #[prost(bytes = "vec", tag = "4")]
     pub link: ::prost::alloc::vec::Vec<u8>,
     /// Only a continuation may contain its exact originating execution profile.
-    #[prost(bytes="vec", tag="5")]
+    #[prost(bytes = "vec", tag = "5")]
     pub continuation_profile: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateContextRequest {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub identity: ::core::option::Option<RequestIdentity>,
-    #[prost(string, tag="2")]
+    #[prost(string, tag = "2")]
     pub model: ::prost::alloc::string::String,
-    #[prost(message, repeated, tag="3")]
+    #[prost(message, repeated, tag = "3")]
     pub items: ::prost::alloc::vec::Vec<Item>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct InspectContextRequest {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub revision: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -126,277 +126,277 @@ pub struct Empty {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Insert {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub target: ::prost::alloc::vec::Vec<u8>,
-    #[prost(message, optional, tag="2")]
+    #[prost(message, optional, tag = "2")]
     pub item: ::core::option::Option<Item>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Replace {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub target: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub payload: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Edit {
-    #[prost(oneof="edit::Action", tags="1, 2, 3, 4, 5")]
+    #[prost(oneof = "edit::Action", tags = "1, 2, 3, 4, 5")]
     pub action: ::core::option::Option<edit::Action>,
 }
 /// Nested message and enum types in `Edit`.
 pub mod edit {
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Action {
-        #[prost(message, tag="1")]
+        #[prost(message, tag = "1")]
         Append(super::Item),
-        #[prost(message, tag="2")]
+        #[prost(message, tag = "2")]
         InsertBefore(super::Insert),
-        #[prost(message, tag="3")]
+        #[prost(message, tag = "3")]
         InsertAfter(super::Insert),
-        #[prost(message, tag="4")]
+        #[prost(message, tag = "4")]
         Replace(super::Replace),
-        #[prost(bytes, tag="5")]
+        #[prost(bytes, tag = "5")]
         Delete(::prost::alloc::vec::Vec<u8>),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Edits {
-    #[prost(message, repeated, tag="1")]
+    #[prost(message, repeated, tag = "1")]
     pub edits: ::prost::alloc::vec::Vec<Edit>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Truncate {
-    #[prost(bytes="vec", optional, tag="1")]
+    #[prost(bytes = "vec", optional, tag = "1")]
     pub through: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Compact {
-    #[prost(bytes="vec", repeated, tag="1")]
+    #[prost(bytes = "vec", repeated, tag = "1")]
     pub selected: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
-    #[prost(message, repeated, tag="2")]
+    #[prost(message, repeated, tag = "2")]
     pub replacement: ::prost::alloc::vec::Vec<Item>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Transfer {
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub model: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MutateContextRequest {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub identity: ::core::option::Option<RequestIdentity>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub source: ::prost::alloc::vec::Vec<u8>,
-    #[prost(oneof="mutate_context_request::Action", tags="3, 4, 5, 6, 7, 8")]
+    #[prost(oneof = "mutate_context_request::Action", tags = "3, 4, 5, 6, 7, 8")]
     pub action: ::core::option::Option<mutate_context_request::Action>,
 }
 /// Nested message and enum types in `MutateContextRequest`.
 pub mod mutate_context_request {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Action {
-        #[prost(message, tag="3")]
+        #[prost(message, tag = "3")]
         Edit(super::Edits),
-        #[prost(message, tag="4")]
+        #[prost(message, tag = "4")]
         Fork(super::Empty),
-        #[prost(message, tag="5")]
+        #[prost(message, tag = "5")]
         Truncate(super::Truncate),
-        #[prost(message, tag="6")]
+        #[prost(message, tag = "6")]
         Compact(super::Compact),
-        #[prost(message, tag="7")]
+        #[prost(message, tag = "7")]
         Release(super::Empty),
-        #[prost(message, tag="8")]
+        #[prost(message, tag = "8")]
         Transfer(super::Transfer),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MutationReceipt {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub revision: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub command_digest: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag="3")]
+    #[prost(uint64, tag = "3")]
     pub sequence: u64,
     /// The recorded command's effect, not a promise of current or warm retention.
-    #[prost(bool, tag="4")]
+    #[prost(bool, tag = "4")]
     pub retained: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ContextView {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub revision: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", optional, tag="2")]
+    #[prost(bytes = "vec", optional, tag = "2")]
     pub parent: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
-    #[prost(bytes="vec", tag="3")]
+    #[prost(bytes = "vec", tag = "3")]
     pub lineage: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="4")]
+    #[prost(bytes = "vec", tag = "4")]
     pub execution_profile: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="5")]
+    #[prost(bytes = "vec", tag = "5")]
     pub content_digest: ::prost::alloc::vec::Vec<u8>,
-    #[prost(message, repeated, tag="6")]
+    #[prost(message, repeated, tag = "6")]
     pub items: ::prost::alloc::vec::Vec<Item>,
-    #[prost(string, tag="7")]
+    #[prost(string, tag = "7")]
     pub model: ::prost::alloc::string::String,
-    #[prost(message, optional, tag="8")]
+    #[prost(message, optional, tag = "8")]
     pub provenance: ::core::option::Option<ContextProvenance>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ContextProvenance {
-    #[prost(oneof="context_provenance::Origin", tags="1, 2, 3, 4, 5, 6")]
+    #[prost(oneof = "context_provenance::Origin", tags = "1, 2, 3, 4, 5, 6")]
     pub origin: ::core::option::Option<context_provenance::Origin>,
 }
 /// Nested message and enum types in `ContextProvenance`.
 pub mod context_provenance {
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Origin {
-        #[prost(message, tag="1")]
+        #[prost(message, tag = "1")]
         Created(super::Empty),
-        #[prost(message, tag="2")]
+        #[prost(message, tag = "2")]
         Derived(super::ProvenanceSource),
-        #[prost(message, tag="3")]
+        #[prost(message, tag = "3")]
         Forked(super::ProvenanceSource),
-        #[prost(message, tag="4")]
+        #[prost(message, tag = "4")]
         Transferred(super::TransferProvenance),
-        #[prost(message, tag="5")]
+        #[prost(message, tag = "5")]
         Generated(super::GenerationProvenance),
-        #[prost(message, tag="6")]
+        #[prost(message, tag = "6")]
         RunInput(super::RunInputProvenance),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProvenanceSource {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub source: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TransferProvenance {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub source: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bool, tag="2")]
+    #[prost(bool, tag = "2")]
     pub reused_compatible_state: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GenerationProvenance {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub run_id: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub terminal_receipt_digest: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RunInputProvenance {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub source: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub run_id: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag="3")]
+    #[prost(uint64, tag = "3")]
     pub maximum_output: u64,
-    #[prost(uint64, optional, tag="4")]
+    #[prost(uint64, optional, tag = "4")]
     pub seed: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GenerateRunRequest {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub identity: ::core::option::Option<RequestIdentity>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub context: ::prost::alloc::vec::Vec<u8>,
-    #[prost(message, optional, tag="3")]
+    #[prost(message, optional, tag = "3")]
     pub input: ::core::option::Option<Item>,
-    #[prost(uint64, tag="4")]
+    #[prost(uint64, tag = "4")]
     pub maximum_output: u64,
-    #[prost(uint64, optional, tag="5")]
+    #[prost(uint64, optional, tag = "5")]
     pub seed: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GenerateRunResponse {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub run: ::core::option::Option<RunView>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct InspectRunRequest {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub run_id: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WatchRunRequest {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub run_id: ::prost::alloc::vec::Vec<u8>,
     /// Inclusive, zero-based public cursor.
-    #[prost(uint64, tag="2")]
+    #[prost(uint64, tag = "2")]
     pub from_sequence: u64,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogicalUsage {
-    #[prost(uint64, tag="1")]
+    #[prost(uint64, tag = "1")]
     pub new_prefill: u64,
-    #[prost(uint64, tag="2")]
+    #[prost(uint64, tag = "2")]
     pub generated_output: u64,
-    #[prost(uint64, tag="3")]
+    #[prost(uint64, tag = "3")]
     pub effective_context_reads: u64,
-    #[prost(uint64, tag="4")]
+    #[prost(uint64, tag = "4")]
     pub retained_byte_millis: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UsageReceipt {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub receipt_id: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub model_profile: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="3")]
+    #[prost(bytes = "vec", tag = "3")]
     pub meter_revision: ::prost::alloc::vec::Vec<u8>,
-    #[prost(message, optional, tag="4")]
+    #[prost(message, optional, tag = "4")]
     pub usage: ::core::option::Option<LogicalUsage>,
-    #[prost(bytes="vec", tag="5")]
+    #[prost(bytes = "vec", tag = "5")]
     pub rate_card_revision: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RunResult {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub output: ::prost::alloc::vec::Vec<u8>,
-    #[prost(message, optional, tag="2")]
+    #[prost(message, optional, tag = "2")]
     pub context: ::core::option::Option<ContextView>,
-    #[prost(enumeration="RunTerminal", tag="3")]
+    #[prost(enumeration = "RunTerminal", tag = "3")]
     pub terminal: i32,
-    #[prost(message, optional, tag="4")]
+    #[prost(message, optional, tag = "4")]
     pub receipt: ::core::option::Option<UsageReceipt>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RunView {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub run_id: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub input: ::prost::alloc::vec::Vec<u8>,
-    #[prost(string, tag="3")]
+    #[prost(string, tag = "3")]
     pub model: ::prost::alloc::string::String,
-    #[prost(uint64, tag="4")]
+    #[prost(uint64, tag = "4")]
     pub last_sequence: u64,
-    #[prost(bool, tag="5")]
+    #[prost(bool, tag = "5")]
     pub cancellation_requested: bool,
-    #[prost(message, optional, tag="6")]
+    #[prost(message, optional, tag = "6")]
     pub result: ::core::option::Option<RunResult>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RunEvent {
-    #[prost(uint64, tag="1")]
+    #[prost(uint64, tag = "1")]
     pub sequence: u64,
-    #[prost(oneof="run_event::Event", tags="2, 3, 4, 5")]
+    #[prost(oneof = "run_event::Event", tags = "2, 3, 4, 5")]
     pub event: ::core::option::Option<run_event::Event>,
 }
 /// Nested message and enum types in `RunEvent`.
 pub mod run_event {
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Event {
-        #[prost(bytes, tag="2")]
+        #[prost(bytes, tag = "2")]
         Output(::prost::alloc::vec::Vec<u8>),
-        #[prost(message, tag="3")]
+        #[prost(message, tag = "3")]
         Usage(super::LogicalUsage),
-        #[prost(enumeration="super::RunTerminal", tag="4")]
+        #[prost(enumeration = "super::RunTerminal", tag = "4")]
         Terminal(i32),
-        #[prost(message, tag="5")]
+        #[prost(message, tag = "5")]
         Progress(super::RunProgress),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RunProgress {
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub kind: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]

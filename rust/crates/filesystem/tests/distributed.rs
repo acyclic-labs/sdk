@@ -36,6 +36,16 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
             .value,
         CreateAuthorityOutcome::Created(Head::genesis(Epoch::GENESIS))
     );
+    assert_eq!(store.authorities(8).await?, vec![authority_id]);
+    assert_eq!(
+        provider
+            .tail(StreamPath::new(format!(
+                "fs/authorities/{}",
+                hex::encode(authority_id.into_bytes())
+            ))?)
+            .await?,
+        1
+    );
 
     let proposal = ProposedCommit {
         operation_id: OperationId::from_bytes([8; 16]),
@@ -159,6 +169,15 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
             .value,
         FenceOutcome::Advanced(_)
     ));
+    store
+        .create_authority(
+            AuthorityId::from_bytes([11; 16]),
+            Epoch::GENESIS,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    assert!(store.authorities(1).await.is_err());
     Ok(())
 }
 

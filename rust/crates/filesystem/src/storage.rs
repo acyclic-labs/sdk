@@ -5,8 +5,6 @@ use crate::foundation::{
 };
 use crate::performance::{MeasuredResult, OperationFailure, WorkBudget, WorkCounters};
 use bytes::Bytes;
-#[cfg(all(not(target_arch = "wasm32"), feature = "local"))]
-use std::mem::size_of;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -499,80 +497,6 @@ impl<T: ObjectStore + ?Sized> ObjectStore for Arc<T> {
     fn contains(&self, object_id: ObjectId, budget: WorkBudget) -> ObjectResult<bool> {
         (**self).contains(object_id, budget)
     }
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "local"))]
-pub(crate) fn read_many_sequential<S: ObjectStore + ?Sized>(
-    store: &S,
-    requests: &[ObjectReadRequest],
-    budget: WorkBudget,
-) -> ObjectResult<Vec<ObjectRead>> {
-    if requests.is_empty() {
-        return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
-            "object read batch is empty".to_owned(),
-        )));
-    }
-    let item_count = u64::try_from(requests.len()).unwrap_or(u64::MAX);
-    let vector_bytes = u64::try_from(requests.len())
-        .unwrap_or(u64::MAX)
-        .saturating_mul(u64::try_from(size_of::<ObjectRead>()).unwrap_or(u64::MAX));
-    let mut work = WorkCounters {
-        items_examined: item_count,
-        allocation_operations: u64::from(!requests.is_empty()),
-        peak_allocation_bytes: vector_bytes,
-        ..WorkCounters::default()
-    };
-    let mut admission = work;
-    admission.items_returned = item_count;
-    admission
-        .verify(budget)
-        .map_err(|error| ObjectFailure::before_work(error.into()))?;
-    let mut values = Vec::new();
-    values.try_reserve_exact(requests.len()).map_err(|_| {
-        ObjectFailure::new(
-            ObjectStoreError::Rejected("object batch result allocation failed".to_owned()),
-            work,
-        )
-    })?;
-    let mut retained_bytes = vector_bytes;
-    for request in requests {
-        let remaining = work
-            .remaining(budget)
-            .map_err(|error| ObjectFailure::new(error.into(), work))?;
-        let receipt = store
-            .read(request.object_id, request.maximum_bytes, remaining)
-            .map_err(|failure| {
-                let nested = *failure.work;
-                let peak = work
-                    .peak_allocation_bytes
-                    .max(retained_bytes.saturating_add(nested.peak_allocation_bytes));
-                match work.checked_add(nested) {
-                    Ok(mut combined) => {
-                        combined.peak_allocation_bytes = peak;
-                        ObjectFailure::new(failure.error, combined)
-                    }
-                    Err(error) => ObjectFailure::new(error.into(), work),
-                }
-            })?;
-        let nested_peak = retained_bytes.saturating_add(receipt.work.peak_allocation_bytes);
-        work = work
-            .checked_add(receipt.work)
-            .map_err(|error| ObjectFailure::new(error.into(), work))?;
-        work.peak_allocation_bytes = work.peak_allocation_bytes.max(nested_peak);
-        retained_bytes = retained_bytes.saturating_add(match receipt.value.retention {
-            ObjectReadRetention::Shared => 0,
-            ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-        });
-        work.peak_allocation_bytes = work.peak_allocation_bytes.max(retained_bytes);
-        work.verify(budget)
-            .map_err(|error| ObjectFailure::new(error.into(), work))?;
-        values.push(receipt.value);
-    }
-    work.items_returned = item_count;
-    Ok(ObjectReceipt {
-        value: values,
-        work,
-    })
 }
 
 /// Typed immutable-object failures.
