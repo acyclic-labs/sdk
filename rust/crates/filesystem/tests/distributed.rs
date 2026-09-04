@@ -10,7 +10,8 @@ use acyclic_fs::{
 use acyclic_fs::{ProviderObjectStore, StreamAuthorityStore};
 use acyclic_objects::{MemoryObjects, ObjectsProvider};
 use acyclic_stream::{
-    AppendRequest, MemoryStream, ReadRequest, StreamError, StreamPath, StreamProvider,
+    AppendRequest, ChildrenRequest, MemoryStream, ReadRequest, StreamError, StreamPath,
+    StreamProvider,
 };
 use bytes::Bytes;
 use futures::StreamExt;
@@ -20,7 +21,7 @@ use std::sync::Arc;
 async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = Arc::new(MemoryStream::default());
-    let store = StreamAuthorityStore::new(provider);
+    let store = StreamAuthorityStore::new(Arc::clone(&provider));
     let authority_id = AuthorityId::from_bytes([7; 16]);
     let cancellation = CancellationToken::new();
     assert_eq!(
@@ -69,6 +70,29 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
             .value,
         AppendOutcome::AlreadyCommitted(commit.clone())
     );
+    let second_authority = AuthorityId::from_bytes([17; 16]);
+    store
+        .create_authority(
+            second_authority,
+            Epoch::GENESIS,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    assert!(matches!(
+        store
+            .compare_and_append(
+                second_authority,
+                Epoch::GENESIS,
+                Head::genesis(Epoch::GENESIS),
+                proposal.clone(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value,
+        AppendOutcome::Committed(_)
+    ));
     let conflicting = ProposedCommit {
         fingerprint: Digest::from_bytes([10; 32]),
         ..proposal
@@ -87,6 +111,26 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
             .value,
         AppendOutcome::IdempotencyConflict { .. }
     ));
+    let authority_path = StreamPath::new(format!(
+        "fs/authorities/{}",
+        hex::encode(authority_id.into_bytes())
+    ))?;
+    let children = provider
+        .children(ChildrenRequest {
+            parent: Some(authority_path),
+            limit: 16,
+        })
+        .await?
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(
+        children
+            .iter()
+            .all(|child| !child.path.as_str().contains("/operations")),
+        "native Stream idempotency must replace shadow operation paths"
+    );
     assert_eq!(
         store
             .replay(
