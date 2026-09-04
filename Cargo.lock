@@ -209,10 +209,12 @@ version = "1.0.0-rc.2"
 dependencies = [
  "async-trait",
  "bytes",
+ "fs2",
  "futures",
  "prost",
  "protoc-bin-vendored",
  "sha2",
+ "tempfile",
  "thiserror",
  "tokio",
  "tonic",
