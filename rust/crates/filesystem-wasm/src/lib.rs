@@ -1965,6 +1965,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     struct MemoryOptions {
         maximum_object_bytes: u64,
+        maximum_memory_bytes: u64,
         object_cache: BrowserObjectCacheOptions,
     }
 
@@ -5443,12 +5444,15 @@ mod bindings {
     #[wasm_bindgen(js_name = openMemoryFs)]
     pub fn open_memory_fs(options: JsValue) -> Result<BrowserFs, JsValue> {
         let options: MemoryOptions = serde_wasm_bindgen::from_value(options).map_err(js_error)?;
-        if options.maximum_object_bytes == 0 {
+        if options.maximum_object_bytes == 0
+            || options.maximum_memory_bytes < options.maximum_object_bytes
+        {
             return Err(JsValue::from_str("memory filesystem options are invalid"));
         }
         Ok(BrowserFs {
             engine: Some(BrowserEngine::Memory(memory_engine(
                 options.maximum_object_bytes,
+                options.maximum_memory_bytes,
                 browser_object_cache_options(&options.object_cache),
             )?)),
             capabilities: Capabilities {
@@ -5664,12 +5668,14 @@ mod bindings {
 
     fn memory_engine(
         maximum_object_bytes: u64,
+        maximum_memory_bytes: u64,
         cache: ObjectCacheOptions,
     ) -> Result<Fs<MemoryAuthority, MemoryObjects>, JsValue> {
         let streams = Arc::new(acyclic_stream::MemoryStream::default());
-        let (objects, bucket) = acyclic_objects::MemoryObjects::with_bucket(
+        let (objects, bucket) = acyclic_objects::MemoryObjects::with_bucket_limits(
             "acyclic-fs-wasm-memory",
             maximum_object_bytes,
+            maximum_memory_bytes,
         )
         .map_err(js_error)?;
         Ok(Fs::new(
@@ -6604,6 +6610,7 @@ mod bindings {
         fn test_browser_fs() -> Result<BrowserFs, JsValue> {
             let engine = memory_engine(
                 1024,
+                64 * 1024 * 1024,
                 ObjectCacheOptions {
                     maximum_entries: 8,
                     maximum_bytes: 1024,
@@ -6790,7 +6797,9 @@ mod bindings {
                 b"ready"
             );
             assert!(exact.read("/output/status".to_owned(), 5).await.is_err());
-            let exact_fork = workspace.fork_at("exact-fork".to_owned(), exact).await?;
+            let exact_fork = workspace
+                .fork_at("exact-fork".to_owned(), exact, None)
+                .await?;
             assert!(
                 exact_fork
                     .read("/output/status".to_owned(), 5)
@@ -6805,7 +6814,7 @@ mod bindings {
             workspace: &BrowserWorkspace,
             payload: &[u8],
         ) -> Result<(), JsValue> {
-            let fork = workspace.fork("fork".to_owned()).await?;
+            let fork = workspace.fork("fork".to_owned(), None).await?;
             assert_ne!(fork.id(), workspace.id());
             assert_ne!(fork.head().await?, workspace.head().await?);
             assert_eq!(fork.read("/binary".to_owned(), 5).await?, payload);

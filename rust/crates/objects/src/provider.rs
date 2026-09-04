@@ -304,6 +304,7 @@ struct IdempotencyRecord {
 
 struct State {
     maximum_bytes: usize,
+    maximum_object_bytes: usize,
     sequence: u64,
     bytes: usize,
     names: BTreeMap<String, String>,
@@ -318,6 +319,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             maximum_bytes: MEMORY_BYTES,
+            maximum_object_bytes: MEMORY_BYTES,
             sequence: 0,
             bytes: 0,
             names: BTreeMap::new(),
@@ -360,6 +362,7 @@ impl MemoryObjects {
         Ok(Self {
             state: Arc::new(Mutex::new(State {
                 maximum_bytes,
+                maximum_object_bytes: maximum_bytes,
                 ..State::default()
             })),
         })
@@ -387,7 +390,42 @@ impl MemoryObjects {
         Ok(Self::from_bucket(name, maximum_bytes))
     }
 
+    /// Creates one deterministic bucket with independent per-object and aggregate bounds.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid bucket name, zero limits, a per-object limit larger than the aggregate
+    /// limit, or limits that cannot be represented by this process.
+    pub fn with_bucket_limits(
+        name: impl Into<String>,
+        maximum_object_bytes: u64,
+        maximum_bytes: u64,
+    ) -> Result<(Self, wire::BucketRef), ObjectsError> {
+        let maximum_object_bytes = usize::try_from(maximum_object_bytes)
+            .map_err(|_| ObjectsError::Invalid("memory object limit is not representable"))?;
+        let maximum_bytes = usize::try_from(maximum_bytes)
+            .map_err(|_| ObjectsError::Invalid("memory byte limit is not representable"))?;
+        if maximum_object_bytes == 0 || maximum_bytes == 0 || maximum_object_bytes > maximum_bytes {
+            return Err(ObjectsError::Invalid("invalid memory object limits"));
+        }
+        let name = name.into();
+        Self::validate_bucket_name(&name)?;
+        Ok(Self::from_bucket_limits(
+            name,
+            maximum_object_bytes,
+            maximum_bytes,
+        ))
+    }
+
     fn from_bucket(name: String, maximum_bytes: usize) -> (Self, wire::BucketRef) {
+        Self::from_bucket_limits(name, maximum_bytes, maximum_bytes)
+    }
+
+    fn from_bucket_limits(
+        name: String,
+        maximum_object_bytes: usize,
+        maximum_bytes: usize,
+    ) -> (Self, wire::BucketRef) {
         let bucket_id = "bucket-0000000000000001".to_owned();
         let reference = wire::BucketRef {
             bucket_id: bucket_id.clone(),
@@ -395,6 +433,7 @@ impl MemoryObjects {
         };
         let mut state = State {
             maximum_bytes,
+            maximum_object_bytes,
             sequence: 1,
             ..State::default()
         };
@@ -895,10 +934,11 @@ impl ObjectsProvider for MemoryObjects {
                     return Err(ObjectsError::PreconditionFailed);
                 }
                 let size = request.body.len();
-                if state
-                    .bytes
-                    .checked_add(size)
-                    .is_none_or(|bytes| bytes > state.maximum_bytes)
+                if size > state.maximum_object_bytes
+                    || state
+                        .bytes
+                        .checked_add(size)
+                        .is_none_or(|bytes| bytes > state.maximum_bytes)
                 {
                     return Err(ObjectsError::Capacity);
                 }
@@ -1558,6 +1598,41 @@ mod tests {
             Err(ObjectsError::Invalid("memory byte limit must be positive"))
         ));
         assert!(MemoryObjects::with_bucket("INVALID", 4).is_err());
+        assert!(MemoryObjects::with_bucket_limits("embedded", 5, 4).is_err());
+
+        let (independent, independent_bucket) =
+            MemoryObjects::with_bucket_limits("independent", 3, 6)
+                .unwrap_or_else(|_| unreachable!());
+        put(&independent, &independent_bucket, "first", b"one", None).await;
+        put(&independent, &independent_bucket, "second", b"two", None).await;
+        assert_eq!(
+            independent
+                .put(PutRequest {
+                    bucket: independent_bucket.clone(),
+                    object_key: "aggregate-overflow".into(),
+                    body: bytes::Bytes::from_static(b"x"),
+                    metadata: metadata(),
+                    condition: None,
+                    idempotency_key: None,
+                })
+                .await,
+            Err(ObjectsError::Capacity)
+        );
+        let (per_object, per_object_bucket) = MemoryObjects::with_bucket_limits("per-object", 3, 6)
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            per_object
+                .put(PutRequest {
+                    bucket: per_object_bucket,
+                    object_key: "too-large".into(),
+                    body: bytes::Bytes::from_static(b"four"),
+                    metadata: metadata(),
+                    condition: None,
+                    idempotency_key: None,
+                })
+                .await,
+            Err(ObjectsError::Capacity)
+        );
 
         let (store, bucket) =
             MemoryObjects::with_bucket("embedded", 4).unwrap_or_else(|_| unreachable!());

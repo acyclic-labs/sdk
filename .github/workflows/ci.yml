@@ -72,7 +72,7 @@ jobs:
         with:
           toolchain: 1.94.0
           targets: wasm32-unknown-unknown
-      - run: cargo check -p acyclic-fs-wasm --target wasm32-unknown-unknown
+      - run: cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --no-run --locked
 
   typescript:
     runs-on: ubuntu-latest

@@ -980,6 +980,7 @@ export interface BrowserFsOptions {
 
 export interface MemoryFsOptions {
   readonly maximumObjectBytes: number;
+  readonly maximumMemoryBytes: number;
   readonly objectCache: ObjectCacheOptions;
 }
 

@@ -20,5 +20,11 @@ export async function openMemoryFs(options: MemoryFsOptions): Promise<FsEngine> 
   if (!Number.isSafeInteger(options.maximumObjectBytes) || options.maximumObjectBytes <= 0) {
     throw new RangeError("memory filesystem object bound must be a positive safe integer");
   }
+  if (
+    !Number.isSafeInteger(options.maximumMemoryBytes)
+    || options.maximumMemoryBytes < options.maximumObjectBytes
+  ) {
+    throw new RangeError("memory filesystem aggregate bound must cover one maximum object");
+  }
   return adaptWasmFs(await (await bindings()).openMemoryFs(options));
 }
