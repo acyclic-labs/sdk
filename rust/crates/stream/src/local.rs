@@ -135,7 +135,10 @@ impl LocalStream {
         .await
         .map_err(|_| LocalStreamError::Executor)
         .and_then(|result| result)
-        .map_err(|_| StreamError::Unavailable)
+        .map_err(|error| match error {
+            LocalStreamError::InvalidLimits => StreamError::Capacity,
+            _ => StreamError::Unavailable,
+        })
     }
 
     async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
@@ -982,11 +985,40 @@ mod tests {
                     idempotency_key: None,
                 })
                 .await,
-            Err(StreamError::Unavailable)
+            Err(StreamError::Capacity)
         ));
         assert!(matches!(
             provider.tail(StreamPath::new("capacity")?).await,
             Err(StreamError::NotFound)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn complete_frame_corruption_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        provider
+            .append(AppendRequest {
+                path: StreamPath::new("authenticated")?,
+                records: vec![Bytes::from_static(b"body")],
+                if_tail: Some(0),
+                idempotency_key: None,
+            })
+            .await?;
+        drop(provider);
+
+        let journal = directory.path().join("stream.journal");
+        let mut file = OpenOptions::new().read(true).write(true).open(journal)?;
+        let body_offset = u64::try_from(HEADER_BYTES + 5).map_err(std::io::Error::other)?;
+        file.seek(SeekFrom::Start(body_offset))?;
+        file.write_all(&[0xff])?;
+        file.sync_all()?;
+        drop(file);
+
+        assert!(matches!(
+            LocalStream::open(directory.path(), LocalStreamLimits::default()).await,
+            Err(LocalStreamError::Corrupt)
         ));
         Ok(())
     }
