@@ -649,7 +649,7 @@ export class BrowserFs {
      * Returns a JavaScript error for malformed manifest, incomplete or
      * corrupt closure, conflicting authority, cancellation, or bounded work.
      */
-    restoreVolume(manifest: any): Promise<BrowserVolume>;
+    restoreVolume(manifest: any, operation_id: Uint8Array): Promise<BrowserVolume>;
     /**
      * Exact backend facts selected during open.
      *
@@ -926,11 +926,11 @@ export class BrowserWorkspace {
     /**
      * Forks the current generation into an independent named workspace.
      */
-    fork(destination: string): Promise<BrowserWorkspace>;
+    fork(destination: string, idempotency_key?: Uint8Array | null): Promise<BrowserWorkspace>;
     /**
      * Creates an independent workspace at one caller-selected exact generation.
      */
-    forkAt(destination: string, generation: BrowserGeneration): Promise<BrowserWorkspace>;
+    forkAt(destination: string, generation: BrowserGeneration, idempotency_key?: Uint8Array | null): Promise<BrowserWorkspace>;
     /**
      * Current immutable generation identity.
      */
@@ -1082,7 +1082,7 @@ export interface InitOutput {
     readonly browserfs_objectCacheStats: (a: number) => [number, number, number];
     readonly browserfs_openVolume: (a: number, b: number, c: number) => any;
     readonly browserfs_openWorkspace: (a: number, b: number, c: number) => any;
-    readonly browserfs_restoreVolume: (a: number, b: any) => any;
+    readonly browserfs_restoreVolume: (a: number, b: any, c: number, d: number) => any;
     readonly browsergeneration_id: (a: number) => [number, number];
     readonly browsergeneration_listDirectory: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browsergeneration_pin: (a: number, b: number, c: number) => any;
@@ -1127,8 +1127,8 @@ export interface InitOutput {
     readonly browserworkspace_checkpoint: (a: number, b: number, c: number) => any;
     readonly browserworkspace_delete: (a: number, b: number, c: number) => any;
     readonly browserworkspace_diff: (a: number, b: number, c: number, d: number) => any;
-    readonly browserworkspace_fork: (a: number, b: number, c: number) => any;
-    readonly browserworkspace_forkAt: (a: number, b: number, c: number, d: number) => any;
+    readonly browserworkspace_fork: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly browserworkspace_forkAt: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly browserworkspace_head: (a: number) => any;
     readonly browserworkspace_id: (a: number) => [number, number];
     readonly browserworkspace_joinInto: (a: number, b: number, c: any) => any;
@@ -1146,11 +1146,11 @@ export interface InitOutput {
     readonly browserworkspace_write: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly openBrowserFs: (a: any) => any;
     readonly openMemoryFs: (a: any) => [number, number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h99011fa81a70a26c: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h6351411ee5760e0b: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h0732115cd49c6da8: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h826571d35b52986c: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h7721336414c3989a: (a: number, b: number) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hbda0b83ef83cb943: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__heeb8c212da1e0976: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h2a4eb6287a5d90bc: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h700ae9e05bdefaac: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__ha10a2157f63fc2da: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
