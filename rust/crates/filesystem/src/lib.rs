@@ -153,9 +153,10 @@ pub use native_mount::{
     NativeMountSession, NativeMountSessionIsolation, NativeSparseAccelerationEvidence,
     NativeStorageAccelerationError, NativeStorageAccelerationEvidence, NativeStorageCapabilities,
     NativeStorageCapabilityError, RoutedMountSource, SharedCheckout, SharedCheckoutState,
-    materialize_checkout, mount_native, probe_native_mount, probe_native_storage_accelerations,
-    probe_native_storage_capabilities, reclaim_native_mount_destination_fence,
-    reclaim_stale_native_mount_destination_fences, recover_native_mount_destination, seal_checkout,
+    materialize_checkout, mount_native, mount_native_over_existing, probe_native_mount,
+    probe_native_storage_accelerations, probe_native_storage_capabilities,
+    reclaim_native_mount_destination_fence, reclaim_stale_native_mount_destination_fences,
+    recover_native_mount_destination, seal_checkout,
 };
 #[cfg(all(feature = "native-mount", target_os = "windows"))]
 pub use native_mount::{

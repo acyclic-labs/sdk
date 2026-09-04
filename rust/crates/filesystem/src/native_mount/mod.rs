@@ -923,6 +923,48 @@ pub fn mount_native(
     })
 }
 
+/// Starts a native projection mounted directly over an existing,
+/// non-empty directory — its contents are shadowed for the mount's
+/// duration and reappear once the returned session stops.
+///
+/// For callers that must project a checkout at a specific real path that
+/// already has content (for example, redirecting an entire tool session
+/// into a fork at the project's own root), as opposed to [`mount_native`]'s
+/// ordinary empty-destination contract. Process-fencing against concurrent
+/// mounts of the same destination is identical to `mount_native`.
+///
+/// # Errors
+///
+/// Same as [`mount_native`], except the destination may be non-empty; it
+/// must still be an existing, non-symlink directory not already admitted
+/// by another live mount.
+pub fn mount_native_over_existing(
+    request: NativeMountRequest,
+    source: Arc<dyn MountFilesystem>,
+) -> Result<NativeMountSession, NativeMountError> {
+    let capabilities = probe_native_mount();
+    if !capabilities.available {
+        return Err(NativeMountError::CapabilityUnavailable(
+            capabilities
+                .unavailable_reason
+                .unwrap_or_else(|| "unavailable".to_owned()),
+        ));
+    }
+    if request.writable && !capabilities.writable {
+        return Err(NativeMountError::WritableUnavailable(
+            "the selected kernel API cannot prove exact authored effects".to_owned(),
+        ));
+    }
+    let (driver, destination_guard) =
+        start_owned_session_over_existing(&request.destination, || start_driver(&request, source))?;
+    Ok(NativeMountSession {
+        mount_id: request.mount_id,
+        destination: request.destination,
+        driver: Some(driver),
+        destination_guard: Some(destination_guard),
+    })
+}
+
 /// Reclaims the process fence for one externally detached destination.
 ///
 /// This is the supervisor-side crash-recovery boundary. A live owner keeps the
@@ -1101,9 +1143,30 @@ fn start_owned_session<D>(
     Ok((driver, destination_guard))
 }
 
+/// Same as [`start_owned_session`], but admits an existing non-empty
+/// destination (see [`admit_destination_over_existing`]).
+fn start_owned_session_over_existing<D>(
+    destination: &Path,
+    start: impl FnOnce() -> Result<D, NativeMountError>,
+) -> Result<(D, MountDestinationGuard), NativeMountError> {
+    let destination_guard = admit_destination_over_existing(destination)?;
+    let driver = start()?;
+    Ok((driver, destination_guard))
+}
+
 fn admit_destination(destination: &Path) -> Result<MountDestinationGuard, NativeMountError> {
     let guard = MountDestinationGuard::acquire(destination)?;
     validate_destination(destination)?;
+    Ok(guard)
+}
+
+/// Same process-fence as [`admit_destination`], but admits an existing
+/// non-empty directory instead of requiring emptiness.
+fn admit_destination_over_existing(
+    destination: &Path,
+) -> Result<MountDestinationGuard, NativeMountError> {
+    let guard = MountDestinationGuard::acquire(destination)?;
+    validate_directory(destination)?;
     Ok(guard)
 }
 
@@ -1372,14 +1435,22 @@ fn update_path_identity(hasher: &mut blake3::Hasher, path: &Path) {
 }
 
 fn validate_destination(destination: &Path) -> Result<(), NativeMountError> {
-    let metadata =
-        std::fs::symlink_metadata(destination).map_err(|_| NativeMountError::InvalidDestination)?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(NativeMountError::InvalidDestination);
-    }
+    validate_directory(destination)?;
     let mut entries =
         std::fs::read_dir(destination).map_err(|_| NativeMountError::InvalidDestination)?;
     if entries.next().is_some() {
+        return Err(NativeMountError::InvalidDestination);
+    }
+    Ok(())
+}
+
+/// The directory half of [`validate_destination`], without the
+/// empty-directory requirement — shared with
+/// [`mount_native_over_existing`]'s admission path.
+fn validate_directory(destination: &Path) -> Result<(), NativeMountError> {
+    let metadata =
+        std::fs::symlink_metadata(destination).map_err(|_| NativeMountError::InvalidDestination)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(NativeMountError::InvalidDestination);
     }
     Ok(())
@@ -1572,6 +1643,34 @@ mod tests {
             Err(NativeMountError::InvalidDestination)
         ));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn validate_directory_admits_nonempty_directories_but_still_rejects_non_directories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-fs-mount-over-existing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root)?;
+        std::fs::write(root.join("occupied"), b"x")?;
+        assert!(validate_directory(&root).is_ok());
+
+        let file = root.join("occupied");
+        assert!(matches!(
+            validate_directory(&file),
+            Err(NativeMountError::InvalidDestination)
+        ));
+
+        let missing = root.join("does-not-exist");
+        assert!(matches!(
+            validate_directory(&missing),
+            Err(NativeMountError::InvalidDestination)
+        ));
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     #[test]
