@@ -12,8 +12,9 @@ mkdir -p "$source_root" "$test_root"
 git archive HEAD | tar -x -C "$source_root"
 
 version="$(cargo metadata --no-deps --format-version 1 --manifest-path "$source_root/Cargo.toml" | python3 -c 'import json,sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "inference-sdk"))')"
-cargo package --locked --no-verify -p inference-sdk --manifest-path "$source_root/Cargo.toml"
-crate="$source_root/target/package/inference-sdk-${version}.crate"
+package_target="$work/package-target"
+cargo package --locked --no-verify -p inference-sdk --manifest-path "$source_root/Cargo.toml" --target-dir "$package_target"
+crate="$package_target/package/inference-sdk-${version}.crate"
 actual="$(sha256sum "$crate" | cut -d ' ' -f 1)"
 expected="$(python3 - "$version" <<'PY'
 import json, pathlib, sys

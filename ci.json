@@ -1,0 +1,166 @@
+{
+  "revision": 6,
+  "repository": "sdk",
+  "default_branch": "main",
+  "trigger": "continuous",
+  "rust_toolchain": "rust-toolchain.toml",
+  "cargo_lockfile": "Cargo.lock",
+  "variables": {
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_TERM_COLOR": "always"
+  },
+  "authority": null,
+  "jobs": [
+    {
+      "name": "linux",
+      "runner": "linux",
+      "timeout_minutes": 15,
+      "checkout": "source_history",
+      "condition": { "kind": "always" },
+      "depends_on": [],
+      "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "bun", "tools"],
+      "reuse": "exact_tree",
+      "inputs": [],
+      "qualifications": [],
+      "releases": [],
+      "steps": [
+        {
+          "name": "qualify",
+          "condition": "succeeded",
+          "action": {
+            "kind": "shell",
+            "working_directory": ".",
+            "command": "set -euo pipefail\nbun install --frozen-lockfile\ncargo fmt --all -- --check\ncargo clippy --workspace --all-targets --all-features --locked -- -D warnings\ncargo test --workspace --all-features --locked\nbash scripts/check-inference-package.sh\ncargo run --locked -p acyclic-cli\nbun run test\nbun run licenses\nbunx buf format -d --exit-code\nbunx buf lint\nbunx buf generate\ngit diff --exit-code -- generated\nbun scripts/check-boundaries.mjs\nbun scripts/check-metadata.mjs\nbase=\"${SYSTEM_PULLREQUEST_TARGETBRANCH:-}\"\nif [[ -n \"$base\" ]]; then\n  base=${base#refs/heads/}\n  bunx buf breaking --against \".git#ref=origin/$base\" --exclude-path proto/inference/v1/inference.proto\nfi"
+          }
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "policy",
+      "runner": "linux_check",
+      "timeout_minutes": 15,
+      "checkout": "source_history",
+      "condition": { "kind": "always" },
+      "depends_on": [],
+      "caches": ["rustup", "cargo_registry", "compiler", "tools"],
+      "reuse": "exact_tree",
+      "inputs": [],
+      "qualifications": [],
+      "releases": [],
+      "steps": [
+        {
+          "name": "policy",
+          "condition": "succeeded",
+          "action": {
+            "kind": "shell",
+            "working_directory": ".",
+            "command": "set -euo pipefail\nhead=\"${SYSTEM_PULLREQUEST_SOURCECOMMITID:-$BUILD_SOURCEVERSION}\"\nif [[ -n \"${SYSTEM_PULLREQUEST_TARGETBRANCH:-}\" ]]; then\n  branch=\"${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}\"\n  git fetch --no-tags origin \"$branch\"\n  base=\"$(git merge-base \"$head\" \"origin/$branch\")\"\nelse\n  base=\"${head}^\"\nfi\nwhile read -r commit; do\n  git show --quiet --format=%B \"$commit\" | grep --quiet --ignore-case '^Signed-off-by: .\\+ <.\\+>$' || { echo \"Commit $commit lacks a Signed-off-by trailer.\" >&2; exit 1; }\ndone < <(git rev-list --reverse \"$base..$head\")\nif ! command -v cargo-deny >/dev/null; then cargo install --locked cargo-deny --version 0.19.0; fi\ncargo deny check licenses\narchive=\"$TOOLS_DIR/gitleaks_8.30.1_linux_x64.tar.gz\"\nmkdir -p \"$TOOLS_DIR/gitleaks-8.30.1\"\nif [[ ! -x \"$TOOLS_DIR/gitleaks-8.30.1/gitleaks\" ]]; then\n  curl --fail --silent --show-error --location https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz --output \"$archive\"\n  echo \"551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $archive\" | sha256sum --check\n  tar --extract --gzip --file \"$archive\" --directory \"$TOOLS_DIR/gitleaks-8.30.1\" gitleaks\nfi\n\"$TOOLS_DIR/gitleaks-8.30.1/gitleaks\" detect --source . --no-banner --redact"
+          }
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "web",
+      "runner": "linux",
+      "timeout_minutes": 15,
+      "checkout": "source",
+      "condition": { "kind": "always" },
+      "depends_on": [],
+      "caches": ["rustup", "cargo_registry", "compiler", "tools"],
+      "reuse": "exact_tree",
+      "inputs": [],
+      "qualifications": [],
+      "releases": [],
+      "steps": [
+        {
+          "name": "browsers",
+          "condition": "succeeded",
+          "action": {
+            "kind": "shell",
+            "working_directory": ".",
+            "command": "set -euo pipefail\nrustup target add wasm32-unknown-unknown\nif ! command -v wasm-bindgen-test-runner >/dev/null; then cargo install --locked wasm-bindgen-cli --version 0.2.117; fi\nexport CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner\nCHROMEDRIVER=\"$(command -v chromedriver)\" cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked\nGECKODRIVER=\"$(command -v geckodriver)\" cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked"
+          }
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "linux-arm64",
+      "runner": "linux_arm64",
+      "timeout_minutes": 15,
+      "checkout": "source",
+      "condition": { "kind": "always" },
+      "depends_on": [],
+      "caches": ["rustup", "cargo_registry", "cargo_git", "compiler"],
+      "reuse": "exact_tree",
+      "inputs": [],
+      "qualifications": [],
+      "releases": [],
+      "steps": [
+        {
+          "name": "native",
+          "condition": "succeeded",
+          "action": {
+            "kind": "shell",
+            "working_directory": ".",
+            "command": "if ! command -v cc >/dev/null || ! pkg-config --exists fuse3; then sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libfuse3-dev; fi\ncargo test --workspace --all-features --locked"
+          }
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "windows",
+      "runner": "windows",
+      "timeout_minutes": 15,
+      "checkout": "source",
+      "condition": { "kind": "always" },
+      "depends_on": [],
+      "caches": ["rustup", "cargo_registry", "cargo_git", "compiler"],
+      "reuse": "exact_tree",
+      "inputs": [],
+      "qualifications": [],
+      "releases": [],
+      "steps": [
+        {
+          "name": "native",
+          "condition": "succeeded",
+          "action": {
+            "kind": "shell",
+            "working_directory": ".",
+            "command": "cargo test --workspace --all-features --locked\nrustup target add aarch64-pc-windows-msvc\ncargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked"
+          }
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "name": "macos",
+      "runner": "macos",
+      "timeout_minutes": 15,
+      "checkout": "source",
+      "condition": { "kind": "always" },
+      "depends_on": [],
+      "caches": ["rustup", "cargo_registry", "cargo_git", "compiler"],
+      "reuse": "exact_tree",
+      "inputs": [],
+      "qualifications": [],
+      "releases": [],
+      "steps": [
+        {
+          "name": "native",
+          "condition": "succeeded",
+          "action": {
+            "kind": "shell",
+            "working_directory": ".",
+            "command": "cargo test -p acyclic-fs --no-default-features --features local,memory,native-watch,native-executor --locked\ncargo test -p acyclic-harness -p inference-sdk -p acyclic-machines -p acyclic-objects -p acyclic-stream --locked\nrustup target add x86_64-apple-darwin\ncargo check -p acyclic-fs --no-default-features --features local,memory,native-watch,native-executor --target x86_64-apple-darwin --locked"
+          }
+        }
+      ],
+      "outputs": []
+    }
+  ]
+}
