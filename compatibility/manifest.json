@@ -14,10 +14,10 @@
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {
-      "version": "1.0.0-rc.1",
-      "schemaDigest": "sha256:1efb0ea5396ad5707b17c24b35c0039640882c7e3e81a6ce5f01f05197792fff",
-      "descriptorDigest": "sha256:1d0f8c263673070655a527d160bf27d7dc1b3f82d95895ad3e20b7f4582583c7",
-      "conformanceDigest": "sha256:377d550296852fc98a820404f31c5d9324397a685caf2f92b04e90cc0b3f529b"
+      "version": "1.0.0-rc.3",
+      "schemaDigest": "sha256:975f0a4ba0e24fe42316c86456e3870f61f07624eec0b430617fa8a3fdd0c305",
+      "descriptorDigest": "sha256:d69361b6290d521113a65a35dfe1ff8988a8f670c6ddf6535242aee3df871d0b",
+      "conformanceDigest": "sha256:a5f3b11cedd1df8b01ca9fdd9b1351475f2f2cd2bcf7ff46c332978f65336aae"
     },
     "objects": {
       "version": "1.0.0-rc.1",

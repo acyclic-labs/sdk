@@ -418,6 +418,32 @@ pub enum CommitOutcome {
     Conflict(Vec<CommitConflict>),
 }
 
+/// Terminal result retained under one account-scoped retry identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IdempotencyOutcome {
+    /// Append success or tail conflict.
+    Append(AppendOutcome),
+    /// Successful immutable-prefix fork.
+    Fork(ForkReceipt),
+    /// Successful logical trim.
+    Trim(TrimReceipt),
+    /// Successful permanent deletion.
+    Delete(DeleteReceipt),
+    /// Coordinated commit success or exact conflict.
+    Commit(CommitOutcome),
+}
+
+/// Exact retained recovery fact for one caller-owned retry identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdempotencyObservation {
+    /// Account-scoped identity supplied by the caller.
+    pub idempotency_key: IdempotencyKey,
+    /// Digest of the canonical request arguments bound to the identity.
+    pub request_digest: [u8; 32],
+    /// Original terminal result.
+    pub outcome: IdempotencyOutcome,
+}
+
 /// Backpressured finite read or long-lived follow.
 pub type RecordStream = BoxStream<'static, Result<Record, StreamError>>;
 /// Backpressured fixed-snapshot direct-child listing.
@@ -426,6 +452,11 @@ pub type ChildStream = BoxStream<'static, Result<Child, StreamError>>;
 /// Canonical provider contract. Placement and transport remain invisible.
 #[async_trait]
 pub trait StreamProvider: Send + Sync + 'static {
+    /// Reads the retained terminal result for one caller-owned retry identity.
+    async fn inspect_idempotency(
+        &self,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<Option<IdempotencyObservation>, StreamError>;
     /// Current next sequence.
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError>;
     /// Atomic append or tail conflict.
@@ -476,6 +507,14 @@ impl<P: StreamProvider> StreamClient<P> {
             client: Self::new(Arc::clone(&self.provider)),
             path: StreamPath::new(path)?,
         })
+    }
+
+    /// Reads the retained terminal result for one caller-owned retry identity.
+    pub async fn inspect_idempotency(
+        &self,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<Option<IdempotencyObservation>, StreamError> {
+        self.provider.inspect_idempotency(idempotency_key).await
     }
 
     /// Lists direct children from one fixed snapshot.

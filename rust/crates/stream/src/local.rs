@@ -17,8 +17,8 @@ use tokio::sync::{RwLock, watch};
 use crate::{
     AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitCondition, CommitMutation,
     CommitOutcome, CommitRequest, CommittedEnvelope, DeleteReceipt, ForkReceipt, ForkRequest,
-    IdempotencyKey, MAX_COMMAND_BYTES, MAX_ITEMS, MemoryLimits, MemoryStream, ReadRequest,
-    RecordStream, StreamError, StreamPath, StreamProvider, TrimReceipt,
+    IdempotencyKey, IdempotencyObservation, MAX_COMMAND_BYTES, MAX_ITEMS, MemoryLimits,
+    MemoryStream, ReadRequest, RecordStream, StreamError, StreamPath, StreamProvider, TrimReceipt,
 };
 
 const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
@@ -172,6 +172,19 @@ impl LocalStream {
 
 #[async_trait]
 impl StreamProvider for LocalStream {
+    async fn inspect_idempotency(
+        &self,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<Option<IdempotencyObservation>, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.read().await;
+        self.check_available()?;
+        self.inner
+            .provider
+            .inspect_idempotency(idempotency_key)
+            .await
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.check_available()?;
         let _visibility = self.inner.visibility.read().await;

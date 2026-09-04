@@ -23,8 +23,9 @@ use crate::{
     AppendOutcome, AppendReceipt, AppendRequest, Child, ChildStream, ChildrenRequest,
     CommitCondition, CommitConflict, CommitId, CommitMutation, CommitOutcome, CommitRequest,
     CommittedAppend, CommittedDelete, CommittedEnvelope, CommittedFork, CommittedMutation,
-    CommittedTrim, DeleteReceipt, ForkReceipt, ForkRequest, IdempotencyKey, ReadRequest, Record,
-    RecordStream, StreamError, StreamPath, StreamProvider, TrimReceipt, wire,
+    CommittedTrim, DeleteReceipt, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
+    IdempotencyOutcome, ReadRequest, Record, RecordStream, StreamError, StreamPath, StreamProvider,
+    TrimReceipt, wire,
 };
 
 const OPERATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -309,6 +310,23 @@ fn retryable(error: &Status) -> bool {
 
 #[async_trait]
 impl StreamProvider for Client {
+    async fn inspect_idempotency(
+        &self,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<Option<IdempotencyObservation>, StreamError> {
+        let response = self
+            .unary(
+                wire::InspectIdempotencyRequest {
+                    idempotency_key: Bytes::copy_from_slice(idempotency_key.as_bytes()),
+                },
+                |mut service, request| {
+                    Box::pin(async move { service.inspect_idempotency(request).await })
+                },
+            )
+            .await?;
+        bind_observation(idempotency_key, response.observation)
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.unary(
             wire::TailRequest {
@@ -336,14 +354,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.append(request).await }),
             )
             .await?;
-        match response.outcome.ok_or(StreamError::Unavailable)? {
-            wire::append_response::Outcome::Committed(receipt) => {
-                Ok(AppendOutcome::Committed(append_receipt(receipt)?))
-            }
-            wire::append_response::Outcome::Conflict(conflict) => Ok(AppendOutcome::TailConflict {
-                actual_tail: conflict.actual_tail,
-            }),
-        }
+        append_outcome_from_wire(response)
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
@@ -473,18 +484,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.commit(request).await }),
             )
             .await?;
-        match response.outcome.ok_or(StreamError::Unavailable)? {
-            wire::commit_response::Outcome::Committed(envelope) => {
-                Ok(CommitOutcome::Committed(envelope_from_wire(envelope)?))
-            }
-            wire::commit_response::Outcome::Conflict(conflicts) => Ok(CommitOutcome::Conflict(
-                conflicts
-                    .conflicts
-                    .into_iter()
-                    .map(conflict_from_wire)
-                    .collect::<Result<_, _>>()?,
-            )),
-        }
+        commit_outcome_from_wire(response)
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
@@ -507,6 +507,23 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     type ChildrenStream =
         futures::stream::BoxStream<'static, Result<wire::ChildrenResponse, Status>>;
 
+    async fn inspect_idempotency(
+        &self,
+        request: Request<wire::InspectIdempotencyRequest>,
+    ) -> Result<Response<wire::InspectIdempotencyResponse>, Status> {
+        let key =
+            IdempotencyKey::new(request.into_inner().idempotency_key).map_err(error_status)?;
+        let observation = self
+            .provider
+            .inspect_idempotency(key)
+            .await
+            .map_err(error_status)?
+            .map(observation_wire);
+        Ok(Response::new(wire::InspectIdempotencyResponse {
+            observation,
+        }))
+    }
+
     async fn append(
         &self,
         request: Request<wire::AppendRequest>,
@@ -522,17 +539,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             })
             .await
             .map_err(error_status)?;
-        let outcome = match outcome {
-            AppendOutcome::Committed(receipt) => {
-                wire::append_response::Outcome::Committed(append_receipt_wire(receipt))
-            }
-            AppendOutcome::TailConflict { actual_tail } => {
-                wire::append_response::Outcome::Conflict(wire::TailConflict { actual_tail })
-            }
-        };
-        Ok(Response::new(wire::AppendResponse {
-            outcome: Some(outcome),
-        }))
+        Ok(Response::new(append_outcome_wire(outcome)))
     }
 
     async fn tail(
@@ -700,19 +707,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             })
             .await
             .map_err(error_status)?;
-        let outcome = match outcome {
-            CommitOutcome::Committed(envelope) => {
-                wire::commit_response::Outcome::Committed(envelope_wire(envelope))
-            }
-            CommitOutcome::Conflict(conflicts) => {
-                wire::commit_response::Outcome::Conflict(wire::CommitConflicts {
-                    conflicts: conflicts.into_iter().map(conflict_wire).collect(),
-                })
-            }
-        };
-        Ok(Response::new(wire::CommitResponse {
-            outcome: Some(outcome),
-        }))
+        Ok(Response::new(commit_outcome_wire(outcome)))
     }
 
     async fn read_commit(
@@ -726,6 +721,143 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             .await
             .map_err(error_status)?;
         Ok(Response::new(envelope_wire(envelope)))
+    }
+}
+
+fn observation_from_wire(
+    value: wire::IdempotencyObservation,
+) -> Result<IdempotencyObservation, StreamError> {
+    let request_digest = <[u8; 32]>::try_from(value.request_digest.as_ref())
+        .map_err(|_| StreamError::Unavailable)?;
+    let outcome = match value.outcome.ok_or(StreamError::Unavailable)? {
+        wire::idempotency_observation::Outcome::Append(value) => {
+            IdempotencyOutcome::Append(append_outcome_from_wire(value)?)
+        }
+        wire::idempotency_observation::Outcome::Fork(value) => {
+            IdempotencyOutcome::Fork(ForkReceipt {
+                source: path(value.source)?,
+                destination: path(value.destination)?,
+                forked_at: value.forked_at,
+                tail: value.tail,
+                commit_id: commit_id(&value.commit_id)?,
+            })
+        }
+        wire::idempotency_observation::Outcome::Trim(value) => {
+            IdempotencyOutcome::Trim(TrimReceipt {
+                path: path(value.path)?,
+                trim_point: value.trim_point,
+                commit_id: commit_id(&value.commit_id)?,
+            })
+        }
+        wire::idempotency_observation::Outcome::Delete(value) => {
+            IdempotencyOutcome::Delete(DeleteReceipt {
+                path: path(value.path)?,
+                commit_id: commit_id(&value.commit_id)?,
+            })
+        }
+        wire::idempotency_observation::Outcome::Commit(value) => {
+            IdempotencyOutcome::Commit(commit_outcome_from_wire(value)?)
+        }
+    };
+    Ok(IdempotencyObservation {
+        idempotency_key: IdempotencyKey::new(value.idempotency_key)?,
+        request_digest,
+        outcome,
+    })
+}
+
+fn bind_observation(
+    requested: IdempotencyKey,
+    observation: Option<wire::IdempotencyObservation>,
+) -> Result<Option<IdempotencyObservation>, StreamError> {
+    let observation = observation.map(observation_from_wire).transpose()?;
+    if observation
+        .as_ref()
+        .is_some_and(|observation| observation.idempotency_key != requested)
+    {
+        return Err(StreamError::Unavailable);
+    }
+    Ok(observation)
+}
+
+fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObservation {
+    let outcome = match value.outcome {
+        IdempotencyOutcome::Append(value) => {
+            wire::idempotency_observation::Outcome::Append(append_outcome_wire(value))
+        }
+        IdempotencyOutcome::Fork(value) => {
+            wire::idempotency_observation::Outcome::Fork(fork_receipt_wire(value))
+        }
+        IdempotencyOutcome::Trim(value) => {
+            wire::idempotency_observation::Outcome::Trim(trim_receipt_wire(value))
+        }
+        IdempotencyOutcome::Delete(value) => {
+            wire::idempotency_observation::Outcome::Delete(delete_receipt_wire(value))
+        }
+        IdempotencyOutcome::Commit(value) => {
+            wire::idempotency_observation::Outcome::Commit(commit_outcome_wire(value))
+        }
+    };
+    wire::IdempotencyObservation {
+        idempotency_key: Bytes::copy_from_slice(value.idempotency_key.as_bytes()),
+        request_digest: Bytes::copy_from_slice(&value.request_digest),
+        outcome: Some(outcome),
+    }
+}
+
+fn append_outcome_from_wire(value: wire::AppendResponse) -> Result<AppendOutcome, StreamError> {
+    match value.outcome.ok_or(StreamError::Unavailable)? {
+        wire::append_response::Outcome::Committed(receipt) => {
+            Ok(AppendOutcome::Committed(append_receipt(receipt)?))
+        }
+        wire::append_response::Outcome::Conflict(conflict) => Ok(AppendOutcome::TailConflict {
+            actual_tail: conflict.actual_tail,
+        }),
+    }
+}
+
+fn append_outcome_wire(value: AppendOutcome) -> wire::AppendResponse {
+    let outcome = match value {
+        AppendOutcome::Committed(receipt) => {
+            wire::append_response::Outcome::Committed(append_receipt_wire(receipt))
+        }
+        AppendOutcome::TailConflict { actual_tail } => {
+            wire::append_response::Outcome::Conflict(wire::TailConflict { actual_tail })
+        }
+    };
+    wire::AppendResponse {
+        outcome: Some(outcome),
+    }
+}
+
+fn commit_outcome_from_wire(value: wire::CommitResponse) -> Result<CommitOutcome, StreamError> {
+    match value.outcome.ok_or(StreamError::Unavailable)? {
+        wire::commit_response::Outcome::Committed(envelope) => {
+            Ok(CommitOutcome::Committed(envelope_from_wire(envelope)?))
+        }
+        wire::commit_response::Outcome::Conflict(conflicts) => Ok(CommitOutcome::Conflict(
+            conflicts
+                .conflicts
+                .into_iter()
+                .map(conflict_from_wire)
+                .collect::<Result<_, _>>()?,
+        )),
+    }
+}
+
+fn commit_outcome_wire(value: CommitOutcome) -> wire::CommitResponse {
+    let outcome = match value {
+        CommitOutcome::Committed(envelope) => {
+            wire::commit_response::Outcome::Committed(envelope_wire(envelope))
+        }
+        CommitOutcome::Conflict(conflicts) => {
+            wire::commit_response::Outcome::Conflict(wire::CommitConflicts {
+                conflicts: conflicts.into_iter().map(conflict_wire).collect(),
+            })
+        }
+    };
+    wire::CommitResponse {
+        outcome: Some(outcome),
     }
 }
 
@@ -1079,6 +1211,23 @@ mod tests {
     use crate::MemoryStream;
     use wire::stream_service_server::StreamService;
 
+    #[test]
+    fn inspection_rejects_an_observation_for_another_retry_identity() -> Result<(), StreamError> {
+        let requested = IdempotencyKey::new(Bytes::from_static(b"requested"))?;
+        let forged = wire::IdempotencyObservation {
+            idempotency_key: Bytes::from_static(b"other"),
+            request_digest: Bytes::from_static(&[7; 32]),
+            outcome: Some(wire::idempotency_observation::Outcome::Append(
+                append_outcome_wire(AppendOutcome::TailConflict { actual_tail: 3 }),
+            )),
+        };
+        assert_eq!(
+            bind_observation(requested, Some(forged)),
+            Err(StreamError::Unavailable)
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn service_maps_the_canonical_contract_without_an_alternate_state_machine()
     -> Result<(), Status> {
@@ -1097,6 +1246,22 @@ mod tests {
         };
         if receipt.start != 0 || receipt.end != 1 || receipt.commit_id.len() != 32 {
             return Err(Status::internal("append receipt changed"));
+        }
+        let observation = service
+            .inspect_idempotency(Request::new(wire::InspectIdempotencyRequest {
+                idempotency_key: Bytes::from_static(b"wire-append"),
+            }))
+            .await?
+            .into_inner()
+            .observation
+            .ok_or_else(|| Status::internal("idempotency observation missing"))?;
+        if observation.request_digest.len() != 32
+            || !matches!(
+                observation.outcome,
+                Some(wire::idempotency_observation::Outcome::Append(_))
+            )
+        {
+            return Err(Status::internal("idempotency observation changed"));
         }
         let mut read = service
             .read(Request::new(wire::ReadRequest {

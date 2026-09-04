@@ -5,8 +5,8 @@ use futures::StreamExt as _;
 
 use crate::{
     AppendOutcome, AppendRequest, ChildrenRequest, CommitCondition, CommitConflict, CommitMutation,
-    CommitOutcome, CommitRequest, ForkRequest, IdempotencyKey, ReadRequest, StreamError,
-    StreamPath, StreamProvider,
+    CommitOutcome, CommitRequest, ForkRequest, IdempotencyKey, IdempotencyOutcome, ReadRequest,
+    StreamError, StreamPath, StreamProvider,
 };
 
 /// Canonical language-neutral Stream conformance inventory.
@@ -20,6 +20,14 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     let source = path("conformance/source")?;
     let child = path("conformance/child")?;
     let append_key = key(b"stream-append")?;
+    if provider
+        .inspect_idempotency(append_key.clone())
+        .await
+        .map_err(error)?
+        .is_some()
+    {
+        return Err("unknown idempotency identity was reported as retained".into());
+    }
     let initial = AppendRequest {
         path: source.clone(),
         records: vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
@@ -42,12 +50,23 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             path: source.clone(),
             records: vec![Bytes::from_static(b"different")],
             if_tail: Some(0),
-            idempotency_key: Some(append_key),
+            idempotency_key: Some(append_key.clone()),
         })
         .await
         != Err(StreamError::IdempotencyMismatch)
     {
         return Err("changed idempotency arguments were accepted".into());
+    }
+    let append_observation = provider
+        .inspect_idempotency(append_key.clone())
+        .await
+        .map_err(error)?
+        .ok_or_else(|| "committed append identity was not retained".to_owned())?;
+    if append_observation.idempotency_key != append_key
+        || append_observation.request_digest == [0; 32]
+        || append_observation.outcome != IdempotencyOutcome::Append(first.clone())
+    {
+        return Err("append inspection did not return the exact retained outcome".into());
     }
     if provider
         .append(AppendRequest {
@@ -197,6 +216,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         return Err("coordinated commit replay or envelope changed".into());
     }
     let absent = path("conformance/absent-tail")?;
+    let absent_key = key(b"stream-absent-tail")?;
     let absent_request = CommitRequest {
         conditions: vec![CommitCondition::Tail {
             path: absent.clone(),
@@ -206,7 +226,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             path: absent.clone(),
             records: vec![Bytes::from_static(b"must-not-commit")],
         }],
-        idempotency_key: key(b"stream-absent-tail")?,
+        idempotency_key: absent_key.clone(),
     };
     let absent_conflict = CommitOutcome::Conflict(vec![CommitConflict::Tail {
         path: absent.clone(),
@@ -222,6 +242,17 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         || provider.tail(absent).await != Err(StreamError::NotFound)
     {
         return Err("absent tail condition did not return one replayable conflict".into());
+    }
+    let absent_observation = provider
+        .inspect_idempotency(absent_key.clone())
+        .await
+        .map_err(error)?
+        .ok_or_else(|| "commit conflict identity was not retained".to_owned())?;
+    if absent_observation.idempotency_key != absent_key
+        || absent_observation.request_digest == [0; 32]
+        || absent_observation.outcome != IdempotencyOutcome::Commit(absent_conflict)
+    {
+        return Err("commit-conflict inspection did not preserve the terminal result".into());
     }
     Ok(())
 }

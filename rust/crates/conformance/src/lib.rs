@@ -11,8 +11,8 @@ use acyclic_machines::{
 use acyclic_objects::{GetRequest, ObjectsProvider, PutRequest, ReadTarget, wire};
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
-    ForkRequest, IdempotencyKey as StreamIdempotencyKey, ReadRequest, StreamError, StreamPath,
-    StreamProvider,
+    ForkRequest, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, ReadRequest,
+    StreamError, StreamPath, StreamProvider,
 };
 use bytes::Bytes;
 use futures::StreamExt;
@@ -83,6 +83,17 @@ pub async fn stream(provider: &dyn StreamProvider) -> Result<(), String> {
             != first
     {
         return Err("atomic append or exact replay changed its receipt".into());
+    }
+    let append_observation = provider
+        .inspect_idempotency(append_key.clone())
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "committed append identity was not retained".to_owned())?;
+    if append_observation.idempotency_key != append_key
+        || append_observation.request_digest == [0; 32]
+        || append_observation.outcome != IdempotencyOutcome::Append(first.clone())
+    {
+        return Err("append inspection did not preserve its exact retained outcome".into());
     }
     let mismatch = provider
         .append(AppendRequest {
@@ -191,6 +202,16 @@ pub async fn stream(provider: &dyn StreamProvider) -> Result<(), String> {
             != *envelope
     {
         return Err("coordinated commit replay or envelope changed".into());
+    }
+    let commit_observation = provider
+        .inspect_idempotency(parse_key(b"stream-commit")?)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "committed transaction identity was not retained".to_owned())?;
+    if commit_observation.request_digest == [0; 32]
+        || commit_observation.outcome != IdempotencyOutcome::Commit(committed)
+    {
+        return Err("commit inspection did not preserve its exact retained outcome".into());
     }
     Ok(())
 }

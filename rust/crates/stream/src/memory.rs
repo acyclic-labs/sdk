@@ -15,9 +15,9 @@ use crate::{
     AppendOutcome, AppendReceipt, AppendRequest, Child, ChildStream, ChildrenRequest,
     CommitCondition, CommitConflict, CommitId, CommitMutation, CommitOutcome, CommitRequest,
     CommittedAppend, CommittedDelete, CommittedEnvelope, CommittedFork, CommittedMutation,
-    CommittedTrim, DeleteReceipt, ForkReceipt, ForkRequest, IdempotencyKey, MAX_COMMAND_BYTES,
-    MAX_ITEMS, MAX_RECORD_BYTES, ReadRequest, Record, RecordStream, StreamError, StreamPath,
-    StreamProvider, TrimReceipt,
+    CommittedTrim, DeleteReceipt, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
+    IdempotencyOutcome, MAX_COMMAND_BYTES, MAX_ITEMS, MAX_RECORD_BYTES, ReadRequest, Record,
+    RecordStream, StreamError, StreamPath, StreamProvider, TrimReceipt,
 };
 
 /// Explicit fail-closed process-memory ceilings.
@@ -108,20 +108,26 @@ enum History {
 #[derive(Clone)]
 struct Replay {
     digest: [u8; 32],
-    result: ReplayResult,
-}
-
-#[derive(Clone)]
-enum ReplayResult {
-    Append(AppendOutcome),
-    Fork(ForkReceipt),
-    Trim(TrimReceipt),
-    Delete(DeleteReceipt),
-    Commit(CommitOutcome),
+    result: IdempotencyOutcome,
 }
 
 #[async_trait]
 impl StreamProvider for MemoryStream {
+    async fn inspect_idempotency(
+        &self,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<Option<IdempotencyObservation>, StreamError> {
+        let state = self.state.read().await;
+        Ok(state
+            .replays
+            .get(idempotency_key.as_bytes())
+            .map(|replay| IdempotencyObservation {
+                idempotency_key,
+                request_digest: replay.digest,
+                outcome: replay.result.clone(),
+            }))
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         let state = self.state.read().await;
         reject_retired(&state, &path)?;
@@ -152,7 +158,7 @@ impl StreamProvider for MemoryStream {
                 &mut state,
                 request.idempotency_key,
                 digest,
-                ReplayResult::Append(result.clone()),
+                IdempotencyOutcome::Append(result.clone()),
             );
             return Ok(result);
         }
@@ -202,7 +208,7 @@ impl StreamProvider for MemoryStream {
             &mut state,
             request.idempotency_key,
             digest,
-            ReplayResult::Append(result.clone()),
+            IdempotencyOutcome::Append(result.clone()),
         );
         Ok(result)
     }
@@ -268,7 +274,7 @@ impl StreamProvider for MemoryStream {
             &mut state,
             request.idempotency_key,
             digest,
-            ReplayResult::Fork(receipt.clone()),
+            IdempotencyOutcome::Fork(receipt.clone()),
         );
         Ok(receipt)
     }
@@ -311,7 +317,7 @@ impl StreamProvider for MemoryStream {
             &mut state,
             Some(idempotency_key),
             digest,
-            ReplayResult::Trim(receipt.clone()),
+            IdempotencyOutcome::Trim(receipt.clone()),
         );
         Ok(receipt)
     }
@@ -356,7 +362,7 @@ impl StreamProvider for MemoryStream {
             &mut state,
             Some(idempotency_key),
             digest,
-            ReplayResult::Delete(receipt.clone()),
+            IdempotencyOutcome::Delete(receipt.clone()),
         );
         Ok(receipt)
     }
@@ -479,7 +485,7 @@ impl StreamProvider for MemoryStream {
                 &mut state,
                 Some(request.idempotency_key),
                 digest,
-                ReplayResult::Commit(result.clone()),
+                IdempotencyOutcome::Commit(result.clone()),
             );
             return Ok(result);
         }
@@ -510,7 +516,7 @@ impl StreamProvider for MemoryStream {
             &mut state,
             Some(request.idempotency_key),
             digest,
-            ReplayResult::Commit(result.clone()),
+            IdempotencyOutcome::Commit(result.clone()),
         );
         Ok(result)
     }
@@ -771,7 +777,7 @@ fn replay(
     state: &State,
     key: Option<&crate::IdempotencyKey>,
     digest: [u8; 32],
-) -> Result<Option<ReplayResult>, StreamError> {
+) -> Result<Option<IdempotencyOutcome>, StreamError> {
     let Some(key) = key else { return Ok(None) };
     let Some(replay) = state.replays.get(key.as_bytes()) else {
         return Ok(None);
@@ -788,7 +794,7 @@ fn replay_append(
     digest: [u8; 32],
 ) -> Result<Option<AppendOutcome>, StreamError> {
     match replay(state, key, digest)? {
-        Some(ReplayResult::Append(result)) => Ok(Some(result)),
+        Some(IdempotencyOutcome::Append(result)) => Ok(Some(result)),
         Some(_) => Err(StreamError::IdempotencyMismatch),
         None => Ok(None),
     }
@@ -800,7 +806,7 @@ fn replay_fork(
     digest: [u8; 32],
 ) -> Result<Option<ForkReceipt>, StreamError> {
     match replay(state, key, digest)? {
-        Some(ReplayResult::Fork(result)) => Ok(Some(result)),
+        Some(IdempotencyOutcome::Fork(result)) => Ok(Some(result)),
         Some(_) => Err(StreamError::IdempotencyMismatch),
         None => Ok(None),
     }
@@ -812,7 +818,7 @@ fn replay_trim(
     digest: [u8; 32],
 ) -> Result<Option<TrimReceipt>, StreamError> {
     match replay(state, Some(key), digest)? {
-        Some(ReplayResult::Trim(result)) => Ok(Some(result)),
+        Some(IdempotencyOutcome::Trim(result)) => Ok(Some(result)),
         Some(_) => Err(StreamError::IdempotencyMismatch),
         None => Ok(None),
     }
@@ -824,7 +830,7 @@ fn replay_delete(
     digest: [u8; 32],
 ) -> Result<Option<DeleteReceipt>, StreamError> {
     match replay(state, Some(key), digest)? {
-        Some(ReplayResult::Delete(result)) => Ok(Some(result)),
+        Some(IdempotencyOutcome::Delete(result)) => Ok(Some(result)),
         Some(_) => Err(StreamError::IdempotencyMismatch),
         None => Ok(None),
     }
@@ -836,7 +842,7 @@ fn replay_commit(
     digest: [u8; 32],
 ) -> Result<Option<CommitOutcome>, StreamError> {
     match replay(state, Some(key), digest)? {
-        Some(ReplayResult::Commit(result)) => Ok(Some(result)),
+        Some(IdempotencyOutcome::Commit(result)) => Ok(Some(result)),
         Some(_) => Err(StreamError::IdempotencyMismatch),
         None => Ok(None),
     }
@@ -858,7 +864,7 @@ fn retain_replay(
     state: &mut State,
     key: Option<crate::IdempotencyKey>,
     digest: [u8; 32],
-    result: ReplayResult,
+    result: IdempotencyOutcome,
 ) {
     if let Some(key) = key {
         state.replays.insert(
@@ -1418,7 +1424,16 @@ mod tests {
             idempotency_key: Some(key(b"only-key")?),
         };
         let committed = provider.append(request.clone()).await?;
-        assert_eq!(provider.append(request.clone()).await, Ok(committed));
+        assert_eq!(
+            provider.append(request.clone()).await,
+            Ok(committed.clone())
+        );
+        let observation = provider
+            .inspect_idempotency(key(b"only-key")?)
+            .await?
+            .ok_or(StreamError::Unavailable)?;
+        assert_ne!(observation.request_digest, [0; 32]);
+        assert_eq!(observation.outcome, IdempotencyOutcome::Append(committed));
         assert_eq!(
             provider
                 .append(AppendRequest {

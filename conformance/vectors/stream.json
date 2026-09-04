@@ -5,6 +5,7 @@
     "atomic-batch-and-contiguous-zero-based-sequences",
     "tail-cas-conflict-is-data-and-mutates-nothing",
     "exact-idempotency-replay-and-argument-mismatch",
+    "native-idempotency-inspection-of-success-and-conflict",
     "immutable-prefix-fork-and-independent-suffixes",
     "finite-read-and-gapless-follow-handoff",
     "fixed-snapshot-direct-child-listing",
