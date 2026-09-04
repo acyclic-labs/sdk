@@ -216,16 +216,6 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             lineage_path(destination_authority).map_err(OperationFailure::before_work)?;
         let destination_locator = generation_path(destination_authority, source_generation)
             .map_err(OperationFailure::before_work)?;
-        let source_tail = self
-            .provider
-            .tail(source_lineage.clone())
-            .await
-            .map_err(|error| OperationFailure::before_work(map_stream_error(error)))?;
-        if source_tail < forked_at {
-            return Err(OperationFailure::before_work(AuthorityStoreError::Corrupt(
-                "generation locator exceeds the source lineage".to_owned(),
-            )));
-        }
         if let Some(head) = self
             .existing_fork_destination(destination_authority, source_generation, forked_at)
             .await
@@ -233,16 +223,12 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         {
             return authority_success(
                 CreateAuthorityOutcome::Existing(head),
-                authority_read_work(9),
+                authority_read_work(8),
                 budget,
             );
         }
         let request = acyclic_stream::CommitRequest {
             conditions: vec![
-                acyclic_stream::CommitCondition::Tail {
-                    path: source_lineage.clone(),
-                    expected: source_tail,
-                },
                 acyclic_stream::CommitCondition::Absent {
                     path: destination_records.clone(),
                 },
@@ -279,8 +265,8 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 .map_err(OperationFailure::before_work)?,
         };
         let mut work = authority_write_work(4, 96);
-        work.authority_records_read = 4;
-        work.backend_read_operations = 4;
+        work.authority_records_read = 3;
+        work.backend_read_operations = 3;
         admit_authority(work, budget)?;
         match self.provider.commit(request).await {
             Ok(acyclic_stream::CommitOutcome::Committed(_)) => authority_success(
