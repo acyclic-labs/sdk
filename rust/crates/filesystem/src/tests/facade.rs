@@ -7155,7 +7155,7 @@ fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         .ok_or("equal refresh blocked")??;
     assert_eq!(equal.value, advanced.value);
     assert_eq!(equal.work.object_probes, 0);
-    assert_eq!(equal.work.backend_read_operations, 2);
+    assert_eq!(equal.work.backend_read_operations, 3);
 
     assert!(!dirty.dependencies.is_empty());
     poll_ready(dirty.discard(WorkBudget::UNBOUNDED, &cancellation)).ok_or("discard blocked")??;

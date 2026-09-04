@@ -759,12 +759,9 @@ mod tests {
         Lifecycle, MutationMode, VolumeConfig, VolumeLimits,
     };
     use crate::path::PortablePath;
-    use crate::{
-        CancellationToken, Checkout, CheckoutMountSource, Fs, MemoryAuthorityStore,
-        MemoryObjectStore, SharedCheckout, WorkBudget,
-    };
+    use crate::{CancellationToken, CheckoutMountSource, Fs, SharedCheckout, WorkBudget};
 
-    type MemoryCheckout = Checkout<MemoryAuthorityStore, MemoryObjectStore>;
+    type MemoryCheckout = crate::facade::MemoryCheckout;
 
     fn metadata() -> FileMetadata {
         FileMetadata::default()

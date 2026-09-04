@@ -393,6 +393,42 @@ mod tests {
     async fn memory_profile_conforms() -> Result<(), String> {
         let profile = MemoryProfile::new();
         filesystem_smoke(&profile.filesystem).await?;
+
+        let stream_children = profile
+            .stream
+            .children(acyclic_stream::ChildrenRequest {
+                parent: None,
+                limit: 8,
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .collect::<Vec<_>>()
+            .await;
+        if !stream_children.iter().any(|child| {
+            child
+                .as_ref()
+                .is_ok_and(|child| child.path.as_str() == "fs")
+        }) {
+            return Err("filesystem did not publish through the profile's public Stream".into());
+        }
+        let filesystem_objects = profile
+            .objects
+            .list(
+                ReadTarget::Bucket(profile.filesystem_bucket.clone()),
+                "fs/v1/".to_owned(),
+                None,
+                true,
+                128,
+                None,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if filesystem_objects.entries.is_empty() {
+            return Err(
+                "filesystem did not admit objects through the profile's public Objects".into(),
+            );
+        }
+
         stream(&profile.stream).await?;
         objects(&profile.objects).await?;
         machines(&profile.machines).await?;

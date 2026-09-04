@@ -277,8 +277,8 @@ struct IdempotencyRecord {
     outcome: MutationOutcome,
 }
 
-#[derive(Default)]
 struct State {
+    maximum_bytes: usize,
     sequence: u64,
     bytes: usize,
     names: BTreeMap<String, String>,
@@ -287,6 +287,22 @@ struct State {
     multiparts: BTreeMap<String, MultipartState>,
     listings: BTreeMap<String, ListingView>,
     idempotency: BTreeMap<String, IdempotencyRecord>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            maximum_bytes: MEMORY_BYTES,
+            sequence: 0,
+            bytes: 0,
+            names: BTreeMap::new(),
+            buckets: BTreeMap::new(),
+            snapshots: BTreeMap::new(),
+            multiparts: BTreeMap::new(),
+            listings: BTreeMap::new(),
+            idempotency: BTreeMap::new(),
+        }
+    }
 }
 
 /// Bounded deterministic process-local reference provider.
@@ -299,6 +315,81 @@ pub struct MemoryObjects {
 }
 
 impl MemoryObjects {
+    /// Creates the default bounded reference provider with one deterministic bucket.
+    #[must_use]
+    pub fn with_default_bucket() -> (Self, wire::BucketRef) {
+        Self::from_bucket("memory-bucket".to_owned(), MEMORY_BYTES)
+    }
+
+    /// Creates an empty reference provider with an explicit aggregate byte ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero or process-unrepresentable limits before allocating provider state.
+    pub fn new(maximum_bytes: u64) -> Result<Self, ObjectsError> {
+        let maximum_bytes = usize::try_from(maximum_bytes)
+            .map_err(|_| ObjectsError::Invalid("memory byte limit is not representable"))?;
+        if maximum_bytes == 0 {
+            return Err(ObjectsError::Invalid("memory byte limit must be positive"));
+        }
+        Ok(Self {
+            state: Arc::new(Mutex::new(State {
+                maximum_bytes,
+                ..State::default()
+            })),
+        })
+    }
+
+    /// Creates a bounded provider with one deterministic bucket already admitted.
+    ///
+    /// This synchronous constructor lets another in-process SDK family compose the exact public
+    /// reference provider without running an executor merely to establish its private bucket.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid bucket name or memory ceiling.
+    pub fn with_bucket(
+        name: impl Into<String>,
+        maximum_bytes: u64,
+    ) -> Result<(Self, wire::BucketRef), ObjectsError> {
+        let maximum_bytes = usize::try_from(maximum_bytes)
+            .map_err(|_| ObjectsError::Invalid("memory byte limit is not representable"))?;
+        if maximum_bytes == 0 {
+            return Err(ObjectsError::Invalid("memory byte limit must be positive"));
+        }
+        let name = name.into();
+        Self::validate_bucket_name(&name)?;
+        Ok(Self::from_bucket(name, maximum_bytes))
+    }
+
+    fn from_bucket(name: String, maximum_bytes: usize) -> (Self, wire::BucketRef) {
+        let bucket_id = "bucket-0000000000000001".to_owned();
+        let reference = wire::BucketRef {
+            bucket_id: bucket_id.clone(),
+            name: name.clone(),
+        };
+        let mut state = State {
+            maximum_bytes,
+            sequence: 1,
+            ..State::default()
+        };
+        state.names.insert(name, bucket_id.clone());
+        state.buckets.insert(
+            bucket_id,
+            BucketState {
+                reference: reference.clone(),
+                created_at: Self::timestamp(&state),
+                objects: BTreeMap::new(),
+            },
+        );
+        (
+            Self {
+                state: Arc::new(Mutex::new(state)),
+            },
+            reference,
+        )
+    }
+
     fn fingerprint(kind: &str, fields: &[&[u8]]) -> blake3::Hash {
         let mut hasher = blake3::Hasher::new();
         for field in std::iter::once(kind.as_bytes()).chain(fields.iter().copied()) {
@@ -426,6 +517,24 @@ impl MemoryObjects {
     fn validate_key(value: &str) -> Result<(), ObjectsError> {
         if value.is_empty() || value.len() > limits::KEY_BYTES || value.contains('\0') {
             Err(ObjectsError::Invalid("invalid object key"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_bucket_name(name: &str) -> Result<(), ObjectsError> {
+        let valid_edges = name
+            .as_bytes()
+            .first()
+            .zip(name.as_bytes().last())
+            .is_some_and(|(first, last)| {
+                first.is_ascii_alphanumeric() && last.is_ascii_alphanumeric()
+            });
+        let valid_body = name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+        if !(3..=63).contains(&name.len()) || !valid_edges || !valid_body {
+            Err(ObjectsError::Invalid("invalid bucket name"))
         } else {
             Ok(())
         }
@@ -644,19 +753,7 @@ impl ObjectsProvider for MemoryObjects {
         name: String,
         idempotency_key: Option<String>,
     ) -> Result<wire::Bucket, ObjectsError> {
-        let valid_edges = name
-            .as_bytes()
-            .first()
-            .zip(name.as_bytes().last())
-            .is_some_and(|(first, last)| {
-                first.is_ascii_alphanumeric() && last.is_ascii_alphanumeric()
-            });
-        let valid_body = name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
-        if !(3..=63).contains(&name.len()) || !valid_edges || !valid_body {
-            return Err(ObjectsError::Invalid("invalid bucket name"));
-        }
+        Self::validate_bucket_name(&name)?;
         let fingerprint = Self::fingerprint("create-bucket", &[name.as_bytes()]);
         let mut state = self.state.lock().await;
         Self::execute(
@@ -776,7 +873,7 @@ impl ObjectsProvider for MemoryObjects {
                 if state
                     .bytes
                     .checked_add(size)
-                    .is_none_or(|bytes| bytes > MEMORY_BYTES)
+                    .is_none_or(|bytes| bytes > state.maximum_bytes)
                 {
                     return Err(ObjectsError::Capacity);
                 }
@@ -1222,7 +1319,7 @@ impl ObjectsProvider for MemoryObjects {
                     .saturating_sub(existing_size)
                     .checked_add(body.len())
                     .ok_or(ObjectsError::Capacity)?;
-                if projected > MEMORY_BYTES {
+                if projected > state.maximum_bytes {
                     return Err(ObjectsError::Capacity);
                 }
                 let part = wire::UploadedPart {
@@ -1427,6 +1524,40 @@ mod tests {
             })
             .await
             .unwrap_or_else(|_| unreachable!())
+    }
+
+    #[tokio::test]
+    async fn synchronous_bucket_composition_is_exact_and_capacity_bounded() {
+        assert!(matches!(
+            MemoryObjects::new(0),
+            Err(ObjectsError::Invalid("memory byte limit must be positive"))
+        ));
+        assert!(MemoryObjects::with_bucket("INVALID", 4).is_err());
+
+        let (store, bucket) =
+            MemoryObjects::with_bucket("embedded", 4).unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            store
+                .head_bucket(&bucket)
+                .await
+                .unwrap_or_else(|_| unreachable!())
+                .bucket,
+            Some(bucket.clone())
+        );
+        put(&store, &bucket, "full", b"four", None).await;
+        assert_eq!(
+            store
+                .put(PutRequest {
+                    bucket,
+                    object_key: "overflow".into(),
+                    body: bytes::Bytes::from_static(b"x"),
+                    metadata: metadata(),
+                    condition: None,
+                    idempotency_key: None,
+                })
+                .await,
+            Err(ObjectsError::Capacity)
+        );
     }
 
     #[tokio::test]

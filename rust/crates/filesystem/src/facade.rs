@@ -278,6 +278,40 @@ pub type LocalFs = Fs<LocalAuthorityBackend, LocalObjectBackend>;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub type LocalVolume = Volume<LocalAuthorityBackend, LocalObjectBackend>;
 
+/// Deterministic in-process composition over the exact public Stream and Objects providers.
+#[cfg(all(
+    feature = "memory",
+    feature = "distributed",
+    not(target_arch = "wasm32")
+))]
+pub type MemoryFs = Fs<MemoryAuthorityBackend, MemoryObjectBackend>;
+
+#[cfg(all(
+    feature = "memory",
+    feature = "distributed",
+    not(target_arch = "wasm32")
+))]
+/// Filesystem authority adapter backed by the public in-memory Stream provider.
+pub type MemoryAuthorityBackend =
+    crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>;
+
+#[cfg(all(
+    feature = "memory",
+    feature = "distributed",
+    not(target_arch = "wasm32")
+))]
+/// Filesystem object adapter backed by the public in-memory Objects provider.
+pub type MemoryObjectBackend =
+    crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>;
+
+#[cfg(all(
+    test,
+    feature = "memory",
+    feature = "distributed",
+    not(target_arch = "wasm32")
+))]
+pub(crate) type MemoryCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
+
 /// Ephemeral path-independent regular file retained by an open native handle.
 ///
 /// Detached files share immutable objects with their originating volume but
@@ -1002,7 +1036,7 @@ impl<A, S> Fs<A, crate::cache::CachedObjectStore<S>> {
     }
 }
 
-#[cfg(feature = "memory")]
+#[cfg(all(feature = "memory", target_arch = "wasm32"))]
 impl Fs<crate::memory::MemoryAuthorityStore, crate::memory::MemoryObjectStore> {
     /// Creates the deterministic infrastructure-free memory composition.
     #[must_use]
@@ -1027,6 +1061,61 @@ impl Fs<crate::memory::MemoryAuthorityStore, crate::memory::MemoryObjectStore> {
             objects,
             EmbeddedCapabilities::MEMORY,
         ))
+    }
+}
+
+#[cfg(all(
+    feature = "memory",
+    feature = "distributed",
+    not(target_arch = "wasm32")
+))]
+impl
+    Fs<
+        crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>,
+        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+    >
+{
+    /// Creates the deterministic infrastructure-free composition from the exact public reference
+    /// Stream and Objects providers used by hosted-service tests.
+    #[must_use]
+    pub fn memory() -> Self {
+        let stream = std::sync::Arc::new(acyclic_stream::MemoryStream::default());
+        let (objects, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
+        Self::from_memory_providers(stream, std::sync::Arc::new(objects), bucket)
+    }
+
+    /// Creates the public-provider memory composition with an explicit aggregate object ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a zero or process-unrepresentable object bound before allocating provider state.
+    pub fn memory_bounded(maximum_object_bytes: u64) -> Result<Self, FsError> {
+        let stream = std::sync::Arc::new(acyclic_stream::MemoryStream::default());
+        let (objects, bucket) =
+            acyclic_objects::MemoryObjects::with_bucket("acyclic-fs-memory", maximum_object_bytes)
+                .map_err(|error| FsError::Object(ObjectStoreError::Rejected(error.to_string())))?;
+        Ok(Self::from_memory_providers(
+            stream,
+            std::sync::Arc::new(objects),
+            bucket,
+        ))
+    }
+
+    /// Composes Filesystem over caller-owned public reference providers.
+    ///
+    /// Clones of the same providers may be retained to test cross-family behavior without any
+    /// shadow filesystem storage implementation.
+    #[must_use]
+    pub fn from_memory_providers(
+        stream: std::sync::Arc<acyclic_stream::MemoryStream>,
+        objects: std::sync::Arc<acyclic_objects::MemoryObjects>,
+        bucket: acyclic_objects::wire::BucketRef,
+    ) -> Self {
+        Self::new(
+            crate::distributed::StreamAuthorityStore::new(stream),
+            crate::distributed::ProviderObjectStore::new(objects, bucket),
+            EmbeddedCapabilities::MEMORY,
+        )
     }
 }
 

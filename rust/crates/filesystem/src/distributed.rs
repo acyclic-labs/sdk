@@ -746,7 +746,16 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             .operation(authority_id, operation_id)
             .await
             .map_err(OperationFailure::before_work)?;
-        authority_success(value, authority_read_work(1), budget)
+        let records_read = u64::from(value.is_some());
+        authority_success(
+            value,
+            WorkCounters {
+                authority_records_read: records_read,
+                backend_read_operations: 1,
+                ..WorkCounters::default()
+            },
+            budget,
+        )
     }
 }
 
@@ -795,9 +804,6 @@ impl<P: ObjectsProvider> AsyncObjectStore for ProviderObjectStore<P> {
             backend_write_operations: 1,
             object_bytes_written: byte_count,
             bytes_hashed: byte_count,
-            bytes_copied: byte_count,
-            allocation_operations: u64::from(!bytes.is_empty()),
-            peak_allocation_bytes: byte_count,
             ..WorkCounters::default()
         };
         admit(work, budget)?;
@@ -856,6 +862,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for ProviderObjectStore<P> {
             .map_err(|error| OperationFailure::before_work(map_objects_error(error)))?;
         let observed = u64::try_from(value.body.len()).unwrap_or(u64::MAX);
         let work = WorkCounters {
+            object_probes: 1,
             backend_read_operations: 1,
             object_bytes_read: observed,
             bytes_hashed: observed,

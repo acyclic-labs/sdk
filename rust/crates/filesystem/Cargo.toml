@@ -60,7 +60,7 @@ windows = { version = "0.62.2", features = [
 [features]
 default = ["local", "memory", "native-watch"]
 local = ["dep:fs2", "dep:rusqlite", "native-executor"]
-memory = []
+memory = ["distributed"]
 native-watch = ["dep:notify", "dep:tokio"]
 native-executor = ["dep:tokio"]
 native-mount = ["native-watch", "native-executor", "dep:fs2", "dep:fuser"]

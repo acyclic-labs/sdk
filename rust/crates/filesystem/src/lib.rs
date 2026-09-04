@@ -111,6 +111,12 @@ pub use facade::{
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use facade::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions, LocalVolume};
+#[cfg(all(
+    feature = "memory",
+    feature = "distributed",
+    not(target_arch = "wasm32")
+))]
+pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
 pub use foundation::{
     AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, AuthorityId, CheckoutId, Digest, DurableCommit, Epoch,
     FileId, GenerationId, Head, MountId, OperationId, ProposedCommit, Sequence, VolumeId, WatchId,

@@ -1834,14 +1834,17 @@ fn boundary_budget() -> WorkBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Fs;
     use crate::model::{
         AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
     };
-    use crate::{Fs, MemoryAuthorityStore, MemoryObjectStore};
     #[cfg(target_os = "linux")]
     use std::os::unix::ffi::OsStringExt;
 
-    type MemorySource = CheckoutMountSource<MemoryAuthorityStore, MemoryObjectStore>;
+    type MemorySource = CheckoutMountSource<
+        crate::facade::MemoryAuthorityBackend,
+        crate::facade::MemoryObjectBackend,
+    >;
 
     fn metadata() -> FileMetadata {
         FileMetadata {

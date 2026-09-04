@@ -5,10 +5,7 @@ use crate::facade::Fs;
 use crate::model::{CheckoutMode, GenerationSelector, Lifecycle, MutationMode, VolumeConfig};
 use crate::performance::WorkBudget;
 
-fn checkout() -> Result<
-    Checkout<crate::MemoryAuthorityStore, crate::MemoryObjectStore>,
-    Box<dyn std::error::Error>,
-> {
+fn checkout() -> Result<crate::facade::MemoryCheckout, Box<dyn std::error::Error>> {
     let fs = Fs::memory_bounded(crate::model::VolumeLimits::default().maximum_object_bytes)?;
     let cancellation = CancellationToken::default();
     let volume = poll_ready(fs.create_volume(
@@ -34,10 +31,7 @@ fn checkout() -> Result<
 
 fn same_volume_checkouts(
     count: usize,
-) -> Result<
-    Vec<Checkout<crate::MemoryAuthorityStore, crate::MemoryObjectStore>>,
-    Box<dyn std::error::Error>,
-> {
+) -> Result<Vec<crate::facade::MemoryCheckout>, Box<dyn std::error::Error>> {
     let fs = Fs::memory_bounded(crate::model::VolumeLimits::default().maximum_object_bytes)?;
     let cancellation = CancellationToken::default();
     let volume = poll_ready(fs.create_volume(
