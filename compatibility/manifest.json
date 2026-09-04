@@ -32,10 +32,10 @@
       "conformanceDigest": "sha256:f51d232ae2f6c1bdc6ab283dcd18a2a31ce022ebcd5780c556c674a53aacda50"
     },
     "inference": {
-      "version": "1.0.0-rc.1",
-      "schemaDigest": "sha256:054010878db5862e13c8fb33af0e5934a99c14b242065f9421dc4f7f702c342f",
-      "descriptorDigest": "sha256:006d5e33c8c9176ff7f31627388f76dfa23959f60932dca1a24537cfe132d9ca",
-      "conformanceDigest": "sha256:651937f5419c70f9f035de57d5f80025464795c036f77edf1589dcfce17808a3"
+      "version": "1.0.0-rc.2",
+      "schemaDigest": "sha256:c88c0226fc306cb2f084bc9652551e4b7b27b2689cc0960f9bfe20b7e1ff86ee",
+      "descriptorDigest": "sha256:b55e5cbb9f5fbd0a033881a147da91bd9354f19ce083793f38a14d0944973c32",
+      "conformanceDigest": "sha256:61a042319770d3bf1e5bfe7b57328e90431dcf798c67f48abb972b9231550139"
     }
   }
 }

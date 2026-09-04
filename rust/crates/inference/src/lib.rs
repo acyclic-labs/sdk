@@ -1,1406 +1,1116 @@
-//! Public Inference contract, ergonomic client handles, and deterministic memory provider.
+//! Customer-only immutable Context client. No physical or private protocol dependency.
 //!
-//! The public surface describes logical model work and retained Contexts. Placement,
-//! batching, physical caches, KV movement, workers, and rebalancing are provider internals.
+//! Context content operations are implemented independently of Run execution and
+//! warm retention. Their existence is not a claim of deployed service availability.
 
-use async_trait::async_trait;
-use bytes::Bytes;
-use std::collections::{BTreeMap, BTreeSet};
+#![forbid(unsafe_code)]
+
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use uuid::Uuid;
+use std::time::Duration;
+use tonic::Request;
+use tonic::metadata::{Ascii, MetadataValue};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
+use zeroize::{Zeroize, Zeroizing};
 
-/// Generated public gRPC messages and client/server bindings.
-#[allow(missing_docs, clippy::all)]
+/// Generated customer contract and service traits, also used by deterministic mocks.
+#[allow(missing_docs, unused_qualifications, clippy::all, clippy::pedantic)]
 pub mod wire {
-    /// Versioned public packages.
-    pub mod acyclic {
-        /// Inference Context and Run messages.
-        pub mod inference {
-            /// Inference protocol revision 1.
-            pub mod v1 {
-                tonic::include_proto!("acyclic.inference.v1");
-            }
-        }
+    tonic::include_proto!("inference.customer.v1");
+}
+
+/// Customer-only reflection; no backend descriptors or implementation are packaged.
+pub const DESCRIPTOR: &[u8] = include_bytes!("../inference_descriptor.bin");
+/// Bounded customer transport ceiling, not a published retention entitlement.
+pub const MAXIMUM_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+
+impl Drop for wire::Item {
+    fn drop(&mut self) {
+        self.payload.zeroize();
     }
 }
 
-/// Errors returned by the public Inference boundary.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+impl Drop for wire::Replace {
+    fn drop(&mut self) {
+        self.payload.zeroize();
+    }
+}
+
+impl Drop for wire::RunEvent {
+    fn drop(&mut self) {
+        scrub_run_event(self);
+    }
+}
+
+impl Drop for wire::RunResult {
+    fn drop(&mut self) {
+        scrub_run_result(self);
+    }
+}
+
+fn scrub_run_event(event: &mut wire::RunEvent) {
+    if let Some(wire::run_event::Event::Output(output)) = event.event.as_mut() {
+        output.zeroize();
+    }
+}
+
+fn scrub_run_result(result: &mut wire::RunResult) {
+    result.output.zeroize();
+}
+
+/// Transport or contract failure. Reuse the same builder to reconcile uncertainty.
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The requested resource does not exist.
-    #[error("resource not found: {0}")]
-    NotFound(String),
-    /// The request conflicts with an existing immutable identity or revision.
-    #[error("conflict: {0}")]
-    Conflict(String),
-    /// The selected model or service lacks a required capability.
-    #[error("unsupported capability: {0}")]
-    Unsupported(String),
-    /// The request is malformed or outside an advertised bound.
-    #[error("invalid request: {0}")]
-    Invalid(String),
+    /// Invalid configuration, request identity or response shape.
+    #[error("invalid customer contract: {0}")]
+    Invalid(&'static str),
+    /// Channel setup failed before an RPC was sent.
+    #[error("customer transport setup failed: {0}")]
+    Transport(#[from] tonic::transport::Error),
+    /// A failed observation never proves an admitted mutation was absent.
+    #[error("customer operation observation failed: {0}")]
+    Observation(#[from] tonic::Status),
 }
 
-/// Result returned by the public Inference SDK.
-pub type Result<T> = std::result::Result<T, Error>;
-
-mod grpc;
-pub use grpc::ManagedInference;
-
-const MAXIMUM_ITEMS: usize = 4_096;
-const MAXIMUM_CONTENT_BYTES: usize = 8 * 1024 * 1024;
-
-/// Stable identifier allocated before a logical request is dispatched.
-pub type RequestId = String;
-/// Stable immutable Context revision identifier.
-pub type ContextId = String;
-/// Stable recoverable Run identifier.
-pub type RunId = String;
-
-/// Canonical Context item kind.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ItemKind {
-    /// Global instruction.
-    Instruction,
-    /// System-authored content.
-    System,
-    /// Developer-authored content.
-    Developer,
-    /// User-authored content.
-    User,
-    /// Model-authored content.
-    Assistant,
-    /// Versioned tool definition.
-    ToolDefinition,
-    /// Complete validated tool call.
-    ToolCall,
-    /// Result linked to a tool call.
-    ToolResult,
-    /// Supported image content.
-    Image,
-    /// Supported audio content.
-    Audio,
-    /// Supported file content.
-    File,
-    /// Opaque model-specific continuation content.
-    Continuation,
+struct Connection {
+    channel: Channel,
+    authorization: Zeroizing<String>,
+    client_instance: [u8; 16],
 }
 
-/// One immutable canonical Context item.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Item {
-    /// Identity stable within its lineage.
-    pub id: String,
-    /// Semantic item kind.
-    pub kind: ItemKind,
-    /// Exact content bytes, shared across in-process forks without copying.
-    pub content: Bytes,
-    /// Tool-call relationship when required by the item kind.
-    pub link: Option<String>,
-    /// Exact originating execution profile for opaque continuation content.
-    pub continuation_profile: Option<String>,
-}
-
-impl Item {
-    /// Creates one text item with a fresh stable identity.
-    #[must_use]
-    pub fn text(kind: ItemKind, text: impl Into<String>) -> Self {
-        Self {
-            id: Uuid::new_v4().to_string(),
-            kind,
-            content: Bytes::from(text.into()),
-            link: None,
-            continuation_profile: None,
-        }
-    }
-}
-
-/// Explicit durable or admitted warm retention policy.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Retention {
-    /// Canonical content remains recoverable without a residency promise.
-    Durable,
-    /// Provider-admitted warm policy through an absolute Unix-millisecond deadline.
-    WarmUntil(u64),
-}
-
-impl Retention {
-    /// Requests an admitted warm policy until the supplied Unix-millisecond deadline.
-    #[must_use]
-    pub const fn warm_until(expires_at_unix_ms: u64) -> Self {
-        Self::WarmUntil(expires_at_unix_ms)
-    }
-}
-
-/// How a Context revision was produced.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Provenance {
-    /// Initial Context creation.
-    Created,
-    /// Immutable content mutation from a parent revision.
-    Derived,
-    /// Independent lineage fork over an exact source revision.
-    Forked {
-        /// Exact source revision.
-        source: ContextId,
-    },
-    /// Canonical content replayed for another model identity.
-    Transferred {
-        /// Source revision.
-        source: ContextId,
-        /// Whether compatible provider state was reused.
-        reused_compatible_state: bool,
-    },
-    /// Completed generation produced a continuation revision.
-    Generated {
-        /// Run that produced this revision.
-        run: RunId,
-    },
-}
-
-/// Immutable logical Context revision.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContextSnapshot {
-    /// Revision identity.
-    pub id: ContextId,
-    /// Independent lineage identity.
-    pub lineage: String,
-    /// Parent revision when one exists.
-    pub parent: Option<ContextId>,
-    /// Pinned provider model identity.
-    pub model: String,
-    /// Ordered canonical content.
-    pub items: Arc<[Item]>,
-    /// Current retention policy for this reference.
-    pub retention: Retention,
-    /// Revision provenance.
-    pub provenance: Provenance,
-}
-
-/// One exact item-addressed Context edit.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ContextEdit {
-    /// Append an item.
-    Append(Item),
-    /// Insert before the identified item.
-    InsertBefore {
-        /// Existing item identity.
-        target: String,
-        /// New item.
-        item: Item,
-    },
-    /// Insert after the identified item.
-    InsertAfter {
-        /// Existing item identity.
-        target: String,
-        /// New item.
-        item: Item,
-    },
-    /// Replace content while preserving identity, kind, and link.
-    Replace {
-        /// Existing item identity.
-        target: String,
-        /// Replacement bytes.
-        content: Bytes,
-    },
-    /// Delete one identified item.
-    Delete {
-        /// Existing item identity.
-        target: String,
-    },
-}
-
-impl ContextEdit {
-    /// Replaces one item's exact bytes while preserving its semantic identity.
-    #[must_use]
-    pub fn replace(target: impl Into<String>, text: impl Into<String>) -> Self {
-        Self::Replace {
-            target: target.into(),
-            content: Bytes::from(text.into()),
-        }
-    }
-}
-
-/// Provider-advertised model behavior, never inferred from an endpoint shape.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ModelCapabilities {
-    /// Exact model identity.
-    pub model: String,
-    /// Maximum canonical input bytes supported by this profile.
-    pub maximum_context_bytes: u64,
-    /// Maximum output units supported by this profile.
-    pub maximum_output: u64,
-    /// Supported logical features.
-    pub features: BTreeSet<String>,
-}
-
-/// Capability-checked generation controls.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GenerationSettings {
-    /// Maximum output units.
-    pub maximum_output: u64,
-    /// Optional reproducibility seed when the selected profile supports it.
-    pub seed: Option<u64>,
-}
-
-impl Default for GenerationSettings {
-    fn default() -> Self {
-        Self {
-            maximum_output: 1_024,
-            seed: None,
-        }
-    }
-}
-
-/// Four work-based logical quantities. Physical replicas never multiply these values.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Usage {
-    /// Input work newly computed.
-    pub new_prefill: u64,
-    /// Generated output work.
-    pub generated_output: u64,
-    /// Effective Context read work.
-    pub effective_context_reads: u64,
-    /// Retained logical byte-milliseconds settled by this receipt.
-    pub retained_byte_millis: u64,
-}
-
-/// Immutable settled logical usage receipt.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UsageReceipt {
-    /// Receipt identity.
-    pub id: String,
-    /// Exact model identity.
-    pub model: String,
-    /// Meter revision.
-    pub meter_revision: String,
-    /// Settled quantities.
-    pub usage: Usage,
-}
-
-/// Factual terminal Run state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RunTerminal {
-    /// Output and continuation completed.
-    Completed,
-    /// Output reached its admitted bound.
-    OutputLimited,
-    /// A complete validated tool call ended the Run.
-    ToolCall,
-    /// Model refusal.
-    Refusal,
-    /// Cancellation was confirmed.
-    Cancelled,
-    /// Execution failed after admission.
-    Failed,
-    /// Completion cannot be established.
-    Indeterminate,
-}
-
-/// Ordered replayable Run event payload.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RunEventKind {
-    /// Output bytes in order.
-    Output(Bytes),
-    /// Provisional usage observation.
-    Usage(Usage),
-    /// Exactly one factual terminal event.
-    Terminal(RunTerminal),
-}
-
-/// One ordered Run event. Observation may redeliver the same sequence.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RunEvent {
-    /// Monotonic sequence beginning at zero.
-    pub sequence: u64,
-    /// Event payload.
-    pub kind: RunEventKind,
-}
-
-/// Completed Run result.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RunResult {
-    /// Exact output bytes.
-    pub output: Bytes,
-    /// New continuation Context when valid.
-    pub context: Option<ContextSnapshot>,
-    /// Factual terminal state.
-    pub terminal: RunTerminal,
-    /// Immutable settled usage.
-    pub receipt: UsageReceipt,
-}
-
-/// Recoverable Run observation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RunSnapshot {
-    /// Run identity allocated before execution.
-    pub id: RunId,
-    /// Input Context revision.
-    pub input: ContextId,
-    /// Committed events.
-    pub events: Arc<[RunEvent]>,
-    /// Terminal result when settled.
-    pub result: Option<RunResult>,
-}
-
-/// Idempotent Context creation request.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CreateContextRequest {
-    /// Caller-retained request identity.
-    pub request_id: RequestId,
-    /// Model alias or exact identity resolved by the provider.
-    pub model: String,
-    /// Initial canonical items.
-    pub items: Vec<Item>,
-}
-
-/// Idempotent Context mutation request.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MutateContextRequest {
-    /// Caller-retained request identity.
-    pub request_id: RequestId,
-    /// Immutable source revision.
-    pub source: ContextId,
-    /// Exact mutation.
-    pub mutation: ContextMutation,
-}
-
-/// Context mutation preserving an immutable source.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ContextMutation {
-    /// Establish a new independently retained lineage.
-    Fork,
-    /// Apply exact item edits atomically.
-    Edit(Vec<ContextEdit>),
-    /// Retain an exact prefix; `None` means empty.
-    Truncate(Option<String>),
-    /// Replace selected items explicitly.
-    Compact {
-        /// Exact selected item identities.
-        selected: Vec<String>,
-        /// Explicit replacement items.
-        replacement: Vec<Item>,
-    },
-    /// Transfer canonical content to another pinned model.
-    Transfer {
-        /// Exact target model or provider-resolved alias.
-        model: String,
-    },
-}
-
-/// Idempotent Run admission request.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GenerateRequest {
-    /// Caller-retained request identity.
-    pub request_id: RequestId,
-    /// Immutable input Context revision.
-    pub context: ContextId,
-    /// New user input.
-    pub input: Item,
-    /// Exact generation controls.
-    pub settings: GenerationSettings,
-}
-
-/// Logical provider boundary shared by memory, customer-hosted, and managed adapters.
-#[async_trait]
-pub trait InferenceProvider: Send + Sync {
-    /// Lists exact accessible model profiles.
-    async fn models(&self) -> Result<Vec<ModelCapabilities>>;
-    /// Creates or reconciles one immutable Context.
-    async fn create_context(&self, request: CreateContextRequest) -> Result<ContextSnapshot>;
-    /// Reads one retained Context revision.
-    async fn inspect_context(&self, id: &str) -> Result<ContextSnapshot>;
-    /// Applies or reconciles one exact immutable mutation.
-    async fn mutate_context(&self, request: MutateContextRequest) -> Result<ContextSnapshot>;
-    /// Changes only this revision's retention reference.
-    async fn retain_context(&self, id: &str, retention: Retention) -> Result<ContextSnapshot>;
-    /// Deletes only this revision's reference.
-    async fn delete_context(&self, id: &str) -> Result<bool>;
-    /// Admits or reconciles one Run.
-    async fn generate(&self, request: GenerateRequest) -> Result<RunSnapshot>;
-    /// Observes one existing Run without executing a successor.
-    async fn inspect_run(&self, id: &str) -> Result<RunSnapshot>;
-    /// Replays committed events from an inclusive sequence and follows through terminal.
-    async fn run_events(&self, id: &str, from_sequence: u64) -> Result<Vec<RunEvent>> {
-        Ok(self
-            .inspect_run(id)
-            .await?
-            .events
-            .iter()
-            .filter(|event| event.sequence >= from_sequence)
-            .cloned()
-            .collect())
-    }
-    /// Requests cancellation of one existing Run.
-    async fn cancel_run(&self, id: &str) -> Result<RunSnapshot>;
-}
-
-#[derive(Default)]
-struct MemoryState {
-    contexts: BTreeMap<ContextId, ContextSnapshot>,
-    runs: BTreeMap<RunId, RunSnapshot>,
-    creates: BTreeMap<RequestId, (CreateContextRequest, ContextId)>,
-    mutations: BTreeMap<RequestId, (MutateContextRequest, ContextId)>,
-    generations: BTreeMap<RequestId, (GenerateRequest, RunId)>,
-}
-
-/// Deterministic bounded process-local provider for tests and local composition.
+/// Authenticated customer connection; infrastructure remains entirely service-owned.
 #[derive(Clone)]
-pub struct MemoryInference {
-    state: Arc<RwLock<MemoryState>>,
-    models: Arc<[ModelCapabilities]>,
-}
-
-impl Default for MemoryInference {
-    fn default() -> Self {
-        Self::new([ModelCapabilities {
-            model: "deterministic".to_owned(),
-            maximum_context_bytes: MAXIMUM_CONTENT_BYTES as u64,
-            maximum_output: 65_536,
-            features: BTreeSet::from([
-                "contexts".to_owned(),
-                "forks".to_owned(),
-                "recovery".to_owned(),
-            ]),
-        }])
-    }
-}
-
-impl MemoryInference {
-    /// Creates a memory provider with an exact model catalog.
-    #[must_use]
-    pub fn new(models: impl IntoIterator<Item = ModelCapabilities>) -> Self {
-        Self {
-            state: Arc::new(RwLock::new(MemoryState::default())),
-            models: models.into_iter().collect::<Vec<_>>().into(),
-        }
-    }
-
-    fn model(&self, model: &str) -> Result<&ModelCapabilities> {
-        self.models
-            .iter()
-            .find(|candidate| candidate.model == model)
-            .ok_or_else(|| Error::Unsupported(format!("model {model}")))
-    }
-}
-
-fn request_id() -> String {
-    Uuid::new_v4().to_string()
-}
-
-fn context_id() -> String {
-    Uuid::new_v4().to_string()
-}
-
-fn validate_items(items: &[Item]) -> Result<()> {
-    if items.len() > MAXIMUM_ITEMS {
-        return Err(Error::Invalid("Context item bound exceeded".to_owned()));
-    }
-    let mut ids = BTreeSet::new();
-    let mut bytes = 0_usize;
-    for item in items {
-        bytes = bytes
-            .checked_add(item.content.len())
-            .ok_or_else(|| Error::Invalid("Context byte bound overflowed".to_owned()))?;
-        if item.id.is_empty() || !ids.insert(item.id.clone()) {
-            return Err(Error::Invalid(
-                "Context item identity is invalid".to_owned(),
-            ));
-        }
-        let linked = matches!(item.kind, ItemKind::ToolCall | ItemKind::ToolResult);
-        let continuation = item.kind == ItemKind::Continuation;
-        if linked != item.link.is_some()
-            || continuation != item.continuation_profile.is_some()
-            || item
-                .continuation_profile
-                .as_ref()
-                .is_some_and(String::is_empty)
-        {
-            return Err(Error::Invalid("Context tool link is invalid".to_owned()));
-        }
-    }
-    if bytes > MAXIMUM_CONTENT_BYTES {
-        return Err(Error::Invalid("Context byte bound exceeded".to_owned()));
-    }
-    Ok(())
-}
-
-fn content_bytes(items: &[Item]) -> Result<u64> {
-    items.iter().try_fold(0_u64, |total, item| {
-        let item_bytes = u64::try_from(item.content.len())
-            .map_err(|_| Error::Invalid("Context byte bound overflowed".to_owned()))?;
-        total
-            .checked_add(item_bytes)
-            .ok_or_else(|| Error::Invalid("Context byte bound overflowed".to_owned()))
-    })
-}
-
-fn apply_edits(items: &mut Vec<Item>, edits: Vec<ContextEdit>) -> Result<()> {
-    for edit in edits {
-        match edit {
-            ContextEdit::Append(item) => items.push(item),
-            ContextEdit::InsertBefore { target, item } => {
-                let index = items
-                    .iter()
-                    .position(|candidate| candidate.id == target)
-                    .ok_or(Error::NotFound(target))?;
-                items.insert(index, item);
-            }
-            ContextEdit::InsertAfter { target, item } => {
-                let index = items
-                    .iter()
-                    .position(|candidate| candidate.id == target)
-                    .ok_or(Error::NotFound(target))?;
-                items.insert(index + 1, item);
-            }
-            ContextEdit::Replace { target, content } => {
-                let item = items
-                    .iter_mut()
-                    .find(|candidate| candidate.id == target)
-                    .ok_or(Error::NotFound(target))?;
-                item.content = content;
-            }
-            ContextEdit::Delete { target } => {
-                let index = items
-                    .iter()
-                    .position(|candidate| candidate.id == target)
-                    .ok_or(Error::NotFound(target))?;
-                items.remove(index);
-            }
-        }
-    }
-    validate_items(items)
-}
-
-#[async_trait]
-impl InferenceProvider for MemoryInference {
-    async fn models(&self) -> Result<Vec<ModelCapabilities>> {
-        Ok(self.models.to_vec())
-    }
-
-    async fn create_context(&self, request: CreateContextRequest) -> Result<ContextSnapshot> {
-        let model = self.model(&request.model)?;
-        validate_items(&request.items)?;
-        if content_bytes(&request.items)? > model.maximum_context_bytes {
-            return Err(Error::Invalid("model Context bound exceeded".to_owned()));
-        }
-        let mut state = self.state.write().await;
-        if let Some((prior, id)) = state.creates.get(&request.request_id) {
-            if prior != &request {
-                return Err(Error::Conflict(request.request_id));
-            }
-            return state
-                .contexts
-                .get(id)
-                .cloned()
-                .ok_or_else(|| Error::NotFound(id.clone()));
-        }
-        let id = context_id();
-        let snapshot = ContextSnapshot {
-            id: id.clone(),
-            lineage: Uuid::new_v4().to_string(),
-            parent: None,
-            model: request.model.clone(),
-            items: request.items.clone().into(),
-            retention: Retention::Durable,
-            provenance: Provenance::Created,
-        };
-        state.contexts.insert(id.clone(), snapshot.clone());
-        state
-            .creates
-            .insert(request.request_id.clone(), (request, id));
-        Ok(snapshot)
-    }
-
-    async fn inspect_context(&self, id: &str) -> Result<ContextSnapshot> {
-        self.state
-            .read()
-            .await
-            .contexts
-            .get(id)
-            .cloned()
-            .ok_or_else(|| Error::NotFound(id.to_owned()))
-    }
-
-    async fn mutate_context(&self, request: MutateContextRequest) -> Result<ContextSnapshot> {
-        let mut state = self.state.write().await;
-        if let Some((prior, id)) = state.mutations.get(&request.request_id) {
-            if prior != &request {
-                return Err(Error::Conflict(request.request_id));
-            }
-            return state
-                .contexts
-                .get(id)
-                .cloned()
-                .ok_or_else(|| Error::NotFound(id.clone()));
-        }
-        let source = state
-            .contexts
-            .get(&request.source)
-            .cloned()
-            .ok_or_else(|| Error::NotFound(request.source.clone()))?;
-        let mut items = source.items.to_vec();
-        let mut lineage = source.lineage.clone();
-        let mut model = source.model.clone();
-        let provenance = match &request.mutation {
-            ContextMutation::Fork => {
-                lineage = Uuid::new_v4().to_string();
-                Provenance::Forked {
-                    source: source.id.clone(),
-                }
-            }
-            ContextMutation::Edit(edits) => {
-                apply_edits(&mut items, edits.clone())?;
-                Provenance::Derived
-            }
-            ContextMutation::Truncate(through) => {
-                match through {
-                    Some(id) => {
-                        let index = items
-                            .iter()
-                            .position(|item| &item.id == id)
-                            .ok_or_else(|| Error::NotFound(id.clone()))?;
-                        items.truncate(index + 1);
-                    }
-                    None => items.clear(),
-                }
-                Provenance::Derived
-            }
-            ContextMutation::Compact {
-                selected,
-                replacement,
-            } => {
-                if selected.is_empty() {
-                    return Err(Error::Invalid("compaction selection is empty".to_owned()));
-                }
-                let selected = selected.iter().collect::<BTreeSet<_>>();
-                let first = items
-                    .iter()
-                    .position(|item| selected.contains(&item.id))
-                    .ok_or_else(|| Error::NotFound("compaction selection".to_owned()))?;
-                if selected
-                    .iter()
-                    .any(|id| !items.iter().any(|item| &item.id == *id))
-                {
-                    return Err(Error::NotFound("compaction selection".to_owned()));
-                }
-                items.retain(|item| !selected.contains(&item.id));
-                items.splice(first..first, replacement.clone());
-                validate_items(&items)?;
-                Provenance::Derived
-            }
-            ContextMutation::Transfer { model: target } => {
-                self.model(target)?;
-                model.clone_from(target);
-                lineage = Uuid::new_v4().to_string();
-                Provenance::Transferred {
-                    source: source.id.clone(),
-                    reused_compatible_state: source.model == *target,
-                }
-            }
-        };
-        validate_items(&items)?;
-        let target = self.model(&model)?;
-        if content_bytes(&items)? > target.maximum_context_bytes {
-            return Err(Error::Invalid("model Context bound exceeded".to_owned()));
-        }
-        let id = context_id();
-        let snapshot = ContextSnapshot {
-            id: id.clone(),
-            lineage,
-            parent: Some(source.id),
-            model,
-            items: items.into(),
-            retention: Retention::Durable,
-            provenance,
-        };
-        state.contexts.insert(id.clone(), snapshot.clone());
-        state
-            .mutations
-            .insert(request.request_id.clone(), (request, id));
-        Ok(snapshot)
-    }
-
-    async fn retain_context(&self, id: &str, retention: Retention) -> Result<ContextSnapshot> {
-        if matches!(retention, Retention::WarmUntil(0)) {
-            return Err(Error::Invalid("warm expiry is invalid".to_owned()));
-        }
-        let mut state = self.state.write().await;
-        let context = state
-            .contexts
-            .get_mut(id)
-            .ok_or_else(|| Error::NotFound(id.to_owned()))?;
-        context.retention = retention;
-        Ok(context.clone())
-    }
-
-    async fn delete_context(&self, id: &str) -> Result<bool> {
-        Ok(self.state.write().await.contexts.remove(id).is_some())
-    }
-
-    async fn generate(&self, request: GenerateRequest) -> Result<RunSnapshot> {
-        if request.settings.maximum_output == 0 {
-            return Err(Error::Invalid("maximum output is zero".to_owned()));
-        }
-        let mut state = self.state.write().await;
-        if let Some((prior, id)) = state.generations.get(&request.request_id) {
-            if prior != &request {
-                return Err(Error::Conflict(request.request_id));
-            }
-            return state
-                .runs
-                .get(id)
-                .cloned()
-                .ok_or_else(|| Error::NotFound(id.clone()));
-        }
-        let source = state
-            .contexts
-            .get(&request.context)
-            .cloned()
-            .ok_or_else(|| Error::NotFound(request.context.clone()))?;
-        let model = self.model(&source.model)?;
-        if request.settings.maximum_output > model.maximum_output {
-            return Err(Error::Unsupported(
-                "generation output bound exceeds the model profile".to_owned(),
-            ));
-        }
-        if request.input.kind != ItemKind::User {
-            return Err(Error::Invalid(
-                "generation input must be user content".to_owned(),
-            ));
-        }
-        let output = request.input.content.clone();
-        let output_units = u64::try_from(output.len())
-            .map_err(|_| Error::Invalid("output length is excessive".to_owned()))?;
-        let terminal = if output_units > request.settings.maximum_output {
-            RunTerminal::OutputLimited
-        } else {
-            RunTerminal::Completed
-        };
-        let output = if terminal == RunTerminal::OutputLimited {
-            let maximum = usize::try_from(request.settings.maximum_output)
-                .map_err(|_| Error::Invalid("output limit is excessive".to_owned()))?;
-            output.slice(..maximum.min(output.len()))
-        } else {
-            output
-        };
-        let id = Uuid::new_v4().to_string();
-        let mut items = source.items.to_vec();
-        items.push(request.input.clone());
-        items.push(Item {
-            id: Uuid::new_v4().to_string(),
-            kind: ItemKind::Assistant,
-            content: output.clone(),
-            link: None,
-            continuation_profile: None,
-        });
-        validate_items(&items)?;
-        if content_bytes(&items)? > model.maximum_context_bytes {
-            return Err(Error::Invalid("model Context bound exceeded".to_owned()));
-        }
-        let continuation = ContextSnapshot {
-            id: context_id(),
-            lineage: source.lineage.clone(),
-            parent: Some(source.id.clone()),
-            model: source.model.clone(),
-            items: items.into(),
-            retention: Retention::Durable,
-            provenance: Provenance::Generated { run: id.clone() },
-        };
-        let input_bytes = content_bytes(&source.items)?;
-        let usage = Usage {
-            new_prefill: u64::try_from(request.input.content.len())
-                .map_err(|_| Error::Invalid("input work overflowed".to_owned()))?,
-            generated_output: u64::try_from(output.len())
-                .map_err(|_| Error::Invalid("output work overflowed".to_owned()))?,
-            effective_context_reads: input_bytes,
-            retained_byte_millis: 0,
-        };
-        let result = RunResult {
-            output: output.clone(),
-            context: Some(continuation.clone()),
-            terminal,
-            receipt: UsageReceipt {
-                id: Uuid::new_v4().to_string(),
-                model: source.model,
-                meter_revision: "memory-v1".to_owned(),
-                usage,
-            },
-        };
-        let run = RunSnapshot {
-            id: id.clone(),
-            input: source.id,
-            events: vec![
-                RunEvent {
-                    sequence: 0,
-                    kind: RunEventKind::Output(output),
-                },
-                RunEvent {
-                    sequence: 1,
-                    kind: RunEventKind::Usage(usage),
-                },
-                RunEvent {
-                    sequence: 2,
-                    kind: RunEventKind::Terminal(terminal),
-                },
-            ]
-            .into(),
-            result: Some(result),
-        };
-        state.contexts.insert(continuation.id.clone(), continuation);
-        state.runs.insert(id.clone(), run.clone());
-        state
-            .generations
-            .insert(request.request_id.clone(), (request, id));
-        Ok(run)
-    }
-
-    async fn inspect_run(&self, id: &str) -> Result<RunSnapshot> {
-        self.state
-            .read()
-            .await
-            .runs
-            .get(id)
-            .cloned()
-            .ok_or_else(|| Error::NotFound(id.to_owned()))
-    }
-
-    async fn cancel_run(&self, id: &str) -> Result<RunSnapshot> {
-        self.inspect_run(id).await
-    }
-}
-
-/// Cloneable customer client over one public provider implementation.
-#[derive(Clone)]
-pub struct Inference {
-    provider: Arc<dyn InferenceProvider>,
-}
+pub struct Inference(Arc<Connection>);
 
 impl Inference {
-    /// Binds a local, customer-hosted, or managed provider.
-    #[must_use]
-    pub fn new(provider: impl InferenceProvider + 'static) -> Self {
-        Self {
-            provider: Arc::new(provider),
+    /// Connect using an explicit trusted CA and bounded TLS/RPC deadlines.
+    ///
+    /// # Errors
+    /// Rejects non-HTTPS endpoints, invalid credentials and failed TLS setup.
+    pub async fn connect(endpoint: &str, api_key: &str, ca_pem: &[u8]) -> Result<Self, Error> {
+        if !endpoint.starts_with("https://") || ca_pem.is_empty() {
+            return Err(Error::Invalid(
+                "HTTPS and an explicit trust root are required",
+            ));
         }
+        let authorization = authorization(api_key)?;
+        let channel = Endpoint::from_shared(endpoint.to_owned())?
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .keep_alive_timeout(Duration::from_secs(10))
+            .tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca_pem)))?
+            .connect()
+            .await?;
+        Ok(Self(Arc::new(Connection {
+            channel,
+            authorization,
+            client_instance: *uuid::Uuid::now_v7().as_bytes(),
+        })))
     }
 
-    /// Creates a deterministic process-local client.
+    /// Start an exact immutable Context creation with a stable pre-dispatch identity.
     #[must_use]
-    pub fn memory() -> Self {
-        Self::new(MemoryInference::default())
-    }
-
-    /// Connects to an authenticated managed or customer-hosted Inference endpoint.
-    pub async fn connect(endpoint: impl AsRef<str>, bearer_token: impl AsRef<str>) -> Result<Self> {
-        Ok(Self::new(
-            ManagedInference::connect(endpoint, bearer_token).await?,
-        ))
-    }
-
-    /// Begins one replay-safe Context creation.
-    #[must_use]
-    pub fn context(&self, model: impl Into<String>) -> ContextBuilder {
-        ContextBuilder {
-            provider: Arc::clone(&self.provider),
-            request: CreateContextRequest {
-                request_id: request_id(),
+    pub fn context(&self, model: impl Into<String>) -> CreateContext {
+        CreateContext {
+            client: self.clone(),
+            request: wire::CreateContextRequest {
+                identity: Some(self.identity()),
                 model: model.into(),
                 items: Vec::new(),
             },
         }
     }
 
-    /// Lists exact provider capabilities.
-    pub async fn models(&self) -> Result<Vec<ModelCapabilities>> {
-        self.provider.models().await
+    /// Authenticate and attach to an existing immutable retained revision.
+    ///
+    /// # Errors
+    /// Rejects unknown/unretained revisions or an invalid service response.
+    pub async fn attach(&self, revision: [u8; 32]) -> Result<Context, Error> {
+        nonzero(&revision)?;
+        let context = Context {
+            client: self.clone(),
+            revision,
+        };
+        context.inspect().await?;
+        Ok(context)
     }
 
-    /// Attaches to one retained revision without executing work.
-    pub async fn attach(&self, id: impl AsRef<str>) -> Result<Context> {
-        let snapshot = self.provider.inspect_context(id.as_ref()).await?;
-        Ok(Context::new(Arc::clone(&self.provider), snapshot))
+    fn identity(&self) -> wire::RequestIdentity {
+        wire::RequestIdentity {
+            client_instance: self.0.client_instance.to_vec(),
+            request_id: uuid::Uuid::now_v7().as_bytes().to_vec(),
+        }
     }
 
-    /// Recovers one existing Run without creating a successor.
-    pub async fn recover(&self, id: impl AsRef<str>) -> Result<Run> {
-        self.provider.inspect_run(id.as_ref()).await?;
-        Ok(Run {
-            provider: Arc::clone(&self.provider),
-            id: id.as_ref().to_owned(),
-        })
+    fn rpc(&self) -> wire::contexts_client::ContextsClient<Channel> {
+        wire::contexts_client::ContextsClient::new(self.0.channel.clone())
+            .max_decoding_message_size(MAXIMUM_MESSAGE_BYTES)
+            .max_encoding_message_size(MAXIMUM_MESSAGE_BYTES)
+    }
+
+    fn runs(&self) -> wire::runs_client::RunsClient<Channel> {
+        wire::runs_client::RunsClient::new(self.0.channel.clone())
+            .max_decoding_message_size(MAXIMUM_MESSAGE_BYTES)
+            .max_encoding_message_size(MAXIMUM_MESSAGE_BYTES)
+    }
+
+    fn warm(&self) -> wire::warm_contexts_client::WarmContextsClient<Channel> {
+        wire::warm_contexts_client::WarmContextsClient::new(self.0.channel.clone())
+            .max_decoding_message_size(MAXIMUM_MESSAGE_BYTES)
+            .max_encoding_message_size(MAXIMUM_MESSAGE_BYTES)
+    }
+
+    fn discovery(&self) -> wire::models_client::ModelsClient<Channel> {
+        wire::models_client::ModelsClient::new(self.0.channel.clone())
+            .max_decoding_message_size(MAXIMUM_MESSAGE_BYTES)
+            .max_encoding_message_size(MAXIMUM_MESSAGE_BYTES)
+    }
+
+    /// Discover exact model revisions and the customer features currently admitted for them.
+    ///
+    /// # Errors
+    /// Rejects unauthenticated, malformed, duplicate, or unbounded capability responses.
+    pub async fn models(&self) -> Result<Vec<wire::ModelCapability>, Error> {
+        let response = self
+            .discovery()
+            .list(self.request(wire::ListModelsRequest {})?)
+            .await?
+            .into_inner();
+        if response.models.is_empty() || response.models.len() > 4_096 {
+            return Err(Error::Invalid("model capability count is invalid"));
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for model in &response.models {
+            let mut retention_profiles = std::collections::BTreeSet::new();
+            if model.model.is_empty()
+                || model.model.len() > 256
+                || !names.insert(model.model.as_str())
+                || fixed::<32>(&model.execution_profile).is_err()
+                || model.maximum_context == 0
+                || model.maximum_output == 0
+                || model.features.is_empty()
+                || model.features.len() > 64
+                || model
+                    .features
+                    .iter()
+                    .any(|feature| feature.is_empty() || feature.len() > 64)
+                || model.retention_profiles.len() > 64
+                || model.retention_profiles.iter().any(|profile| {
+                    fixed::<32>(&profile.profile).is_err()
+                        || profile.minimum_duration_ms == 0
+                        || profile.maximum_duration_ms < profile.minimum_duration_ms
+                        || !retention_profiles.insert(profile.profile.as_slice())
+                })
+            {
+                return Err(Error::Invalid("model capability is invalid"));
+            }
+        }
+        Ok(response.models)
+    }
+
+    /// Recover one previously admitted Run by its caller-known identity.
+    #[must_use]
+    pub fn recover_run(&self, run_id: [u8; 16]) -> Run {
+        Run {
+            client: self.clone(),
+            run_id,
+        }
+    }
+
+    /// Recover a previously admitted warm commitment without creating another.
+    #[must_use]
+    pub fn recover_warm(&self, commitment: [u8; 32]) -> WarmContext {
+        WarmContext {
+            client: self.clone(),
+            commitment,
+        }
+    }
+
+    fn request<T>(&self, value: T) -> Result<Request<T>, Error> {
+        let mut request = Request::new(value);
+        // Tonic owns unavoidable transport metadata copies. Retained credential
+        // storage is zeroizing and is never cloned into another long-lived field.
+        let mut authorization = MetadataValue::<Ascii>::try_from(self.0.authorization.as_str())
+            .map_err(|_| Error::Invalid("invalid API key"))?;
+        authorization.set_sensitive(true);
+        request
+            .metadata_mut()
+            .insert("authorization", authorization);
+        request.set_timeout(Duration::from_secs(60));
+        Ok(request)
     }
 }
 
-/// Replay-safe Context creation builder.
+fn authorization(api_key: &str) -> Result<Zeroizing<String>, Error> {
+    if api_key.is_empty() || api_key.len() > 8_192 {
+        return Err(Error::Invalid("invalid API key"));
+    }
+    let value = Zeroizing::new(format!("Bearer {api_key}"));
+    MetadataValue::<Ascii>::try_from(value.as_str())
+        .map_err(|_| Error::Invalid("invalid API key"))?;
+    Ok(value)
+}
+
+fn nonzero<const N: usize>(value: &[u8; N]) -> Result<(), Error> {
+    if *value == [0; N] {
+        return Err(Error::Invalid("zero identity"));
+    }
+    Ok(())
+}
+
+fn fixed<const N: usize>(value: &[u8]) -> Result<[u8; N], Error> {
+    let bytes = value
+        .try_into()
+        .map_err(|_| Error::Invalid("identity length differs"))?;
+    nonzero(&bytes)?;
+    Ok(bytes)
+}
+
+fn bounded<M: prost::Message>(message: &M) -> Result<(), Error> {
+    if message.encoded_len() > MAXIMUM_MESSAGE_BYTES {
+        return Err(Error::Invalid("message exceeds transport ceiling"));
+    }
+    Ok(())
+}
+
+/// Replayable creation builder. Reusing it reconciles the same exact command.
 #[derive(Clone)]
-pub struct ContextBuilder {
-    provider: Arc<dyn InferenceProvider>,
-    request: CreateContextRequest,
+pub struct CreateContext {
+    client: Inference,
+    request: wire::CreateContextRequest,
 }
 
-impl ContextBuilder {
-    /// Adds exact instruction content.
+impl CreateContext {
+    /// Append exact instruction bytes with a fresh item identity.
     #[must_use]
-    pub fn instructions(mut self, text: impl Into<String>) -> Self {
-        self.request
-            .items
-            .push(Item::text(ItemKind::Instruction, text));
-        self
+    pub fn instructions(self, text: impl Into<String>) -> Self {
+        self.item(text_item(wire::ItemKind::Instruction, text.into()))
     }
 
-    /// Adds one exact typed item.
+    /// Add one typed item. Semantic validation belongs to the authenticated service.
     #[must_use]
-    pub fn item(mut self, item: Item) -> Self {
+    pub fn item(mut self, item: wire::Item) -> Self {
         self.request.items.push(item);
         self
     }
 
-    /// Returns the pre-dispatch request identity.
+    /// Caller-known command identity, available before network effects.
     #[must_use]
-    pub fn request_id(&self) -> &str {
-        &self.request.request_id
+    pub fn identity(&self) -> Option<&wire::RequestIdentity> {
+        self.request.identity.as_ref()
     }
 
-    /// Creates or reconciles this exact request.
-    pub async fn create(&self) -> Result<Context> {
-        let snapshot = self.provider.create_context(self.request.clone()).await?;
-        Ok(Context::new(Arc::clone(&self.provider), snapshot))
+    /// Create or reconcile this immutable Context; never repeat logical work.
+    ///
+    /// # Errors
+    /// Failed observations require the same builder, not a new creation command.
+    pub async fn create(&self) -> Result<Context, Error> {
+        bounded(&self.request)?;
+        let receipt = self
+            .client
+            .rpc()
+            .create(self.client.request(self.request.clone())?)
+            .await?
+            .into_inner();
+        validate_receipt(&receipt)?;
+        if !receipt.retained {
+            return Err(Error::Invalid("creation did not retain a revision"));
+        }
+        Ok(Context {
+            client: self.client.clone(),
+            revision: fixed(&receipt.revision)?,
+        })
     }
 }
 
-/// Immutable Context handle.
+/// Immutable revision handle; cloning a handle does not create a fork or retention edge.
 #[derive(Clone)]
 pub struct Context {
-    provider: Arc<dyn InferenceProvider>,
-    snapshot: ContextSnapshot,
+    client: Inference,
+    revision: [u8; 32],
+}
+
+/// Explicit customer warm-retention policy. Distribution and capacity remain
+/// service-owned; the opaque profile must come from model discovery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Retention {
+    latency_profile: [u8; 32],
+    expires_at_ms: u64,
+}
+
+impl Retention {
+    /// Request an admitted warm promise through an exact published latency profile.
+    #[must_use]
+    pub const fn warm_until(latency_profile: [u8; 32], expires_at_ms: u64) -> Self {
+        Self {
+            latency_profile,
+            expires_at_ms,
+        }
+    }
 }
 
 impl Context {
-    fn new(provider: Arc<dyn InferenceProvider>, snapshot: ContextSnapshot) -> Self {
-        Self { provider, snapshot }
-    }
-
-    /// Immutable revision identity.
+    /// Portable revision identity for later authenticated attachment.
     #[must_use]
-    pub fn id(&self) -> &str {
-        &self.snapshot.id
+    pub const fn id(&self) -> [u8; 32] {
+        self.revision
     }
 
-    /// Exact canonical items already observed by this handle.
+    /// Read exact retained content and its pinned logical execution identity.
+    ///
+    /// # Errors
+    /// Returns service rejection or malformed response without fabricating content.
+    pub async fn inspect(&self) -> Result<wire::ContextView, Error> {
+        let view = self
+            .client
+            .rpc()
+            .inspect(self.client.request(wire::InspectContextRequest {
+                revision: self.revision.to_vec(),
+            })?)
+            .await?
+            .into_inner();
+        if fixed::<32>(&view.revision)? != self.revision {
+            return Err(Error::Invalid("revision differs"));
+        }
+        fixed::<32>(&view.lineage)?;
+        fixed::<32>(&view.execution_profile)?;
+        fixed::<32>(&view.content_digest)?;
+        if let Some(parent) = &view.parent {
+            fixed::<32>(parent)?;
+        }
+        if view.model.is_empty() || view.model.len() > 256 {
+            return Err(Error::Invalid("Context model is invalid"));
+        }
+        validate_provenance(
+            view.provenance
+                .as_ref()
+                .ok_or(Error::Invalid("Context provenance is absent"))?,
+        )?;
+        Ok(view)
+    }
+
+    /// Prepare an independently retained fork. Sending twice reconciles that fork.
     #[must_use]
-    pub fn items(&self) -> &[Item] {
-        &self.snapshot.items
+    pub fn fork(&self) -> ContextMutation {
+        self.mutation(wire::mutate_context_request::Action::Fork(wire::Empty {}))
     }
 
-    /// Exact pinned model identity.
+    /// Prepare exact atomic item edits, leaving this revision unchanged.
     #[must_use]
-    pub fn model(&self) -> &str {
-        &self.snapshot.model
+    pub fn edit(&self, edits: Vec<wire::Edit>) -> ContextMutation {
+        self.mutation(wire::mutate_context_request::Action::Edit(wire::Edits {
+            edits,
+        }))
     }
 
-    /// Revision provenance.
+    /// Prepare one exact user-message append.
     #[must_use]
-    pub const fn provenance(&self) -> &Provenance {
-        &self.snapshot.provenance
+    pub fn append(&self, text: impl Into<String>) -> ContextMutation {
+        self.edit(vec![wire::Edit {
+            action: Some(wire::edit::Action::Append(text_item(
+                wire::ItemKind::User,
+                text.into(),
+            ))),
+        }])
     }
 
-    async fn mutate(&self, mutation: ContextMutation) -> Result<Self> {
-        let snapshot = self
-            .provider
-            .mutate_context(MutateContextRequest {
-                request_id: request_id(),
-                source: self.snapshot.id.clone(),
-                mutation,
-            })
-            .await?;
-        Ok(Self::new(Arc::clone(&self.provider), snapshot))
+    /// Retain exactly the selected prefix; None explicitly means an empty prefix.
+    #[must_use]
+    pub fn truncate(&self, through: Option<[u8; 16]>) -> ContextMutation {
+        self.mutation(wire::mutate_context_request::Action::Truncate(
+            wire::Truncate {
+                through: through.map(|id| id.to_vec()),
+            },
+        ))
     }
 
-    /// Creates an independently retained lineage over this exact revision.
-    pub async fn fork(&self) -> Result<Self> {
-        self.mutate(ContextMutation::Fork).await
-    }
-
-    /// Appends one user item and returns a new immutable revision.
-    pub async fn append(&self, text: impl Into<String>) -> Result<Self> {
-        self.edit([ContextEdit::Append(Item::text(ItemKind::User, text))])
-            .await
-    }
-
-    /// Applies exact edits atomically.
-    pub async fn edit(&self, edits: impl IntoIterator<Item = ContextEdit>) -> Result<Self> {
-        self.mutate(ContextMutation::Edit(edits.into_iter().collect()))
-            .await
-    }
-
-    /// Retains an exact prefix; `None` means empty.
-    pub async fn truncate(&self, through: Option<String>) -> Result<Self> {
-        self.mutate(ContextMutation::Truncate(through)).await
-    }
-
-    /// Explicitly compacts selected items into caller-supplied replacement content.
-    pub async fn compact(&self, selected: Vec<String>, replacement: Vec<Item>) -> Result<Self> {
-        self.mutate(ContextMutation::Compact {
-            selected,
-            replacement,
-        })
-        .await
-    }
-
-    /// Transfers canonical content to another exact model profile.
-    pub async fn transfer(&self, model: impl Into<String>) -> Result<Self> {
-        self.mutate(ContextMutation::Transfer {
-            model: model.into(),
-        })
-        .await
-    }
-
-    /// Changes only this revision's retention reference.
-    pub async fn retain(&self, retention: Retention) -> Result<Self> {
-        let snapshot = self
-            .provider
-            .retain_context(&self.snapshot.id, retention)
-            .await?;
-        Ok(Self::new(Arc::clone(&self.provider), snapshot))
-    }
-
-    /// Deletes only this revision's reference.
-    pub async fn delete(&self) -> Result<bool> {
-        self.provider.delete_context(&self.snapshot.id).await
-    }
-
-    /// Admits one generation Run and returns its recoverable identity.
-    pub async fn generate(&self, input: impl Into<String>) -> Result<Run> {
-        self.generate_with(input, GenerationSettings::default())
-            .await
-    }
-
-    /// Admits one generation Run with exact capability-checked settings.
-    pub async fn generate_with(
+    /// Prepare explicit replacement of selected items; no summary is generated.
+    #[must_use]
+    pub fn compact(
         &self,
-        input: impl Into<String>,
-        settings: GenerationSettings,
-    ) -> Result<Run> {
-        let snapshot = self
-            .provider
-            .generate(GenerateRequest {
-                request_id: request_id(),
-                context: self.snapshot.id.clone(),
-                input: Item::text(ItemKind::User, input),
-                settings,
-            })
-            .await?;
-        Ok(Run {
-            provider: Arc::clone(&self.provider),
-            id: snapshot.id,
+        selected: Vec<[u8; 16]>,
+        replacement: Vec<wire::Item>,
+    ) -> ContextMutation {
+        self.mutation(wire::mutate_context_request::Action::Compact(
+            wire::Compact {
+                selected: selected.into_iter().map(|id| id.to_vec()).collect(),
+                replacement,
+            },
+        ))
+    }
+
+    /// Release only this revision's own edge, never descendants or physical bytes.
+    #[must_use]
+    pub fn release(&self) -> ContextMutation {
+        self.mutation(wire::mutate_context_request::Action::Release(
+            wire::Empty {},
+        ))
+    }
+
+    /// Resolve a target model revision and replay this exact canonical content into a new Context.
+    #[must_use]
+    pub fn transfer(&self, model: impl Into<String>) -> ContextMutation {
+        self.mutation(wire::mutate_context_request::Action::Transfer(
+            wire::Transfer {
+                model: model.into(),
+            },
+        ))
+    }
+
+    /// Prepare one recoverable generation against this exact immutable revision.
+    #[must_use]
+    pub fn generate(&self, input: impl Into<String>, maximum_output: u64) -> GenerateRun {
+        let identity = self.client.identity();
+        GenerateRun {
+            client: self.client.clone(),
+            request: wire::GenerateRunRequest {
+                identity: Some(identity),
+                context: self.revision.to_vec(),
+                input: Some(text_item(wire::ItemKind::User, input.into())),
+                maximum_output,
+                seed: None,
+            },
+        }
+    }
+
+    /// Prepare one replayable warm-retention admission for this exact revision.
+    #[must_use]
+    pub fn retain(&self, policy: Retention) -> RetainWarm {
+        RetainWarm {
+            client: self.client.clone(),
+            request: wire::RetainWarmRequest {
+                identity: Some(self.client.identity()),
+                context: self.revision.to_vec(),
+                latency_profile: policy.latency_profile.to_vec(),
+                expires_at_ms: policy.expires_at_ms,
+            },
+        }
+    }
+
+    fn mutation(&self, action: wire::mutate_context_request::Action) -> ContextMutation {
+        ContextMutation {
+            client: self.client.clone(),
+            request: wire::MutateContextRequest {
+                identity: Some(self.client.identity()),
+                source: self.revision.to_vec(),
+                action: Some(action),
+            },
+        }
+    }
+}
+
+/// Replayable warm admission. A failed observation must be reconciled by
+/// sending this same value, never by allocating another request identity.
+#[derive(Clone)]
+pub struct RetainWarm {
+    client: Inference,
+    request: wire::RetainWarmRequest,
+}
+
+impl RetainWarm {
+    /// Caller-known request identity allocated before effects.
+    #[must_use]
+    pub fn identity(&self) -> Option<&wire::RequestIdentity> {
+        self.request.identity.as_ref()
+    }
+
+    /// Admit or reconcile the exact warm promise.
+    ///
+    /// # Errors
+    /// Rejects malformed policy, transport failure, service rejection, or a
+    /// response not bound to the requested Context.
+    pub async fn send(&self) -> Result<WarmContext, Error> {
+        bounded(&self.request)?;
+        let expected_context = fixed::<32>(&self.request.context)?;
+        fixed::<32>(&self.request.latency_profile)?;
+        if self.request.expires_at_ms == 0 {
+            return Err(Error::Invalid("warm expiry is zero"));
+        }
+        let view = self
+            .client
+            .warm()
+            .retain(self.client.request(self.request.clone())?)
+            .await?
+            .into_inner();
+        validate_warm_view(&view, Some(expected_context), None)?;
+        Ok(WarmContext {
+            client: self.client.clone(),
+            commitment: fixed(&view.commitment)?,
         })
     }
 }
 
-/// Recoverable Run handle. Dropping it never cancels execution.
+/// Recoverable warm commitment. It never exposes physical placement or KV
+/// allocation identity and therefore remains valid through service rebalancing.
+#[derive(Clone)]
+pub struct WarmContext {
+    client: Inference,
+    commitment: [u8; 32],
+}
+
+impl WarmContext {
+    /// Stable commitment identity.
+    #[must_use]
+    pub const fn id(&self) -> [u8; 32] {
+        self.commitment
+    }
+
+    /// Inspect the latest durable logical warm fact.
+    ///
+    /// # Errors
+    /// Rejects transport/service failure or malformed commitment evidence.
+    pub async fn inspect(&self) -> Result<wire::WarmView, Error> {
+        nonzero(&self.commitment)?;
+        let view = self
+            .client
+            .warm()
+            .inspect(self.client.request(wire::InspectWarmRequest {
+                commitment: self.commitment.to_vec(),
+            })?)
+            .await?
+            .into_inner();
+        validate_warm_view(&view, None, Some(self.commitment))?;
+        Ok(view)
+    }
+
+    /// Prepare an extension of the current promise. Reusing the returned builder
+    /// reconciles the same renewal; a failed renewal leaves the prior promise intact.
+    #[must_use]
+    pub fn renew(&self, expires_at_ms: u64) -> RenewWarm {
+        RenewWarm {
+            client: self.client.clone(),
+            request: wire::RenewWarmRequest {
+                identity: Some(self.client.identity()),
+                commitment: self.commitment.to_vec(),
+                expires_at_ms,
+            },
+        }
+    }
+
+    /// Prepare cleanup and release of only this warm promise.
+    #[must_use]
+    pub fn release(&self) -> ReleaseWarm {
+        ReleaseWarm {
+            client: self.client.clone(),
+            request: wire::ReleaseWarmRequest {
+                identity: Some(self.client.identity()),
+                commitment: self.commitment.to_vec(),
+            },
+        }
+    }
+}
+
+/// Replayable warm renewal.
+#[derive(Clone)]
+pub struct RenewWarm {
+    client: Inference,
+    request: wire::RenewWarmRequest,
+}
+
+impl RenewWarm {
+    /// Extend and reconcile this exact commitment.
+    ///
+    /// # Errors
+    /// Rejects malformed expiry, transport/service failure, or a foreign response.
+    pub async fn send(&self) -> Result<wire::WarmView, Error> {
+        bounded(&self.request)?;
+        let commitment = fixed::<32>(&self.request.commitment)?;
+        if self.request.expires_at_ms == 0 {
+            return Err(Error::Invalid("warm expiry is zero"));
+        }
+        let view = self
+            .client
+            .warm()
+            .renew(self.client.request(self.request.clone())?)
+            .await?
+            .into_inner();
+        validate_warm_view(&view, None, Some(commitment))?;
+        Ok(view)
+    }
+}
+
+/// Replayable cleanup-complete release.
+#[derive(Clone)]
+pub struct ReleaseWarm {
+    client: Inference,
+    request: wire::ReleaseWarmRequest,
+}
+
+impl ReleaseWarm {
+    /// Release or reconcile this exact warm promise.
+    ///
+    /// # Errors
+    /// Rejects transport/service failure or a response without factual release.
+    pub async fn send(&self) -> Result<wire::WarmView, Error> {
+        bounded(&self.request)?;
+        let commitment = fixed::<32>(&self.request.commitment)?;
+        let view = self
+            .client
+            .warm()
+            .release(self.client.request(self.request.clone())?)
+            .await?
+            .into_inner();
+        validate_warm_view(&view, None, Some(commitment))?;
+        if wire::WarmState::try_from(view.state).unwrap_or(wire::WarmState::Unspecified)
+            != wire::WarmState::Released
+        {
+            return Err(Error::Invalid("warm release is not terminal"));
+        }
+        Ok(view)
+    }
+}
+
+/// Replayable Run admission builder. Reusing it reconciles one logical Run.
+#[derive(Clone)]
+pub struct GenerateRun {
+    client: Inference,
+    request: wire::GenerateRunRequest,
+}
+
+impl GenerateRun {
+    /// Pin a deterministic sampling seed.
+    #[must_use]
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.request.seed = Some(seed);
+        self
+    }
+
+    /// Caller-known Run identity allocated before network effects.
+    ///
+    /// # Errors
+    /// Rejects a missing, zero, or incorrectly sized identity.
+    pub fn id(&self) -> Result<[u8; 16], Error> {
+        fixed(
+            &self
+                .request
+                .identity
+                .as_ref()
+                .ok_or(Error::Invalid("missing Run identity"))?
+                .request_id,
+        )
+    }
+
+    /// Admit or reconcile this exact Run without creating a successor.
+    ///
+    /// # Errors
+    /// An unavailable response requires replaying this builder, never allocating another Run.
+    pub async fn send(&self) -> Result<Run, Error> {
+        bounded(&self.request)?;
+        if self.request.maximum_output == 0 {
+            return Err(Error::Invalid("zero output bound"));
+        }
+        let run_id = self.id()?;
+        let response = self
+            .client
+            .runs()
+            .generate(self.client.request(self.request.clone())?)
+            .await?
+            .into_inner();
+        let view = response.run.ok_or(Error::Invalid("missing Run response"))?;
+        validate_run_view(&view, run_id)?;
+        Ok(Run {
+            client: self.client.clone(),
+            run_id,
+        })
+    }
+}
+
+/// Recoverable logical Run. Cloning this handle never repeats execution.
 #[derive(Clone)]
 pub struct Run {
-    provider: Arc<dyn InferenceProvider>,
-    id: RunId,
+    client: Inference,
+    run_id: [u8; 16],
 }
 
 impl Run {
-    /// Stable Run identity.
+    /// Caller-known stable Run identity.
     #[must_use]
-    pub fn id(&self) -> &str {
-        &self.id
+    pub const fn id(&self) -> [u8; 16] {
+        self.run_id
     }
 
-    /// Replays committed events from an inclusive sequence.
-    pub async fn events_from(&self, sequence: u64) -> Result<Vec<RunEvent>> {
-        self.provider.run_events(&self.id, sequence).await
+    fn inspect_request(&self) -> wire::InspectRunRequest {
+        wire::InspectRunRequest {
+            run_id: self.run_id.to_vec(),
+        }
     }
 
-    /// Observes the factual result without redispatching generation.
-    pub async fn result(&self) -> Result<RunResult> {
-        self.provider
-            .inspect_run(&self.id)
+    /// Inspect durable Run state without opening a watch or admitting work.
+    ///
+    /// # Errors
+    /// Returns authenticated service rejection or malformed response evidence.
+    pub async fn inspect(&self) -> Result<wire::RunView, Error> {
+        let view = self
+            .client
+            .runs()
+            .inspect(self.client.request(self.inspect_request())?)
             .await?
-            .result
-            .ok_or_else(|| Error::Invalid("Run is not terminal".to_owned()))
+            .into_inner();
+        validate_run_view(&view, self.run_id)?;
+        Ok(view)
     }
 
-    /// Requests cancellation and returns the current factual observation.
-    pub async fn cancel(&self) -> Result<RunSnapshot> {
-        self.provider.cancel_run(&self.id).await
+    /// Resume the ordered event stream at an inclusive zero-based cursor.
+    ///
+    /// # Errors
+    /// Returns transport or authenticated service rejection before the stream is established.
+    pub async fn watch(&self, from_sequence: u64) -> Result<RunEvents, Error> {
+        let view = self.inspect().await?;
+        if view.result.is_some() {
+            let end = view
+                .last_sequence
+                .checked_add(1)
+                .ok_or(Error::Invalid("Run sequence exhausted"))?;
+            if from_sequence > end {
+                return Err(Error::Invalid("Run cursor exceeds retained events"));
+            }
+            if from_sequence == end {
+                return Ok(RunEvents {
+                    stream: None,
+                    expected: from_sequence,
+                    terminal: true,
+                });
+            }
+        }
+        let stream = self
+            .client
+            .runs()
+            .watch(self.client.request(wire::WatchRunRequest {
+                run_id: self.run_id.to_vec(),
+                from_sequence,
+            })?)
+            .await?
+            .into_inner();
+        Ok(RunEvents {
+            stream: Some(stream),
+            expected: from_sequence,
+            terminal: false,
+        })
+    }
+
+    /// Request durable cancellation of this Run only.
+    ///
+    /// # Errors
+    /// Returns authenticated service rejection or malformed post-cancellation state.
+    pub async fn cancel(&self) -> Result<wire::RunView, Error> {
+        let view = self
+            .client
+            .runs()
+            .cancel(self.client.request(self.inspect_request())?)
+            .await?
+            .into_inner();
+        validate_run_view(&view, self.run_id)?;
+        Ok(view)
     }
 }
 
-/// Compatibility name used by the assembled in-memory profile.
-pub type DeterministicInference = MemoryInference;
+/// Validating event-stream observation. Dropping it never cancels the Run.
+pub struct RunEvents {
+    stream: Option<tonic::Streaming<wire::RunEvent>>,
+    expected: u64,
+    terminal: bool,
+}
 
-/// Runs the public black-box Context and Run conformance core against any provider.
-pub async fn conformance(provider: &dyn InferenceProvider) -> std::result::Result<(), String> {
-    let create = CreateContextRequest {
-        request_id: "conformance-create".to_owned(),
-        model: "deterministic".to_owned(),
-        items: vec![Item {
-            id: "instruction".to_owned(),
-            kind: ItemKind::Instruction,
-            content: Bytes::from_static(b"exact"),
-            link: None,
-            continuation_profile: None,
-        }],
-    };
-    let base = provider
-        .create_context(create.clone())
-        .await
-        .map_err(|error| error.to_string())?;
-    if provider
-        .create_context(create)
-        .await
-        .map_err(|error| error.to_string())?
-        .id
-        != base.id
-    {
-        return Err("Context creation replay changed identity".to_owned());
+impl RunEvents {
+    /// Read and validate the next ordered event.
+    ///
+    /// # Errors
+    /// Rejects transport failure, a gap/reorder, malformed event, invalid terminal, or a stream
+    /// that closes without terminal evidence.
+    pub async fn next(&mut self) -> Result<Option<wire::RunEvent>, Error> {
+        let Some(stream) = self.stream.as_mut() else {
+            return Ok(None);
+        };
+        let Some(event) = stream.message().await? else {
+            if self.terminal {
+                return Ok(None);
+            }
+            return Err(Error::Invalid("Run stream ended before terminal"));
+        };
+        if self.terminal || event.sequence != self.expected || event.event.is_none() {
+            return Err(Error::Invalid("Run event order or shape differs"));
+        }
+        self.expected = self
+            .expected
+            .checked_add(1)
+            .ok_or(Error::Invalid("Run sequence exhausted"))?;
+        if let Some(wire::run_event::Event::Terminal(value)) = event.event {
+            if wire::RunTerminal::try_from(value).unwrap_or(wire::RunTerminal::Unspecified)
+                == wire::RunTerminal::Unspecified
+            {
+                return Err(Error::Invalid("Run terminal is invalid"));
+            }
+            self.terminal = true;
+        }
+        Ok(Some(event))
     }
-    let fork = provider
-        .mutate_context(MutateContextRequest {
-            request_id: "conformance-fork".to_owned(),
-            source: base.id.clone(),
-            mutation: ContextMutation::Fork,
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    if fork.lineage == base.lineage || fork.items != base.items {
-        return Err("fork did not preserve exact content under an independent lineage".to_owned());
+}
+
+fn validate_run_view(view: &wire::RunView, expected: [u8; 16]) -> Result<(), Error> {
+    if fixed::<16>(&view.run_id)? != expected || fixed::<32>(&view.input).is_err() {
+        return Err(Error::Invalid("Run identity differs"));
     }
-    let replacement = Bytes::from_static(b"changed");
-    let edited = provider
-        .mutate_context(MutateContextRequest {
-            request_id: "conformance-edit".to_owned(),
-            source: fork.id.clone(),
-            mutation: ContextMutation::Edit(vec![ContextEdit::Replace {
-                target: "instruction".to_owned(),
-                content: replacement.clone(),
-            }]),
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    if edited.items[0].content != replacement
-        || base.items[0].content != Bytes::from_static(b"exact")
-    {
-        return Err("item-addressed edit mutated its immutable source".to_owned());
+    if view.model.is_empty() || view.model.len() > 256 {
+        return Err(Error::Invalid("Run model is invalid"));
     }
-    let compacted = provider
-        .mutate_context(MutateContextRequest {
-            request_id: "conformance-compact".to_owned(),
-            source: edited.id.clone(),
-            mutation: ContextMutation::Compact {
-                selected: vec!["instruction".to_owned()],
-                replacement: vec![Item {
-                    id: "summary".to_owned(),
-                    kind: ItemKind::Instruction,
-                    content: Bytes::from_static(b"summary"),
-                    link: None,
-                    continuation_profile: None,
-                }],
-            },
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    if compacted.items.len() != 1 || compacted.items[0].id != "summary" {
-        return Err("explicit compaction produced the wrong canonical content".to_owned());
-    }
-    let transferred = provider
-        .mutate_context(MutateContextRequest {
-            request_id: "conformance-transfer".to_owned(),
-            source: compacted.id.clone(),
-            mutation: ContextMutation::Transfer {
-                model: "deterministic".to_owned(),
-            },
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    if transferred.lineage == compacted.lineage || transferred.items != compacted.items {
-        return Err("transfer did not preserve canonical content in a new lineage".to_owned());
-    }
-    let empty = provider
-        .mutate_context(MutateContextRequest {
-            request_id: "conformance-truncate".to_owned(),
-            source: transferred.id.clone(),
-            mutation: ContextMutation::Truncate(None),
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    if !empty.items.is_empty() {
-        return Err("exact empty-prefix truncation retained content".to_owned());
-    }
-    let run = provider
-        .generate(GenerateRequest {
-            request_id: "conformance-run".to_owned(),
-            context: transferred.id.clone(),
-            input: Item {
-                id: "run-input".to_owned(),
-                kind: ItemKind::User,
-                content: Bytes::from_static(b"answer"),
-                link: None,
-                continuation_profile: None,
-            },
-            settings: GenerationSettings::default(),
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    let result = run.result.ok_or_else(|| "Run did not settle".to_owned())?;
-    if run.events.len() != 3
-        || run
-            .events
-            .iter()
-            .enumerate()
-            .any(|(index, event)| usize::try_from(event.sequence) != Ok(index))
-        || result.terminal != RunTerminal::Completed
-        || &*result.output != b"answer"
-        || result.receipt.usage.generated_output != 6
-        || result.context.is_none()
-    {
-        return Err("Run events, result, or receipt violated conformance".to_owned());
-    }
-    let replay = provider
-        .run_events(&run.id, 1)
-        .await
-        .map_err(|error| error.to_string())?;
-    if replay.len() != 2 || replay[0].sequence != 1 || replay[1].sequence != 2 {
-        return Err("inclusive Run event replay violated sequence semantics".to_owned());
-    }
-    let limited = provider
-        .generate(GenerateRequest {
-            request_id: "conformance-output-limit".to_owned(),
-            context: transferred.id.clone(),
-            input: Item {
-                id: "limited-input".to_owned(),
-                kind: ItemKind::User,
-                content: Bytes::from_static(b"bounded"),
-                link: None,
-                continuation_profile: None,
-            },
-            settings: GenerationSettings {
-                maximum_output: 3,
-                seed: None,
-            },
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    let limited = limited
-        .result
-        .ok_or_else(|| "output-limited Run did not settle".to_owned())?;
-    if limited.terminal != RunTerminal::OutputLimited
-        || limited.output != Bytes::from_static(b"bou")
-    {
-        return Err("output limit was not enforced exactly".to_owned());
-    }
-    let conflict = provider
-        .create_context(CreateContextRequest {
-            request_id: "conformance-create".to_owned(),
-            model: "deterministic".to_owned(),
-            items: vec![],
-        })
-        .await;
-    if !matches!(conflict, Err(Error::Conflict(_))) {
-        return Err("changed idempotent request did not conflict".to_owned());
-    }
-    let unsupported = provider
-        .create_context(CreateContextRequest {
-            request_id: "conformance-unsupported".to_owned(),
-            model: "unsupported-conformance-model".to_owned(),
-            items: vec![],
-        })
-        .await;
-    if !matches!(unsupported, Err(Error::Unsupported(_))) {
-        return Err("unsupported model was not rejected explicitly".to_owned());
-    }
-    provider
-        .retain_context(&transferred.id, Retention::WarmUntil(1))
-        .await
-        .map_err(|error| error.to_string())?;
-    provider
-        .delete_context(&base.id)
-        .await
-        .map_err(|error| error.to_string())?;
-    if provider.inspect_context(&fork.id).await.is_err() {
-        return Err("source deletion invalidated an independently retained fork".to_owned());
+    if let Some(result) = &view.result {
+        let terminal =
+            wire::RunTerminal::try_from(result.terminal).unwrap_or(wire::RunTerminal::Unspecified);
+        if terminal == wire::RunTerminal::Unspecified {
+            return Err(Error::Invalid("Run result terminal is invalid"));
+        }
+        if let Some(receipt) = &result.receipt {
+            fixed::<32>(&receipt.receipt_id)?;
+            fixed::<32>(&receipt.model_profile)?;
+            fixed::<32>(&receipt.meter_revision)?;
+            fixed::<32>(&receipt.rate_card_revision)?;
+            if receipt.usage.is_none() {
+                return Err(Error::Invalid("Run usage is absent"));
+            }
+        }
     }
     Ok(())
+}
+
+fn validate_warm_view(
+    view: &wire::WarmView,
+    expected_context: Option<[u8; 32]>,
+    expected_commitment: Option<[u8; 32]>,
+) -> Result<(), Error> {
+    let commitment = fixed::<32>(&view.commitment)?;
+    let context = fixed::<32>(&view.context)?;
+    fixed::<32>(&view.model_profile)?;
+    fixed::<32>(&view.latency_profile)?;
+    fixed::<32>(&view.evidence_digest)?;
+    fixed::<32>(&view.admission_receipt_id)?;
+    let state = wire::WarmState::try_from(view.state).unwrap_or(wire::WarmState::Unspecified);
+    if expected_context.is_some_and(|expected| expected != context)
+        || expected_commitment.is_some_and(|expected| expected != commitment)
+        || view.expires_at_ms == 0
+        || view.sequence == 0
+        || state == wire::WarmState::Unspecified
+    {
+        return Err(Error::Invalid("warm commitment shape differs"));
+    }
+    Ok(())
+}
+
+fn validate_provenance(value: &wire::ContextProvenance) -> Result<(), Error> {
+    use wire::context_provenance::Origin;
+    match value
+        .origin
+        .as_ref()
+        .ok_or(Error::Invalid("Context provenance is absent"))?
+    {
+        Origin::Created(_) => Ok(()),
+        Origin::Derived(value) | Origin::Forked(value) => fixed::<32>(&value.source).map(|_| ()),
+        Origin::Transferred(value) => fixed::<32>(&value.source).map(|_| ()),
+        Origin::Generated(value) => {
+            fixed::<16>(&value.run_id)?;
+            fixed::<32>(&value.terminal_receipt_digest).map(|_| ())
+        }
+        Origin::RunInput(value) => {
+            fixed::<32>(&value.source)?;
+            fixed::<16>(&value.run_id)?;
+            if value.maximum_output == 0 {
+                return Err(Error::Invalid("Run input output bound is zero"));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Replayable mutation with a pre-dispatch command identity, not an execution retry.
+#[derive(Clone)]
+pub struct ContextMutation {
+    client: Inference,
+    request: wire::MutateContextRequest,
+}
+
+impl ContextMutation {
+    /// Caller-known command identity before dispatch.
+    #[must_use]
+    pub fn identity(&self) -> Option<&wire::RequestIdentity> {
+        self.request.identity.as_ref()
+    }
+
+    /// Submit or reconcile the exact command. The receipt is not a billing/deletion proof.
+    ///
+    /// # Errors
+    /// An unavailable observation does not imply the mutation failed to commit.
+    pub async fn send(&self) -> Result<wire::MutationReceipt, Error> {
+        bounded(&self.request)?;
+        let receipt = self
+            .client
+            .rpc()
+            .mutate(self.client.request(self.request.clone())?)
+            .await?
+            .into_inner();
+        validate_receipt(&receipt)?;
+        Ok(receipt)
+    }
+}
+
+fn validate_receipt(receipt: &wire::MutationReceipt) -> Result<(), Error> {
+    fixed::<32>(&receipt.revision)?;
+    fixed::<32>(&receipt.command_digest)?;
+    if receipt.sequence == 0 {
+        return Err(Error::Invalid("missing publication sequence"));
+    }
+    Ok(())
+}
+
+fn text_item(kind: wire::ItemKind, text: String) -> wire::Item {
+    wire::Item {
+        id: uuid::Uuid::now_v7().as_bytes().to_vec(),
+        kind: kind as i32,
+        payload: text.into_bytes(),
+        link: Vec::new(),
+        continuation_profile: Vec::new(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prost::Message;
 
-    #[tokio::test]
-    async fn memory_contexts_fork_edit_transfer_generate_and_recover() -> Result<()> {
-        let provider = MemoryInference::new([
-            ModelCapabilities {
-                model: "deterministic".to_owned(),
-                maximum_context_bytes: MAXIMUM_CONTENT_BYTES as u64,
-                maximum_output: 65_536,
-                features: BTreeSet::new(),
-            },
-            ModelCapabilities {
-                model: "reasoner".to_owned(),
-                maximum_context_bytes: MAXIMUM_CONTENT_BYTES as u64,
-                maximum_output: 65_536,
-                features: BTreeSet::new(),
-            },
-        ]);
-        let inference = Inference::new(provider);
-        let create = inference.context("deterministic").instructions("exact");
-        let base = create.create().await?;
-        assert_eq!(create.create().await?.id(), base.id());
-        let first_item = base.items()[0].id.clone();
-        let fork = base.fork().await?;
-        let edited = fork
-            .edit([ContextEdit::replace(first_item, "changed")])
-            .await?;
-        assert_eq!(&*base.items()[0].content, b"exact");
-        assert_eq!(&*edited.items()[0].content, b"changed");
-        assert_ne!(base.snapshot.lineage, fork.snapshot.lineage);
-        let transferred = edited.transfer("reasoner").await?;
-        assert_eq!(transferred.model(), "reasoner");
-        let run = transferred.generate("answer").await?;
-        let recovered = inference.recover(run.id()).await?;
-        assert_eq!(recovered.events_from(1).await?.len(), 2);
-        let result = recovered.result().await?;
-        assert_eq!(&*result.output, b"answer");
-        assert_eq!(result.terminal, RunTerminal::Completed);
-        assert_eq!(result.receipt.usage.generated_output, 6);
-        base.delete().await?;
-        assert_eq!(&*fork.items()[0].content, b"exact");
+    #[test]
+    fn descriptor_contains_only_customer_contract() -> Result<(), Box<dyn std::error::Error>> {
+        let descriptor = prost_types::FileDescriptorSet::decode(DESCRIPTOR)?;
+        assert_eq!(descriptor.file.len(), 1);
+        let file = &descriptor.file[0];
+        assert_eq!(file.package.as_deref(), Some("inference.customer.v1"));
+        assert!(file.dependency.is_empty());
+        assert_eq!(file.service.len(), 4);
+        assert_eq!(file.service[0].name.as_deref(), Some("Models"));
+        assert_eq!(file.service[0].method.len(), 1);
+        assert_eq!(file.service[1].name.as_deref(), Some("Contexts"));
+        assert_eq!(file.service[1].method.len(), 3);
+        assert_eq!(file.service[2].name.as_deref(), Some("WarmContexts"));
+        assert_eq!(file.service[2].method.len(), 4);
+        assert_eq!(file.service[3].name.as_deref(), Some("Runs"));
+        assert_eq!(file.service[3].method.len(), 4);
+        let names: Vec<_> = file
+            .message_type
+            .iter()
+            .map(|message| message.name.as_deref())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "ListModelsRequest",
+                "ListModelsResponse",
+                "ModelCapability",
+                "RetentionProfile",
+                "RetainWarmRequest",
+                "InspectWarmRequest",
+                "RenewWarmRequest",
+                "ReleaseWarmRequest",
+                "WarmView",
+                "RequestIdentity",
+                "Item",
+                "CreateContextRequest",
+                "InspectContextRequest",
+                "Empty",
+                "Insert",
+                "Replace",
+                "Edit",
+                "Edits",
+                "Truncate",
+                "Compact",
+                "Transfer",
+                "MutateContextRequest",
+                "MutationReceipt",
+                "ContextView",
+                "ContextProvenance",
+                "ProvenanceSource",
+                "TransferProvenance",
+                "GenerationProvenance",
+                "RunInputProvenance",
+                "GenerateRunRequest",
+                "GenerateRunResponse",
+                "InspectRunRequest",
+                "WatchRunRequest",
+                "LogicalUsage",
+                "UsageReceipt",
+                "RunResult",
+                "RunView",
+                "RunEvent",
+                "RunProgress"
+            ]
+            .map(Some)
+        );
+        let manifest = include_str!("../Cargo.toml");
+        for dependency in ["inference-protocol", "inference-client", "path =", "git ="] {
+            assert!(
+                !manifest.contains(dependency),
+                "private/source dependency in customer manifest"
+            );
+        }
         Ok(())
     }
 
-    #[tokio::test]
-    async fn idempotency_conflicts_and_unsupported_models_are_explicit() -> Result<()> {
-        let provider = MemoryInference::default();
-        let request = CreateContextRequest {
-            request_id: "request".to_owned(),
-            model: "deterministic".to_owned(),
-            items: vec![Item::text(ItemKind::User, "one")],
+    #[test]
+    fn rejects_incomplete_receipts_and_sensitive_credentials() -> Result<(), Error> {
+        assert!(validate_receipt(&wire::MutationReceipt::default()).is_err());
+        assert!(validate_warm_view(&wire::WarmView::default(), None, None).is_err());
+        let valid = wire::WarmView {
+            commitment: vec![1; 32],
+            context: vec![2; 32],
+            model_profile: vec![3; 32],
+            latency_profile: vec![4; 32],
+            expires_at_ms: 1,
+            state: wire::WarmState::Active.into(),
+            evidence_digest: vec![5; 32],
+            admission_receipt_id: vec![6; 32],
+            sequence: 1,
         };
-        let first = provider.create_context(request.clone()).await?;
-        assert_eq!(provider.create_context(request.clone()).await?.id, first.id);
-        let mut changed = request;
-        changed.items = vec![Item::text(ItemKind::User, "two")];
-        assert!(matches!(
-            provider.create_context(changed).await,
-            Err(Error::Conflict(_))
-        ));
-        assert!(matches!(
-            Inference::new(provider).context("unknown").create().await,
-            Err(Error::Unsupported(_))
-        ));
+        validate_warm_view(&valid, Some([2; 32]), Some([1; 32]))?;
+        assert!(authorization("").is_err());
+        assert!(authorization("line\nbreak").is_err());
+        let secret = authorization("secret")?;
+        assert_eq!(secret.as_str(), "Bearer secret");
         Ok(())
     }
 
     #[tokio::test]
-    async fn memory_provider_passes_family_conformance() {
-        assert!(conformance(&MemoryInference::default()).await.is_ok());
+    async fn request_metadata_marks_the_ephemeral_bearer_copy_sensitive() -> Result<(), Error> {
+        let client = Inference(Arc::new(Connection {
+            channel: Endpoint::from_static("https://localhost").connect_lazy(),
+            authorization: authorization("secret")?,
+            client_instance: [1; 16],
+        }));
+        let request = client.request(())?;
+        let bearer = request
+            .metadata()
+            .get("authorization")
+            .ok_or(Error::Invalid("missing authorization"))?;
+        assert!(bearer.is_sensitive());
+        assert_eq!(client.0.authorization.as_str(), "Bearer secret");
+        Ok(())
+    }
+
+    #[test]
+    fn customer_output_destructors_scrub_owned_buffers() -> Result<(), Error> {
+        let mut event = wire::RunEvent {
+            sequence: 0,
+            event: Some(wire::run_event::Event::Output(vec![7; 32])),
+        };
+        scrub_run_event(&mut event);
+        let Some(wire::run_event::Event::Output(bytes)) = event.event.as_ref() else {
+            return Err(Error::Invalid("output event is absent"));
+        };
+        assert!(bytes.iter().all(|byte| *byte == 0));
+
+        let mut result = wire::RunResult {
+            output: vec![9; 32],
+            context: None,
+            terminal: wire::RunTerminal::Completed.into(),
+            receipt: None,
+        };
+        scrub_run_result(&mut result);
+        assert!(result.output.iter().all(|byte| *byte == 0));
+        Ok(())
     }
 }

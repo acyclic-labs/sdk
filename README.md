@@ -19,10 +19,9 @@ until their family version is published and tagged.
 - An Objects v1 Rust gRPC client and bounded reference provider with permanent
   versions, BLAKE3 validators, delete markers, conditions, exact idempotency,
   stable listing views, multipart publication, and whole-bucket snapshots/forks.
-- An Inference v1 Rust client/provider family with immutable item-addressed
-  Context revisions, independent forks, explicit edit/compact/transfer,
-  recoverable Runs, inclusive event replay, cancellation, four work meters,
-  and zero-copy `Bytes` payloads across its Rust and protobuf boundary.
+- An Inference v1 Rust client with immutable item-addressed Context revisions,
+  independent forks, exact edit/compact/transfer, recoverable Runs, inclusive
+  event replay, cancellation, four work meters, and admitted warm commitments.
 - A shape-free Machines v1 contract with immutable image qualification, exact
   idempotency, checkpoints, fork sets, lifecycle recovery, stable endpoints,
   events, usage receipts, a mutual-TLS/Unix client, and one bounded deterministic
@@ -56,21 +55,25 @@ authenticated service; placement, batching, KV movement, and rebalancing remain
 provider internals:
 
 ```rust,no_run
-use acyclic_inference::Inference;
+use inference_sdk::Inference;
 
-# async fn example() -> acyclic_inference::Result<()> {
-let inference = Inference::connect("https://inference.example", "account-token").await?;
+# async fn example() -> inference_sdk::Result<(), inference_sdk::Error> {
+let inference = Inference::connect(
+    "https://inference.example",
+    "account-token",
+    include_bytes!("trusted-ca.pem"),
+).await?;
 let base = inference
     .context("model/revision")
     .instructions("Answer from the supplied evidence.")
     .create()
     .await?;
-let branch = base.fork().await?;
-let run = branch.generate("Summarize the findings.").await?;
-let run_id = run.id().to_owned();
-let result = run.result().await?;
-let recovered = inference.recover(run_id).await?;
-let events = recovered.events_from(0).await?;
+let branch = base.fork().send().await?;
+let run = branch.generate("Summarize the findings.", 1_024).send().await?;
+let run_id = run.id();
+let result = run.inspect().await?;
+let recovered = inference.recover_run(run_id);
+let events = recovered.watch(0).await?;
 # let _ = (result, events);
 # Ok(())
 # }

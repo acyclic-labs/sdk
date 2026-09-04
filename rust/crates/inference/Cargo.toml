@@ -1,28 +1,31 @@
 [package]
-name = "acyclic-inference"
-version = "1.0.0-rc.1"
+name = "inference-sdk"
+version = "1.0.0-rc.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Public Rust SDK for durable Inference Contexts and recoverable Runs"
+description = "Rust SDK for immutable Inference Contexts, recoverable Runs, and warm commitments"
 publish = true
 build = "build.rs"
 
 [dependencies]
-async-trait.workspace = true
-bytes.workspace = true
 prost.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
 uuid.workspace = true
+zeroize.workspace = true
 
 [build-dependencies]
-prost = "0.14.4"
-prost-types = "0.14.4"
+prost.workspace = true
+prost-types.workspace = true
+protoc-bin-vendored.workspace = true
 tonic-prost-build.workspace = true
+
+[dev-dependencies]
+prost-types.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

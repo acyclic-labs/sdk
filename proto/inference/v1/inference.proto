@@ -1,67 +1,102 @@
 syntax = "proto3";
-package acyclic.inference.v1;
+package inference.customer.v1;
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/inference/v1;inferencev1";
 
-message OperationIdentity {
-  string operation_id = 1;
-  string idempotency_key = 2;
+service Models {
+  rpc List(ListModelsRequest) returns (ListModelsResponse);
 }
 
-message ProtocolIdentity {
-  string version = 1;
-  string descriptor_digest = 2;
+message ListModelsRequest {}
+message ListModelsResponse {
+  repeated ModelCapability models = 1;
+}
+message ModelCapability {
+  string model = 1;
+  bytes execution_profile = 2;
+  uint64 maximum_context = 3;
+  uint64 maximum_output = 4;
+  repeated string features = 5;
+  repeated RetentionProfile retention_profiles = 6;
 }
 
-message Capability {
-  string name = 1;
-  string version = 2;
+message RetentionProfile {
+  bytes profile = 1;
+  uint64 minimum_duration_ms = 2;
+  uint64 maximum_duration_ms = 3;
 }
 
-message CapabilitySet {
-  repeated Capability capabilities = 1;
+// Immutable canonical content operations. Execution/retention guarantees are
+// advertised separately; these methods do not admit a Run or a warm promise.
+service Contexts {
+  rpc Create(CreateContextRequest) returns (MutationReceipt);
+  rpc Inspect(InspectContextRequest) returns (ContextView);
+  rpc Mutate(MutateContextRequest) returns (MutationReceipt);
 }
 
-message HandshakeRequest {
-  ProtocolIdentity protocol = 1;
-  CapabilitySet required = 2;
+// Customer warm-retention commitments. Placement, workers, allocations,
+// migration, rebalancing, and cleanup mechanics remain private.
+service WarmContexts {
+  rpc Retain(RetainWarmRequest) returns (WarmView);
+  rpc Inspect(InspectWarmRequest) returns (WarmView);
+  rpc Renew(RenewWarmRequest) returns (WarmView);
+  rpc Release(ReleaseWarmRequest) returns (WarmView);
 }
 
-message HandshakeResponse {
-  ProtocolIdentity protocol = 1;
-  CapabilitySet supported = 2;
+message RetainWarmRequest {
+  RequestIdentity identity = 1;
+  bytes context = 2;
+  bytes latency_profile = 3;
+  uint64 expires_at_ms = 4;
 }
 
-enum ErrorCode {
-  ERROR_CODE_UNSPECIFIED = 0;
-  ERROR_CODE_NOT_FOUND = 1;
-  ERROR_CODE_CONFLICT = 2;
-  ERROR_CODE_UNSUPPORTED = 3;
-  ERROR_CODE_INVALID = 4;
-  ERROR_CODE_UNAUTHORIZED = 5;
+message InspectWarmRequest {
+  bytes commitment = 1;
 }
 
-message Error {
-  ErrorCode code = 1;
-  string message = 2;
+message RenewWarmRequest {
+  RequestIdentity identity = 1;
+  bytes commitment = 2;
+  uint64 expires_at_ms = 3;
 }
 
-enum AdmissionState {
-  ADMISSION_STATE_UNSPECIFIED = 0;
-  ADMISSION_STATE_ACCEPTED = 1;
-  ADMISSION_STATE_REJECTED = 2;
-  ADMISSION_STATE_INDETERMINATE = 3;
+message ReleaseWarmRequest {
+  RequestIdentity identity = 1;
+  bytes commitment = 2;
 }
 
-message Admission {
-  OperationIdentity operation = 1;
-  AdmissionState state = 2;
-  Error error = 3;
+enum WarmState {
+  WARM_STATE_UNSPECIFIED = 0;
+  WARM_STATE_ACTIVE = 1;
+  WARM_STATE_EXPIRED = 2;
+  WARM_STATE_BREACHED = 3;
+  WARM_STATE_RELEASED = 4;
 }
 
-message ContextRef {
-  string context_id = 1;
-  reserved 2;
+message WarmView {
+  bytes commitment = 1;
+  bytes context = 2;
+  bytes model_profile = 3;
+  bytes latency_profile = 4;
+  uint64 expires_at_ms = 5;
+  WarmState state = 6;
+  bytes evidence_digest = 7;
+  bytes admission_receipt_id = 8;
+  uint64 sequence = 9;
+}
+
+// Recoverable logical generation. Distribution, placement, migration, cache,
+// and worker identities are intentionally absent.
+service Runs {
+  rpc Generate(GenerateRunRequest) returns (GenerateRunResponse);
+  rpc Inspect(InspectRunRequest) returns (RunView);
+  rpc Watch(WatchRunRequest) returns (stream RunEvent);
+  rpc Cancel(InspectRunRequest) returns (RunView);
+}
+
+message RequestIdentity {
+  bytes client_instance = 1;
+  bytes request_id = 2;
 }
 
 enum ItemKind {
@@ -81,156 +116,132 @@ enum ItemKind {
 }
 
 message Item {
-  string item_id = 1;
+  bytes id = 1;
   ItemKind kind = 2;
-  bytes content = 3;
-  optional string link = 4;
-  optional string continuation_profile = 5;
-}
-
-message ModelCapabilities {
-  string model = 1;
-  uint64 maximum_context_bytes = 2;
-  uint64 maximum_output = 3;
-  repeated string features = 4;
-}
-
-message ListModelsRequest {}
-message ListModelsResponse {
-  repeated ModelCapabilities models = 1;
+  bytes payload = 3;
+  // Exactly one logical link for tool call/result; absent for all other kinds.
+  bytes link = 4;
+  // Only a continuation may contain its exact originating execution profile.
+  bytes continuation_profile = 5;
 }
 
 message CreateContextRequest {
-  OperationIdentity operation = 1;
+  RequestIdentity identity = 1;
   string model = 2;
   repeated Item items = 3;
 }
 
 message InspectContextRequest {
-  ContextRef context = 1;
+  bytes revision = 1;
 }
-
+message Empty {}
 message Insert {
-  string target_item_id = 1;
+  bytes target = 1;
   Item item = 2;
 }
-
 message Replace {
-  string target_item_id = 1;
-  bytes content = 2;
+  bytes target = 1;
+  bytes payload = 2;
 }
-
-message ContextEdit {
+message Edit {
   oneof action {
     Item append = 1;
     Insert insert_before = 2;
     Insert insert_after = 3;
     Replace replace = 4;
-    string delete_item_id = 5;
+    bytes delete = 5;
   }
 }
-
-message EditContext {
-  repeated ContextEdit edits = 1;
+message Edits {
+  repeated Edit edits = 1;
 }
-
-message TruncateContext {
-  optional string through_item_id = 1;
+message Truncate {
+  optional bytes through = 1;
 }
-
-message CompactContext {
-  repeated string selected_item_ids = 1;
+message Compact {
+  repeated bytes selected = 1;
   repeated Item replacement = 2;
 }
-
-message TransferContext {
+message Transfer {
   string model = 1;
 }
-
 message MutateContextRequest {
-  OperationIdentity operation = 1;
-  ContextRef source = 2;
-  oneof mutation {
-    bool fork = 3;
-    EditContext edit = 4;
-    TruncateContext truncate = 5;
-    CompactContext compact = 6;
-    TransferContext transfer = 7;
+  RequestIdentity identity = 1;
+  bytes source = 2;
+  oneof action {
+    Edits edit = 3;
+    Empty fork = 4;
+    Truncate truncate = 5;
+    Compact compact = 6;
+    Empty release = 7;
+    Transfer transfer = 8;
   }
 }
 
-enum RetentionKind {
-  RETENTION_KIND_UNSPECIFIED = 0;
-  RETENTION_KIND_DURABLE = 1;
-  RETENTION_KIND_WARM_UNTIL = 2;
+message MutationReceipt {
+  bytes revision = 1;
+  bytes command_digest = 2;
+  uint64 sequence = 3;
+  // The recorded command's effect, not a promise of current or warm retention.
+  bool retained = 4;
 }
-
-message Retention {
-  RetentionKind kind = 1;
-  optional uint64 expires_at_unix_ms = 2;
-}
-
-message RetainContextRequest {
-  OperationIdentity operation = 1;
-  ContextRef context = 2;
-  Retention retention = 3;
-}
-
-message DeleteContextRequest {
-  OperationIdentity operation = 1;
-  ContextRef context = 2;
-}
-
-message DeleteContextResponse {
-  Admission admission = 1;
-  bool deleted = 2;
-}
-
-enum ContextProvenanceKind {
-  CONTEXT_PROVENANCE_KIND_UNSPECIFIED = 0;
-  CONTEXT_PROVENANCE_KIND_CREATED = 1;
-  CONTEXT_PROVENANCE_KIND_DERIVED = 2;
-  CONTEXT_PROVENANCE_KIND_FORKED = 3;
-  CONTEXT_PROVENANCE_KIND_TRANSFERRED = 4;
-  CONTEXT_PROVENANCE_KIND_GENERATED = 5;
+message ContextView {
+  bytes revision = 1;
+  optional bytes parent = 2;
+  bytes lineage = 3;
+  bytes execution_profile = 4;
+  bytes content_digest = 5;
+  repeated Item items = 6;
+  string model = 7;
+  ContextProvenance provenance = 8;
 }
 
 message ContextProvenance {
-  ContextProvenanceKind kind = 1;
-  optional ContextRef source = 2;
-  optional string run_id = 3;
-  bool reused_compatible_state = 4;
+  oneof origin {
+    Empty created = 1;
+    ProvenanceSource derived = 2;
+    ProvenanceSource forked = 3;
+    TransferProvenance transferred = 4;
+    GenerationProvenance generated = 5;
+    RunInputProvenance run_input = 6;
+  }
+}
+message ProvenanceSource {
+  bytes source = 1;
+}
+message TransferProvenance {
+  bytes source = 1;
+  bool reused_compatible_state = 2;
+}
+message GenerationProvenance {
+  bytes run_id = 1;
+  bytes terminal_receipt_digest = 2;
+}
+message RunInputProvenance {
+  bytes source = 1;
+  bytes run_id = 2;
+  uint64 maximum_output = 3;
+  optional uint64 seed = 4;
 }
 
-message Context {
-  ContextRef context = 1;
-  string lineage_id = 2;
-  optional ContextRef parent = 3;
-  string model = 4;
-  repeated Item items = 5;
-  Retention retention = 6;
-  ContextProvenance provenance = 7;
-}
-
-message ContextResponse {
-  Admission admission = 1;
-  Context context = 2;
-}
-
-message GenerationSettings {
-  uint64 maximum_output = 1;
-  optional uint64 seed = 2;
-}
-
-message GenerateRequest {
-  OperationIdentity operation = 1;
-  ContextRef context = 2;
+message GenerateRunRequest {
+  RequestIdentity identity = 1;
+  bytes context = 2;
   Item input = 3;
-  GenerationSettings settings = 4;
+  uint64 maximum_output = 4;
+  optional uint64 seed = 5;
 }
 
-message RunRef {
-  string run_id = 1;
+message GenerateRunResponse {
+  RunView run = 1;
+}
+message InspectRunRequest {
+  bytes run_id = 1;
+}
+message WatchRunRequest {
+  bytes run_id = 1;
+  // Inclusive, zero-based public cursor.
+  uint64 from_sequence = 2;
 }
 
 enum RunTerminal {
@@ -244,7 +255,7 @@ enum RunTerminal {
   RUN_TERMINAL_INDETERMINATE = 7;
 }
 
-message Usage {
+message LogicalUsage {
   uint64 new_prefill = 1;
   uint64 generated_output = 2;
   uint64 effective_context_reads = 3;
@@ -252,59 +263,39 @@ message Usage {
 }
 
 message UsageReceipt {
-  string receipt_id = 1;
-  string model = 2;
-  string meter_revision = 3;
-  Usage usage = 4;
+  bytes receipt_id = 1;
+  bytes model_profile = 2;
+  bytes meter_revision = 3;
+  LogicalUsage usage = 4;
+  bytes rate_card_revision = 5;
 }
 
 message RunResult {
   bytes output = 1;
-  optional Context context = 2;
+  optional ContextView context = 2;
   RunTerminal terminal = 3;
-  UsageReceipt receipt = 4;
+  optional UsageReceipt receipt = 4;
 }
 
-message Run {
-  RunRef run = 1;
-  ContextRef input = 2;
-  optional RunResult result = 3;
-  repeated RunEvent events = 4;
-}
-
-message GenerateResponse {
-  Admission admission = 1;
-  Run run = 2;
-}
-
-message InspectRunRequest {
-  RunRef run = 1;
-}
-
-message WatchRunRequest {
-  RunRef run = 1;
-  uint64 from_sequence = 2;
+message RunView {
+  bytes run_id = 1;
+  bytes input = 2;
+  string model = 3;
+  uint64 last_sequence = 4;
+  bool cancellation_requested = 5;
+  optional RunResult result = 6;
 }
 
 message RunEvent {
   uint64 sequence = 1;
   oneof event {
     bytes output = 2;
-    Usage usage = 3;
+    LogicalUsage usage = 3;
     RunTerminal terminal = 4;
+    RunProgress progress = 5;
   }
 }
 
-service InferenceService {
-  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
-  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
-  rpc CreateContext(CreateContextRequest) returns (ContextResponse);
-  rpc InspectContext(InspectContextRequest) returns (Context);
-  rpc MutateContext(MutateContextRequest) returns (ContextResponse);
-  rpc RetainContext(RetainContextRequest) returns (ContextResponse);
-  rpc DeleteContext(DeleteContextRequest) returns (DeleteContextResponse);
-  rpc Generate(GenerateRequest) returns (GenerateResponse);
-  rpc InspectRun(InspectRunRequest) returns (Run);
-  rpc WatchRun(WatchRunRequest) returns (stream RunEvent);
-  rpc CancelRun(InspectRunRequest) returns (Run);
+message RunProgress {
+  string kind = 1;
 }

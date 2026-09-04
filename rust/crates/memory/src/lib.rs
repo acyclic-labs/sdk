@@ -1,6 +1,5 @@
 //! A complete in-memory provider profile.
 
-use acyclic_inference::DeterministicInference;
 use acyclic_machines::SimulatedMachines;
 use acyclic_objects::MemoryObjects;
 use acyclic_stream::MemoryStream;
@@ -19,8 +18,6 @@ pub struct MemoryProfile {
     pub filesystem_bucket: acyclic_objects::wire::BucketRef,
     /// Deterministic execution simulator.
     pub machines: SimulatedMachines,
-    /// Deterministic model provider.
-    pub inference: DeterministicInference,
 }
 
 impl MemoryProfile {
@@ -40,7 +37,6 @@ impl MemoryProfile {
             objects,
             filesystem_bucket,
             machines: SimulatedMachines::default(),
-            inference: DeterministicInference::default(),
         }
     }
 }

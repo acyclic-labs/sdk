@@ -62,7 +62,7 @@ jobs:
         with:
           toolchain: 1.94.0
       - run: cargo test -p acyclic-fs --no-default-features --features local,memory,native-watch,native-executor
-      - run: cargo test -p acyclic-harness -p acyclic-inference -p acyclic-machines -p acyclic-objects -p acyclic-stream
+      - run: cargo test -p acyclic-harness -p inference-sdk -p acyclic-machines -p acyclic-objects -p acyclic-stream
 
   wasm:
     runs-on: ubuntu-latest
