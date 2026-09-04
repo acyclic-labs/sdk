@@ -1,17 +1,18 @@
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
 
 import { openHostedFs } from "../dist/hosted.js";
 
 const root = await mkdtemp(join(tmpdir(), "acyclic-fs-hosted-"));
-const executable = resolve(
-  "../../..",
-  process.platform === "win32" ? "target/debug/fsd.exe" : "target/debug/fsd",
-);
+const target = process.env.CARGO_TARGET_DIR;
+const targetDirectory = target === undefined
+  ? resolve("../../..", "target")
+  : isAbsolute(target) ? target : resolve(target);
+const executable = join(targetDirectory, "debug", process.platform === "win32" ? "fsd.exe" : "fsd");
 const child = spawn(executable, ["--root", root], { stdio: ["ignore", "pipe", "inherit"] });
 
 try {
