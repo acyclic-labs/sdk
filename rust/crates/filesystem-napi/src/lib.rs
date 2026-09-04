@@ -1720,17 +1720,12 @@ impl NativeWorkspace {
     ///
     /// Returns name, generation, authority, or storage failures.
     #[napi]
-    pub async fn fork(
-        &self,
-        destination: String,
-        idempotency_key: Option<Buffer>,
-    ) -> Result<NativeWorkspace> {
-        let idempotency_key = native_idempotency_key(idempotency_key)?;
+    pub async fn fork(&self, destination: String) -> Result<NativeWorkspace> {
         let generation = self.inner.head().await.map_err(napi_error)?;
         self.inner
             .fork(
                 destination,
-                ForkOptions::from_generation(generation, idempotency_key),
+                ForkOptions::from_generation(generation, IdempotencyKey::new()),
             )
             .await
             .map(|inner| NativeWorkspace { inner })
@@ -1747,13 +1742,11 @@ impl NativeWorkspace {
         &self,
         destination: String,
         generation: &NativeGeneration,
-        idempotency_key: Option<Buffer>,
     ) -> Result<NativeWorkspace> {
-        let idempotency_key = native_idempotency_key(idempotency_key)?;
         self.inner
             .fork(
                 destination,
-                ForkOptions::from_generation(generation.inner.clone(), idempotency_key),
+                ForkOptions::from_generation(generation.inner.clone(), IdempotencyKey::new()),
             )
             .await
             .map(|inner| NativeWorkspace { inner })
@@ -2736,11 +2729,11 @@ impl NativeFs {
     /// # Errors
     ///
     /// Returns a JavaScript error when the durable local stores cannot open.
-    #[napi(constructor)]
-    pub fn new(root: String, object_cache: NativeObjectCacheOptions) -> Result<Self> {
+    #[napi(factory)]
+    pub async fn open(root: String, object_cache: NativeObjectCacheOptions) -> Result<Self> {
         let mut options = LocalOptions::new(root);
         options.object_cache = native_object_cache_options(object_cache)?;
-        let inner = LocalFs::local(options).map_err(napi_error)?;
+        let inner = LocalFs::local(options).await.map_err(napi_error)?;
         Ok(Self {
             inner: Arc::new(inner),
             cancellation: CancellationToken::new(),
@@ -6668,11 +6661,11 @@ mod tests {
         assert!(facts.native_watch);
     }
 
-    #[test]
-    fn native_owner_exposes_and_clears_shared_object_acceleration()
+    #[tokio::test]
+    async fn native_owner_exposes_and_clears_shared_object_acceleration()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let fs = NativeFs::new(
+        let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
                 maximum_entries: 8,
@@ -6680,19 +6673,20 @@ mod tests {
                 maximum_in_flight: 2,
                 maximum_waiters_per_object: 2,
             },
-        )?;
+        )
+        .await?;
         assert_eq!(fs.object_cache_stats()?.resident_entries.get_u64().1, 0);
         fs.clear_object_cache()?;
         assert_eq!(fs.object_cache_stats()?.resident_bytes.get_u64().1, 0);
         Ok(())
     }
 
-    #[test]
-    fn native_owner_rejects_zero_or_lossy_object_cache_bounds()
+    #[tokio::test]
+    async fn native_owner_rejects_zero_or_lossy_object_cache_bounds()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         assert!(
-            NativeFs::new(
+            NativeFs::open(
                 root.path().to_string_lossy().into_owned(),
                 NativeObjectCacheOptions {
                     maximum_entries: 0,
@@ -6701,10 +6695,11 @@ mod tests {
                     maximum_waiters_per_object: 2,
                 },
             )
+            .await
             .is_err()
         );
         assert!(
-            NativeFs::new(
+            NativeFs::open(
                 root.path().to_string_lossy().into_owned(),
                 NativeObjectCacheOptions {
                     maximum_entries: 8,
@@ -6716,6 +6711,7 @@ mod tests {
                     maximum_waiters_per_object: 2,
                 },
             )
+            .await
             .is_err()
         );
         Ok(())
@@ -6725,7 +6721,7 @@ mod tests {
     async fn native_owner_exposes_both_generation_fenced_speculation_engines()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let fs = NativeFs::new(
+        let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
                 maximum_entries: 8,
@@ -6733,7 +6729,8 @@ mod tests {
                 maximum_in_flight: 2,
                 maximum_waiters_per_object: 2,
             },
-        )?;
+        )
+        .await?;
         let volume_id = VolumeId::new();
         let generation_id = acyclic_fs::GenerationId::new(Digest::from_bytes([7_u8; 32]));
         let speculation = fs.create_speculation(
@@ -6991,7 +6988,7 @@ mod tests {
     async fn native_named_workspace_is_durable_binary_and_fork_exact()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let fs = NativeFs::new(
+        let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
                 maximum_entries: 8,
@@ -6999,7 +6996,8 @@ mod tests {
                 maximum_in_flight: 2,
                 maximum_waiters_per_object: 2,
             },
-        )?;
+        )
+        .await?;
         let workspace = fs.create_workspace("main".to_owned()).await?;
         assert_eq!(workspace.name(), "main");
         let committed = workspace
@@ -7052,16 +7050,14 @@ mod tests {
                 .await
                 .is_err()
         );
-        let exact_fork = workspace
-            .fork_at("exact-agent".to_owned(), &exact, None)
-            .await?;
+        let exact_fork = workspace.fork_at("exact-agent".to_owned(), &exact).await?;
         assert!(
             exact_fork
                 .read("/output/status".to_owned(), bigint(5))
                 .await
                 .is_err()
         );
-        let fork = workspace.fork("agent".to_owned(), None).await?;
+        let fork = workspace.fork("agent".to_owned()).await?;
         assert_eq!(
             fork.read("/value.bin".to_owned(), bigint(16))
                 .await?
@@ -7070,7 +7066,7 @@ mod tests {
         );
         drop(fs);
 
-        let reopened = NativeFs::new(
+        let reopened = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
                 maximum_entries: 8,
@@ -7078,7 +7074,8 @@ mod tests {
                 maximum_in_flight: 2,
                 maximum_waiters_per_object: 2,
             },
-        )?
+        )
+        .await?
         .open_workspace("main".to_owned())
         .await?;
         assert_eq!(
@@ -7097,7 +7094,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         let source = tempfile::tempdir()?;
         std::fs::write(source.path().join("value.bin"), [1_u8, 2, 3])?;
-        let fs = NativeFs::new(
+        let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
                 maximum_entries: 8,
@@ -7105,7 +7102,8 @@ mod tests {
                 maximum_in_flight: 2,
                 maximum_waiters_per_object: 2,
             },
-        )?;
+        )
+        .await?;
         let workspace = fs
             .attach_directory(
                 "attached".to_owned(),
@@ -7151,7 +7149,7 @@ mod tests {
     async fn native_workspace_change_sets_compose_and_join_atomically()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let fs = NativeFs::new(
+        let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
                 maximum_entries: 32,
@@ -7159,11 +7157,12 @@ mod tests {
                 maximum_in_flight: 4,
                 maximum_waiters_per_object: 4,
             },
-        )?;
+        )
+        .await?;
         let main = fs.create_workspace("main".to_owned()).await?;
         main.write("/base".to_owned(), Buffer::from(vec![1_u8]))
             .await?;
-        let agent = main.fork("agent".to_owned(), None).await?;
+        let agent = main.fork("agent".to_owned()).await?;
         let base = agent.sync().await?;
         agent
             .write("/first".to_owned(), Buffer::from(vec![2_u8]))
@@ -7206,7 +7205,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         let source_root = tempfile::tempdir()?;
         let cancellation = CancellationToken::new();
-        let fs = LocalFs::local(LocalOptions::new(root.path()))?;
+        let fs = LocalFs::local(LocalOptions::new(root.path())).await?;
         let volume = fs
             .create_volume(test_config(), WorkBudget::UNBOUNDED, &cancellation)
             .await?

@@ -10,7 +10,7 @@ use acyclic_fs::{CancellationToken, Fs, LocalOptions, MountedView, WorkBudget};
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let fs = Fs::local(LocalOptions::new(root.path()))?;
+    let fs = Fs::local(LocalOptions::new(root.path())).await?;
     let cancellation = CancellationToken::default();
 
     let workspace = fs

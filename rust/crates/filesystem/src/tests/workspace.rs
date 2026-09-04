@@ -215,6 +215,50 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
 }
 
 #[tokio::test]
+async fn exact_generation_transaction_is_stateless_and_rebases_safely() -> Result<(), Box<dyn Error>>
+{
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("exact-transaction").await?;
+    let base = workspace.head().await?;
+
+    workspace.write_text("/upstream", "one").await?;
+    let mut transaction = workspace
+        .begin_transaction_at(&base, IdempotencyKey::new())
+        .await?;
+    transaction.write_text("/local", "two").await?;
+    assert!(matches!(
+        transaction.commit().await?,
+        TransactionCommit::Conflict { .. }
+    ));
+    assert!(matches!(
+        transaction.rebase(16).await?,
+        TransactionRebase::Rebased(_)
+    ));
+    assert!(matches!(
+        transaction.commit().await?,
+        TransactionCommit::Committed(_)
+    ));
+    assert_eq!(
+        workspace.read("/upstream", 8).await?,
+        Bytes::from_static(b"one")
+    );
+    assert_eq!(
+        workspace.read("/local", 8).await?,
+        Bytes::from_static(b"two")
+    );
+
+    let other = fs.create_workspace("other-exact-transaction").await?;
+    let foreign = other.head().await?;
+    assert!(matches!(
+        workspace
+            .begin_transaction_at(&foreign, IdempotencyKey::new())
+            .await,
+        Err(WorkspaceError::ForeignGeneration)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn transaction_preserves_links_sparse_ranges_metadata_and_cow_clones()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();

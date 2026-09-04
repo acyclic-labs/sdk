@@ -4,8 +4,11 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
+import { createClient } from "@connectrpc/connect";
+import { createGrpcWebTransport } from "@connectrpc/connect-web";
 
 import { openHostedFs } from "../dist/hosted.js";
+import { FilesystemDaemonService } from "../generated/proto/filesystem/daemon/v2/daemon_pb.js";
 
 const root = await mkdtemp(join(tmpdir(), "acyclic-fs-hosted-"));
 const target = process.env.CARGO_TARGET_DIR;
@@ -24,8 +27,8 @@ try {
   ]);
   const startup = JSON.parse(startupEvent[0]);
   const fs = await openHostedFs({
-    endpoint: startup.httpEndpoint,
-    bearerToken: startup.httpBearerToken,
+    endpoint: startup.endpoint,
+    bearerToken: startup.bearerToken,
   });
   const workspace = await fs.createWorkspace("hosted-e2e");
   const initial = await workspace.sync();
@@ -55,16 +58,18 @@ try {
   }
   const fork = await workspace.forkAt("historical", initial);
   let absent = false;
-  try { await fork.read("/hello.txt", 64n); } catch (error) { absent = error?.code === "engine_failure"; }
+  try { await fork.read("/hello.txt", 64n); } catch (error) { absent = error?.code === "not_found"; }
   if (!absent) throw new Error("exact-generation fork did not preserve historical state");
   fs.close();
 
-  const shutdown = await fetch(startup.httpEndpoint, {
-    method: "POST",
-    headers: { authorization: `Bearer ${startup.httpBearerToken}`, "content-type": "application/json" },
-    body: JSON.stringify({ id: "shutdown", method: "shutdown" }),
-  });
-  if (!shutdown.ok) throw new Error(`daemon shutdown failed with ${shutdown.status}`);
+  const daemon = createClient(FilesystemDaemonService, createGrpcWebTransport({
+    baseUrl: startup.endpoint,
+    interceptors: [(next) => (request) => {
+      request.header.set("authorization", `Bearer ${startup.bearerToken}`);
+      return next(request);
+    }],
+  }));
+  await daemon.shutdown({});
   const [code] = await once(child, "exit");
   if (code !== 0) throw new Error(`daemon exited ${code}`);
 } finally {

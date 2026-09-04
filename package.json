@@ -6,11 +6,14 @@
   "scripts": {
     "build": "tsc -b --force",
     "check": "tsc -b --force --pretty false",
+    "generate": "bun x buf generate && bun x buf build --path proto/filesystem -o rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin && bun scripts/sync-filesystem-generated.mjs",
+    "check:generated": "bun scripts/check-generated.mjs",
     "test": "bun run check && bun test typescript/packages/*/test && bun run --filter '@acyclic/fs' test",
     "licenses": "bun scripts/check-js-licenses.mjs"
   },
   "devDependencies": {
     "@bufbuild/buf": "1.72.0",
+    "@bufbuild/protoc-gen-es": "2.14.1",
     "@types/bun": "1.4.0",
     "ajv": "8.20.0",
     "typescript": "7.0.2"

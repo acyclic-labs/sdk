@@ -19,13 +19,16 @@ use tonic::{
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
 };
 
+use crate::wire_codec::{
+    condition_from_wire, condition_wire, mutation_from_wire, mutation_wire, optional_key, path,
+    required_key,
+};
 use crate::{
     AppendOutcome, AppendReceipt, AppendRequest, Child, ChildStream, ChildrenRequest,
-    CommitCondition, CommitConflict, CommitId, CommitMutation, CommitOutcome, CommitRequest,
-    CommittedAppend, CommittedDelete, CommittedEnvelope, CommittedFork, CommittedMutation,
-    CommittedTrim, DeleteReceipt, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
-    IdempotencyOutcome, ReadRequest, Record, RecordStream, StreamError, StreamPath, StreamProvider,
-    TrimReceipt, wire,
+    CommitConflict, CommitId, CommitOutcome, CommitRequest, CommittedAppend, CommittedDelete,
+    CommittedEnvelope, CommittedFork, CommittedMutation, CommittedTrim, DeleteReceipt, ForkReceipt,
+    ForkRequest, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, ReadRequest, Record,
+    RecordStream, StreamError, StreamPath, StreamProvider, TrimReceipt, wire,
 };
 
 const OPERATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -899,10 +902,6 @@ fn status(error: tonic::Status) -> StreamError {
     }
 }
 
-fn path(value: String) -> Result<StreamPath, StreamError> {
-    StreamPath::new(value)
-}
-
 fn commit_id(value: &[u8]) -> Result<CommitId, StreamError> {
     let bytes = <[u8; 32]>::try_from(value).map_err(|_| StreamError::Unavailable)?;
     Ok(CommitId::from_bytes(bytes))
@@ -927,16 +926,6 @@ fn append_receipt(value: wire::AppendReceipt) -> Result<AppendReceipt, StreamErr
         tail: value.tail,
         commit_id: commit_id(&value.commit_id)?,
     })
-}
-
-fn optional_key(value: Option<Bytes>) -> Result<Option<IdempotencyKey>, StreamError> {
-    value.map(IdempotencyKey::new).transpose()
-}
-
-fn required_key(value: Option<Bytes>) -> Result<IdempotencyKey, StreamError> {
-    value
-        .ok_or(StreamError::InvalidArgument)
-        .and_then(IdempotencyKey::new)
 }
 
 fn record_wire(value: Record) -> wire::Record {
@@ -978,92 +967,6 @@ fn delete_receipt_wire(value: DeleteReceipt) -> wire::DeleteReceipt {
     wire::DeleteReceipt {
         path: value.path.to_string(),
         commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-fn condition_wire(value: CommitCondition) -> wire::CommitCondition {
-    let condition = match value {
-        CommitCondition::Tail { path, expected } => {
-            wire::commit_condition::Condition::Tail(wire::TailCondition {
-                path: path.to_string(),
-                expected,
-            })
-        }
-        CommitCondition::Absent { path } => {
-            wire::commit_condition::Condition::Absent(wire::AbsentCondition {
-                path: path.to_string(),
-            })
-        }
-    };
-    wire::CommitCondition {
-        condition: Some(condition),
-    }
-}
-
-fn condition_from_wire(value: wire::CommitCondition) -> Result<CommitCondition, StreamError> {
-    match value.condition.ok_or(StreamError::InvalidArgument)? {
-        wire::commit_condition::Condition::Tail(value) => Ok(CommitCondition::Tail {
-            path: path(value.path)?,
-            expected: value.expected,
-        }),
-        wire::commit_condition::Condition::Absent(value) => Ok(CommitCondition::Absent {
-            path: path(value.path)?,
-        }),
-    }
-}
-
-fn mutation_wire(value: CommitMutation) -> wire::CommitMutation {
-    let mutation = match value {
-        CommitMutation::Append { path, records } => {
-            wire::commit_mutation::Mutation::Append(wire::AppendMutation {
-                path: path.to_string(),
-                records,
-            })
-        }
-        CommitMutation::Fork {
-            source,
-            destination,
-            at_tail,
-        } => wire::commit_mutation::Mutation::Fork(wire::ForkMutation {
-            source: source.to_string(),
-            destination: destination.to_string(),
-            at_tail,
-        }),
-        CommitMutation::Trim { path, before } => {
-            wire::commit_mutation::Mutation::Trim(wire::TrimMutation {
-                path: path.to_string(),
-                before,
-            })
-        }
-        CommitMutation::Delete { path } => {
-            wire::commit_mutation::Mutation::Delete(wire::DeleteMutation {
-                path: path.to_string(),
-            })
-        }
-    };
-    wire::CommitMutation {
-        mutation: Some(mutation),
-    }
-}
-
-fn mutation_from_wire(value: wire::CommitMutation) -> Result<CommitMutation, StreamError> {
-    match value.mutation.ok_or(StreamError::InvalidArgument)? {
-        wire::commit_mutation::Mutation::Append(value) => Ok(CommitMutation::Append {
-            path: path(value.path)?,
-            records: value.records,
-        }),
-        wire::commit_mutation::Mutation::Fork(value) => Ok(CommitMutation::Fork {
-            source: path(value.source)?,
-            destination: path(value.destination)?,
-            at_tail: value.at_tail,
-        }),
-        wire::commit_mutation::Mutation::Trim(value) => Ok(CommitMutation::Trim {
-            path: path(value.path)?,
-            before: value.before,
-        }),
-        wire::commit_mutation::Mutation::Delete(value) => Ok(CommitMutation::Delete {
-            path: path(value.path)?,
-        }),
     }
 }
 

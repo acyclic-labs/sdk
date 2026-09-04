@@ -1,9 +1,18 @@
 version: v2
 clean: true
 plugins:
-  - remote: buf.build/community/neoeinstein-prost:v0.5.0
+  - local: [cargo, run, --quiet, --locked, --package, sdk-proto-codegen, --, prost]
     out: generated/rust
-  - remote: buf.build/bufbuild/es:v2.14.1
+    strategy: all
+  - local: [cargo, run, --quiet, --locked, --package, sdk-proto-codegen, --, tonic]
+    out: generated/rust
+    strategy: all
+    types:
+      - acyclic.filesystem.v2.FilesystemService
+      - acyclic.filesystem.daemon.v2.FilesystemDaemonService
+  - local: [bun, x, protoc-gen-es]
     out: generated/typescript
-  - remote: buf.build/grpc-ecosystem/openapiv2:v2.30.0
-    out: generated/openapi
+    strategy: all
+    opt:
+      - target=js+dts
+      - import_extension=js

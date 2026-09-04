@@ -305,15 +305,53 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Transaction<A, O>, WorkspaceError> {
+        let generation = self.head().await?;
+        self.open_transaction_at(&generation, idempotency_key, false)
+            .await
+    }
+
+    /// Opens one sparse atomic transaction against an exact immutable generation.
+    ///
+    /// This is the stateless transport boundary: a remote caller can retain its
+    /// base generation, submit sparse mutations later, and receive the same
+    /// observation-safe commit or rebase result as an embedded caller. The
+    /// generation must belong to this workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::ForeignGeneration`] for another workspace, or
+    /// an authentication, authority, storage, or workspace-state failure.
+    pub async fn begin_transaction_at(
+        &self,
+        generation: &Generation<A, O>,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<Transaction<A, O>, WorkspaceError> {
+        if generation.workspace.id != self.id {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let requires_rebase = self.head().await?.id != generation.id;
+        self.open_transaction_at(generation, idempotency_key, requires_rebase)
+            .await
+    }
+
+    async fn open_transaction_at(
+        &self,
+        generation: &Generation<A, O>,
+        idempotency_key: IdempotencyKey,
+        requires_rebase: bool,
+    ) -> Result<Transaction<A, O>, WorkspaceError> {
+        let mut checkout = self
+            .engine_checkout(
+                GenerationSelector::Exact(generation.id),
+                CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        checkout.bind_authored_operation(idempotency_key.operation_id());
         Ok(Transaction {
-            checkout: self
-                .engine_checkout(
-                    GenerationSelector::Head,
-                    CheckoutMode::tracking_transaction(),
-                )
-                .await?,
+            checkout,
             workspace: self.clone(),
             idempotency_key,
+            requires_rebase,
         })
     }
 
@@ -880,6 +918,7 @@ pub struct Transaction<A, O> {
     workspace: Workspace<A, O>,
     checkout: Checkout<A, O>,
     idempotency_key: IdempotencyKey,
+    requires_rebase: bool,
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
@@ -1361,6 +1400,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     /// Returns authentication, closure, storage, cancellation, or indeterminate
     /// authority failures. Semantic publication rejections are typed outcomes.
     pub async fn commit(&mut self) -> Result<TransactionCommit<A, O>, WorkspaceError> {
+        if self.requires_rebase {
+            let retried = self
+                .checkout
+                .retry_stale_commit(
+                    self.idempotency_key.operation_id(),
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await
+                .map_err(WorkspaceError::engine)?
+                .value;
+            let Some(outcome) = retried else {
+                return Ok(TransactionCommit::Conflict {
+                    actual: self.workspace.head().await?,
+                });
+            };
+            return self.commit_outcome(outcome).await;
+        }
         let outcome = self
             .checkout
             .commit(
@@ -1371,6 +1428,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             .await
             .map_err(WorkspaceError::engine)?
             .value;
+        self.commit_outcome(outcome).await
+    }
+
+    async fn commit_outcome(
+        &self,
+        outcome: CheckoutCommitOutcome,
+    ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
         match outcome {
             CheckoutCommitOutcome::Committed { generation_id, .. } => {
                 Ok(TransactionCommit::Committed(Generation {
@@ -1418,6 +1482,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             .value;
         Ok(match decision {
             crate::kernel::RebaseDecision::Safe { generation } => {
+                self.requires_rebase = false;
                 TransactionRebase::Rebased(Generation {
                     workspace: self.workspace.clone(),
                     id: generation,

@@ -3,87 +3,87 @@
 /// Shared draft contract types. These become stable only in a tagged release.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct OperationIdentity {
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub operation_id: ::prost::alloc::string::String,
-    #[prost(string, tag="2")]
+    #[prost(string, tag = "2")]
     pub idempotency_key: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProtocolIdentity {
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub version: ::prost::alloc::string::String,
-    #[prost(string, tag="2")]
+    #[prost(string, tag = "2")]
     pub descriptor_digest: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Capability {
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    #[prost(string, tag="2")]
+    #[prost(string, tag = "2")]
     pub version: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CapabilitySet {
-    #[prost(message, repeated, tag="1")]
+    #[prost(message, repeated, tag = "1")]
     pub capabilities: ::prost::alloc::vec::Vec<Capability>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HandshakeRequest {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub protocol: ::core::option::Option<ProtocolIdentity>,
-    #[prost(message, optional, tag="2")]
+    #[prost(message, optional, tag = "2")]
     pub required: ::core::option::Option<CapabilitySet>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HandshakeResponse {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub protocol: ::core::option::Option<ProtocolIdentity>,
-    #[prost(message, optional, tag="2")]
+    #[prost(message, optional, tag = "2")]
     pub supported: ::core::option::Option<CapabilitySet>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Error {
-    #[prost(enumeration="ErrorCode", tag="1")]
+    #[prost(enumeration = "ErrorCode", tag = "1")]
     pub code: i32,
-    #[prost(string, tag="2")]
+    #[prost(string, tag = "2")]
     pub message: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Admission {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub operation: ::core::option::Option<OperationIdentity>,
-    #[prost(enumeration="AdmissionState", tag="2")]
+    #[prost(enumeration = "AdmissionState", tag = "2")]
     pub state: i32,
-    #[prost(message, optional, tag="3")]
+    #[prost(message, optional, tag = "3")]
     pub error: ::core::option::Option<Error>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct OperationStatus {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub operation: ::core::option::Option<OperationIdentity>,
-    #[prost(enumeration="CompletionState", tag="2")]
+    #[prost(enumeration = "CompletionState", tag = "2")]
     pub state: i32,
-    #[prost(message, optional, tag="3")]
+    #[prost(message, optional, tag = "3")]
     pub error: ::core::option::Option<Error>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ObserveRequest {
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub operation_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CancelRequest {
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub operation_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CancelResponse {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub status: ::core::option::Option<OperationStatus>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Cursor {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub opaque: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]

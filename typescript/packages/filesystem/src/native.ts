@@ -50,7 +50,7 @@ const changeSetHandles = new WeakMap<FsChangeSet, NativeRawChangeSet>();
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS } from "./contracts.js";
 
-const PACKAGE_VERSION = "0.1.0-rc.1";
+const PACKAGE_VERSION = "0.2.0-rc.1";
 const TARGETS = new Set([
   "win32-x64",
   "win32-arm64",
@@ -106,7 +106,7 @@ export async function openNativeFs(options: NativeFsOptions): Promise<NativeFsEn
   );
   const binding = await bindings();
   return adaptFs(
-    new binding.NativeFs(options.root, {
+    await binding.NativeFs.open(options.root, {
       maximumEntries: options.objectCache.maximumEntries,
       maximumBytes: BigInt(options.objectCache.maximumBytes),
       maximumInFlight: options.objectCache.maximumInFlight,
@@ -685,7 +685,7 @@ function nativeMount(
     case "linux":
       return "linux-fuse";
     case "macos":
-      return "macos-fuse-t";
+      return "macos-nfs";
     case "windows":
       return "windows-projfs";
     default:

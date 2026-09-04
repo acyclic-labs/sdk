@@ -1,4 +1,4 @@
-//! Linux FUSE and macOS FUSE-T projection over the common callback contract.
+//! Linux FUSE projection over the common callback contract.
 
 use super::{
     MountDirectoryEntry, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
@@ -128,19 +128,6 @@ impl FuseSession {
             MountOption::DefaultPermissions,
             MountOption::NoAtime,
         ];
-        // FUSE-T stores macOS extended attributes as AppleDouble sidecar
-        // files unless the NFS bridge advertises native named-attribute
-        // streams, which this projection serves through its xattr callbacks.
-        #[cfg(target_os = "macos")]
-        {
-            // FUSE-T's SMB transport is interruptible and supports native
-            // notifications. Its NFS transport creates hard, non-interruptible
-            // client calls that can permanently wedge a process if the server
-            // exits during a request.
-            options.push(MountOption::CUSTOM("backend=smb".to_owned()));
-            options.push(MountOption::CUSTOM("namedattr".to_owned()));
-            options.push(MountOption::CUSTOM("nobrowse".to_owned()));
-        }
         if !request.writable {
             options.push(MountOption::RO);
         }

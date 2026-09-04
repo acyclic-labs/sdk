@@ -6,7 +6,7 @@ export interface EngineCapabilities {
   readonly architecture: string;
   readonly authority: "memory" | "indexeddb" | "local" | "remote";
   readonly immutableObjects: "memory" | "indexeddb" | "indexeddb-opfs" | "local" | "remote";
-  readonly nativeMount: "none" | "linux-fuse" | "macos-fuse-t" | "windows-projfs";
+  readonly nativeMount: "none" | "linux-fuse" | "macos-nfs" | "windows-projfs";
   readonly writableNativeMount: boolean;
   readonly nativeWatch: boolean;
   readonly nativeWatchBackend:
@@ -984,6 +984,11 @@ export interface MemoryFsOptions {
   readonly objectCache: ObjectCacheOptions;
 }
 
+export interface NativeFsOptions {
+  readonly root: string;
+  readonly objectCache: ObjectCacheOptions;
+}
+
 export interface ObjectCacheOptions {
   readonly maximumEntries: number;
   readonly maximumBytes: number;
@@ -997,11 +1002,6 @@ export const DEFAULT_OBJECT_CACHE_OPTIONS: ObjectCacheOptions = Object.freeze({
   maximumInFlight: 1024,
   maximumWaitersPerObject: 1024,
 });
-
-export interface NativeFsOptions {
-  readonly root: string;
-  readonly objectCache: ObjectCacheOptions;
-}
 
 export interface ObjectCacheStats {
   readonly hits: bigint;
@@ -1475,7 +1475,9 @@ export interface NativeBindings {
     readonly writableMount: boolean;
     readonly providerProcessIoObservable: boolean;
   };
-  readonly NativeFs: new (root: string, objectCache: NativeRawObjectCacheOptions) => NativeRawFs;
+  readonly NativeFs: {
+    open(root: string, objectCache: NativeRawObjectCacheOptions): Promise<NativeRawFs>;
+  };
 }
 
 export interface NativeRawObjectCacheOptions {
@@ -1886,7 +1888,10 @@ export interface NativeRawFs {
       objects: readonly Uint8Array[],
       maximumObjects: number,
     ): Promise<{ readonly nextObject: bigint; readonly workJson: string }>;
-    restoreVolume(manifest: NativeRawExportManifest, operationId: Uint8Array): Promise<NativeRawVolume>;
+    restoreVolume(
+      manifest: NativeRawExportManifest,
+      operationId: Uint8Array,
+    ): Promise<NativeRawVolume>;
     close(): void;
 }
 

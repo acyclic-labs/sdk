@@ -13,15 +13,23 @@ pub mod wire {
     pub mod harness {
         /// Version 1 of the shared harness contract.
         pub mod v1 {
-            include!("generated/acyclic.harness.v1.rs");
+            include!("generated/acyclic/harness/v1/acyclic.harness.v1.rs");
         }
     }
 
     /// Filesystem messages and service definitions.
     pub mod filesystem {
-        /// Version 1 of the public Filesystem contract.
-        pub mod v1 {
-            include!("generated/acyclic.filesystem.v1.rs");
+        /// Version 2 of the public Filesystem contract.
+        pub mod v2 {
+            include!(concat!(env!("OUT_DIR"), "/acyclic.filesystem.v2.rs"));
+        }
+
+        /// Process-local daemon lifecycle and native-host operations.
+        pub mod daemon {
+            /// Version 2 of the daemon-only transport.
+            pub mod v2 {
+                include!(concat!(env!("OUT_DIR"), "/acyclic.filesystem.daemon.v2.rs"));
+            }
         }
     }
 }
@@ -35,7 +43,7 @@ pub use wire_service::{
 };
 
 /// Canonical public descriptor set used by compatibility and conformance gates.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-filesystem-v1.bin");
+pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-filesystem-v2.bin");
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod public_contract_tests {
@@ -45,7 +53,7 @@ mod public_contract_tests {
     fn generated_transport_and_descriptor_are_packaged() {
         assert!(!FILE_DESCRIPTOR_SET.is_empty());
         let _ = std::any::TypeId::of::<
-            wire::filesystem::v1::filesystem_service_client::FilesystemServiceClient<
+            wire::filesystem::v2::filesystem_service_client::FilesystemServiceClient<
                 tonic::transport::Channel,
             >,
         >();
@@ -60,18 +68,12 @@ pub mod distributed;
 pub mod facade;
 pub mod foundation;
 pub mod kernel;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub mod local;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub mod local_authority;
 #[cfg(test)]
 pub mod memory;
 pub mod model;
 pub mod mount;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native_capture;
-#[cfg(all(feature = "native-executor", not(target_arch = "wasm32")))]
-pub mod native_executor;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod native_host;
@@ -81,6 +83,8 @@ pub mod notification;
 pub mod path;
 pub mod performance;
 pub mod s3;
+#[cfg(all(feature = "s3-http", not(target_arch = "wasm32")))]
+pub mod s3_http;
 #[cfg(feature = "memory")]
 pub mod simulation;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
@@ -110,7 +114,10 @@ pub use facade::{
     NamedAttributeWriteMode, PathMetadataLookup, StagedContent, Volume,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub use facade::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions, LocalVolume};
+pub use facade::{
+    LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend, LocalOptions,
+    LocalVolume,
+};
 #[cfg(all(feature = "memory", feature = "distributed"))]
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
 pub use foundation::{
@@ -122,10 +129,6 @@ pub use kernel::{
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
     encode_generation_export_manifest,
 };
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub use local::{LocalGarbageCollection, LocalObjectStore};
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub use local_authority::{LocalAuthorityConfig, LocalAuthorityStore};
 #[cfg(test)]
 pub use memory::{MemoryAuthorityStore, MemoryObjectStore};
 pub use mount::{
@@ -136,11 +139,6 @@ pub use mount::{
 pub use native_capture::{
     CaptureError, CaptureOptions, CaptureReceipt, WatchCaptureReceipt, capture_baseline,
     capture_paths, capture_root_identity, capture_watch_batch,
-};
-#[cfg(all(feature = "native-executor", not(target_arch = "wasm32")))]
-pub use native_executor::{
-    NativeExecutionError, NativeExecutor, NativeExecutorConfig, NativeExecutorConfigError,
-    NativeStore,
 };
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub use native_mount::{
@@ -170,8 +168,13 @@ pub use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
 pub use s3::{
-    S3Error, S3List, S3ListOptions, S3MultipartOptions, S3MultipartUpload, S3Object, S3ObjectHead,
-    S3Workspace,
+    S3Error, S3List, S3ListCursor, S3ListOptions, S3MultipartOptions, S3MultipartUpload, S3Object,
+    S3ObjectHead, S3Workspace,
+};
+#[cfg(all(feature = "s3-http", not(target_arch = "wasm32")))]
+pub use s3_http::{
+    FilesystemS3Adapter, FilesystemS3Authentication, FilesystemS3Limits, FilesystemS3Principal,
+    FilesystemS3Resolver, S3MultipartRetentionLimits, active_s3_multipart_objects,
 };
 #[cfg(feature = "memory")]
 pub use simulation::{

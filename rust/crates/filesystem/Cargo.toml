@@ -1,6 +1,6 @@
 [package]
 name = "acyclic-fs"
-version = "0.1.0-rc.1"
+version = "0.2.0-rc.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -24,8 +24,14 @@ acyclic-objects = { version = "1.0.0-rc.1", path = "../objects", optional = true
 acyclic-stream = { version = "1.0.0-rc.1", path = "../stream", optional = true, default-features = false }
 
 [dev-dependencies]
+http.workspace = true
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "rt"] }
+
+[build-dependencies]
+prost.workspace = true
+prost-types.workspace = true
+tonic-prost-build.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.175"
@@ -35,17 +41,19 @@ fuser = { version = "0.16.0", default-features = false, features = ["abi-7-31"],
 
 [target.'cfg(target_os = "macos")'.build-dependencies]
 cc = "1.2.56"
-pkg-config = "0.3.32"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cap-primitives = "4.0.3"
 cap-std = "4.0.3"
 fs2 = { workspace = true, optional = true }
 prost.workspace = true
-rusqlite = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["sync"] }
 tonic.workspace = true
 tonic-prost.workspace = true
+async-trait.workspace = true
+s3s = { workspace = true, optional = true }
+subtle = { workspace = true, optional = true }
+sync_wrapper = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [
@@ -59,11 +67,11 @@ windows = { version = "0.62.2", features = [
 
 [features]
 default = ["local", "memory", "native-watch"]
-local = ["dep:fs2", "dep:rusqlite", "native-executor"]
+local = ["distributed", "acyclic-objects/local", "acyclic-stream/local"]
 memory = ["distributed"]
 native-watch = ["dep:notify", "dep:tokio"]
-native-executor = ["dep:tokio"]
-native-mount = ["native-watch", "native-executor", "dep:fs2", "dep:fuser"]
+native-mount = ["native-watch", "dep:fs2", "dep:fuser"]
+s3-http = ["dep:s3s", "dep:subtle", "dep:sync_wrapper"]
 distributed = ["dep:acyclic-objects", "dep:acyclic-stream"]
 
 [lints]

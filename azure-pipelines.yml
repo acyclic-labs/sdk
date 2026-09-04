@@ -94,13 +94,15 @@ jobs:
           for build in builds:
               run=build.get('id')
               if not isinstance(run,int) or run==int(current) or build.get('definition',{}).get('id')!=int(definition): continue
-              artifact_query=urllib.parse.urlencode({'api-version':'7.1','artifactName':artifact})
+              artifact_query=urllib.parse.urlencode({'api-version':'7.1'})
               artifact_request=urllib.request.Request(f'{collection}{project}/_apis/build/builds/{run}/artifacts?{artifact_query}',headers=headers)
               try:
-                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(65537)
-                  if len(artifact_encoded)>65536: continue
-                  record=json.loads(artifact_encoded)
-                  if record.get('name')!=artifact or record.get('resource',{}).get('type')!='PipelineArtifact': continue
+                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(262145)
+                  if len(artifact_encoded)>262144: continue
+                  records=json.loads(artifact_encoded).get('value',[])
+                  if not isinstance(records,list) or len(records)>64: continue
+                  matches=[record for record in records if record.get('name')==artifact and record.get('resource',{}).get('type')=='PipelineArtifact']
+                  if len(matches)!=1: continue
               except Exception: continue
               print(f'##vso[task.setvariable variable=FLEET_REUSE_RUN_ID]{run}')
               print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]true')
@@ -165,23 +167,57 @@ jobs:
           visit(path,'.')
           return {'entries':entries,'entry_count':len(entries),'total_bytes':total}
 
+      def remove_path(path):
+          path=Path(path)
+          if path.is_symlink():
+              path.unlink()
+          elif path.is_file():
+              os.chmod(path,stat.S_IWRITE)
+              path.unlink()
+          elif path.is_dir():
+              def retry(action,name,_):
+                  os.chmod(name,stat.S_IRWXU)
+                  action(name)
+              shutil.rmtree(path,onerror=retry)
+
       def replace_copy(source,destination):
           source=Path(source); destination=Path(destination)
-          if destination.exists():
-              shutil.rmtree(destination) if destination.is_dir() else destination.unlink()
+          remove_path(destination)
           destination.parent.mkdir(parents=True,exist_ok=True)
           if source.is_dir(): shutil.copytree(source,destination,copy_function=shutil.copy2)
           elif source.is_file(): shutil.copy2(source,destination)
           else: raise SystemExit('reusable output is not a regular file or directory')
 
+      def restore_file_modes(path,expected):
+          if os.name=='nt': return
+          actual=inventory(path)
+          def content_only(value):
+              return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
+          if content_only(actual)!=content_only(expected): raise ValueError('exact reuse output digest is invalid')
+          for entry in expected['entries']:
+              if entry.get('kind')!='file': continue
+              relative=entry.get('path'); file_mode=entry.get('mode')
+              if relative=='.':
+                  target=Path(path)
+              else:
+                  parts=relative.split('/') if isinstance(relative,str) else []
+                  if not parts or any(part in ('','.','..') for part in parts): raise ValueError('exact reuse output path is invalid')
+                  target=Path(path).joinpath(*parts)
+              if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
+              if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
+              target.chmod(file_mode)
+
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
+      canonical=root.parent/(root.name+'.canonical')
       if mode=='prepare':
-          if root.exists(): shutil.rmtree(root)
+          remove_path(root)
+          remove_path(canonical)
           root.mkdir(parents=True)
       elif mode=='stage':
+          remove_path(canonical)
           output_root=root/'outputs'
-          if output_root.exists(): shutil.rmtree(output_root)
+          remove_path(output_root)
           outputs=[]
           for index,spec in enumerate(specs):
               payload=output_root/str(index)/'payload'
@@ -197,24 +233,35 @@ jobs:
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
               if not isinstance(outputs,list) or len(outputs)!=len(specs): raise ValueError('exact reuse output inventory is invalid')
-              destinations=[]
               for index,(spec,record) in enumerate(zip(specs,outputs)):
                   if set(record)!={'index','name','inventory'} or record['index']!=index or record['name']!=spec['name']: raise ValueError('exact reuse output identity is invalid')
                   payload=root/'outputs'/str(index)/'payload'
+                  restore_file_modes(payload,record['inventory'])
                   if inventory(payload)!=record['inventory']: raise ValueError('exact reuse output digest is invalid')
-                  destinations.append((payload,spec['actual_path']))
-              for source,destination in destinations: replace_copy(source,destination)
+              remove_path(canonical)
+              canonical.mkdir(parents=True)
+              (canonical/'receipt.json').write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
+              for index in range(len(specs)):
+                  replace_copy(root/'outputs'/str(index)/'payload',canonical/'outputs'/str(index)/'payload')
+              remove_path(root)
+              os.replace(canonical,root)
+              for index,spec in enumerate(specs):
+                  replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
               print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if root.exists(): shutil.rmtree(root)
+              if mode=='restore':
+                  for spec in specs:
+                      remove_path(spec['actual_path'])
+              remove_path(root)
+              remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=prepare
       if [[ "${FLEET_REUSE_FOUND:-false}" == true ]]; then mode=restore; fi
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" '37620761f1350324f36bb0b43982c2aa6174e15df387690ba7f23bdd2f06df0f' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" '9166cfc607d1b5af6859b4679d2dff43a581fa5014de7c5091ff8609f0cc0064' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Verify and restore exact successful job result
   - task: Cache@2
@@ -277,14 +324,6 @@ jobs:
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
   - task: Cache@2
     inputs:
-      key: '"bun-v3" | "$(Agent.OS)" | "sdk" | "$(Build.SourceVersion)"'
-      restoreKeys: |
-        "bun-v3" | "$(Agent.OS)" | "sdk"
-      path: $(Pipeline.Workspace)/.bun
-      cacheHitVar: FLEET_CACHE_BUN
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
-  - task: Cache@2
-    inputs:
       key: '"tools-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk"'
       path: $(TOOLS_DIR)
       cacheHitVar: FLEET_CACHE_TOOLS
@@ -313,34 +352,28 @@ jobs:
     displayName: Restore exact Rust toolchain
   - bash: |
       set -euo pipefail
-      version='1.3.14'
-      prefix="$(Pipeline.Workspace)/.bun/runtime/$version"
-      if [[ ! -x "$prefix/bin/bun" ]]; then npm install --global --prefix "$prefix" "bun@$version"; fi
-      echo "##vso[task.prependpath]$prefix/bin"
-      "$prefix/bin/bun" --version
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
-    displayName: Restore exact Bun runtime
-  - bash: |
       set -euo pipefail
-      set -euo pipefail
+      source scripts/ensure-bun.sh
       bun install --frozen-lockfile
       cargo fmt --all -- --check
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       cargo test --workspace --all-features --locked
+      cargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1
+      cargo build -p acyclic-fs-napi --locked
+      bun scripts/check-filesystem-napi.mjs
       bash scripts/check-inference-package.sh
       cargo run --locked -p acyclic-cli
       bun run test
       bun run licenses
-      bunx buf format -d --exit-code
-      bunx buf lint
-      bunx buf generate
-      git diff --exit-code -- generated
+      bun x buf format -d --exit-code
+      bun x buf lint
+      bun run check:generated
       bun scripts/check-boundaries.mjs
       bun scripts/check-metadata.mjs
       base="${SYSTEM_PULLREQUEST_TARGETBRANCH:-}"
       if [[ -n "$base" ]]; then
         base=${base#refs/heads/}
-        bunx buf breaking --against ".git#ref=origin/$base" --exclude-path proto/inference/v1/inference.proto
+        bun x buf breaking --against ".git#ref=origin/$base" --exclude-path proto/inference/v1/inference.proto --exclude-path proto/filesystem/v1 --exclude-path proto/filesystem/daemon/v1
       fi
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
     displayName: qualify
@@ -391,23 +424,57 @@ jobs:
           visit(path,'.')
           return {'entries':entries,'entry_count':len(entries),'total_bytes':total}
 
+      def remove_path(path):
+          path=Path(path)
+          if path.is_symlink():
+              path.unlink()
+          elif path.is_file():
+              os.chmod(path,stat.S_IWRITE)
+              path.unlink()
+          elif path.is_dir():
+              def retry(action,name,_):
+                  os.chmod(name,stat.S_IRWXU)
+                  action(name)
+              shutil.rmtree(path,onerror=retry)
+
       def replace_copy(source,destination):
           source=Path(source); destination=Path(destination)
-          if destination.exists():
-              shutil.rmtree(destination) if destination.is_dir() else destination.unlink()
+          remove_path(destination)
           destination.parent.mkdir(parents=True,exist_ok=True)
           if source.is_dir(): shutil.copytree(source,destination,copy_function=shutil.copy2)
           elif source.is_file(): shutil.copy2(source,destination)
           else: raise SystemExit('reusable output is not a regular file or directory')
 
+      def restore_file_modes(path,expected):
+          if os.name=='nt': return
+          actual=inventory(path)
+          def content_only(value):
+              return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
+          if content_only(actual)!=content_only(expected): raise ValueError('exact reuse output digest is invalid')
+          for entry in expected['entries']:
+              if entry.get('kind')!='file': continue
+              relative=entry.get('path'); file_mode=entry.get('mode')
+              if relative=='.':
+                  target=Path(path)
+              else:
+                  parts=relative.split('/') if isinstance(relative,str) else []
+                  if not parts or any(part in ('','.','..') for part in parts): raise ValueError('exact reuse output path is invalid')
+                  target=Path(path).joinpath(*parts)
+              if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
+              if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
+              target.chmod(file_mode)
+
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
+      canonical=root.parent/(root.name+'.canonical')
       if mode=='prepare':
-          if root.exists(): shutil.rmtree(root)
+          remove_path(root)
+          remove_path(canonical)
           root.mkdir(parents=True)
       elif mode=='stage':
+          remove_path(canonical)
           output_root=root/'outputs'
-          if output_root.exists(): shutil.rmtree(output_root)
+          remove_path(output_root)
           outputs=[]
           for index,spec in enumerate(specs):
               payload=output_root/str(index)/'payload'
@@ -423,29 +490,40 @@ jobs:
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
               if not isinstance(outputs,list) or len(outputs)!=len(specs): raise ValueError('exact reuse output inventory is invalid')
-              destinations=[]
               for index,(spec,record) in enumerate(zip(specs,outputs)):
                   if set(record)!={'index','name','inventory'} or record['index']!=index or record['name']!=spec['name']: raise ValueError('exact reuse output identity is invalid')
                   payload=root/'outputs'/str(index)/'payload'
+                  restore_file_modes(payload,record['inventory'])
                   if inventory(payload)!=record['inventory']: raise ValueError('exact reuse output digest is invalid')
-                  destinations.append((payload,spec['actual_path']))
-              for source,destination in destinations: replace_copy(source,destination)
+              remove_path(canonical)
+              canonical.mkdir(parents=True)
+              (canonical/'receipt.json').write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
+              for index in range(len(specs)):
+                  replace_copy(root/'outputs'/str(index)/'payload',canonical/'outputs'/str(index)/'payload')
+              remove_path(root)
+              os.replace(canonical,root)
+              for index,spec in enumerate(specs):
+                  replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
               print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if root.exists(): shutil.rmtree(root)
+              if mode=='restore':
+                  for spec in specs:
+                      remove_path(spec['actual_path'])
+              remove_path(root)
+              remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" '37620761f1350324f36bb0b43982c2aa6174e15df387690ba7f23bdd2f06df0f' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" '9166cfc607d1b5af6859b4679d2dff43a581fa5014de7c5091ff8609f0cc0064' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: PublishPipelineArtifact@1
     displayName: Publish exact reusable job result
-    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
+    condition: succeeded()
     inputs:
       targetPath: '$(Pipeline.Workspace)/.qualified/linux'
       artifact: 'qualified-job_linux'
@@ -527,13 +605,15 @@ jobs:
           for build in builds:
               run=build.get('id')
               if not isinstance(run,int) or run==int(current) or build.get('definition',{}).get('id')!=int(definition): continue
-              artifact_query=urllib.parse.urlencode({'api-version':'7.1','artifactName':artifact})
+              artifact_query=urllib.parse.urlencode({'api-version':'7.1'})
               artifact_request=urllib.request.Request(f'{collection}{project}/_apis/build/builds/{run}/artifacts?{artifact_query}',headers=headers)
               try:
-                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(65537)
-                  if len(artifact_encoded)>65536: continue
-                  record=json.loads(artifact_encoded)
-                  if record.get('name')!=artifact or record.get('resource',{}).get('type')!='PipelineArtifact': continue
+                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(262145)
+                  if len(artifact_encoded)>262144: continue
+                  records=json.loads(artifact_encoded).get('value',[])
+                  if not isinstance(records,list) or len(records)>64: continue
+                  matches=[record for record in records if record.get('name')==artifact and record.get('resource',{}).get('type')=='PipelineArtifact']
+                  if len(matches)!=1: continue
               except Exception: continue
               print(f'##vso[task.setvariable variable=FLEET_REUSE_RUN_ID]{run}')
               print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]true')
@@ -598,23 +678,57 @@ jobs:
           visit(path,'.')
           return {'entries':entries,'entry_count':len(entries),'total_bytes':total}
 
+      def remove_path(path):
+          path=Path(path)
+          if path.is_symlink():
+              path.unlink()
+          elif path.is_file():
+              os.chmod(path,stat.S_IWRITE)
+              path.unlink()
+          elif path.is_dir():
+              def retry(action,name,_):
+                  os.chmod(name,stat.S_IRWXU)
+                  action(name)
+              shutil.rmtree(path,onerror=retry)
+
       def replace_copy(source,destination):
           source=Path(source); destination=Path(destination)
-          if destination.exists():
-              shutil.rmtree(destination) if destination.is_dir() else destination.unlink()
+          remove_path(destination)
           destination.parent.mkdir(parents=True,exist_ok=True)
           if source.is_dir(): shutil.copytree(source,destination,copy_function=shutil.copy2)
           elif source.is_file(): shutil.copy2(source,destination)
           else: raise SystemExit('reusable output is not a regular file or directory')
 
+      def restore_file_modes(path,expected):
+          if os.name=='nt': return
+          actual=inventory(path)
+          def content_only(value):
+              return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
+          if content_only(actual)!=content_only(expected): raise ValueError('exact reuse output digest is invalid')
+          for entry in expected['entries']:
+              if entry.get('kind')!='file': continue
+              relative=entry.get('path'); file_mode=entry.get('mode')
+              if relative=='.':
+                  target=Path(path)
+              else:
+                  parts=relative.split('/') if isinstance(relative,str) else []
+                  if not parts or any(part in ('','.','..') for part in parts): raise ValueError('exact reuse output path is invalid')
+                  target=Path(path).joinpath(*parts)
+              if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
+              if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
+              target.chmod(file_mode)
+
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
+      canonical=root.parent/(root.name+'.canonical')
       if mode=='prepare':
-          if root.exists(): shutil.rmtree(root)
+          remove_path(root)
+          remove_path(canonical)
           root.mkdir(parents=True)
       elif mode=='stage':
+          remove_path(canonical)
           output_root=root/'outputs'
-          if output_root.exists(): shutil.rmtree(output_root)
+          remove_path(output_root)
           outputs=[]
           for index,spec in enumerate(specs):
               payload=output_root/str(index)/'payload'
@@ -630,17 +744,28 @@ jobs:
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
               if not isinstance(outputs,list) or len(outputs)!=len(specs): raise ValueError('exact reuse output inventory is invalid')
-              destinations=[]
               for index,(spec,record) in enumerate(zip(specs,outputs)):
                   if set(record)!={'index','name','inventory'} or record['index']!=index or record['name']!=spec['name']: raise ValueError('exact reuse output identity is invalid')
                   payload=root/'outputs'/str(index)/'payload'
+                  restore_file_modes(payload,record['inventory'])
                   if inventory(payload)!=record['inventory']: raise ValueError('exact reuse output digest is invalid')
-                  destinations.append((payload,spec['actual_path']))
-              for source,destination in destinations: replace_copy(source,destination)
+              remove_path(canonical)
+              canonical.mkdir(parents=True)
+              (canonical/'receipt.json').write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
+              for index in range(len(specs)):
+                  replace_copy(root/'outputs'/str(index)/'payload',canonical/'outputs'/str(index)/'payload')
+              remove_path(root)
+              os.replace(canonical,root)
+              for index,spec in enumerate(specs):
+                  replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
               print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if root.exists(): shutil.rmtree(root)
+              if mode=='restore':
+                  for spec in specs:
+                      remove_path(spec['actual_path'])
+              remove_path(root)
+              remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
@@ -801,23 +926,57 @@ jobs:
           visit(path,'.')
           return {'entries':entries,'entry_count':len(entries),'total_bytes':total}
 
+      def remove_path(path):
+          path=Path(path)
+          if path.is_symlink():
+              path.unlink()
+          elif path.is_file():
+              os.chmod(path,stat.S_IWRITE)
+              path.unlink()
+          elif path.is_dir():
+              def retry(action,name,_):
+                  os.chmod(name,stat.S_IRWXU)
+                  action(name)
+              shutil.rmtree(path,onerror=retry)
+
       def replace_copy(source,destination):
           source=Path(source); destination=Path(destination)
-          if destination.exists():
-              shutil.rmtree(destination) if destination.is_dir() else destination.unlink()
+          remove_path(destination)
           destination.parent.mkdir(parents=True,exist_ok=True)
           if source.is_dir(): shutil.copytree(source,destination,copy_function=shutil.copy2)
           elif source.is_file(): shutil.copy2(source,destination)
           else: raise SystemExit('reusable output is not a regular file or directory')
 
+      def restore_file_modes(path,expected):
+          if os.name=='nt': return
+          actual=inventory(path)
+          def content_only(value):
+              return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
+          if content_only(actual)!=content_only(expected): raise ValueError('exact reuse output digest is invalid')
+          for entry in expected['entries']:
+              if entry.get('kind')!='file': continue
+              relative=entry.get('path'); file_mode=entry.get('mode')
+              if relative=='.':
+                  target=Path(path)
+              else:
+                  parts=relative.split('/') if isinstance(relative,str) else []
+                  if not parts or any(part in ('','.','..') for part in parts): raise ValueError('exact reuse output path is invalid')
+                  target=Path(path).joinpath(*parts)
+              if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
+              if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
+              target.chmod(file_mode)
+
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
+      canonical=root.parent/(root.name+'.canonical')
       if mode=='prepare':
-          if root.exists(): shutil.rmtree(root)
+          remove_path(root)
+          remove_path(canonical)
           root.mkdir(parents=True)
       elif mode=='stage':
+          remove_path(canonical)
           output_root=root/'outputs'
-          if output_root.exists(): shutil.rmtree(output_root)
+          remove_path(output_root)
           outputs=[]
           for index,spec in enumerate(specs):
               payload=output_root/str(index)/'payload'
@@ -833,17 +992,28 @@ jobs:
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
               if not isinstance(outputs,list) or len(outputs)!=len(specs): raise ValueError('exact reuse output inventory is invalid')
-              destinations=[]
               for index,(spec,record) in enumerate(zip(specs,outputs)):
                   if set(record)!={'index','name','inventory'} or record['index']!=index or record['name']!=spec['name']: raise ValueError('exact reuse output identity is invalid')
                   payload=root/'outputs'/str(index)/'payload'
+                  restore_file_modes(payload,record['inventory'])
                   if inventory(payload)!=record['inventory']: raise ValueError('exact reuse output digest is invalid')
-                  destinations.append((payload,spec['actual_path']))
-              for source,destination in destinations: replace_copy(source,destination)
+              remove_path(canonical)
+              canonical.mkdir(parents=True)
+              (canonical/'receipt.json').write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
+              for index in range(len(specs)):
+                  replace_copy(root/'outputs'/str(index)/'payload',canonical/'outputs'/str(index)/'payload')
+              remove_path(root)
+              os.replace(canonical,root)
+              for index,spec in enumerate(specs):
+                  replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
               print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if root.exists(): shutil.rmtree(root)
+              if mode=='restore':
+                  for spec in specs:
+                      remove_path(spec['actual_path'])
+              remove_path(root)
+              remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
@@ -855,7 +1025,7 @@ jobs:
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: PublishPipelineArtifact@1
     displayName: Publish exact reusable job result
-    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
+    condition: succeeded()
     inputs:
       targetPath: '$(Pipeline.Workspace)/.qualified/policy'
       artifact: 'qualified-job_policy'
@@ -936,13 +1106,15 @@ jobs:
           for build in builds:
               run=build.get('id')
               if not isinstance(run,int) or run==int(current) or build.get('definition',{}).get('id')!=int(definition): continue
-              artifact_query=urllib.parse.urlencode({'api-version':'7.1','artifactName':artifact})
+              artifact_query=urllib.parse.urlencode({'api-version':'7.1'})
               artifact_request=urllib.request.Request(f'{collection}{project}/_apis/build/builds/{run}/artifacts?{artifact_query}',headers=headers)
               try:
-                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(65537)
-                  if len(artifact_encoded)>65536: continue
-                  record=json.loads(artifact_encoded)
-                  if record.get('name')!=artifact or record.get('resource',{}).get('type')!='PipelineArtifact': continue
+                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(262145)
+                  if len(artifact_encoded)>262144: continue
+                  records=json.loads(artifact_encoded).get('value',[])
+                  if not isinstance(records,list) or len(records)>64: continue
+                  matches=[record for record in records if record.get('name')==artifact and record.get('resource',{}).get('type')=='PipelineArtifact']
+                  if len(matches)!=1: continue
               except Exception: continue
               print(f'##vso[task.setvariable variable=FLEET_REUSE_RUN_ID]{run}')
               print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]true')
@@ -1007,23 +1179,57 @@ jobs:
           visit(path,'.')
           return {'entries':entries,'entry_count':len(entries),'total_bytes':total}
 
+      def remove_path(path):
+          path=Path(path)
+          if path.is_symlink():
+              path.unlink()
+          elif path.is_file():
+              os.chmod(path,stat.S_IWRITE)
+              path.unlink()
+          elif path.is_dir():
+              def retry(action,name,_):
+                  os.chmod(name,stat.S_IRWXU)
+                  action(name)
+              shutil.rmtree(path,onerror=retry)
+
       def replace_copy(source,destination):
           source=Path(source); destination=Path(destination)
-          if destination.exists():
-              shutil.rmtree(destination) if destination.is_dir() else destination.unlink()
+          remove_path(destination)
           destination.parent.mkdir(parents=True,exist_ok=True)
           if source.is_dir(): shutil.copytree(source,destination,copy_function=shutil.copy2)
           elif source.is_file(): shutil.copy2(source,destination)
           else: raise SystemExit('reusable output is not a regular file or directory')
 
+      def restore_file_modes(path,expected):
+          if os.name=='nt': return
+          actual=inventory(path)
+          def content_only(value):
+              return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
+          if content_only(actual)!=content_only(expected): raise ValueError('exact reuse output digest is invalid')
+          for entry in expected['entries']:
+              if entry.get('kind')!='file': continue
+              relative=entry.get('path'); file_mode=entry.get('mode')
+              if relative=='.':
+                  target=Path(path)
+              else:
+                  parts=relative.split('/') if isinstance(relative,str) else []
+                  if not parts or any(part in ('','.','..') for part in parts): raise ValueError('exact reuse output path is invalid')
+                  target=Path(path).joinpath(*parts)
+              if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
+              if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
+              target.chmod(file_mode)
+
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
+      canonical=root.parent/(root.name+'.canonical')
       if mode=='prepare':
-          if root.exists(): shutil.rmtree(root)
+          remove_path(root)
+          remove_path(canonical)
           root.mkdir(parents=True)
       elif mode=='stage':
+          remove_path(canonical)
           output_root=root/'outputs'
-          if output_root.exists(): shutil.rmtree(output_root)
+          remove_path(output_root)
           outputs=[]
           for index,spec in enumerate(specs):
               payload=output_root/str(index)/'payload'
@@ -1039,17 +1245,28 @@ jobs:
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
               if not isinstance(outputs,list) or len(outputs)!=len(specs): raise ValueError('exact reuse output inventory is invalid')
-              destinations=[]
               for index,(spec,record) in enumerate(zip(specs,outputs)):
                   if set(record)!={'index','name','inventory'} or record['index']!=index or record['name']!=spec['name']: raise ValueError('exact reuse output identity is invalid')
                   payload=root/'outputs'/str(index)/'payload'
+                  restore_file_modes(payload,record['inventory'])
                   if inventory(payload)!=record['inventory']: raise ValueError('exact reuse output digest is invalid')
-                  destinations.append((payload,spec['actual_path']))
-              for source,destination in destinations: replace_copy(source,destination)
+              remove_path(canonical)
+              canonical.mkdir(parents=True)
+              (canonical/'receipt.json').write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
+              for index in range(len(specs)):
+                  replace_copy(root/'outputs'/str(index)/'payload',canonical/'outputs'/str(index)/'payload')
+              remove_path(root)
+              os.replace(canonical,root)
+              for index,spec in enumerate(specs):
+                  replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
               print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if root.exists(): shutil.rmtree(root)
+              if mode=='restore':
+                  for spec in specs:
+                      remove_path(spec['actual_path'])
+              remove_path(root)
+              remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
@@ -1194,23 +1411,57 @@ jobs:
           visit(path,'.')
           return {'entries':entries,'entry_count':len(entries),'total_bytes':total}
 
+      def remove_path(path):
+          path=Path(path)
+          if path.is_symlink():
+              path.unlink()
+          elif path.is_file():
+              os.chmod(path,stat.S_IWRITE)
+              path.unlink()
+          elif path.is_dir():
+              def retry(action,name,_):
+                  os.chmod(name,stat.S_IRWXU)
+                  action(name)
+              shutil.rmtree(path,onerror=retry)
+
       def replace_copy(source,destination):
           source=Path(source); destination=Path(destination)
-          if destination.exists():
-              shutil.rmtree(destination) if destination.is_dir() else destination.unlink()
+          remove_path(destination)
           destination.parent.mkdir(parents=True,exist_ok=True)
           if source.is_dir(): shutil.copytree(source,destination,copy_function=shutil.copy2)
           elif source.is_file(): shutil.copy2(source,destination)
           else: raise SystemExit('reusable output is not a regular file or directory')
 
+      def restore_file_modes(path,expected):
+          if os.name=='nt': return
+          actual=inventory(path)
+          def content_only(value):
+              return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
+          if content_only(actual)!=content_only(expected): raise ValueError('exact reuse output digest is invalid')
+          for entry in expected['entries']:
+              if entry.get('kind')!='file': continue
+              relative=entry.get('path'); file_mode=entry.get('mode')
+              if relative=='.':
+                  target=Path(path)
+              else:
+                  parts=relative.split('/') if isinstance(relative,str) else []
+                  if not parts or any(part in ('','.','..') for part in parts): raise ValueError('exact reuse output path is invalid')
+                  target=Path(path).joinpath(*parts)
+              if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
+              if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
+              target.chmod(file_mode)
+
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
+      canonical=root.parent/(root.name+'.canonical')
       if mode=='prepare':
-          if root.exists(): shutil.rmtree(root)
+          remove_path(root)
+          remove_path(canonical)
           root.mkdir(parents=True)
       elif mode=='stage':
+          remove_path(canonical)
           output_root=root/'outputs'
-          if output_root.exists(): shutil.rmtree(output_root)
+          remove_path(output_root)
           outputs=[]
           for index,spec in enumerate(specs):
               payload=output_root/str(index)/'payload'
@@ -1226,17 +1477,28 @@ jobs:
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
               if not isinstance(outputs,list) or len(outputs)!=len(specs): raise ValueError('exact reuse output inventory is invalid')
-              destinations=[]
               for index,(spec,record) in enumerate(zip(specs,outputs)):
                   if set(record)!={'index','name','inventory'} or record['index']!=index or record['name']!=spec['name']: raise ValueError('exact reuse output identity is invalid')
                   payload=root/'outputs'/str(index)/'payload'
+                  restore_file_modes(payload,record['inventory'])
                   if inventory(payload)!=record['inventory']: raise ValueError('exact reuse output digest is invalid')
-                  destinations.append((payload,spec['actual_path']))
-              for source,destination in destinations: replace_copy(source,destination)
+              remove_path(canonical)
+              canonical.mkdir(parents=True)
+              (canonical/'receipt.json').write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
+              for index in range(len(specs)):
+                  replace_copy(root/'outputs'/str(index)/'payload',canonical/'outputs'/str(index)/'payload')
+              remove_path(root)
+              os.replace(canonical,root)
+              for index,spec in enumerate(specs):
+                  replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
               print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if root.exists(): shutil.rmtree(root)
+              if mode=='restore':
+                  for spec in specs:
+                      remove_path(spec['actual_path'])
+              remove_path(root)
+              remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
@@ -1248,7 +1510,7 @@ jobs:
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: PublishPipelineArtifact@1
     displayName: Publish exact reusable job result
-    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
+    condition: succeeded()
     inputs:
       targetPath: '$(Pipeline.Workspace)/.qualified/web'
       artifact: 'qualified-job_web'
@@ -1329,13 +1591,15 @@ jobs:
           for build in builds:
               run=build.get('id')
               if not isinstance(run,int) or run==int(current) or build.get('definition',{}).get('id')!=int(definition): continue
-              artifact_query=urllib.parse.urlencode({'api-version':'7.1','artifactName':artifact})
+              artifact_query=urllib.parse.urlencode({'api-version':'7.1'})
               artifact_request=urllib.request.Request(f'{collection}{project}/_apis/build/builds/{run}/artifacts?{artifact_query}',headers=headers)
               try:
-                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(65537)
-                  if len(artifact_encoded)>65536: continue
-                  record=json.loads(artifact_encoded)
-                  if record.get('name')!=artifact or record.get('resource',{}).get('type')!='PipelineArtifact': continue
+                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(262145)
+                  if len(artifact_encoded)>262144: continue
+                  records=json.loads(artifact_encoded).get('value',[])
+                  if not isinstance(records,list) or len(records)>64: continue
+                  matches=[record for record in records if record.get('name')==artifact and record.get('resource',{}).get('type')=='PipelineArtifact']
+                  if len(matches)!=1: continue
               except Exception: continue
               print(f'##vso[task.setvariable variable=FLEET_REUSE_RUN_ID]{run}')
               print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]true')
@@ -1400,23 +1664,57 @@ jobs:
           visit(path,'.')
           return {'entries':entries,'entry_count':len(entries),'total_bytes':total}
 
+      def remove_path(path):
+          path=Path(path)
+          if path.is_symlink():
+              path.unlink()
+          elif path.is_file():
+              os.chmod(path,stat.S_IWRITE)
+              path.unlink()
+          elif path.is_dir():
+              def retry(action,name,_):
+                  os.chmod(name,stat.S_IRWXU)
+                  action(name)
+              shutil.rmtree(path,onerror=retry)
+
       def replace_copy(source,destination):
           source=Path(source); destination=Path(destination)
-          if destination.exists():
-              shutil.rmtree(destination) if destination.is_dir() else destination.unlink()
+          remove_path(destination)
           destination.parent.mkdir(parents=True,exist_ok=True)
           if source.is_dir(): shutil.copytree(source,destination,copy_function=shutil.copy2)
           elif source.is_file(): shutil.copy2(source,destination)
           else: raise SystemExit('reusable output is not a regular file or directory')
 
+      def restore_file_modes(path,expected):
+          if os.name=='nt': return
+          actual=inventory(path)
+          def content_only(value):
+              return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
+          if content_only(actual)!=content_only(expected): raise ValueError('exact reuse output digest is invalid')
+          for entry in expected['entries']:
+              if entry.get('kind')!='file': continue
+              relative=entry.get('path'); file_mode=entry.get('mode')
+              if relative=='.':
+                  target=Path(path)
+              else:
+                  parts=relative.split('/') if isinstance(relative,str) else []
+                  if not parts or any(part in ('','.','..') for part in parts): raise ValueError('exact reuse output path is invalid')
+                  target=Path(path).joinpath(*parts)
+              if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
+              if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
+              target.chmod(file_mode)
+
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
+      canonical=root.parent/(root.name+'.canonical')
       if mode=='prepare':
-          if root.exists(): shutil.rmtree(root)
+          remove_path(root)
+          remove_path(canonical)
           root.mkdir(parents=True)
       elif mode=='stage':
+          remove_path(canonical)
           output_root=root/'outputs'
-          if output_root.exists(): shutil.rmtree(output_root)
+          remove_path(output_root)
           outputs=[]
           for index,spec in enumerate(specs):
               payload=output_root/str(index)/'payload'
@@ -1432,24 +1730,35 @@ jobs:
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
               if not isinstance(outputs,list) or len(outputs)!=len(specs): raise ValueError('exact reuse output inventory is invalid')
-              destinations=[]
               for index,(spec,record) in enumerate(zip(specs,outputs)):
                   if set(record)!={'index','name','inventory'} or record['index']!=index or record['name']!=spec['name']: raise ValueError('exact reuse output identity is invalid')
                   payload=root/'outputs'/str(index)/'payload'
+                  restore_file_modes(payload,record['inventory'])
                   if inventory(payload)!=record['inventory']: raise ValueError('exact reuse output digest is invalid')
-                  destinations.append((payload,spec['actual_path']))
-              for source,destination in destinations: replace_copy(source,destination)
+              remove_path(canonical)
+              canonical.mkdir(parents=True)
+              (canonical/'receipt.json').write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
+              for index in range(len(specs)):
+                  replace_copy(root/'outputs'/str(index)/'payload',canonical/'outputs'/str(index)/'payload')
+              remove_path(root)
+              os.replace(canonical,root)
+              for index,spec in enumerate(specs):
+                  replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
               print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if root.exists(): shutil.rmtree(root)
+              if mode=='restore':
+                  for spec in specs:
+                      remove_path(spec['actual_path'])
+              remove_path(root)
+              remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=prepare
       if [[ "${FLEET_REUSE_FOUND:-false}" == true ]]; then mode=restore; fi
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" '93fa69afe8d62283f3c380803d8b3863e778bd60427ff6a5d7d923a6e8701edc' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" 'c9028db6c2b4f2af6af72127b1551c22207771bd575043adc053e082fe903737' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Verify and restore exact successful job result
   - task: Cache@2
@@ -1510,6 +1819,12 @@ jobs:
       path: $(SCCACHE_DIR)
       cacheHitVar: FLEET_CACHE_SCCACHE
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    inputs:
+      key: '"tools-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk"'
+      path: $(TOOLS_DIR)
+      cacheHitVar: FLEET_CACHE_TOOLS
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
   - bash: |
       set -euo pipefail
       version='1.28.2'
@@ -1534,8 +1849,13 @@ jobs:
     displayName: Restore exact Rust toolchain
   - bash: |
       set -euo pipefail
+      set -euo pipefail
+      source scripts/ensure-bun.sh
       if ! command -v cc >/dev/null || ! pkg-config --exists fuse3; then sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libfuse3-dev; fi
       cargo test --workspace --all-features --locked
+      cargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1
+      cargo build -p acyclic-fs-napi --locked
+      bun scripts/check-filesystem-napi.mjs
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
     displayName: native
   - bash: |
@@ -1585,23 +1905,57 @@ jobs:
           visit(path,'.')
           return {'entries':entries,'entry_count':len(entries),'total_bytes':total}
 
+      def remove_path(path):
+          path=Path(path)
+          if path.is_symlink():
+              path.unlink()
+          elif path.is_file():
+              os.chmod(path,stat.S_IWRITE)
+              path.unlink()
+          elif path.is_dir():
+              def retry(action,name,_):
+                  os.chmod(name,stat.S_IRWXU)
+                  action(name)
+              shutil.rmtree(path,onerror=retry)
+
       def replace_copy(source,destination):
           source=Path(source); destination=Path(destination)
-          if destination.exists():
-              shutil.rmtree(destination) if destination.is_dir() else destination.unlink()
+          remove_path(destination)
           destination.parent.mkdir(parents=True,exist_ok=True)
           if source.is_dir(): shutil.copytree(source,destination,copy_function=shutil.copy2)
           elif source.is_file(): shutil.copy2(source,destination)
           else: raise SystemExit('reusable output is not a regular file or directory')
 
+      def restore_file_modes(path,expected):
+          if os.name=='nt': return
+          actual=inventory(path)
+          def content_only(value):
+              return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
+          if content_only(actual)!=content_only(expected): raise ValueError('exact reuse output digest is invalid')
+          for entry in expected['entries']:
+              if entry.get('kind')!='file': continue
+              relative=entry.get('path'); file_mode=entry.get('mode')
+              if relative=='.':
+                  target=Path(path)
+              else:
+                  parts=relative.split('/') if isinstance(relative,str) else []
+                  if not parts or any(part in ('','.','..') for part in parts): raise ValueError('exact reuse output path is invalid')
+                  target=Path(path).joinpath(*parts)
+              if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
+              if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
+              target.chmod(file_mode)
+
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
+      canonical=root.parent/(root.name+'.canonical')
       if mode=='prepare':
-          if root.exists(): shutil.rmtree(root)
+          remove_path(root)
+          remove_path(canonical)
           root.mkdir(parents=True)
       elif mode=='stage':
+          remove_path(canonical)
           output_root=root/'outputs'
-          if output_root.exists(): shutil.rmtree(output_root)
+          remove_path(output_root)
           outputs=[]
           for index,spec in enumerate(specs):
               payload=output_root/str(index)/'payload'
@@ -1617,29 +1971,40 @@ jobs:
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
               if not isinstance(outputs,list) or len(outputs)!=len(specs): raise ValueError('exact reuse output inventory is invalid')
-              destinations=[]
               for index,(spec,record) in enumerate(zip(specs,outputs)):
                   if set(record)!={'index','name','inventory'} or record['index']!=index or record['name']!=spec['name']: raise ValueError('exact reuse output identity is invalid')
                   payload=root/'outputs'/str(index)/'payload'
+                  restore_file_modes(payload,record['inventory'])
                   if inventory(payload)!=record['inventory']: raise ValueError('exact reuse output digest is invalid')
-                  destinations.append((payload,spec['actual_path']))
-              for source,destination in destinations: replace_copy(source,destination)
+              remove_path(canonical)
+              canonical.mkdir(parents=True)
+              (canonical/'receipt.json').write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
+              for index in range(len(specs)):
+                  replace_copy(root/'outputs'/str(index)/'payload',canonical/'outputs'/str(index)/'payload')
+              remove_path(root)
+              os.replace(canonical,root)
+              for index,spec in enumerate(specs):
+                  replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
               print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if root.exists(): shutil.rmtree(root)
+              if mode=='restore':
+                  for spec in specs:
+                      remove_path(spec['actual_path'])
+              remove_path(root)
+              remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" '93fa69afe8d62283f3c380803d8b3863e778bd60427ff6a5d7d923a6e8701edc' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" 'c9028db6c2b4f2af6af72127b1551c22207771bd575043adc053e082fe903737' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: PublishPipelineArtifact@1
     displayName: Publish exact reusable job result
-    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
+    condition: succeeded()
     inputs:
       targetPath: '$(Pipeline.Workspace)/.qualified/linux-arm64'
       artifact: 'qualified-job_linux_2darm64'
@@ -1719,13 +2084,15 @@ jobs:
           for build in builds:
               run=build.get('id')
               if not isinstance(run,int) or run==int(current) or build.get('definition',{}).get('id')!=int(definition): continue
-              artifact_query=urllib.parse.urlencode({'api-version':'7.1','artifactName':artifact})
+              artifact_query=urllib.parse.urlencode({'api-version':'7.1'})
               artifact_request=urllib.request.Request(f'{collection}{project}/_apis/build/builds/{run}/artifacts?{artifact_query}',headers=headers)
               try:
-                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(65537)
-                  if len(artifact_encoded)>65536: continue
-                  record=json.loads(artifact_encoded)
-                  if record.get('name')!=artifact or record.get('resource',{}).get('type')!='PipelineArtifact': continue
+                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(262145)
+                  if len(artifact_encoded)>262144: continue
+                  records=json.loads(artifact_encoded).get('value',[])
+                  if not isinstance(records,list) or len(records)>64: continue
+                  matches=[record for record in records if record.get('name')==artifact and record.get('resource',{}).get('type')=='PipelineArtifact']
+                  if len(matches)!=1: continue
               except Exception: continue
               print(f'##vso[task.setvariable variable=FLEET_REUSE_RUN_ID]{run}')
               print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]true')
@@ -1791,23 +2158,57 @@ jobs:
           visit(path,'.')
           return {'entries':entries,'entry_count':len(entries),'total_bytes':total}
 
+      def remove_path(path):
+          path=Path(path)
+          if path.is_symlink():
+              path.unlink()
+          elif path.is_file():
+              os.chmod(path,stat.S_IWRITE)
+              path.unlink()
+          elif path.is_dir():
+              def retry(action,name,_):
+                  os.chmod(name,stat.S_IRWXU)
+                  action(name)
+              shutil.rmtree(path,onerror=retry)
+
       def replace_copy(source,destination):
           source=Path(source); destination=Path(destination)
-          if destination.exists():
-              shutil.rmtree(destination) if destination.is_dir() else destination.unlink()
+          remove_path(destination)
           destination.parent.mkdir(parents=True,exist_ok=True)
           if source.is_dir(): shutil.copytree(source,destination,copy_function=shutil.copy2)
           elif source.is_file(): shutil.copy2(source,destination)
           else: raise SystemExit('reusable output is not a regular file or directory')
 
+      def restore_file_modes(path,expected):
+          if os.name=='nt': return
+          actual=inventory(path)
+          def content_only(value):
+              return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
+          if content_only(actual)!=content_only(expected): raise ValueError('exact reuse output digest is invalid')
+          for entry in expected['entries']:
+              if entry.get('kind')!='file': continue
+              relative=entry.get('path'); file_mode=entry.get('mode')
+              if relative=='.':
+                  target=Path(path)
+              else:
+                  parts=relative.split('/') if isinstance(relative,str) else []
+                  if not parts or any(part in ('','.','..') for part in parts): raise ValueError('exact reuse output path is invalid')
+                  target=Path(path).joinpath(*parts)
+              if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
+              if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
+              target.chmod(file_mode)
+
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
+      canonical=root.parent/(root.name+'.canonical')
       if mode=='prepare':
-          if root.exists(): shutil.rmtree(root)
+          remove_path(root)
+          remove_path(canonical)
           root.mkdir(parents=True)
       elif mode=='stage':
+          remove_path(canonical)
           output_root=root/'outputs'
-          if output_root.exists(): shutil.rmtree(output_root)
+          remove_path(output_root)
           outputs=[]
           for index,spec in enumerate(specs):
               payload=output_root/str(index)/'payload'
@@ -1823,17 +2224,28 @@ jobs:
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
               if not isinstance(outputs,list) or len(outputs)!=len(specs): raise ValueError('exact reuse output inventory is invalid')
-              destinations=[]
               for index,(spec,record) in enumerate(zip(specs,outputs)):
                   if set(record)!={'index','name','inventory'} or record['index']!=index or record['name']!=spec['name']: raise ValueError('exact reuse output identity is invalid')
                   payload=root/'outputs'/str(index)/'payload'
+                  restore_file_modes(payload,record['inventory'])
                   if inventory(payload)!=record['inventory']: raise ValueError('exact reuse output digest is invalid')
-                  destinations.append((payload,spec['actual_path']))
-              for source,destination in destinations: replace_copy(source,destination)
+              remove_path(canonical)
+              canonical.mkdir(parents=True)
+              (canonical/'receipt.json').write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
+              for index in range(len(specs)):
+                  replace_copy(root/'outputs'/str(index)/'payload',canonical/'outputs'/str(index)/'payload')
+              remove_path(root)
+              os.replace(canonical,root)
+              for index,spec in enumerate(specs):
+                  replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
               print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if root.exists(): shutil.rmtree(root)
+              if mode=='restore':
+                  for spec in specs:
+                      remove_path(spec['actual_path'])
+              remove_path(root)
+              remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
@@ -1841,7 +2253,7 @@ jobs:
       $helperPath = Join-Path '$(Agent.TempDirectory)' 'fleet-exact-reuse.py'
       [System.IO.File]::WriteAllText($helperPath, $helper, [System.Text.UTF8Encoding]::new($false))
       $mode = if ($env:FLEET_REUSE_FOUND -eq 'true') { 'restore' } else { 'prepare' }
-      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '9af8904bf3d7590f45be88e261305efeecae205cfb3a07c2e2d7743ab5d22c94' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE 'f0459755813bd3718169e44d616062534d1c08842cb5ed4201d21ee7dcd2760b' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       Remove-Item -LiteralPath $helperPath -Force
     displayName: Verify and restore exact successful job result
   - task: Cache@2
@@ -1902,6 +2314,12 @@ jobs:
       path: $(SCCACHE_DIR)
       cacheHitVar: FLEET_CACHE_SCCACHE
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    inputs:
+      key: '"tools-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk"'
+      path: $(TOOLS_DIR)
+      cacheHitVar: FLEET_CACHE_TOOLS
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
   - pwsh: |
       $ErrorActionPreference = 'Stop'
       $version = '1.28.2'
@@ -1925,7 +2343,11 @@ jobs:
     displayName: Restore exact Rust toolchain
   - pwsh: |
       $ErrorActionPreference = 'Stop'
+      . .\scripts\ensure-bun.ps1
       cargo test --workspace --all-features --locked
+      cargo test -p acyclic-fs --features native-mount --locked --lib native_mount::adapter::tests::writable_projfs_captures_closes_renames_links_and_deletes -- --ignored --test-threads=1
+      cargo build -p acyclic-fs-napi --locked
+      bun scripts/check-filesystem-napi.mjs
       rustup target add aarch64-pc-windows-msvc
       cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
@@ -1977,23 +2399,57 @@ jobs:
           visit(path,'.')
           return {'entries':entries,'entry_count':len(entries),'total_bytes':total}
 
+      def remove_path(path):
+          path=Path(path)
+          if path.is_symlink():
+              path.unlink()
+          elif path.is_file():
+              os.chmod(path,stat.S_IWRITE)
+              path.unlink()
+          elif path.is_dir():
+              def retry(action,name,_):
+                  os.chmod(name,stat.S_IRWXU)
+                  action(name)
+              shutil.rmtree(path,onerror=retry)
+
       def replace_copy(source,destination):
           source=Path(source); destination=Path(destination)
-          if destination.exists():
-              shutil.rmtree(destination) if destination.is_dir() else destination.unlink()
+          remove_path(destination)
           destination.parent.mkdir(parents=True,exist_ok=True)
           if source.is_dir(): shutil.copytree(source,destination,copy_function=shutil.copy2)
           elif source.is_file(): shutil.copy2(source,destination)
           else: raise SystemExit('reusable output is not a regular file or directory')
 
+      def restore_file_modes(path,expected):
+          if os.name=='nt': return
+          actual=inventory(path)
+          def content_only(value):
+              return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
+          if content_only(actual)!=content_only(expected): raise ValueError('exact reuse output digest is invalid')
+          for entry in expected['entries']:
+              if entry.get('kind')!='file': continue
+              relative=entry.get('path'); file_mode=entry.get('mode')
+              if relative=='.':
+                  target=Path(path)
+              else:
+                  parts=relative.split('/') if isinstance(relative,str) else []
+                  if not parts or any(part in ('','.','..') for part in parts): raise ValueError('exact reuse output path is invalid')
+                  target=Path(path).joinpath(*parts)
+              if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
+              if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
+              target.chmod(file_mode)
+
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
+      canonical=root.parent/(root.name+'.canonical')
       if mode=='prepare':
-          if root.exists(): shutil.rmtree(root)
+          remove_path(root)
+          remove_path(canonical)
           root.mkdir(parents=True)
       elif mode=='stage':
+          remove_path(canonical)
           output_root=root/'outputs'
-          if output_root.exists(): shutil.rmtree(output_root)
+          remove_path(output_root)
           outputs=[]
           for index,spec in enumerate(specs):
               payload=output_root/str(index)/'payload'
@@ -2009,17 +2465,28 @@ jobs:
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
               if not isinstance(outputs,list) or len(outputs)!=len(specs): raise ValueError('exact reuse output inventory is invalid')
-              destinations=[]
               for index,(spec,record) in enumerate(zip(specs,outputs)):
                   if set(record)!={'index','name','inventory'} or record['index']!=index or record['name']!=spec['name']: raise ValueError('exact reuse output identity is invalid')
                   payload=root/'outputs'/str(index)/'payload'
+                  restore_file_modes(payload,record['inventory'])
                   if inventory(payload)!=record['inventory']: raise ValueError('exact reuse output digest is invalid')
-                  destinations.append((payload,spec['actual_path']))
-              for source,destination in destinations: replace_copy(source,destination)
+              remove_path(canonical)
+              canonical.mkdir(parents=True)
+              (canonical/'receipt.json').write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
+              for index in range(len(specs)):
+                  replace_copy(root/'outputs'/str(index)/'payload',canonical/'outputs'/str(index)/'payload')
+              remove_path(root)
+              os.replace(canonical,root)
+              for index,spec in enumerate(specs):
+                  replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
               print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if root.exists(): shutil.rmtree(root)
+              if mode=='restore':
+                  for spec in specs:
+                      remove_path(spec['actual_path'])
+              remove_path(root)
+              remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
@@ -2027,13 +2494,13 @@ jobs:
       $helperPath = Join-Path '$(Agent.TempDirectory)' 'fleet-exact-reuse.py'
       [System.IO.File]::WriteAllText($helperPath, $helper, [System.Text.UTF8Encoding]::new($false))
       $mode = 'stage'
-      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '9af8904bf3d7590f45be88e261305efeecae205cfb3a07c2e2d7743ab5d22c94' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE 'f0459755813bd3718169e44d616062534d1c08842cb5ed4201d21ee7dcd2760b' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       Remove-Item -LiteralPath $helperPath -Force
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: PublishPipelineArtifact@1
     displayName: Publish exact reusable job result
-    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
+    condition: succeeded()
     inputs:
       targetPath: '$(Pipeline.Workspace)/.qualified/windows'
       artifact: 'qualified-job_windows'
@@ -2115,13 +2582,15 @@ jobs:
           for build in builds:
               run=build.get('id')
               if not isinstance(run,int) or run==int(current) or build.get('definition',{}).get('id')!=int(definition): continue
-              artifact_query=urllib.parse.urlencode({'api-version':'7.1','artifactName':artifact})
+              artifact_query=urllib.parse.urlencode({'api-version':'7.1'})
               artifact_request=urllib.request.Request(f'{collection}{project}/_apis/build/builds/{run}/artifacts?{artifact_query}',headers=headers)
               try:
-                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(65537)
-                  if len(artifact_encoded)>65536: continue
-                  record=json.loads(artifact_encoded)
-                  if record.get('name')!=artifact or record.get('resource',{}).get('type')!='PipelineArtifact': continue
+                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(262145)
+                  if len(artifact_encoded)>262144: continue
+                  records=json.loads(artifact_encoded).get('value',[])
+                  if not isinstance(records,list) or len(records)>64: continue
+                  matches=[record for record in records if record.get('name')==artifact and record.get('resource',{}).get('type')=='PipelineArtifact']
+                  if len(matches)!=1: continue
               except Exception: continue
               print(f'##vso[task.setvariable variable=FLEET_REUSE_RUN_ID]{run}')
               print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]true')
@@ -2186,23 +2655,57 @@ jobs:
           visit(path,'.')
           return {'entries':entries,'entry_count':len(entries),'total_bytes':total}
 
+      def remove_path(path):
+          path=Path(path)
+          if path.is_symlink():
+              path.unlink()
+          elif path.is_file():
+              os.chmod(path,stat.S_IWRITE)
+              path.unlink()
+          elif path.is_dir():
+              def retry(action,name,_):
+                  os.chmod(name,stat.S_IRWXU)
+                  action(name)
+              shutil.rmtree(path,onerror=retry)
+
       def replace_copy(source,destination):
           source=Path(source); destination=Path(destination)
-          if destination.exists():
-              shutil.rmtree(destination) if destination.is_dir() else destination.unlink()
+          remove_path(destination)
           destination.parent.mkdir(parents=True,exist_ok=True)
           if source.is_dir(): shutil.copytree(source,destination,copy_function=shutil.copy2)
           elif source.is_file(): shutil.copy2(source,destination)
           else: raise SystemExit('reusable output is not a regular file or directory')
 
+      def restore_file_modes(path,expected):
+          if os.name=='nt': return
+          actual=inventory(path)
+          def content_only(value):
+              return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
+          if content_only(actual)!=content_only(expected): raise ValueError('exact reuse output digest is invalid')
+          for entry in expected['entries']:
+              if entry.get('kind')!='file': continue
+              relative=entry.get('path'); file_mode=entry.get('mode')
+              if relative=='.':
+                  target=Path(path)
+              else:
+                  parts=relative.split('/') if isinstance(relative,str) else []
+                  if not parts or any(part in ('','.','..') for part in parts): raise ValueError('exact reuse output path is invalid')
+                  target=Path(path).joinpath(*parts)
+              if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
+              if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
+              target.chmod(file_mode)
+
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
+      canonical=root.parent/(root.name+'.canonical')
       if mode=='prepare':
-          if root.exists(): shutil.rmtree(root)
+          remove_path(root)
+          remove_path(canonical)
           root.mkdir(parents=True)
       elif mode=='stage':
+          remove_path(canonical)
           output_root=root/'outputs'
-          if output_root.exists(): shutil.rmtree(output_root)
+          remove_path(output_root)
           outputs=[]
           for index,spec in enumerate(specs):
               payload=output_root/str(index)/'payload'
@@ -2218,24 +2721,35 @@ jobs:
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
               if not isinstance(outputs,list) or len(outputs)!=len(specs): raise ValueError('exact reuse output inventory is invalid')
-              destinations=[]
               for index,(spec,record) in enumerate(zip(specs,outputs)):
                   if set(record)!={'index','name','inventory'} or record['index']!=index or record['name']!=spec['name']: raise ValueError('exact reuse output identity is invalid')
                   payload=root/'outputs'/str(index)/'payload'
+                  restore_file_modes(payload,record['inventory'])
                   if inventory(payload)!=record['inventory']: raise ValueError('exact reuse output digest is invalid')
-                  destinations.append((payload,spec['actual_path']))
-              for source,destination in destinations: replace_copy(source,destination)
+              remove_path(canonical)
+              canonical.mkdir(parents=True)
+              (canonical/'receipt.json').write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
+              for index in range(len(specs)):
+                  replace_copy(root/'outputs'/str(index)/'payload',canonical/'outputs'/str(index)/'payload')
+              remove_path(root)
+              os.replace(canonical,root)
+              for index,spec in enumerate(specs):
+                  replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
               print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if root.exists(): shutil.rmtree(root)
+              if mode=='restore':
+                  for spec in specs:
+                      remove_path(spec['actual_path'])
+              remove_path(root)
+              remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=prepare
       if [[ "${FLEET_REUSE_FOUND:-false}" == true ]]; then mode=restore; fi
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '24e985070874c74a390ba5d18d2d3675e648c0a43ed46600f9437499ebbdfad3' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" 'e91f81a6d3a2f3361e3ed3a2108419ecda262e29f404df5da06e945b008b2232' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Verify and restore exact successful job result
   - task: Cache@2
@@ -2296,6 +2810,12 @@ jobs:
       path: $(SCCACHE_DIR)
       cacheHitVar: FLEET_CACHE_SCCACHE
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    inputs:
+      key: '"tools-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk"'
+      path: $(TOOLS_DIR)
+      cacheHitVar: FLEET_CACHE_TOOLS
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
   - bash: |
       set -euo pipefail
       version='1.28.2'
@@ -2320,10 +2840,14 @@ jobs:
     displayName: Restore exact Rust toolchain
   - bash: |
       set -euo pipefail
-      cargo test -p acyclic-fs --no-default-features --features local,memory,native-watch,native-executor --locked
-      cargo test -p acyclic-harness -p inference-sdk -p acyclic-machines -p acyclic-objects -p acyclic-stream --locked
+      set -euo pipefail
+      source scripts/ensure-bun.sh
+      cargo test --workspace --all-features --locked
+      cargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1
+      cargo build -p acyclic-fs-napi --locked
+      bun scripts/check-filesystem-napi.mjs
       rustup target add x86_64-apple-darwin
-      cargo check -p acyclic-fs --no-default-features --features local,memory,native-watch,native-executor --target x86_64-apple-darwin --locked
+      cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target x86_64-apple-darwin --locked
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
     displayName: native
   - bash: |
@@ -2373,23 +2897,57 @@ jobs:
           visit(path,'.')
           return {'entries':entries,'entry_count':len(entries),'total_bytes':total}
 
+      def remove_path(path):
+          path=Path(path)
+          if path.is_symlink():
+              path.unlink()
+          elif path.is_file():
+              os.chmod(path,stat.S_IWRITE)
+              path.unlink()
+          elif path.is_dir():
+              def retry(action,name,_):
+                  os.chmod(name,stat.S_IRWXU)
+                  action(name)
+              shutil.rmtree(path,onerror=retry)
+
       def replace_copy(source,destination):
           source=Path(source); destination=Path(destination)
-          if destination.exists():
-              shutil.rmtree(destination) if destination.is_dir() else destination.unlink()
+          remove_path(destination)
           destination.parent.mkdir(parents=True,exist_ok=True)
           if source.is_dir(): shutil.copytree(source,destination,copy_function=shutil.copy2)
           elif source.is_file(): shutil.copy2(source,destination)
           else: raise SystemExit('reusable output is not a regular file or directory')
 
+      def restore_file_modes(path,expected):
+          if os.name=='nt': return
+          actual=inventory(path)
+          def content_only(value):
+              return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
+          if content_only(actual)!=content_only(expected): raise ValueError('exact reuse output digest is invalid')
+          for entry in expected['entries']:
+              if entry.get('kind')!='file': continue
+              relative=entry.get('path'); file_mode=entry.get('mode')
+              if relative=='.':
+                  target=Path(path)
+              else:
+                  parts=relative.split('/') if isinstance(relative,str) else []
+                  if not parts or any(part in ('','.','..') for part in parts): raise ValueError('exact reuse output path is invalid')
+                  target=Path(path).joinpath(*parts)
+              if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
+              if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
+              target.chmod(file_mode)
+
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
+      canonical=root.parent/(root.name+'.canonical')
       if mode=='prepare':
-          if root.exists(): shutil.rmtree(root)
+          remove_path(root)
+          remove_path(canonical)
           root.mkdir(parents=True)
       elif mode=='stage':
+          remove_path(canonical)
           output_root=root/'outputs'
-          if output_root.exists(): shutil.rmtree(output_root)
+          remove_path(output_root)
           outputs=[]
           for index,spec in enumerate(specs):
               payload=output_root/str(index)/'payload'
@@ -2405,29 +2963,40 @@ jobs:
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
               if not isinstance(outputs,list) or len(outputs)!=len(specs): raise ValueError('exact reuse output inventory is invalid')
-              destinations=[]
               for index,(spec,record) in enumerate(zip(specs,outputs)):
                   if set(record)!={'index','name','inventory'} or record['index']!=index or record['name']!=spec['name']: raise ValueError('exact reuse output identity is invalid')
                   payload=root/'outputs'/str(index)/'payload'
+                  restore_file_modes(payload,record['inventory'])
                   if inventory(payload)!=record['inventory']: raise ValueError('exact reuse output digest is invalid')
-                  destinations.append((payload,spec['actual_path']))
-              for source,destination in destinations: replace_copy(source,destination)
+              remove_path(canonical)
+              canonical.mkdir(parents=True)
+              (canonical/'receipt.json').write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
+              for index in range(len(specs)):
+                  replace_copy(root/'outputs'/str(index)/'payload',canonical/'outputs'/str(index)/'payload')
+              remove_path(root)
+              os.replace(canonical,root)
+              for index,spec in enumerate(specs):
+                  replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
               print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if root.exists(): shutil.rmtree(root)
+              if mode=='restore':
+                  for spec in specs:
+                      remove_path(spec['actual_path'])
+              remove_path(root)
+              remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '24e985070874c74a390ba5d18d2d3675e648c0a43ed46600f9437499ebbdfad3' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" 'e91f81a6d3a2f3361e3ed3a2108419ecda262e29f404df5da06e945b008b2232' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: PublishPipelineArtifact@1
     displayName: Publish exact reusable job result
-    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
+    condition: succeeded()
     inputs:
       targetPath: '$(Pipeline.Workspace)/.qualified/macos'
       artifact: 'qualified-job_macos'

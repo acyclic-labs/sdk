@@ -99,6 +99,31 @@ pub async fn prove_generation_closure_async<S: crate::AsyncObjectStore>(
         .map_err(|error| OperationFailure::new(error, context.work))
 }
 
+#[cfg(feature = "s3-http")]
+pub(crate) async fn prove_blob_closure_async<S: crate::AsyncObjectStore>(
+    store: &S,
+    root: ObjectId,
+    expected_bytes: u64,
+    limits: ClosureLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<ObjectId>, WorkCounters), GenerationProofFailure> {
+    let mut context = ProofContext::new(store, limits, budget, cancellation);
+    let logical_bytes = context
+        .prove_blob(root)
+        .await
+        .map_err(|error| OperationFailure::new(error, context.work))?;
+    if logical_bytes != expected_bytes {
+        return Err(OperationFailure::new(
+            ClosureError::BlobLengthMismatch,
+            context.work,
+        ));
+    }
+    let mut objects = context.objects.into_iter().collect::<Vec<_>>();
+    objects.sort_unstable();
+    Ok((objects, context.work))
+}
+
 struct ProofContext<'a, S> {
     store: &'a S,
     limits: ClosureLimits,

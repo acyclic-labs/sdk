@@ -5,6 +5,9 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(feature = "local")]
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
@@ -24,7 +27,7 @@ pub enum Condition {
     IfVersion(String),
 }
 
-#[cfg(feature = "grpc")]
+#[cfg(any(feature = "grpc", feature = "local"))]
 impl Condition {
     pub(crate) fn wire(self) -> wire::Preconditions {
         let condition = match self {
@@ -249,9 +252,147 @@ pub trait ObjectsProvider: Send + Sync {
 }
 
 #[derive(Clone)]
+enum StoredBody {
+    Memory(bytes::Bytes),
+    Composite {
+        parts: Arc<[StoredBody]>,
+        length: usize,
+    },
+    #[cfg(feature = "local")]
+    Local {
+        root: Arc<PathBuf>,
+        digest: [u8; 32],
+        length: usize,
+    },
+}
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+enum BodyIdentity {
+    Memory {
+        address: usize,
+        length: usize,
+    },
+    #[cfg(feature = "local")]
+    Local([u8; 32]),
+}
+
+impl StoredBody {
+    fn memory(body: bytes::Bytes) -> Self {
+        Self::Memory(body)
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Memory(body) => body.len(),
+            Self::Composite { length, .. } => *length,
+            #[cfg(feature = "local")]
+            Self::Local { length, .. } => *length,
+        }
+    }
+
+    fn read(&self, start: usize, end: usize) -> Result<bytes::Bytes, ObjectsError> {
+        match self {
+            Self::Memory(body) => Ok(body.slice(start..end)),
+            Self::Composite { parts, .. } => {
+                let mut output = Vec::with_capacity(end.saturating_sub(start));
+                let mut offset = 0usize;
+                for part in parts.iter() {
+                    let part_end = offset
+                        .checked_add(part.len())
+                        .ok_or(ObjectsError::Unavailable)?;
+                    if part_end > start && offset < end {
+                        let selected_start = start.saturating_sub(offset).min(part.len());
+                        let selected_end = end.saturating_sub(offset).min(part.len());
+                        output.extend_from_slice(&part.read(selected_start, selected_end)?);
+                    }
+                    offset = part_end;
+                }
+                if output.len() != end.saturating_sub(start) {
+                    return Err(ObjectsError::Unavailable);
+                }
+                Ok(output.into())
+            }
+            #[cfg(feature = "local")]
+            Self::Local {
+                root,
+                digest,
+                length,
+            } => {
+                if end > *length || start > end {
+                    return Err(ObjectsError::Invalid("invalid range"));
+                }
+                crate::local::read_body(root, digest, *length, start, end)
+            }
+        }
+    }
+
+    fn update_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), ObjectsError> {
+        match self {
+            Self::Memory(body) => {
+                hasher.update(body);
+                Ok(())
+            }
+            Self::Composite { parts, .. } => {
+                for part in parts.iter() {
+                    part.update_hash(hasher)?;
+                }
+                Ok(())
+            }
+            #[cfg(feature = "local")]
+            Self::Local {
+                root,
+                digest,
+                length,
+            } => crate::local::hash_body(root, digest, *length, hasher),
+        }
+    }
+
+    fn leaves(&self, output: &mut Vec<(BodyIdentity, usize)>) {
+        match self {
+            Self::Memory(body) => output.push((
+                BodyIdentity::Memory {
+                    address: body.as_ptr() as usize,
+                    length: body.len(),
+                },
+                body.len(),
+            )),
+            Self::Composite { parts, .. } => {
+                for part in parts.iter() {
+                    part.leaves(output);
+                }
+            }
+            #[cfg(feature = "local")]
+            Self::Local { digest, length, .. } => {
+                output.push((BodyIdentity::Local(*digest), *length));
+            }
+        }
+    }
+
+    async fn read_async(&self, start: usize, end: usize) -> Result<bytes::Bytes, ObjectsError> {
+        #[cfg(feature = "local")]
+        if self.has_local_storage() {
+            let body = self.clone();
+            return tokio::task::spawn_blocking(move || body.read(start, end))
+                .await
+                .map_err(|_| ObjectsError::Unavailable)?;
+        }
+        self.read(start, end)
+    }
+
+    #[cfg(feature = "local")]
+    fn has_local_storage(&self) -> bool {
+        match self {
+            Self::Memory(_) => false,
+            Self::Local { .. } => true,
+            Self::Composite { parts, .. } => parts.iter().any(Self::has_local_storage),
+        }
+    }
+}
+
+#[derive(Clone)]
 struct Version {
     descriptor: wire::ObjectVersion,
-    body: Option<bytes::Bytes>,
+    body: Option<StoredBody>,
 }
 
 #[derive(Clone)]
@@ -272,7 +413,24 @@ struct MultipartState {
     object_key: String,
     metadata: wire::ObjectMetadata,
     condition: Option<Condition>,
-    parts: BTreeMap<u32, (wire::UploadedPart, bytes::Bytes)>,
+    parts: BTreeMap<u32, (wire::UploadedPart, StoredBody)>,
+}
+
+struct StoredPartRequest {
+    bucket: wire::BucketRef,
+    object_key: String,
+    upload_id: String,
+    part_number: u32,
+    body: StoredBody,
+    body_digest: [u8; 32],
+    idempotency_key: Option<String>,
+}
+
+#[cfg(feature = "local")]
+pub(crate) struct ExternalBody {
+    pub(crate) root: PathBuf,
+    pub(crate) digest: [u8; 32],
+    pub(crate) length: usize,
 }
 
 #[derive(Clone)]
@@ -306,7 +464,9 @@ struct State {
     maximum_bytes: usize,
     maximum_object_bytes: usize,
     sequence: u64,
+    listing_sequence: u64,
     bytes: usize,
+    body_references: BTreeMap<BodyIdentity, (usize, usize)>,
     names: BTreeMap<String, String>,
     buckets: BTreeMap<String, BucketState>,
     snapshots: BTreeMap<String, SnapshotState>,
@@ -321,7 +481,9 @@ impl Default for State {
             maximum_bytes: MEMORY_BYTES,
             maximum_object_bytes: MEMORY_BYTES,
             sequence: 0,
+            listing_sequence: 0,
             bytes: 0,
+            body_references: BTreeMap::new(),
             names: BTreeMap::new(),
             buckets: BTreeMap::new(),
             snapshots: BTreeMap::new(),
@@ -329,6 +491,93 @@ impl Default for State {
             listings: BTreeMap::new(),
             idempotency: BTreeMap::new(),
         }
+    }
+}
+
+impl State {
+    fn additional_body_bytes(&self, body: &StoredBody) -> Result<usize, ObjectsError> {
+        let mut leaves = Vec::new();
+        body.leaves(&mut leaves);
+        leaves
+            .into_iter()
+            .try_fold(0usize, |total, (identity, length)| {
+                if self.body_references.contains_key(&identity) {
+                    Ok(total)
+                } else {
+                    total.checked_add(length).ok_or(ObjectsError::Capacity)
+                }
+            })
+    }
+
+    fn retain_body(&mut self, body: &StoredBody) -> Result<(), ObjectsError> {
+        let mut leaves = Vec::new();
+        body.leaves(&mut leaves);
+        for (identity, length) in leaves {
+            match self.body_references.entry(identity) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    self.bytes = self
+                        .bytes
+                        .checked_add(length)
+                        .ok_or(ObjectsError::Capacity)?;
+                    entry.insert((length, 1));
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    if entry.get().0 != length {
+                        return Err(ObjectsError::Unavailable);
+                    }
+                    entry.get_mut().1 =
+                        entry.get().1.checked_add(1).ok_or(ObjectsError::Capacity)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn release_body(&mut self, body: &StoredBody) -> Result<(), ObjectsError> {
+        let mut leaves = Vec::new();
+        body.leaves(&mut leaves);
+        for (identity, length) in leaves {
+            let references = self
+                .body_references
+                .get_mut(&identity)
+                .ok_or(ObjectsError::Unavailable)?;
+            if references.0 != length || references.1 == 0 {
+                return Err(ObjectsError::Unavailable);
+            }
+            references.1 -= 1;
+            if references.1 == 0 {
+                self.body_references.remove(&identity);
+                self.bytes = self
+                    .bytes
+                    .checked_sub(length)
+                    .ok_or(ObjectsError::Unavailable)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn retain_bucket(&mut self, bucket: &BucketState) -> Result<(), ObjectsError> {
+        for body in bucket
+            .objects
+            .values()
+            .flatten()
+            .filter_map(|version| version.body.as_ref())
+        {
+            self.retain_body(body)?;
+        }
+        Ok(())
+    }
+
+    fn release_bucket(&mut self, bucket: &BucketState) -> Result<(), ObjectsError> {
+        for body in bucket
+            .objects
+            .values()
+            .flatten()
+            .filter_map(|version| version.body.as_ref())
+        {
+            self.release_body(body)?;
+        }
+        Ok(())
     }
 }
 
@@ -342,6 +591,33 @@ pub struct MemoryObjects {
 }
 
 impl MemoryObjects {
+    #[cfg(feature = "local")]
+    pub(crate) async fn local_body_digests(&self) -> BTreeSet<[u8; 32]> {
+        let state = self.state.lock().await;
+        state
+            .body_references
+            .keys()
+            .filter_map(|identity| match identity {
+                BodyIdentity::Local(digest) => Some(*digest),
+                BodyIdentity::Memory { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Resolves a bucket by its canonical name without mutating provider state.
+    pub async fn bucket_named(&self, name: &str) -> Result<Option<wire::BucketRef>, ObjectsError> {
+        Self::validate_bucket_name(name)?;
+        let state = self.state.lock().await;
+        let Some(bucket_id) = state.names.get(name) else {
+            return Ok(None);
+        };
+        let bucket = state
+            .buckets
+            .get(bucket_id)
+            .ok_or(ObjectsError::Unavailable)?;
+        Ok(Some(bucket.reference.clone()))
+    }
+
     /// Creates the default bounded reference provider with one deterministic bucket.
     #[must_use]
     pub fn with_default_bucket() -> (Self, wire::BucketRef) {
@@ -354,15 +630,27 @@ impl MemoryObjects {
     ///
     /// Rejects zero or process-unrepresentable limits before allocating provider state.
     pub fn new(maximum_bytes: u64) -> Result<Self, ObjectsError> {
-        let maximum_bytes = usize::try_from(maximum_bytes)
-            .map_err(|_| ObjectsError::Invalid("memory byte limit is not representable"))?;
         if maximum_bytes == 0 {
             return Err(ObjectsError::Invalid("memory byte limit must be positive"));
+        }
+        Self::new_with_limits(maximum_bytes, maximum_bytes)
+    }
+
+    pub(crate) fn new_with_limits(
+        maximum_object_bytes: u64,
+        maximum_bytes: u64,
+    ) -> Result<Self, ObjectsError> {
+        let maximum_object_bytes = usize::try_from(maximum_object_bytes)
+            .map_err(|_| ObjectsError::Invalid("memory object limit is not representable"))?;
+        let maximum_bytes = usize::try_from(maximum_bytes)
+            .map_err(|_| ObjectsError::Invalid("memory byte limit is not representable"))?;
+        if maximum_object_bytes == 0 || maximum_bytes == 0 || maximum_object_bytes > maximum_bytes {
+            return Err(ObjectsError::Invalid("invalid memory object limits"));
         }
         Ok(Self {
             state: Arc::new(Mutex::new(State {
                 maximum_bytes,
-                maximum_object_bytes: maximum_bytes,
+                maximum_object_bytes,
                 ..State::default()
             })),
         })
@@ -542,11 +830,13 @@ impl MemoryObjects {
     }
 
     fn next(state: &mut State, kind: &str) -> Result<String, ObjectsError> {
-        state.sequence = state
-            .sequence
-            .checked_add(1)
-            .ok_or(ObjectsError::Capacity)?;
-        Ok(format!("{kind}-{:016x}", state.sequence))
+        let sequence = if kind == "listing" {
+            &mut state.listing_sequence
+        } else {
+            &mut state.sequence
+        };
+        *sequence = sequence.checked_add(1).ok_or(ObjectsError::Capacity)?;
+        Ok(format!("{kind}-{sequence:016x}"))
     }
 
     fn timestamp(state: &State) -> prost_types::Timestamp {
@@ -682,6 +972,21 @@ impl MemoryObjects {
         }
     }
 
+    fn target_ref<'a>(
+        state: &'a State,
+        target: &ReadTarget,
+    ) -> Result<&'a BucketState, ObjectsError> {
+        match target {
+            ReadTarget::Bucket(reference) => Self::bucket(state, reference),
+            ReadTarget::Snapshot(reference) => state
+                .snapshots
+                .get(&reference.snapshot_id)
+                .filter(|snapshot| snapshot.reference == *reference)
+                .map(|snapshot| &snapshot.bucket)
+                .ok_or(ObjectsError::NotFound),
+        }
+    }
+
     fn visible<'a>(
         bucket: &'a BucketState,
         object_key: &str,
@@ -721,7 +1026,8 @@ impl MemoryObjects {
 
     fn descriptor(
         state: &mut State,
-        body: &[u8],
+        body_digest: &[u8; 32],
+        body_length: usize,
         metadata: wire::ObjectMetadata,
         marker: bool,
     ) -> Result<wire::ObjectVersion, ObjectsError> {
@@ -729,12 +1035,12 @@ impl MemoryObjects {
         let etag = if marker {
             String::new()
         } else {
-            format!("\"{}\"", blake3::hash(body).to_hex())
+            format!("\"{}\"", blake3::Hash::from_bytes(*body_digest).to_hex())
         };
         Ok(wire::ObjectVersion {
             version_id,
             etag,
-            size: body.len() as u64,
+            size: body_length as u64,
             delete_marker: marker,
             metadata: Some(metadata),
             created_at: Some(Self::timestamp(state)),
@@ -807,6 +1113,221 @@ impl MemoryObjects {
             left.cmp(right)
         });
         items
+    }
+
+    async fn put_stored(
+        &self,
+        request: PutRequest,
+        body: StoredBody,
+        body_digest: [u8; 32],
+    ) -> Result<wire::ObjectVersion, ObjectsError> {
+        let PutRequest {
+            bucket,
+            object_key,
+            body: _,
+            metadata,
+            condition,
+            idempotency_key,
+        } = request;
+        Self::validate_key(&object_key)?;
+        Self::validate_metadata(&metadata)?;
+        let bucket_fields = Self::reference_fields(&bucket);
+        let condition_bytes = Self::condition_bytes(&condition);
+        let metadata_bytes = Self::metadata_bytes(&metadata);
+        let fingerprint = Self::fingerprint(
+            "put",
+            &[
+                bucket_fields[0],
+                bucket_fields[1],
+                object_key.as_bytes(),
+                &condition_bytes,
+                &metadata_bytes,
+                &body_digest,
+            ],
+        );
+        let mut state = self.state.lock().await;
+        Self::execute(
+            &mut state,
+            idempotency_key.as_deref(),
+            fingerprint,
+            |outcome| match outcome {
+                MutationOutcome::Version(value) => Some(value.clone()),
+                _ => None,
+            },
+            MutationOutcome::Version,
+            |state| {
+                let current = Self::bucket(state, &bucket)?
+                    .objects
+                    .get(&object_key)
+                    .and_then(|history| history.last())
+                    .cloned();
+                if !Self::condition(current.as_ref(), &condition) {
+                    return Err(ObjectsError::PreconditionFailed);
+                }
+                let size = body.len();
+                let additional = state.additional_body_bytes(&body)?;
+                if size > state.maximum_object_bytes
+                    || state
+                        .bytes
+                        .checked_add(additional)
+                        .is_none_or(|bytes| bytes > state.maximum_bytes)
+                {
+                    return Err(ObjectsError::Capacity);
+                }
+                let descriptor = Self::descriptor(state, &body_digest, size, metadata, false)?;
+                state.retain_body(&body)?;
+                Self::bucket_mut(state, &bucket)?
+                    .objects
+                    .entry(object_key)
+                    .or_default()
+                    .push(Version {
+                        descriptor: descriptor.clone(),
+                        body: Some(body),
+                    });
+                Ok(descriptor)
+            },
+        )
+    }
+
+    #[cfg(feature = "local")]
+    pub(crate) async fn put_external(
+        &self,
+        request: PutRequest,
+        external: ExternalBody,
+    ) -> Result<wire::ObjectVersion, ObjectsError> {
+        let ExternalBody {
+            root,
+            digest,
+            length,
+        } = external;
+        self.put_stored(
+            request,
+            StoredBody::Local {
+                root: Arc::new(root),
+                digest,
+                length,
+            },
+            digest,
+        )
+        .await
+    }
+
+    async fn upload_part_stored(
+        &self,
+        request: StoredPartRequest,
+    ) -> Result<wire::UploadedPart, ObjectsError> {
+        let StoredPartRequest {
+            bucket,
+            object_key,
+            upload_id,
+            part_number,
+            body,
+            body_digest,
+            idempotency_key,
+        } = request;
+        if !(1..=limits::MULTIPART_PARTS).contains(&part_number)
+            || body.len() as u64 > limits::MAX_MULTIPART_PART_BYTES
+        {
+            return Err(ObjectsError::Invalid("invalid multipart part"));
+        }
+        let bucket_fields = Self::reference_fields(&bucket);
+        let part_number_bytes = part_number.to_le_bytes();
+        let fingerprint = Self::fingerprint(
+            "upload-part",
+            &[
+                bucket_fields[0],
+                bucket_fields[1],
+                object_key.as_bytes(),
+                upload_id.as_bytes(),
+                &part_number_bytes,
+                &body_digest,
+            ],
+        );
+        let mut state = self.state.lock().await;
+        Self::execute(
+            &mut state,
+            idempotency_key.as_deref(),
+            fingerprint,
+            |outcome| match outcome {
+                MutationOutcome::Part(value) => Some(value.clone()),
+                _ => None,
+            },
+            MutationOutcome::Part,
+            |state| {
+                let existing_body = state
+                    .multiparts
+                    .get(&upload_id)
+                    .filter(|upload| upload.bucket == bucket && upload.object_key == object_key)
+                    .ok_or(ObjectsError::NotFound)?
+                    .parts
+                    .get(&part_number)
+                    .map(|(_, body)| body.clone());
+                if let Some(existing) = &existing_body {
+                    state.release_body(existing)?;
+                }
+                let additional = state.additional_body_bytes(&body)?;
+                if state
+                    .bytes
+                    .checked_add(additional)
+                    .is_none_or(|bytes| bytes > state.maximum_bytes)
+                {
+                    if let Some(existing) = &existing_body {
+                        state.retain_body(existing)?;
+                    }
+                    return Err(ObjectsError::Capacity);
+                }
+                let part = wire::UploadedPart {
+                    part_number,
+                    etag: format!("\"{}\"", blake3::Hash::from_bytes(body_digest).to_hex()),
+                    size: body.len() as u64,
+                };
+                state
+                    .multiparts
+                    .get_mut(&upload_id)
+                    .ok_or(ObjectsError::NotFound)?
+                    .parts
+                    .insert(part_number, (part.clone(), body));
+                let admitted = state
+                    .multiparts
+                    .get(&upload_id)
+                    .and_then(|upload| upload.parts.get(&part_number))
+                    .map(|(_, body)| body.clone())
+                    .ok_or(ObjectsError::Unavailable)?;
+                state.retain_body(&admitted)?;
+                Ok(part)
+            },
+        )
+    }
+
+    #[cfg(feature = "local")]
+    pub(crate) async fn upload_part_external(
+        &self,
+        bucket: wire::BucketRef,
+        object_key: String,
+        upload_id: String,
+        part_number: u32,
+        external: ExternalBody,
+        idempotency_key: Option<String>,
+    ) -> Result<wire::UploadedPart, ObjectsError> {
+        let ExternalBody {
+            root,
+            digest,
+            length,
+        } = external;
+        self.upload_part_stored(StoredPartRequest {
+            bucket,
+            object_key,
+            upload_id,
+            part_number,
+            body: StoredBody::Local {
+                root: Arc::new(root),
+                digest,
+                length,
+            },
+            body_digest: digest,
+            idempotency_key,
+        })
+        .await
     }
 }
 
@@ -897,71 +1418,16 @@ impl ObjectsProvider for MemoryObjects {
     }
 
     async fn put(&self, request: PutRequest) -> Result<wire::ObjectVersion, ObjectsError> {
-        Self::validate_key(&request.object_key)?;
-        Self::validate_metadata(&request.metadata)?;
-        let bucket_fields = Self::reference_fields(&request.bucket);
-        let condition = Self::condition_bytes(&request.condition);
-        let metadata = Self::metadata_bytes(&request.metadata);
-        let body_digest = blake3::hash(&request.body);
-        let fingerprint = Self::fingerprint(
-            "put",
-            &[
-                bucket_fields[0],
-                bucket_fields[1],
-                request.object_key.as_bytes(),
-                &condition,
-                &metadata,
-                body_digest.as_bytes(),
-            ],
-        );
-        let mut state = self.state.lock().await;
-        Self::execute(
-            &mut state,
-            request.idempotency_key.as_deref(),
-            fingerprint,
-            |outcome| match outcome {
-                MutationOutcome::Version(value) => Some(value.clone()),
-                _ => None,
-            },
-            MutationOutcome::Version,
-            |state| {
-                let current = Self::bucket(state, &request.bucket)?
-                    .objects
-                    .get(&request.object_key)
-                    .and_then(|history| history.last())
-                    .cloned();
-                if !Self::condition(current.as_ref(), &request.condition) {
-                    return Err(ObjectsError::PreconditionFailed);
-                }
-                let size = request.body.len();
-                if size > state.maximum_object_bytes
-                    || state
-                        .bytes
-                        .checked_add(size)
-                        .is_none_or(|bytes| bytes > state.maximum_bytes)
-                {
-                    return Err(ObjectsError::Capacity);
-                }
-                let descriptor = Self::descriptor(state, &request.body, request.metadata, false)?;
-                Self::bucket_mut(state, &request.bucket)?
-                    .objects
-                    .entry(request.object_key)
-                    .or_default()
-                    .push(Version {
-                        descriptor: descriptor.clone(),
-                        body: Some(request.body),
-                    });
-                state.bytes += size;
-                Ok(descriptor)
-            },
-        )
+        let digest = *blake3::hash(&request.body).as_bytes();
+        let body = StoredBody::memory(request.body.clone());
+        self.put_stored(request, body, digest).await
     }
 
     async fn get(&self, request: GetRequest) -> Result<BufferedObject, ObjectsError> {
         Self::validate_key(&request.object_key)?;
         let state = self.state.lock().await;
-        let bucket = Self::target(&state, &request.target)?;
-        let version = Self::visible(&bucket, &request.object_key, request.version_id.as_deref())?;
+        let bucket = Self::target_ref(&state, &request.target)?;
+        let version = Self::visible(bucket, &request.object_key, request.version_id.as_deref())?;
         if request
             .if_match
             .as_ref()
@@ -973,9 +1439,11 @@ impl ObjectsProvider for MemoryObjects {
         {
             return Err(ObjectsError::PreconditionFailed);
         }
-        let body = version.body.as_ref().ok_or(ObjectsError::NotFound)?;
-        let selected = match request.range {
-            None => body.clone(),
+        let descriptor = version.descriptor.clone();
+        let body = version.body.clone().ok_or(ObjectsError::NotFound)?;
+        drop(state);
+        let (start, end) = match request.range {
+            None => (0, body.len()),
             Some((start, end)) => {
                 let start =
                     usize::try_from(start).map_err(|_| ObjectsError::Invalid("invalid range"))?;
@@ -984,14 +1452,15 @@ impl ObjectsProvider for MemoryObjects {
                 if start > end || end >= body.len() {
                     return Err(ObjectsError::Invalid("invalid range"));
                 }
-                body.slice(start..=end)
+                (start, end.saturating_add(1))
             }
         };
-        if selected.len() as u64 > request.maximum_bytes {
+        if end.saturating_sub(start) as u64 > request.maximum_bytes {
             return Err(ObjectsError::Capacity);
         }
+        let selected = body.read_async(start, end).await?;
         Ok(BufferedObject {
-            version: version.descriptor.clone(),
+            version: descriptor,
             body: selected,
         })
     }
@@ -1037,7 +1506,7 @@ impl ObjectsProvider for MemoryObjects {
                     return Err(ObjectsError::PreconditionFailed);
                 }
                 if let Some(identity) = version_id {
-                    let (removed_bytes, empty) = {
+                    let (removed_body, empty) = {
                         let Some(history) = Self::bucket_mut(state, &bucket)?
                             .objects
                             .get_mut(&object_key)
@@ -1057,12 +1526,11 @@ impl ObjectsProvider for MemoryObjects {
                             });
                         };
                         let removed = history.remove(position);
-                        (
-                            removed.body.as_ref().map_or(0, |body| body.len()),
-                            history.is_empty(),
-                        )
+                        (removed.body, history.is_empty())
                     };
-                    state.bytes = state.bytes.saturating_sub(removed_bytes);
+                    if let Some(body) = removed_body {
+                        state.release_body(&body)?;
+                    }
                     if empty {
                         Self::bucket_mut(state, &bucket)?
                             .objects
@@ -1073,8 +1541,13 @@ impl ObjectsProvider for MemoryObjects {
                         marker: None,
                     })
                 } else {
-                    let marker =
-                        Self::descriptor(state, &[], wire::ObjectMetadata::default(), true)?;
+                    let marker = Self::descriptor(
+                        state,
+                        blake3::hash(&[]).as_bytes(),
+                        0,
+                        wire::ObjectMetadata::default(),
+                        true,
+                    )?;
                     Self::bucket_mut(state, &bucket)?
                         .objects
                         .entry(object_key)
@@ -1174,6 +1647,7 @@ impl ObjectsProvider for MemoryObjects {
             MutationOutcome::Snapshot,
             |state| {
                 let source = Self::bucket(state, &bucket)?.clone();
+                state.retain_bucket(&source)?;
                 let snapshot_id = Self::next(state, "snapshot")?;
                 let reference = wire::SnapshotRef {
                     snapshot_id: snapshot_id.clone(),
@@ -1222,7 +1696,15 @@ impl ObjectsProvider for MemoryObjects {
                     .snapshots
                     .get(&snapshot.snapshot_id)
                     .is_some_and(|value| value.reference == snapshot);
-                Ok(exists && state.snapshots.remove(&snapshot.snapshot_id).is_some())
+                if !exists {
+                    return Ok(false);
+                }
+                let removed = state
+                    .snapshots
+                    .remove(&snapshot.snapshot_id)
+                    .ok_or(ObjectsError::Unavailable)?;
+                state.release_bucket(&removed.bucket)?;
+                Ok(true)
             },
         )
     }
@@ -1258,6 +1740,7 @@ impl ObjectsProvider for MemoryObjects {
                     return Err(ObjectsError::AlreadyExists);
                 }
                 let source = Self::target(state, &source)?;
+                state.retain_bucket(&source)?;
                 let bucket_id = Self::next(state, "bucket")?;
                 let reference = wire::BucketRef {
                     bucket_id: bucket_id.clone(),
@@ -1341,67 +1824,17 @@ impl ObjectsProvider for MemoryObjects {
         body: bytes::Bytes,
         idempotency_key: Option<String>,
     ) -> Result<wire::UploadedPart, ObjectsError> {
-        if !(1..=limits::MULTIPART_PARTS).contains(&part_number)
-            || body.len() as u64 > limits::MAX_MULTIPART_PART_BYTES
-        {
-            return Err(ObjectsError::Invalid("invalid multipart part"));
-        }
-        let bucket_fields = Self::reference_fields(&bucket);
-        let part_number_bytes = part_number.to_le_bytes();
-        let body_digest = blake3::hash(&body);
-        let fingerprint = Self::fingerprint(
-            "upload-part",
-            &[
-                bucket_fields[0],
-                bucket_fields[1],
-                object_key.as_bytes(),
-                upload_id.as_bytes(),
-                &part_number_bytes,
-                body_digest.as_bytes(),
-            ],
-        );
-        let mut state = self.state.lock().await;
-        Self::execute(
-            &mut state,
-            idempotency_key.as_deref(),
-            fingerprint,
-            |outcome| match outcome {
-                MutationOutcome::Part(value) => Some(value.clone()),
-                _ => None,
-            },
-            MutationOutcome::Part,
-            |state| {
-                let existing_size = state
-                    .multiparts
-                    .get(&upload_id)
-                    .filter(|upload| upload.bucket == bucket && upload.object_key == object_key)
-                    .ok_or(ObjectsError::NotFound)?
-                    .parts
-                    .get(&part_number)
-                    .map_or(0, |(_, body)| body.len());
-                let projected = state
-                    .bytes
-                    .saturating_sub(existing_size)
-                    .checked_add(body.len())
-                    .ok_or(ObjectsError::Capacity)?;
-                if projected > state.maximum_bytes {
-                    return Err(ObjectsError::Capacity);
-                }
-                let part = wire::UploadedPart {
-                    part_number,
-                    etag: format!("\"{}\"", blake3::hash(&body).to_hex()),
-                    size: body.len() as u64,
-                };
-                state
-                    .multiparts
-                    .get_mut(&upload_id)
-                    .ok_or(ObjectsError::NotFound)?
-                    .parts
-                    .insert(part_number, (part.clone(), body));
-                state.bytes = projected;
-                Ok(part)
-            },
-        )
+        let digest = *blake3::hash(&body).as_bytes();
+        self.upload_part_stored(StoredPartRequest {
+            bucket,
+            object_key,
+            upload_id,
+            part_number,
+            body: StoredBody::memory(body),
+            body_digest: digest,
+            idempotency_key,
+        })
+        .await
     }
 
     async fn list_parts(
@@ -1485,18 +1918,42 @@ impl ObjectsProvider for MemoryObjects {
                     state.multiparts.insert(upload_id, upload);
                     return Err(ObjectsError::PreconditionFailed);
                 }
-                let mut body = Vec::new();
-                for (_, part_body) in upload.parts.values() {
-                    body.extend_from_slice(part_body);
+                let body_length =
+                    match upload.parts.values().try_fold(0usize, |total, (_, body)| {
+                        total.checked_add(body.len()).ok_or(ObjectsError::Capacity)
+                    }) {
+                        Ok(body_length) => body_length,
+                        Err(error) => {
+                            state.multiparts.insert(upload_id, upload);
+                            return Err(error);
+                        }
+                    };
+                if body_length > state.maximum_object_bytes {
+                    state.multiparts.insert(upload_id, upload);
+                    return Err(ObjectsError::Capacity);
                 }
-                let descriptor = Self::descriptor(state, &body, upload.metadata, false)?;
+                let bodies = upload
+                    .parts
+                    .into_values()
+                    .map(|(_, body)| body)
+                    .collect::<Vec<_>>();
+                let mut hasher = blake3::Hasher::new();
+                for body in &bodies {
+                    body.update_hash(&mut hasher)?;
+                }
+                let body_digest = *hasher.finalize().as_bytes();
+                let descriptor =
+                    Self::descriptor(state, &body_digest, body_length, upload.metadata, false)?;
                 Self::bucket_mut(state, &bucket)?
                     .objects
                     .entry(object_key)
                     .or_default()
                     .push(Version {
                         descriptor: descriptor.clone(),
-                        body: Some(body.into()),
+                        body: Some(StoredBody::Composite {
+                            parts: bodies.into(),
+                            length: body_length,
+                        }),
                     });
                 Ok(descriptor)
             },
@@ -1538,12 +1995,9 @@ impl ObjectsProvider for MemoryObjects {
                     return Ok(false);
                 }
                 if let Some(upload) = state.multiparts.remove(&upload_id) {
-                    let released = upload
-                        .parts
-                        .values()
-                        .map(|(_, body)| body.len())
-                        .sum::<usize>();
-                    state.bytes = state.bytes.saturating_sub(released);
+                    for (_, body) in upload.parts.values() {
+                        state.release_body(body)?;
+                    }
                 }
                 Ok(true)
             },
@@ -1560,15 +2014,6 @@ mod tests {
             content_type: "text/plain".into(),
             ..Default::default()
         }
-    }
-
-    async fn bucket(store: &MemoryObjects, name: &str) -> wire::BucketRef {
-        store
-            .create_bucket(name.into(), None)
-            .await
-            .unwrap_or_else(|_| unreachable!())
-            .bucket
-            .unwrap_or_else(|| unreachable!())
     }
 
     async fn put(
@@ -1661,276 +2106,105 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn permanent_versions_and_delete_markers_are_exact() {
-        let store = MemoryObjects::default();
-        let bucket = bucket(&store, "versions").await;
-        let first = put(&store, &bucket, "a", b"one", None).await;
-        let second = put(&store, &bucket, "a", b"two", None).await;
-        assert_ne!(first.version_id, second.version_id);
-        assert_eq!(first.etag, format!("\"{}\"", blake3::hash(b"one").to_hex()));
+    async fn memory_provider_passes_the_public_conformance_suite() -> Result<(), ObjectsError> {
+        crate::conformance::verify(&MemoryObjects::default(), "conformance").await
+    }
 
-        let deleted = store
-            .delete(bucket.clone(), "missing".into(), None, None, None)
+    #[tokio::test]
+    async fn shared_snapshot_and_fork_bodies_retain_exact_capacity() {
+        let store = MemoryObjects::new(3).unwrap_or_else(|_| unreachable!());
+        let source = store
+            .create_bucket("source-bucket".into(), Some("create-source".into()))
             .await
-            .unwrap_or_else(|_| unreachable!());
+            .unwrap_or_else(|_| unreachable!())
+            .bucket
+            .unwrap_or_else(|| unreachable!());
+        let version = put(&store, &source, "shared", b"abc", None).await;
+        let version_id = version.version_id.clone();
+        let snapshot = store
+            .snapshot(source.clone(), Some("snapshot".into()))
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .snapshot
+            .unwrap_or_else(|| unreachable!());
         assert!(
-            deleted.existed
-                && deleted
-                    .marker
-                    .as_ref()
-                    .is_some_and(|value| value.delete_marker)
-        );
-
-        let unknown = store
-            .delete(
-                bucket.clone(),
-                "a".into(),
-                Some("unknown".into()),
-                None,
-                None,
-            )
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(
-            unknown,
-            DeleteResult {
-                existed: false,
-                marker: None
-            }
-        );
-        let first_body = store
-            .get(GetRequest {
-                target: ReadTarget::Bucket(bucket.clone()),
-                object_key: "a".into(),
-                version_id: Some(first.version_id.clone()),
-                range: None,
-                if_match: None,
-                if_none_match: None,
-                maximum_bytes: u64::MAX,
-            })
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(first_body.body.as_ref(), b"one");
-        assert_eq!(
             store
-                .get(GetRequest {
-                    target: ReadTarget::Bucket(bucket),
-                    object_key: "a".into(),
-                    version_id: Some(first.version_id),
-                    range: None,
-                    if_match: None,
-                    if_none_match: None,
-                    maximum_bytes: 2,
+                .delete(
+                    source.clone(),
+                    "shared".into(),
+                    Some(version.version_id),
+                    None,
+                    Some("delete-source".into()),
+                )
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            store
+                .put(PutRequest {
+                    bucket: source.clone(),
+                    object_key: "replacement".into(),
+                    body: bytes::Bytes::from_static(b"def"),
+                    metadata: metadata(),
+                    condition: None,
+                    idempotency_key: None,
                 })
                 .await,
             Err(ObjectsError::Capacity)
-        );
-    }
-
-    #[tokio::test]
-    async fn conditions_fail_without_creating_versions() {
-        let store = MemoryObjects::default();
-        let bucket = bucket(&store, "conditions").await;
-        let first = put(&store, &bucket, "a", b"one", Some(Condition::IfAbsent)).await;
-        assert_eq!(
-            store
-                .put(PutRequest {
-                    bucket: bucket.clone(),
-                    object_key: "a".into(),
-                    body: bytes::Bytes::from_static(b"two"),
-                    metadata: metadata(),
-                    condition: Some(Condition::IfAbsent),
-                    idempotency_key: None
-                })
-                .await,
-            Err(ObjectsError::PreconditionFailed)
-        );
-        let listed = store
-            .list(ReadTarget::Bucket(bucket), "".into(), None, true, 10, None)
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(listed.entries.len(), 1);
-        assert_eq!(listed.entries[0].version.as_ref(), Some(&first));
-    }
-
-    #[tokio::test]
-    async fn idempotency_replays_exact_outcome_and_rejects_argument_reuse() {
-        let store = MemoryObjects::default();
-        let created = store
-            .create_bucket("idempotency".into(), Some("create-key".into()))
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(
-            store
-                .create_bucket("idempotency".into(), Some("create-key".into()))
-                .await,
-            Ok(created.clone())
-        );
-        assert_eq!(
-            store
-                .create_bucket("different".into(), Some("create-key".into()))
-                .await,
-            Err(ObjectsError::IdempotencyMismatch)
-        );
-        let bucket = created.bucket.unwrap_or_else(|| unreachable!());
-        let request = PutRequest {
-            bucket: bucket.clone(),
-            object_key: "a".into(),
-            body: bytes::Bytes::from_static(b"one"),
-            metadata: metadata(),
-            condition: Some(Condition::IfAbsent),
-            idempotency_key: Some("put-key".into()),
-        };
-        let first = store
-            .put(request.clone())
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(store.put(request).await, Ok(first));
-        assert_eq!(
-            store
-                .put(PutRequest {
-                    bucket,
-                    object_key: "a".into(),
-                    body: bytes::Bytes::from_static(b"different"),
-                    metadata: metadata(),
-                    condition: Some(Condition::IfAbsent),
-                    idempotency_key: Some("put-key".into()),
-                })
-                .await,
-            Err(ObjectsError::IdempotencyMismatch)
-        );
-    }
-
-    #[tokio::test]
-    async fn listing_pages_remain_fixed_after_mutation() {
-        let store = MemoryObjects::default();
-        let bucket = bucket(&store, "listing").await;
-        put(&store, &bucket, "a", b"one", None).await;
-        put(&store, &bucket, "b", b"two", None).await;
-        let first = store
-            .list(
-                ReadTarget::Bucket(bucket.clone()),
-                "".into(),
-                None,
-                false,
-                1,
-                None,
-            )
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        put(&store, &bucket, "aa", b"later", None).await;
-        let second = store
-            .list(
-                ReadTarget::Bucket(bucket),
-                "".into(),
-                None,
-                false,
-                1,
-                first.continuation,
-            )
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(first.entries[0].object_key, "a");
-        assert_eq!(second.entries[0].object_key, "b");
-    }
-
-    #[tokio::test]
-    async fn snapshots_and_forks_share_a_fixed_view() {
-        let store = MemoryObjects::default();
-        let source = bucket(&store, "source").await;
-        put(&store, &source, "a", b"before", None).await;
-        let snapshot = store
-            .snapshot(source.clone(), None)
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        put(&store, &source, "a", b"after", None).await;
-        let snapshot_ref = snapshot.snapshot.unwrap_or_else(|| unreachable!());
+        ));
         let fork = store
             .fork(
-                ReadTarget::Snapshot(snapshot_ref.clone()),
-                "fork".into(),
-                None,
+                ReadTarget::Snapshot(snapshot.clone()),
+                "fork-bucket".into(),
+                Some("fork".into()),
             )
             .await
-            .unwrap_or_else(|_| unreachable!());
-        let fork_ref = fork.bucket.unwrap_or_else(|| unreachable!());
-        let read = store
-            .get(GetRequest {
-                target: ReadTarget::Bucket(fork_ref),
-                object_key: "a".into(),
-                version_id: None,
-                range: None,
-                if_match: None,
-                if_none_match: None,
-                maximum_bytes: u64::MAX,
-            })
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(read.body.as_ref(), b"before");
+            .unwrap_or_else(|_| unreachable!())
+            .bucket
+            .unwrap_or_else(|| unreachable!());
         assert!(
             store
-                .destroy_snapshot(snapshot_ref, None)
+                .destroy_snapshot(snapshot, Some("destroy-snapshot".into()))
                 .await
-                .unwrap_or_else(|_| unreachable!())
+                .unwrap_or(false)
         );
-    }
-
-    #[tokio::test]
-    async fn multipart_publishes_only_on_exact_completion() {
-        let store = MemoryObjects::default();
-        let bucket = bucket(&store, "multipart").await;
-        let upload = store
-            .create_multipart(bucket.clone(), "a".into(), metadata(), None, None)
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(
+        assert!(matches!(
             store
-                .get(GetRequest {
-                    target: ReadTarget::Bucket(bucket.clone()),
-                    object_key: "a".into(),
-                    version_id: None,
-                    range: None,
-                    if_match: None,
-                    if_none_match: None,
-                    maximum_bytes: u64::MAX
+                .put(PutRequest {
+                    bucket: source.clone(),
+                    object_key: "replacement".into(),
+                    body: bytes::Bytes::from_static(b"def"),
+                    metadata: metadata(),
+                    condition: None,
+                    idempotency_key: None,
                 })
                 .await,
-            Err(ObjectsError::NotFound)
+            Err(ObjectsError::Capacity)
+        ));
+        assert!(
+            store
+                .delete(
+                    fork,
+                    "shared".into(),
+                    Some(version_id),
+                    None,
+                    Some("delete-fork".into()),
+                )
+                .await
+                .is_ok()
         );
-        let part = store
-            .upload_part(
-                bucket.clone(),
-                "a".into(),
-                upload.upload_id.clone(),
-                1,
-                bytes::Bytes::from_static(b"body"),
-                None,
-            )
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        let version = store
-            .complete_multipart(
-                bucket.clone(),
-                "a".into(),
-                upload.upload_id,
-                vec![part],
-                None,
-            )
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(version.size, 4);
-        let read = store
-            .get(GetRequest {
-                target: ReadTarget::Bucket(bucket),
-                object_key: "a".into(),
-                version_id: None,
-                range: None,
-                if_match: None,
-                if_none_match: None,
-                maximum_bytes: u64::MAX,
-            })
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(read.body.as_ref(), b"body");
+        assert!(
+            store
+                .put(PutRequest {
+                    bucket: source,
+                    object_key: "replacement".into(),
+                    body: bytes::Bytes::from_static(b"def"),
+                    metadata: metadata(),
+                    condition: None,
+                    idempotency_key: None,
+                })
+                .await
+                .is_ok()
+        );
     }
 }

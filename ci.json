@@ -19,7 +19,7 @@
       "checkout": "source_history",
       "condition": { "kind": "always" },
       "depends_on": [],
-      "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "bun", "tools"],
+      "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "tools"],
       "reuse": "exact_tree",
       "inputs": [],
       "qualifications": [],
@@ -31,7 +31,7 @@
           "action": {
             "kind": "shell",
             "working_directory": ".",
-            "command": "set -euo pipefail\nbun install --frozen-lockfile\ncargo fmt --all -- --check\ncargo clippy --workspace --all-targets --all-features --locked -- -D warnings\ncargo test --workspace --all-features --locked\nbash scripts/check-inference-package.sh\ncargo run --locked -p acyclic-cli\nbun run test\nbun run licenses\nbunx buf format -d --exit-code\nbunx buf lint\nbunx buf generate\ngit diff --exit-code -- generated\nbun scripts/check-boundaries.mjs\nbun scripts/check-metadata.mjs\nbase=\"${SYSTEM_PULLREQUEST_TARGETBRANCH:-}\"\nif [[ -n \"$base\" ]]; then\n  base=${base#refs/heads/}\n  bunx buf breaking --against \".git#ref=origin/$base\" --exclude-path proto/inference/v1/inference.proto\nfi"
+            "command": "set -euo pipefail\nsource scripts/ensure-bun.sh\nbun install --frozen-lockfile\ncargo fmt --all -- --check\ncargo clippy --workspace --all-targets --all-features --locked -- -D warnings\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs\nbash scripts/check-inference-package.sh\ncargo run --locked -p acyclic-cli\nbun run test\nbun run licenses\nbun x buf format -d --exit-code\nbun x buf lint\nbun run check:generated\nbun scripts/check-boundaries.mjs\nbun scripts/check-metadata.mjs\nbase=\"${SYSTEM_PULLREQUEST_TARGETBRANCH:-}\"\nif [[ -n \"$base\" ]]; then\n  base=${base#refs/heads/}\n  bun x buf breaking --against \".git#ref=origin/$base\" --exclude-path proto/inference/v1/inference.proto --exclude-path proto/filesystem/v1 --exclude-path proto/filesystem/daemon/v1\nfi"
           }
         }
       ],
@@ -94,7 +94,7 @@
       "checkout": "source",
       "condition": { "kind": "always" },
       "depends_on": [],
-      "caches": ["rustup", "cargo_registry", "cargo_git", "compiler"],
+      "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "tools"],
       "reuse": "exact_tree",
       "inputs": [],
       "qualifications": [],
@@ -106,7 +106,7 @@
           "action": {
             "kind": "shell",
             "working_directory": ".",
-            "command": "if ! command -v cc >/dev/null || ! pkg-config --exists fuse3; then sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libfuse3-dev; fi\ncargo test --workspace --all-features --locked"
+            "command": "set -euo pipefail\nsource scripts/ensure-bun.sh\nif ! command -v cc >/dev/null || ! pkg-config --exists fuse3; then sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libfuse3-dev; fi\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs"
           }
         }
       ],
@@ -119,7 +119,7 @@
       "checkout": "source",
       "condition": { "kind": "always" },
       "depends_on": [],
-      "caches": ["rustup", "cargo_registry", "cargo_git", "compiler"],
+      "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "tools"],
       "reuse": "exact_tree",
       "inputs": [],
       "qualifications": [],
@@ -131,7 +131,7 @@
           "action": {
             "kind": "shell",
             "working_directory": ".",
-            "command": "cargo test --workspace --all-features --locked\nrustup target add aarch64-pc-windows-msvc\ncargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked"
+            "command": ". .\\scripts\\ensure-bun.ps1\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib native_mount::adapter::tests::writable_projfs_captures_closes_renames_links_and_deletes -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs\nrustup target add aarch64-pc-windows-msvc\ncargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked"
           }
         }
       ],
@@ -144,7 +144,7 @@
       "checkout": "source",
       "condition": { "kind": "always" },
       "depends_on": [],
-      "caches": ["rustup", "cargo_registry", "cargo_git", "compiler"],
+      "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "tools"],
       "reuse": "exact_tree",
       "inputs": [],
       "qualifications": [],
@@ -156,7 +156,7 @@
           "action": {
             "kind": "shell",
             "working_directory": ".",
-            "command": "cargo test -p acyclic-fs --no-default-features --features local,memory,native-watch,native-executor --locked\ncargo test -p acyclic-harness -p inference-sdk -p acyclic-machines -p acyclic-objects -p acyclic-stream --locked\nrustup target add x86_64-apple-darwin\ncargo check -p acyclic-fs --no-default-features --features local,memory,native-watch,native-executor --target x86_64-apple-darwin --locked"
+            "command": "set -euo pipefail\nsource scripts/ensure-bun.sh\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs\nrustup target add x86_64-apple-darwin\ncargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target x86_64-apple-darwin --locked"
           }
         }
       ],

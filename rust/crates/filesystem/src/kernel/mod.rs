@@ -72,6 +72,8 @@ pub use checkpoint::{
     CheckpointError, CheckpointFailure, CheckpointReceipt, CheckpointRequest, build_checkpoint,
     build_checkpoint_async,
 };
+#[cfg(feature = "s3-http")]
+pub(crate) use closure::prove_blob_closure_async;
 pub use closure::{
     ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure,
     prove_generation_closure_async,

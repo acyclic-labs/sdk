@@ -24,8 +24,10 @@ pub struct S3ListOptions {
     pub prefix: String,
     /// Either no delimiter or the S3 path delimiter `/`.
     pub delimiter: Option<char>,
-    /// Return keys strictly after this prior key or common prefix.
-    pub after: Option<String>,
+    /// Initial exclusive key marker. Ignored after a continuation is supplied.
+    pub start_after: Option<String>,
+    /// Opaque immutable-generation continuation returned by a prior page.
+    pub continuation: Option<S3ListCursor>,
     /// Maximum combined objects and common prefixes returned.
     pub maximum_keys: u32,
     /// Hard authenticated namespace entries examined by this request.
@@ -37,7 +39,8 @@ impl Default for S3ListOptions {
         Self {
             prefix: String::new(),
             delimiter: Some('/'),
-            after: None,
+            start_after: None,
+            continuation: None,
             maximum_keys: 1_000,
             maximum_entries_examined: 100_000,
         }
@@ -65,10 +68,59 @@ pub struct S3List {
     pub objects: Vec<S3Object>,
     /// Delimiter-collapsed prefixes selected in bytewise key order.
     pub common_prefixes: Vec<String>,
-    /// Last returned key/prefix when more matching results exist.
-    pub next_after: Option<String>,
+    /// Immutable-generation continuation when more matching results exist.
+    pub next_continuation: Option<S3ListCursor>,
     /// Exact authenticated namespace entries examined.
     pub entries_examined: u32,
+}
+
+/// Opaque stable S3 listing continuation bound to one generation and query.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct S3ListCursor {
+    generation: crate::GenerationId,
+    after: String,
+    query: crate::Digest,
+}
+
+impl S3ListCursor {
+    /// Encodes this cursor for an S3 continuation-token field.
+    #[must_use]
+    pub fn encode(&self) -> String {
+        format!(
+            "v1.{}.{}.{}",
+            hex::encode(self.generation.digest().into_bytes()),
+            hex::encode(self.query.into_bytes()),
+            hex::encode(self.after.as_bytes())
+        )
+    }
+
+    /// Decodes one bounded canonical continuation token.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed versions, identities, UTF-8, and oversized markers.
+    pub fn decode(token: &str, maximum_key_bytes: u32) -> Result<Self, S3Error> {
+        let mut fields = token.split('.');
+        if fields.next() != Some("v1") {
+            return Err(S3Error::InvalidContinuation);
+        }
+        let generation = decode_fixed::<32>(fields.next())?;
+        let query = decode_fixed::<32>(fields.next())?;
+        let after = fields.next().ok_or(S3Error::InvalidContinuation)?;
+        if fields.next().is_some() || after.len() > maximum_key_bytes as usize * 2 {
+            return Err(S3Error::InvalidContinuation);
+        }
+        let after = hex::decode(after).map_err(|_| S3Error::InvalidContinuation)?;
+        let after = String::from_utf8(after).map_err(|_| S3Error::InvalidContinuation)?;
+        if after.len() > maximum_key_bytes as usize {
+            return Err(S3Error::InvalidContinuation);
+        }
+        Ok(Self {
+            generation: crate::GenerationId::new(crate::Digest::from_bytes(generation)),
+            after,
+            query: crate::Digest::from_bytes(query),
+        })
+    }
 }
 
 /// A zero-state S3 mapping over one workspace.
@@ -151,6 +203,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     /// Rejects invalid keys, absent/non-regular paths, and backend failures.
     pub async fn head_object(&self, key: &str) -> Result<S3ObjectHead, S3Error> {
         let generation = self.workspace.head().await?;
+        self.head_object_in(generation, key).await
+    }
+
+    /// Reads object metadata from one exact immutable generation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign generation, invalid key, absent/non-regular path, or backend failure.
+    pub async fn head_object_at(
+        &self,
+        generation: &crate::Generation<A, O>,
+        key: &str,
+    ) -> Result<S3ObjectHead, S3Error> {
+        if generation.workspace_id() != self.workspace.id() {
+            return Err(S3Error::ForeignGeneration);
+        }
+        self.head_object_in(generation.clone(), key).await
+    }
+
+    async fn head_object_in(
+        &self,
+        generation: crate::Generation<A, O>,
+        key: &str,
+    ) -> Result<S3ObjectHead, S3Error> {
         let mut checkout = self
             .workspace
             .engine_checkout(
@@ -194,6 +270,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     /// Returns key, range, kind, authentication, or storage failures.
     pub async fn get_object_range(&self, key: &str, range: ByteRange) -> Result<Bytes, S3Error> {
         let generation = self.workspace.head().await?;
+        self.get_object_range_in(generation, key, range).await
+    }
+
+    /// Reads one exact byte range from one immutable generation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign generation, invalid key/range, or authenticated storage failure.
+    pub async fn get_object_range_at(
+        &self,
+        generation: &crate::Generation<A, O>,
+        key: &str,
+        range: ByteRange,
+    ) -> Result<Bytes, S3Error> {
+        if generation.workspace_id() != self.workspace.id() {
+            return Err(S3Error::ForeignGeneration);
+        }
+        self.get_object_range_in(generation.clone(), key, range)
+            .await
+    }
+
+    async fn get_object_range_in(
+        &self,
+        generation: crate::Generation<A, O>,
+        key: &str,
+        range: ByteRange,
+    ) -> Result<Bytes, S3Error> {
         let mut checkout = self
             .workspace
             .engine_checkout(
@@ -295,8 +398,45 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     /// Returns malformed options, unsupported names, work exhaustion, or
     /// authenticated storage failures.
     pub async fn list_objects(&self, options: S3ListOptions) -> Result<S3List, S3Error> {
+        self.list_objects_in(None, options).await
+    }
+
+    /// Lists from one exact immutable generation with stable continuation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign generation, malformed options/cursors, exhausted work, or storage failure.
+    pub async fn list_objects_at(
+        &self,
+        generation: &crate::Generation<A, O>,
+        options: S3ListOptions,
+    ) -> Result<S3List, S3Error> {
+        if generation.workspace_id() != self.workspace.id() {
+            return Err(S3Error::ForeignGeneration);
+        }
+        self.list_objects_in(Some(generation.clone()), options)
+            .await
+    }
+
+    async fn list_objects_in(
+        &self,
+        selected: Option<crate::Generation<A, O>>,
+        options: S3ListOptions,
+    ) -> Result<S3List, S3Error> {
         validate_list_options(&options)?;
-        let generation = self.workspace.head().await?;
+        let query = list_query_digest(&options);
+        let generation = match options.continuation.as_ref() {
+            Some(cursor) => {
+                if cursor.query != query {
+                    return Err(S3Error::InvalidContinuation);
+                }
+                self.workspace.generation(cursor.generation).await?
+            }
+            None => match selected {
+                Some(generation) => generation,
+                None => self.workspace.head().await?,
+            },
+        };
         let mut checkout = self
             .workspace
             .engine_checkout(
@@ -389,7 +529,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
                 }
             }
         }
-        finish_list(objects, prefixes, options.maximum_keys, examined)
+        finish_list(
+            objects,
+            prefixes,
+            options.maximum_keys,
+            examined,
+            generation.id(),
+            query,
+        )
     }
 }
 
@@ -397,7 +544,7 @@ fn empty_list() -> S3List {
     S3List {
         objects: Vec::new(),
         common_prefixes: Vec::new(),
-        next_after: None,
+        next_continuation: None,
         entries_examined: 0,
     }
 }
@@ -407,6 +554,8 @@ fn finish_list(
     mut prefixes: BTreeSet<String>,
     maximum_keys: u32,
     entries_examined: u32,
+    generation: crate::GenerationId,
+    query: crate::Digest,
 ) -> Result<S3List, S3Error> {
     let mut combined = objects
         .keys()
@@ -423,8 +572,14 @@ fn finish_list(
     Ok(S3List {
         objects: objects.into_values().collect(),
         common_prefixes: prefixes.into_iter().collect(),
-        next_after: has_more
-            .then(|| combined.last().map(|(key, _)| key.clone()))
+        next_continuation: has_more
+            .then(|| {
+                combined.last().map(|(key, _)| S3ListCursor {
+                    generation,
+                    after: key.clone(),
+                    query,
+                })
+            })
             .flatten(),
         entries_examined,
     })
@@ -527,12 +682,12 @@ enum SelectedKey {
 }
 
 fn select_key(key: &str, options: &S3ListOptions) -> Option<SelectedKey> {
-    if !key.starts_with(&options.prefix)
-        || options
-            .after
-            .as_ref()
-            .is_some_and(|after| key <= after.as_str())
-    {
+    let after = options
+        .continuation
+        .as_ref()
+        .map(|cursor| cursor.after.as_str())
+        .or(options.start_after.as_deref());
+    if !key.starts_with(&options.prefix) || after.is_some_and(|after| key <= after) {
         return None;
     }
     let remainder = &key[options.prefix.len()..];
@@ -548,6 +703,24 @@ fn select_key(key: &str, options: &S3ListOptions) -> Option<SelectedKey> {
     Some(SelectedKey::Object)
 }
 
+fn list_query_digest(options: &S3ListOptions) -> crate::Digest {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"acyclic-fs-s3-list-query-v1\0");
+    hasher.update(&(options.prefix.len() as u64).to_le_bytes());
+    hasher.update(options.prefix.as_bytes());
+    hasher.update(&[options.delimiter.map_or(0, |value| value as u8)]);
+    crate::Digest::from_bytes(*hasher.finalize().as_bytes())
+}
+
+fn decode_fixed<const N: usize>(value: Option<&str>) -> Result<[u8; N], S3Error> {
+    let value = value.ok_or(S3Error::InvalidContinuation)?;
+    if value.len() != N * 2 {
+        return Err(S3Error::InvalidContinuation);
+    }
+    let decoded = hex::decode(value).map_err(|_| S3Error::InvalidContinuation)?;
+    decoded.try_into().map_err(|_| S3Error::InvalidContinuation)
+}
+
 fn validate_list_options(options: &S3ListOptions) -> Result<(), S3Error> {
     if options.maximum_keys == 0 || options.maximum_entries_examined == 0 {
         return Err(S3Error::InvalidRequest("list bounds must be positive"));
@@ -558,10 +731,17 @@ fn validate_list_options(options: &S3ListOptions) -> Result<(), S3Error> {
     if options.prefix.starts_with('/') || options.prefix.contains("//") {
         return Err(S3Error::InvalidKey);
     }
+    if options
+        .start_after
+        .as_ref()
+        .is_some_and(|value| value.len() > 32 * 1024)
+    {
+        return Err(S3Error::InvalidRequest("start marker is too large"));
+    }
     Ok(())
 }
 
-async fn create_parent_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(crate) async fn create_parent_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     transaction: &mut crate::Transaction<A, O>,
     key: &str,
 ) -> Result<(), S3Error> {
@@ -648,6 +828,12 @@ pub enum S3Error {
     /// Multipart completion referenced an absent part.
     #[error("S3 multipart part {0} is absent")]
     MissingPart(u32),
+    /// An exact-generation view was supplied for another workspace.
+    #[error("S3 generation belongs to another workspace")]
+    ForeignGeneration,
+    /// Listing continuation is malformed or belongs to another query.
+    #[error("invalid S3 listing continuation")]
+    InvalidContinuation,
 }
 
 #[cfg(test)]
@@ -740,9 +926,23 @@ mod tests {
             ..S3ListOptions::default()
         }))
         .await?;
-        assert_eq!(first.next_after.as_deref(), Some("b"));
+        assert_eq!(
+            first
+                .next_continuation
+                .as_ref()
+                .map(|cursor| cursor.after.as_str()),
+            Some("b")
+        );
+        let token = first
+            .next_continuation
+            .as_ref()
+            .ok_or("first listing page has no continuation")?
+            .encode();
+        let continuation = S3ListCursor::decode(&token, 32 * 1024)?;
+        s3.put_object("aa", Bytes::from_static(b"new"), IdempotencyKey::new())
+            .await?;
         let second = Box::pin(s3.list_objects(S3ListOptions {
-            after: first.next_after,
+            continuation: Some(continuation),
             ..S3ListOptions::default()
         }))
         .await?;
@@ -754,6 +954,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["c"]
         );
+        assert!(matches!(
+            S3ListCursor::decode("v1.invalid", 32 * 1024),
+            Err(S3Error::InvalidContinuation)
+        ));
+        assert!(matches!(
+            Box::pin(s3.list_objects(S3ListOptions {
+                prefix: "different".to_owned(),
+                continuation: first.next_continuation,
+                ..S3ListOptions::default()
+            }))
+            .await,
+            Err(S3Error::InvalidContinuation)
+        ));
         assert!(matches!(
             Box::pin(s3.list_objects(S3ListOptions {
                 maximum_entries_examined: 1,

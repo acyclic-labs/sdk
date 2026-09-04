@@ -1,79 +1,51 @@
-//! Builds the reviewed high-level FUSE-T bridge on macOS only.
+//! Generates transport from the committed descriptor and builds the Darwin bridge.
+
+use prost::Message;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let descriptors = prost_types::FileDescriptorSet::decode(
+        include_bytes!("src/generated/acyclic-filesystem-v2.bin").as_slice(),
+    )?;
+    let mut prost = tonic_prost_build::Config::new();
+    prost.extern_path(".acyclic.harness.v1", "crate::wire::harness::v1");
+    tonic_prost_build::configure()
+        .build_client(true)
+        .build_server(true)
+        .compile_fds_with_config(descriptors, prost)?;
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/generated/acyclic-filesystem-v2.bin");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_NATIVE_MOUNT");
 
-    if std::env::var_os("CARGO_FEATURE_NATIVE_MOUNT").is_none() {
-        return Ok(());
-    }
-
-    println!("cargo:rerun-if-changed=src/native_mount/fuse_t_bridge.c");
-
     #[cfg(target_os = "macos")]
-    if let Err(error) = build_fuse_t_bridge() {
-        return Err(std::io::Error::other(format!(
-            "FUSE-T libfuse3 development package is required on macOS: {error}"
-        ))
-        .into());
+    if std::env::var_os("CARGO_FEATURE_NATIVE_MOUNT").is_some() {
+        build_darwin_mount();
     }
-
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn build_fuse_t_bridge() -> Result<(), String> {
-    use std::path::PathBuf;
-
-    // FUSE-T versions its pkg-config package after the bridge release (for
-    // example 1.2.7), not after the compatible libfuse ABI (3.x).
-    println!("cargo:rerun-if-env-changed=FUSE_T_PREFIX");
-    let (include_paths, library_paths) = match pkg_config::Config::new()
-        .cargo_metadata(false)
-        .probe("fuse3")
-    {
-        Ok(library) => (library.include_paths, library.link_paths),
-        Err(probe_error) => {
-            let prefix = std::env::var_os("FUSE_T_PREFIX")
-                .map_or_else(|| PathBuf::from("/usr/local"), PathBuf::from);
-            let include = prefix.join("include/fuse3");
-            let library = prefix.join("lib");
-            if !include.join("fuse.h").is_file() || !library.join("libfuse3.a").is_file() {
-                return Err(format!(
-                    "pkg-config failed ({probe_error}); verified FUSE-T headers and static library are absent below {}",
-                    prefix.display()
-                ));
-            }
-            (vec![include], vec![library])
-        }
-    };
-    let static_library = library_paths
-        .iter()
-        .find(|path| path.join("libfuse3.a").is_file())
-        .ok_or_else(|| "FUSE-T did not provide the required static libfuse3 archive".to_owned())?;
-    emit_static_fuse_t_link(static_library)?;
-    let mut build = cc::Build::new();
-    build.file("src/native_mount/fuse_t_bridge.c");
-    for include in include_paths {
-        build.include(include);
+fn build_darwin_mount() {
+    const SOURCES: &[&str] = &[
+        "vendor/darwinfuse/src/nfs4_xdr.c",
+        "vendor/darwinfuse/src/rpc.c",
+        "vendor/darwinfuse/src/nfs4_server.c",
+        "vendor/darwinfuse/src/nfs4_ops.c",
+        "vendor/darwinfuse/src/inode_table.c",
+        "vendor/darwinfuse/src/fuse_opt.c",
+        "vendor/darwinfuse/src/darwinfuse.c",
+        "src/native_mount/darwin_mount_bridge.c",
+    ];
+    println!("cargo:rerun-if-changed=vendor/darwinfuse/LICENSE");
+    for source in SOURCES {
+        println!("cargo:rerun-if-changed={source}");
     }
-    build.flag_if_supported("-std=c11");
-    build.warnings(true);
-    build.compile("acyclic_fs_fuse_t_bridge");
-    // The static archive makes every final consumer binary independent of
-    // Cargo's DYLD_LIBRARY_PATH and mutable machine-global loader paths. Its
-    // constructor uses DiskArbitration, so declare the required frameworks.
-    println!("cargo:rustc-link-lib=framework=CoreFoundation");
-    println!("cargo:rustc-link-lib=framework=DiskArbitration");
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn emit_static_fuse_t_link(library: &std::path::Path) -> Result<(), String> {
-    let encoded = library
-        .to_str()
-        .ok_or_else(|| "FUSE-T library path is not UTF-8".to_owned())?;
-    println!("cargo:rustc-link-search=native={encoded}");
-    println!("cargo:rustc-link-lib=static=fuse3");
-    Ok(())
+    cc::Build::new()
+        .files(SOURCES)
+        .include("vendor/darwinfuse/include")
+        .include("vendor/darwinfuse/src")
+        .define("_FILE_OFFSET_BITS", "64")
+        .flag_if_supported("-std=c11")
+        .flag_if_supported("-Wno-unused-parameter")
+        .warnings(true)
+        .compile("acyclic_fs_darwin_mount");
 }

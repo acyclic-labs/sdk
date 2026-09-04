@@ -1,4 +1,5 @@
 /target/
+/.tools/
 node_modules/
 /typescript/packages/*/dist/
 *.tsbuildinfo

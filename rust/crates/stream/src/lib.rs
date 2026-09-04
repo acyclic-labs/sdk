@@ -13,6 +13,8 @@ pub mod grpc;
 #[cfg(feature = "local")]
 mod local;
 mod memory;
+#[cfg(any(feature = "grpc", feature = "local"))]
+mod wire_codec;
 
 /// Generated canonical Stream v2 protocol.
 #[allow(missing_docs)]

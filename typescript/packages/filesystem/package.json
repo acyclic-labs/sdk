@@ -1,6 +1,6 @@
 {
   "name": "@acyclic/fs",
-  "version": "0.1.0-rc.1",
+  "version": "0.2.0-rc.1",
   "license": "Apache-2.0",
   "private": false,
   "type": "module",
@@ -30,13 +30,21 @@
     }
   },
   "scripts": {
-    "build": "bunx tsc -p tsconfig.json",
+    "build:proto": "cd ../../.. && bun x buf format --diff --exit-code --path proto/filesystem/v2 --path proto/filesystem/daemon/v2 && bun x buf lint && bun run generate",
+    "clean": "bun -e \"import { rmSync } from 'node:fs'; for (const path of ['dist', 'tsconfig.tsbuildinfo']) rmSync(path, { recursive: true, force: true })\"",
+    "build": "bun x tsc -p tsconfig.json",
+    "build:clean": "bun run clean && bun run build",
     "build:wasm": "cargo build --manifest-path ../../../Cargo.toml -p acyclic-fs-wasm --target wasm32-unknown-unknown --profile wasm-release --locked && wasm-bindgen ../../../target/wasm32-unknown-unknown/wasm-release/acyclic_fs_wasm.wasm --target web --out-dir generated/wasm --out-name acyclic_fs_wasm",
-    "check": "bunx tsc -p tsconfig.json --noEmit",
+    "check": "bun x tsc -p tsconfig.json --noEmit",
     "test": "bun run test:composition && bun run test:hosted",
     "test:composition": "bun test/node-memory.mjs",
     "test:hosted": "cargo build --manifest-path ../../../Cargo.toml -p acyclic-fs-daemon --locked && bun test/hosted.mjs",
-    "pack:dry": "bun pm pack --dry-run"
+    "pack:dry": "bun run build:clean && bun pm pack --dry-run"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.14.1",
+    "@connectrpc/connect": "2.1.1",
+    "@connectrpc/connect-web": "2.1.1"
   },
   "devDependencies": {
     "@types/node": "26.4.1",

@@ -49,20 +49,20 @@
     {
       "sourceRepository": "https://github.com/acyclic-labs/fs",
       "sourceCommit": "e45723e9d4cf3c0caa364800060ecd916d5da648",
-      "sourcePath": "crates/napi",
-      "destinationPath": "rust/crates/filesystem-napi",
-      "license": "Apache-2.0",
-      "auditResult": "approved",
-      "reviewer": "Acyclic Labs Filesystem canonical ownership migration"
-    },
-    {
-      "sourceRepository": "https://github.com/acyclic-labs/fs",
-      "sourceCommit": "e45723e9d4cf3c0caa364800060ecd916d5da648",
       "sourcePath": "packages/fs",
       "destinationPath": "typescript/packages/filesystem",
       "license": "Apache-2.0",
       "auditResult": "approved",
       "reviewer": "Acyclic Labs Filesystem canonical ownership migration"
+    },
+    {
+      "sourceRepository": "https://github.com/marcelcotta/DarwinFUSE",
+      "sourceCommit": "3026545a74084c006205fd43610904fb5d8a769b",
+      "sourcePath": "include and src",
+      "destinationPath": "rust/crates/filesystem/vendor/darwinfuse",
+      "license": "MIT",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs self-contained macOS mount transport audit"
     }
   ],
   "references": [

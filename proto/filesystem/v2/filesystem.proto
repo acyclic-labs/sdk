@@ -1,0 +1,637 @@
+syntax = "proto3";
+package acyclic.filesystem.v2;
+
+import "harness/v1/harness.proto";
+
+option go_package = "github.com/acyclic-labs/sdk/go/gen/filesystem/v2;filesystemv2";
+
+// Public Filesystem is generation-exact and bounded. Physical pages, provider
+// credentials, placement, and backing Stream/Object topology never cross it.
+
+message WorkspaceRef {
+  bytes workspace_id = 1;
+  string name = 2;
+}
+message GenerationRef {
+  WorkspaceRef workspace = 1;
+  bytes generation_id = 2;
+}
+message OperationOptions {
+  bytes idempotency_key = 1;
+}
+message PageOptions {
+  uint32 maximum_items = 1;
+  LogicalName after = 2;
+}
+message ByteRange {
+  uint64 offset = 1;
+  uint64 length = 2;
+}
+
+enum FilesystemProfile {
+  FILESYSTEM_PROFILE_UNSPECIFIED = 0;
+  FILESYSTEM_PROFILE_PORTABLE = 1;
+  FILESYSTEM_PROFILE_POSIX = 2;
+  FILESYSTEM_PROFILE_WINDOWS = 3;
+  FILESYSTEM_PROFILE_BROWSER = 4;
+}
+
+enum FileKind {
+  FILE_KIND_UNSPECIFIED = 0;
+  FILE_KIND_REGULAR = 1;
+  FILE_KIND_DIRECTORY = 2;
+  FILE_KIND_SYMBOLIC_LINK = 3;
+  FILE_KIND_FIFO = 4;
+  FILE_KIND_SOCKET = 5;
+  FILE_KIND_CHARACTER_DEVICE = 6;
+  FILE_KIND_BLOCK_DEVICE = 7;
+  FILE_KIND_REPARSE_POINT = 8;
+  FILE_KIND_MOUNT_BOUNDARY = 9;
+}
+
+enum MutationStatus {
+  MUTATION_STATUS_UNSPECIFIED = 0;
+  MUTATION_STATUS_COMMITTED = 1;
+  MUTATION_STATUS_ALREADY_COMMITTED = 2;
+  MUTATION_STATUS_CONFLICT = 3;
+  MUTATION_STATUS_FENCED = 4;
+  MUTATION_STATUS_IDEMPOTENCY_CONFLICT = 5;
+  MUTATION_STATUS_INDETERMINATE = 6;
+}
+
+enum JoinHistory {
+  JOIN_HISTORY_UNSPECIFIED = 0;
+  JOIN_HISTORY_MERGE = 1;
+  JOIN_HISTORY_REBASE = 2;
+  JOIN_HISTORY_SQUASH = 3;
+  JOIN_HISTORY_CHERRY_PICK = 4;
+}
+
+enum ConflictUse {
+  CONFLICT_USE_UNSPECIFIED = 0;
+  CONFLICT_USE_OBSERVATION = 1;
+  CONFLICT_USE_MUTATION = 2;
+  CONFLICT_USE_OBSERVATION_AND_MUTATION = 3;
+}
+
+enum SparseTarget {
+  SPARSE_TARGET_UNSPECIFIED = 0;
+  SPARSE_TARGET_DATA = 1;
+  SPARSE_TARGET_HOLE = 2;
+}
+
+message OptionalU32 {
+  oneof value {
+    uint32 present = 1;
+    bool unavailable = 2;
+  }
+}
+message OptionalU64 {
+  oneof value {
+    uint64 present = 1;
+    bool unavailable = 2;
+  }
+}
+message OptionalI64 {
+  oneof value {
+    sint64 present = 1;
+    bool unavailable = 2;
+  }
+}
+
+message Metadata {
+  OptionalU32 posix_mode = 1;
+  OptionalU32 posix_uid = 2;
+  OptionalU32 posix_gid = 3;
+  OptionalU64 posix_flags = 4;
+  OptionalU32 windows_attributes = 5;
+  OptionalI64 created_ns = 6;
+  OptionalI64 modified_ns = 7;
+  OptionalI64 accessed_ns = 8;
+  OptionalI64 changed_ns = 9;
+  bool has_named_attributes = 10;
+  bool has_acl = 11;
+  bool has_security_descriptor = 12;
+}
+
+message FileStat {
+  bytes file_id = 1;
+  FileKind kind = 2;
+  uint64 link_count = 3;
+  OptionalU64 logical_bytes = 4;
+  Metadata metadata = 5;
+}
+
+message DirectoryEntry {
+  LogicalName name = 1;
+  FileStat stat = 2;
+}
+message DirectoryPage {
+  repeated DirectoryEntry entries = 1;
+  LogicalName next = 2;
+}
+
+enum ExtentKind {
+  EXTENT_KIND_UNSPECIFIED = 0;
+  EXTENT_KIND_HOLE = 1;
+  EXTENT_KIND_ALLOCATED_ZERO = 2;
+  EXTENT_KIND_CONTENT = 3;
+}
+message Extent {
+  ByteRange range = 1;
+  ExtentKind kind = 2;
+}
+
+message Capabilities {
+  string contract_version = 1;
+  repeated FilesystemProfile profiles = 2;
+  uint64 maximum_request_bytes = 3;
+  uint64 maximum_response_bytes = 4;
+  uint32 maximum_transaction_mutations = 5;
+  uint32 maximum_page_items = 6;
+  bool native_mount_credentials = 7;
+  bool s3_credentials = 8;
+  bool source_reconciliation = 9;
+}
+
+message Workspace {
+  WorkspaceRef workspace = 1;
+  string name = 2;
+  FilesystemProfile profile = 3;
+  GenerationRef head = 4;
+  bool deleted = 5;
+}
+
+message HandshakeRequest {
+  acyclic.harness.v1.HandshakeRequest harness = 1;
+}
+message HandshakeResponse {
+  acyclic.harness.v1.HandshakeResponse harness = 1;
+  Capabilities capabilities = 2;
+}
+message CreateWorkspaceRequest {
+  string name = 1;
+  FilesystemProfile profile = 2;
+  OperationOptions operation = 3;
+}
+message OpenWorkspaceRequest {
+  oneof selector {
+    WorkspaceRef workspace = 1;
+    string name = 2;
+  }
+}
+message WorkspaceResponse {
+  Workspace workspace = 1;
+  MutationStatus status = 2;
+}
+message DeleteWorkspaceRequest {
+  WorkspaceRef workspace = 1;
+  OperationOptions operation = 2;
+}
+message MutationResponse {
+  MutationStatus status = 1;
+  GenerationRef generation = 2;
+  GenerationRef actual_head = 3;
+  repeated Conflict conflicts = 4;
+  bool truncated = 5;
+}
+
+message GetHeadRequest {
+  WorkspaceRef workspace = 1;
+}
+message GetGenerationRequest {
+  GenerationRef generation = 1;
+}
+message GenerationResponse {
+  GenerationRef generation = 1;
+  repeated GenerationRef parents = 2;
+}
+message ReadRequest {
+  GenerationRef generation = 1;
+  string path = 2;
+  ByteRange range = 3;
+  uint64 maximum_bytes = 4;
+}
+message ReadResponse {
+  bytes contents = 1;
+}
+message StatRequest {
+  GenerationRef generation = 1;
+  string path = 2;
+}
+message StatResponse {
+  FileStat stat = 1;
+}
+message ListDirectoryRequest {
+  GenerationRef generation = 1;
+  string path = 2;
+  PageOptions page = 3;
+}
+message ListDirectoryResponse {
+  DirectoryPage page = 1;
+}
+message ReadLinkRequest {
+  GenerationRef generation = 1;
+  string path = 2;
+  uint64 maximum_bytes = 3;
+}
+message PlanExtentsRequest {
+  GenerationRef generation = 1;
+  string path = 2;
+  ByteRange range = 3;
+  uint32 maximum_extents = 4;
+}
+message PlanExtentsResponse {
+  repeated Extent extents = 1;
+  bool truncated = 2;
+}
+
+message CreateFile {
+  string path = 1;
+  bytes contents = 2;
+  Metadata metadata = 3;
+}
+message CreateDirectory {
+  string path = 1;
+  Metadata metadata = 2;
+}
+message CreateSymbolicLink {
+  string path = 1;
+  bytes target = 2;
+  Metadata metadata = 3;
+}
+message Remove {
+  string path = 1;
+}
+message Rename {
+  string source = 1;
+  string destination = 2;
+  bool replace = 3;
+}
+message HardLink {
+  string source = 1;
+  string destination = 2;
+}
+message Write {
+  string path = 1;
+  uint64 offset = 2;
+  bytes contents = 3;
+}
+message Resize {
+  string path = 1;
+  uint64 logical_bytes = 2;
+}
+message ZeroRange {
+  string path = 1;
+  ByteRange range = 2;
+  bool allocated = 3;
+  bool extend = 4;
+}
+message Preallocate {
+  string path = 1;
+  ByteRange range = 2;
+  bool keep_size = 3;
+}
+message CloneRange {
+  string source = 1;
+  uint64 source_offset = 2;
+  string destination = 3;
+  uint64 destination_offset = 4;
+  uint64 length = 5;
+}
+message SetMetadata {
+  string path = 1;
+  Metadata metadata = 2;
+}
+message CreateDirectories {
+  string path = 1;
+}
+message PutFile {
+  string path = 1;
+  bytes contents = 2;
+}
+message CopyFile {
+  string source = 1;
+  string destination = 2;
+}
+message Mutation {
+  oneof mutation {
+    CreateFile create_file = 1;
+    CreateDirectory create_directory = 2;
+    CreateSymbolicLink create_symbolic_link = 3;
+    Remove remove = 4;
+    Rename rename = 5;
+    HardLink hard_link = 6;
+    Write write = 7;
+    Resize resize = 8;
+    ZeroRange zero_range = 9;
+    Preallocate preallocate = 10;
+    CloneRange clone_range = 11;
+    SetMetadata set_metadata = 12;
+    CreateDirectories create_directories = 13;
+    PutFile put_file = 14;
+    CopyFile copy_file = 15;
+  }
+}
+message ApplyTransactionRequest {
+  // Exact immutable base observed by the caller. Independent head changes are
+  // rebased from this state; dependency overlap is returned as conflicts.
+  GenerationRef base = 1;
+  repeated Mutation mutations = 2;
+  OperationOptions operation = 3;
+  uint32 maximum_conflicts = 4;
+}
+message RebaseTransactionRequest {
+  GenerationRef base = 1;
+  repeated Mutation mutations = 2;
+  uint32 maximum_conflicts = 3;
+  OperationOptions operation = 4;
+}
+message RebaseTransactionResponse {
+  GenerationRef base = 1;
+  repeated Conflict conflicts = 2;
+  bool truncated = 3;
+}
+
+message ForkWorkspaceRequest {
+  GenerationRef source = 1;
+  string destination_name = 2;
+  OperationOptions operation = 3;
+}
+message DiffRequest {
+  GenerationRef from = 1;
+  GenerationRef to = 2;
+  uint32 maximum_changes = 3;
+}
+enum NameEncoding {
+  NAME_ENCODING_UNSPECIFIED = 0;
+  NAME_ENCODING_UTF8 = 1;
+  NAME_ENCODING_POSIX_BYTES = 2;
+  NAME_ENCODING_WINDOWS_UTF16LE = 3;
+}
+message LogicalName {
+  NameEncoding encoding = 1;
+  bytes bytes = 2;
+}
+message FileRecordSnapshot {
+  bytes file_id = 1;
+  FileKind file_kind = 2;
+  uint64 link_count = 3;
+  bytes metadata_object = 4;
+  string payload_kind = 5;
+  OptionalU64 logical_bytes = 6;
+  bytes payload_object = 7;
+  bytes inline_bytes = 8;
+  OptionalU32 device_major = 9;
+  OptionalU32 device_minor = 10;
+}
+message FileRecordChange {
+  bytes file_id = 1;
+  FileRecordSnapshot before = 2;
+  FileRecordSnapshot after = 3;
+}
+message TreeEntrySnapshot {
+  LogicalName name = 1;
+  bytes file_id = 2;
+  FileKind file_kind = 3;
+}
+message DirectoryBindingChange {
+  bytes directory_id = 1;
+  LogicalName name = 2;
+  TreeEntrySnapshot before = 3;
+  TreeEntrySnapshot after = 4;
+}
+message WorkCounters {
+  uint64 authority_records_read = 1;
+  uint64 authority_records_appended = 2;
+  uint64 authority_bytes_read = 3;
+  uint64 authority_bytes_written = 4;
+  uint64 object_probes = 5;
+  uint64 backend_read_operations = 6;
+  uint64 backend_write_operations = 7;
+  uint64 durability_operations = 8;
+  uint64 page_reads = 9;
+  uint64 page_writes = 10;
+  uint64 object_bytes_read = 11;
+  uint64 object_bytes_written = 12;
+  uint64 bytes_hashed = 13;
+  uint64 bytes_copied = 14;
+  uint64 bytes_encoded = 15;
+  uint64 source_bytes_read = 16;
+  uint64 output_bytes = 17;
+  uint64 items_examined = 18;
+  uint64 items_returned = 19;
+  uint64 allocation_operations = 20;
+  uint64 peak_allocation_bytes = 21;
+  uint64 materializations = 22;
+}
+message DiffResponse {
+  GenerationRef from = 1;
+  GenerationRef to = 2;
+  repeated FileRecordChange files = 3;
+  repeated DirectoryBindingChange bindings = 4;
+  bool truncated = 5;
+  WorkCounters work = 6;
+}
+message RebaseRequest {
+  WorkspaceRef workspace = 1;
+  reserved 2;
+  uint32 maximum_conflicts = 3;
+  OperationOptions operation = 4;
+  uint32 maximum_generations = 5;
+  uint32 maximum_changes = 6;
+}
+message FileConflict {
+  bytes file_id = 1;
+}
+message ContentConflict {
+  bytes file_id = 1;
+  ByteRange range = 2;
+}
+message SparseConflict {
+  bytes file_id = 1;
+  uint64 offset = 2;
+  SparseTarget target = 3;
+}
+message DirectoryNameConflict {
+  bytes directory_id = 1;
+  LogicalName name = 2;
+}
+message DirectoryRangeConflict {
+  bytes directory_id = 1;
+  LogicalName after = 2;
+  uint32 maximum_entries = 3;
+}
+message Conflict {
+  oneof region {
+    FileConflict file_record = 1;
+    FileConflict metadata = 2;
+    FileConflict file_length = 3;
+    ContentConflict content_range = 4;
+    SparseConflict sparse_seek = 5;
+    DirectoryNameConflict directory_name = 6;
+    DirectoryRangeConflict directory_range = 7;
+  }
+  ConflictUse use = 8;
+  bytes expected_digest = 9;
+  bytes actual_digest = 10;
+}
+enum RebaseStatus {
+  REBASE_STATUS_UNSPECIFIED = 0;
+  REBASE_STATUS_REBASED = 1;
+  REBASE_STATUS_ALREADY_REBASED = 2;
+  REBASE_STATUS_CURRENT = 3;
+  REBASE_STATUS_STALE = 4;
+  REBASE_STATUS_CONFLICTED = 5;
+  REBASE_STATUS_FENCED = 6;
+  REBASE_STATUS_IDEMPOTENCY_CONFLICT = 7;
+}
+message RebaseResponse {
+  RebaseStatus status = 1;
+  GenerationRef generation = 2;
+  repeated Conflict conflicts = 3;
+  bool truncated = 4;
+}
+message PlanJoinRequest {
+  GenerationRef source = 1;
+  GenerationRef target = 2;
+  uint32 maximum_changes = 3;
+  uint32 maximum_conflicts = 4;
+  uint32 maximum_generations = 5;
+  JoinHistory history = 6;
+}
+message JoinPlan {
+  bytes plan_id = 1;
+  GenerationRef source = 2;
+  GenerationRef expected_target = 3;
+  repeated FileRecordChange file_changes = 4;
+  repeated Conflict conflicts = 5;
+  bool truncated = 6;
+  GenerationRef common_ancestor = 7;
+  uint32 maximum_generations = 8;
+  uint32 maximum_changes = 9;
+  uint32 maximum_conflicts = 10;
+  JoinHistory history = 11;
+  repeated DirectoryBindingChange binding_changes = 12;
+}
+message ApplyJoinRequest {
+  JoinPlan plan = 1;
+  OperationOptions operation = 2;
+}
+enum JoinStatus {
+  JOIN_STATUS_UNSPECIFIED = 0;
+  JOIN_STATUS_APPLIED = 1;
+  JOIN_STATUS_ALREADY_APPLIED = 2;
+  JOIN_STATUS_NO_CHANGES = 3;
+  JOIN_STATUS_STALE_TARGET = 4;
+  JOIN_STATUS_CONFLICTED = 5;
+  JOIN_STATUS_FENCED = 6;
+  JOIN_STATUS_IDEMPOTENCY_CONFLICT = 7;
+}
+message JoinResponse {
+  JoinStatus status = 1;
+  GenerationRef generation = 2;
+  repeated Conflict conflicts = 3;
+  bool truncated = 4;
+}
+
+message RetainGenerationRequest {
+  GenerationRef generation = 1;
+  string identity = 2;
+  OperationOptions operation = 3;
+}
+message RetainGenerationResponse {
+  GenerationRef generation = 1;
+  string identity = 2;
+  MutationStatus status = 3;
+}
+message ExportRequest {
+  GenerationRef generation = 1;
+  bytes after = 2;
+  uint32 maximum_objects = 3;
+  uint64 maximum_bytes = 4;
+}
+message ExportChunk {
+  bytes cursor = 1;
+  bytes object_id = 2;
+  bytes contents = 3;
+  bool terminal = 4;
+}
+message ImportChunk {
+  WorkspaceRef workspace = 1;
+  bytes operation_id = 2;
+  bytes cursor = 3;
+  bytes object_id = 4;
+  bytes contents = 5;
+  bool terminal = 6;
+}
+message ImportResponse {
+  MutationResponse outcome = 1;
+}
+
+message CredentialRequest {
+  WorkspaceRef workspace = 1;
+  GenerationRef generation = 2;
+  bool writable = 3;
+  uint64 expires_after_seconds = 4;
+  OperationOptions operation = 5;
+}
+message CredentialResponse {
+  string endpoint = 1;
+  int64 expires_at_unix_seconds = 2;
+  oneof credential {
+    string bearer_token = 3;
+    S3Credential s3 = 4;
+  }
+}
+message S3Credential {
+  string bucket = 1;
+  string region = 2;
+  string access_key_id = 3;
+  string secret_access_key = 4;
+  string session_token = 5;
+}
+message ObserveRequest {
+  WorkspaceRef workspace = 1;
+  bytes operation_id = 2;
+}
+message ObserveResponse {
+  string state = 1;
+  MutationResponse outcome = 2;
+}
+message CancelRequest {
+  WorkspaceRef workspace = 1;
+  bytes operation_id = 2;
+}
+message CancelResponse {
+  ObserveResponse operation = 1;
+}
+
+service FilesystemService {
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (WorkspaceResponse);
+  rpc OpenWorkspace(OpenWorkspaceRequest) returns (WorkspaceResponse);
+  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (MutationResponse);
+  rpc GetHead(GetHeadRequest) returns (GenerationResponse);
+  rpc GetGeneration(GetGenerationRequest) returns (GenerationResponse);
+  rpc Read(ReadRequest) returns (ReadResponse);
+  rpc Stat(StatRequest) returns (StatResponse);
+  rpc ListDirectory(ListDirectoryRequest) returns (ListDirectoryResponse);
+  rpc ReadLink(ReadLinkRequest) returns (ReadResponse);
+  rpc PlanExtents(PlanExtentsRequest) returns (PlanExtentsResponse);
+  rpc ApplyTransaction(ApplyTransactionRequest) returns (MutationResponse);
+  rpc RebaseTransaction(RebaseTransactionRequest) returns (RebaseTransactionResponse);
+  rpc ForkWorkspace(ForkWorkspaceRequest) returns (WorkspaceResponse);
+  rpc Diff(DiffRequest) returns (DiffResponse);
+  rpc Rebase(RebaseRequest) returns (RebaseResponse);
+  rpc PlanJoin(PlanJoinRequest) returns (JoinPlan);
+  rpc ApplyJoin(ApplyJoinRequest) returns (JoinResponse);
+  rpc Checkpoint(RetainGenerationRequest) returns (RetainGenerationResponse);
+  rpc Pin(RetainGenerationRequest) returns (RetainGenerationResponse);
+  rpc Export(ExportRequest) returns (stream ExportChunk);
+  rpc Import(stream ImportChunk) returns (ImportResponse);
+  rpc IssueMountCredential(CredentialRequest) returns (CredentialResponse);
+  rpc IssueS3Credential(CredentialRequest) returns (CredentialResponse);
+  rpc Observe(ObserveRequest) returns (ObserveResponse);
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+}

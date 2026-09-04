@@ -1,4 +1,4 @@
-//! Native FUSE, FUSE-T, and `ProjFS` projection boundary.
+//! Native Linux FUSE, macOS NFS, and Windows `ProjFS` projection boundary.
 //!
 //! Drivers project one canonical SDK checkout. They own kernel handles and
 //! callback cursors only; filesystem truth, COW state, and publication remain
@@ -51,10 +51,10 @@ pub use storage_accelerations::{
     probe_native_storage_accelerations,
 };
 
+#[cfg(target_os = "macos")]
+mod darwin_mount;
 #[cfg(target_os = "linux")]
 mod fuse;
-#[cfg(target_os = "macos")]
-mod fuse_t;
 #[cfg(target_os = "windows")]
 mod usn;
 #[cfg(target_os = "windows")]
@@ -71,8 +71,8 @@ mod projfs;
 pub enum NativeMountKind {
     /// Linux kernel FUSE through `/dev/fuse`.
     LinuxFuse,
-    /// macOS FUSE-T/libfuse session.
-    MacOsFuseT,
+    /// Self-contained macOS loopback-NFS session.
+    MacOsNfs,
     /// Windows Projected File System provider.
     WindowsProjFs,
 }
@@ -427,7 +427,7 @@ pub enum MountAttributeWriteMode {
 
 /// Exact platform-native absolute path used only at the kernel callback edge.
 ///
-/// Components contain raw Unix name bytes on FUSE/FUSE-T and little-endian
+/// Components contain raw Unix name bytes on Linux FUSE/macOS NFS and little-endian
 /// UTF-16 code units on `ProjFS`. The checkout adapter converts them into the
 /// volume's declared logical-name representation without lossy text routing.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -786,7 +786,7 @@ enum DriverSession {
     #[cfg(target_os = "linux")]
     Fuse(fuse::FuseSession),
     #[cfg(target_os = "macos")]
-    FuseT(fuse_t::FuseTSession),
+    DarwinMount(darwin_mount::DarwinMountSession),
     #[cfg(target_os = "windows")]
     ProjFs(projfs::ProjFsSession),
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -830,7 +830,7 @@ impl NativeMountSession {
     pub fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
         match &self.driver {
             #[cfg(target_os = "macos")]
-            Some(DriverSession::FuseT(session)) => session.invalidate(path),
+            Some(DriverSession::DarwinMount(session)) => session.invalidate(path),
             #[cfg(not(target_os = "macos"))]
             Some(_) => {
                 let _ = path;
@@ -1267,7 +1267,7 @@ fn linux_destination_is_mounted(destination: &Path) -> Result<bool, NativeMountE
 
 #[cfg(target_os = "macos")]
 fn recover_platform_destination(destination: &Path) -> Result<(), NativeMountError> {
-    fuse_t::recover_destination(destination)
+    darwin_mount::recover_destination(destination)
 }
 
 #[cfg(target_os = "windows")]
@@ -1398,7 +1398,7 @@ fn start_driver(
     request: &NativeMountRequest,
     source: Arc<dyn MountFilesystem>,
 ) -> Result<DriverSession, NativeMountError> {
-    fuse_t::FuseTSession::start(request, source).map(DriverSession::FuseT)
+    darwin_mount::DarwinMountSession::start(request, source).map(DriverSession::DarwinMount)
 }
 
 #[cfg(target_os = "windows")]
@@ -1422,7 +1422,7 @@ fn stop_driver(driver: &mut DriverSession) -> Result<(), NativeMountError> {
         #[cfg(target_os = "linux")]
         DriverSession::Fuse(session) => session.stop(),
         #[cfg(target_os = "macos")]
-        DriverSession::FuseT(session) => session.stop(),
+        DriverSession::DarwinMount(session) => session.stop(),
         #[cfg(target_os = "windows")]
         DriverSession::ProjFs(session) => session.stop(),
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -1454,27 +1454,18 @@ mod platform {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::{NativeMountCapabilities, NativeMountKind, NativeMountSessionIsolation};
-    use std::os::unix::fs::PermissionsExt;
-
-    const FUSE_T_RUNTIME: &str = "/usr/local/bin/go-nfsv4";
-    const FUSE_T_LIBRARY: &str = "/usr/local/lib/libfuse-t.dylib";
-
-    fn executable_file(path: &str) -> bool {
-        std::fs::metadata(path)
-            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-    }
 
     pub(super) fn probe() -> NativeMountCapabilities {
-        let available =
-            executable_file(FUSE_T_RUNTIME) && std::path::Path::new(FUSE_T_LIBRARY).is_file();
+        let available = std::path::Path::new("/sbin/mount_nfs").is_file()
+            && std::path::Path::new("/sbin/umount").is_file();
         NativeMountCapabilities {
-            kind: Some(NativeMountKind::MacOsFuseT),
+            kind: Some(NativeMountKind::MacOsNfs),
             available,
             writable: available,
             provider_process_io_observable: available,
-            session_isolation: NativeMountSessionIsolation::ProcessIsolated,
+            session_isolation: NativeMountSessionIsolation::SharedProcess,
             unavailable_reason: (!available)
-                .then(|| "FUSE-T runtime or compatibility library is unavailable".to_owned()),
+                .then(|| "the built-in macOS NFS mount utilities are unavailable".to_owned()),
         }
     }
 }

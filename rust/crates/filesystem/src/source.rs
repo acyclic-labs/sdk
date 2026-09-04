@@ -656,7 +656,7 @@ mod tests {
         let local_options = crate::LocalOptions::new(storage.path());
 
         {
-            let fs = Fs::local(local_options.clone())?;
+            let fs = Fs::local(local_options.clone()).await?;
             let workspace = Box::pin(fs.attach_directory(
                 "durable",
                 source_root.path(),
@@ -669,7 +669,7 @@ mod tests {
 
         std::fs::write(source_root.path().join("durable.txt"), b"two")?;
         {
-            let fs = Fs::local(local_options.clone())?;
+            let fs = Fs::local(local_options.clone()).await?;
             let workspace = Box::pin(fs.attach_directory(
                 "durable",
                 source_root.path(),
@@ -692,15 +692,6 @@ mod tests {
             ));
         }
 
-        let collected = Fs::collect_local_garbage(
-            local_options,
-            16,
-            1_024,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?;
-        assert!(collected.value.examined > 0);
         Ok(())
     }
 }

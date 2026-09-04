@@ -546,7 +546,7 @@ pub const DIMENSIONS: &[Dimension] = &[
             "windows",
             "browser",
             "linux_fuse",
-            "macos_fuse_t",
+            "macos_nfs",
             "windows_projfs",
         ],
     },
@@ -567,7 +567,7 @@ pub const DIMENSIONS: &[Dimension] = &[
     },
     Dimension {
         name: "consumer_surface",
-        levels: &["rust", "wasm", "napi", "native_mount", "daemon"],
+        levels: &["rust", "wasm", "native_mount", "daemon"],
     },
     Dimension {
         name: "failure",
@@ -600,7 +600,7 @@ pub struct WorkloadCase {
 
 /// Locked BLAKE3 identity of the ordered taxonomy and generated case sequence.
 pub const WORKLOAD_CORPUS_DIGEST: &str =
-    "874c9d448bc86c7aed3c303e42a8455d8be9a965826f6d907909929a49a76f44";
+    "b1e9d1d438350fcc849459e2cf8d4b56c315113de9598872a81e3fb1eb0c1c78";
 
 /// Returns the locked corpus identity used by indexed selectors.
 #[must_use]
@@ -1011,7 +1011,7 @@ impl std::error::Error for TargetedInteractionSelectionError {}
 
 /// Locked BLAKE3 identity of every targeted three-way Cartesian case.
 pub const TARGETED_INTERACTION_CORPUS_DIGEST: &str =
-    "6ca9306ad000455d5303ef28b6083c0292febe87a3d5acbf772496312ad59bf9";
+    "64f53d9363ac120394e7a88df81566e38c566b5da31f07b4759d385c8c352e59";
 
 /// Returns every mandatory targeted interaction in stable family and level
 /// order. Unlike the broad pairwise corpus, each named family is the complete
@@ -2006,7 +2006,7 @@ mod tests {
         assert_eq!(value["schema"], "acyclic-fs-pairwise-workload-corpus-v2");
         assert_eq!(
             value["corpus_digest"],
-            "874c9d448bc86c7aed3c303e42a8455d8be9a965826f6d907909929a49a76f44"
+            "b1e9d1d438350fcc849459e2cf8d4b56c315113de9598872a81e3fb1eb0c1c78"
         );
         assert_eq!(compute_workload_corpus_digest(), WORKLOAD_CORPUS_DIGEST);
         assert_eq!(value["cases"].as_array().map(Vec::len), Some(first.len()));
@@ -2319,7 +2319,7 @@ mod tests {
                 maximum_cases: 20_000,
             },
         )?;
-        assert_eq!(complete.len(), 14_300);
+        assert_eq!(complete.len(), 14_160);
         let mut recomposed = Vec::new();
         for shard_index in 0..17 {
             recomposed.extend(select_targeted_interaction_cases(

@@ -1,3 +1,37 @@
+import { create } from "@bufbuild/protobuf";
+import { Code, ConnectError, createClient, type Client, type Interceptor } from "@connectrpc/connect";
+import { createGrpcWebTransport } from "@connectrpc/connect-web";
+
+import {
+  ConflictUse,
+  ExtentKind,
+  FileKind,
+  FilesystemProfile,
+  FilesystemService,
+  JoinHistory,
+  JoinStatus as WireJoinStatus,
+  MutationSchema,
+  MutationStatus,
+  NameEncoding,
+  OperationOptionsSchema,
+  RebaseStatus,
+  SparseTarget,
+  type Conflict as WireConflict,
+  type DiffResponse,
+  type FileRecordSnapshot as WireFileRecordSnapshot,
+  type GenerationRef as WireGenerationRef,
+  type JoinPlan as WireJoinPlan,
+  type LogicalName as WireLogicalName,
+  type Metadata as WireMetadata,
+  type Mutation as WireMutation,
+  type OptionalI64,
+  type OptionalU32,
+  type OptionalU64,
+  type TreeEntrySnapshot as WireTreeEntrySnapshot,
+  type WorkCounters as WireWorkCounters,
+  type Workspace as WireWorkspace,
+  type WorkspaceRef as WireWorkspaceRef,
+} from "../generated/proto/filesystem/v2/filesystem_pb.js";
 import type {
   DirectoryBindingChange,
   EngineCapabilities,
@@ -35,82 +69,52 @@ import type {
 
 export type * from "./public-types.js";
 
-type Json = null | boolean | number | string | readonly Json[] | JsonObject;
-type JsonObject = { readonly [name: string]: Json };
-type Command = JsonObject & { readonly method: string };
-
 const DEFAULT_MAXIMUM_RESPONSE_BYTES = 24 * 1024 * 1024;
+const DEFAULT_MAXIMUM_CONFLICTS = 1_024;
 
 export class HostedFsError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
+  constructor(readonly code: string, message: string) {
     super(message);
     this.name = "HostedFsError";
   }
 }
 
-class Client {
-  readonly endpoint: string;
-  readonly bearerToken: string;
+interface HostedClient {
+  readonly rpc: Client<typeof FilesystemService>;
   readonly maximumResponseBytes: number;
-  readonly send: typeof globalThis.fetch;
-  #nextRequest = 0;
-  #closed = false;
-
-  constructor(options: HostedFsOptions) {
-    const endpoint = new URL(options.endpoint);
-    if (endpoint.protocol !== "https:" && endpoint.protocol !== "http:") {
-      throw new RangeError("hosted filesystem endpoint must use HTTP or HTTPS");
-    }
-    if (options.bearerToken.length === 0) throw new RangeError("bearer token must be non-empty");
-    const maximum = options.maximumResponseBytes ?? DEFAULT_MAXIMUM_RESPONSE_BYTES;
-    if (!Number.isSafeInteger(maximum) || maximum <= 0) {
-      throw new RangeError("maximum response bytes must be a positive safe integer");
-    }
-    this.endpoint = endpoint.href;
-    this.bearerToken = options.bearerToken;
-    this.maximumResponseBytes = maximum;
-    this.send = options.fetch ?? globalThis.fetch;
-    if (this.send === undefined) throw new TypeError("this runtime does not provide fetch");
-  }
-
-  close(): void { this.#closed = true; }
-
-  async rpc(command: Command): Promise<Record<string, unknown>> {
-    if (this.#closed) throw new HostedFsError("closed", "hosted filesystem is closed");
-    const id = `fs-${++this.#nextRequest}`;
-    const response = await this.send(this.endpoint, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${this.bearerToken}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ id, ...command }),
-    });
-    const bytes = await readBounded(response, this.maximumResponseBytes);
-    let decoded: unknown;
-    try { decoded = JSON.parse(new TextDecoder().decode(bytes)); }
-    catch { throw new HostedFsError("invalid_response", "filesystem response is not JSON"); }
-    const envelope = object(decoded, "filesystem response");
-    if (string(envelope.id, "response id") !== id) {
-      throw new HostedFsError("invalid_response", "filesystem response identity does not match");
-    }
-    if (!boolean(envelope.ok, "response status")) {
-      const error = object(envelope.error, "filesystem error");
-      throw new HostedFsError(string(error.code, "error code"), string(error.message, "error message"));
-    }
-    if (!response.ok) throw new HostedFsError("http_error", `filesystem HTTP status ${response.status}`);
-    return object(envelope.result, "filesystem result");
-  }
+  readonly maximumTransactionMutations: number;
+  closed: boolean;
 }
 
 export async function openHostedFs(options: HostedFsOptions): Promise<FsEngine> {
-  const client = new Client(options);
-  const advertised = await client.rpc({ method: "capabilities" });
+  const endpoint = new URL(options.endpoint);
+  if (endpoint.protocol !== "https:" && endpoint.protocol !== "http:") {
+    throw new RangeError("hosted filesystem endpoint must use HTTP or HTTPS");
+  }
+  if (options.bearerToken.length === 0) throw new RangeError("bearer token must be non-empty");
+  const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_MAXIMUM_RESPONSE_BYTES;
+  positiveSafeInteger(maximumResponseBytes, "maximum response bytes");
+  const send = options.fetch ?? globalThis.fetch;
+  if (send === undefined) throw new TypeError("this runtime does not provide fetch");
+  const authorize: Interceptor = (next) => async (request) => {
+    request.header.set("authorization", `Bearer ${options.bearerToken}`);
+    return next(request);
+  };
+  const rpcClient = createClient(FilesystemService, createGrpcWebTransport({
+    baseUrl: endpoint.href.replace(/\/$/, ""),
+    interceptors: [authorize],
+    fetch: boundedFetch(send, maximumResponseBytes),
+  }));
+  const handshake = await call(rpcClient.handshake({}));
+  const advertised = required(handshake.capabilities, "filesystem capabilities");
+  const client: HostedClient = {
+    rpc: rpcClient,
+    maximumResponseBytes,
+    maximumTransactionMutations: advertised.maximumTransactionMutations,
+    closed: false,
+  };
   const capabilities: EngineCapabilities = {
-    version: string(advertised.version, "service version"),
+    version: advertised.contractVersion,
     platform: "hosted",
     architecture: "service",
     authority: "remote",
@@ -126,329 +130,836 @@ export async function openHostedFs(options: HostedFsOptions): Promise<FsEngine> 
   return {
     capabilities,
     async createWorkspace(name) {
+      assertOpen(client);
       requireName(name);
-      return workspace(client, await client.rpc({ method: "create_workspace", name }));
+      const response = await call(client.rpc.createWorkspace({
+        name,
+        profile: FilesystemProfile.PORTABLE,
+        operation: operation(),
+      }));
+      return workspace(client, required(response.workspace, "created workspace"));
     },
     async openWorkspace(name) {
+      assertOpen(client);
       requireName(name);
-      return workspace(client, await client.rpc({ method: "open_workspace", name }));
+      const response = await call(client.rpc.openWorkspace({
+        selector: { case: "name", value: name },
+      }));
+      return workspace(client, required(response.workspace, "opened workspace"));
     },
-    close() { client.close(); },
+    close() { client.closed = true; },
   };
 }
 
-function workspace(client: Client, value: Record<string, unknown>): FsWorkspace {
-  const name = string(value.name, "workspace name");
-  const id = fromHex(value.workspaceId, 16, "workspace identity");
+type WorkspaceOwner = { readonly client: HostedClient; readonly reference: WireWorkspaceRef };
+type GenerationOwner = { readonly client: HostedClient; readonly reference: WireGenerationRef };
+const workspaceOwners = new WeakMap<FsWorkspace, WorkspaceOwner>();
+const generationOwners = new WeakMap<FsGeneration, GenerationOwner>();
+const changeSetOwners = new WeakMap<FsChangeSet, {
+  readonly client: HostedClient;
+  readonly workspaceId: Uint8Array;
+  readonly from: WireGenerationRef;
+  readonly to: WireGenerationRef;
+}>();
+
+function workspace(client: HostedClient, value: WireWorkspace): FsWorkspace {
+  const reference = required(value.workspace, "workspace reference");
+  requireBytes(reference.workspaceId, 16, "workspace identity");
+  requireName(reference.name);
   const result: FsWorkspace = {
-    name,
-    id,
-    async head() { return generationId(await client.rpc({ method: "workspace_head", workspace: name })); },
-    async sync() { return generation(client, name, id, await this.head()); },
+    name: reference.name,
+    id: reference.workspaceId.slice(),
+    async head() { return (await currentGeneration(client, reference)).generationId.slice(); },
+    async sync() { return generation(client, await currentGeneration(client, reference)); },
     async checkpoint(label) {
       requireName(label);
-      return generation(client, name, id, generationId(await client.rpc({ method: "workspace_checkpoint", workspace: name, label })));
+      const response = await call(client.rpc.checkpoint({
+        generation: await currentGeneration(client, reference),
+        identity: label,
+        operation: operation(),
+      }));
+      return generation(client, required(response.generation, "checkpoint generation"));
     },
     async pin(identity) {
       requireName(identity);
-      return generation(client, name, id, generationId(await client.rpc({ method: "workspace_pin", workspace: name, identity })));
+      const response = await call(client.rpc.pin({
+        generation: await currentGeneration(client, reference),
+        identity,
+        operation: operation(),
+      }));
+      return generation(client, required(response.generation, "pinned generation"));
     },
     async delete(idempotencyKey) {
-      const response = await client.rpc(optionalIdentity({ method: "workspace_delete", workspace: name }, idempotencyKey));
+      const response = await call(client.rpc.deleteWorkspace({
+        workspace: reference,
+        operation: operation(idempotencyKey),
+      }));
       return deleteStatus(response.status);
     },
-    read(path, maximumBytes) { return read(client, name, undefined, path, maximumBytes); },
-    readRange(path, offset, length) { return readRange(client, name, undefined, path, offset, length); },
-    stat(path) { return stat(client, name, undefined, path); },
-    listDirectory(path, after, maximumEntries) { return list(client, name, undefined, path, after, maximumEntries); },
-    async readSymbolicLink(path) {
-      const response = await client.rpc({ method: "workspace_read_symbolic_link", workspace: name, path });
-      return fromBase64(response.targetBase64, "symbolic-link target");
+    async read(path, maximumBytes) {
+      return read(client, await currentGeneration(client, reference), path, undefined, maximumBytes);
     },
-    planExtents(path, offset, length, maximumSpans) {
-      return extents(client, name, undefined, path, offset, length, maximumSpans);
+    async readRange(path, offset, length) {
+      return read(client, await currentGeneration(client, reference), path, { offset, length }, length);
+    },
+    async stat(path) { return stat(client, await currentGeneration(client, reference), path); },
+    async listDirectory(path, after, maximumEntries) {
+      return list(client, await currentGeneration(client, reference), path, after, maximumEntries);
+    },
+    async readSymbolicLink(path) {
+      return readLink(client, await currentGeneration(client, reference), path);
+    },
+    async planExtents(path, offset, length, maximumSpans) {
+      return extents(client, await currentGeneration(client, reference), path, offset, length, maximumSpans);
     },
     async write(path, bytes) {
-      return commit(await client.rpc({ method: "workspace_write", workspace: name, path, bytes_base64: toBase64(bytes) }));
+      const tx = transaction(client, await currentGeneration(client, reference), undefined);
+      await tx.write(path, bytes);
+      return tx.commit();
     },
     async remove(path) {
-      return commit(await client.rpc({ method: "workspace_remove", workspace: name, path }));
+      const tx = transaction(client, await currentGeneration(client, reference), undefined);
+      await tx.remove(path);
+      return tx.commit();
     },
     async fork(destination) {
-      requireName(destination);
-      return workspace(client, await client.rpc({ method: "workspace_fork", workspace: name, destination }));
+      return fork(client, await currentGeneration(client, reference), destination);
     },
     async forkAt(destination, selected) {
-      requireName(destination);
-      const exact = requireGeneration(selected, client, name);
-      return workspace(client, await client.rpc({ method: "workspace_fork", workspace: name, destination, generation_id: toHex(exact.id) }));
+      return fork(client, requireGeneration(selected, client, reference.workspaceId), destination);
     },
     async beginTransaction(idempotencyKey) {
-      const response = await client.rpc(optionalIdentity({ method: "workspace_begin_transaction", workspace: name }, idempotencyKey));
-      return transaction(client, string(response.transactionId, "transaction identity"));
+      return transaction(client, await currentGeneration(client, reference), idempotencyKey);
     },
     async liveRebase(options, idempotencyKey) {
       validateRebase(options);
-      return rebaseResult(await client.rpc(optionalIdentity({
-        method: "workspace_live_rebase", workspace: name,
-        maximum_generations: options.maximumGenerations,
-        maximum_changes: options.maximumChanges,
-        maximum_conflicts: options.maximumConflicts,
-      }, idempotencyKey)));
+      const response = await call(client.rpc.rebase({
+        workspace: reference,
+        maximumGenerations: options.maximumGenerations,
+        maximumChanges: options.maximumChanges,
+        maximumConflicts: options.maximumConflicts,
+        operation: operation(idempotencyKey),
+      }));
+      return workspaceRebase(response.status, response.generation, response.conflicts, response.truncated);
     },
     async diff(from, to, maximumChanges) {
-      positiveInteger(maximumChanges, "maximum changes");
-      const first = requireGeneration(from, client, name);
-      const second = requireGeneration(to, client, name);
-      return changeSet(client, name, id, await client.rpc({
-        method: "workspace_diff", workspace: name,
-        from_generation_id: toHex(first.id), to_generation_id: toHex(second.id),
-        maximum_changes: maximumChanges,
-      }));
+      positiveU32(maximumChanges, "maximum changes");
+      return diff(
+        client,
+        reference.workspaceId,
+        requireGeneration(from, client, reference.workspaceId),
+        requireGeneration(to, client, reference.workspaceId),
+        maximumChanges,
+      );
     },
     async joinInto(target, options) {
       validateJoin(options);
       const destination = requireWorkspace(target, client);
-      const response = await client.rpc({
-        method: "workspace_plan_join", source: name, target: destination.name,
-        history: options.history, maximum_generations: options.maximumGenerations,
-        maximum_changes: options.maximumChanges, maximum_conflicts: options.maximumConflicts,
-      });
-      return joinPlan(client, response);
+      const plan = await call(client.rpc.planJoin({
+        source: await currentGeneration(client, reference),
+        target: await currentGeneration(client, destination.reference),
+        maximumChanges: options.maximumChanges,
+        maximumConflicts: options.maximumConflicts,
+        maximumGenerations: options.maximumGenerations,
+        history: joinHistory(options.history),
+      }));
+      return joinPlan(client, plan);
     },
   };
-  workspaceOwners.set(result, { client, name });
+  workspaceOwners.set(result, { client, reference });
   return result;
 }
 
-type GenerationHandle = { readonly client: Client; readonly workspace: string; readonly id: Uint8Array };
-const generationOwners = new WeakMap<FsGeneration, GenerationHandle>();
-const workspaceOwners = new WeakMap<FsWorkspace, { readonly client: Client; readonly name: string }>();
-
-function generation(client: Client, workspaceName: string, workspaceId: Uint8Array, id: Uint8Array): FsGeneration {
+function generation(client: HostedClient, reference: WireGenerationRef): FsGeneration {
+  const owner = required(reference.workspace, "generation workspace");
+  requireBytes(reference.generationId, 32, "generation identity");
   const result: FsGeneration = {
-    id: id.slice(), workspaceId: workspaceId.slice(),
-    read(path, maximumBytes) { return read(client, workspaceName, id, path, maximumBytes); },
-    readRange(path, offset, length) { return readRange(client, workspaceName, id, path, offset, length); },
-    stat(path) { return stat(client, workspaceName, id, path); },
-    listDirectory(path, after, maximumEntries) { return list(client, workspaceName, id, path, after, maximumEntries); },
-    async readSymbolicLink(path) {
-      const response = await client.rpc({ method: "workspace_read_symbolic_link", workspace: workspaceName, generation_id: toHex(id), path });
-      return fromBase64(response.targetBase64, "symbolic-link target");
-    },
-    planExtents(path, offset, length, maximumSpans) { return extents(client, workspaceName, id, path, offset, length, maximumSpans); },
+    id: reference.generationId.slice(),
+    workspaceId: owner.workspaceId.slice(),
+    read: (path, maximumBytes) => read(client, reference, path, undefined, maximumBytes),
+    readRange: (path, offset, length) => read(client, reference, path, { offset, length }, length),
+    stat: (path) => stat(client, reference, path),
+    listDirectory: (path, after, maximumEntries) => list(client, reference, path, after, maximumEntries),
+    readSymbolicLink: (path) => readLink(client, reference, path),
+    planExtents: (path, offset, length, maximumSpans) =>
+      extents(client, reference, path, offset, length, maximumSpans),
     async pin(identity) {
       requireName(identity);
-      return generation(client, workspaceName, workspaceId, generationId(await client.rpc({ method: "workspace_pin", workspace: workspaceName, generation_id: toHex(id), identity })));
+      const response = await call(client.rpc.pin({
+        generation: reference,
+        identity,
+        operation: operation(),
+      }));
+      return generation(client, required(response.generation, "pinned generation"));
     },
   };
-  generationOwners.set(result, { client, workspace: workspaceName, id });
+  generationOwners.set(result, { client, reference });
   return result;
 }
 
-function requireGeneration(value: FsGeneration, client: Client, workspaceName: string): GenerationHandle {
-  const owned = generationOwners.get(value);
-  if (owned === undefined || owned.client !== client || owned.workspace !== workspaceName) {
-    throw new TypeError("generation belongs to another hosted workspace");
+async function currentGeneration(client: HostedClient, workspaceRef: WireWorkspaceRef): Promise<WireGenerationRef> {
+  assertOpen(client);
+  const response = await call(client.rpc.getHead({ workspace: workspaceRef }));
+  return required(response.generation, "workspace head");
+}
+
+async function fork(client: HostedClient, source: WireGenerationRef, destinationName: string): Promise<FsWorkspace> {
+  requireName(destinationName);
+  const response = await call(client.rpc.forkWorkspace({
+    source,
+    destinationName,
+    operation: operation(),
+  }));
+  return workspace(client, required(response.workspace, "forked workspace"));
+}
+
+async function read(
+  client: HostedClient,
+  selected: WireGenerationRef,
+  path: string,
+  range: { readonly offset: bigint; readonly length: bigint } | undefined,
+  maximumBytes: bigint,
+): Promise<Uint8Array> {
+  assertOpen(client);
+  if (range === undefined) positiveU64(maximumBytes, "maximum read bytes");
+  else nonnegativeU64(maximumBytes, "maximum read bytes");
+  if (range !== undefined) {
+    nonnegativeU64(range.offset, "read offset");
+    nonnegativeU64(range.length, "read length");
   }
-  return owned;
+  const response = await call(client.rpc.read({
+    generation: selected,
+    path,
+    maximumBytes,
+    ...(range === undefined ? {} : { range }),
+  }));
+  return response.contents.slice();
 }
 
-function requireWorkspace(value: FsWorkspace, client: Client): { readonly name: string } {
-  const owned = workspaceOwners.get(value);
-  if (owned === undefined || owned.client !== client) throw new TypeError("workspace belongs to another hosted runtime");
-  return owned;
-}
-
-async function read(client: Client, workspace: string, selected: Uint8Array | undefined, path: string, maximumBytes: bigint): Promise<Uint8Array> {
-  positive(maximumBytes, "maximum read bytes");
-  const response = await client.rpc(withGeneration({ method: "workspace_read", workspace, path, maximum_bytes: decimal(maximumBytes) }, selected));
-  return fromBase64(response.bytesBase64, "file bytes");
-}
-
-async function readRange(client: Client, workspace: string, selected: Uint8Array | undefined, path: string, offset: bigint, length: bigint): Promise<Uint8Array> {
-  nonnegative(offset, "read offset"); nonnegative(length, "read length");
-  const response = await client.rpc(withGeneration({ method: "workspace_read_range", workspace, path, offset: decimal(offset), length: decimal(length) }, selected));
-  return fromBase64(response.bytesBase64, "file bytes");
-}
-
-async function stat(client: Client, workspace: string, selected: Uint8Array | undefined, path: string): Promise<WorkspaceStat> {
-  const value = await client.rpc(withGeneration({ method: "workspace_stat", workspace, path }, selected));
-  const metadata = object(value.metadata, "workspace metadata");
+async function stat(client: HostedClient, selected: WireGenerationRef, path: string): Promise<WorkspaceStat> {
+  assertOpen(client);
+  const value = required((await call(client.rpc.stat({ generation: selected, path }))).stat, "file stat");
   return {
-    fileId: fromHex(value.fileId, 16, "file identity"), kind: fileKind(value.fileKind),
-    linkCount: bigint(value.linkCount, "link count"), logicalBytes: optionalBigint(value.logicalBytes, "logical bytes"),
-    metadata: metadataValue(metadata),
+    fileId: exactBytes(value.fileId, 16, "file identity"),
+    kind: fileKind(value.kind),
+    linkCount: value.linkCount,
+    logicalBytes: optionalU64(value.logicalBytes),
+    metadata: metadata(value.metadata),
   };
 }
 
-async function list(client: Client, workspace: string, selected: Uint8Array | undefined, path: string, after: WorkspaceName | undefined, maximumEntries: number): Promise<WorkspaceDirectoryPage> {
-  positiveInteger(maximumEntries, "maximum entries");
-  let command: Command = withGeneration({ method: "workspace_list_directory", workspace, path, maximum_entries: maximumEntries }, selected);
-  if (after !== undefined) command = { ...command, after: { encoding: wireEncoding(after.encoding), bytes_base64: toBase64(after.bytes) } };
-  const value = await client.rpc(command);
-  return { entries: array(value.entries, "directory entries").map((entry) => {
-    const item = object(entry, "directory entry");
-    return { name: logicalName(item.name), fileId: fromHex(item.fileId, 16, "file identity"), kind: fileKind(item.fileKind) };
-  }), hasMore: boolean(value.hasMore, "directory continuation") };
+async function list(
+  client: HostedClient,
+  selected: WireGenerationRef,
+  path: string,
+  after: WorkspaceName | undefined,
+  maximumEntries: number,
+): Promise<WorkspaceDirectoryPage> {
+  assertOpen(client);
+  positiveU32(maximumEntries, "maximum entries");
+  const page = required((await call(client.rpc.listDirectory({
+    generation: selected,
+    path,
+    page: { maximumItems: maximumEntries, ...(after === undefined ? {} : { after: wireName(after) }) },
+  }))).page, "directory page");
+  return {
+    entries: page.entries.map((entry) => {
+      const value = required(entry.stat, "directory entry stat");
+      return {
+        name: logicalName(required(entry.name, "directory entry name")),
+        fileId: exactBytes(value.fileId, 16, "file identity"),
+        kind: fileKind(value.kind),
+      };
+    }),
+    hasMore: page.next !== undefined,
+  };
 }
 
-async function extents(client: Client, workspace: string, selected: Uint8Array | undefined, path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<WorkspaceExtentPlan> {
-  nonnegative(offset, "extent offset"); nonnegative(length, "extent length"); positiveInteger(maximumSpans, "maximum spans");
-  const value = await client.rpc(withGeneration({ method: "workspace_plan_extents", workspace, path, offset: decimal(offset), length: decimal(length), maximum_spans: maximumSpans }, selected));
-  return { spans: array(value.spans, "extent spans").map((entry) => {
-    const span = object(entry, "extent span");
-    const kind = string(span.kind, "extent kind");
-    if (kind !== "hole" && kind !== "allocated-zero" && kind !== "content") throw new TypeError("invalid extent kind");
-    return { offset: bigint(span.offset, "extent offset"), length: bigint(span.length, "extent length"), sourceEnd: bigint(span.sourceEnd, "extent source end"), kind };
+async function readLink(client: HostedClient, selected: WireGenerationRef, path: string): Promise<Uint8Array> {
+  assertOpen(client);
+  const response = await call(client.rpc.readLink({
+    generation: selected,
+    path,
+    maximumBytes: BigInt(client.maximumResponseBytes),
+  }));
+  return response.contents.slice();
+}
+
+async function extents(
+  client: HostedClient,
+  selected: WireGenerationRef,
+  path: string,
+  offset: bigint,
+  length: bigint,
+  maximumSpans: number,
+): Promise<WorkspaceExtentPlan> {
+  assertOpen(client);
+  nonnegativeU64(offset, "extent offset");
+  nonnegativeU64(length, "extent length");
+  positiveU32(maximumSpans, "maximum spans");
+  const response = await call(client.rpc.planExtents({
+    generation: selected,
+    path,
+    range: { offset, length },
+    maximumExtents: maximumSpans,
+  }));
+  return { spans: response.extents.map((extent) => {
+    const range = required(extent.range, "extent range");
+    return {
+      offset: range.offset,
+      length: range.length,
+      sourceEnd: range.offset + range.length,
+      kind: extentKind(extent.kind),
+    };
   }) };
 }
 
-function transaction(client: Client, transactionId: string): FsTransaction {
+function transaction(
+  client: HostedClient,
+  initialBase: WireGenerationRef,
+  suppliedIdempotencyKey: Uint8Array | undefined,
+): FsTransaction {
+  let base = initialBase;
+  const operationOptions = operation(suppliedIdempotencyKey);
+  const mutations: WireMutation[] = [];
   let closed = false;
-  const stage = async (operation: JsonObject): Promise<void> => {
+  const stage = (value: WireMutation): Promise<void> => {
+    assertOpen(client);
     if (closed) throw new HostedFsError("closed", "transaction is closed");
-    await client.rpc({ method: "workspace_stage_transaction", transaction_id: transactionId, operation });
+    if (mutations.length >= client.maximumTransactionMutations) {
+      throw new RangeError("transaction exceeds the advertised mutation bound");
+    }
+    mutations.push(value);
+    return Promise.resolve();
   };
   return {
-    createDirAll: (path) => stage({ kind: "create-dir-all", path }),
-    createDirectory: (path) => stage({ kind: "create-directory", path }),
-    createSymbolicLink: (path, target) => stage({ kind: "create-symbolic-link", path, target_base64: toBase64(target) }),
-    write: (path, bytes) => stage({ kind: "write", path, bytes_base64: toBase64(bytes) }),
-    remove: (path) => stage({ kind: "remove", path }),
-    copy: (source, destination) => stage({ kind: "copy", source, destination }),
-    rename: (source, destination) => stage({ kind: "rename", source, destination }),
-    hardLink: (source, destination) => stage({ kind: "hard-link", source, destination }),
-    writeRange: (path, offset, bytes) => { nonnegative(offset, "write offset"); return stage({ kind: "write-range", path, offset: decimal(offset), bytes_base64: toBase64(bytes) }); },
-    resize: (path, logicalBytes) => { nonnegative(logicalBytes, "logical bytes"); return stage({ kind: "resize", path, logical_bytes: decimal(logicalBytes) }); },
-    zeroRange: (path, offset, length, allocated, extend) => { nonnegative(offset, "zero offset"); nonnegative(length, "zero length"); return stage({ kind: "zero-range", path, offset: decimal(offset), length: decimal(length), allocated, extend }); },
-    preallocate: (path, offset, length, keepSize) => { nonnegative(offset, "preallocation offset"); nonnegative(length, "preallocation length"); return stage({ kind: "preallocate", path, offset: decimal(offset), length: decimal(length), keep_size: keepSize }); },
-    cloneRange: (source, sourceOffset, destination, destinationOffset, length) => { nonnegative(sourceOffset, "source offset"); nonnegative(destinationOffset, "destination offset"); nonnegative(length, "clone length"); return stage({ kind: "clone-range", source, source_offset: decimal(sourceOffset), destination, destination_offset: decimal(destinationOffset), length: decimal(length) }); },
-    async rebase(maximumConflicts) { positiveInteger(maximumConflicts, "maximum conflicts"); return transactionRebase(await client.rpc({ method: "workspace_rebase_transaction", transaction_id: transactionId, maximum_conflicts: maximumConflicts })); },
-    async commit() { if (closed) throw new HostedFsError("closed", "transaction is closed"); return commit(await client.rpc({ method: "workspace_commit_transaction", transaction_id: transactionId })); },
-    async close() { if (!closed) { await client.rpc({ method: "workspace_close_transaction", transaction_id: transactionId }); closed = true; } },
+    createDirAll: (path) => stage(mutation("createDirectories", { path })),
+    createDirectory: (path) => stage(mutation("createDirectory", { path })),
+    createSymbolicLink: (path, target) => stage(mutation("createSymbolicLink", { path, target })),
+    write: (path, bytes) => stage(mutation("putFile", { path, contents: bytes })),
+    remove: (path) => stage(mutation("remove", { path })),
+    copy: (source, destination) => stage(mutation("copyFile", { source, destination })),
+    rename: (source, destination) => stage(mutation("rename", { source, destination, replace: false })),
+    hardLink: (source, destination) => stage(mutation("hardLink", { source, destination })),
+    writeRange(path, offset, bytes) {
+      nonnegativeU64(offset, "write offset");
+      return stage(mutation("write", { path, offset, contents: bytes }));
+    },
+    resize(path, logicalBytes) {
+      nonnegativeU64(logicalBytes, "logical bytes");
+      return stage(mutation("resize", { path, logicalBytes }));
+    },
+    zeroRange(path, offset, length, allocated, extend) {
+      nonnegativeU64(offset, "zero offset");
+      nonnegativeU64(length, "zero length");
+      return stage(mutation("zeroRange", { path, range: { offset, length }, allocated, extend }));
+    },
+    preallocate(path, offset, length, keepSize) {
+      nonnegativeU64(offset, "preallocation offset");
+      nonnegativeU64(length, "preallocation length");
+      return stage(mutation("preallocate", { path, range: { offset, length }, keepSize }));
+    },
+    cloneRange(source, sourceOffset, destination, destinationOffset, length) {
+      nonnegativeU64(sourceOffset, "source offset");
+      nonnegativeU64(destinationOffset, "destination offset");
+      nonnegativeU64(length, "clone length");
+      return stage(mutation("cloneRange", { source, sourceOffset, destination, destinationOffset, length }));
+    },
+    async rebase(maximumConflicts): Promise<TransactionRebaseResult> {
+      positiveU32(maximumConflicts, "maximum conflicts");
+      const response = await call(client.rpc.rebaseTransaction({
+        base,
+        mutations,
+        maximumConflicts,
+        operation: operationOptions,
+      }));
+      if (response.conflicts.length === 0) {
+        base = required(response.base, "rebased transaction base");
+        return { status: "rebased", generationId: base.generationId.slice(), conflicts: [], truncated: false };
+      }
+      return {
+        status: "conflicted",
+        generationId: undefined,
+        conflicts: response.conflicts.map(transactionConflict),
+        truncated: response.truncated,
+      };
+    },
+    async commit() {
+      if (closed) throw new HostedFsError("closed", "transaction is closed");
+      const response = await call(client.rpc.applyTransaction({
+        base,
+        mutations,
+        operation: operationOptions,
+        maximumConflicts: DEFAULT_MAXIMUM_CONFLICTS,
+      }));
+      return commit(response.status, response.generation);
+    },
+    close() {
+      closed = true;
+      mutations.length = 0;
+      return Promise.resolve();
+    },
   };
 }
 
-function changeSet(client: Client, workspaceName: string, workspaceId: Uint8Array, value: Record<string, unknown>): FsChangeSet {
-  const from = generation(client, workspaceName, workspaceId, fromHex(value.fromGenerationId, 32, "from generation"));
-  const to = generation(client, workspaceName, workspaceId, fromHex(value.toGenerationId, 32, "to generation"));
-  const diff = generationDiff(value);
+type MutationCase = WireMutation["mutation"] extends { case: infer C } ? C : never;
+function mutation(kind: Exclude<MutationCase, undefined>, value: Record<string, unknown>): WireMutation {
+  return create(MutationSchema, { mutation: { case: kind, value } });
+}
+
+async function diff(
+  client: HostedClient,
+  workspaceId: Uint8Array,
+  from: WireGenerationRef,
+  to: WireGenerationRef,
+  maximumChanges: number,
+): Promise<FsChangeSet> {
+  const response = await call(client.rpc.diff({ from, to, maximumChanges }));
+  const semantic = generationDiff(response);
   const result: FsChangeSet = {
-    from, to, changes: () => diff,
-    async compose(next, maximumChanges) {
-      positiveInteger(maximumChanges, "maximum changes");
-      const owned = changeSetOwners.get(next);
-      if (owned === undefined || owned.client !== client || owned.workspace !== workspaceName || toHex(owned.from) !== toHex(to.id)) throw new TypeError("change sets are not contiguous in this hosted workspace");
-      return changeSet(client, workspaceName, workspaceId, await client.rpc({ method: "workspace_diff", workspace: workspaceName, from_generation_id: toHex(from.id), to_generation_id: toHex(owned.to), maximum_changes: maximumChanges }));
+    from: generation(client, required(response.from, "diff base")),
+    to: generation(client, required(response.to, "diff result")),
+    changes: () => semantic,
+    async compose(next, bound) {
+      positiveU32(bound, "maximum changes");
+      const owner = changeSetOwners.get(next);
+      if (owner === undefined || owner.client !== client || !equalBytes(owner.workspaceId, workspaceId)
+        || !equalBytes(owner.from.generationId, to.generationId)) {
+        throw new TypeError("change sets are not contiguous in this hosted workspace");
+      }
+      return diff(client, workspaceId, from, owner.to, bound);
     },
   };
-  changeSetOwners.set(result, { client, workspace: workspaceName, from: from.id, to: to.id });
+  changeSetOwners.set(result, { client, workspaceId, from, to });
   return result;
 }
 
-const changeSetOwners = new WeakMap<FsChangeSet, { readonly client: Client; readonly workspace: string; readonly from: Uint8Array; readonly to: Uint8Array }>();
-
-function joinPlan(client: Client, value: Record<string, unknown>): FsJoinPlan {
-  const planId = string(value.planId, "join plan identity");
-  const targetHead = fromHex(value.targetGenerationId, 32, "target generation");
-  const commonAncestor = fromHex(value.commonAncestorGenerationId, 32, "common ancestor");
-  let closed = false;
+function joinPlan(client: HostedClient, plan: WireJoinPlan): FsJoinPlan {
+  const target = required(plan.expectedTarget, "join target");
+  const common = required(plan.commonAncestor, "join common ancestor");
   return {
-    targetHead, commonAncestor,
+    targetHead: exactBytes(target.generationId, 32, "target generation"),
+    commonAncestor: exactBytes(common.generationId, 32, "common ancestor"),
     async apply(ifTarget, idempotencyKey) {
-      if (closed) throw new HostedFsError("closed", "join plan is closed");
       requireBytes(ifTarget, 32, "target generation");
-      return joinResult(await client.rpc(optionalIdentity({ method: "workspace_apply_join", plan_id: planId, if_target_generation_id: toHex(ifTarget) }, idempotencyKey)));
+      if (!equalBytes(ifTarget, target.generationId)) {
+        return { status: "stale-target", generationId: target.generationId.slice(), conflicts: [], truncated: false };
+      }
+      const response = await call(client.rpc.applyJoin({ plan, operation: operation(idempotencyKey) }));
+      return joinResult(response.status, response.generation, response.conflicts, response.truncated);
     },
-    async close() { if (!closed) { await client.rpc({ method: "workspace_close_join_plan", plan_id: planId }); closed = true; } },
+    close: () => Promise.resolve(),
   };
 }
 
-function commit(value: Record<string, unknown>): WorkspaceCommit {
-  const status = string(value.status, "commit status");
-  if (status !== "committed" && status !== "already-committed" && status !== "conflict" && status !== "fenced" && status !== "idempotency-conflict") throw new TypeError("invalid commit status");
-  return { status: status as WorkspaceCommitStatus, generationId: value.generationId === undefined || value.generationId === null ? undefined : fromHex(value.generationId, 32, "generation identity") };
+function generationDiff(value: DiffResponse): GenerationDiff {
+  return {
+    files: value.files.map((entry): FileRecordChange => ({
+      fileId: exactBytes(entry.fileId, 16, "file identity"),
+      before: entry.before === undefined ? undefined : fileSnapshot(entry.before),
+      after: entry.after === undefined ? undefined : fileSnapshot(entry.after),
+    })),
+    bindings: value.bindings.map((entry): DirectoryBindingChange => ({
+      directoryId: exactBytes(entry.directoryId, 16, "directory identity"),
+      name: logicalName(required(entry.name, "binding name")),
+      before: entry.before === undefined ? undefined : treeEntry(entry.before),
+      after: entry.after === undefined ? undefined : treeEntry(entry.after),
+    })),
+    truncated: value.truncated,
+    work: workCounters(required(value.work, "diff work")),
+  };
 }
 
-function rebaseResult(value: Record<string, unknown>): WorkspaceRebaseResult {
-  const status = string(value.status, "rebase status");
-  if (status !== "rebased" && status !== "already-rebased" && status !== "current" && status !== "stale" && status !== "conflicted" && status !== "fenced" && status !== "idempotency-conflict") throw new TypeError("invalid rebase status");
-  return { status: status as WorkspaceRebaseStatus, generationId: optionalHex(value.generationId, 32, "generation identity"), conflicts: conflicts(value.conflicts), truncated: boolean(value.truncated, "conflict truncation") };
+function fileSnapshot(value: WireFileRecordSnapshot): FileRecordSnapshot {
+  return {
+    fileId: exactBytes(value.fileId, 16, "file identity"),
+    fileKind: fileKind(value.fileKind),
+    linkCount: value.linkCount,
+    metadataObject: exactBytes(value.metadataObject, 33, "metadata object"),
+    payloadKind: value.payloadKind,
+    logicalBytes: optionalU64(value.logicalBytes),
+    payloadObject: value.payloadObject.length === 0 ? undefined : exactBytes(value.payloadObject, 33, "payload object"),
+    inlineBytes: value.payloadKind === "inline-regular" ? value.inlineBytes.slice() : undefined,
+    deviceMajor: optionalU32(value.deviceMajor),
+    deviceMinor: optionalU32(value.deviceMinor),
+  };
 }
 
-function joinResult(value: Record<string, unknown>): JoinResult {
-  const status = string(value.status, "join status");
-  if (status !== "applied" && status !== "already-applied" && status !== "no-changes" && status !== "stale-target" && status !== "conflicted" && status !== "fenced" && status !== "idempotency-conflict") throw new TypeError("invalid join status");
-  return { status: status as JoinStatus, generationId: optionalHex(value.generationId, 32, "generation identity"), conflicts: conflicts(value.conflicts), truncated: boolean(value.truncated, "conflict truncation") };
+function treeEntry(value: WireTreeEntrySnapshot): TreeEntrySnapshot {
+  return {
+    name: logicalName(required(value.name, "tree entry name")),
+    fileId: exactBytes(value.fileId, 16, "file identity"),
+    fileKind: fileKind(value.fileKind),
+  };
 }
 
-function transactionRebase(value: Record<string, unknown>): TransactionRebaseResult {
-  const status = string(value.status, "transaction rebase status");
-  if (status !== "rebased" && status !== "conflicted") throw new TypeError("invalid transaction rebase status");
-  return { status, generationId: optionalHex(value.generationId, 32, "generation identity"), conflicts: array(value.conflicts, "transaction conflicts").map(transactionConflict), truncated: boolean(value.truncated, "conflict truncation") };
+function transactionConflict(value: WireConflict): TransactionConflict {
+  let region: TransactionConflict["region"];
+  let fileId: Uint8Array | undefined;
+  let directoryId: Uint8Array | undefined;
+  let offset: bigint | undefined;
+  let length: bigint | undefined;
+  let sparseTarget: "data" | "hole" | undefined;
+  let name: WorkspaceName | undefined;
+  let maximumEntries: number | undefined;
+  switch (value.region.case) {
+    case "fileRecord": region = "file-record"; fileId = value.region.value.fileId.slice(); break;
+    case "metadata": region = "metadata"; fileId = value.region.value.fileId.slice(); break;
+    case "fileLength": region = "file-length"; fileId = value.region.value.fileId.slice(); break;
+    case "contentRange": {
+      region = "content-range";
+      fileId = value.region.value.fileId.slice();
+      const range = required(value.region.value.range, "conflict range");
+      offset = range.offset;
+      length = range.length;
+      break;
+    }
+    case "sparseSeek":
+      region = "sparse-seek";
+      fileId = value.region.value.fileId.slice();
+      offset = value.region.value.offset;
+      sparseTarget = value.region.value.target === SparseTarget.DATA ? "data" : "hole";
+      break;
+    case "directoryName":
+      region = "directory-name";
+      directoryId = value.region.value.directoryId.slice();
+      name = logicalName(required(value.region.value.name, "conflict name"));
+      break;
+    case "directoryRange":
+      region = "directory-range";
+      directoryId = value.region.value.directoryId.slice();
+      name = value.region.value.after === undefined ? undefined : logicalName(value.region.value.after);
+      maximumEntries = value.region.value.maximumEntries;
+      break;
+    default: throw new HostedFsError("invalid_response", "conflict region is absent");
+  }
+  return {
+    region, fileId, directoryId, offset, length, sparseTarget, name, maximumEntries,
+    usage: conflictUse(value.use),
+    expected: value.expectedDigest.length === 0 ? undefined : value.expectedDigest.slice(),
+    actual: value.actualDigest.length === 0 ? undefined : value.actualDigest.slice(),
+  };
 }
 
-function transactionConflict(value: unknown): TransactionConflict {
-  const item = object(value, "transaction conflict");
-  const region = string(item.region, "conflict region");
-  if (region !== "file-record" && region !== "metadata" && region !== "file-length" && region !== "content-range" && region !== "sparse-seek" && region !== "directory-name" && region !== "directory-range") throw new TypeError("invalid conflict region");
-  const usage = string(item.usage, "dependency use");
-  if (usage !== "observation" && usage !== "mutation" && usage !== "observation-and-mutation") throw new TypeError("invalid dependency use");
-  const sparse = item.sparseTarget;
-  if (sparse !== undefined && sparse !== null && sparse !== "data" && sparse !== "hole") throw new TypeError("invalid sparse target");
-  return { region, fileId: optionalHex(item.fileId, 16, "file identity"), directoryId: optionalHex(item.directoryId, 16, "directory identity"), offset: optionalBigint(item.offset, "conflict offset"), length: optionalBigint(item.length, "conflict length"), sparseTarget: sparse === null || sparse === undefined ? undefined : sparse, name: item.name === null || item.name === undefined ? undefined : logicalName(item.name), maximumEntries: item.maximumEntries === null || item.maximumEntries === undefined ? undefined : integer(item.maximumEntries, "maximum entries"), usage, expected: optionalHex(item.expected, 32, "expected digest"), actual: optionalHex(item.actual, 32, "actual digest") };
+function mergeConflict(value: WireConflict): MergeConflict {
+  switch (value.region.case) {
+    case "directoryName": return {
+      kind: "binding",
+      directoryId: exactBytes(value.region.value.directoryId, 16, "directory identity"),
+      name: logicalName(required(value.region.value.name, "conflict name")),
+    };
+    case "directoryRange": return {
+      kind: "binding",
+      directoryId: exactBytes(value.region.value.directoryId, 16, "directory identity"),
+      name: logicalName(required(value.region.value.after, "conflict range cursor")),
+    };
+    case "fileRecord": return { kind: "file", fileId: value.region.value.fileId.slice() };
+    case "metadata": return { kind: "file", fileId: value.region.value.fileId.slice() };
+    case "fileLength": return { kind: "file", fileId: value.region.value.fileId.slice() };
+    case "contentRange": return { kind: "file", fileId: value.region.value.fileId.slice() };
+    case "sparseSeek": return { kind: "file", fileId: value.region.value.fileId.slice() };
+    default: throw new HostedFsError("invalid_response", "merge conflict region is absent");
+  }
 }
 
-function conflicts(value: unknown): readonly MergeConflict[] { return array(value, "merge conflicts").map((entry) => { const item = object(entry, "merge conflict"); const kind = string(item.kind, "conflict kind"); if (kind === "file") return { kind, fileId: fromHex(item.fileId, 16, "file identity") }; if (kind === "binding") return { kind, directoryId: fromHex(item.directoryId, 16, "directory identity"), name: logicalName(item.name) }; throw new TypeError("invalid merge conflict"); }); }
-
-function generationDiff(value: Record<string, unknown>): GenerationDiff {
-  return { files: array(value.files, "file changes").map(fileChange), bindings: array(value.bindings, "binding changes").map(bindingChange), truncated: boolean(value.truncated, "diff truncation"), work: work(value.work) };
+function commit(status: MutationStatus, generationRef: WireGenerationRef | undefined): WorkspaceCommit {
+  const statuses: Partial<Record<MutationStatus, WorkspaceCommitStatus>> = {
+    [MutationStatus.COMMITTED]: "committed",
+    [MutationStatus.ALREADY_COMMITTED]: "already-committed",
+    [MutationStatus.CONFLICT]: "conflict",
+    [MutationStatus.FENCED]: "fenced",
+    [MutationStatus.IDEMPOTENCY_CONFLICT]: "idempotency-conflict",
+  };
+  const translated = statuses[status];
+  if (translated === undefined) throw new HostedFsError("invalid_response", "invalid mutation status");
+  return { status: translated, generationId: generationRef?.generationId.slice() };
 }
-function fileChange(value: unknown): FileRecordChange { const item = object(value, "file change"); return { fileId: fromHex(item.fileId, 16, "file identity"), before: item.before === null ? undefined : fileSnapshot(item.before), after: item.after === null ? undefined : fileSnapshot(item.after) }; }
-function fileSnapshot(value: unknown): FileRecordSnapshot { const item = object(value, "file record"); return { fileId: fromHex(item.fileId, 16, "file identity"), fileKind: fileKind(item.fileKind), linkCount: bigint(item.linkCount, "link count"), metadataObject: fromHex(item.metadataObject, 33, "metadata object"), payloadKind: string(item.payloadKind, "payload kind"), logicalBytes: optionalBigint(item.logicalBytes, "logical bytes"), payloadObject: optionalHex(item.payloadObject, 33, "payload object"), inlineBytes: item.inlineBytesBase64 === null || item.inlineBytesBase64 === undefined ? undefined : fromBase64(item.inlineBytesBase64, "inline bytes"), deviceMajor: optionalInteger(item.deviceMajor, "device major"), deviceMinor: optionalInteger(item.deviceMinor, "device minor") }; }
-function bindingChange(value: unknown): DirectoryBindingChange { const item = object(value, "binding change"); return { directoryId: fromHex(item.directoryId, 16, "directory identity"), name: logicalName(item.name), before: item.before === null ? undefined : treeEntry(item.before), after: item.after === null ? undefined : treeEntry(item.after) }; }
-function treeEntry(value: unknown): TreeEntrySnapshot { const item = object(value, "tree entry"); return { name: logicalName(item.name), fileId: fromHex(item.fileId, 16, "file identity"), fileKind: fileKind(item.fileKind) }; }
 
-function metadataValue(value: Record<string, unknown>): WorkspaceMetadata { return { posixMode: optionalInteger(value.posixMode, "POSIX mode"), posixUid: optionalInteger(value.posixUid, "POSIX uid"), posixGid: optionalInteger(value.posixGid, "POSIX gid"), posixFlags: optionalBigint(value.posixFlags, "POSIX flags"), windowsAttributes: optionalInteger(value.windowsAttributes, "Windows attributes"), createdNs: optionalBigint(value.createdNs, "created timestamp"), modifiedNs: optionalBigint(value.modifiedNs, "modified timestamp"), accessedNs: optionalBigint(value.accessedNs, "accessed timestamp"), changedNs: optionalBigint(value.changedNs, "changed timestamp"), hasNamedAttributes: boolean(value.hasNamedAttributes, "named attributes"), hasAcl: boolean(value.hasAcl, "ACL"), hasSecurityDescriptor: boolean(value.hasSecurityDescriptor, "security descriptor") }; }
-function logicalName(value: unknown): WorkspaceName { const item = object(value, "logical name"); const encoding = string(item.encoding, "name encoding"); if (encoding !== "utf8" && encoding !== "posix_bytes" && encoding !== "windows_utf16le") throw new TypeError("invalid name encoding"); return { encoding: encoding === "posix_bytes" ? "posix-bytes" : encoding === "windows_utf16le" ? "windows-utf16le" : encoding, bytes: fromBase64(item.bytesBase64, "name bytes") }; }
-function wireEncoding(value: WorkspaceName["encoding"]): string { return value === "posix-bytes" ? "posix_bytes" : value === "windows-utf16le" ? "windows_utf16le" : value; }
-function fileKind(value: unknown): WorkspaceFileKind { const kind = string(value, "file kind").replaceAll("_", "-"); if (kind !== "regular" && kind !== "directory" && kind !== "symbolic-link" && kind !== "fifo" && kind !== "socket" && kind !== "character-device" && kind !== "block-device" && kind !== "reparse-point" && kind !== "mount-boundary") throw new TypeError("invalid file kind"); return kind; }
+function workspaceRebase(
+  status: RebaseStatus,
+  generationRef: WireGenerationRef | undefined,
+  conflicts: readonly WireConflict[],
+  truncated: boolean,
+): WorkspaceRebaseResult {
+  const statuses: Partial<Record<RebaseStatus, WorkspaceRebaseStatus>> = {
+    [RebaseStatus.REBASED]: "rebased",
+    [RebaseStatus.ALREADY_REBASED]: "already-rebased",
+    [RebaseStatus.CURRENT]: "current",
+    [RebaseStatus.STALE]: "stale",
+    [RebaseStatus.CONFLICTED]: "conflicted",
+    [RebaseStatus.FENCED]: "fenced",
+    [RebaseStatus.IDEMPOTENCY_CONFLICT]: "idempotency-conflict",
+  };
+  const translated = statuses[status];
+  if (translated === undefined) throw new HostedFsError("invalid_response", "invalid rebase status");
+  return {
+    status: translated,
+    generationId: generationRef?.generationId.slice(),
+    conflicts: conflicts.map(mergeConflict),
+    truncated,
+  };
+}
 
-function work(value: unknown): WorkCounters { const item = object(value, "work counters"); const read = (name: string): number => integer(item[name], `work.${name}`); return { authorityRecordsRead: read("authorityRecordsRead"), authorityRecordsAppended: read("authorityRecordsAppended"), authorityBytesRead: read("authorityBytesRead"), authorityBytesWritten: read("authorityBytesWritten"), objectProbes: read("objectProbes"), backendReadOperations: read("backendReadOperations"), backendWriteOperations: read("backendWriteOperations"), durabilityOperations: read("durabilityOperations"), pageReads: read("pageReads"), pageWrites: read("pageWrites"), objectBytesRead: read("objectBytesRead"), objectBytesWritten: read("objectBytesWritten"), bytesHashed: read("bytesHashed"), bytesCopied: read("bytesCopied"), bytesEncoded: read("bytesEncoded"), sourceBytesRead: read("sourceBytesRead"), outputBytes: read("outputBytes"), itemsExamined: read("itemsExamined"), itemsReturned: read("itemsReturned"), allocationOperations: read("allocationOperations"), peakAllocationBytes: read("peakAllocationBytes"), materializations: read("materializations") }; }
+function joinResult(
+  status: WireJoinStatus,
+  generationRef: WireGenerationRef | undefined,
+  conflicts: readonly WireConflict[],
+  truncated: boolean,
+): JoinResult {
+  const statuses: Partial<Record<WireJoinStatus, JoinStatus>> = {
+    [WireJoinStatus.APPLIED]: "applied",
+    [WireJoinStatus.ALREADY_APPLIED]: "already-applied",
+    [WireJoinStatus.NO_CHANGES]: "no-changes",
+    [WireJoinStatus.STALE_TARGET]: "stale-target",
+    [WireJoinStatus.CONFLICTED]: "conflicted",
+    [WireJoinStatus.FENCED]: "fenced",
+    [WireJoinStatus.IDEMPOTENCY_CONFLICT]: "idempotency-conflict",
+  };
+  const translated = statuses[status];
+  if (translated === undefined) throw new HostedFsError("invalid_response", "invalid join status");
+  return {
+    status: translated,
+    generationId: generationRef?.generationId.slice(),
+    conflicts: conflicts.map(mergeConflict),
+    truncated,
+  };
+}
 
-function withGeneration(command: Command, selected: Uint8Array | undefined): Command { return selected === undefined ? command : { ...command, generation_id: toHex(selected) }; }
-function optionalIdentity(command: Command, identity: Uint8Array | undefined): Command { if (identity === undefined) return command; requireBytes(identity, 16, "idempotency key"); return { ...command, idempotency_key: toHex(identity) }; }
-function generationId(value: Record<string, unknown>): Uint8Array { return fromHex(value.generationId, 32, "generation identity"); }
-function deleteStatus(value: unknown): WorkspaceDeleteStatus { const status = string(value, "delete status"); if (status !== "deleted" && status !== "already-deleted" && status !== "conflict" && status !== "idempotency-conflict") throw new TypeError("invalid delete status"); return status; }
-function validateJoin(value: JoinOptions): void { positiveInteger(value.maximumGenerations, "maximum generations"); positiveInteger(value.maximumChanges, "maximum changes"); positiveInteger(value.maximumConflicts, "maximum conflicts"); }
-function validateRebase(value: WorkspaceRebaseOptions): void { positiveInteger(value.maximumGenerations, "maximum generations"); positiveInteger(value.maximumChanges, "maximum changes"); positiveInteger(value.maximumConflicts, "maximum conflicts"); }
+function metadata(value: WireMetadata | undefined): WorkspaceMetadata {
+  const exact = required(value, "metadata");
+  return {
+    posixMode: optionalU32(exact.posixMode), posixUid: optionalU32(exact.posixUid),
+    posixGid: optionalU32(exact.posixGid), posixFlags: optionalU64(exact.posixFlags),
+    windowsAttributes: optionalU32(exact.windowsAttributes), createdNs: optionalI64(exact.createdNs),
+    modifiedNs: optionalI64(exact.modifiedNs), accessedNs: optionalI64(exact.accessedNs),
+    changedNs: optionalI64(exact.changedNs), hasNamedAttributes: exact.hasNamedAttributes,
+    hasAcl: exact.hasAcl, hasSecurityDescriptor: exact.hasSecurityDescriptor,
+  };
+}
+
+function optionalU32(value: OptionalU32 | undefined): number | undefined {
+  return value?.value.case === "present" ? value.value.value : undefined;
+}
+function optionalU64(value: OptionalU64 | undefined): bigint | undefined {
+  return value?.value.case === "present" ? value.value.value : undefined;
+}
+function optionalI64(value: OptionalI64 | undefined): bigint | undefined {
+  return value?.value.case === "present" ? value.value.value : undefined;
+}
+
+function logicalName(value: WireLogicalName): WorkspaceName {
+  const encoding = value.encoding === NameEncoding.UTF8 ? "utf8"
+    : value.encoding === NameEncoding.POSIX_BYTES ? "posix-bytes"
+      : value.encoding === NameEncoding.WINDOWS_UTF16LE ? "windows-utf16le" : undefined;
+  if (encoding === undefined) throw new HostedFsError("invalid_response", "invalid name encoding");
+  return { encoding, bytes: value.bytes.slice() };
+}
+
+function wireName(value: WorkspaceName): { readonly encoding: NameEncoding; readonly bytes: Uint8Array } {
+  return {
+    encoding: value.encoding === "utf8" ? NameEncoding.UTF8
+      : value.encoding === "posix-bytes" ? NameEncoding.POSIX_BYTES : NameEncoding.WINDOWS_UTF16LE,
+    bytes: value.bytes,
+  };
+}
+
+function fileKind(value: FileKind): WorkspaceFileKind {
+  switch (value) {
+    case FileKind.REGULAR: return "regular";
+    case FileKind.DIRECTORY: return "directory";
+    case FileKind.SYMBOLIC_LINK: return "symbolic-link";
+    case FileKind.FIFO: return "fifo";
+    case FileKind.SOCKET: return "socket";
+    case FileKind.CHARACTER_DEVICE: return "character-device";
+    case FileKind.BLOCK_DEVICE: return "block-device";
+    case FileKind.REPARSE_POINT: return "reparse-point";
+    case FileKind.MOUNT_BOUNDARY: return "mount-boundary";
+    default: throw new HostedFsError("invalid_response", "invalid file kind");
+  }
+}
+
+function extentKind(value: ExtentKind): "hole" | "allocated-zero" | "content" {
+  switch (value) {
+    case ExtentKind.HOLE: return "hole";
+    case ExtentKind.ALLOCATED_ZERO: return "allocated-zero";
+    case ExtentKind.CONTENT: return "content";
+    default: throw new HostedFsError("invalid_response", "invalid extent kind");
+  }
+}
+
+function workCounters(value: WireWorkCounters): WorkCounters {
+  return {
+    authorityRecordsRead: safeNumber(value.authorityRecordsRead, "authority records read"),
+    authorityRecordsAppended: safeNumber(value.authorityRecordsAppended, "authority records appended"),
+    authorityBytesRead: safeNumber(value.authorityBytesRead, "authority bytes read"),
+    authorityBytesWritten: safeNumber(value.authorityBytesWritten, "authority bytes written"),
+    objectProbes: safeNumber(value.objectProbes, "object probes"),
+    backendReadOperations: safeNumber(value.backendReadOperations, "backend reads"),
+    backendWriteOperations: safeNumber(value.backendWriteOperations, "backend writes"),
+    durabilityOperations: safeNumber(value.durabilityOperations, "durability operations"),
+    pageReads: safeNumber(value.pageReads, "page reads"), pageWrites: safeNumber(value.pageWrites, "page writes"),
+    objectBytesRead: safeNumber(value.objectBytesRead, "object bytes read"),
+    objectBytesWritten: safeNumber(value.objectBytesWritten, "object bytes written"),
+    bytesHashed: safeNumber(value.bytesHashed, "bytes hashed"), bytesCopied: safeNumber(value.bytesCopied, "bytes copied"),
+    bytesEncoded: safeNumber(value.bytesEncoded, "bytes encoded"), sourceBytesRead: safeNumber(value.sourceBytesRead, "source bytes read"),
+    outputBytes: safeNumber(value.outputBytes, "output bytes"), itemsExamined: safeNumber(value.itemsExamined, "items examined"),
+    itemsReturned: safeNumber(value.itemsReturned, "items returned"),
+    allocationOperations: safeNumber(value.allocationOperations, "allocation operations"),
+    peakAllocationBytes: safeNumber(value.peakAllocationBytes, "peak allocation bytes"),
+    materializations: safeNumber(value.materializations, "materializations"),
+  };
+}
+
+function operation(idempotencyKey?: Uint8Array) {
+  const identity = idempotencyKey?.slice() ?? randomIdentity();
+  requireBytes(identity, 16, "idempotency key");
+  return create(OperationOptionsSchema, { idempotencyKey: identity });
+}
+function randomIdentity(): Uint8Array {
+  const value = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(value);
+  return value;
+}
+
+function requireGeneration(value: FsGeneration, client: HostedClient, workspaceId: Uint8Array): WireGenerationRef {
+  const owner = generationOwners.get(value);
+  if (owner === undefined || owner.client !== client
+    || !equalBytes(required(owner.reference.workspace, "generation workspace").workspaceId, workspaceId)) {
+    throw new TypeError("generation belongs to another hosted workspace");
+  }
+  return owner.reference;
+}
+function requireWorkspace(value: FsWorkspace, client: HostedClient): WorkspaceOwner {
+  const owner = workspaceOwners.get(value);
+  if (owner === undefined || owner.client !== client) throw new TypeError("workspace belongs to another hosted runtime");
+  return owner;
+}
+
+function deleteStatus(value: MutationStatus): WorkspaceDeleteStatus {
+  switch (value) {
+    case MutationStatus.COMMITTED: return "deleted";
+    case MutationStatus.ALREADY_COMMITTED: return "already-deleted";
+    case MutationStatus.CONFLICT: return "conflict";
+    case MutationStatus.IDEMPOTENCY_CONFLICT: return "idempotency-conflict";
+    default: throw new HostedFsError("invalid_response", "invalid delete status");
+  }
+}
+function joinHistory(value: JoinOptions["history"]): JoinHistory {
+  switch (value) {
+    case "merge": return JoinHistory.MERGE;
+    case "rebase": return JoinHistory.REBASE;
+    case "squash": return JoinHistory.SQUASH;
+    case "cherry-pick": return JoinHistory.CHERRY_PICK;
+  }
+}
+function conflictUse(value: ConflictUse): TransactionConflict["usage"] {
+  switch (value) {
+    case ConflictUse.OBSERVATION: return "observation";
+    case ConflictUse.MUTATION: return "mutation";
+    case ConflictUse.OBSERVATION_AND_MUTATION: return "observation-and-mutation";
+    default: throw new HostedFsError("invalid_response", "invalid conflict use");
+  }
+}
+function validateJoin(value: JoinOptions): void {
+  positiveU32(value.maximumGenerations, "maximum generations");
+  positiveU32(value.maximumChanges, "maximum changes");
+  positiveU32(value.maximumConflicts, "maximum conflicts");
+}
+function validateRebase(value: WorkspaceRebaseOptions): void {
+  positiveU32(value.maximumGenerations, "maximum generations");
+  positiveU32(value.maximumChanges, "maximum changes");
+  positiveU32(value.maximumConflicts, "maximum conflicts");
+}
+
+function assertOpen(client: HostedClient): void {
+  if (client.closed) throw new HostedFsError("closed", "hosted filesystem is closed");
+}
 function requireName(value: string): void { if (value.length === 0) throw new RangeError("name must be non-empty"); }
-function positive(value: bigint, name: string): void { if (value <= 0n || value > 18_446_744_073_709_551_615n) throw new RangeError(`${name} must be a positive u64`); }
-function nonnegative(value: bigint, name: string): void { if (value < 0n || value > 18_446_744_073_709_551_615n) throw new RangeError(`${name} must be a u64`); }
-function decimal(value: bigint): string { return value.toString(10); }
-function positiveInteger(value: number, name: string): void { if (!Number.isSafeInteger(value) || value <= 0 || value > 0xffff_ffff) throw new RangeError(`${name} must be a positive u32`); }
-function object(value: unknown, name: string): Record<string, unknown> { if (typeof value !== "object" || value === null || Array.isArray(value)) throw new TypeError(`${name} must be an object`); return value as Record<string, unknown>; }
-function array(value: unknown, name: string): readonly unknown[] { if (!Array.isArray(value)) throw new TypeError(`${name} must be an array`); return value; }
-function string(value: unknown, name: string): string { if (typeof value !== "string") throw new TypeError(`${name} must be a string`); return value; }
-function boolean(value: unknown, name: string): boolean { if (typeof value !== "boolean") throw new TypeError(`${name} must be boolean`); return value; }
-function integer(value: unknown, name: string): number { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a nonnegative safe integer`); return value; }
-function optionalInteger(value: unknown, name: string): number | undefined { return value === null || value === undefined ? undefined : integer(value, name); }
-function bigint(value: unknown, name: string): bigint { if (typeof value === "string" && /^[0-9]+$/.test(value)) return BigInt(value); if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return BigInt(value); throw new TypeError(`${name} must be an exact nonnegative integer`); }
-function optionalBigint(value: unknown, name: string): bigint | undefined { return value === null || value === undefined ? undefined : bigint(value, name); }
-function requireBytes(value: Uint8Array, length: number, name: string): void { if (!(value instanceof Uint8Array) || value.byteLength !== length) throw new RangeError(`${name} must be ${length} bytes`); }
-function toHex(value: Uint8Array): string { let result = ""; for (const byte of value) result += byte.toString(16).padStart(2, "0"); return result; }
-function fromHex(value: unknown, length: number, name: string): Uint8Array { const text = string(value, name); if (text.length !== length * 2 || !/^[0-9a-f]+$/.test(text)) throw new TypeError(`${name} is not canonical lowercase hex`); const bytes = new Uint8Array(length); for (let index = 0; index < length; index++) bytes[index] = Number.parseInt(text.slice(index * 2, index * 2 + 2), 16); return bytes; }
-function optionalHex(value: unknown, length: number, name: string): Uint8Array | undefined { return value === null || value === undefined ? undefined : fromHex(value, length, name); }
-function toBase64(value: Uint8Array): string { let binary = ""; const block = 0x8000; for (let offset = 0; offset < value.length; offset += block) binary += String.fromCharCode(...value.subarray(offset, offset + block)); return btoa(binary); }
-function fromBase64(value: unknown, name: string): Uint8Array { const text = string(value, name); let decoded: string; try { decoded = atob(text); } catch { throw new TypeError(`${name} is not base64`); } const bytes = new Uint8Array(decoded.length); for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index); return bytes; }
+function positiveSafeInteger(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be positive`);
+}
+function positiveU32(value: number, name: string): void {
+  if (!Number.isInteger(value) || value <= 0 || value > 0xffff_ffff) throw new RangeError(`${name} must be a positive u32`);
+}
+function positiveU64(value: bigint, name: string): void {
+  if (value <= 0n || value > 0xffff_ffff_ffff_ffffn) throw new RangeError(`${name} must be a positive u64`);
+}
+function nonnegativeU64(value: bigint, name: string): void {
+  if (value < 0n || value > 0xffff_ffff_ffff_ffffn) throw new RangeError(`${name} must be a u64`);
+}
+function required<T>(value: T | undefined, name: string): T {
+  if (value === undefined) throw new HostedFsError("invalid_response", `${name} is absent`);
+  return value;
+}
+function requireBytes(value: Uint8Array, length: number, name: string): void {
+  if (!(value instanceof Uint8Array) || value.byteLength !== length) {
+    throw new HostedFsError("invalid_response", `${name} must contain ${length} bytes`);
+  }
+}
+function exactBytes(value: Uint8Array, length: number, name: string): Uint8Array {
+  requireBytes(value, length, name);
+  return value.slice();
+}
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index++) difference |= left[index]! ^ right[index]!;
+  return difference === 0;
+}
+function safeNumber(value: bigint, name: string): number {
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new HostedFsError("invalid_response", `${name} exceeds JavaScript's exact integer range`);
+  }
+  return Number(value);
+}
+async function call<T>(request: Promise<T>): Promise<T> {
+  try { return await request; }
+  catch (error) {
+    if (error instanceof HostedFsError) throw error;
+    if (error instanceof ConnectError) {
+      const codes: Partial<Record<Code, string>> = {
+        [Code.Canceled]: "cancelled",
+        [Code.InvalidArgument]: "invalid_argument",
+        [Code.DeadlineExceeded]: "deadline_exceeded",
+        [Code.NotFound]: "not_found",
+        [Code.AlreadyExists]: "already_exists",
+        [Code.PermissionDenied]: "permission_denied",
+        [Code.ResourceExhausted]: "resource_exhausted",
+        [Code.FailedPrecondition]: "failed_precondition",
+        [Code.Aborted]: "aborted",
+        [Code.OutOfRange]: "out_of_range",
+        [Code.Unimplemented]: "unsupported",
+        [Code.Internal]: "internal",
+        [Code.Unavailable]: "unavailable",
+        [Code.DataLoss]: "data_loss",
+        [Code.Unauthenticated]: "unauthenticated",
+      };
+      throw new HostedFsError(codes[error.code] ?? "unknown", error.rawMessage);
+    }
+    throw error;
+  }
+}
 
-async function readBounded(response: Response, maximum: number): Promise<Uint8Array> {
-  const declared = response.headers.get("content-length");
-  if (declared !== null && (!/^[0-9]+$/.test(declared) || BigInt(declared) > BigInt(maximum))) throw new HostedFsError("response_too_large", "filesystem response exceeds the configured bound");
-  if (response.body === null) { const bytes = new Uint8Array(await response.arrayBuffer()); if (bytes.byteLength > maximum) throw new HostedFsError("response_too_large", "filesystem response exceeds the configured bound"); return bytes; }
-  const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let total = 0;
-  try { for (;;) { const next = await reader.read(); if (next.done) break; total += next.value.byteLength; if (total > maximum) { await reader.cancel(); throw new HostedFsError("response_too_large", "filesystem response exceeds the configured bound"); } chunks.push(next.value); } }
-  finally { reader.releaseLock(); }
-  const joined = new Uint8Array(total); let offset = 0; for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.byteLength; } return joined;
+function boundedFetch(send: typeof globalThis.fetch, maximumBytes: number): typeof globalThis.fetch {
+  return async (input, init) => {
+    const response = await send(input, init);
+    const declared = response.headers.get("content-length");
+    if (declared !== null && /^\d+$/.test(declared) && BigInt(declared) > BigInt(maximumBytes)) {
+      await response.body?.cancel();
+      throw new HostedFsError("response_too_large", "filesystem response exceeds its local bound");
+    }
+    if (response.body === null) return response;
+    let received = 0;
+    const bounded = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        received += chunk.byteLength;
+        if (received > maximumBytes) {
+          controller.error(new HostedFsError("response_too_large", "filesystem response exceeds its local bound"));
+        } else {
+          controller.enqueue(chunk);
+        }
+      },
+    }));
+    return new Response(bounded, response);
+  };
 }
