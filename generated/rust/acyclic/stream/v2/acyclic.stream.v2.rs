@@ -361,4 +361,39 @@ pub struct ReadCommitRequest {
     #[prost(bytes="vec", tag="1")]
     pub commit_id: ::prost::alloc::vec::Vec<u8>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct InspectIdempotencyRequest {
+    #[prost(bytes="vec", tag="1")]
+    pub idempotency_key: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct IdempotencyObservation {
+    #[prost(bytes="vec", tag="1")]
+    pub idempotency_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes="vec", tag="2")]
+    pub request_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(oneof="idempotency_observation::Outcome", tags="3, 4, 5, 6, 7")]
+    pub outcome: ::core::option::Option<idempotency_observation::Outcome>,
+}
+/// Nested message and enum types in `IdempotencyObservation`.
+pub mod idempotency_observation {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Outcome {
+        #[prost(message, tag="3")]
+        Append(super::AppendResponse),
+        #[prost(message, tag="4")]
+        Fork(super::ForkReceipt),
+        #[prost(message, tag="5")]
+        Trim(super::TrimReceipt),
+        #[prost(message, tag="6")]
+        Delete(super::DeleteReceipt),
+        #[prost(message, tag="7")]
+        Commit(super::CommitResponse),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct InspectIdempotencyResponse {
+    #[prost(message, optional, tag="1")]
+    pub observation: ::core::option::Option<IdempotencyObservation>,
+}
 // @@protoc_insertion_point(module)

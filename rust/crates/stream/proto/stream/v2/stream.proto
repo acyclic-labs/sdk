@@ -231,7 +231,28 @@ message ReadCommitRequest {
   bytes commit_id = 1;
 }
 
+message InspectIdempotencyRequest {
+  bytes idempotency_key = 1;
+}
+
+message IdempotencyObservation {
+  bytes idempotency_key = 1;
+  bytes request_digest = 2;
+  oneof outcome {
+    AppendResponse append = 3;
+    ForkReceipt fork = 4;
+    TrimReceipt trim = 5;
+    DeleteReceipt delete = 6;
+    CommitResponse commit = 7;
+  }
+}
+
+message InspectIdempotencyResponse {
+  optional IdempotencyObservation observation = 1;
+}
+
 service StreamService {
+  rpc InspectIdempotency(InspectIdempotencyRequest) returns (InspectIdempotencyResponse);
   rpc Append(AppendRequest) returns (AppendResponse);
   rpc Tail(TailRequest) returns (TailResponse);
   rpc Fork(ForkRequest) returns (ForkReceipt);

@@ -986,9 +986,105 @@ export declare type ReadCommitRequest = Message<"acyclic.stream.v2.ReadCommitReq
 export declare const ReadCommitRequestSchema: GenMessage<ReadCommitRequest>;
 
 /**
+ * @generated from message acyclic.stream.v2.InspectIdempotencyRequest
+ */
+export declare type InspectIdempotencyRequest = Message<"acyclic.stream.v2.InspectIdempotencyRequest"> & {
+  /**
+   * @generated from field: bytes idempotency_key = 1;
+   */
+  idempotencyKey: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.stream.v2.InspectIdempotencyRequest.
+ * Use `create(InspectIdempotencyRequestSchema)` to create a new message.
+ */
+export declare const InspectIdempotencyRequestSchema: GenMessage<InspectIdempotencyRequest>;
+
+/**
+ * @generated from message acyclic.stream.v2.IdempotencyObservation
+ */
+export declare type IdempotencyObservation = Message<"acyclic.stream.v2.IdempotencyObservation"> & {
+  /**
+   * @generated from field: bytes idempotency_key = 1;
+   */
+  idempotencyKey: Uint8Array;
+
+  /**
+   * @generated from field: bytes request_digest = 2;
+   */
+  requestDigest: Uint8Array;
+
+  /**
+   * @generated from oneof acyclic.stream.v2.IdempotencyObservation.outcome
+   */
+  outcome: {
+    /**
+     * @generated from field: acyclic.stream.v2.AppendResponse append = 3;
+     */
+    value: AppendResponse;
+    case: "append";
+  } | {
+    /**
+     * @generated from field: acyclic.stream.v2.ForkReceipt fork = 4;
+     */
+    value: ForkReceipt;
+    case: "fork";
+  } | {
+    /**
+     * @generated from field: acyclic.stream.v2.TrimReceipt trim = 5;
+     */
+    value: TrimReceipt;
+    case: "trim";
+  } | {
+    /**
+     * @generated from field: acyclic.stream.v2.DeleteReceipt delete = 6;
+     */
+    value: DeleteReceipt;
+    case: "delete";
+  } | {
+    /**
+     * @generated from field: acyclic.stream.v2.CommitResponse commit = 7;
+     */
+    value: CommitResponse;
+    case: "commit";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message acyclic.stream.v2.IdempotencyObservation.
+ * Use `create(IdempotencyObservationSchema)` to create a new message.
+ */
+export declare const IdempotencyObservationSchema: GenMessage<IdempotencyObservation>;
+
+/**
+ * @generated from message acyclic.stream.v2.InspectIdempotencyResponse
+ */
+export declare type InspectIdempotencyResponse = Message<"acyclic.stream.v2.InspectIdempotencyResponse"> & {
+  /**
+   * @generated from field: optional acyclic.stream.v2.IdempotencyObservation observation = 1;
+   */
+  observation?: IdempotencyObservation | undefined;
+};
+
+/**
+ * Describes the message acyclic.stream.v2.InspectIdempotencyResponse.
+ * Use `create(InspectIdempotencyResponseSchema)` to create a new message.
+ */
+export declare const InspectIdempotencyResponseSchema: GenMessage<InspectIdempotencyResponse>;
+
+/**
  * @generated from service acyclic.stream.v2.StreamService
  */
 export declare const StreamService: GenService<{
+  /**
+   * @generated from rpc acyclic.stream.v2.StreamService.InspectIdempotency
+   */
+  inspectIdempotency: {
+    methodKind: "unary";
+    input: typeof InspectIdempotencyRequestSchema;
+    output: typeof InspectIdempotencyResponseSchema;
+  },
   /**
    * @generated from rpc acyclic.stream.v2.StreamService.Append
    */
