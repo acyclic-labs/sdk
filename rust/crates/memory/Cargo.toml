@@ -15,5 +15,10 @@ acyclic-machines = { version = "1.0.0-rc.1", path = "../machines" }
 acyclic-objects = { version = "1.0.0-rc.1", path = "../objects" }
 acyclic-stream = { version = "1.0.0-rc.1", path = "../stream" }
 
+[dev-dependencies]
+bytes.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [lints]
 workspace = true
