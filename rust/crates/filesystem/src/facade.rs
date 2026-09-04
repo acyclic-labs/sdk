@@ -1408,6 +1408,32 @@ impl
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
+    pub(crate) async fn observe_volume_operation(
+        &self,
+        volume_id: VolumeId,
+        operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Option<DurableCommit>> {
+        let receipt = self
+            .inner
+            .authority
+            .find_operation(
+                volume_authority_id(volume_id),
+                operation_id,
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| {
+                OperationFailure::new(FsError::Authority(failure.error), *failure.work)
+            })?;
+        Ok(FsReceipt {
+            value: receipt.value,
+            work: receipt.work,
+        })
+    }
+
     pub(crate) async fn generation_parents(
         &self,
         volume: &Volume<A, O>,
@@ -1462,12 +1488,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         name: impl AsRef<str>,
         config: VolumeConfig,
     ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
+        self.create_workspace_with_config_operation(name, config, None)
+            .await
+    }
+
+    pub(crate) async fn create_workspace_with_config_operation(
+        &self,
+        name: impl AsRef<str>,
+        config: VolumeConfig,
+        operation_id: Option<OperationId>,
+    ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
         let name = crate::WorkspaceName::new(name)?;
         let id = crate::WorkspaceId::derive(self.inner.workspace_namespace, &name);
         let volume = self
-            .create_volume_with_id(
+            .create_volume_with_id_operation(
                 id.volume_id(),
                 config,
+                operation_id,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
@@ -2289,6 +2326,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Volume<A, O>> {
+        self.create_volume_with_id_operation(volume_id, config, None, budget, cancellation)
+            .await
+    }
+
+    async fn create_volume_with_id_operation(
+        &self,
+        volume_id: VolumeId,
+        config: VolumeConfig,
+        operation_id: Option<OperationId>,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Volume<A, O>> {
         cancellation
             .check()
             .map_err(|error| OperationFailure::before_work(error.into()))?;
@@ -2313,7 +2362,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 volume_id,
                 config,
                 generation_root,
-                operation_id: None,
+                operation_id,
             },
             work,
             budget,

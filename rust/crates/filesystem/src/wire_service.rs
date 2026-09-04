@@ -5,9 +5,9 @@ use crate::model::{FilesystemProfile as EngineProfile, Lifecycle, VolumeConfig};
 use crate::wire::{filesystem::v1 as wire, harness::v1 as harness};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Digest,
-    ForkOptions, Fs, Generation, GenerationId, IdempotencyKey, JoinHistory, JoinOutcome, ObjectId,
-    ObjectKind, Transaction, TransactionCommit, Workspace, WorkspaceDelete, WorkspaceError,
-    WorkspaceExtentKind, WorkspaceMetadata, WorkspaceRebase,
+    DurableCommit, ForkOptions, Fs, Generation, GenerationId, IdempotencyKey, JoinHistory,
+    JoinOutcome, ObjectId, ObjectKind, Transaction, TransactionCommit, Workspace, WorkspaceDelete,
+    WorkspaceError, WorkspaceExtentKind, WorkspaceMetadata, WorkspaceRebase,
 };
 use bytes::Bytes;
 use futures::{StreamExt, stream};
@@ -263,7 +263,7 @@ where
     ) -> Result<Response<wire::WorkspaceResponse>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        let _ = operation(request.operation)?;
+        let operation_id = operation(request.operation)?.operation_id();
         let profile = profile(request.profile)?;
         let lifecycle = if self.filesystem.capabilities().durable {
             Lifecycle::Durable
@@ -274,7 +274,7 @@ where
         config.profile = profile;
         let workspace = self
             .filesystem
-            .create_workspace_with_config(request.name, config)
+            .create_workspace_with_config_operation(request.name, config, Some(operation_id))
             .await
             .map_err(status)?;
         Ok(Response::new(wire::WorkspaceResponse {
@@ -1008,20 +1008,51 @@ where
 
     async fn observe(
         &self,
-        _request: Request<wire::ObserveRequest>,
+        request: Request<wire::ObserveRequest>,
     ) -> Result<Response<wire::ObserveResponse>, Status> {
-        Err(Status::unimplemented(
-            "all current wire mutations complete synchronously",
-        ))
+        self.admit(&request)?;
+        let request = request.into_inner();
+        let workspace = self.workspace(request.workspace).await?;
+        let operation_id = raw_operation(&request.operation_id)?;
+        let observed = self
+            .filesystem
+            .observe_volume_operation(
+                workspace.id().volume_id(),
+                operation_id,
+                crate::WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| Status::unavailable(failure.error.to_string()))?;
+        let response = match observed.value {
+            Some(commit) => wire::ObserveResponse {
+                state: "completed".to_owned(),
+                outcome: Some(observed_mutation(&workspace, &commit)?),
+            },
+            None => wire::ObserveResponse {
+                state: "unknown".to_owned(),
+                outcome: None,
+            },
+        };
+        Ok(Response::new(response))
     }
 
     async fn cancel(
         &self,
-        _request: Request<wire::CancelRequest>,
+        request: Request<wire::CancelRequest>,
     ) -> Result<Response<wire::CancelResponse>, Status> {
-        Err(Status::failed_precondition(
-            "completed synchronous operations cannot be cancelled",
-        ))
+        self.admit(&request)?;
+        let request = request.into_inner();
+        let observed = self
+            .observe(Request::new(wire::ObserveRequest {
+                workspace: request.workspace,
+                operation_id: request.operation_id,
+            }))
+            .await?
+            .into_inner();
+        Ok(Response::new(wire::CancelResponse {
+            operation: Some(observed),
+        }))
     }
 }
 
@@ -1295,11 +1326,20 @@ fn profile_message(value: EngineProfile) -> i32 {
 }
 
 fn operation(value: Option<wire::OperationOptions>) -> Result<IdempotencyKey, Status> {
-    let bytes: [u8; 16] = required(value, "operation")?
-        .idempotency_key
+    let value = required(value, "operation")?;
+    Ok(IdempotencyKey::from_bytes(raw_operation_bytes(
+        &value.idempotency_key,
+    )?))
+}
+
+fn raw_operation(value: &[u8]) -> Result<crate::OperationId, Status> {
+    Ok(crate::OperationId::from_bytes(raw_operation_bytes(value)?))
+}
+
+fn raw_operation_bytes(value: &[u8]) -> Result<[u8; 16], Status> {
+    value
         .try_into()
-        .map_err(|_| Status::invalid_argument("idempotency_key must contain 16 bytes"))?;
-    Ok(IdempotencyKey::from_bytes(bytes))
+        .map_err(|_| Status::invalid_argument("idempotency_key must contain 16 bytes"))
 }
 
 fn generation_id(value: &[u8]) -> Result<GenerationId, Status> {
@@ -1321,6 +1361,49 @@ fn generation_ref<A, O>(generation: &Generation<A, O>) -> wire::GenerationRef {
         workspace: Some(workspace_ref(&generation.workspace)),
         generation_id: generation.id().digest().into_bytes().to_vec(),
     }
+}
+
+fn observed_mutation<A, O>(
+    workspace: &Workspace<A, O>,
+    commit: &DurableCommit,
+) -> Result<wire::MutationResponse, Status> {
+    const MAXIMUM_EVENT_BYTES: u64 = 4 * 1024;
+    let expected = workspace.id().volume_id();
+    if let Ok(deleted) =
+        crate::kernel::decode_workspace_deleted(&commit.payload, MAXIMUM_EVENT_BYTES)
+    {
+        if deleted != expected {
+            return Err(Status::data_loss("operation workspace identity mismatch"));
+        }
+        return Ok(mutation(wire::MutationStatus::Committed, None, None));
+    }
+    let root = if let Ok(publication) =
+        crate::kernel::decode_published_generation(&commit.payload, MAXIMUM_EVENT_BYTES)
+    {
+        if publication.volume_id != expected {
+            return Err(Status::data_loss("operation workspace identity mismatch"));
+        }
+        publication.generation_root
+    } else if let Ok(created) =
+        crate::kernel::decode_volume_created(&commit.payload, MAXIMUM_EVENT_BYTES)
+    {
+        if created.volume_id != expected {
+            return Err(Status::data_loss("operation workspace identity mismatch"));
+        }
+        created.initial_generation_root
+    } else {
+        return Err(Status::data_loss(
+            "operation does not contain a workspace mutation",
+        ));
+    };
+    Ok(mutation(
+        wire::MutationStatus::Committed,
+        Some(wire::GenerationRef {
+            workspace: Some(workspace_ref(workspace)),
+            generation_id: root.digest.into_bytes().to_vec(),
+        }),
+        None,
+    ))
 }
 
 async fn workspace_message<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1695,11 +1778,15 @@ mod tests {
     }
 
     fn operation(value: u8) -> Option<wire::OperationOptions> {
+        Some(wire::OperationOptions {
+            idempotency_key: operation_bytes(value),
+        })
+    }
+
+    fn operation_bytes(value: u8) -> Vec<u8> {
         let mut id = [0_u8; 16];
         id[15] = value;
-        Some(wire::OperationOptions {
-            idempotency_key: id.to_vec(),
-        })
+        id.to_vec()
     }
 
     fn mutation(value: wire::mutation::Mutation) -> wire::Mutation {
@@ -1737,6 +1824,18 @@ mod tests {
                 .workspace
                 .ok_or("missing workspace")?;
             assert_eq!(created.profile, selected as i32);
+            let observed = service
+                .observe(Request::new(wire::ObserveRequest {
+                    workspace: created.workspace.clone(),
+                    operation_id: operation_bytes(u8::try_from(index + 1)?),
+                }))
+                .await?
+                .into_inner();
+            assert_eq!(observed.state, "completed");
+            assert_eq!(
+                observed.outcome.and_then(|outcome| outcome.generation),
+                created.head
+            );
         }
         Ok(())
     }
@@ -1794,6 +1893,32 @@ mod tests {
             .into_inner();
         assert_eq!(committed.status, wire::MutationStatus::Committed as i32);
         let generation = committed.generation.ok_or("missing generation")?;
+        let observed = service
+            .observe(Request::new(wire::ObserveRequest {
+                workspace: Some(workspace.clone()),
+                operation_id: operation_bytes(2),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(observed.state, "completed");
+        assert_eq!(
+            observed
+                .outcome
+                .as_ref()
+                .and_then(|outcome| outcome.generation.as_ref()),
+            Some(&generation)
+        );
+        let unknown = service
+            .cancel(Request::new(wire::CancelRequest {
+                workspace: Some(workspace.clone()),
+                operation_id: operation_bytes(99),
+            }))
+            .await?
+            .into_inner()
+            .operation
+            .ok_or("missing cancellation observation")?;
+        assert_eq!(unknown.state, "unknown");
+        assert!(unknown.outcome.is_none());
         let read = service
             .read(Request::new(wire::ReadRequest {
                 generation: Some(generation.clone()),
