@@ -26,8 +26,11 @@ jobs:
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "inference-sdk"))')"
           test "$GITHUB_REF_NAME" = "inference-v${version}"
-          cargo package --locked -p inference-sdk
-          package="target/package/inference-sdk-${version}.crate"
+          package_root="$(mktemp -d)"
+          trap 'rm -rf "$package_root"' EXIT
+          git archive HEAD | tar -x -C "$package_root"
+          cargo package --locked --no-verify -p inference-sdk --manifest-path "$package_root/Cargo.toml"
+          package="$package_root/target/package/inference-sdk-${version}.crate"
           expected="$(python3 - "$version" <<'PY'
           import json, pathlib, sys
           version = sys.argv[1]
@@ -37,6 +40,8 @@ jobs:
           )"
           actual="$(sha256sum "$package" | cut -d' ' -f1)"
           test "$actual" = "$expected"
+          mkdir -p target/release-assets
+          cp "$package" target/release-assets/
           printf '%s  %s\n' "$actual" "$(basename "$package")" > SHA256SUMS
       - name: Publish immutable release assets
         env:
@@ -46,7 +51,7 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#inference-v}"
           gh release create "$GITHUB_REF_NAME" \
-            "target/package/inference-sdk-${version}.crate" \
+            "target/release-assets/inference-sdk-${version}.crate" \
             proto/inference/v1/inference.proto \
             rust/crates/inference/inference_descriptor.bin \
             conformance/vectors/inference.json \
