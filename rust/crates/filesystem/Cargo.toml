@@ -27,6 +27,7 @@ acyclic-stream = { version = "1.0.0-rc.1", path = "../stream", optional = true, 
 http.workspace = true
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "rt"] }
+tokio-stream.workspace = true
 
 [build-dependencies]
 prost.workspace = true

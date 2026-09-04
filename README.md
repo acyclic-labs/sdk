@@ -60,6 +60,28 @@ Run the local profile without an Acyclic account:
 cargo run -p acyclic-cli
 ```
 
+The Filesystem API keeps the same workspace, generation, and sparse transaction
+shape when its execution boundary moves to the hosted service:
+
+```rust,no_run
+use acyclic_fs::{Fs, HostedFsOptions, IdempotencyKey};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let filesystem = Fs::hosted(HostedFsOptions::new(
+    "https://fs.example",
+    "account-token",
+)).await?;
+let workspace = filesystem.open_workspace("project").await?;
+let base = workspace.head().await?;
+let mut transaction = workspace.begin_transaction(IdempotencyKey::new());
+transaction.put_file("/README.md", b"canonical\n".to_vec());
+let outcome = transaction.commit(32).await?;
+let exact = workspace.generation(base.id().to_vec()).await?;
+# let _ = (outcome, exact);
+# Ok(())
+# }
+```
+
 Use the same high-level Inference API with either a local provider or an
 authenticated service; placement, batching, KV movement, and rebalancing remain
 provider internals:

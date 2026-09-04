@@ -67,6 +67,8 @@ pub mod cancellation;
 pub mod distributed;
 pub mod facade;
 pub mod foundation;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod hosted;
 pub mod kernel;
 #[cfg(test)]
 pub mod memory;
@@ -124,6 +126,10 @@ pub use foundation::{
     AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, AuthorityId, CheckoutId, Digest, DurableCommit, Epoch,
     FileId, GenerationId, Head, MountId, OperationId, ProposedCommit, Sequence, VolumeId, WatchId,
     authority_commit_digest,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use hosted::{
+    HostedFs, HostedFsError, HostedFsOptions, HostedGeneration, HostedTransaction, HostedWorkspace,
 };
 pub use kernel::{
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
