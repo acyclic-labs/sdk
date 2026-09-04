@@ -29,8 +29,9 @@ const LINEAGE_TAIL_DOMAIN: &[u8] = b"acyclic-fs-stream-lineage-tail-v1\0";
 
 /// Filesystem authority over native hierarchical Streams.
 ///
-/// Records, writer epochs, and operation identities are separate child paths
-/// changed through one atomic Stream commit. The adapter owns no side database.
+/// Records, writer epochs, and lineage are child paths changed through one atomic Stream commit.
+/// Retry results come from the provider's native idempotency authority; the adapter owns no side
+/// database or shadow operation streams.
 #[derive(Clone)]
 pub struct StreamAuthorityStore<P> {
     provider: Arc<P>,
@@ -105,18 +106,24 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         authority_id: AuthorityId,
         operation_id: OperationId,
     ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
-        let path = operation_path(authority_id, operation_id)?;
-        match self.provider.tail(path.clone()).await {
-            Ok(1) => {
-                let record = read_one(self.provider.as_ref(), path, 0).await?;
-                Ok(Some(decode_durable(authority_id, &record.value)?))
-            }
-            Ok(_) => Err(AuthorityStoreError::Corrupt(
-                "operation path contains an invalid record count".to_owned(),
-            )),
-            Err(acyclic_stream::StreamError::NotFound) => Ok(None),
-            Err(error) => Err(map_stream_error(error)),
-        }
+        let key = operation_key(authority_id, operation_id)?;
+        let Some(observation) = self
+            .provider
+            .inspect_idempotency(key)
+            .await
+            .map_err(map_stream_error)?
+        else {
+            return Ok(None);
+        };
+        let acyclic_stream::IdempotencyOutcome::Commit(outcome) = observation.outcome else {
+            return Err(AuthorityStoreError::Corrupt(
+                "operation identity retained another Stream mutation family".to_owned(),
+            ));
+        };
+        let acyclic_stream::CommitOutcome::Committed(envelope) = outcome else {
+            return Ok(None);
+        };
+        durable_from_operation_envelope(authority_id, operation_id, envelope).map(Some)
     }
 
     async fn existing_fork_destination(
@@ -455,8 +462,6 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             })?;
         let records = records_path(authority_id).map_err(OperationFailure::before_work)?;
         let epochs = epochs_path(authority_id).map_err(OperationFailure::before_work)?;
-        let operation = operation_path(authority_id, durable.operation_id)
-            .map_err(OperationFailure::before_work)?;
         let mut conditions = vec![
             acyclic_stream::CommitCondition::Tail {
                 path: records.clone(),
@@ -466,21 +471,12 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 path: epochs,
                 expected: snapshot.epoch_tail,
             },
-            acyclic_stream::CommitCondition::Absent {
-                path: operation.clone(),
-            },
         ];
-        let mut mutations = vec![
-            acyclic_stream::CommitMutation::Append {
-                path: records,
-                records: vec![encoded.clone()],
-            },
-            acyclic_stream::CommitMutation::Append {
-                path: operation,
-                records: vec![encoded],
-            },
-        ];
-        let mut authority_records = 2_u64;
+        let mut mutations = vec![acyclic_stream::CommitMutation::Append {
+            path: records,
+            records: vec![encoded],
+        }];
+        let mut authority_records = 1_u64;
         let mut authority_bytes = u64::try_from(durable.payload.len()).unwrap_or(u64::MAX);
         if let Some(generation) = generation_from_payload(authority_id, sequence, &durable.payload)
             .map_err(OperationFailure::before_work)?
@@ -562,7 +558,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         let request = acyclic_stream::CommitRequest {
             conditions,
             mutations,
-            idempotency_key: stream_key(b"operation", &durable.operation_id.into_bytes())
+            idempotency_key: operation_key(authority_id, durable.operation_id)
                 .map_err(OperationFailure::before_work)?,
         };
         let work = authority_write_work(authority_records, authority_bytes);
@@ -1031,16 +1027,35 @@ fn epochs_path(
         .map_err(map_stream_error)
 }
 
-fn operation_path(
+fn durable_from_operation_envelope(
     authority_id: AuthorityId,
     operation_id: OperationId,
-) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
-    acyclic_stream::StreamPath::new(format!(
-        "{}/operations/{}",
-        authority_prefix(authority_id),
-        hex::encode(operation_id.into_bytes())
-    ))
-    .map_err(map_stream_error)
+    envelope: acyclic_stream::CommittedEnvelope,
+) -> Result<DurableCommit, AuthorityStoreError> {
+    let records = records_path(authority_id)?;
+    let mut retained = None;
+    for mutation in envelope.mutations {
+        let acyclic_stream::CommittedMutation::Append(append) = mutation else {
+            continue;
+        };
+        if append.path != records {
+            continue;
+        }
+        let [record] = append.records.as_slice() else {
+            return Err(AuthorityStoreError::Corrupt(
+                "operation appended an invalid authority record count".to_owned(),
+            ));
+        };
+        let durable = decode_durable(authority_id, &record.value)?;
+        if durable.operation_id != operation_id || retained.replace(durable).is_some() {
+            return Err(AuthorityStoreError::Corrupt(
+                "operation envelope does not bind its authority operation".to_owned(),
+            ));
+        }
+    }
+    retained.ok_or_else(|| {
+        AuthorityStoreError::Corrupt("operation envelope omits its authority record".to_owned())
+    })
 }
 
 fn lineage_path(
@@ -1076,6 +1091,16 @@ fn stream_key(
     value.push(0);
     value.extend_from_slice(identity);
     acyclic_stream::IdempotencyKey::new(Bytes::from(value)).map_err(map_stream_error)
+}
+
+fn operation_key(
+    authority_id: AuthorityId,
+    operation_id: OperationId,
+) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
+    let mut identity = [0; 32];
+    identity[..16].copy_from_slice(&authority_id.into_bytes());
+    identity[16..].copy_from_slice(&operation_id.into_bytes());
+    stream_key(b"operation", &identity)
 }
 
 fn encode_epoch(domain: &[u8], epoch: Epoch) -> Bytes {
