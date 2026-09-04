@@ -153,15 +153,9 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     }
     let committed_path = path("conformance/committed")?;
     let request = CommitRequest {
-        conditions: vec![
-            CommitCondition::Tail {
-                path: source.clone(),
-                expected: 2,
-            },
-            CommitCondition::Absent {
-                path: committed_path.clone(),
-            },
-        ],
+        conditions: vec![CommitCondition::Absent {
+            path: committed_path.clone(),
+        }],
         mutations: vec![CommitMutation::Fork {
             source,
             destination: committed_path,

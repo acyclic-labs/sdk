@@ -1061,16 +1061,14 @@ fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {
                 _ => return Err(StreamError::InvalidArgument),
             },
             CommitMutation::Fork {
-                source,
+                source: _,
                 destination,
                 at_tail: _,
             } => {
-                if !matches!(conditions.get(source), Some(CommitCondition::Tail { .. }))
-                    || !matches!(
-                        conditions.get(destination),
-                        Some(CommitCondition::Absent { .. })
-                    )
-                {
+                if !matches!(
+                    conditions.get(destination),
+                    Some(CommitCondition::Absent { .. })
+                ) {
                     return Err(StreamError::InvalidArgument);
                 }
             }
@@ -1358,22 +1356,24 @@ mod tests {
             })
             .await?;
         let request = CommitRequest {
-            conditions: vec![
-                CommitCondition::Absent {
-                    path: path("runs/a")?,
-                },
-                CommitCondition::Tail {
-                    path: source.clone(),
-                    expected: 1,
-                },
-            ],
+            conditions: vec![CommitCondition::Absent {
+                path: path("runs/a")?,
+            }],
             mutations: vec![CommitMutation::Fork {
-                source,
+                source: source.clone(),
                 destination: path("runs/a")?,
                 at_tail: 1,
             }],
             idempotency_key: key(b"commit")?,
         };
+        provider
+            .append(AppendRequest {
+                path: source,
+                records: vec![Bytes::from_static(b"source-progress")],
+                if_tail: Some(1),
+                idempotency_key: None,
+            })
+            .await?;
         let outcome = provider.commit(request.clone()).await;
         let Ok(CommitOutcome::Committed(envelope)) = &outcome else {
             return Err(StreamError::Unavailable);
@@ -1382,6 +1382,20 @@ mod tests {
         assert_eq!(
             provider.read_commit(envelope.commit_id).await.as_ref(),
             Ok(envelope)
+        );
+        let forked = provider
+            .read(ReadRequest {
+                path: path("runs/a")?,
+                from: 0,
+                limit: 10,
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(forked.len(), 1);
+        assert_eq!(
+            forked[0].as_ref().map(|record| record.value.as_ref()),
+            Ok(b"ready".as_slice())
         );
         Ok(())
     }
