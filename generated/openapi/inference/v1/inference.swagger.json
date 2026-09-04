@@ -6,18 +6,18 @@
   },
   "tags": [
     {
-      "name": "Models"
+      "name": "ModelsService"
     },
     {
-      "name": "Contexts",
+      "name": "ContextsService",
       "description": "Immutable canonical content operations. Execution/retention guarantees are\nadvertised separately; these methods do not admit a Run or a warm promise."
     },
     {
-      "name": "WarmContexts",
+      "name": "WarmContextsService",
       "description": "Customer warm-retention commitments. Placement, workers, allocations,\nmigration, rebalancing, and cleanup mechanics remain private."
     },
     {
-      "name": "Runs",
+      "name": "RunsService",
       "description": "Recoverable logical generation. Distribution, placement, migration, cache,\nand worker identities are intentionally absent."
     }
   ],

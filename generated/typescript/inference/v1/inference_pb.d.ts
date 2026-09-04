@@ -1266,11 +1266,11 @@ export enum RunTerminal {
 export declare const RunTerminalSchema: GenEnum<RunTerminal>;
 
 /**
- * @generated from service inference.customer.v1.Models
+ * @generated from service inference.customer.v1.ModelsService
  */
-export declare const Models: GenService<{
+export declare const ModelsService: GenService<{
   /**
-   * @generated from rpc inference.customer.v1.Models.List
+   * @generated from rpc inference.customer.v1.ModelsService.List
    */
   list: {
     methodKind: "unary";
@@ -1283,11 +1283,11 @@ export declare const Models: GenService<{
  * Immutable canonical content operations. Execution/retention guarantees are
  * advertised separately; these methods do not admit a Run or a warm promise.
  *
- * @generated from service inference.customer.v1.Contexts
+ * @generated from service inference.customer.v1.ContextsService
  */
-export declare const Contexts: GenService<{
+export declare const ContextsService: GenService<{
   /**
-   * @generated from rpc inference.customer.v1.Contexts.Create
+   * @generated from rpc inference.customer.v1.ContextsService.Create
    */
   create: {
     methodKind: "unary";
@@ -1295,7 +1295,7 @@ export declare const Contexts: GenService<{
     output: typeof MutationReceiptSchema;
   },
   /**
-   * @generated from rpc inference.customer.v1.Contexts.Inspect
+   * @generated from rpc inference.customer.v1.ContextsService.Inspect
    */
   inspect: {
     methodKind: "unary";
@@ -1303,7 +1303,7 @@ export declare const Contexts: GenService<{
     output: typeof ContextViewSchema;
   },
   /**
-   * @generated from rpc inference.customer.v1.Contexts.Mutate
+   * @generated from rpc inference.customer.v1.ContextsService.Mutate
    */
   mutate: {
     methodKind: "unary";
@@ -1316,11 +1316,11 @@ export declare const Contexts: GenService<{
  * Customer warm-retention commitments. Placement, workers, allocations,
  * migration, rebalancing, and cleanup mechanics remain private.
  *
- * @generated from service inference.customer.v1.WarmContexts
+ * @generated from service inference.customer.v1.WarmContextsService
  */
-export declare const WarmContexts: GenService<{
+export declare const WarmContextsService: GenService<{
   /**
-   * @generated from rpc inference.customer.v1.WarmContexts.Retain
+   * @generated from rpc inference.customer.v1.WarmContextsService.Retain
    */
   retain: {
     methodKind: "unary";
@@ -1328,7 +1328,7 @@ export declare const WarmContexts: GenService<{
     output: typeof WarmViewSchema;
   },
   /**
-   * @generated from rpc inference.customer.v1.WarmContexts.Inspect
+   * @generated from rpc inference.customer.v1.WarmContextsService.Inspect
    */
   inspect: {
     methodKind: "unary";
@@ -1336,7 +1336,7 @@ export declare const WarmContexts: GenService<{
     output: typeof WarmViewSchema;
   },
   /**
-   * @generated from rpc inference.customer.v1.WarmContexts.Renew
+   * @generated from rpc inference.customer.v1.WarmContextsService.Renew
    */
   renew: {
     methodKind: "unary";
@@ -1344,7 +1344,7 @@ export declare const WarmContexts: GenService<{
     output: typeof WarmViewSchema;
   },
   /**
-   * @generated from rpc inference.customer.v1.WarmContexts.Release
+   * @generated from rpc inference.customer.v1.WarmContextsService.Release
    */
   release: {
     methodKind: "unary";
@@ -1357,11 +1357,11 @@ export declare const WarmContexts: GenService<{
  * Recoverable logical generation. Distribution, placement, migration, cache,
  * and worker identities are intentionally absent.
  *
- * @generated from service inference.customer.v1.Runs
+ * @generated from service inference.customer.v1.RunsService
  */
-export declare const Runs: GenService<{
+export declare const RunsService: GenService<{
   /**
-   * @generated from rpc inference.customer.v1.Runs.Generate
+   * @generated from rpc inference.customer.v1.RunsService.Generate
    */
   generate: {
     methodKind: "unary";
@@ -1369,7 +1369,7 @@ export declare const Runs: GenService<{
     output: typeof GenerateRunResponseSchema;
   },
   /**
-   * @generated from rpc inference.customer.v1.Runs.Inspect
+   * @generated from rpc inference.customer.v1.RunsService.Inspect
    */
   inspect: {
     methodKind: "unary";
@@ -1377,7 +1377,7 @@ export declare const Runs: GenService<{
     output: typeof RunViewSchema;
   },
   /**
-   * @generated from rpc inference.customer.v1.Runs.Watch
+   * @generated from rpc inference.customer.v1.RunsService.Watch
    */
   watch: {
     methodKind: "server_streaming";
@@ -1385,7 +1385,7 @@ export declare const Runs: GenService<{
     output: typeof RunEventSchema;
   },
   /**
-   * @generated from rpc inference.customer.v1.Runs.Cancel
+   * @generated from rpc inference.customer.v1.RunsService.Cancel
    */
   cancel: {
     methodKind: "unary";

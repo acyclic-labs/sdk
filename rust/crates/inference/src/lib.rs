@@ -142,26 +142,26 @@ impl Inference {
         }
     }
 
-    fn rpc(&self) -> wire::contexts_client::ContextsClient<Channel> {
-        wire::contexts_client::ContextsClient::new(self.0.channel.clone())
+    fn rpc(&self) -> wire::contexts_service_client::ContextsServiceClient<Channel> {
+        wire::contexts_service_client::ContextsServiceClient::new(self.0.channel.clone())
             .max_decoding_message_size(MAXIMUM_MESSAGE_BYTES)
             .max_encoding_message_size(MAXIMUM_MESSAGE_BYTES)
     }
 
-    fn runs(&self) -> wire::runs_client::RunsClient<Channel> {
-        wire::runs_client::RunsClient::new(self.0.channel.clone())
+    fn runs(&self) -> wire::runs_service_client::RunsServiceClient<Channel> {
+        wire::runs_service_client::RunsServiceClient::new(self.0.channel.clone())
             .max_decoding_message_size(MAXIMUM_MESSAGE_BYTES)
             .max_encoding_message_size(MAXIMUM_MESSAGE_BYTES)
     }
 
-    fn warm(&self) -> wire::warm_contexts_client::WarmContextsClient<Channel> {
-        wire::warm_contexts_client::WarmContextsClient::new(self.0.channel.clone())
+    fn warm(&self) -> wire::warm_contexts_service_client::WarmContextsServiceClient<Channel> {
+        wire::warm_contexts_service_client::WarmContextsServiceClient::new(self.0.channel.clone())
             .max_decoding_message_size(MAXIMUM_MESSAGE_BYTES)
             .max_encoding_message_size(MAXIMUM_MESSAGE_BYTES)
     }
 
-    fn discovery(&self) -> wire::models_client::ModelsClient<Channel> {
-        wire::models_client::ModelsClient::new(self.0.channel.clone())
+    fn discovery(&self) -> wire::models_service_client::ModelsServiceClient<Channel> {
+        wire::models_service_client::ModelsServiceClient::new(self.0.channel.clone())
             .max_decoding_message_size(MAXIMUM_MESSAGE_BYTES)
             .max_encoding_message_size(MAXIMUM_MESSAGE_BYTES)
     }
@@ -983,13 +983,13 @@ mod tests {
         assert_eq!(file.package.as_deref(), Some("inference.customer.v1"));
         assert!(file.dependency.is_empty());
         assert_eq!(file.service.len(), 4);
-        assert_eq!(file.service[0].name.as_deref(), Some("Models"));
+        assert_eq!(file.service[0].name.as_deref(), Some("ModelsService"));
         assert_eq!(file.service[0].method.len(), 1);
-        assert_eq!(file.service[1].name.as_deref(), Some("Contexts"));
+        assert_eq!(file.service[1].name.as_deref(), Some("ContextsService"));
         assert_eq!(file.service[1].method.len(), 3);
-        assert_eq!(file.service[2].name.as_deref(), Some("WarmContexts"));
+        assert_eq!(file.service[2].name.as_deref(), Some("WarmContextsService"));
         assert_eq!(file.service[2].method.len(), 4);
-        assert_eq!(file.service[3].name.as_deref(), Some("Runs"));
+        assert_eq!(file.service[3].name.as_deref(), Some("RunsService"));
         assert_eq!(file.service[3].method.len(), 4);
         let names: Vec<_> = file
             .message_type

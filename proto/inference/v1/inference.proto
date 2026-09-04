@@ -3,7 +3,7 @@ package inference.customer.v1;
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/inference/v1;inferencev1";
 
-service Models {
+service ModelsService {
   rpc List(ListModelsRequest) returns (ListModelsResponse);
 }
 
@@ -28,7 +28,7 @@ message RetentionProfile {
 
 // Immutable canonical content operations. Execution/retention guarantees are
 // advertised separately; these methods do not admit a Run or a warm promise.
-service Contexts {
+service ContextsService {
   rpc Create(CreateContextRequest) returns (MutationReceipt);
   rpc Inspect(InspectContextRequest) returns (ContextView);
   rpc Mutate(MutateContextRequest) returns (MutationReceipt);
@@ -36,7 +36,7 @@ service Contexts {
 
 // Customer warm-retention commitments. Placement, workers, allocations,
 // migration, rebalancing, and cleanup mechanics remain private.
-service WarmContexts {
+service WarmContextsService {
   rpc Retain(RetainWarmRequest) returns (WarmView);
   rpc Inspect(InspectWarmRequest) returns (WarmView);
   rpc Renew(RenewWarmRequest) returns (WarmView);
@@ -87,7 +87,7 @@ message WarmView {
 
 // Recoverable logical generation. Distribution, placement, migration, cache,
 // and worker identities are intentionally absent.
-service Runs {
+service RunsService {
   rpc Generate(GenerateRunRequest) returns (GenerateRunResponse);
   rpc Inspect(InspectRunRequest) returns (RunView);
   rpc Watch(WatchRunRequest) returns (stream RunEvent);
