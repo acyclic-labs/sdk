@@ -106,7 +106,7 @@
           "action": {
             "kind": "shell",
             "working_directory": ".",
-            "command": "set -euo pipefail\nsource scripts/ensure-bun.sh\nif ! command -v cc >/dev/null || ! pkg-config --exists fuse3; then sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libfuse3-dev; fi\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs"
+            "command": "set -euo pipefail\nif ! command -v cc >/dev/null || ! command -v unzip >/dev/null || ! command -v pkg-config >/dev/null || ! pkg-config --exists fuse3; then sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libfuse3-dev unzip; fi\nsource scripts/ensure-bun.sh\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs"
           }
         }
       ],

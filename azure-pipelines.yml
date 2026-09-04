@@ -1599,7 +1599,7 @@ jobs:
       PY
       mode=prepare
       if [[ "${FLEET_REUSE_FOUND:-false}" == true ]]; then mode=restore; fi
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" '4cbf24ab295751a0527a677e875cc1540ce3be8386fd808a88be945fd725cec5' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" '0ea020cdd8f92023e6aa8b10aa827086c9655a501682e18c187b9865fa0328fd' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Verify and restore exact successful job result
   - task: Cache@2
@@ -1657,8 +1657,8 @@ jobs:
   - bash: |
       set -euo pipefail
       set -euo pipefail
+      if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || ! command -v pkg-config >/dev/null || ! pkg-config --exists fuse3; then sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libfuse3-dev unzip; fi
       source scripts/ensure-bun.sh
-      if ! command -v cc >/dev/null || ! pkg-config --exists fuse3; then sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libfuse3-dev; fi
       cargo test --workspace --all-features --locked
       cargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1
       cargo build -p acyclic-fs-napi --locked
@@ -1798,7 +1798,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" '4cbf24ab295751a0527a677e875cc1540ce3be8386fd808a88be945fd725cec5' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" '0ea020cdd8f92023e6aa8b10aa827086c9655a501682e18c187b9865fa0328fd' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
