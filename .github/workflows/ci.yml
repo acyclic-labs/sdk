@@ -82,7 +82,10 @@ jobs:
       - run: bunx buf generate
       - run: git diff --exit-code -- generated
       - if: github.event_name == 'pull_request'
-        run: bunx buf breaking --against ".git#branch=${{ github.base_ref }}"
+        # The pre-release Inference family intentionally replaced its unpublished
+        # wire package. Its exact schema/descriptor/vector digests are gated above;
+        # stable families retain Buf breaking enforcement here.
+        run: bunx buf breaking --against ".git#ref=origin/${{ github.base_ref }}" --exclude-path proto/inference/v1/inference.proto
       - run: bun scripts/check-boundaries.mjs
       - run: bun scripts/check-metadata.mjs
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b
