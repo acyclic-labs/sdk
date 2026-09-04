@@ -63,6 +63,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
+      - name: Qualify packaged Inference SDK
+        run: bash scripts/check-inference-package.sh
       - run: cargo run --locked -p acyclic-cli
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b
         with:

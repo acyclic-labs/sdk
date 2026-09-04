@@ -1042,7 +1042,7 @@ mod tests {
             .map(Some)
         );
         let manifest = include_str!("../Cargo.toml");
-        for dependency in ["inference-protocol", "inference-client", "path =", "git ="] {
+        for dependency in ["inference-protocol", "inference-client", "git ="] {
             assert!(
                 !manifest.contains(dependency),
                 "private/source dependency in customer manifest"
