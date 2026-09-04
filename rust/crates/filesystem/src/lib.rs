@@ -55,7 +55,7 @@ mod public_contract_tests {
 pub mod async_storage;
 pub mod cache;
 pub mod cancellation;
-#[cfg(all(feature = "distributed", not(target_arch = "wasm32")))]
+#[cfg(feature = "distributed")]
 pub mod distributed;
 pub mod facade;
 pub mod foundation;
@@ -64,7 +64,7 @@ pub mod kernel;
 pub mod local;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub mod local_authority;
-#[cfg(feature = "memory")]
+#[cfg(test)]
 pub mod memory;
 pub mod model;
 pub mod mount;
@@ -100,7 +100,7 @@ pub use async_storage::{
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
-#[cfg(all(feature = "distributed", not(target_arch = "wasm32")))]
+#[cfg(feature = "distributed")]
 pub use distributed::{ProviderObjectStore, StreamAuthorityStore};
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
@@ -111,11 +111,7 @@ pub use facade::{
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use facade::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions, LocalVolume};
-#[cfg(all(
-    feature = "memory",
-    feature = "distributed",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "memory", feature = "distributed"))]
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
 pub use foundation::{
     AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, AuthorityId, CheckoutId, Digest, DurableCommit, Epoch,
@@ -130,7 +126,7 @@ pub use kernel::{
 pub use local::{LocalGarbageCollection, LocalObjectStore};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use local_authority::{LocalAuthorityConfig, LocalAuthorityStore};
-#[cfg(feature = "memory")]
+#[cfg(test)]
 pub use memory::{MemoryAuthorityStore, MemoryObjectStore};
 pub use mount::{
     MountError, MountedCheckout, MountedGeneration, MountedView, MountedViewBuilder,

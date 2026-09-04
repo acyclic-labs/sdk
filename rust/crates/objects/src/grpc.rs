@@ -1,6 +1,6 @@
 //! Idiomatic gRPC client for the public Objects contract.
 
-use crate::wire;
+use crate::{Condition, wire};
 use bytes::Bytes;
 use futures::{Stream, StreamExt, stream::iter};
 use prost::Message;
@@ -166,30 +166,6 @@ impl MutationOptions {
         (!self.idempotency_key.is_empty()).then(|| wire::MutationIdentity {
             idempotency_key: self.idempotency_key.clone(),
         })
-    }
-}
-
-/// Exactly one current-version write condition.
-#[derive(Clone, Debug)]
-pub enum Condition {
-    /// Require no live current version.
-    IfAbsent,
-    /// Require the current opaque `ETag`.
-    IfMatch(String),
-    /// Require the current opaque version identity.
-    IfVersion(String),
-}
-
-impl Condition {
-    fn wire(self) -> wire::Preconditions {
-        let condition = match self {
-            Self::IfAbsent => wire::preconditions::Condition::IfAbsent(true),
-            Self::IfMatch(etag) => wire::preconditions::Condition::IfMatch(etag),
-            Self::IfVersion(version_id) => wire::preconditions::Condition::IfVersion(version_id),
-        };
-        wire::Preconditions {
-            condition: Some(condition),
-        }
     }
 }
 

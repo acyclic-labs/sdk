@@ -115,6 +115,8 @@ name = "acyclic-fs-wasm"
 version = "0.1.0-rc.1"
 dependencies = [
  "acyclic-fs",
+ "acyclic-objects",
+ "acyclic-stream",
  "blake3",
  "bytes",
  "indexed_db_futures",

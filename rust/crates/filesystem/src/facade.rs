@@ -279,37 +279,20 @@ pub type LocalFs = Fs<LocalAuthorityBackend, LocalObjectBackend>;
 pub type LocalVolume = Volume<LocalAuthorityBackend, LocalObjectBackend>;
 
 /// Deterministic in-process composition over the exact public Stream and Objects providers.
-#[cfg(all(
-    feature = "memory",
-    feature = "distributed",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "memory", feature = "distributed"))]
 pub type MemoryFs = Fs<MemoryAuthorityBackend, MemoryObjectBackend>;
 
-#[cfg(all(
-    feature = "memory",
-    feature = "distributed",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "memory", feature = "distributed"))]
 /// Filesystem authority adapter backed by the public in-memory Stream provider.
 pub type MemoryAuthorityBackend =
     crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>;
 
-#[cfg(all(
-    feature = "memory",
-    feature = "distributed",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "memory", feature = "distributed"))]
 /// Filesystem object adapter backed by the public in-memory Objects provider.
 pub type MemoryObjectBackend =
     crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>;
 
-#[cfg(all(
-    test,
-    feature = "memory",
-    feature = "distributed",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(test, feature = "memory", feature = "distributed"))]
 pub(crate) type MemoryCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
 
 /// Ephemeral path-independent regular file retained by an open native handle.
@@ -1036,39 +1019,7 @@ impl<A, S> Fs<A, crate::cache::CachedObjectStore<S>> {
     }
 }
 
-#[cfg(all(feature = "memory", target_arch = "wasm32"))]
-impl Fs<crate::memory::MemoryAuthorityStore, crate::memory::MemoryObjectStore> {
-    /// Creates the deterministic infrastructure-free memory composition.
-    #[must_use]
-    pub fn memory() -> Self {
-        Self::new(
-            crate::memory::MemoryAuthorityStore::default(),
-            crate::memory::MemoryObjectStore::default(),
-            EmbeddedCapabilities::MEMORY,
-        )
-    }
-
-    /// Creates the deterministic infrastructure-free memory composition with
-    /// an explicit immutable-object ceiling.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a zero object bound before allocating backend state.
-    pub fn memory_bounded(maximum_object_bytes: u64) -> Result<Self, FsError> {
-        let objects = crate::memory::MemoryObjectStore::new(maximum_object_bytes)?;
-        Ok(Self::new(
-            crate::memory::MemoryAuthorityStore::default(),
-            objects,
-            EmbeddedCapabilities::MEMORY,
-        ))
-    }
-}
-
-#[cfg(all(
-    feature = "memory",
-    feature = "distributed",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "memory", feature = "distributed"))]
 impl
     Fs<
         crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>,
@@ -1408,6 +1359,7 @@ impl
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn observe_volume_operation(
         &self,
         volume_id: VolumeId,

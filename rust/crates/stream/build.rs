@@ -10,9 +10,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     prost.file_descriptor_set_path(output.join("acyclic-stream-v2.bin"));
     prost.bytes([".acyclic.stream.v2"]);
+    let grpc = std::env::var_os("CARGO_FEATURE_GRPC").is_some();
     tonic_prost_build::configure()
-        .build_server(true)
-        .build_client(true)
+        .build_server(grpc)
+        .build_client(grpc)
         .compile_with_config(
             prost,
             &[std::path::Path::new("proto/stream/v2/stream.proto")],

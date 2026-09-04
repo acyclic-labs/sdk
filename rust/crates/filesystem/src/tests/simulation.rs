@@ -271,14 +271,17 @@ fn fence_before_append_preserves_nested_budget_failure_work()
     let failure = result
         .err()
         .ok_or("zero append budget unexpectedly published after fencing")?;
-    assert!(matches!(
-        failure.error,
-        AuthorityStoreError::Work(WorkError::BudgetExceeded {
-            counter: "backend_read_operations",
-            maximum: 0,
-            ..
-        })
-    ));
+    assert!(
+        matches!(
+            failure.error,
+            AuthorityStoreError::Work(WorkError::BudgetExceeded {
+                counter: "backend_read_operations",
+                maximum: 1,
+                ..
+            })
+        ),
+        "unexpected failure: {failure:?}"
+    );
     assert_eq!(failure.work.backend_write_operations, 1);
     assert_eq!(failure.work.authority_records_appended, 1);
     Ok(())
@@ -929,7 +932,7 @@ fn corrupt_delayed_visibility_state_preserves_nested_failure_work()
     .err()
     .ok_or("corrupt delayed object unexpectedly published")?;
     assert!(matches!(failure.error, ObjectStoreError::DigestMismatch));
-    assert_eq!(failure.work.backend_write_operations, 1);
+    assert_eq!(failure.work.backend_write_operations, 0);
 
     let simulation = Simulation::default();
     let (object_id, bytes) = object(b"underflow");

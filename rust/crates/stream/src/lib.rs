@@ -8,13 +8,14 @@ use futures::stream::BoxStream;
 use thiserror::Error;
 
 pub mod conformance;
+#[cfg(feature = "grpc")]
 pub mod grpc;
 mod memory;
 
 /// Generated canonical Stream v2 protocol.
 #[allow(missing_docs)]
 pub mod wire {
-    tonic::include_proto!("acyclic.stream.v2");
+    include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v2.rs"));
 }
 /// Canonical public descriptor set used by compatibility gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v2/stream_descriptor.bin");
@@ -493,6 +494,7 @@ impl<P: StreamProvider> StreamClient<P> {
     }
 }
 
+#[cfg(feature = "grpc")]
 impl StreamClient<grpc::Client> {
     /// Connects the high-level API to an authenticated managed or customer-hosted endpoint.
     pub async fn connect(

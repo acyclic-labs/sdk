@@ -8,6 +8,10 @@ repository.workspace = true
 publish = true
 description = "Immutable Objects contract, gRPC client, and bounded in-memory provider"
 
+[features]
+default = ["grpc"]
+grpc = ["dep:tonic", "dep:tonic-prost"]
+
 [dependencies]
 async-trait.workspace = true
 blake3 = "1.8.2"
@@ -16,9 +20,9 @@ futures.workspace = true
 prost.workspace = true
 prost-types = "0.14.4"
 thiserror.workspace = true
-tokio.workspace = true
-tonic = { version = "0.14.6", features = ["tls-ring", "tls-webpki-roots"] }
-tonic-prost.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
+tonic = { version = "0.14.6", features = ["tls-ring", "tls-webpki-roots"], optional = true }
+tonic-prost = { workspace = true, optional = true }
 
 [lints]
 workspace = true

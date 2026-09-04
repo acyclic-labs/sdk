@@ -9,6 +9,10 @@ publish.workspace = true
 description = "Hierarchical append-only Streams contract, clients, and local provider"
 build = "build.rs"
 
+[features]
+default = ["grpc"]
+grpc = ["dep:tonic", "dep:tonic-prost"]
+
 [dependencies]
 async-trait.workspace = true
 bytes.workspace = true
@@ -16,9 +20,9 @@ futures.workspace = true
 prost.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
-tonic.workspace = true
-tonic-prost.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["sync", "time"] }
+tonic = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
 uuid.workspace = true
 
 [build-dependencies]

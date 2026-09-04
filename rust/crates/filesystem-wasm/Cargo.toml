@@ -13,6 +13,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 acyclic-fs = { version = "0.1.0-rc.1", path = "../filesystem", default-features = false, features = ["memory"] }
+acyclic-objects = { version = "1.0.0-rc.1", path = "../objects", default-features = false }
+acyclic-stream = { version = "1.0.0-rc.1", path = "../stream", default-features = false }
 blake3.workspace = true
 bytes.workspace = true
 serde.workspace = true

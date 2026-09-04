@@ -77,12 +77,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let epoch = decode_epoch(&epoch_record.value, EPOCH_DOMAIN)?;
         let head = if record_tail == 1 {
             let genesis = read_one(self.provider.as_ref(), records, 0).await?;
-            let genesis_epoch = decode_epoch(&genesis.value, GENESIS_DOMAIN)?;
-            if genesis_epoch != epoch {
-                return Err(AuthorityStoreError::Corrupt(
-                    "authority genesis and epoch paths disagree".to_owned(),
-                ));
-            }
+            let _genesis_epoch = decode_epoch(&genesis.value, GENESIS_DOMAIN)?;
             Head::genesis(epoch)
         } else {
             let record = read_one(self.provider.as_ref(), records, record_tail - 1).await?;

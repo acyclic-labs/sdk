@@ -9,7 +9,6 @@ use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
 };
-use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
     AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStoreError, CreateAuthorityOutcome,
@@ -20,6 +19,9 @@ use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use thiserror::Error;
+
+type ReferenceAuthority = crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>;
+type ReferenceObjects = crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>;
 
 /// One exact simulator interception point.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -203,24 +205,24 @@ impl State {
 
 /// Shared deterministic simulator and its two backend handles.
 #[derive(Clone)]
-pub struct Simulation<A = MemoryAuthorityStore, O = MemoryObjectStore> {
+pub struct Simulation<
+    A = crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>,
+    O = crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+> {
     state: Arc<Mutex<State>>,
     authority: Arc<A>,
     objects: Arc<O>,
 }
 
-impl Simulation<MemoryAuthorityStore, MemoryObjectStore> {
+impl Simulation<ReferenceAuthority, ReferenceObjects> {
     /// Creates a bounded simulator over fresh deterministic memory primitives.
     ///
     /// # Errors
     ///
     /// Rejects any zero hard bound before allocating simulator state.
     pub fn new(options: SimulationOptions) -> Result<Self, SimulationError> {
-        Self::wrap(
-            MemoryAuthorityStore::default(),
-            MemoryObjectStore::default(),
-            options,
-        )
+        let (authority, objects) = reference_backends();
+        Self::wrap(authority, objects, options)
     }
 }
 
@@ -441,6 +443,7 @@ impl<A, O: AsyncObjectStore> Simulation<A, O> {
 
 impl Default for Simulation {
     fn default() -> Self {
+        let (authority, objects) = reference_backends();
         Self {
             state: Arc::new(Mutex::new(State {
                 options: SimulationOptions::default(),
@@ -450,24 +453,37 @@ impl Default for Simulation {
                 pending_objects: BTreeMap::new(),
                 pending_object_bytes: 0,
             })),
-            authority: Arc::new(MemoryAuthorityStore::default()),
-            objects: Arc::new(MemoryObjectStore::default()),
+            authority: Arc::new(authority),
+            objects: Arc::new(objects),
         }
     }
 }
 
 /// Authority backend handle controlled by one [`Simulation`].
 #[derive(Clone)]
-pub struct SimulatedAuthorityStore<A = MemoryAuthorityStore> {
+pub struct SimulatedAuthorityStore<
+    A = crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>,
+> {
     state: Arc<Mutex<State>>,
     inner: Arc<A>,
 }
 
 /// Immutable-object backend handle controlled by one [`Simulation`].
 #[derive(Clone)]
-pub struct SimulatedObjectStore<O = MemoryObjectStore> {
+pub struct SimulatedObjectStore<
+    O = crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+> {
     state: Arc<Mutex<State>>,
     inner: Arc<O>,
+}
+
+fn reference_backends() -> (ReferenceAuthority, ReferenceObjects) {
+    let streams = Arc::new(acyclic_stream::MemoryStream::default());
+    let (objects, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
+    (
+        crate::distributed::StreamAuthorityStore::new(streams),
+        crate::distributed::ProviderObjectStore::new(Arc::new(objects), bucket),
+    )
 }
 
 fn authority_fault(error: impl Into<String>) -> AuthorityFailure {

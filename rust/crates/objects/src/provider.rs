@@ -8,10 +8,35 @@ use std::{
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::{Condition, limits, wire};
+use crate::{limits, wire};
 
 const MEMORY_BYTES: usize = 64 * 1_024 * 1_024;
 const SYSTEM_METADATA_BYTES: usize = 2 * 1_024;
+
+/// Exactly one current-version mutation condition shared by every provider transport.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Condition {
+    /// Require no live current version.
+    IfAbsent,
+    /// Require the current opaque `ETag`.
+    IfMatch(String),
+    /// Require the current opaque version identity.
+    IfVersion(String),
+}
+
+#[cfg(feature = "grpc")]
+impl Condition {
+    pub(crate) fn wire(self) -> wire::Preconditions {
+        let condition = match self {
+            Self::IfAbsent => wire::preconditions::Condition::IfAbsent(true),
+            Self::IfMatch(etag) => wire::preconditions::Condition::IfMatch(etag),
+            Self::IfVersion(version_id) => wire::preconditions::Condition::IfVersion(version_id),
+        };
+        wire::Preconditions {
+            condition: Some(condition),
+        }
+    }
+}
 
 /// A bucket or immutable snapshot selected for a read.
 #[derive(Clone, Debug, PartialEq)]

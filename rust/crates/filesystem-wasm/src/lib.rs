@@ -33,12 +33,12 @@ mod bindings {
         ApplyOptions, AuthoredMutation, ByteRange, CachedObjectStore, CancellationToken, ChangeSet,
         Checkout, CheckoutCommitOutcome, Digest, EmbeddedCapabilities, FileCloneRequest, FileId,
         ForkOptions, Fs, Generation, GenerationExportManifest, IdempotencyKey, JoinHistory,
-        JoinOutcome, JoinPlan, LiveMutationOutcome, MemoryAuthorityStore, MemoryObjectStore,
-        MergeConflict, MergePreparation, NamedAttributeWriteMode, ObjectCacheOptions, ObjectId,
-        ObjectKind, ObjectReadRequest, ObjectResidency, OperationId, PromotionAdmission,
-        PromotionDestination, PromotionRejection, PromotionSpeculatorOptions, ResidencyAdmission,
-        ResidencyHint, ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions,
-        SpeculationController, SpeculationOptions, StorageLocationId, StorageTier, Transaction,
+        JoinOutcome, JoinPlan, LiveMutationOutcome, MergeConflict, MergePreparation,
+        NamedAttributeWriteMode, ObjectCacheOptions, ObjectId, ObjectKind, ObjectReadRequest,
+        ObjectResidency, OperationId, PromotionAdmission, PromotionDestination, PromotionRejection,
+        PromotionSpeculatorOptions, ProviderObjectStore, ResidencyAdmission, ResidencyHint,
+        ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions, SpeculationController,
+        SpeculationOptions, StorageLocationId, StorageTier, StreamAuthorityStore, Transaction,
         TransactionCommit, TransactionConflict, TransactionConflictRegion,
         TransactionDependencyUse, TransactionRebase, TransactionSparseSeek, Volume, VolumeId,
         WorkBudget, Workspace, WorkspaceDelete, WorkspaceDirectoryPage, WorkspaceExtentKind,
@@ -46,59 +46,61 @@ mod bindings {
         decode_generation_export_manifest, encode_generation_export_manifest,
     };
     use serde::{Deserialize, Serialize};
+    use std::sync::Arc;
     use wasm_bindgen::prelude::*;
 
     type IndexedDbObjects = CachedObjectStore<IndexedDbObjectStore>;
     type OpfsObjects = CachedObjectStore<OpfsAcceleratedObjectStore>;
-    type MemoryObjects = CachedObjectStore<MemoryObjectStore>;
+    type MemoryAuthority = StreamAuthorityStore<acyclic_stream::MemoryStream>;
+    type MemoryObjects = CachedObjectStore<ProviderObjectStore<acyclic_objects::MemoryObjects>>;
 
     #[derive(Clone)]
     enum BrowserEngine {
         IndexedDb(Fs<IndexedDbAuthorityStore, IndexedDbObjects>),
         IndexedDbOpfs(Fs<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(Fs<MemoryAuthorityStore, MemoryObjects>),
+        Memory(Fs<MemoryAuthority, MemoryObjects>),
     }
 
     enum BrowserVolumeEngine {
         IndexedDb(Volume<IndexedDbAuthorityStore, IndexedDbObjects>),
         IndexedDbOpfs(Volume<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(Volume<MemoryAuthorityStore, MemoryObjects>),
+        Memory(Volume<MemoryAuthority, MemoryObjects>),
     }
 
     enum BrowserCheckoutEngine {
         IndexedDb(Checkout<IndexedDbAuthorityStore, IndexedDbObjects>),
         IndexedDbOpfs(Checkout<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(Checkout<MemoryAuthorityStore, MemoryObjects>),
+        Memory(Checkout<MemoryAuthority, MemoryObjects>),
     }
 
     enum BrowserWorkspaceEngine {
         IndexedDb(Workspace<IndexedDbAuthorityStore, IndexedDbObjects>),
         IndexedDbOpfs(Workspace<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(Workspace<MemoryAuthorityStore, MemoryObjects>),
+        Memory(Workspace<MemoryAuthority, MemoryObjects>),
     }
 
     enum BrowserGenerationEngine {
         IndexedDb(Generation<IndexedDbAuthorityStore, IndexedDbObjects>),
         IndexedDbOpfs(Generation<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(Generation<MemoryAuthorityStore, MemoryObjects>),
+        Memory(Generation<MemoryAuthority, MemoryObjects>),
     }
 
     enum BrowserChangeSetEngine {
         IndexedDb(ChangeSet<IndexedDbAuthorityStore, IndexedDbObjects>),
         IndexedDbOpfs(ChangeSet<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(ChangeSet<MemoryAuthorityStore, MemoryObjects>),
+        Memory(ChangeSet<MemoryAuthority, MemoryObjects>),
     }
 
     enum BrowserJoinPlanEngine {
         IndexedDb(JoinPlan<IndexedDbAuthorityStore, IndexedDbObjects>),
         IndexedDbOpfs(JoinPlan<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(JoinPlan<MemoryAuthorityStore, MemoryObjects>),
+        Memory(JoinPlan<MemoryAuthority, MemoryObjects>),
     }
 
     enum BrowserTransactionEngine {
         IndexedDb(Transaction<IndexedDbAuthorityStore, IndexedDbObjects>),
         IndexedDbOpfs(Transaction<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(Transaction<MemoryAuthorityStore, MemoryObjects>),
+        Memory(Transaction<MemoryAuthority, MemoryObjects>),
     }
 
     macro_rules! with_checkout_mut {
@@ -5445,14 +5447,10 @@ mod bindings {
             return Err(JsValue::from_str("memory filesystem options are invalid"));
         }
         Ok(BrowserFs {
-            engine: Some(BrowserEngine::Memory(Fs::new(
-                MemoryAuthorityStore::default(),
-                cached_objects(
-                    MemoryObjectStore::new(options.maximum_object_bytes).map_err(js_error)?,
-                    browser_object_cache_options(&options.object_cache),
-                )?,
-                EmbeddedCapabilities::MEMORY,
-            ))),
+            engine: Some(BrowserEngine::Memory(memory_engine(
+                options.maximum_object_bytes,
+                browser_object_cache_options(&options.object_cache),
+            )?)),
             capabilities: Capabilities {
                 version: env!("CARGO_PKG_VERSION"),
                 platform: "browser",
@@ -5662,6 +5660,23 @@ mod bindings {
         options: ObjectCacheOptions,
     ) -> Result<CachedObjectStore<S>, JsValue> {
         CachedObjectStore::new(objects, options).map_err(js_error)
+    }
+
+    fn memory_engine(
+        maximum_object_bytes: u64,
+        cache: ObjectCacheOptions,
+    ) -> Result<Fs<MemoryAuthority, MemoryObjects>, JsValue> {
+        let streams = Arc::new(acyclic_stream::MemoryStream::default());
+        let (objects, bucket) = acyclic_objects::MemoryObjects::with_bucket(
+            "acyclic-fs-wasm-memory",
+            maximum_object_bytes,
+        )
+        .map_err(js_error)?;
+        Ok(Fs::new(
+            StreamAuthorityStore::new(streams),
+            cached_objects(ProviderObjectStore::new(Arc::new(objects), bucket), cache)?,
+            EmbeddedCapabilities::MEMORY,
+        ))
     }
 
     const fn browser_object_cache_options(
@@ -6587,9 +6602,8 @@ mod bindings {
         wasm_bindgen_test_configure!(run_in_browser);
 
         fn test_browser_fs() -> Result<BrowserFs, JsValue> {
-            let objects = MemoryObjectStore::new(1024).map_err(js_error)?;
-            let objects = cached_objects(
-                objects,
+            let engine = memory_engine(
+                1024,
                 ObjectCacheOptions {
                     maximum_entries: 8,
                     maximum_bytes: 1024,
@@ -6598,11 +6612,7 @@ mod bindings {
                 },
             )?;
             Ok(BrowserFs {
-                engine: Some(BrowserEngine::Memory(Fs::new(
-                    MemoryAuthorityStore::default(),
-                    objects,
-                    EmbeddedCapabilities::MEMORY,
-                ))),
+                engine: Some(BrowserEngine::Memory(engine)),
                 capabilities: Capabilities {
                     version: env!("CARGO_PKG_VERSION"),
                     platform: "browser",

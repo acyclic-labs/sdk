@@ -474,6 +474,7 @@ impl ErrorCode {
     }
 }
 /// Generated client implementations.
+#[cfg(feature = "grpc")]
 pub mod buckets_service_client {
     #![allow(
         unused_variables,
@@ -639,6 +640,7 @@ pub mod buckets_service_client {
     }
 }
 /// Generated server implementations.
+#[cfg(feature = "grpc")]
 pub mod buckets_service_server {
     #![allow(
         unused_variables,
@@ -919,6 +921,7 @@ pub mod buckets_service_server {
     }
 }
 /// Generated client implementations.
+#[cfg(feature = "grpc")]
 pub mod objects_service_client {
     #![allow(
         unused_variables,
@@ -1139,6 +1142,7 @@ pub mod objects_service_client {
     }
 }
 /// Generated server implementations.
+#[cfg(feature = "grpc")]
 pub mod objects_service_server {
     #![allow(
         unused_variables,
@@ -1532,6 +1536,7 @@ pub mod objects_service_server {
     }
 }
 /// Generated client implementations.
+#[cfg(feature = "grpc")]
 pub mod multipart_service_client {
     #![allow(
         unused_variables,
@@ -1758,6 +1763,7 @@ pub mod multipart_service_client {
     }
 }
 /// Generated server implementations.
+#[cfg(feature = "grpc")]
 pub mod multipart_service_server {
     #![allow(
         unused_variables,
@@ -2144,6 +2150,7 @@ pub mod multipart_service_server {
     }
 }
 /// Generated client implementations.
+#[cfg(feature = "grpc")]
 pub mod snapshots_service_client {
     #![allow(
         unused_variables,
@@ -2341,6 +2348,7 @@ pub mod snapshots_service_client {
     }
 }
 /// Generated server implementations.
+#[cfg(feature = "grpc")]
 pub mod snapshots_service_server {
     #![allow(
         unused_variables,

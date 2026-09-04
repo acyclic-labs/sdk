@@ -35,7 +35,9 @@ pub mod limits {
     pub const RECLAMATION_GRACE_SECONDS: u64 = 7 * 24 * 60 * 60;
 }
 
+#[cfg(feature = "grpc")]
 mod grpc;
+#[cfg(feature = "grpc")]
 pub use grpc::*;
 
 mod provider;
