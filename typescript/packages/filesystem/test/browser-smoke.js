@@ -279,7 +279,7 @@ async function run() {
     const object = await reopened.exportObject(objectId, 64n * 1024n * 1024n);
     await destination.importObject(objectId, object.bytes);
   }
-  const restored = await destination.restoreVolume(manifest);
+  const restored = await destination.restoreVolume(manifest, new Uint8Array(16).fill(7));
   const restoredCheckout = await restored.checkout({
     access: "read-only",
     consistency: "pinned",

@@ -176,7 +176,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
     }
 
     fn admit<M: Message>(&self, request: &Request<M>) -> Result<(), Status> {
-        let bytes = u64::try_from(request.get_ref().encoded_len()).unwrap_or(u64::MAX);
+        self.admit_message(request.get_ref())
+    }
+
+    fn admit_message<M: Message>(&self, message: &M) -> Result<(), Status> {
+        let bytes = u64::try_from(message.encoded_len()).unwrap_or(u64::MAX);
         if bytes > self.limits.maximum_request_bytes {
             return Err(Status::resource_exhausted(
                 "encoded request exceeds service bound",
@@ -230,7 +234,12 @@ where
             }),
             capabilities: Some(wire::Capabilities {
                 contract_version: "1".to_owned(),
-                profiles: vec![wire::FilesystemProfile::Portable as i32],
+                profiles: vec![
+                    wire::FilesystemProfile::Portable as i32,
+                    wire::FilesystemProfile::Posix as i32,
+                    wire::FilesystemProfile::Windows as i32,
+                    wire::FilesystemProfile::Browser as i32,
+                ],
                 maximum_request_bytes: self.limits.maximum_request_bytes,
                 maximum_response_bytes: self.limits.maximum_response_bytes,
                 maximum_transaction_mutations: self.limits.maximum_transaction_mutations,
@@ -890,16 +899,18 @@ where
             .message()
             .await?
             .ok_or_else(|| Status::invalid_argument("import stream is empty"))?;
+        self.admit_message(&first)?;
         if !first.object_id.is_empty() || first.contents.is_empty() {
             return Err(Status::invalid_argument(
                 "import must begin with a manifest chunk",
             ));
         }
         let workspace_ref = required(first.workspace, "workspace")?;
-        let operation_id = first.operation_id.clone();
-        let _ = operation(Some(wire::OperationOptions {
-            idempotency_key: operation_id.clone(),
-        }))?;
+        let operation_bytes = first.operation_id.clone();
+        let operation_id = operation(Some(wire::OperationOptions {
+            idempotency_key: operation_bytes.clone(),
+        }))?
+        .operation_id();
         let manifest = crate::decode_generation_export_manifest(
             &first.contents,
             self.limits.maximum_response_bytes,
@@ -920,8 +931,14 @@ where
         let mut expected_index = 0_usize;
         let mut terminal = first.terminal;
         while let Some(chunk) = stream.message().await? {
+            self.admit_message(&chunk)?;
+            if expected_index >= self.limits.maximum_page_items as usize {
+                return Err(Status::resource_exhausted(
+                    "import object count exceeds service bound",
+                ));
+            }
             if chunk.workspace.as_ref() != Some(&workspace_ref)
-                || chunk.operation_id != operation_id
+                || chunk.operation_id != operation_bytes
                 || terminal
             {
                 return Err(Status::invalid_argument(
@@ -955,6 +972,7 @@ where
         self.filesystem
             .restore_volume(
                 &manifest,
+                operation_id,
                 crate::WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
@@ -1258,11 +1276,9 @@ fn input_i64(value: Option<wire::OptionalI64>) -> Result<MetadataField<i64>, Sta
 fn profile(value: i32) -> Result<EngineProfile, Status> {
     match wire::FilesystemProfile::try_from(value).ok() {
         Some(wire::FilesystemProfile::Portable) => Ok(EngineProfile::Portable),
-        Some(wire::FilesystemProfile::Posix)
-        | Some(wire::FilesystemProfile::Windows)
-        | Some(wire::FilesystemProfile::Browser) => Err(Status::unimplemented(
-            "hosted wire paths currently require portable semantics",
-        )),
+        Some(wire::FilesystemProfile::Posix) => Ok(EngineProfile::Posix),
+        Some(wire::FilesystemProfile::Windows) => Ok(EngineProfile::Windows),
+        Some(wire::FilesystemProfile::Browser) => Ok(EngineProfile::Browser),
         Some(wire::FilesystemProfile::Unspecified) | None => {
             Err(Status::invalid_argument("filesystem profile is required"))
         }
@@ -1690,6 +1706,39 @@ mod tests {
         wire::Mutation {
             mutation: Some(value),
         }
+    }
+
+    #[tokio::test]
+    async fn handshake_and_creation_expose_every_canonical_profile()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
+        let advertised = service
+            .handshake(Request::new(wire::HandshakeRequest { harness: None }))
+            .await?
+            .into_inner()
+            .capabilities
+            .ok_or("missing capabilities")?;
+        let profiles = [
+            wire::FilesystemProfile::Portable,
+            wire::FilesystemProfile::Posix,
+            wire::FilesystemProfile::Windows,
+            wire::FilesystemProfile::Browser,
+        ];
+        assert_eq!(advertised.profiles, profiles.map(|profile| profile as i32));
+        for (index, selected) in profiles.into_iter().enumerate() {
+            let created = service
+                .create_workspace(Request::new(wire::CreateWorkspaceRequest {
+                    name: format!("profile-{index}"),
+                    profile: selected as i32,
+                    operation: operation(u8::try_from(index + 1)?),
+                }))
+                .await?
+                .into_inner()
+                .workspace
+                .ok_or("missing workspace")?;
+            assert_eq!(created.profile, selected as i32);
+        }
+        Ok(())
     }
 
     #[tokio::test]

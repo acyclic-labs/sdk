@@ -3116,11 +3116,21 @@ impl NativeFs {
     /// Returns a JavaScript error for malformed manifest fields, incomplete or
     /// corrupt closure, conflicting authority, cancellation, or bounded work.
     #[napi]
-    pub async fn restore_volume(&self, manifest: NativeExportManifest) -> Result<NativeVolume> {
+    pub async fn restore_volume(
+        &self,
+        manifest: NativeExportManifest,
+        operation_id: Buffer,
+    ) -> Result<NativeVolume> {
         let manifest = decode_export_manifest(&manifest)?;
+        let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
         let receipt = self
             .inner
-            .restore_volume(&manifest, boundary_budget(), &self.cancellation)
+            .restore_volume(
+                &manifest,
+                operation_id,
+                boundary_budget(),
+                &self.cancellation,
+            )
             .await
             .map_err(napi_error)?;
         Ok(NativeVolume {

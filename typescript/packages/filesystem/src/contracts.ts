@@ -1119,7 +1119,7 @@ export interface WasmRawFs {
     objects: readonly Uint8Array[],
     maximumObjects: number,
   ): Promise<{ readonly nextObject: string; readonly work: WorkCounters }>;
-  restoreVolume(manifest: WasmImportManifest): Promise<WasmRawVolume>;
+  restoreVolume(manifest: WasmImportManifest, operationId: Uint8Array): Promise<WasmRawVolume>;
   close(): void;
 }
 
@@ -1885,7 +1885,7 @@ export interface NativeRawFs {
       objects: readonly Uint8Array[],
       maximumObjects: number,
     ): Promise<{ readonly nextObject: bigint; readonly workJson: string }>;
-    restoreVolume(manifest: NativeRawExportManifest): Promise<NativeRawVolume>;
+    restoreVolume(manifest: NativeRawExportManifest, operationId: Uint8Array): Promise<NativeRawVolume>;
     close(): void;
 }
 

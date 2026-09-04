@@ -2470,8 +2470,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// Restores a volume authority from a fully imported immutable generation.
     ///
     /// The complete closure is authenticated before the first authority fact
-    /// can expose it. Repeating the exact restore is idempotent; a different
-    /// generation/configuration under the same volume identity is rejected.
+    /// can expose it. Retrying with the same caller-owned operation identity is
+    /// idempotent; changing its input is rejected by authority publication.
     ///
     /// # Errors
     ///
@@ -2480,6 +2480,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub async fn restore_volume(
         &self,
         manifest: &GenerationExportManifest,
+        operation_id: OperationId,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Volume<A, O>> {
@@ -2504,7 +2505,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 volume_id: manifest.volume_id,
                 config: manifest.config,
                 generation_root: manifest.generation_root,
-                operation_id: None,
+                operation_id: Some(operation_id),
             },
             work,
             budget,

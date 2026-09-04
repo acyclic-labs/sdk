@@ -6121,11 +6121,15 @@ fn manifest_transfer_restores_only_after_the_complete_closure_authenticates()
         ("objects", wrong_objects, true),
         ("file-count", wrong_file_count, true),
     ] {
-        let failure =
-            poll_ready(destination.restore_volume(&invalid, WorkBudget::UNBOUNDED, &cancellation))
-                .ok_or("invalid restore blocked")?
-                .err()
-                .ok_or("invalid manifest unexpectedly restored")?;
+        let failure = poll_ready(destination.restore_volume(
+            &invalid,
+            OperationId::from_bytes([31; 16]),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("invalid restore blocked")?
+        .err()
+        .ok_or("invalid manifest unexpectedly restored")?;
         assert!(matches!(failure.error, FsError::InvalidExportManifest));
         assert_eq!(
             failure.work.backend_read_operations > 0,
@@ -6134,10 +6138,34 @@ fn manifest_transfer_restores_only_after_the_complete_closure_authenticates()
         );
         assert_eq!(failure.work.authority_records_appended, 0);
     }
-    let restored =
-        poll_ready(destination.restore_volume(&manifest, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("restore blocked")??
-            .value;
+    let restore_operation = OperationId::from_bytes([32; 16]);
+    let restored = poll_ready(destination.restore_volume(
+        &manifest,
+        restore_operation,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("restore blocked")??
+    .value;
+    let retried = poll_ready(destination.restore_volume(
+        &manifest,
+        restore_operation,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("restore retry blocked")??
+    .value;
+    assert_eq!(retried.id(), restored.id());
+    let changed_operation = poll_ready(destination.restore_volume(
+        &manifest,
+        OperationId::from_bytes([33; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("changed-operation restore blocked")?
+    .err()
+    .ok_or("changed-operation restore unexpectedly succeeded")?;
+    assert!(matches!(changed_operation.error, FsError::CreationRejected));
     let mut restored_checkout = poll_ready(restored.checkout(
         GenerationSelector::Head,
         pinned(),

@@ -2978,23 +2978,28 @@ mod bindings {
         /// Returns a JavaScript error for malformed manifest, incomplete or
         /// corrupt closure, conflicting authority, cancellation, or bounded work.
         #[wasm_bindgen(js_name = restoreVolume)]
-        pub async fn restore_volume(&self, manifest: JsValue) -> Result<BrowserVolume, JsValue> {
+        pub async fn restore_volume(
+            &self,
+            manifest: JsValue,
+            operation_id: Vec<u8>,
+        ) -> Result<BrowserVolume, JsValue> {
             let manifest: ImportManifest =
                 serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
             let manifest = decode_export_manifest(&manifest)?;
+            let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
             let config = manifest.config;
             let cancellation = CancellationToken::default();
             let (engine, acquisition_work) = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => {
                     let receipt = fs
-                        .restore_volume(&manifest, boundary_budget(), &cancellation)
+                        .restore_volume(&manifest, operation_id, boundary_budget(), &cancellation)
                         .await
                         .map_err(js_error)?;
                     (BrowserVolumeEngine::IndexedDb(receipt.value), receipt.work)
                 }
                 BrowserEngine::IndexedDbOpfs(fs) => {
                     let receipt = fs
-                        .restore_volume(&manifest, boundary_budget(), &cancellation)
+                        .restore_volume(&manifest, operation_id, boundary_budget(), &cancellation)
                         .await
                         .map_err(js_error)?;
                     (
@@ -3004,7 +3009,7 @@ mod bindings {
                 }
                 BrowserEngine::Memory(fs) => {
                     let receipt = fs
-                        .restore_volume(&manifest, boundary_budget(), &cancellation)
+                        .restore_volume(&manifest, operation_id, boundary_budget(), &cancellation)
                         .await
                         .map_err(js_error)?;
                     (BrowserVolumeEngine::Memory(receipt.value), receipt.work)
