@@ -149,6 +149,8 @@ pub(crate) use persistent_diff::{
 pub use probe::{
     AuthenticatedGenerationProbe, AuthenticatedProbeError, ProbeLimits, capture_content_range_bytes,
 };
+#[cfg(test)]
+pub(crate) use publication::encode_publication_payload;
 pub use publication::{
     PublicationError, PublicationFailure, PublicationReceipt, PublishGenerationRequest,
     PublishedGeneration, decode_published_generation, publish_generation, publish_generation_async,

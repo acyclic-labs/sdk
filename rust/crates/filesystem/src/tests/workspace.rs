@@ -65,6 +65,39 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
 }
 
 #[tokio::test]
+async fn workspace_forks_an_unpublished_checkpoint_without_mutating_its_source()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let source = fs.create_workspace("checkpoint-source").await?;
+    let mut transaction = source.begin_transaction(IdempotencyKey::new()).await?;
+    transaction
+        .write_text("/candidate-only", "candidate")
+        .await?;
+    let checkpoint = transaction
+        .checkout
+        .checkpoint(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
+    let unpublished = source.generation(checkpoint).await?;
+    let child = source
+        .fork(
+            "checkpoint-child",
+            ForkOptions::from_generation(unpublished, IdempotencyKey::from_bytes([0x44; 16])),
+        )
+        .await?;
+
+    assert_eq!(
+        child.read("/candidate-only", 64).await?,
+        Bytes::from_static(b"candidate")
+    );
+    assert!(source.read("/candidate-only", 64).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
 async fn transaction_is_atomic_idempotent_and_visible_to_forks() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = fs.create_workspace("repo").await?;

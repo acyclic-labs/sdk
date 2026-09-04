@@ -310,7 +310,10 @@ const fn fingerprint_input_length() -> usize {
     16 + 8 + 8 + 8 + 32 + publication_payload_length()
 }
 
-fn encode_publication_payload(volume_id: VolumeId, generation_root: ObjectId) -> Vec<u8> {
+pub(crate) fn encode_publication_payload(
+    volume_id: VolumeId,
+    generation_root: ObjectId,
+) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(publication_payload_length());
     bytes.extend_from_slice(PAYLOAD_DOMAIN);
     bytes.extend_from_slice(&1_u16.to_le_bytes());

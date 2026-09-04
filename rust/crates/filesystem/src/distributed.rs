@@ -5,7 +5,7 @@ use crate::foundation::{
     AuthorityId, Digest, DurableCommit, Epoch, GenerationId, Head, OperationId, ProposedCommit,
     Sequence, authority_commit_digest,
 };
-use crate::kernel::{decode_published_generation, decode_volume_created};
+use crate::kernel::{decode_published_generation, decode_volume_created, volume_authority_id};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters};
 use crate::storage::{
     AppendOutcome as FsAppendOutcome, AuthorityReceipt, AuthorityResult, AuthorityStoreError,
@@ -123,6 +123,38 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             Err(error) => Err(map_stream_error(error)),
         }
     }
+
+    async fn existing_fork_destination(
+        &self,
+        destination_authority: AuthorityId,
+        source_generation: GenerationId,
+        forked_at: u64,
+    ) -> Result<Option<Head>, AuthorityStoreError> {
+        let snapshot = match self.snapshot(destination_authority).await {
+            Ok(snapshot) => snapshot,
+            Err(AuthorityStoreError::Missing) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let locator = generation_path(destination_authority, source_generation)?;
+        let record = read_one(self.provider.as_ref(), locator, 0).await?;
+        let located_tail = decode_lineage_tail(&record.value)?;
+        if located_tail == 0 {
+            return Err(AuthorityStoreError::Corrupt(
+                "destination generation locator selected an empty lineage".to_owned(),
+            ));
+        }
+        let lineage = lineage_path(destination_authority)?;
+        let selected = read_one(self.provider.as_ref(), lineage, located_tail - 1).await?;
+        if located_tail == forked_at
+            && decode_lineage_generation(&selected.value)? == source_generation
+        {
+            Ok(Some(snapshot.head))
+        } else {
+            Err(AuthorityStoreError::Rejected(
+                "destination generation fork conflicts with existing state".to_owned(),
+            ))
+        }
+    }
 }
 
 impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityStore<P> {
@@ -146,9 +178,15 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             lineage_path(source_authority).map_err(OperationFailure::before_work)?;
         let source_locator = generation_path(source_authority, source_generation)
             .map_err(OperationFailure::before_work)?;
-        let locator_record = read_one(self.provider.as_ref(), source_locator, 0)
-            .await
-            .map_err(OperationFailure::before_work)?;
+        let locator_record = match read_one(self.provider.as_ref(), source_locator, 0).await {
+            Ok(record) => record,
+            Err(AuthorityStoreError::Missing) => {
+                return self
+                    .create_authority(destination_authority, Epoch::GENESIS, budget, cancellation)
+                    .await;
+            }
+            Err(error) => return Err(OperationFailure::before_work(error)),
+        };
         let forked_at =
             decode_lineage_tail(&locator_record.value).map_err(OperationFailure::before_work)?;
         if forked_at == 0 {
@@ -178,20 +216,33 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             lineage_path(destination_authority).map_err(OperationFailure::before_work)?;
         let destination_locator = generation_path(destination_authority, source_generation)
             .map_err(OperationFailure::before_work)?;
-        self.provider
-            .fork(acyclic_stream::ForkRequest {
-                source: source_lineage,
-                destination: destination_lineage,
-                at_tail: Some(forked_at),
-                idempotency_key: Some(
-                    stream_key(b"fork-lineage", &operation_id.into_bytes())
-                        .map_err(OperationFailure::before_work)?,
-                ),
-            })
+        let source_tail = self
+            .provider
+            .tail(source_lineage.clone())
             .await
             .map_err(|error| OperationFailure::before_work(map_stream_error(error)))?;
+        if source_tail < forked_at {
+            return Err(OperationFailure::before_work(AuthorityStoreError::Corrupt(
+                "generation locator exceeds the source lineage".to_owned(),
+            )));
+        }
+        if let Some(head) = self
+            .existing_fork_destination(destination_authority, source_generation, forked_at)
+            .await
+            .map_err(OperationFailure::before_work)?
+        {
+            return authority_success(
+                CreateAuthorityOutcome::Existing(head),
+                authority_read_work(9),
+                budget,
+            );
+        }
         let request = acyclic_stream::CommitRequest {
             conditions: vec![
+                acyclic_stream::CommitCondition::Tail {
+                    path: source_lineage.clone(),
+                    expected: source_tail,
+                },
                 acyclic_stream::CommitCondition::Absent {
                     path: destination_records.clone(),
                 },
@@ -201,8 +252,16 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 acyclic_stream::CommitCondition::Absent {
                     path: destination_locator.clone(),
                 },
+                acyclic_stream::CommitCondition::Absent {
+                    path: destination_lineage.clone(),
+                },
             ],
             mutations: vec![
+                acyclic_stream::CommitMutation::Fork {
+                    source: source_lineage,
+                    destination: destination_lineage.clone(),
+                    at_tail: forked_at,
+                },
                 acyclic_stream::CommitMutation::Append {
                     path: destination_records,
                     records: vec![encode_epoch(GENESIS_DOMAIN, Epoch::GENESIS)],
@@ -219,11 +278,9 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             idempotency_key: stream_key(b"fork-authority", &operation_id.into_bytes())
                 .map_err(OperationFailure::before_work)?,
         };
-        let mut work = authority_write_work(3, 96);
-        work.authority_records_read = 2;
-        work.backend_read_operations = 2;
-        work.backend_write_operations = 2;
-        work.durability_operations = 2;
+        let mut work = authority_write_work(4, 96);
+        work.authority_records_read = 4;
+        work.backend_read_operations = 4;
         admit_authority(work, budget)?;
         match self.provider.commit(request).await {
             Ok(acyclic_stream::CommitOutcome::Committed(_)) => authority_success(
@@ -232,33 +289,23 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 budget,
             ),
             Ok(acyclic_stream::CommitOutcome::Conflict(_)) => {
-                let snapshot = self
-                    .snapshot(destination_authority)
+                work = work
+                    .checked_add(authority_read_work(6))
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
+                let head = self
+                    .existing_fork_destination(destination_authority, source_generation, forked_at)
                     .await
-                    .map_err(|error| OperationFailure::new(error, work))?;
-                let locator = generation_path(destination_authority, source_generation)
-                    .map_err(|error| OperationFailure::new(error, work))?;
-                let record = read_one(self.provider.as_ref(), locator, 0)
-                    .await
-                    .map_err(|error| OperationFailure::new(error, work))?;
-                if snapshot.head == Head::genesis(Epoch::GENESIS)
-                    && decode_lineage_tail(&record.value)
-                        .map_err(|error| OperationFailure::new(error, work))?
-                        == forked_at
-                {
-                    authority_success(
-                        CreateAuthorityOutcome::Existing(snapshot.head),
-                        work,
-                        budget,
-                    )
-                } else {
-                    Err(OperationFailure::new(
-                        AuthorityStoreError::Rejected(
-                            "destination generation fork conflicts with existing state".to_owned(),
-                        ),
-                        work,
-                    ))
-                }
+                    .map_err(|error| OperationFailure::new(error, work))?
+                    .ok_or_else(|| {
+                        OperationFailure::new(
+                            AuthorityStoreError::Rejected(
+                                "generation fork conflicted without creating its destination"
+                                    .to_owned(),
+                            ),
+                            work,
+                        )
+                    })?;
+                authority_success(CreateAuthorityOutcome::Existing(head), work, budget)
             }
             Err(error) => Err(OperationFailure::new(map_stream_error(error), work)),
         }
@@ -454,7 +501,9 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         ];
         let mut authority_records = 2_u64;
         let mut authority_bytes = u64::try_from(durable.payload.len()).unwrap_or(u64::MAX);
-        if let Some(generation) = generation_from_payload(&durable.payload) {
+        if let Some(generation) = generation_from_payload(authority_id, sequence, &durable.payload)
+            .map_err(OperationFailure::before_work)?
+        {
             let lineage = lineage_path(authority_id).map_err(OperationFailure::before_work)?;
             let locator =
                 generation_path(authority_id, generation).map_err(OperationFailure::before_work)?;
@@ -1055,13 +1104,32 @@ fn encode_epoch(domain: &[u8], epoch: Epoch) -> Bytes {
     Bytes::from(value)
 }
 
-fn generation_from_payload(payload: &[u8]) -> Option<GenerationId> {
+fn generation_from_payload(
+    authority_id: AuthorityId,
+    sequence: Sequence,
+    payload: &[u8],
+) -> Result<Option<GenerationId>, AuthorityStoreError> {
     if let Ok(created) = decode_volume_created(payload, STREAM_RECORD_LIMIT) {
-        return Some(GenerationId::new(created.initial_generation_root.digest));
+        if sequence != Sequence::new(1) || volume_authority_id(created.volume_id) != authority_id {
+            return Err(AuthorityStoreError::Corrupt(
+                "volume creation identity or sequence does not match its authority".to_owned(),
+            ));
+        }
+        return Ok(Some(GenerationId::new(
+            created.initial_generation_root.digest,
+        )));
     }
-    decode_published_generation(payload, STREAM_RECORD_LIMIT)
-        .ok()
-        .map(|published| GenerationId::new(published.generation_root.digest))
+    if let Ok(published) = decode_published_generation(payload, STREAM_RECORD_LIMIT) {
+        if sequence == Sequence::new(1) || volume_authority_id(published.volume_id) != authority_id
+        {
+            return Err(AuthorityStoreError::Corrupt(
+                "generation publication identity or sequence does not match its authority"
+                    .to_owned(),
+            ));
+        }
+        return Ok(Some(GenerationId::new(published.generation_root.digest)));
+    }
+    Ok(None)
 }
 
 fn encode_lineage_generation(generation: GenerationId) -> Bytes {
@@ -1245,4 +1313,58 @@ fn admit(work: WorkCounters, budget: WorkBudget) -> Result<(), OperationFailure<
 fn success<T>(value: T, work: WorkCounters, budget: WorkBudget) -> ObjectResult<T> {
     admit(work, budget)?;
     Ok(ObjectReceipt { value, work })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernel::{VolumeCreated, encode_publication_payload, encode_volume_created};
+    use crate::model::{Lifecycle, VolumeConfig};
+    use crate::storage::ObjectKind;
+
+    #[test]
+    fn generation_records_are_bound_to_their_authority_and_sequence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let volume_id = crate::foundation::VolumeId::from_bytes([0x71; 16]);
+        let authority_id = volume_authority_id(volume_id);
+        let root = ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: Digest::from_bytes([0x72; 32]),
+        };
+        let creation = encode_volume_created(VolumeCreated {
+            volume_id,
+            config: VolumeConfig::portable(Lifecycle::Ephemeral),
+            initial_generation_root: root,
+        })?;
+        let publication = encode_publication_payload(volume_id, root);
+        let generation = GenerationId::new(root.digest);
+
+        assert_eq!(
+            generation_from_payload(authority_id, Sequence::new(1), &creation)?,
+            Some(generation)
+        );
+        assert_eq!(
+            generation_from_payload(authority_id, Sequence::new(2), &publication)?,
+            Some(generation)
+        );
+        assert!(generation_from_payload(authority_id, Sequence::new(2), &creation).is_err());
+        assert!(generation_from_payload(authority_id, Sequence::new(1), &publication).is_err());
+        assert!(
+            generation_from_payload(
+                AuthorityId::from_bytes([0x73; 16]),
+                Sequence::new(1),
+                &creation,
+            )
+            .is_err()
+        );
+        assert!(
+            generation_from_payload(
+                AuthorityId::from_bytes([0x73; 16]),
+                Sequence::new(2),
+                &publication,
+            )
+            .is_err()
+        );
+        Ok(())
+    }
 }

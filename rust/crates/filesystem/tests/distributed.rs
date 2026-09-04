@@ -4,12 +4,14 @@
 use acyclic_fs::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, CancellationToken,
     CreateAuthorityOutcome, Digest, EmbeddedCapabilities, Epoch, FenceOutcome, ForkOptions, Fs,
-    Head, IdempotencyKey, ObjectId, ObjectKind, OperationId, ProposedCommit, ReplayLimit, Sequence,
-    WorkBudget, object_digest,
+    GenerationId, Head, IdempotencyKey, ObjectId, ObjectKind, OperationId, ProposedCommit,
+    ReplayLimit, Sequence, WorkBudget, object_digest,
 };
 use acyclic_fs::{ProviderObjectStore, StreamAuthorityStore};
 use acyclic_objects::{MemoryObjects, ObjectsProvider};
-use acyclic_stream::{MemoryStream, ReadRequest, StreamPath, StreamProvider};
+use acyclic_stream::{
+    AppendRequest, MemoryStream, ReadRequest, StreamError, StreamPath, StreamProvider,
+};
 use bytes::Bytes;
 use futures::StreamExt;
 use std::sync::Arc;
@@ -244,5 +246,99 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
     child.write_text("/child-only", "child").await?;
     assert!(child.read("/source-only", 16).await.is_err());
     assert!(source.read("/child-only", 16).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn generation_fork_falls_back_for_an_authority_without_lineage_locators()
+-> Result<(), Box<dyn std::error::Error>> {
+    let streams = Arc::new(MemoryStream::default());
+    let store = StreamAuthorityStore::new(streams);
+    let source = AuthorityId::from_bytes([0x61; 16]);
+    let destination = AuthorityId::from_bytes([0x62; 16]);
+    let cancellation = CancellationToken::new();
+    store
+        .create_authority(source, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation)
+        .await?;
+    let forked = store
+        .fork_generation_authority(
+            source,
+            GenerationId::new(Digest::from_bytes([0x63; 32])),
+            destination,
+            OperationId::from_bytes([0x64; 16]),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(
+        forked.value,
+        CreateAuthorityOutcome::Created(Head::genesis(Epoch::GENESIS))
+    );
+    assert_eq!(
+        store
+            .head(destination, WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value,
+        Head::genesis(Epoch::GENESIS)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_atomic_generation_fork_leaves_no_destination_lineage()
+-> Result<(), Box<dyn std::error::Error>> {
+    let streams = Arc::new(MemoryStream::default());
+    let objects = Arc::new(MemoryObjects::default());
+    let bucket = objects
+        .create_bucket(
+            "atomic-fork".to_owned(),
+            Some("create-atomic-fork".to_owned()),
+        )
+        .await?
+        .bucket
+        .ok_or("bucket identity missing")?;
+    let store = StreamAuthorityStore::new(Arc::clone(&streams));
+    let fs = Fs::new(
+        store.clone(),
+        ProviderObjectStore::new(objects, bucket),
+        EmbeddedCapabilities::MEMORY,
+    );
+    let source = fs.create_workspace("atomic-source").await?;
+    source.write_text("/shared", "base").await?;
+    let selected = source.head().await?;
+    let destination_id = fs.workspace_id("blocked-destination")?;
+    let destination_authority = AuthorityId::from_bytes(destination_id.into_bytes());
+    let prefix = format!(
+        "fs/authorities/{}",
+        hex::encode(destination_authority.into_bytes())
+    );
+    streams
+        .append(AppendRequest {
+            path: StreamPath::new(format!("{prefix}/records"))?,
+            records: vec![Bytes::from_static(b"conflict")],
+            if_tail: Some(0),
+            idempotency_key: None,
+        })
+        .await?;
+    let source_authority = AuthorityId::from_bytes(source.id().into_bytes());
+    assert!(
+        store
+            .fork_generation_authority(
+                source_authority,
+                selected.id(),
+                destination_authority,
+                OperationId::from_bytes([0x65; 16]),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        streams
+            .tail(StreamPath::new(format!("{prefix}/lineage"))?)
+            .await,
+        Err(StreamError::NotFound)
+    );
     Ok(())
 }
