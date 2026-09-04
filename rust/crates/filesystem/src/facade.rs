@@ -1035,23 +1035,6 @@ impl
         Self::from_memory_providers(stream, std::sync::Arc::new(objects), bucket)
     }
 
-    /// Creates the public-provider memory composition with an explicit aggregate object ceiling.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a zero or process-unrepresentable object bound before allocating provider state.
-    pub fn memory_bounded(maximum_object_bytes: u64) -> Result<Self, FsError> {
-        let stream = std::sync::Arc::new(acyclic_stream::MemoryStream::default());
-        let (objects, bucket) =
-            acyclic_objects::MemoryObjects::with_bucket("acyclic-fs-memory", maximum_object_bytes)
-                .map_err(|error| FsError::Object(ObjectStoreError::Rejected(error.to_string())))?;
-        Ok(Self::from_memory_providers(
-            stream,
-            std::sync::Arc::new(objects),
-            bucket,
-        ))
-    }
-
     /// Composes Filesystem over caller-owned public reference providers.
     ///
     /// Clones of the same providers may be retained to test cross-family behavior without any

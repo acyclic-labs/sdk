@@ -4471,7 +4471,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
 #[test]
 fn opaque_payload_reads_enforce_the_volume_output_bound() -> Result<(), Box<dyn std::error::Error>>
 {
-    let fs = Fs::memory_bounded(config().limits.maximum_object_bytes)?;
+    let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let mut limited = config();
     limited.profile = FilesystemProfile::Windows;
@@ -4772,8 +4772,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
 fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
-    assert!(Fs::memory_bounded(0).is_err());
-    let fs = Fs::memory_bounded(config().limits.maximum_object_bytes)?;
+    let fs = Fs::memory();
     let volume = poll_ready(fs.create_volume_with_id(
         VolumeId::from_bytes([117; 16]),
         config(),
@@ -6291,7 +6290,7 @@ fn encoded_object_and_backend_buffers_share_one_exact_peak()
         })
     ));
 
-    let fs = Fs::memory_bounded(config().limits.maximum_object_bytes)?;
+    let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let encoded = vec![7_u8; 16];
     let encoded_capacity = u64::try_from(encoded.capacity())?;
@@ -6333,7 +6332,7 @@ fn encoded_object_and_backend_buffers_share_one_exact_peak()
 #[test]
 fn memory_create_open_and_head_checkout_reconstruct_from_two_stores()
 -> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory_bounded(config().limits.maximum_object_bytes)?;
+    let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume_id = VolumeId::from_bytes([41; 16]);
     let created = poll_ready(fs.create_volume_with_id(
@@ -6706,7 +6705,7 @@ fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
 #[allow(clippy::too_many_lines)]
 fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
 -> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory_bounded(config().limits.maximum_object_bytes)?;
+    let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume_id = VolumeId::from_bytes([49; 16]);
     let volume = poll_ready(fs.create_volume_with_id(
@@ -6976,7 +6975,7 @@ fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
 #[allow(clippy::too_many_lines)]
 fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
 -> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory_bounded(config().limits.maximum_object_bytes)?;
+    let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume = poll_ready(fs.create_volume_with_id(
         VolumeId::from_bytes([50; 16]),
