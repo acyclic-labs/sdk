@@ -31,6 +31,8 @@ pub const MAX_COMMAND_BYTES: usize = 1024 * 1024 + 8 * 1024;
 pub const MIN_IDEMPOTENCY_RETENTION_SECS: u64 = 24 * 60 * 60;
 /// Maximum caller retry-identity width.
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
+/// Maximum canonical path text accepted by the single-command wire format.
+pub const MAX_PATH_BYTES: usize = u16::MAX as usize;
 
 /// Permanent account-relative slash-separated ASCII path.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -41,7 +43,7 @@ impl StreamPath {
     pub fn new(path: impl AsRef<str>) -> Result<Self, StreamError> {
         let path = path.as_ref();
         if path.is_empty()
-            || path.len() > MAX_COMMAND_BYTES
+            || path.len() > MAX_PATH_BYTES
             || !path.is_ascii()
             || path.starts_with('/')
             || path.ends_with('/')
@@ -54,7 +56,10 @@ impl StreamPath {
             if segment.is_empty()
                 || segment == "."
                 || segment == ".."
-                || segment.bytes().any(|byte| byte.is_ascii_control())
+                || segment
+                    .bytes()
+                    .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+                || segment.as_bytes().contains(&b'\\')
             {
                 return Err(StreamError::InvalidPath);
             }

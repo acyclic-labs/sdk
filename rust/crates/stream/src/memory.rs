@@ -1477,9 +1477,16 @@ mod tests {
 
     #[test]
     fn permanent_path_validation_rejects_ambiguous_names() {
-        for invalid in ["", "/a", "a/", "a//b", ".", "..", "a/./b", "a/../b", "a\n"] {
+        for invalid in [
+            "", "/a", "a/", "a//b", ".", "..", "a/./b", "a/../b", "a\n", "a b", "a\\b",
+        ] {
             assert_eq!(StreamPath::new(invalid), Err(StreamError::InvalidPath));
         }
+        assert!(StreamPath::new("a".repeat(crate::MAX_PATH_BYTES)).is_ok());
+        assert_eq!(
+            StreamPath::new("a".repeat(crate::MAX_PATH_BYTES + 1)),
+            Err(StreamError::InvalidPath)
+        );
         assert!(StreamPath::new("runs/run_42/agents/researcher").is_ok());
     }
 }

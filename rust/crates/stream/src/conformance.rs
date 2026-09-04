@@ -4,9 +4,9 @@ use bytes::Bytes;
 use futures::StreamExt as _;
 
 use crate::{
-    AppendOutcome, AppendRequest, CommitCondition, CommitConflict, CommitMutation, CommitOutcome,
-    CommitRequest, ForkRequest, IdempotencyKey, ReadRequest, StreamError, StreamPath,
-    StreamProvider,
+    AppendOutcome, AppendRequest, ChildrenRequest, CommitCondition, CommitConflict, CommitMutation,
+    CommitOutcome, CommitRequest, ForkRequest, IdempotencyKey, ReadRequest, StreamError,
+    StreamPath, StreamProvider,
 };
 
 /// Canonical language-neutral Stream conformance inventory.
@@ -88,6 +88,26 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         || inherited[0].as_ref().map_err(ToString::to_string)?.value != Bytes::from_static(b"one")
     {
         return Err("forked history was not exact".into());
+    }
+    let children = provider
+        .children(ChildrenRequest {
+            parent: Some(path("conformance")?),
+            limit: 8,
+        })
+        .await
+        .map_err(error)?
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(error)?;
+    if children
+        .into_iter()
+        .map(|child| child.path)
+        .collect::<Vec<_>>()
+        != vec![path("conformance/child")?, path("conformance/source")?]
+    {
+        return Err("direct child listing changed its fixed snapshot".into());
     }
     let mut follow = provider.follow(child.clone(), 1).await.map_err(error)?;
     provider
