@@ -1,0 +1,12 @@
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Exact public Bun archive digests in Fleet-generated Azure cache identities"
+condition = "AND"
+paths = ['''^azure-pipelines\.yml$''']
+regexTarget = "line"
+regexes = ['''^\s*key: '"bun-v4-(951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f|a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b|0a0620930b6675d7ba440e81f4e0e00d3cfbe096c4b140d3fff02205e9e18922|d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620)" \| "\$\(Agent\.OS\)" \| "sdk" \| "\$\(Build\.SourceVersion\)"'\s*$''']

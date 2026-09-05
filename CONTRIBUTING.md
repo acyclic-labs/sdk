@@ -16,6 +16,9 @@ The current renderer is Fleet release 4858, source `bd46bdfeceaa224a6893dcbbd2cd
 executable SHA-256 `84c3c90bec70032bab224e5baec6d14d8f7c2f06d0d77b541a953ed5db9f6fc0`.
 It isolates native Bun caches by pinned platform archive and stops success-only
 work after a setup failure, including when exact-tree reuse misses.
+The secret scanner keeps all default rules. Its only cache exception matches the
+four exact public Bun archive digests on complete generated cache-key lines in
+`azure-pipelines.yml`; bounded negative tests cover other hashes, paths and context.
 The policy lane verifies and runs the pinned upstream cargo-deny archive from the
 tool cache; it never compiles the checker or restores an unused compiler cache.
 

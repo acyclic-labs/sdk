@@ -998,7 +998,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=fetch
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" '654e049cc0969b819534f9abec1422ad280664b98431fbb99ab8d8bdb25fb541' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" 'd380995d2ddc56301f780b74504654524ad7645b59595f769b458c721e0d3071' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Find, download and verify exact successful job result
     env:
@@ -1080,6 +1080,7 @@ jobs:
         tar --extract --gzip --file "$archive" --directory "$TOOLS_DIR/gitleaks-8.30.1" gitleaks
       fi
       "$TOOLS_DIR/gitleaks-8.30.1/gitleaks" detect --source . --no-banner --redact
+      python3 scripts/check-secret-policy.py "$TOOLS_DIR/gitleaks-8.30.1/gitleaks"
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: policy
   - bash: |
@@ -1315,7 +1316,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" '654e049cc0969b819534f9abec1422ad280664b98431fbb99ab8d8bdb25fb541' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" 'd380995d2ddc56301f780b74504654524ad7645b59595f769b458c721e0d3071' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
