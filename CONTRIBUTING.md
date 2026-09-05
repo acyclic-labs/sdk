@@ -16,7 +16,10 @@ the exact source tree and semantic job identity.
 The Linux lane retains the isolated, tested Inference crate and filesystem npm
 archive with SHA-256 inventories in `packages-linux`. The filesystem archive runs
 the existing public-export/WASM composition test outside the workspace; a missing
-packaged WASM must fail. Publication consumes these exact successful-run bytes,
+packaged WASM must fail. Cargo packages and verifies the public Objects, Streams,
+and Filesystem dependency closure together with all features. Registry publication
+must publish the exact Objects and Streams archives before Filesystem.
+Publication consumes these exact successful-run bytes,
 never a rebuild. These are not published registry versions, native companion
 qualification, browser qualification, or qualification of other SDK families.
 
