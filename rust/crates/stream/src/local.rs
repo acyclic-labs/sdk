@@ -27,6 +27,24 @@ const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
 const HEADER_BYTES: usize = HEADER_MAGIC.len() + 8 * 8;
 const FRAME_CHECKSUM_BYTES: usize = 32;
 
+/// How the journal is made durable before a mutation becomes observable.
+///
+/// A per-open policy, not part of the on-disk contract: a journal written under one policy
+/// reopens under any other.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LocalDurability {
+    /// Every publication waits for the storage device to flush its cache (`F_FULLFSYNC` on
+    /// Apple platforms, `fsync`/`fdatasync` elsewhere), so acknowledged frames survive power
+    /// loss.
+    #[default]
+    FullFlush,
+    /// Every publication is ordered behind earlier writes without waiting for the device
+    /// cache (`F_BARRIERFSYNC` on Apple platforms, `fdatasync` elsewhere). Acknowledged
+    /// frames survive process crashes; a power loss before the device drains its cache can
+    /// lose the newest ones, which startup recovery discards as a torn tail.
+    Barrier,
+}
+
 /// Explicit local retention and recovery bounds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LocalStreamLimits {
@@ -36,6 +54,8 @@ pub struct LocalStreamLimits {
     pub journal_operations: u64,
     /// Maximum journal bytes, including framing.
     pub journal_bytes: u64,
+    /// Journal synchronization policy. Not recorded in the durable header.
+    pub durability: LocalDurability,
 }
 
 impl Default for LocalStreamLimits {
@@ -44,6 +64,7 @@ impl Default for LocalStreamLimits {
             memory: MemoryLimits::default(),
             journal_operations: 1_000_000,
             journal_bytes: 1024 * 1024 * 1024,
+            durability: LocalDurability::FullFlush,
         }
     }
 }
@@ -386,8 +407,8 @@ impl Journal {
         if length == 0 {
             let header = encode_header(limits)?;
             file.write_all(&header)?;
-            file.sync_all()?;
-            sync_directory(root)?;
+            sync_file(&file, limits.durability)?;
+            sync_directory(root, limits.durability)?;
         } else {
             let mut header = vec![0_u8; HEADER_BYTES];
             file.read_exact(&mut header)
@@ -405,7 +426,7 @@ impl Journal {
             let frame_start = valid_length;
             let remaining = total_length.saturating_sub(frame_start);
             if remaining < 4 {
-                truncate_torn_tail(&mut file, frame_start)?;
+                truncate_torn_tail(&mut file, frame_start, limits.durability)?;
                 valid_length = frame_start;
                 break;
             }
@@ -417,7 +438,7 @@ impl Journal {
                 .and_then(|value| value.checked_add(u64::try_from(FRAME_CHECKSUM_BYTES).ok()?))
                 .ok_or(LocalStreamError::Corrupt)?;
             if remaining < frame_length {
-                truncate_torn_tail(&mut file, frame_start)?;
+                truncate_torn_tail(&mut file, frame_start, limits.durability)?;
                 valid_length = frame_start;
                 break;
             }
@@ -493,28 +514,66 @@ impl Journal {
         self.file.write_all(&frame.length)?;
         self.file.write_all(&frame.command)?;
         self.file.write_all(&frame.checksum)?;
-        self.file.sync_data()?;
+        sync_file_data(&self.file, self.limits.durability)?;
         self.operations += 1;
         self.bytes += frame.bytes;
         Ok(())
     }
 }
 
-fn truncate_torn_tail(file: &mut File, valid_length: u64) -> Result<(), LocalStreamError> {
+fn truncate_torn_tail(
+    file: &mut File,
+    valid_length: u64,
+    durability: LocalDurability,
+) -> Result<(), LocalStreamError> {
     file.set_len(valid_length)?;
-    file.sync_all()?;
+    sync_file(file, durability)?;
     file.seek(SeekFrom::Start(valid_length))?;
     Ok(())
 }
 
+fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
+    match durability {
+        LocalDurability::FullFlush => file.sync_all(),
+        LocalDurability::Barrier => barrier_sync(file),
+    }
+}
+
+fn sync_file_data(file: &File, durability: LocalDurability) -> std::io::Result<()> {
+    match durability {
+        LocalDurability::FullFlush => file.sync_data(),
+        LocalDurability::Barrier => barrier_sync(file),
+    }
+}
+
+/// Orders every earlier write to `file` ahead of later ones without waiting for the device
+/// cache. Falls back to a full flush where the filesystem cannot issue a barrier.
+#[cfg(target_vendor = "apple")]
+#[allow(unsafe_code)]
+fn barrier_sync(file: &File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+    // SAFETY: `F_BARRIERFSYNC` takes no argument and only acts on the descriptor, which
+    // `file` keeps open for the duration of the call.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC) } == 0 {
+        Ok(())
+    } else {
+        file.sync_all()
+    }
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn barrier_sync(file: &File) -> std::io::Result<()> {
+    file.sync_data()
+}
+
 #[cfg(unix)]
-fn sync_directory(path: &Path) -> Result<(), LocalStreamError> {
-    File::open(path)?.sync_all()?;
+fn sync_directory(path: &Path, durability: LocalDurability) -> Result<(), LocalStreamError> {
+    sync_file(&File::open(path)?, durability)?;
     Ok(())
 }
 
 #[cfg(windows)]
-fn sync_directory(_path: &Path) -> Result<(), LocalStreamError> {
+fn sync_directory(_path: &Path, _durability: LocalDurability) -> Result<(), LocalStreamError> {
     // `FlushFileBuffers` on the newly created journal durably admits both its contents and
     // directory entry on supported Windows filesystems. Windows does not expose a portable
     // flush operation for directory handles.

@@ -11,7 +11,7 @@ description = "Immutable Objects contract with gRPC, memory, and durable local p
 [features]
 default = ["grpc"]
 grpc = ["dep:tonic", "dep:tonic-prost"]
-local = ["dep:fs2", "tokio/rt-multi-thread"]
+local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
 
 [dependencies]
 async-trait.workspace = true
@@ -25,6 +25,9 @@ thiserror.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
 tonic = { version = "0.14.6", features = ["tls-ring", "tls-webpki-roots"], optional = true }
 tonic-prost = { workspace = true, optional = true }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+libc = { version = "0.2.175", optional = true }
 
 [lints]
 workspace = true

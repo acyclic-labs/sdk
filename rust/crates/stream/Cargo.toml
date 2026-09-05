@@ -12,7 +12,7 @@ build = "build.rs"
 [features]
 default = ["grpc"]
 grpc = ["dep:tonic", "dep:tonic-prost"]
-local = ["dep:fs2", "tokio/rt-multi-thread"]
+local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
 
 [dependencies]
 async-trait.workspace = true
@@ -26,6 +26,9 @@ tokio = { version = "1.48.0", default-features = false, features = ["sync", "tim
 tonic = { workspace = true, optional = true }
 tonic-prost = { workspace = true, optional = true }
 uuid.workspace = true
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+libc = { version = "0.2.175", optional = true }
 
 [build-dependencies]
 protoc-bin-vendored.workspace = true
