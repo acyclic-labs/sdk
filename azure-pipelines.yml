@@ -76,62 +76,9 @@ jobs:
     displayName: Compute exact source tree identity
   - bash: |
       set -euo pipefail
-      helper='$(Agent.TempDirectory)/fleet-reuse-lookup.py'
-      cat >"$helper" <<'PY'
-      import json,os,sys,urllib.parse,urllib.request
-      collection,project,definition,current,tree,artifact=sys.argv[1:]
-      print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]false')
-      token=os.environ.get('SYSTEM_ACCESSTOKEN','')
-      if not token or len(token)>8192: raise SystemExit(0)
-      headers={'Authorization':f'Bearer {token}'}
-      query=urllib.parse.urlencode({'api-version':'7.1','definitions':int(definition),'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16})
-      try:
-          request=urllib.request.Request(f'{collection}{project}/_apis/build/builds?{query}',headers=headers)
-          with urllib.request.urlopen(request,timeout=15) as response: encoded=response.read(262145)
-          if len(encoded)>262144: raise ValueError('build result exceeds its bound')
-          builds=json.loads(encoded).get('value',[])
-          if not isinstance(builds,list) or len(builds)>16: raise ValueError('build result is invalid')
-          for build in builds:
-              run=build.get('id')
-              if not isinstance(run,int) or run==int(current) or build.get('definition',{}).get('id')!=int(definition): continue
-              artifact_query=urllib.parse.urlencode({'api-version':'7.1'})
-              artifact_request=urllib.request.Request(f'{collection}{project}/_apis/build/builds/{run}/artifacts?{artifact_query}',headers=headers)
-              try:
-                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(262145)
-                  if len(artifact_encoded)>262144: continue
-                  records=json.loads(artifact_encoded).get('value',[])
-                  if not isinstance(records,list) or len(records)>64: continue
-                  matches=[record for record in records if record.get('name')==artifact and record.get('resource',{}).get('type')=='PipelineArtifact']
-                  if len(matches)!=1: continue
-              except Exception: continue
-              print(f'##vso[task.setvariable variable=FLEET_REUSE_RUN_ID]{run}')
-              print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]true')
-              break
-      except Exception as error:
-          print(f'exact reuse lookup unavailable; executing bounded job: {error}',file=sys.stderr)
-      PY
-      python3 "$helper" '$(System.CollectionUri)' '$(System.TeamProjectId)' '$(System.DefinitionId)' '$(Build.BuildId)' "${FLEET_SOURCE_TREE:?}" 'qualified-job_linux'
-      rm -f -- "$helper"
-    displayName: Find exact successful cross-run result
-    env:
-      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-  - task: DownloadPipelineArtifact@2
-    displayName: Restore exact successful job receipt and outputs
-    condition: and(succeeded(), eq(variables['FLEET_REUSE_FOUND'], 'true'))
-    inputs:
-      buildType: specific
-      project: '$(System.TeamProjectId)'
-      definition: '$(System.DefinitionId)'
-      pipelineId: '$(FLEET_REUSE_RUN_ID)'
-      artifactName: 'qualified-job_linux'
-      targetPath: '$(Pipeline.Workspace)/.qualified/linux'
-      allowPartiallySucceededBuilds: false
-      allowFailedBuilds: false
-  - bash: |
-      set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
       cat >"$helper" <<'PY'
-      import hashlib,json,os,shutil,stat,sys
+      import hashlib,json,os,shutil,stat,struct,sys,tempfile,time,urllib.parse,urllib.request,zipfile
       from pathlib import Path
 
       MAX_ENTRIES=int(sys.argv[1]); MAX_BYTES=int(sys.argv[2])
@@ -189,7 +136,6 @@ jobs:
           else: raise SystemExit('reusable output is not a regular file or directory')
 
       def restore_file_modes(path,expected):
-          if os.name=='nt': return
           actual=inventory(path)
           def content_only(value):
               return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
@@ -206,6 +152,107 @@ jobs:
               if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
               if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
               target.chmod(file_mode)
+
+      def fetch():
+          # Optional cache transport only. Release/qualification downloads remain required tasks.
+          token=os.environ.get('SYSTEM_ACCESSTOKEN','')
+          if not token or len(token)>8192: return False
+          collection=os.environ['SYSTEM_COLLECTIONURI']
+          project=os.environ['SYSTEM_TEAMPROJECTID']
+          definition=int(os.environ['SYSTEM_DEFINITIONID']); current=int(os.environ['BUILD_BUILDID'])
+          artifact=os.environ['FLEET_REUSE_ARTIFACT']
+          endpoint=urllib.parse.urlsplit(collection)
+          if (endpoint.scheme!='https' or endpoint.hostname!='dev.azure.com' or endpoint.username
+                  or endpoint.password or endpoint.query or endpoint.fragment or not collection.endswith('/')):
+              raise ValueError('invalid collection')
+          deadline=time.monotonic()+45
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs): return None
+          opener=urllib.request.build_opener(NoRedirect)
+          def remaining():
+              budget=deadline-time.monotonic()
+              if budget<=0: raise TimeoutError('reuse deadline')
+              return min(15,budget)
+          def metadata(path,query):
+              url=collection+urllib.parse.quote(project,safe='')+'/_apis/'+path+'?'+urllib.parse.urlencode(query)
+              request=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}'})
+              with opener.open(request,timeout=remaining()) as response: data=response.read(262145)
+              if len(data)>262144: raise ValueError('oversized metadata')
+              return json.loads(data)
+          builds=metadata('build/builds',{'api-version':'7.1','definitions':definition,'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16}).get('value',[])
+          if not isinstance(builds,list) or len(builds)>16: raise ValueError('invalid build inventory')
+          for build in builds:
+              run=build.get('id')
+              if (type(run) is not int or run==current or build.get('definition',{}).get('id')!=definition
+                      or build.get('status')!='completed' or build.get('result')!='succeeded'): continue
+              try:
+                  record=metadata(f'pipelines/{definition}/runs/{run}/artifacts',{'api-version':'7.1','artifactName':artifact,'$expand':'signedContent'})
+                  if record.get('name')!=artifact: continue
+                  url=record['signedContent']['url']; parsed=urllib.parse.urlsplit(url)
+                  if (parsed.scheme!='https' or parsed.username or parsed.password or parsed.port not in (None,443)
+                          or not parsed.hostname or not parsed.hostname.endswith('.artifacts.visualstudio.com')):
+                      raise ValueError('invalid signed download destination')
+                  root.parent.mkdir(parents=True,exist_ok=True)
+                  with tempfile.TemporaryDirectory(prefix='reuse-',dir=root.parent) as temporary:
+                      archive=Path(temporary)/'download.zip'
+                      # Never send the job bearer token to the signed-content host or follow redirects.
+                      with opener.open(url,timeout=remaining()) as response, archive.open('xb') as target:
+                          size=0
+                          while True:
+                              remaining()
+                              block=response.read(min(1024*1024,MAX_BYTES-size+1))
+                              if not block: break
+                              size+=len(block)
+                              if size>MAX_BYTES: raise ValueError('oversized download')
+                              target.write(block)
+                      unpack(archive,Path(temporary)/'content',artifact,remaining)
+                      remove_path(root)
+                      os.replace(Path(temporary)/'content',root)
+                  return True
+              except Exception:
+                  # No response URLs, bearer tokens or signed download queries enter logs.
+                  remaining()
+          return False
+
+      def unpack(archive,destination,artifact,remaining):
+          # Bound the central directory before ZipFile allocates its entry inventory. ZIP64
+          # caches fall back to ordinary execution; no supported payload requires >2 GiB.
+          size=archive.stat().st_size
+          with archive.open('rb') as source:
+              source.seek(max(0,size-65557)); tail=source.read(65557)
+          position=tail.rfind(b'PK\x05\x06')
+          if position<0 or len(tail)-position<22: raise ValueError('missing ZIP directory')
+          _,disk,central_disk,count,total,central_size,offset,comment=struct.unpack('<4s4H2LH',tail[position:position+22])
+          if (disk or central_disk or count!=total or not 0<total<=min(MAX_ENTRIES,65534)
+                  or central_size>16*1024*1024 or offset+central_size>size-len(tail)+position
+                  or position+22+comment!=len(tail) or tail[max(0,position-20):position].startswith(b'PK\x06\x07')):
+              raise ValueError('oversized or unsupported ZIP directory')
+          with zipfile.ZipFile(archive) as payload:
+              entries=payload.infolist()
+              if len(entries)!=total: raise ValueError('ZIP entry count mismatch')
+              names=set(); bytes_total=0
+              for entry in entries:
+                  remaining()
+                  parts=entry.filename.rstrip('/').split('/')
+                  if (len(parts)>64 or parts[0]!=artifact or (len(parts)==1 and not entry.is_dir())
+                          or any(part in ('','.','..') or part.rstrip(' .')!=part
+                                 or any(ord(char)<32 or char in '\\:' for char in part) for part in parts)):
+                      raise ValueError('invalid ZIP path')
+                  name='/'.join(parts[1:]).casefold()
+                  mode=stat.S_IFMT(entry.external_attr>>16)
+                  if name in names or mode not in (0,stat.S_IFREG,stat.S_IFDIR): raise ValueError('invalid ZIP member')
+                  names.add(name); bytes_total+=entry.file_size
+                  if bytes_total>MAX_BYTES: raise ValueError('oversized extracted inventory')
+              destination.mkdir()
+              for entry in entries:
+                  remaining()
+                  target=destination.joinpath(*entry.filename.rstrip('/').split('/')[1:])
+                  if entry.is_dir(): target.mkdir(parents=True,exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      with payload.open(entry) as source, target.open('xb') as output:
+                          while block:=source.read(1024*1024):
+                              remaining(); output.write(block)
 
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
@@ -227,8 +274,9 @@ jobs:
           temporary=root/'receipt.json.tmp'
           temporary.write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
           os.replace(temporary,receipt_path)
-      elif mode=='restore':
+      elif mode in ('restore','fetch'):
           try:
+              if mode=='fetch' and not fetch(): raise ValueError('no downloaded exact result')
               receipt=json.loads(receipt_path.read_bytes())
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
@@ -249,21 +297,22 @@ jobs:
                   replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
-              print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if mode=='restore':
-                  for spec in specs:
-                      remove_path(spec['actual_path'])
+              print(f'exact reuse unavailable ({type(error).__name__}); executing bounded job',file=sys.stderr)
+              for spec in specs:
+                  remove_path(spec['actual_path'])
               remove_path(root)
               remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
       PY
-      mode=prepare
-      if [[ "${FLEET_REUSE_FOUND:-false}" == true ]]; then mode=restore; fi
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" 'd03bb4bca97a457899327db0f0cc5ecb8278aa6aad3242c7189462676f7c3bca' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      mode=fetch
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" 'f92e461fcccdbdf15e3e9a12fdeb6f66db690a692f32f3fe8de87a80ff17df8a' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       rm -f -- "$helper"
-    displayName: Verify and restore exact successful job result
+    displayName: Find, download and verify exact successful job result
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      FLEET_REUSE_ARTIFACT: qualified-job_linux
   - task: Cache@2
     inputs:
       key: '"rustup-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | rust-toolchain.toml'
@@ -395,7 +444,7 @@ jobs:
       cargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1
       cargo build -p acyclic-fs-napi --locked
       bun scripts/check-filesystem-napi.mjs
-      bash scripts/check-inference-package.sh
+      bash scripts/check-inference-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/inference"
       cargo run --locked -p acyclic-cli
       bun run test
       bun run licenses
@@ -418,11 +467,16 @@ jobs:
       exit 0
     condition: and(always(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Stop compiler-cache server
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)/packages'
+      artifact: 'packages-linux'
+      publishLocation: pipeline
   - bash: |
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
       cat >"$helper" <<'PY'
-      import hashlib,json,os,shutil,stat,sys
+      import hashlib,json,os,shutil,stat,struct,sys,tempfile,time,urllib.parse,urllib.request,zipfile
       from pathlib import Path
 
       MAX_ENTRIES=int(sys.argv[1]); MAX_BYTES=int(sys.argv[2])
@@ -480,7 +534,6 @@ jobs:
           else: raise SystemExit('reusable output is not a regular file or directory')
 
       def restore_file_modes(path,expected):
-          if os.name=='nt': return
           actual=inventory(path)
           def content_only(value):
               return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
@@ -497,6 +550,107 @@ jobs:
               if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
               if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
               target.chmod(file_mode)
+
+      def fetch():
+          # Optional cache transport only. Release/qualification downloads remain required tasks.
+          token=os.environ.get('SYSTEM_ACCESSTOKEN','')
+          if not token or len(token)>8192: return False
+          collection=os.environ['SYSTEM_COLLECTIONURI']
+          project=os.environ['SYSTEM_TEAMPROJECTID']
+          definition=int(os.environ['SYSTEM_DEFINITIONID']); current=int(os.environ['BUILD_BUILDID'])
+          artifact=os.environ['FLEET_REUSE_ARTIFACT']
+          endpoint=urllib.parse.urlsplit(collection)
+          if (endpoint.scheme!='https' or endpoint.hostname!='dev.azure.com' or endpoint.username
+                  or endpoint.password or endpoint.query or endpoint.fragment or not collection.endswith('/')):
+              raise ValueError('invalid collection')
+          deadline=time.monotonic()+45
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs): return None
+          opener=urllib.request.build_opener(NoRedirect)
+          def remaining():
+              budget=deadline-time.monotonic()
+              if budget<=0: raise TimeoutError('reuse deadline')
+              return min(15,budget)
+          def metadata(path,query):
+              url=collection+urllib.parse.quote(project,safe='')+'/_apis/'+path+'?'+urllib.parse.urlencode(query)
+              request=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}'})
+              with opener.open(request,timeout=remaining()) as response: data=response.read(262145)
+              if len(data)>262144: raise ValueError('oversized metadata')
+              return json.loads(data)
+          builds=metadata('build/builds',{'api-version':'7.1','definitions':definition,'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16}).get('value',[])
+          if not isinstance(builds,list) or len(builds)>16: raise ValueError('invalid build inventory')
+          for build in builds:
+              run=build.get('id')
+              if (type(run) is not int or run==current or build.get('definition',{}).get('id')!=definition
+                      or build.get('status')!='completed' or build.get('result')!='succeeded'): continue
+              try:
+                  record=metadata(f'pipelines/{definition}/runs/{run}/artifacts',{'api-version':'7.1','artifactName':artifact,'$expand':'signedContent'})
+                  if record.get('name')!=artifact: continue
+                  url=record['signedContent']['url']; parsed=urllib.parse.urlsplit(url)
+                  if (parsed.scheme!='https' or parsed.username or parsed.password or parsed.port not in (None,443)
+                          or not parsed.hostname or not parsed.hostname.endswith('.artifacts.visualstudio.com')):
+                      raise ValueError('invalid signed download destination')
+                  root.parent.mkdir(parents=True,exist_ok=True)
+                  with tempfile.TemporaryDirectory(prefix='reuse-',dir=root.parent) as temporary:
+                      archive=Path(temporary)/'download.zip'
+                      # Never send the job bearer token to the signed-content host or follow redirects.
+                      with opener.open(url,timeout=remaining()) as response, archive.open('xb') as target:
+                          size=0
+                          while True:
+                              remaining()
+                              block=response.read(min(1024*1024,MAX_BYTES-size+1))
+                              if not block: break
+                              size+=len(block)
+                              if size>MAX_BYTES: raise ValueError('oversized download')
+                              target.write(block)
+                      unpack(archive,Path(temporary)/'content',artifact,remaining)
+                      remove_path(root)
+                      os.replace(Path(temporary)/'content',root)
+                  return True
+              except Exception:
+                  # No response URLs, bearer tokens or signed download queries enter logs.
+                  remaining()
+          return False
+
+      def unpack(archive,destination,artifact,remaining):
+          # Bound the central directory before ZipFile allocates its entry inventory. ZIP64
+          # caches fall back to ordinary execution; no supported payload requires >2 GiB.
+          size=archive.stat().st_size
+          with archive.open('rb') as source:
+              source.seek(max(0,size-65557)); tail=source.read(65557)
+          position=tail.rfind(b'PK\x05\x06')
+          if position<0 or len(tail)-position<22: raise ValueError('missing ZIP directory')
+          _,disk,central_disk,count,total,central_size,offset,comment=struct.unpack('<4s4H2LH',tail[position:position+22])
+          if (disk or central_disk or count!=total or not 0<total<=min(MAX_ENTRIES,65534)
+                  or central_size>16*1024*1024 or offset+central_size>size-len(tail)+position
+                  or position+22+comment!=len(tail) or tail[max(0,position-20):position].startswith(b'PK\x06\x07')):
+              raise ValueError('oversized or unsupported ZIP directory')
+          with zipfile.ZipFile(archive) as payload:
+              entries=payload.infolist()
+              if len(entries)!=total: raise ValueError('ZIP entry count mismatch')
+              names=set(); bytes_total=0
+              for entry in entries:
+                  remaining()
+                  parts=entry.filename.rstrip('/').split('/')
+                  if (len(parts)>64 or parts[0]!=artifact or (len(parts)==1 and not entry.is_dir())
+                          or any(part in ('','.','..') or part.rstrip(' .')!=part
+                                 or any(ord(char)<32 or char in '\\:' for char in part) for part in parts)):
+                      raise ValueError('invalid ZIP path')
+                  name='/'.join(parts[1:]).casefold()
+                  mode=stat.S_IFMT(entry.external_attr>>16)
+                  if name in names or mode not in (0,stat.S_IFREG,stat.S_IFDIR): raise ValueError('invalid ZIP member')
+                  names.add(name); bytes_total+=entry.file_size
+                  if bytes_total>MAX_BYTES: raise ValueError('oversized extracted inventory')
+              destination.mkdir()
+              for entry in entries:
+                  remaining()
+                  target=destination.joinpath(*entry.filename.rstrip('/').split('/')[1:])
+                  if entry.is_dir(): target.mkdir(parents=True,exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      with payload.open(entry) as source, target.open('xb') as output:
+                          while block:=source.read(1024*1024):
+                              remaining(); output.write(block)
 
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
@@ -518,8 +672,9 @@ jobs:
           temporary=root/'receipt.json.tmp'
           temporary.write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
           os.replace(temporary,receipt_path)
-      elif mode=='restore':
+      elif mode in ('restore','fetch'):
           try:
+              if mode=='fetch' and not fetch(): raise ValueError('no downloaded exact result')
               receipt=json.loads(receipt_path.read_bytes())
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
@@ -540,10 +695,9 @@ jobs:
                   replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
-              print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if mode=='restore':
-                  for spec in specs:
-                      remove_path(spec['actual_path'])
+              print(f'exact reuse unavailable ({type(error).__name__}); executing bounded job',file=sys.stderr)
+              for spec in specs:
+                  remove_path(spec['actual_path'])
               remove_path(root)
               remove_path(canonical)
               root.mkdir(parents=True)
@@ -551,7 +705,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" 'd03bb4bca97a457899327db0f0cc5ecb8278aa6aad3242c7189462676f7c3bca' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" 'f92e461fcccdbdf15e3e9a12fdeb6f66db690a692f32f3fe8de87a80ff17df8a' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
@@ -621,62 +775,9 @@ jobs:
     displayName: Compute exact source tree identity
   - bash: |
       set -euo pipefail
-      helper='$(Agent.TempDirectory)/fleet-reuse-lookup.py'
-      cat >"$helper" <<'PY'
-      import json,os,sys,urllib.parse,urllib.request
-      collection,project,definition,current,tree,artifact=sys.argv[1:]
-      print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]false')
-      token=os.environ.get('SYSTEM_ACCESSTOKEN','')
-      if not token or len(token)>8192: raise SystemExit(0)
-      headers={'Authorization':f'Bearer {token}'}
-      query=urllib.parse.urlencode({'api-version':'7.1','definitions':int(definition),'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16})
-      try:
-          request=urllib.request.Request(f'{collection}{project}/_apis/build/builds?{query}',headers=headers)
-          with urllib.request.urlopen(request,timeout=15) as response: encoded=response.read(262145)
-          if len(encoded)>262144: raise ValueError('build result exceeds its bound')
-          builds=json.loads(encoded).get('value',[])
-          if not isinstance(builds,list) or len(builds)>16: raise ValueError('build result is invalid')
-          for build in builds:
-              run=build.get('id')
-              if not isinstance(run,int) or run==int(current) or build.get('definition',{}).get('id')!=int(definition): continue
-              artifact_query=urllib.parse.urlencode({'api-version':'7.1'})
-              artifact_request=urllib.request.Request(f'{collection}{project}/_apis/build/builds/{run}/artifacts?{artifact_query}',headers=headers)
-              try:
-                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(262145)
-                  if len(artifact_encoded)>262144: continue
-                  records=json.loads(artifact_encoded).get('value',[])
-                  if not isinstance(records,list) or len(records)>64: continue
-                  matches=[record for record in records if record.get('name')==artifact and record.get('resource',{}).get('type')=='PipelineArtifact']
-                  if len(matches)!=1: continue
-              except Exception: continue
-              print(f'##vso[task.setvariable variable=FLEET_REUSE_RUN_ID]{run}')
-              print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]true')
-              break
-      except Exception as error:
-          print(f'exact reuse lookup unavailable; executing bounded job: {error}',file=sys.stderr)
-      PY
-      python3 "$helper" '$(System.CollectionUri)' '$(System.TeamProjectId)' '$(System.DefinitionId)' '$(Build.BuildId)' "${FLEET_SOURCE_TREE:?}" 'qualified-job_policy'
-      rm -f -- "$helper"
-    displayName: Find exact successful cross-run result
-    env:
-      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-  - task: DownloadPipelineArtifact@2
-    displayName: Restore exact successful job receipt and outputs
-    condition: and(succeeded(), eq(variables['FLEET_REUSE_FOUND'], 'true'))
-    inputs:
-      buildType: specific
-      project: '$(System.TeamProjectId)'
-      definition: '$(System.DefinitionId)'
-      pipelineId: '$(FLEET_REUSE_RUN_ID)'
-      artifactName: 'qualified-job_policy'
-      targetPath: '$(Pipeline.Workspace)/.qualified/policy'
-      allowPartiallySucceededBuilds: false
-      allowFailedBuilds: false
-  - bash: |
-      set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
       cat >"$helper" <<'PY'
-      import hashlib,json,os,shutil,stat,sys
+      import hashlib,json,os,shutil,stat,struct,sys,tempfile,time,urllib.parse,urllib.request,zipfile
       from pathlib import Path
 
       MAX_ENTRIES=int(sys.argv[1]); MAX_BYTES=int(sys.argv[2])
@@ -734,7 +835,6 @@ jobs:
           else: raise SystemExit('reusable output is not a regular file or directory')
 
       def restore_file_modes(path,expected):
-          if os.name=='nt': return
           actual=inventory(path)
           def content_only(value):
               return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
@@ -751,6 +851,107 @@ jobs:
               if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
               if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
               target.chmod(file_mode)
+
+      def fetch():
+          # Optional cache transport only. Release/qualification downloads remain required tasks.
+          token=os.environ.get('SYSTEM_ACCESSTOKEN','')
+          if not token or len(token)>8192: return False
+          collection=os.environ['SYSTEM_COLLECTIONURI']
+          project=os.environ['SYSTEM_TEAMPROJECTID']
+          definition=int(os.environ['SYSTEM_DEFINITIONID']); current=int(os.environ['BUILD_BUILDID'])
+          artifact=os.environ['FLEET_REUSE_ARTIFACT']
+          endpoint=urllib.parse.urlsplit(collection)
+          if (endpoint.scheme!='https' or endpoint.hostname!='dev.azure.com' or endpoint.username
+                  or endpoint.password or endpoint.query or endpoint.fragment or not collection.endswith('/')):
+              raise ValueError('invalid collection')
+          deadline=time.monotonic()+45
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs): return None
+          opener=urllib.request.build_opener(NoRedirect)
+          def remaining():
+              budget=deadline-time.monotonic()
+              if budget<=0: raise TimeoutError('reuse deadline')
+              return min(15,budget)
+          def metadata(path,query):
+              url=collection+urllib.parse.quote(project,safe='')+'/_apis/'+path+'?'+urllib.parse.urlencode(query)
+              request=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}'})
+              with opener.open(request,timeout=remaining()) as response: data=response.read(262145)
+              if len(data)>262144: raise ValueError('oversized metadata')
+              return json.loads(data)
+          builds=metadata('build/builds',{'api-version':'7.1','definitions':definition,'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16}).get('value',[])
+          if not isinstance(builds,list) or len(builds)>16: raise ValueError('invalid build inventory')
+          for build in builds:
+              run=build.get('id')
+              if (type(run) is not int or run==current or build.get('definition',{}).get('id')!=definition
+                      or build.get('status')!='completed' or build.get('result')!='succeeded'): continue
+              try:
+                  record=metadata(f'pipelines/{definition}/runs/{run}/artifacts',{'api-version':'7.1','artifactName':artifact,'$expand':'signedContent'})
+                  if record.get('name')!=artifact: continue
+                  url=record['signedContent']['url']; parsed=urllib.parse.urlsplit(url)
+                  if (parsed.scheme!='https' or parsed.username or parsed.password or parsed.port not in (None,443)
+                          or not parsed.hostname or not parsed.hostname.endswith('.artifacts.visualstudio.com')):
+                      raise ValueError('invalid signed download destination')
+                  root.parent.mkdir(parents=True,exist_ok=True)
+                  with tempfile.TemporaryDirectory(prefix='reuse-',dir=root.parent) as temporary:
+                      archive=Path(temporary)/'download.zip'
+                      # Never send the job bearer token to the signed-content host or follow redirects.
+                      with opener.open(url,timeout=remaining()) as response, archive.open('xb') as target:
+                          size=0
+                          while True:
+                              remaining()
+                              block=response.read(min(1024*1024,MAX_BYTES-size+1))
+                              if not block: break
+                              size+=len(block)
+                              if size>MAX_BYTES: raise ValueError('oversized download')
+                              target.write(block)
+                      unpack(archive,Path(temporary)/'content',artifact,remaining)
+                      remove_path(root)
+                      os.replace(Path(temporary)/'content',root)
+                  return True
+              except Exception:
+                  # No response URLs, bearer tokens or signed download queries enter logs.
+                  remaining()
+          return False
+
+      def unpack(archive,destination,artifact,remaining):
+          # Bound the central directory before ZipFile allocates its entry inventory. ZIP64
+          # caches fall back to ordinary execution; no supported payload requires >2 GiB.
+          size=archive.stat().st_size
+          with archive.open('rb') as source:
+              source.seek(max(0,size-65557)); tail=source.read(65557)
+          position=tail.rfind(b'PK\x05\x06')
+          if position<0 or len(tail)-position<22: raise ValueError('missing ZIP directory')
+          _,disk,central_disk,count,total,central_size,offset,comment=struct.unpack('<4s4H2LH',tail[position:position+22])
+          if (disk or central_disk or count!=total or not 0<total<=min(MAX_ENTRIES,65534)
+                  or central_size>16*1024*1024 or offset+central_size>size-len(tail)+position
+                  or position+22+comment!=len(tail) or tail[max(0,position-20):position].startswith(b'PK\x06\x07')):
+              raise ValueError('oversized or unsupported ZIP directory')
+          with zipfile.ZipFile(archive) as payload:
+              entries=payload.infolist()
+              if len(entries)!=total: raise ValueError('ZIP entry count mismatch')
+              names=set(); bytes_total=0
+              for entry in entries:
+                  remaining()
+                  parts=entry.filename.rstrip('/').split('/')
+                  if (len(parts)>64 or parts[0]!=artifact or (len(parts)==1 and not entry.is_dir())
+                          or any(part in ('','.','..') or part.rstrip(' .')!=part
+                                 or any(ord(char)<32 or char in '\\:' for char in part) for part in parts)):
+                      raise ValueError('invalid ZIP path')
+                  name='/'.join(parts[1:]).casefold()
+                  mode=stat.S_IFMT(entry.external_attr>>16)
+                  if name in names or mode not in (0,stat.S_IFREG,stat.S_IFDIR): raise ValueError('invalid ZIP member')
+                  names.add(name); bytes_total+=entry.file_size
+                  if bytes_total>MAX_BYTES: raise ValueError('oversized extracted inventory')
+              destination.mkdir()
+              for entry in entries:
+                  remaining()
+                  target=destination.joinpath(*entry.filename.rstrip('/').split('/')[1:])
+                  if entry.is_dir(): target.mkdir(parents=True,exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      with payload.open(entry) as source, target.open('xb') as output:
+                          while block:=source.read(1024*1024):
+                              remaining(); output.write(block)
 
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
@@ -772,8 +973,9 @@ jobs:
           temporary=root/'receipt.json.tmp'
           temporary.write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
           os.replace(temporary,receipt_path)
-      elif mode=='restore':
+      elif mode in ('restore','fetch'):
           try:
+              if mode=='fetch' and not fetch(): raise ValueError('no downloaded exact result')
               receipt=json.loads(receipt_path.read_bytes())
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
@@ -794,21 +996,22 @@ jobs:
                   replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
-              print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if mode=='restore':
-                  for spec in specs:
-                      remove_path(spec['actual_path'])
+              print(f'exact reuse unavailable ({type(error).__name__}); executing bounded job',file=sys.stderr)
+              for spec in specs:
+                  remove_path(spec['actual_path'])
               remove_path(root)
               remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
       PY
-      mode=prepare
-      if [[ "${FLEET_REUSE_FOUND:-false}" == true ]]; then mode=restore; fi
+      mode=fetch
       python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" 'ce0cb717709fae9bce9a25f3d8b228fc2d32d4f1e086c72954f1754b748b3e7e' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
-    displayName: Verify and restore exact successful job result
+    displayName: Find, download and verify exact successful job result
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      FLEET_REUSE_ARTIFACT: qualified-job_policy
   - task: Cache@2
     inputs:
       key: '"rustup-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | rust-toolchain.toml'
@@ -924,7 +1127,7 @@ jobs:
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
       cat >"$helper" <<'PY'
-      import hashlib,json,os,shutil,stat,sys
+      import hashlib,json,os,shutil,stat,struct,sys,tempfile,time,urllib.parse,urllib.request,zipfile
       from pathlib import Path
 
       MAX_ENTRIES=int(sys.argv[1]); MAX_BYTES=int(sys.argv[2])
@@ -982,7 +1185,6 @@ jobs:
           else: raise SystemExit('reusable output is not a regular file or directory')
 
       def restore_file_modes(path,expected):
-          if os.name=='nt': return
           actual=inventory(path)
           def content_only(value):
               return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
@@ -999,6 +1201,107 @@ jobs:
               if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
               if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
               target.chmod(file_mode)
+
+      def fetch():
+          # Optional cache transport only. Release/qualification downloads remain required tasks.
+          token=os.environ.get('SYSTEM_ACCESSTOKEN','')
+          if not token or len(token)>8192: return False
+          collection=os.environ['SYSTEM_COLLECTIONURI']
+          project=os.environ['SYSTEM_TEAMPROJECTID']
+          definition=int(os.environ['SYSTEM_DEFINITIONID']); current=int(os.environ['BUILD_BUILDID'])
+          artifact=os.environ['FLEET_REUSE_ARTIFACT']
+          endpoint=urllib.parse.urlsplit(collection)
+          if (endpoint.scheme!='https' or endpoint.hostname!='dev.azure.com' or endpoint.username
+                  or endpoint.password or endpoint.query or endpoint.fragment or not collection.endswith('/')):
+              raise ValueError('invalid collection')
+          deadline=time.monotonic()+45
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs): return None
+          opener=urllib.request.build_opener(NoRedirect)
+          def remaining():
+              budget=deadline-time.monotonic()
+              if budget<=0: raise TimeoutError('reuse deadline')
+              return min(15,budget)
+          def metadata(path,query):
+              url=collection+urllib.parse.quote(project,safe='')+'/_apis/'+path+'?'+urllib.parse.urlencode(query)
+              request=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}'})
+              with opener.open(request,timeout=remaining()) as response: data=response.read(262145)
+              if len(data)>262144: raise ValueError('oversized metadata')
+              return json.loads(data)
+          builds=metadata('build/builds',{'api-version':'7.1','definitions':definition,'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16}).get('value',[])
+          if not isinstance(builds,list) or len(builds)>16: raise ValueError('invalid build inventory')
+          for build in builds:
+              run=build.get('id')
+              if (type(run) is not int or run==current or build.get('definition',{}).get('id')!=definition
+                      or build.get('status')!='completed' or build.get('result')!='succeeded'): continue
+              try:
+                  record=metadata(f'pipelines/{definition}/runs/{run}/artifacts',{'api-version':'7.1','artifactName':artifact,'$expand':'signedContent'})
+                  if record.get('name')!=artifact: continue
+                  url=record['signedContent']['url']; parsed=urllib.parse.urlsplit(url)
+                  if (parsed.scheme!='https' or parsed.username or parsed.password or parsed.port not in (None,443)
+                          or not parsed.hostname or not parsed.hostname.endswith('.artifacts.visualstudio.com')):
+                      raise ValueError('invalid signed download destination')
+                  root.parent.mkdir(parents=True,exist_ok=True)
+                  with tempfile.TemporaryDirectory(prefix='reuse-',dir=root.parent) as temporary:
+                      archive=Path(temporary)/'download.zip'
+                      # Never send the job bearer token to the signed-content host or follow redirects.
+                      with opener.open(url,timeout=remaining()) as response, archive.open('xb') as target:
+                          size=0
+                          while True:
+                              remaining()
+                              block=response.read(min(1024*1024,MAX_BYTES-size+1))
+                              if not block: break
+                              size+=len(block)
+                              if size>MAX_BYTES: raise ValueError('oversized download')
+                              target.write(block)
+                      unpack(archive,Path(temporary)/'content',artifact,remaining)
+                      remove_path(root)
+                      os.replace(Path(temporary)/'content',root)
+                  return True
+              except Exception:
+                  # No response URLs, bearer tokens or signed download queries enter logs.
+                  remaining()
+          return False
+
+      def unpack(archive,destination,artifact,remaining):
+          # Bound the central directory before ZipFile allocates its entry inventory. ZIP64
+          # caches fall back to ordinary execution; no supported payload requires >2 GiB.
+          size=archive.stat().st_size
+          with archive.open('rb') as source:
+              source.seek(max(0,size-65557)); tail=source.read(65557)
+          position=tail.rfind(b'PK\x05\x06')
+          if position<0 or len(tail)-position<22: raise ValueError('missing ZIP directory')
+          _,disk,central_disk,count,total,central_size,offset,comment=struct.unpack('<4s4H2LH',tail[position:position+22])
+          if (disk or central_disk or count!=total or not 0<total<=min(MAX_ENTRIES,65534)
+                  or central_size>16*1024*1024 or offset+central_size>size-len(tail)+position
+                  or position+22+comment!=len(tail) or tail[max(0,position-20):position].startswith(b'PK\x06\x07')):
+              raise ValueError('oversized or unsupported ZIP directory')
+          with zipfile.ZipFile(archive) as payload:
+              entries=payload.infolist()
+              if len(entries)!=total: raise ValueError('ZIP entry count mismatch')
+              names=set(); bytes_total=0
+              for entry in entries:
+                  remaining()
+                  parts=entry.filename.rstrip('/').split('/')
+                  if (len(parts)>64 or parts[0]!=artifact or (len(parts)==1 and not entry.is_dir())
+                          or any(part in ('','.','..') or part.rstrip(' .')!=part
+                                 or any(ord(char)<32 or char in '\\:' for char in part) for part in parts)):
+                      raise ValueError('invalid ZIP path')
+                  name='/'.join(parts[1:]).casefold()
+                  mode=stat.S_IFMT(entry.external_attr>>16)
+                  if name in names or mode not in (0,stat.S_IFREG,stat.S_IFDIR): raise ValueError('invalid ZIP member')
+                  names.add(name); bytes_total+=entry.file_size
+                  if bytes_total>MAX_BYTES: raise ValueError('oversized extracted inventory')
+              destination.mkdir()
+              for entry in entries:
+                  remaining()
+                  target=destination.joinpath(*entry.filename.rstrip('/').split('/')[1:])
+                  if entry.is_dir(): target.mkdir(parents=True,exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      with payload.open(entry) as source, target.open('xb') as output:
+                          while block:=source.read(1024*1024):
+                              remaining(); output.write(block)
 
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
@@ -1020,8 +1323,9 @@ jobs:
           temporary=root/'receipt.json.tmp'
           temporary.write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
           os.replace(temporary,receipt_path)
-      elif mode=='restore':
+      elif mode in ('restore','fetch'):
           try:
+              if mode=='fetch' and not fetch(): raise ValueError('no downloaded exact result')
               receipt=json.loads(receipt_path.read_bytes())
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
@@ -1042,10 +1346,9 @@ jobs:
                   replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
-              print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if mode=='restore':
-                  for spec in specs:
-                      remove_path(spec['actual_path'])
+              print(f'exact reuse unavailable ({type(error).__name__}); executing bounded job',file=sys.stderr)
+              for spec in specs:
+                  remove_path(spec['actual_path'])
               remove_path(root)
               remove_path(canonical)
               root.mkdir(parents=True)
@@ -1122,62 +1425,9 @@ jobs:
     displayName: Compute exact source tree identity
   - bash: |
       set -euo pipefail
-      helper='$(Agent.TempDirectory)/fleet-reuse-lookup.py'
-      cat >"$helper" <<'PY'
-      import json,os,sys,urllib.parse,urllib.request
-      collection,project,definition,current,tree,artifact=sys.argv[1:]
-      print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]false')
-      token=os.environ.get('SYSTEM_ACCESSTOKEN','')
-      if not token or len(token)>8192: raise SystemExit(0)
-      headers={'Authorization':f'Bearer {token}'}
-      query=urllib.parse.urlencode({'api-version':'7.1','definitions':int(definition),'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16})
-      try:
-          request=urllib.request.Request(f'{collection}{project}/_apis/build/builds?{query}',headers=headers)
-          with urllib.request.urlopen(request,timeout=15) as response: encoded=response.read(262145)
-          if len(encoded)>262144: raise ValueError('build result exceeds its bound')
-          builds=json.loads(encoded).get('value',[])
-          if not isinstance(builds,list) or len(builds)>16: raise ValueError('build result is invalid')
-          for build in builds:
-              run=build.get('id')
-              if not isinstance(run,int) or run==int(current) or build.get('definition',{}).get('id')!=int(definition): continue
-              artifact_query=urllib.parse.urlencode({'api-version':'7.1'})
-              artifact_request=urllib.request.Request(f'{collection}{project}/_apis/build/builds/{run}/artifacts?{artifact_query}',headers=headers)
-              try:
-                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(262145)
-                  if len(artifact_encoded)>262144: continue
-                  records=json.loads(artifact_encoded).get('value',[])
-                  if not isinstance(records,list) or len(records)>64: continue
-                  matches=[record for record in records if record.get('name')==artifact and record.get('resource',{}).get('type')=='PipelineArtifact']
-                  if len(matches)!=1: continue
-              except Exception: continue
-              print(f'##vso[task.setvariable variable=FLEET_REUSE_RUN_ID]{run}')
-              print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]true')
-              break
-      except Exception as error:
-          print(f'exact reuse lookup unavailable; executing bounded job: {error}',file=sys.stderr)
-      PY
-      python3 "$helper" '$(System.CollectionUri)' '$(System.TeamProjectId)' '$(System.DefinitionId)' '$(Build.BuildId)' "${FLEET_SOURCE_TREE:?}" 'qualified-job_web'
-      rm -f -- "$helper"
-    displayName: Find exact successful cross-run result
-    env:
-      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-  - task: DownloadPipelineArtifact@2
-    displayName: Restore exact successful job receipt and outputs
-    condition: and(succeeded(), eq(variables['FLEET_REUSE_FOUND'], 'true'))
-    inputs:
-      buildType: specific
-      project: '$(System.TeamProjectId)'
-      definition: '$(System.DefinitionId)'
-      pipelineId: '$(FLEET_REUSE_RUN_ID)'
-      artifactName: 'qualified-job_web'
-      targetPath: '$(Pipeline.Workspace)/.qualified/web'
-      allowPartiallySucceededBuilds: false
-      allowFailedBuilds: false
-  - bash: |
-      set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
       cat >"$helper" <<'PY'
-      import hashlib,json,os,shutil,stat,sys
+      import hashlib,json,os,shutil,stat,struct,sys,tempfile,time,urllib.parse,urllib.request,zipfile
       from pathlib import Path
 
       MAX_ENTRIES=int(sys.argv[1]); MAX_BYTES=int(sys.argv[2])
@@ -1235,7 +1485,6 @@ jobs:
           else: raise SystemExit('reusable output is not a regular file or directory')
 
       def restore_file_modes(path,expected):
-          if os.name=='nt': return
           actual=inventory(path)
           def content_only(value):
               return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
@@ -1252,6 +1501,107 @@ jobs:
               if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
               if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
               target.chmod(file_mode)
+
+      def fetch():
+          # Optional cache transport only. Release/qualification downloads remain required tasks.
+          token=os.environ.get('SYSTEM_ACCESSTOKEN','')
+          if not token or len(token)>8192: return False
+          collection=os.environ['SYSTEM_COLLECTIONURI']
+          project=os.environ['SYSTEM_TEAMPROJECTID']
+          definition=int(os.environ['SYSTEM_DEFINITIONID']); current=int(os.environ['BUILD_BUILDID'])
+          artifact=os.environ['FLEET_REUSE_ARTIFACT']
+          endpoint=urllib.parse.urlsplit(collection)
+          if (endpoint.scheme!='https' or endpoint.hostname!='dev.azure.com' or endpoint.username
+                  or endpoint.password or endpoint.query or endpoint.fragment or not collection.endswith('/')):
+              raise ValueError('invalid collection')
+          deadline=time.monotonic()+45
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs): return None
+          opener=urllib.request.build_opener(NoRedirect)
+          def remaining():
+              budget=deadline-time.monotonic()
+              if budget<=0: raise TimeoutError('reuse deadline')
+              return min(15,budget)
+          def metadata(path,query):
+              url=collection+urllib.parse.quote(project,safe='')+'/_apis/'+path+'?'+urllib.parse.urlencode(query)
+              request=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}'})
+              with opener.open(request,timeout=remaining()) as response: data=response.read(262145)
+              if len(data)>262144: raise ValueError('oversized metadata')
+              return json.loads(data)
+          builds=metadata('build/builds',{'api-version':'7.1','definitions':definition,'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16}).get('value',[])
+          if not isinstance(builds,list) or len(builds)>16: raise ValueError('invalid build inventory')
+          for build in builds:
+              run=build.get('id')
+              if (type(run) is not int or run==current or build.get('definition',{}).get('id')!=definition
+                      or build.get('status')!='completed' or build.get('result')!='succeeded'): continue
+              try:
+                  record=metadata(f'pipelines/{definition}/runs/{run}/artifacts',{'api-version':'7.1','artifactName':artifact,'$expand':'signedContent'})
+                  if record.get('name')!=artifact: continue
+                  url=record['signedContent']['url']; parsed=urllib.parse.urlsplit(url)
+                  if (parsed.scheme!='https' or parsed.username or parsed.password or parsed.port not in (None,443)
+                          or not parsed.hostname or not parsed.hostname.endswith('.artifacts.visualstudio.com')):
+                      raise ValueError('invalid signed download destination')
+                  root.parent.mkdir(parents=True,exist_ok=True)
+                  with tempfile.TemporaryDirectory(prefix='reuse-',dir=root.parent) as temporary:
+                      archive=Path(temporary)/'download.zip'
+                      # Never send the job bearer token to the signed-content host or follow redirects.
+                      with opener.open(url,timeout=remaining()) as response, archive.open('xb') as target:
+                          size=0
+                          while True:
+                              remaining()
+                              block=response.read(min(1024*1024,MAX_BYTES-size+1))
+                              if not block: break
+                              size+=len(block)
+                              if size>MAX_BYTES: raise ValueError('oversized download')
+                              target.write(block)
+                      unpack(archive,Path(temporary)/'content',artifact,remaining)
+                      remove_path(root)
+                      os.replace(Path(temporary)/'content',root)
+                  return True
+              except Exception:
+                  # No response URLs, bearer tokens or signed download queries enter logs.
+                  remaining()
+          return False
+
+      def unpack(archive,destination,artifact,remaining):
+          # Bound the central directory before ZipFile allocates its entry inventory. ZIP64
+          # caches fall back to ordinary execution; no supported payload requires >2 GiB.
+          size=archive.stat().st_size
+          with archive.open('rb') as source:
+              source.seek(max(0,size-65557)); tail=source.read(65557)
+          position=tail.rfind(b'PK\x05\x06')
+          if position<0 or len(tail)-position<22: raise ValueError('missing ZIP directory')
+          _,disk,central_disk,count,total,central_size,offset,comment=struct.unpack('<4s4H2LH',tail[position:position+22])
+          if (disk or central_disk or count!=total or not 0<total<=min(MAX_ENTRIES,65534)
+                  or central_size>16*1024*1024 or offset+central_size>size-len(tail)+position
+                  or position+22+comment!=len(tail) or tail[max(0,position-20):position].startswith(b'PK\x06\x07')):
+              raise ValueError('oversized or unsupported ZIP directory')
+          with zipfile.ZipFile(archive) as payload:
+              entries=payload.infolist()
+              if len(entries)!=total: raise ValueError('ZIP entry count mismatch')
+              names=set(); bytes_total=0
+              for entry in entries:
+                  remaining()
+                  parts=entry.filename.rstrip('/').split('/')
+                  if (len(parts)>64 or parts[0]!=artifact or (len(parts)==1 and not entry.is_dir())
+                          or any(part in ('','.','..') or part.rstrip(' .')!=part
+                                 or any(ord(char)<32 or char in '\\:' for char in part) for part in parts)):
+                      raise ValueError('invalid ZIP path')
+                  name='/'.join(parts[1:]).casefold()
+                  mode=stat.S_IFMT(entry.external_attr>>16)
+                  if name in names or mode not in (0,stat.S_IFREG,stat.S_IFDIR): raise ValueError('invalid ZIP member')
+                  names.add(name); bytes_total+=entry.file_size
+                  if bytes_total>MAX_BYTES: raise ValueError('oversized extracted inventory')
+              destination.mkdir()
+              for entry in entries:
+                  remaining()
+                  target=destination.joinpath(*entry.filename.rstrip('/').split('/')[1:])
+                  if entry.is_dir(): target.mkdir(parents=True,exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      with payload.open(entry) as source, target.open('xb') as output:
+                          while block:=source.read(1024*1024):
+                              remaining(); output.write(block)
 
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
@@ -1273,8 +1623,9 @@ jobs:
           temporary=root/'receipt.json.tmp'
           temporary.write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
           os.replace(temporary,receipt_path)
-      elif mode=='restore':
+      elif mode in ('restore','fetch'):
           try:
+              if mode=='fetch' and not fetch(): raise ValueError('no downloaded exact result')
               receipt=json.loads(receipt_path.read_bytes())
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
@@ -1295,21 +1646,22 @@ jobs:
                   replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
-              print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if mode=='restore':
-                  for spec in specs:
-                      remove_path(spec['actual_path'])
+              print(f'exact reuse unavailable ({type(error).__name__}); executing bounded job',file=sys.stderr)
+              for spec in specs:
+                  remove_path(spec['actual_path'])
               remove_path(root)
               remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
       PY
-      mode=prepare
-      if [[ "${FLEET_REUSE_FOUND:-false}" == true ]]; then mode=restore; fi
+      mode=fetch
       python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/web' "${FLEET_SOURCE_TREE:?}" 'fa7a78b8e186f8c7fb231c2d663208c26f19e44dd7d94ce72a397bdaf565e0b0' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
-    displayName: Verify and restore exact successful job result
+    displayName: Find, download and verify exact successful job result
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      FLEET_REUSE_ARTIFACT: qualified-job_web
   - task: Cache@2
     inputs:
       key: '"rustup-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | rust-toolchain.toml'
@@ -1409,7 +1761,7 @@ jobs:
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
       cat >"$helper" <<'PY'
-      import hashlib,json,os,shutil,stat,sys
+      import hashlib,json,os,shutil,stat,struct,sys,tempfile,time,urllib.parse,urllib.request,zipfile
       from pathlib import Path
 
       MAX_ENTRIES=int(sys.argv[1]); MAX_BYTES=int(sys.argv[2])
@@ -1467,7 +1819,6 @@ jobs:
           else: raise SystemExit('reusable output is not a regular file or directory')
 
       def restore_file_modes(path,expected):
-          if os.name=='nt': return
           actual=inventory(path)
           def content_only(value):
               return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
@@ -1484,6 +1835,107 @@ jobs:
               if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
               if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
               target.chmod(file_mode)
+
+      def fetch():
+          # Optional cache transport only. Release/qualification downloads remain required tasks.
+          token=os.environ.get('SYSTEM_ACCESSTOKEN','')
+          if not token or len(token)>8192: return False
+          collection=os.environ['SYSTEM_COLLECTIONURI']
+          project=os.environ['SYSTEM_TEAMPROJECTID']
+          definition=int(os.environ['SYSTEM_DEFINITIONID']); current=int(os.environ['BUILD_BUILDID'])
+          artifact=os.environ['FLEET_REUSE_ARTIFACT']
+          endpoint=urllib.parse.urlsplit(collection)
+          if (endpoint.scheme!='https' or endpoint.hostname!='dev.azure.com' or endpoint.username
+                  or endpoint.password or endpoint.query or endpoint.fragment or not collection.endswith('/')):
+              raise ValueError('invalid collection')
+          deadline=time.monotonic()+45
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs): return None
+          opener=urllib.request.build_opener(NoRedirect)
+          def remaining():
+              budget=deadline-time.monotonic()
+              if budget<=0: raise TimeoutError('reuse deadline')
+              return min(15,budget)
+          def metadata(path,query):
+              url=collection+urllib.parse.quote(project,safe='')+'/_apis/'+path+'?'+urllib.parse.urlencode(query)
+              request=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}'})
+              with opener.open(request,timeout=remaining()) as response: data=response.read(262145)
+              if len(data)>262144: raise ValueError('oversized metadata')
+              return json.loads(data)
+          builds=metadata('build/builds',{'api-version':'7.1','definitions':definition,'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16}).get('value',[])
+          if not isinstance(builds,list) or len(builds)>16: raise ValueError('invalid build inventory')
+          for build in builds:
+              run=build.get('id')
+              if (type(run) is not int or run==current or build.get('definition',{}).get('id')!=definition
+                      or build.get('status')!='completed' or build.get('result')!='succeeded'): continue
+              try:
+                  record=metadata(f'pipelines/{definition}/runs/{run}/artifacts',{'api-version':'7.1','artifactName':artifact,'$expand':'signedContent'})
+                  if record.get('name')!=artifact: continue
+                  url=record['signedContent']['url']; parsed=urllib.parse.urlsplit(url)
+                  if (parsed.scheme!='https' or parsed.username or parsed.password or parsed.port not in (None,443)
+                          or not parsed.hostname or not parsed.hostname.endswith('.artifacts.visualstudio.com')):
+                      raise ValueError('invalid signed download destination')
+                  root.parent.mkdir(parents=True,exist_ok=True)
+                  with tempfile.TemporaryDirectory(prefix='reuse-',dir=root.parent) as temporary:
+                      archive=Path(temporary)/'download.zip'
+                      # Never send the job bearer token to the signed-content host or follow redirects.
+                      with opener.open(url,timeout=remaining()) as response, archive.open('xb') as target:
+                          size=0
+                          while True:
+                              remaining()
+                              block=response.read(min(1024*1024,MAX_BYTES-size+1))
+                              if not block: break
+                              size+=len(block)
+                              if size>MAX_BYTES: raise ValueError('oversized download')
+                              target.write(block)
+                      unpack(archive,Path(temporary)/'content',artifact,remaining)
+                      remove_path(root)
+                      os.replace(Path(temporary)/'content',root)
+                  return True
+              except Exception:
+                  # No response URLs, bearer tokens or signed download queries enter logs.
+                  remaining()
+          return False
+
+      def unpack(archive,destination,artifact,remaining):
+          # Bound the central directory before ZipFile allocates its entry inventory. ZIP64
+          # caches fall back to ordinary execution; no supported payload requires >2 GiB.
+          size=archive.stat().st_size
+          with archive.open('rb') as source:
+              source.seek(max(0,size-65557)); tail=source.read(65557)
+          position=tail.rfind(b'PK\x05\x06')
+          if position<0 or len(tail)-position<22: raise ValueError('missing ZIP directory')
+          _,disk,central_disk,count,total,central_size,offset,comment=struct.unpack('<4s4H2LH',tail[position:position+22])
+          if (disk or central_disk or count!=total or not 0<total<=min(MAX_ENTRIES,65534)
+                  or central_size>16*1024*1024 or offset+central_size>size-len(tail)+position
+                  or position+22+comment!=len(tail) or tail[max(0,position-20):position].startswith(b'PK\x06\x07')):
+              raise ValueError('oversized or unsupported ZIP directory')
+          with zipfile.ZipFile(archive) as payload:
+              entries=payload.infolist()
+              if len(entries)!=total: raise ValueError('ZIP entry count mismatch')
+              names=set(); bytes_total=0
+              for entry in entries:
+                  remaining()
+                  parts=entry.filename.rstrip('/').split('/')
+                  if (len(parts)>64 or parts[0]!=artifact or (len(parts)==1 and not entry.is_dir())
+                          or any(part in ('','.','..') or part.rstrip(' .')!=part
+                                 or any(ord(char)<32 or char in '\\:' for char in part) for part in parts)):
+                      raise ValueError('invalid ZIP path')
+                  name='/'.join(parts[1:]).casefold()
+                  mode=stat.S_IFMT(entry.external_attr>>16)
+                  if name in names or mode not in (0,stat.S_IFREG,stat.S_IFDIR): raise ValueError('invalid ZIP member')
+                  names.add(name); bytes_total+=entry.file_size
+                  if bytes_total>MAX_BYTES: raise ValueError('oversized extracted inventory')
+              destination.mkdir()
+              for entry in entries:
+                  remaining()
+                  target=destination.joinpath(*entry.filename.rstrip('/').split('/')[1:])
+                  if entry.is_dir(): target.mkdir(parents=True,exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      with payload.open(entry) as source, target.open('xb') as output:
+                          while block:=source.read(1024*1024):
+                              remaining(); output.write(block)
 
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
@@ -1505,8 +1957,9 @@ jobs:
           temporary=root/'receipt.json.tmp'
           temporary.write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
           os.replace(temporary,receipt_path)
-      elif mode=='restore':
+      elif mode in ('restore','fetch'):
           try:
+              if mode=='fetch' and not fetch(): raise ValueError('no downloaded exact result')
               receipt=json.loads(receipt_path.read_bytes())
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
@@ -1527,10 +1980,9 @@ jobs:
                   replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
-              print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if mode=='restore':
-                  for spec in specs:
-                      remove_path(spec['actual_path'])
+              print(f'exact reuse unavailable ({type(error).__name__}); executing bounded job',file=sys.stderr)
+              for spec in specs:
+                  remove_path(spec['actual_path'])
               remove_path(root)
               remove_path(canonical)
               root.mkdir(parents=True)
@@ -1607,62 +2059,9 @@ jobs:
     displayName: Compute exact source tree identity
   - bash: |
       set -euo pipefail
-      helper='$(Agent.TempDirectory)/fleet-reuse-lookup.py'
-      cat >"$helper" <<'PY'
-      import json,os,sys,urllib.parse,urllib.request
-      collection,project,definition,current,tree,artifact=sys.argv[1:]
-      print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]false')
-      token=os.environ.get('SYSTEM_ACCESSTOKEN','')
-      if not token or len(token)>8192: raise SystemExit(0)
-      headers={'Authorization':f'Bearer {token}'}
-      query=urllib.parse.urlencode({'api-version':'7.1','definitions':int(definition),'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16})
-      try:
-          request=urllib.request.Request(f'{collection}{project}/_apis/build/builds?{query}',headers=headers)
-          with urllib.request.urlopen(request,timeout=15) as response: encoded=response.read(262145)
-          if len(encoded)>262144: raise ValueError('build result exceeds its bound')
-          builds=json.loads(encoded).get('value',[])
-          if not isinstance(builds,list) or len(builds)>16: raise ValueError('build result is invalid')
-          for build in builds:
-              run=build.get('id')
-              if not isinstance(run,int) or run==int(current) or build.get('definition',{}).get('id')!=int(definition): continue
-              artifact_query=urllib.parse.urlencode({'api-version':'7.1'})
-              artifact_request=urllib.request.Request(f'{collection}{project}/_apis/build/builds/{run}/artifacts?{artifact_query}',headers=headers)
-              try:
-                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(262145)
-                  if len(artifact_encoded)>262144: continue
-                  records=json.loads(artifact_encoded).get('value',[])
-                  if not isinstance(records,list) or len(records)>64: continue
-                  matches=[record for record in records if record.get('name')==artifact and record.get('resource',{}).get('type')=='PipelineArtifact']
-                  if len(matches)!=1: continue
-              except Exception: continue
-              print(f'##vso[task.setvariable variable=FLEET_REUSE_RUN_ID]{run}')
-              print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]true')
-              break
-      except Exception as error:
-          print(f'exact reuse lookup unavailable; executing bounded job: {error}',file=sys.stderr)
-      PY
-      python3 "$helper" '$(System.CollectionUri)' '$(System.TeamProjectId)' '$(System.DefinitionId)' '$(Build.BuildId)' "${FLEET_SOURCE_TREE:?}" 'qualified-job_linux_2darm64'
-      rm -f -- "$helper"
-    displayName: Find exact successful cross-run result
-    env:
-      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-  - task: DownloadPipelineArtifact@2
-    displayName: Restore exact successful job receipt and outputs
-    condition: and(succeeded(), eq(variables['FLEET_REUSE_FOUND'], 'true'))
-    inputs:
-      buildType: specific
-      project: '$(System.TeamProjectId)'
-      definition: '$(System.DefinitionId)'
-      pipelineId: '$(FLEET_REUSE_RUN_ID)'
-      artifactName: 'qualified-job_linux_2darm64'
-      targetPath: '$(Pipeline.Workspace)/.qualified/linux-arm64'
-      allowPartiallySucceededBuilds: false
-      allowFailedBuilds: false
-  - bash: |
-      set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
       cat >"$helper" <<'PY'
-      import hashlib,json,os,shutil,stat,sys
+      import hashlib,json,os,shutil,stat,struct,sys,tempfile,time,urllib.parse,urllib.request,zipfile
       from pathlib import Path
 
       MAX_ENTRIES=int(sys.argv[1]); MAX_BYTES=int(sys.argv[2])
@@ -1720,7 +2119,6 @@ jobs:
           else: raise SystemExit('reusable output is not a regular file or directory')
 
       def restore_file_modes(path,expected):
-          if os.name=='nt': return
           actual=inventory(path)
           def content_only(value):
               return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
@@ -1737,6 +2135,107 @@ jobs:
               if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
               if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
               target.chmod(file_mode)
+
+      def fetch():
+          # Optional cache transport only. Release/qualification downloads remain required tasks.
+          token=os.environ.get('SYSTEM_ACCESSTOKEN','')
+          if not token or len(token)>8192: return False
+          collection=os.environ['SYSTEM_COLLECTIONURI']
+          project=os.environ['SYSTEM_TEAMPROJECTID']
+          definition=int(os.environ['SYSTEM_DEFINITIONID']); current=int(os.environ['BUILD_BUILDID'])
+          artifact=os.environ['FLEET_REUSE_ARTIFACT']
+          endpoint=urllib.parse.urlsplit(collection)
+          if (endpoint.scheme!='https' or endpoint.hostname!='dev.azure.com' or endpoint.username
+                  or endpoint.password or endpoint.query or endpoint.fragment or not collection.endswith('/')):
+              raise ValueError('invalid collection')
+          deadline=time.monotonic()+45
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs): return None
+          opener=urllib.request.build_opener(NoRedirect)
+          def remaining():
+              budget=deadline-time.monotonic()
+              if budget<=0: raise TimeoutError('reuse deadline')
+              return min(15,budget)
+          def metadata(path,query):
+              url=collection+urllib.parse.quote(project,safe='')+'/_apis/'+path+'?'+urllib.parse.urlencode(query)
+              request=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}'})
+              with opener.open(request,timeout=remaining()) as response: data=response.read(262145)
+              if len(data)>262144: raise ValueError('oversized metadata')
+              return json.loads(data)
+          builds=metadata('build/builds',{'api-version':'7.1','definitions':definition,'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16}).get('value',[])
+          if not isinstance(builds,list) or len(builds)>16: raise ValueError('invalid build inventory')
+          for build in builds:
+              run=build.get('id')
+              if (type(run) is not int or run==current or build.get('definition',{}).get('id')!=definition
+                      or build.get('status')!='completed' or build.get('result')!='succeeded'): continue
+              try:
+                  record=metadata(f'pipelines/{definition}/runs/{run}/artifacts',{'api-version':'7.1','artifactName':artifact,'$expand':'signedContent'})
+                  if record.get('name')!=artifact: continue
+                  url=record['signedContent']['url']; parsed=urllib.parse.urlsplit(url)
+                  if (parsed.scheme!='https' or parsed.username or parsed.password or parsed.port not in (None,443)
+                          or not parsed.hostname or not parsed.hostname.endswith('.artifacts.visualstudio.com')):
+                      raise ValueError('invalid signed download destination')
+                  root.parent.mkdir(parents=True,exist_ok=True)
+                  with tempfile.TemporaryDirectory(prefix='reuse-',dir=root.parent) as temporary:
+                      archive=Path(temporary)/'download.zip'
+                      # Never send the job bearer token to the signed-content host or follow redirects.
+                      with opener.open(url,timeout=remaining()) as response, archive.open('xb') as target:
+                          size=0
+                          while True:
+                              remaining()
+                              block=response.read(min(1024*1024,MAX_BYTES-size+1))
+                              if not block: break
+                              size+=len(block)
+                              if size>MAX_BYTES: raise ValueError('oversized download')
+                              target.write(block)
+                      unpack(archive,Path(temporary)/'content',artifact,remaining)
+                      remove_path(root)
+                      os.replace(Path(temporary)/'content',root)
+                  return True
+              except Exception:
+                  # No response URLs, bearer tokens or signed download queries enter logs.
+                  remaining()
+          return False
+
+      def unpack(archive,destination,artifact,remaining):
+          # Bound the central directory before ZipFile allocates its entry inventory. ZIP64
+          # caches fall back to ordinary execution; no supported payload requires >2 GiB.
+          size=archive.stat().st_size
+          with archive.open('rb') as source:
+              source.seek(max(0,size-65557)); tail=source.read(65557)
+          position=tail.rfind(b'PK\x05\x06')
+          if position<0 or len(tail)-position<22: raise ValueError('missing ZIP directory')
+          _,disk,central_disk,count,total,central_size,offset,comment=struct.unpack('<4s4H2LH',tail[position:position+22])
+          if (disk or central_disk or count!=total or not 0<total<=min(MAX_ENTRIES,65534)
+                  or central_size>16*1024*1024 or offset+central_size>size-len(tail)+position
+                  or position+22+comment!=len(tail) or tail[max(0,position-20):position].startswith(b'PK\x06\x07')):
+              raise ValueError('oversized or unsupported ZIP directory')
+          with zipfile.ZipFile(archive) as payload:
+              entries=payload.infolist()
+              if len(entries)!=total: raise ValueError('ZIP entry count mismatch')
+              names=set(); bytes_total=0
+              for entry in entries:
+                  remaining()
+                  parts=entry.filename.rstrip('/').split('/')
+                  if (len(parts)>64 or parts[0]!=artifact or (len(parts)==1 and not entry.is_dir())
+                          or any(part in ('','.','..') or part.rstrip(' .')!=part
+                                 or any(ord(char)<32 or char in '\\:' for char in part) for part in parts)):
+                      raise ValueError('invalid ZIP path')
+                  name='/'.join(parts[1:]).casefold()
+                  mode=stat.S_IFMT(entry.external_attr>>16)
+                  if name in names or mode not in (0,stat.S_IFREG,stat.S_IFDIR): raise ValueError('invalid ZIP member')
+                  names.add(name); bytes_total+=entry.file_size
+                  if bytes_total>MAX_BYTES: raise ValueError('oversized extracted inventory')
+              destination.mkdir()
+              for entry in entries:
+                  remaining()
+                  target=destination.joinpath(*entry.filename.rstrip('/').split('/')[1:])
+                  if entry.is_dir(): target.mkdir(parents=True,exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      with payload.open(entry) as source, target.open('xb') as output:
+                          while block:=source.read(1024*1024):
+                              remaining(); output.write(block)
 
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
@@ -1758,8 +2257,9 @@ jobs:
           temporary=root/'receipt.json.tmp'
           temporary.write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
           os.replace(temporary,receipt_path)
-      elif mode=='restore':
+      elif mode in ('restore','fetch'):
           try:
+              if mode=='fetch' and not fetch(): raise ValueError('no downloaded exact result')
               receipt=json.loads(receipt_path.read_bytes())
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
@@ -1780,21 +2280,22 @@ jobs:
                   replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
-              print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if mode=='restore':
-                  for spec in specs:
-                      remove_path(spec['actual_path'])
+              print(f'exact reuse unavailable ({type(error).__name__}); executing bounded job',file=sys.stderr)
+              for spec in specs:
+                  remove_path(spec['actual_path'])
               remove_path(root)
               remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
       PY
-      mode=prepare
-      if [[ "${FLEET_REUSE_FOUND:-false}" == true ]]; then mode=restore; fi
+      mode=fetch
       python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" 'ec69da37edc3c14393527a0ffee604ceafb156e5a40baa4a4ac5425e7b3e0c3e' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
-    displayName: Verify and restore exact successful job result
+    displayName: Find, download and verify exact successful job result
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      FLEET_REUSE_ARTIFACT: qualified-job_linux_2darm64
   - task: Cache@2
     inputs:
       key: '"rustup-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | rust-toolchain.toml'
@@ -1937,7 +2438,7 @@ jobs:
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
       cat >"$helper" <<'PY'
-      import hashlib,json,os,shutil,stat,sys
+      import hashlib,json,os,shutil,stat,struct,sys,tempfile,time,urllib.parse,urllib.request,zipfile
       from pathlib import Path
 
       MAX_ENTRIES=int(sys.argv[1]); MAX_BYTES=int(sys.argv[2])
@@ -1995,7 +2496,6 @@ jobs:
           else: raise SystemExit('reusable output is not a regular file or directory')
 
       def restore_file_modes(path,expected):
-          if os.name=='nt': return
           actual=inventory(path)
           def content_only(value):
               return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
@@ -2012,6 +2512,107 @@ jobs:
               if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
               if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
               target.chmod(file_mode)
+
+      def fetch():
+          # Optional cache transport only. Release/qualification downloads remain required tasks.
+          token=os.environ.get('SYSTEM_ACCESSTOKEN','')
+          if not token or len(token)>8192: return False
+          collection=os.environ['SYSTEM_COLLECTIONURI']
+          project=os.environ['SYSTEM_TEAMPROJECTID']
+          definition=int(os.environ['SYSTEM_DEFINITIONID']); current=int(os.environ['BUILD_BUILDID'])
+          artifact=os.environ['FLEET_REUSE_ARTIFACT']
+          endpoint=urllib.parse.urlsplit(collection)
+          if (endpoint.scheme!='https' or endpoint.hostname!='dev.azure.com' or endpoint.username
+                  or endpoint.password or endpoint.query or endpoint.fragment or not collection.endswith('/')):
+              raise ValueError('invalid collection')
+          deadline=time.monotonic()+45
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs): return None
+          opener=urllib.request.build_opener(NoRedirect)
+          def remaining():
+              budget=deadline-time.monotonic()
+              if budget<=0: raise TimeoutError('reuse deadline')
+              return min(15,budget)
+          def metadata(path,query):
+              url=collection+urllib.parse.quote(project,safe='')+'/_apis/'+path+'?'+urllib.parse.urlencode(query)
+              request=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}'})
+              with opener.open(request,timeout=remaining()) as response: data=response.read(262145)
+              if len(data)>262144: raise ValueError('oversized metadata')
+              return json.loads(data)
+          builds=metadata('build/builds',{'api-version':'7.1','definitions':definition,'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16}).get('value',[])
+          if not isinstance(builds,list) or len(builds)>16: raise ValueError('invalid build inventory')
+          for build in builds:
+              run=build.get('id')
+              if (type(run) is not int or run==current or build.get('definition',{}).get('id')!=definition
+                      or build.get('status')!='completed' or build.get('result')!='succeeded'): continue
+              try:
+                  record=metadata(f'pipelines/{definition}/runs/{run}/artifacts',{'api-version':'7.1','artifactName':artifact,'$expand':'signedContent'})
+                  if record.get('name')!=artifact: continue
+                  url=record['signedContent']['url']; parsed=urllib.parse.urlsplit(url)
+                  if (parsed.scheme!='https' or parsed.username or parsed.password or parsed.port not in (None,443)
+                          or not parsed.hostname or not parsed.hostname.endswith('.artifacts.visualstudio.com')):
+                      raise ValueError('invalid signed download destination')
+                  root.parent.mkdir(parents=True,exist_ok=True)
+                  with tempfile.TemporaryDirectory(prefix='reuse-',dir=root.parent) as temporary:
+                      archive=Path(temporary)/'download.zip'
+                      # Never send the job bearer token to the signed-content host or follow redirects.
+                      with opener.open(url,timeout=remaining()) as response, archive.open('xb') as target:
+                          size=0
+                          while True:
+                              remaining()
+                              block=response.read(min(1024*1024,MAX_BYTES-size+1))
+                              if not block: break
+                              size+=len(block)
+                              if size>MAX_BYTES: raise ValueError('oversized download')
+                              target.write(block)
+                      unpack(archive,Path(temporary)/'content',artifact,remaining)
+                      remove_path(root)
+                      os.replace(Path(temporary)/'content',root)
+                  return True
+              except Exception:
+                  # No response URLs, bearer tokens or signed download queries enter logs.
+                  remaining()
+          return False
+
+      def unpack(archive,destination,artifact,remaining):
+          # Bound the central directory before ZipFile allocates its entry inventory. ZIP64
+          # caches fall back to ordinary execution; no supported payload requires >2 GiB.
+          size=archive.stat().st_size
+          with archive.open('rb') as source:
+              source.seek(max(0,size-65557)); tail=source.read(65557)
+          position=tail.rfind(b'PK\x05\x06')
+          if position<0 or len(tail)-position<22: raise ValueError('missing ZIP directory')
+          _,disk,central_disk,count,total,central_size,offset,comment=struct.unpack('<4s4H2LH',tail[position:position+22])
+          if (disk or central_disk or count!=total or not 0<total<=min(MAX_ENTRIES,65534)
+                  or central_size>16*1024*1024 or offset+central_size>size-len(tail)+position
+                  or position+22+comment!=len(tail) or tail[max(0,position-20):position].startswith(b'PK\x06\x07')):
+              raise ValueError('oversized or unsupported ZIP directory')
+          with zipfile.ZipFile(archive) as payload:
+              entries=payload.infolist()
+              if len(entries)!=total: raise ValueError('ZIP entry count mismatch')
+              names=set(); bytes_total=0
+              for entry in entries:
+                  remaining()
+                  parts=entry.filename.rstrip('/').split('/')
+                  if (len(parts)>64 or parts[0]!=artifact or (len(parts)==1 and not entry.is_dir())
+                          or any(part in ('','.','..') or part.rstrip(' .')!=part
+                                 or any(ord(char)<32 or char in '\\:' for char in part) for part in parts)):
+                      raise ValueError('invalid ZIP path')
+                  name='/'.join(parts[1:]).casefold()
+                  mode=stat.S_IFMT(entry.external_attr>>16)
+                  if name in names or mode not in (0,stat.S_IFREG,stat.S_IFDIR): raise ValueError('invalid ZIP member')
+                  names.add(name); bytes_total+=entry.file_size
+                  if bytes_total>MAX_BYTES: raise ValueError('oversized extracted inventory')
+              destination.mkdir()
+              for entry in entries:
+                  remaining()
+                  target=destination.joinpath(*entry.filename.rstrip('/').split('/')[1:])
+                  if entry.is_dir(): target.mkdir(parents=True,exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      with payload.open(entry) as source, target.open('xb') as output:
+                          while block:=source.read(1024*1024):
+                              remaining(); output.write(block)
 
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
@@ -2033,8 +2634,9 @@ jobs:
           temporary=root/'receipt.json.tmp'
           temporary.write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
           os.replace(temporary,receipt_path)
-      elif mode=='restore':
+      elif mode in ('restore','fetch'):
           try:
+              if mode=='fetch' and not fetch(): raise ValueError('no downloaded exact result')
               receipt=json.loads(receipt_path.read_bytes())
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
@@ -2055,10 +2657,9 @@ jobs:
                   replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
-              print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if mode=='restore':
-                  for spec in specs:
-                      remove_path(spec['actual_path'])
+              print(f'exact reuse unavailable ({type(error).__name__}); executing bounded job',file=sys.stderr)
+              for spec in specs:
+                  remove_path(spec['actual_path'])
               remove_path(root)
               remove_path(canonical)
               root.mkdir(parents=True)
@@ -2136,61 +2737,7 @@ jobs:
   - pwsh: |
       $ErrorActionPreference = 'Stop'
       $helper = @'
-      import json,os,sys,urllib.parse,urllib.request
-      collection,project,definition,current,tree,artifact=sys.argv[1:]
-      print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]false')
-      token=os.environ.get('SYSTEM_ACCESSTOKEN','')
-      if not token or len(token)>8192: raise SystemExit(0)
-      headers={'Authorization':f'Bearer {token}'}
-      query=urllib.parse.urlencode({'api-version':'7.1','definitions':int(definition),'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16})
-      try:
-          request=urllib.request.Request(f'{collection}{project}/_apis/build/builds?{query}',headers=headers)
-          with urllib.request.urlopen(request,timeout=15) as response: encoded=response.read(262145)
-          if len(encoded)>262144: raise ValueError('build result exceeds its bound')
-          builds=json.loads(encoded).get('value',[])
-          if not isinstance(builds,list) or len(builds)>16: raise ValueError('build result is invalid')
-          for build in builds:
-              run=build.get('id')
-              if not isinstance(run,int) or run==int(current) or build.get('definition',{}).get('id')!=int(definition): continue
-              artifact_query=urllib.parse.urlencode({'api-version':'7.1'})
-              artifact_request=urllib.request.Request(f'{collection}{project}/_apis/build/builds/{run}/artifacts?{artifact_query}',headers=headers)
-              try:
-                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(262145)
-                  if len(artifact_encoded)>262144: continue
-                  records=json.loads(artifact_encoded).get('value',[])
-                  if not isinstance(records,list) or len(records)>64: continue
-                  matches=[record for record in records if record.get('name')==artifact and record.get('resource',{}).get('type')=='PipelineArtifact']
-                  if len(matches)!=1: continue
-              except Exception: continue
-              print(f'##vso[task.setvariable variable=FLEET_REUSE_RUN_ID]{run}')
-              print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]true')
-              break
-      except Exception as error:
-          print(f'exact reuse lookup unavailable; executing bounded job: {error}',file=sys.stderr)
-      '@
-      $helperPath = Join-Path '$(Agent.TempDirectory)' 'fleet-reuse-lookup.py'
-      [System.IO.File]::WriteAllText($helperPath, $helper, [System.Text.UTF8Encoding]::new($false))
-      & python $helperPath '$(System.CollectionUri)' '$(System.TeamProjectId)' '$(System.DefinitionId)' '$(Build.BuildId)' $env:FLEET_SOURCE_TREE 'qualified-job_windows'
-      Remove-Item -LiteralPath $helperPath -Force
-    displayName: Find exact successful cross-run result
-    env:
-      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-  - task: DownloadPipelineArtifact@2
-    displayName: Restore exact successful job receipt and outputs
-    condition: and(succeeded(), eq(variables['FLEET_REUSE_FOUND'], 'true'))
-    inputs:
-      buildType: specific
-      project: '$(System.TeamProjectId)'
-      definition: '$(System.DefinitionId)'
-      pipelineId: '$(FLEET_REUSE_RUN_ID)'
-      artifactName: 'qualified-job_windows'
-      targetPath: '$(Pipeline.Workspace)/.qualified/windows'
-      allowPartiallySucceededBuilds: false
-      allowFailedBuilds: false
-  - pwsh: |
-      $ErrorActionPreference = 'Stop'
-      $helper = @'
-      import hashlib,json,os,shutil,stat,sys
+      import hashlib,json,os,shutil,stat,struct,sys,tempfile,time,urllib.parse,urllib.request,zipfile
       from pathlib import Path
 
       MAX_ENTRIES=int(sys.argv[1]); MAX_BYTES=int(sys.argv[2])
@@ -2248,7 +2795,6 @@ jobs:
           else: raise SystemExit('reusable output is not a regular file or directory')
 
       def restore_file_modes(path,expected):
-          if os.name=='nt': return
           actual=inventory(path)
           def content_only(value):
               return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
@@ -2265,6 +2811,107 @@ jobs:
               if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
               if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
               target.chmod(file_mode)
+
+      def fetch():
+          # Optional cache transport only. Release/qualification downloads remain required tasks.
+          token=os.environ.get('SYSTEM_ACCESSTOKEN','')
+          if not token or len(token)>8192: return False
+          collection=os.environ['SYSTEM_COLLECTIONURI']
+          project=os.environ['SYSTEM_TEAMPROJECTID']
+          definition=int(os.environ['SYSTEM_DEFINITIONID']); current=int(os.environ['BUILD_BUILDID'])
+          artifact=os.environ['FLEET_REUSE_ARTIFACT']
+          endpoint=urllib.parse.urlsplit(collection)
+          if (endpoint.scheme!='https' or endpoint.hostname!='dev.azure.com' or endpoint.username
+                  or endpoint.password or endpoint.query or endpoint.fragment or not collection.endswith('/')):
+              raise ValueError('invalid collection')
+          deadline=time.monotonic()+45
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs): return None
+          opener=urllib.request.build_opener(NoRedirect)
+          def remaining():
+              budget=deadline-time.monotonic()
+              if budget<=0: raise TimeoutError('reuse deadline')
+              return min(15,budget)
+          def metadata(path,query):
+              url=collection+urllib.parse.quote(project,safe='')+'/_apis/'+path+'?'+urllib.parse.urlencode(query)
+              request=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}'})
+              with opener.open(request,timeout=remaining()) as response: data=response.read(262145)
+              if len(data)>262144: raise ValueError('oversized metadata')
+              return json.loads(data)
+          builds=metadata('build/builds',{'api-version':'7.1','definitions':definition,'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16}).get('value',[])
+          if not isinstance(builds,list) or len(builds)>16: raise ValueError('invalid build inventory')
+          for build in builds:
+              run=build.get('id')
+              if (type(run) is not int or run==current or build.get('definition',{}).get('id')!=definition
+                      or build.get('status')!='completed' or build.get('result')!='succeeded'): continue
+              try:
+                  record=metadata(f'pipelines/{definition}/runs/{run}/artifacts',{'api-version':'7.1','artifactName':artifact,'$expand':'signedContent'})
+                  if record.get('name')!=artifact: continue
+                  url=record['signedContent']['url']; parsed=urllib.parse.urlsplit(url)
+                  if (parsed.scheme!='https' or parsed.username or parsed.password or parsed.port not in (None,443)
+                          or not parsed.hostname or not parsed.hostname.endswith('.artifacts.visualstudio.com')):
+                      raise ValueError('invalid signed download destination')
+                  root.parent.mkdir(parents=True,exist_ok=True)
+                  with tempfile.TemporaryDirectory(prefix='reuse-',dir=root.parent) as temporary:
+                      archive=Path(temporary)/'download.zip'
+                      # Never send the job bearer token to the signed-content host or follow redirects.
+                      with opener.open(url,timeout=remaining()) as response, archive.open('xb') as target:
+                          size=0
+                          while True:
+                              remaining()
+                              block=response.read(min(1024*1024,MAX_BYTES-size+1))
+                              if not block: break
+                              size+=len(block)
+                              if size>MAX_BYTES: raise ValueError('oversized download')
+                              target.write(block)
+                      unpack(archive,Path(temporary)/'content',artifact,remaining)
+                      remove_path(root)
+                      os.replace(Path(temporary)/'content',root)
+                  return True
+              except Exception:
+                  # No response URLs, bearer tokens or signed download queries enter logs.
+                  remaining()
+          return False
+
+      def unpack(archive,destination,artifact,remaining):
+          # Bound the central directory before ZipFile allocates its entry inventory. ZIP64
+          # caches fall back to ordinary execution; no supported payload requires >2 GiB.
+          size=archive.stat().st_size
+          with archive.open('rb') as source:
+              source.seek(max(0,size-65557)); tail=source.read(65557)
+          position=tail.rfind(b'PK\x05\x06')
+          if position<0 or len(tail)-position<22: raise ValueError('missing ZIP directory')
+          _,disk,central_disk,count,total,central_size,offset,comment=struct.unpack('<4s4H2LH',tail[position:position+22])
+          if (disk or central_disk or count!=total or not 0<total<=min(MAX_ENTRIES,65534)
+                  or central_size>16*1024*1024 or offset+central_size>size-len(tail)+position
+                  or position+22+comment!=len(tail) or tail[max(0,position-20):position].startswith(b'PK\x06\x07')):
+              raise ValueError('oversized or unsupported ZIP directory')
+          with zipfile.ZipFile(archive) as payload:
+              entries=payload.infolist()
+              if len(entries)!=total: raise ValueError('ZIP entry count mismatch')
+              names=set(); bytes_total=0
+              for entry in entries:
+                  remaining()
+                  parts=entry.filename.rstrip('/').split('/')
+                  if (len(parts)>64 or parts[0]!=artifact or (len(parts)==1 and not entry.is_dir())
+                          or any(part in ('','.','..') or part.rstrip(' .')!=part
+                                 or any(ord(char)<32 or char in '\\:' for char in part) for part in parts)):
+                      raise ValueError('invalid ZIP path')
+                  name='/'.join(parts[1:]).casefold()
+                  mode=stat.S_IFMT(entry.external_attr>>16)
+                  if name in names or mode not in (0,stat.S_IFREG,stat.S_IFDIR): raise ValueError('invalid ZIP member')
+                  names.add(name); bytes_total+=entry.file_size
+                  if bytes_total>MAX_BYTES: raise ValueError('oversized extracted inventory')
+              destination.mkdir()
+              for entry in entries:
+                  remaining()
+                  target=destination.joinpath(*entry.filename.rstrip('/').split('/')[1:])
+                  if entry.is_dir(): target.mkdir(parents=True,exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      with payload.open(entry) as source, target.open('xb') as output:
+                          while block:=source.read(1024*1024):
+                              remaining(); output.write(block)
 
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
@@ -2286,8 +2933,9 @@ jobs:
           temporary=root/'receipt.json.tmp'
           temporary.write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
           os.replace(temporary,receipt_path)
-      elif mode=='restore':
+      elif mode in ('restore','fetch'):
           try:
+              if mode=='fetch' and not fetch(): raise ValueError('no downloaded exact result')
               receipt=json.loads(receipt_path.read_bytes())
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
@@ -2308,10 +2956,9 @@ jobs:
                   replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
-              print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if mode=='restore':
-                  for spec in specs:
-                      remove_path(spec['actual_path'])
+              print(f'exact reuse unavailable ({type(error).__name__}); executing bounded job',file=sys.stderr)
+              for spec in specs:
+                  remove_path(spec['actual_path'])
               remove_path(root)
               remove_path(canonical)
               root.mkdir(parents=True)
@@ -2320,10 +2967,13 @@ jobs:
       '@
       $helperPath = Join-Path '$(Agent.TempDirectory)' 'fleet-exact-reuse.py'
       [System.IO.File]::WriteAllText($helperPath, $helper, [System.Text.UTF8Encoding]::new($false))
-      $mode = if ($env:FLEET_REUSE_FOUND -eq 'true') { 'restore' } else { 'prepare' }
+      $mode = 'fetch'
       & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '25ffd54124b13cdb2a8e1736f7acc5e0386b521957a121ca8910e370a3962187' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       Remove-Item -LiteralPath $helperPath -Force
-    displayName: Verify and restore exact successful job result
+    displayName: Find, download and verify exact successful job result
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      FLEET_REUSE_ARTIFACT: qualified-job_windows
   - task: Cache@2
     inputs:
       key: '"rustup-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | rust-toolchain.toml'
@@ -2464,7 +3114,7 @@ jobs:
   - pwsh: |
       $ErrorActionPreference = 'Stop'
       $helper = @'
-      import hashlib,json,os,shutil,stat,sys
+      import hashlib,json,os,shutil,stat,struct,sys,tempfile,time,urllib.parse,urllib.request,zipfile
       from pathlib import Path
 
       MAX_ENTRIES=int(sys.argv[1]); MAX_BYTES=int(sys.argv[2])
@@ -2522,7 +3172,6 @@ jobs:
           else: raise SystemExit('reusable output is not a regular file or directory')
 
       def restore_file_modes(path,expected):
-          if os.name=='nt': return
           actual=inventory(path)
           def content_only(value):
               return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
@@ -2539,6 +3188,107 @@ jobs:
               if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
               if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
               target.chmod(file_mode)
+
+      def fetch():
+          # Optional cache transport only. Release/qualification downloads remain required tasks.
+          token=os.environ.get('SYSTEM_ACCESSTOKEN','')
+          if not token or len(token)>8192: return False
+          collection=os.environ['SYSTEM_COLLECTIONURI']
+          project=os.environ['SYSTEM_TEAMPROJECTID']
+          definition=int(os.environ['SYSTEM_DEFINITIONID']); current=int(os.environ['BUILD_BUILDID'])
+          artifact=os.environ['FLEET_REUSE_ARTIFACT']
+          endpoint=urllib.parse.urlsplit(collection)
+          if (endpoint.scheme!='https' or endpoint.hostname!='dev.azure.com' or endpoint.username
+                  or endpoint.password or endpoint.query or endpoint.fragment or not collection.endswith('/')):
+              raise ValueError('invalid collection')
+          deadline=time.monotonic()+45
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs): return None
+          opener=urllib.request.build_opener(NoRedirect)
+          def remaining():
+              budget=deadline-time.monotonic()
+              if budget<=0: raise TimeoutError('reuse deadline')
+              return min(15,budget)
+          def metadata(path,query):
+              url=collection+urllib.parse.quote(project,safe='')+'/_apis/'+path+'?'+urllib.parse.urlencode(query)
+              request=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}'})
+              with opener.open(request,timeout=remaining()) as response: data=response.read(262145)
+              if len(data)>262144: raise ValueError('oversized metadata')
+              return json.loads(data)
+          builds=metadata('build/builds',{'api-version':'7.1','definitions':definition,'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16}).get('value',[])
+          if not isinstance(builds,list) or len(builds)>16: raise ValueError('invalid build inventory')
+          for build in builds:
+              run=build.get('id')
+              if (type(run) is not int or run==current or build.get('definition',{}).get('id')!=definition
+                      or build.get('status')!='completed' or build.get('result')!='succeeded'): continue
+              try:
+                  record=metadata(f'pipelines/{definition}/runs/{run}/artifacts',{'api-version':'7.1','artifactName':artifact,'$expand':'signedContent'})
+                  if record.get('name')!=artifact: continue
+                  url=record['signedContent']['url']; parsed=urllib.parse.urlsplit(url)
+                  if (parsed.scheme!='https' or parsed.username or parsed.password or parsed.port not in (None,443)
+                          or not parsed.hostname or not parsed.hostname.endswith('.artifacts.visualstudio.com')):
+                      raise ValueError('invalid signed download destination')
+                  root.parent.mkdir(parents=True,exist_ok=True)
+                  with tempfile.TemporaryDirectory(prefix='reuse-',dir=root.parent) as temporary:
+                      archive=Path(temporary)/'download.zip'
+                      # Never send the job bearer token to the signed-content host or follow redirects.
+                      with opener.open(url,timeout=remaining()) as response, archive.open('xb') as target:
+                          size=0
+                          while True:
+                              remaining()
+                              block=response.read(min(1024*1024,MAX_BYTES-size+1))
+                              if not block: break
+                              size+=len(block)
+                              if size>MAX_BYTES: raise ValueError('oversized download')
+                              target.write(block)
+                      unpack(archive,Path(temporary)/'content',artifact,remaining)
+                      remove_path(root)
+                      os.replace(Path(temporary)/'content',root)
+                  return True
+              except Exception:
+                  # No response URLs, bearer tokens or signed download queries enter logs.
+                  remaining()
+          return False
+
+      def unpack(archive,destination,artifact,remaining):
+          # Bound the central directory before ZipFile allocates its entry inventory. ZIP64
+          # caches fall back to ordinary execution; no supported payload requires >2 GiB.
+          size=archive.stat().st_size
+          with archive.open('rb') as source:
+              source.seek(max(0,size-65557)); tail=source.read(65557)
+          position=tail.rfind(b'PK\x05\x06')
+          if position<0 or len(tail)-position<22: raise ValueError('missing ZIP directory')
+          _,disk,central_disk,count,total,central_size,offset,comment=struct.unpack('<4s4H2LH',tail[position:position+22])
+          if (disk or central_disk or count!=total or not 0<total<=min(MAX_ENTRIES,65534)
+                  or central_size>16*1024*1024 or offset+central_size>size-len(tail)+position
+                  or position+22+comment!=len(tail) or tail[max(0,position-20):position].startswith(b'PK\x06\x07')):
+              raise ValueError('oversized or unsupported ZIP directory')
+          with zipfile.ZipFile(archive) as payload:
+              entries=payload.infolist()
+              if len(entries)!=total: raise ValueError('ZIP entry count mismatch')
+              names=set(); bytes_total=0
+              for entry in entries:
+                  remaining()
+                  parts=entry.filename.rstrip('/').split('/')
+                  if (len(parts)>64 or parts[0]!=artifact or (len(parts)==1 and not entry.is_dir())
+                          or any(part in ('','.','..') or part.rstrip(' .')!=part
+                                 or any(ord(char)<32 or char in '\\:' for char in part) for part in parts)):
+                      raise ValueError('invalid ZIP path')
+                  name='/'.join(parts[1:]).casefold()
+                  mode=stat.S_IFMT(entry.external_attr>>16)
+                  if name in names or mode not in (0,stat.S_IFREG,stat.S_IFDIR): raise ValueError('invalid ZIP member')
+                  names.add(name); bytes_total+=entry.file_size
+                  if bytes_total>MAX_BYTES: raise ValueError('oversized extracted inventory')
+              destination.mkdir()
+              for entry in entries:
+                  remaining()
+                  target=destination.joinpath(*entry.filename.rstrip('/').split('/')[1:])
+                  if entry.is_dir(): target.mkdir(parents=True,exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      with payload.open(entry) as source, target.open('xb') as output:
+                          while block:=source.read(1024*1024):
+                              remaining(); output.write(block)
 
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
@@ -2560,8 +3310,9 @@ jobs:
           temporary=root/'receipt.json.tmp'
           temporary.write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
           os.replace(temporary,receipt_path)
-      elif mode=='restore':
+      elif mode in ('restore','fetch'):
           try:
+              if mode=='fetch' and not fetch(): raise ValueError('no downloaded exact result')
               receipt=json.loads(receipt_path.read_bytes())
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
@@ -2582,10 +3333,9 @@ jobs:
                   replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
-              print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if mode=='restore':
-                  for spec in specs:
-                      remove_path(spec['actual_path'])
+              print(f'exact reuse unavailable ({type(error).__name__}); executing bounded job',file=sys.stderr)
+              for spec in specs:
+                  remove_path(spec['actual_path'])
               remove_path(root)
               remove_path(canonical)
               root.mkdir(parents=True)
@@ -2665,62 +3415,9 @@ jobs:
     displayName: Compute exact source tree identity
   - bash: |
       set -euo pipefail
-      helper='$(Agent.TempDirectory)/fleet-reuse-lookup.py'
-      cat >"$helper" <<'PY'
-      import json,os,sys,urllib.parse,urllib.request
-      collection,project,definition,current,tree,artifact=sys.argv[1:]
-      print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]false')
-      token=os.environ.get('SYSTEM_ACCESSTOKEN','')
-      if not token or len(token)>8192: raise SystemExit(0)
-      headers={'Authorization':f'Bearer {token}'}
-      query=urllib.parse.urlencode({'api-version':'7.1','definitions':int(definition),'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16})
-      try:
-          request=urllib.request.Request(f'{collection}{project}/_apis/build/builds?{query}',headers=headers)
-          with urllib.request.urlopen(request,timeout=15) as response: encoded=response.read(262145)
-          if len(encoded)>262144: raise ValueError('build result exceeds its bound')
-          builds=json.loads(encoded).get('value',[])
-          if not isinstance(builds,list) or len(builds)>16: raise ValueError('build result is invalid')
-          for build in builds:
-              run=build.get('id')
-              if not isinstance(run,int) or run==int(current) or build.get('definition',{}).get('id')!=int(definition): continue
-              artifact_query=urllib.parse.urlencode({'api-version':'7.1'})
-              artifact_request=urllib.request.Request(f'{collection}{project}/_apis/build/builds/{run}/artifacts?{artifact_query}',headers=headers)
-              try:
-                  with urllib.request.urlopen(artifact_request,timeout=15) as response: artifact_encoded=response.read(262145)
-                  if len(artifact_encoded)>262144: continue
-                  records=json.loads(artifact_encoded).get('value',[])
-                  if not isinstance(records,list) or len(records)>64: continue
-                  matches=[record for record in records if record.get('name')==artifact and record.get('resource',{}).get('type')=='PipelineArtifact']
-                  if len(matches)!=1: continue
-              except Exception: continue
-              print(f'##vso[task.setvariable variable=FLEET_REUSE_RUN_ID]{run}')
-              print('##vso[task.setvariable variable=FLEET_REUSE_FOUND]true')
-              break
-      except Exception as error:
-          print(f'exact reuse lookup unavailable; executing bounded job: {error}',file=sys.stderr)
-      PY
-      python3 "$helper" '$(System.CollectionUri)' '$(System.TeamProjectId)' '$(System.DefinitionId)' '$(Build.BuildId)' "${FLEET_SOURCE_TREE:?}" 'qualified-job_macos'
-      rm -f -- "$helper"
-    displayName: Find exact successful cross-run result
-    env:
-      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-  - task: DownloadPipelineArtifact@2
-    displayName: Restore exact successful job receipt and outputs
-    condition: and(succeeded(), eq(variables['FLEET_REUSE_FOUND'], 'true'))
-    inputs:
-      buildType: specific
-      project: '$(System.TeamProjectId)'
-      definition: '$(System.DefinitionId)'
-      pipelineId: '$(FLEET_REUSE_RUN_ID)'
-      artifactName: 'qualified-job_macos'
-      targetPath: '$(Pipeline.Workspace)/.qualified/macos'
-      allowPartiallySucceededBuilds: false
-      allowFailedBuilds: false
-  - bash: |
-      set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
       cat >"$helper" <<'PY'
-      import hashlib,json,os,shutil,stat,sys
+      import hashlib,json,os,shutil,stat,struct,sys,tempfile,time,urllib.parse,urllib.request,zipfile
       from pathlib import Path
 
       MAX_ENTRIES=int(sys.argv[1]); MAX_BYTES=int(sys.argv[2])
@@ -2778,7 +3475,6 @@ jobs:
           else: raise SystemExit('reusable output is not a regular file or directory')
 
       def restore_file_modes(path,expected):
-          if os.name=='nt': return
           actual=inventory(path)
           def content_only(value):
               return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
@@ -2795,6 +3491,107 @@ jobs:
               if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
               if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
               target.chmod(file_mode)
+
+      def fetch():
+          # Optional cache transport only. Release/qualification downloads remain required tasks.
+          token=os.environ.get('SYSTEM_ACCESSTOKEN','')
+          if not token or len(token)>8192: return False
+          collection=os.environ['SYSTEM_COLLECTIONURI']
+          project=os.environ['SYSTEM_TEAMPROJECTID']
+          definition=int(os.environ['SYSTEM_DEFINITIONID']); current=int(os.environ['BUILD_BUILDID'])
+          artifact=os.environ['FLEET_REUSE_ARTIFACT']
+          endpoint=urllib.parse.urlsplit(collection)
+          if (endpoint.scheme!='https' or endpoint.hostname!='dev.azure.com' or endpoint.username
+                  or endpoint.password or endpoint.query or endpoint.fragment or not collection.endswith('/')):
+              raise ValueError('invalid collection')
+          deadline=time.monotonic()+45
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs): return None
+          opener=urllib.request.build_opener(NoRedirect)
+          def remaining():
+              budget=deadline-time.monotonic()
+              if budget<=0: raise TimeoutError('reuse deadline')
+              return min(15,budget)
+          def metadata(path,query):
+              url=collection+urllib.parse.quote(project,safe='')+'/_apis/'+path+'?'+urllib.parse.urlencode(query)
+              request=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}'})
+              with opener.open(request,timeout=remaining()) as response: data=response.read(262145)
+              if len(data)>262144: raise ValueError('oversized metadata')
+              return json.loads(data)
+          builds=metadata('build/builds',{'api-version':'7.1','definitions':definition,'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16}).get('value',[])
+          if not isinstance(builds,list) or len(builds)>16: raise ValueError('invalid build inventory')
+          for build in builds:
+              run=build.get('id')
+              if (type(run) is not int or run==current or build.get('definition',{}).get('id')!=definition
+                      or build.get('status')!='completed' or build.get('result')!='succeeded'): continue
+              try:
+                  record=metadata(f'pipelines/{definition}/runs/{run}/artifacts',{'api-version':'7.1','artifactName':artifact,'$expand':'signedContent'})
+                  if record.get('name')!=artifact: continue
+                  url=record['signedContent']['url']; parsed=urllib.parse.urlsplit(url)
+                  if (parsed.scheme!='https' or parsed.username or parsed.password or parsed.port not in (None,443)
+                          or not parsed.hostname or not parsed.hostname.endswith('.artifacts.visualstudio.com')):
+                      raise ValueError('invalid signed download destination')
+                  root.parent.mkdir(parents=True,exist_ok=True)
+                  with tempfile.TemporaryDirectory(prefix='reuse-',dir=root.parent) as temporary:
+                      archive=Path(temporary)/'download.zip'
+                      # Never send the job bearer token to the signed-content host or follow redirects.
+                      with opener.open(url,timeout=remaining()) as response, archive.open('xb') as target:
+                          size=0
+                          while True:
+                              remaining()
+                              block=response.read(min(1024*1024,MAX_BYTES-size+1))
+                              if not block: break
+                              size+=len(block)
+                              if size>MAX_BYTES: raise ValueError('oversized download')
+                              target.write(block)
+                      unpack(archive,Path(temporary)/'content',artifact,remaining)
+                      remove_path(root)
+                      os.replace(Path(temporary)/'content',root)
+                  return True
+              except Exception:
+                  # No response URLs, bearer tokens or signed download queries enter logs.
+                  remaining()
+          return False
+
+      def unpack(archive,destination,artifact,remaining):
+          # Bound the central directory before ZipFile allocates its entry inventory. ZIP64
+          # caches fall back to ordinary execution; no supported payload requires >2 GiB.
+          size=archive.stat().st_size
+          with archive.open('rb') as source:
+              source.seek(max(0,size-65557)); tail=source.read(65557)
+          position=tail.rfind(b'PK\x05\x06')
+          if position<0 or len(tail)-position<22: raise ValueError('missing ZIP directory')
+          _,disk,central_disk,count,total,central_size,offset,comment=struct.unpack('<4s4H2LH',tail[position:position+22])
+          if (disk or central_disk or count!=total or not 0<total<=min(MAX_ENTRIES,65534)
+                  or central_size>16*1024*1024 or offset+central_size>size-len(tail)+position
+                  or position+22+comment!=len(tail) or tail[max(0,position-20):position].startswith(b'PK\x06\x07')):
+              raise ValueError('oversized or unsupported ZIP directory')
+          with zipfile.ZipFile(archive) as payload:
+              entries=payload.infolist()
+              if len(entries)!=total: raise ValueError('ZIP entry count mismatch')
+              names=set(); bytes_total=0
+              for entry in entries:
+                  remaining()
+                  parts=entry.filename.rstrip('/').split('/')
+                  if (len(parts)>64 or parts[0]!=artifact or (len(parts)==1 and not entry.is_dir())
+                          or any(part in ('','.','..') or part.rstrip(' .')!=part
+                                 or any(ord(char)<32 or char in '\\:' for char in part) for part in parts)):
+                      raise ValueError('invalid ZIP path')
+                  name='/'.join(parts[1:]).casefold()
+                  mode=stat.S_IFMT(entry.external_attr>>16)
+                  if name in names or mode not in (0,stat.S_IFREG,stat.S_IFDIR): raise ValueError('invalid ZIP member')
+                  names.add(name); bytes_total+=entry.file_size
+                  if bytes_total>MAX_BYTES: raise ValueError('oversized extracted inventory')
+              destination.mkdir()
+              for entry in entries:
+                  remaining()
+                  target=destination.joinpath(*entry.filename.rstrip('/').split('/')[1:])
+                  if entry.is_dir(): target.mkdir(parents=True,exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      with payload.open(entry) as source, target.open('xb') as output:
+                          while block:=source.read(1024*1024):
+                              remaining(); output.write(block)
 
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
@@ -2816,8 +3613,9 @@ jobs:
           temporary=root/'receipt.json.tmp'
           temporary.write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
           os.replace(temporary,receipt_path)
-      elif mode=='restore':
+      elif mode in ('restore','fetch'):
           try:
+              if mode=='fetch' and not fetch(): raise ValueError('no downloaded exact result')
               receipt=json.loads(receipt_path.read_bytes())
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
@@ -2838,21 +3636,22 @@ jobs:
                   replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
-              print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if mode=='restore':
-                  for spec in specs:
-                      remove_path(spec['actual_path'])
+              print(f'exact reuse unavailable ({type(error).__name__}); executing bounded job',file=sys.stderr)
+              for spec in specs:
+                  remove_path(spec['actual_path'])
               remove_path(root)
               remove_path(canonical)
               root.mkdir(parents=True)
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]false')
       else: raise SystemExit('invalid exact reuse mode')
       PY
-      mode=prepare
-      if [[ "${FLEET_REUSE_FOUND:-false}" == true ]]; then mode=restore; fi
+      mode=fetch
       python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '94f24755f9e127863c72c0524c8a427d90aeb1cc99d1ee2e4ec1864ae1c109ea' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
-    displayName: Verify and restore exact successful job result
+    displayName: Find, download and verify exact successful job result
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      FLEET_REUSE_ARTIFACT: qualified-job_macos
   - task: Cache@2
     inputs:
       key: '"rustup-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | rust-toolchain.toml'
@@ -2996,7 +3795,7 @@ jobs:
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
       cat >"$helper" <<'PY'
-      import hashlib,json,os,shutil,stat,sys
+      import hashlib,json,os,shutil,stat,struct,sys,tempfile,time,urllib.parse,urllib.request,zipfile
       from pathlib import Path
 
       MAX_ENTRIES=int(sys.argv[1]); MAX_BYTES=int(sys.argv[2])
@@ -3054,7 +3853,6 @@ jobs:
           else: raise SystemExit('reusable output is not a regular file or directory')
 
       def restore_file_modes(path,expected):
-          if os.name=='nt': return
           actual=inventory(path)
           def content_only(value):
               return {**value,'entries':[{name:field for name,field in entry.items() if name!='mode'} for entry in value['entries']]}
@@ -3071,6 +3869,107 @@ jobs:
               if not isinstance(file_mode,int) or file_mode<0 or file_mode>0o777: raise ValueError('exact reuse output mode is invalid')
               if not stat.S_ISREG(target.lstat().st_mode): raise ValueError('exact reuse output kind is invalid')
               target.chmod(file_mode)
+
+      def fetch():
+          # Optional cache transport only. Release/qualification downloads remain required tasks.
+          token=os.environ.get('SYSTEM_ACCESSTOKEN','')
+          if not token or len(token)>8192: return False
+          collection=os.environ['SYSTEM_COLLECTIONURI']
+          project=os.environ['SYSTEM_TEAMPROJECTID']
+          definition=int(os.environ['SYSTEM_DEFINITIONID']); current=int(os.environ['BUILD_BUILDID'])
+          artifact=os.environ['FLEET_REUSE_ARTIFACT']
+          endpoint=urllib.parse.urlsplit(collection)
+          if (endpoint.scheme!='https' or endpoint.hostname!='dev.azure.com' or endpoint.username
+                  or endpoint.password or endpoint.query or endpoint.fragment or not collection.endswith('/')):
+              raise ValueError('invalid collection')
+          deadline=time.monotonic()+45
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs): return None
+          opener=urllib.request.build_opener(NoRedirect)
+          def remaining():
+              budget=deadline-time.monotonic()
+              if budget<=0: raise TimeoutError('reuse deadline')
+              return min(15,budget)
+          def metadata(path,query):
+              url=collection+urllib.parse.quote(project,safe='')+'/_apis/'+path+'?'+urllib.parse.urlencode(query)
+              request=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}'})
+              with opener.open(request,timeout=remaining()) as response: data=response.read(262145)
+              if len(data)>262144: raise ValueError('oversized metadata')
+              return json.loads(data)
+          builds=metadata('build/builds',{'api-version':'7.1','definitions':definition,'statusFilter':'completed','resultFilter':'succeeded','tagFilters':f'qualified-tree-{tree}','queryOrder':'finishTimeDescending','$top':16}).get('value',[])
+          if not isinstance(builds,list) or len(builds)>16: raise ValueError('invalid build inventory')
+          for build in builds:
+              run=build.get('id')
+              if (type(run) is not int or run==current or build.get('definition',{}).get('id')!=definition
+                      or build.get('status')!='completed' or build.get('result')!='succeeded'): continue
+              try:
+                  record=metadata(f'pipelines/{definition}/runs/{run}/artifacts',{'api-version':'7.1','artifactName':artifact,'$expand':'signedContent'})
+                  if record.get('name')!=artifact: continue
+                  url=record['signedContent']['url']; parsed=urllib.parse.urlsplit(url)
+                  if (parsed.scheme!='https' or parsed.username or parsed.password or parsed.port not in (None,443)
+                          or not parsed.hostname or not parsed.hostname.endswith('.artifacts.visualstudio.com')):
+                      raise ValueError('invalid signed download destination')
+                  root.parent.mkdir(parents=True,exist_ok=True)
+                  with tempfile.TemporaryDirectory(prefix='reuse-',dir=root.parent) as temporary:
+                      archive=Path(temporary)/'download.zip'
+                      # Never send the job bearer token to the signed-content host or follow redirects.
+                      with opener.open(url,timeout=remaining()) as response, archive.open('xb') as target:
+                          size=0
+                          while True:
+                              remaining()
+                              block=response.read(min(1024*1024,MAX_BYTES-size+1))
+                              if not block: break
+                              size+=len(block)
+                              if size>MAX_BYTES: raise ValueError('oversized download')
+                              target.write(block)
+                      unpack(archive,Path(temporary)/'content',artifact,remaining)
+                      remove_path(root)
+                      os.replace(Path(temporary)/'content',root)
+                  return True
+              except Exception:
+                  # No response URLs, bearer tokens or signed download queries enter logs.
+                  remaining()
+          return False
+
+      def unpack(archive,destination,artifact,remaining):
+          # Bound the central directory before ZipFile allocates its entry inventory. ZIP64
+          # caches fall back to ordinary execution; no supported payload requires >2 GiB.
+          size=archive.stat().st_size
+          with archive.open('rb') as source:
+              source.seek(max(0,size-65557)); tail=source.read(65557)
+          position=tail.rfind(b'PK\x05\x06')
+          if position<0 or len(tail)-position<22: raise ValueError('missing ZIP directory')
+          _,disk,central_disk,count,total,central_size,offset,comment=struct.unpack('<4s4H2LH',tail[position:position+22])
+          if (disk or central_disk or count!=total or not 0<total<=min(MAX_ENTRIES,65534)
+                  or central_size>16*1024*1024 or offset+central_size>size-len(tail)+position
+                  or position+22+comment!=len(tail) or tail[max(0,position-20):position].startswith(b'PK\x06\x07')):
+              raise ValueError('oversized or unsupported ZIP directory')
+          with zipfile.ZipFile(archive) as payload:
+              entries=payload.infolist()
+              if len(entries)!=total: raise ValueError('ZIP entry count mismatch')
+              names=set(); bytes_total=0
+              for entry in entries:
+                  remaining()
+                  parts=entry.filename.rstrip('/').split('/')
+                  if (len(parts)>64 or parts[0]!=artifact or (len(parts)==1 and not entry.is_dir())
+                          or any(part in ('','.','..') or part.rstrip(' .')!=part
+                                 or any(ord(char)<32 or char in '\\:' for char in part) for part in parts)):
+                      raise ValueError('invalid ZIP path')
+                  name='/'.join(parts[1:]).casefold()
+                  mode=stat.S_IFMT(entry.external_attr>>16)
+                  if name in names or mode not in (0,stat.S_IFREG,stat.S_IFDIR): raise ValueError('invalid ZIP member')
+                  names.add(name); bytes_total+=entry.file_size
+                  if bytes_total>MAX_BYTES: raise ValueError('oversized extracted inventory')
+              destination.mkdir()
+              for entry in entries:
+                  remaining()
+                  target=destination.joinpath(*entry.filename.rstrip('/').split('/')[1:])
+                  if entry.is_dir(): target.mkdir(parents=True,exist_ok=True)
+                  else:
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      with payload.open(entry) as source, target.open('xb') as output:
+                          while block:=source.read(1024*1024):
+                              remaining(); output.write(block)
 
       base={'revision':1,'source_tree':tree,'job_semantic_sha256':semantic,'toolchain_sha256':file_sha(Path(toolchain)),'lockfile_sha256':file_sha(Path(lockfile)),'runner_os':runner_os,'runner_architecture':runner_arch}
       receipt_path=root/'receipt.json'
@@ -3092,8 +3991,9 @@ jobs:
           temporary=root/'receipt.json.tmp'
           temporary.write_text(json.dumps(receipt,separators=(',',':'),sort_keys=True)+'\n',encoding='utf-8')
           os.replace(temporary,receipt_path)
-      elif mode=='restore':
+      elif mode in ('restore','fetch'):
           try:
+              if mode=='fetch' and not fetch(): raise ValueError('no downloaded exact result')
               receipt=json.loads(receipt_path.read_bytes())
               if set(receipt)!=(set(base)|{'outputs'}) or any(receipt.get(name)!=value for name,value in base.items()): raise ValueError('exact reuse receipt identity is invalid')
               outputs=receipt['outputs']
@@ -3114,10 +4014,9 @@ jobs:
                   replace_copy(root/'outputs'/str(index)/'payload',spec['actual_path'])
               print('##vso[task.setvariable variable=FLEET_QUALIFICATION_RESTORED]true')
           except (Exception,SystemExit) as error:
-              print(f'exact reuse rejected; executing bounded job: {error}',file=sys.stderr)
-              if mode=='restore':
-                  for spec in specs:
-                      remove_path(spec['actual_path'])
+              print(f'exact reuse unavailable ({type(error).__name__}); executing bounded job',file=sys.stderr)
+              for spec in specs:
+                  remove_path(spec['actual_path'])
               remove_path(root)
               remove_path(canonical)
               root.mkdir(parents=True)
