@@ -12,11 +12,29 @@ an entry to `provenance/manifest.json` before it is merged.
 authority. Independent platform and browser lanes run concurrently, cache only
 registries, tools, and compiler outputs, and reuse a successful result only for
 the exact source tree and semantic job identity.
+The current renderer is Fleet release 4858, source `bd46bdfeceaa224a6893dcbbd2cd48a4774588e7`,
+executable SHA-256 `84c3c90bec70032bab224e5baec6d14d8f7c2f06d0d77b541a953ed5db9f6fc0`.
+It isolates native Bun caches by pinned platform archive and stops success-only
+work after a setup failure, including when exact-tree reuse misses.
+The secret scanner keeps all default rules. Its only cache exception matches the
+four exact public Bun archive digests on complete generated cache-key lines in
+`azure-pipelines.yml`; bounded negative tests cover other hashes, paths and context.
+The policy lane verifies and runs the pinned upstream cargo-deny archive from the
+tool cache; it never compiles the checker or restores an unused compiler cache.
 
-The Linux lane retains the already-isolated and tested Inference crate plus its
-SHA-256 inventory in `packages-linux`. Publication consumes that exact successful
-run's archive; it must not rebuild the crate. This artifact is not a published
-registry version or qualification of the other SDK families.
+The Linux lane retains the isolated, tested Inference crate and filesystem npm
+archive with SHA-256 inventories in `packages-linux`. The filesystem archive runs
+the existing public-export/WASM composition test outside the workspace; a missing
+packaged WASM must fail. Cargo packages and verifies the public Objects, Streams,
+and Filesystem dependency closure together with all features. Registry publication
+must publish the exact Objects and Streams archives before Filesystem.
+Publication consumes these exact successful-run bytes,
+never a rebuild. Each native lane also retains the exact filesystem companion copy
+loaded by its successful ABI child, named by package version/host OS/architecture with
+a SHA-256 inventory. An existing output directory is rejected. These are host-qualified
+debug binaries, not optimized or cross-target binaries; cross-target `cargo check` does
+not produce a publishable companion. Retained archives are not published registry
+versions, browser qualification, or qualification of other SDK families.
 
 Public contracts originate here. A service implementation may validate a
 candidate commit, but it must not maintain a competing customer schema.

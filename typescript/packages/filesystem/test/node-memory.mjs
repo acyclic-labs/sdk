@@ -1,7 +1,7 @@
 import {
   DEFAULT_OBJECT_CACHE_OPTIONS,
   openMemoryFs,
-} from "../dist/memory-node.js";
+} from "@acyclic/fs/memory";
 import { exerciseWorkspace } from "./workspace-composition.mjs";
 
 const engine = await openMemoryFs({
