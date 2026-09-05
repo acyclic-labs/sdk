@@ -308,7 +308,37 @@ impl RecordCursor {
 }
 
 fn retryable(error: &Status) -> bool {
-    matches!(error.code(), Code::Unavailable | Code::DeadlineExceeded)
+    if matches!(error.code(), Code::Unavailable | Code::DeadlineExceeded) {
+        return true;
+    }
+    // Tonic reports an interrupted HTTP/2 response body as Unknown. Only
+    // locally retained transport causes qualify, never a peer's status text.
+    if error.code() != Code::Unknown {
+        return false;
+    }
+    let mut cause = std::error::Error::source(error);
+    while let Some(current) = cause {
+        let io = current.downcast_ref::<std::io::Error>().or_else(|| {
+            current
+                .downcast_ref::<h2::Error>()
+                .and_then(h2::Error::get_io)
+        });
+        if io.is_some_and(|error| {
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::TimedOut
+            )
+        }) {
+            return true;
+        }
+        cause = current.source();
+    }
+    false
 }
 
 #[async_trait]
@@ -1113,6 +1143,34 @@ mod tests {
     use super::*;
     use crate::MemoryStream;
     use wire::stream_service_server::StreamService;
+
+    #[test]
+    fn retries_transport_loss_but_not_peer_errors_or_corrupt_data() {
+        for kind in [
+            std::io::ErrorKind::UnexpectedEof,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::NotConnected,
+            std::io::ErrorKind::TimedOut,
+        ] {
+            let mut error = Status::unknown("response body interrupted");
+            error.set_source(Arc::new(std::io::Error::from(kind)));
+            assert!(retryable(&error), "{kind:?}");
+        }
+        for error in [
+            Status::unknown("response body interrupted"),
+            Status::internal("protocol error"),
+            Status::data_loss("corrupt record"),
+            Status::permission_denied("denied"),
+            Status::cancelled("caller cancelled"),
+            Status::from_error(Box::new(std::io::Error::from(
+                std::io::ErrorKind::InvalidData,
+            ))),
+        ] {
+            assert!(!retryable(&error), "{error:?}");
+        }
+    }
 
     #[test]
     fn inspection_rejects_an_observation_for_another_retry_identity() -> Result<(), StreamError> {

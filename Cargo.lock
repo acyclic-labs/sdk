@@ -222,6 +222,7 @@ dependencies = [
  "bytes",
  "fs2",
  "futures",
+ "h2",
  "libc",
  "prost",
  "protoc-bin-vendored",
