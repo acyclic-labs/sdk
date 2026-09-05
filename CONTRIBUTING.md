@@ -12,6 +12,8 @@ an entry to `provenance/manifest.json` before it is merged.
 authority. Independent platform and browser lanes run concurrently, cache only
 registries, tools, and compiler outputs, and reuse a successful result only for
 the exact source tree and semantic job identity.
+The policy lane verifies and runs the pinned upstream cargo-deny archive from the
+tool cache; it never compiles the checker or restores an unused compiler cache.
 
 The Linux lane retains the isolated, tested Inference crate and filesystem npm
 archive with SHA-256 inventories in `packages-linux`. The filesystem archive runs
