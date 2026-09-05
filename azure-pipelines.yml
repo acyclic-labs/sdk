@@ -2969,7 +2969,7 @@ jobs:
       $helperPath = Join-Path '$(Agent.TempDirectory)' 'fleet-exact-reuse.py'
       [System.IO.File]::WriteAllText($helperPath, $helper, [System.Text.UTF8Encoding]::new($false))
       $mode = 'fetch'
-      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '25ffd54124b13cdb2a8e1736f7acc5e0386b521957a121ca8910e370a3962187' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE 'ccbbc87926a4775cd58c4925047d1a63fc59bbf31a64721161af39e1612adef7' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       Remove-Item -LiteralPath $helperPath -Force
     displayName: Find, download and verify exact successful job result
     env:
@@ -3094,7 +3094,9 @@ jobs:
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
     displayName: Restore exact Bun runtime
   - pwsh: |
+      if ($PSVersionTable.PSVersion -lt [version]'7.4') { throw 'PowerShell 7.4 or newer is required' }
       $ErrorActionPreference = 'Stop'
+      $PSNativeCommandUseErrorActionPreference = $true
       . .\scripts\ensure-bun.ps1
       cargo test --workspace --all-features --locked
       cargo test -p acyclic-fs --features native-mount --locked --lib native_mount::adapter::tests::writable_projfs_captures_closes_renames_links_and_deletes -- --ignored --test-threads=1
@@ -3346,7 +3348,7 @@ jobs:
       $helperPath = Join-Path '$(Agent.TempDirectory)' 'fleet-exact-reuse.py'
       [System.IO.File]::WriteAllText($helperPath, $helper, [System.Text.UTF8Encoding]::new($false))
       $mode = 'stage'
-      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '25ffd54124b13cdb2a8e1736f7acc5e0386b521957a121ca8910e370a3962187' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE 'ccbbc87926a4775cd58c4925047d1a63fc59bbf31a64721161af39e1612adef7' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       Remove-Item -LiteralPath $helperPath -Force
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
