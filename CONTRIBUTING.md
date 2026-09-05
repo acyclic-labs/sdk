@@ -20,8 +20,12 @@ packaged WASM must fail. Cargo packages and verifies the public Objects, Streams
 and Filesystem dependency closure together with all features. Registry publication
 must publish the exact Objects and Streams archives before Filesystem.
 Publication consumes these exact successful-run bytes,
-never a rebuild. These are not published registry versions, native companion
-qualification, browser qualification, or qualification of other SDK families.
+never a rebuild. Each native lane also retains the exact filesystem companion copy
+loaded by its successful ABI child, named by package version/host OS/architecture with
+a SHA-256 inventory. An existing output directory is rejected. These are host-qualified
+debug binaries, not optimized or cross-target binaries; cross-target `cargo check` does
+not produce a publishable companion. Retained archives are not published registry
+versions, browser qualification, or qualification of other SDK families.
 
 Public contracts originate here. A service implementation may validate a
 candidate commit, but it must not maintain a competing customer schema.

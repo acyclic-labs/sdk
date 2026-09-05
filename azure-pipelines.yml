@@ -307,7 +307,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=fetch
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" '6dea1ecce000508610bf81a10810ebeec4d4476a4cea945ccc041543b345dd97' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" 'a9a25014dceb1362cc1ab39a2c6b07eedb678316affd742b5abe452722419958' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       rm -f -- "$helper"
     displayName: Find, download and verify exact successful job result
     env:
@@ -443,7 +443,7 @@ jobs:
       cargo test --workspace --all-features --locked
       cargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1
       cargo build -p acyclic-fs-napi --locked
-      bun scripts/check-filesystem-napi.mjs
+      bun scripts/check-filesystem-napi.mjs "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
       bash scripts/check-inference-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/inference"
       cargo run --locked -p acyclic-cli
       bun run test
@@ -706,7 +706,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" '6dea1ecce000508610bf81a10810ebeec4d4476a4cea945ccc041543b345dd97' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" 'a9a25014dceb1362cc1ab39a2c6b07eedb678316affd742b5abe452722419958' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
@@ -2291,7 +2291,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=fetch
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" 'ec69da37edc3c14393527a0ffee604ceafb156e5a40baa4a4ac5425e7b3e0c3e' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" '4cd2b6e13b93afa3cf7930a532f7524922527752415ab70b90f30bd1878a06de' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux-arm64' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       rm -f -- "$helper"
     displayName: Find, download and verify exact successful job result
     env:
@@ -2425,7 +2425,7 @@ jobs:
       cargo test --workspace --all-features --locked
       cargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1
       cargo build -p acyclic-fs-napi --locked
-      bun scripts/check-filesystem-napi.mjs
+      bun scripts/check-filesystem-napi.mjs "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
     displayName: native
   - bash: |
@@ -2435,6 +2435,11 @@ jobs:
       exit 0
     condition: and(always(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Stop compiler-cache server
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)/packages'
+      artifact: 'packages-linux-arm64'
+      publishLocation: pipeline
   - bash: |
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
@@ -2668,7 +2673,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" 'ec69da37edc3c14393527a0ffee604ceafb156e5a40baa4a4ac5425e7b3e0c3e' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" '4cd2b6e13b93afa3cf7930a532f7524922527752415ab70b90f30bd1878a06de' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux-arm64' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
@@ -2969,7 +2974,7 @@ jobs:
       $helperPath = Join-Path '$(Agent.TempDirectory)' 'fleet-exact-reuse.py'
       [System.IO.File]::WriteAllText($helperPath, $helper, [System.Text.UTF8Encoding]::new($false))
       $mode = 'fetch'
-      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE 'ccbbc87926a4775cd58c4925047d1a63fc59bbf31a64721161af39e1612adef7' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '0902ded05584457b856b9cf830ac6beb785f0622f44e8274140dde8dab4f434f' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-windows' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       Remove-Item -LiteralPath $helperPath -Force
     displayName: Find, download and verify exact successful job result
     env:
@@ -3101,7 +3106,7 @@ jobs:
       cargo test --workspace --all-features --locked
       cargo test -p acyclic-fs --features native-mount --locked --lib native_mount::adapter::tests::writable_projfs_captures_closes_renames_links_and_deletes -- --ignored --test-threads=1
       cargo build -p acyclic-fs-napi --locked
-      bun scripts/check-filesystem-napi.mjs
+      bun scripts/check-filesystem-napi.mjs "$env:BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
       rustup target add aarch64-pc-windows-msvc
       cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
@@ -3114,6 +3119,11 @@ jobs:
       exit 0
     condition: and(always(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Stop compiler-cache server
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)/packages'
+      artifact: 'packages-windows'
+      publishLocation: pipeline
   - pwsh: |
       $ErrorActionPreference = 'Stop'
       $helper = @'
@@ -3348,7 +3358,7 @@ jobs:
       $helperPath = Join-Path '$(Agent.TempDirectory)' 'fleet-exact-reuse.py'
       [System.IO.File]::WriteAllText($helperPath, $helper, [System.Text.UTF8Encoding]::new($false))
       $mode = 'stage'
-      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE 'ccbbc87926a4775cd58c4925047d1a63fc59bbf31a64721161af39e1612adef7' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '0902ded05584457b856b9cf830ac6beb785f0622f44e8274140dde8dab4f434f' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-windows' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       Remove-Item -LiteralPath $helperPath -Force
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
@@ -3649,7 +3659,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=fetch
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '94f24755f9e127863c72c0524c8a427d90aeb1cc99d1ee2e4ec1864ae1c109ea' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '7ccf70d58dc8b15654ff3ec26f0584a786db1557e6de601e6a36ea9d2b341bd3' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-macos' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       rm -f -- "$helper"
     displayName: Find, download and verify exact successful job result
     env:
@@ -3782,7 +3792,7 @@ jobs:
       cargo test --workspace --all-features --locked
       cargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1
       cargo build -p acyclic-fs-napi --locked
-      bun scripts/check-filesystem-napi.mjs
+      bun scripts/check-filesystem-napi.mjs "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
       rustup target add x86_64-apple-darwin
       cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target x86_64-apple-darwin --locked
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
@@ -3794,6 +3804,11 @@ jobs:
       exit 0
     condition: and(always(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Stop compiler-cache server
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)/packages'
+      artifact: 'packages-macos'
+      publishLocation: pipeline
   - bash: |
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
@@ -4027,7 +4042,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '94f24755f9e127863c72c0524c8a427d90aeb1cc99d1ee2e4ec1864ae1c109ea' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '7ccf70d58dc8b15654ff3ec26f0584a786db1557e6de601e6a36ea9d2b341bd3' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-macos' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))

@@ -31,7 +31,7 @@
           "action": {
             "kind": "shell",
             "working_directory": ".",
-            "command": "set -euo pipefail\nsource scripts/ensure-bun.sh\nbun install --frozen-lockfile\ncargo fmt --all -- --check\ncargo clippy --workspace --all-targets --all-features --locked -- -D warnings\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs\nbash scripts/check-inference-package.sh \"$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/inference\"\ncargo run --locked -p acyclic-cli\nbun run test\nbash scripts/check-filesystem-package.sh \"$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/filesystem\"\nbun run licenses\nbun x buf format -d --exit-code\nbun x buf lint\nbun run check:generated\nbun scripts/check-boundaries.mjs\nbun scripts/check-metadata.mjs\nbase=\"${SYSTEM_PULLREQUEST_TARGETBRANCH:-}\"\nif [[ -n \"$base\" ]]; then\n  base=${base#refs/heads/}\n  bun x buf breaking --against \".git#ref=origin/$base\" --exclude-path proto/inference/v1/inference.proto --exclude-path proto/filesystem/v1 --exclude-path proto/filesystem/daemon/v1\nfi"
+            "command": "set -euo pipefail\nsource scripts/ensure-bun.sh\nbun install --frozen-lockfile\ncargo fmt --all -- --check\ncargo clippy --workspace --all-targets --all-features --locked -- -D warnings\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs \"$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native\"\nbash scripts/check-inference-package.sh \"$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/inference\"\ncargo run --locked -p acyclic-cli\nbun run test\nbash scripts/check-filesystem-package.sh \"$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/filesystem\"\nbun run licenses\nbun x buf format -d --exit-code\nbun x buf lint\nbun run check:generated\nbun scripts/check-boundaries.mjs\nbun scripts/check-metadata.mjs\nbase=\"${SYSTEM_PULLREQUEST_TARGETBRANCH:-}\"\nif [[ -n \"$base\" ]]; then\n  base=${base#refs/heads/}\n  bun x buf breaking --against \".git#ref=origin/$base\" --exclude-path proto/inference/v1/inference.proto --exclude-path proto/filesystem/v1 --exclude-path proto/filesystem/daemon/v1\nfi"
           }
         }
       ],
@@ -106,11 +106,11 @@
           "action": {
             "kind": "shell",
             "working_directory": ".",
-            "command": "set -euo pipefail\nif ! command -v cc >/dev/null || ! command -v unzip >/dev/null || ! command -v pkg-config >/dev/null || ! pkg-config --exists fuse3; then sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libfuse3-dev unzip; fi\nsource scripts/ensure-bun.sh\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs"
+            "command": "set -euo pipefail\nif ! command -v cc >/dev/null || ! command -v unzip >/dev/null || ! command -v pkg-config >/dev/null || ! pkg-config --exists fuse3; then sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libfuse3-dev unzip; fi\nsource scripts/ensure-bun.sh\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs \"$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native\""
           }
         }
       ],
-      "outputs": []
+      "outputs": [{"name":"packages-linux-arm64","path":"$(Build.ArtifactStagingDirectory)/packages","condition":"succeeded"}]
     },
     {
       "name": "windows",
@@ -131,11 +131,11 @@
           "action": {
             "kind": "shell",
             "working_directory": ".",
-            "command": ". .\\scripts\\ensure-bun.ps1\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib native_mount::adapter::tests::writable_projfs_captures_closes_renames_links_and_deletes -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs\nrustup target add aarch64-pc-windows-msvc\ncargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked"
+            "command": ". .\\scripts\\ensure-bun.ps1\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib native_mount::adapter::tests::writable_projfs_captures_closes_renames_links_and_deletes -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs \"$env:BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native\"\nrustup target add aarch64-pc-windows-msvc\ncargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked"
           }
         }
       ],
-      "outputs": []
+      "outputs": [{"name":"packages-windows","path":"$(Build.ArtifactStagingDirectory)/packages","condition":"succeeded"}]
     },
     {
       "name": "macos",
@@ -156,11 +156,11 @@
           "action": {
             "kind": "shell",
             "working_directory": ".",
-            "command": "set -euo pipefail\nsource scripts/ensure-bun.sh\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs\nrustup target add x86_64-apple-darwin\ncargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target x86_64-apple-darwin --locked"
+            "command": "set -euo pipefail\nsource scripts/ensure-bun.sh\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs \"$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native\"\nrustup target add x86_64-apple-darwin\ncargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target x86_64-apple-darwin --locked"
           }
         }
       ],
-      "outputs": []
+      "outputs": [{"name":"packages-macos","path":"$(Build.ArtifactStagingDirectory)/packages","condition":"succeeded"}]
     }
   ]
 }
