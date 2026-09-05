@@ -13,10 +13,12 @@ authority. Independent platform and browser lanes run concurrently, cache only
 registries, tools, and compiler outputs, and reuse a successful result only for
 the exact source tree and semantic job identity.
 
-The Linux lane retains the already-isolated and tested Inference crate plus its
-SHA-256 inventory in `packages-linux`. Publication consumes that exact successful
-run's archive; it must not rebuild the crate. This artifact is not a published
-registry version or qualification of the other SDK families.
+The Linux lane retains the isolated, tested Inference crate and filesystem npm
+archive with SHA-256 inventories in `packages-linux`. The filesystem archive runs
+the existing public-export/WASM composition test outside the workspace; a missing
+packaged WASM must fail. Publication consumes these exact successful-run bytes,
+never a rebuild. These are not published registry versions, native companion
+qualification, browser qualification, or qualification of other SDK families.
 
 Public contracts originate here. A service implementation may validate a
 candidate commit, but it must not maintain a competing customer schema.
