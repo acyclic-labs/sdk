@@ -49,6 +49,15 @@ jobs:
     PIP_CACHE_DIR: $(Pipeline.Workspace)/.pip
     DOCKER_CACHE_DIR: $(Pipeline.Workspace)/.docker/linux
     GRYPE_DB_CACHE_DIR: $(Pipeline.Workspace)/.grype
+    SCCACHE_ARCHIVE_DIR: $(Pipeline.Workspace)/.sccache-archive
+    SCCACHE_DIR: $(Pipeline.Workspace)/.sccache
+    SCCACHE_CACHE_SIZE: '1G'
+    SCCACHE_IDLE_TIMEOUT: '900'
+    SCCACHE_EXE: $(Agent.TempDirectory)/fleet-sccache/sccache
+    RUSTC_WRAPPER: $(SCCACHE_EXE)
+    CARGO_INCREMENTAL: '0'
+    CARGO_PROFILE_DEV_DEBUG: '0'
+    CARGO_PROFILE_TEST_DEBUG: '0'
   steps:
   - checkout: self
     clean: true
@@ -57,7 +66,7 @@ jobs:
     persistCredentials: false
   - bash: |
       set -euo pipefail
-      mkdir -p "$(CARGO_HOME)/registry" "$(CARGO_HOME)/git" "$(RUSTUP_HOME)/toolchains" "$(CARGO_TARGET_DIR)" "$(BUN_INSTALL_CACHE_DIR)" "$(NPM_CONFIG_CACHE)" "$(QUALIFICATION_TOOLS_ROOT)" "$(FORMAL_TOOLS_ROOT)" "$(FORMAL_RESULTS_ROOT)" "$(TOOLS_DIR)" "$(TF_PLUGIN_CACHE_DIR)" "$(PIP_CACHE_DIR)" "$(DOCKER_CACHE_DIR)" "$(GRYPE_DB_CACHE_DIR)"
+      mkdir -p "$(CARGO_HOME)/registry" "$(CARGO_HOME)/git" "$(RUSTUP_HOME)/toolchains" "$(CARGO_TARGET_DIR)" "$(BUN_INSTALL_CACHE_DIR)" "$(NPM_CONFIG_CACHE)" "$(QUALIFICATION_TOOLS_ROOT)" "$(FORMAL_TOOLS_ROOT)" "$(FORMAL_RESULTS_ROOT)" "$(TOOLS_DIR)" "$(TF_PLUGIN_CACHE_DIR)" "$(PIP_CACHE_DIR)" "$(DOCKER_CACHE_DIR)" "$(GRYPE_DB_CACHE_DIR)" "$(SCCACHE_ARCHIVE_DIR)" "$(SCCACHE_DIR)"
   - bash: |
       set -euo pipefail
       tree="$(git rev-parse 'HEAD^{tree}')"
@@ -252,7 +261,7 @@ jobs:
       PY
       mode=prepare
       if [[ "${FLEET_REUSE_FOUND:-false}" == true ]]; then mode=restore; fi
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" 'd2183081f9a25b31c770bb1b0cfbb15478312509dfd7c8c34df2cf959d807ea5' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" 'd03bb4bca97a457899327db0f0cc5ecb8278aa6aad3242c7189462676f7c3bca' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Verify and restore exact successful job result
   - task: Cache@2
@@ -278,6 +287,48 @@ jobs:
         "cargo-git-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/git
       cacheHitVar: FLEET_CACHE_CARGO_GIT
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    displayName: Restore pinned compiler-cache archive
+    inputs:
+      key: '"sccache-tool-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "0.17.0" | "67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006"'
+      path: $(SCCACHE_ARCHIVE_DIR)
+      cacheHitVar: FLEET_CACHE_SCCACHE_TOOL
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - bash: |
+      set -euo pipefail
+      archive="$SCCACHE_ARCHIVE_DIR/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz"
+      if [[ ! -f "$archive" ]]; then curl --fail --location --proto '=https' --tlsv1.3 'https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz' --output "$archive"; fi
+      [[ "$(wc -c < "$archive")" -le 104857600 ]]
+      printf '%s  %s\n' '67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006' "$archive" | sha256sum --check --strict
+      extract="$AGENT_TEMPDIRECTORY/fleet-sccache"
+      rm -rf -- "$extract"
+      mkdir -p "$extract"
+      tar -xzf "$archive" -C "$extract"
+      [[ "$(find "$extract" -type f -name 'sccache' -print | wc -l | tr -d ' ')" == 1 ]]
+      binary="$(find "$extract" -type f -name 'sccache' -print)"
+      install -m 0755 "$binary" "$SCCACHE_EXE"
+      "$SCCACHE_EXE" --version
+    displayName: Verify pinned compiler-cache tool
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    displayName: Restore content-addressed compiler outputs
+    inputs:
+      key: '"sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock | "linux" | "$(Build.SourceVersion)"'
+      restoreKeys: |
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock | "linux"
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml
+      path: $(SCCACHE_DIR)
+      cacheHitVar: FLEET_CACHE_SCCACHE
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    inputs:
+      key: '"bun-v3" | "$(Agent.OS)" | "sdk" | "$(Build.SourceVersion)"'
+      restoreKeys: |
+        "bun-v3" | "$(Agent.OS)" | "sdk"
+      path: $(Pipeline.Workspace)/.bun
+      cacheHitVar: FLEET_CACHE_BUN
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
   - task: Cache@2
     inputs:
@@ -309,6 +360,32 @@ jobs:
     displayName: Restore exact Rust toolchain
   - bash: |
       set -euo pipefail
+      version='1.3.14'
+      archive_name='bun-linux-x64.zip'
+      directory_name='bun-linux-x64'
+      expected='951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f'
+      prefix="$(Pipeline.Workspace)/.bun/runtime/$version"
+      bun="$prefix/bin/bun"
+      if [[ ! -x "$bun" ]]; then
+        mkdir -p "$prefix/bin"
+        archive="$prefix/$archive_name"
+        temporary="$archive.tmp"
+        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --max-filesize 134217728 "https://github.com/oven-sh/bun/releases/download/bun-v$version/$archive_name" --output "$temporary"
+        printf '%s  %s\n' "$expected" "$temporary" | sha256sum --check
+        mv "$temporary" "$archive"
+        rm -rf "$prefix/extract"
+        mkdir -p "$prefix/extract"
+        if command -v unzip >/dev/null 2>&1; then unzip -q "$archive" -d "$prefix/extract"; else python3 -m zipfile -e "$archive" "$prefix/extract"; fi
+        mv "$prefix/extract/$directory_name/bun" "$bun"
+        chmod 0755 "$bun"
+        rm -rf "$prefix/extract"
+      fi
+      echo "##vso[task.prependpath]$prefix/bin"
+      "$bun" --version
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    displayName: Restore exact Bun runtime
+  - bash: |
+      set -euo pipefail
       set -euo pipefail
       source scripts/ensure-bun.sh
       bun install --frozen-lockfile
@@ -334,6 +411,13 @@ jobs:
       fi
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
     displayName: qualify
+  - bash: |
+      set +e
+      if [[ -x "$SCCACHE_EXE" ]]; then "$SCCACHE_EXE" --show-stats; "$SCCACHE_EXE" --stop-server; fi
+      rm -rf -- "$AGENT_TEMPDIRECTORY/fleet-sccache"
+      exit 0
+    condition: and(always(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
+    displayName: Stop compiler-cache server
   - bash: |
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
@@ -467,7 +551,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" 'd2183081f9a25b31c770bb1b0cfbb15478312509dfd7c8c34df2cf959d807ea5' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" 'd03bb4bca97a457899327db0f0cc5ecb8278aa6aad3242c7189462676f7c3bca' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
@@ -510,6 +594,15 @@ jobs:
     PIP_CACHE_DIR: $(Pipeline.Workspace)/.pip
     DOCKER_CACHE_DIR: $(Pipeline.Workspace)/.docker/policy
     GRYPE_DB_CACHE_DIR: $(Pipeline.Workspace)/.grype
+    SCCACHE_ARCHIVE_DIR: $(Pipeline.Workspace)/.sccache-archive
+    SCCACHE_DIR: $(Pipeline.Workspace)/.sccache
+    SCCACHE_CACHE_SIZE: '1G'
+    SCCACHE_IDLE_TIMEOUT: '900'
+    SCCACHE_EXE: $(Agent.TempDirectory)/fleet-sccache/sccache
+    RUSTC_WRAPPER: $(SCCACHE_EXE)
+    CARGO_INCREMENTAL: '0'
+    CARGO_PROFILE_DEV_DEBUG: '0'
+    CARGO_PROFILE_TEST_DEBUG: '0'
   steps:
   - checkout: self
     clean: true
@@ -518,7 +611,7 @@ jobs:
     persistCredentials: false
   - bash: |
       set -euo pipefail
-      mkdir -p "$(CARGO_HOME)/registry" "$(CARGO_HOME)/git" "$(RUSTUP_HOME)/toolchains" "$(CARGO_TARGET_DIR)" "$(BUN_INSTALL_CACHE_DIR)" "$(NPM_CONFIG_CACHE)" "$(QUALIFICATION_TOOLS_ROOT)" "$(FORMAL_TOOLS_ROOT)" "$(FORMAL_RESULTS_ROOT)" "$(TOOLS_DIR)" "$(TF_PLUGIN_CACHE_DIR)" "$(PIP_CACHE_DIR)" "$(DOCKER_CACHE_DIR)" "$(GRYPE_DB_CACHE_DIR)"
+      mkdir -p "$(CARGO_HOME)/registry" "$(CARGO_HOME)/git" "$(RUSTUP_HOME)/toolchains" "$(CARGO_TARGET_DIR)" "$(BUN_INSTALL_CACHE_DIR)" "$(NPM_CONFIG_CACHE)" "$(QUALIFICATION_TOOLS_ROOT)" "$(FORMAL_TOOLS_ROOT)" "$(FORMAL_RESULTS_ROOT)" "$(TOOLS_DIR)" "$(TF_PLUGIN_CACHE_DIR)" "$(PIP_CACHE_DIR)" "$(DOCKER_CACHE_DIR)" "$(GRYPE_DB_CACHE_DIR)" "$(SCCACHE_ARCHIVE_DIR)" "$(SCCACHE_DIR)"
   - bash: |
       set -euo pipefail
       tree="$(git rev-parse 'HEAD^{tree}')"
@@ -713,7 +806,7 @@ jobs:
       PY
       mode=prepare
       if [[ "${FLEET_REUSE_FOUND:-false}" == true ]]; then mode=restore; fi
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" '635d1a0fed5f9dc863d0fd822fa2fb5d4e039bd09c1bd9df3b90a15209f1caed' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" 'ce0cb717709fae9bce9a25f3d8b228fc2d32d4f1e086c72954f1754b748b3e7e' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Verify and restore exact successful job result
   - task: Cache@2
@@ -731,6 +824,40 @@ jobs:
         "cargo-registry-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/registry
       cacheHitVar: FLEET_CACHE_CARGO_REGISTRY
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    displayName: Restore pinned compiler-cache archive
+    inputs:
+      key: '"sccache-tool-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "0.17.0" | "67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006"'
+      path: $(SCCACHE_ARCHIVE_DIR)
+      cacheHitVar: FLEET_CACHE_SCCACHE_TOOL
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - bash: |
+      set -euo pipefail
+      archive="$SCCACHE_ARCHIVE_DIR/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz"
+      if [[ ! -f "$archive" ]]; then curl --fail --location --proto '=https' --tlsv1.3 'https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz' --output "$archive"; fi
+      [[ "$(wc -c < "$archive")" -le 104857600 ]]
+      printf '%s  %s\n' '67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006' "$archive" | sha256sum --check --strict
+      extract="$AGENT_TEMPDIRECTORY/fleet-sccache"
+      rm -rf -- "$extract"
+      mkdir -p "$extract"
+      tar -xzf "$archive" -C "$extract"
+      [[ "$(find "$extract" -type f -name 'sccache' -print | wc -l | tr -d ' ')" == 1 ]]
+      binary="$(find "$extract" -type f -name 'sccache' -print)"
+      install -m 0755 "$binary" "$SCCACHE_EXE"
+      "$SCCACHE_EXE" --version
+    displayName: Verify pinned compiler-cache tool
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    displayName: Restore content-addressed compiler outputs
+    inputs:
+      key: '"sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock | "policy" | "$(Build.SourceVersion)"'
+      restoreKeys: |
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock | "policy"
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml
+      path: $(SCCACHE_DIR)
+      cacheHitVar: FLEET_CACHE_SCCACHE
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
   - task: Cache@2
     inputs:
@@ -786,6 +913,13 @@ jobs:
       "$TOOLS_DIR/gitleaks-8.30.1/gitleaks" detect --source . --no-banner --redact
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
     displayName: policy
+  - bash: |
+      set +e
+      if [[ -x "$SCCACHE_EXE" ]]; then "$SCCACHE_EXE" --show-stats; "$SCCACHE_EXE" --stop-server; fi
+      rm -rf -- "$AGENT_TEMPDIRECTORY/fleet-sccache"
+      exit 0
+    condition: and(always(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
+    displayName: Stop compiler-cache server
   - bash: |
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
@@ -919,7 +1053,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" '635d1a0fed5f9dc863d0fd822fa2fb5d4e039bd09c1bd9df3b90a15209f1caed' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" 'ce0cb717709fae9bce9a25f3d8b228fc2d32d4f1e086c72954f1754b748b3e7e' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
@@ -962,6 +1096,15 @@ jobs:
     PIP_CACHE_DIR: $(Pipeline.Workspace)/.pip
     DOCKER_CACHE_DIR: $(Pipeline.Workspace)/.docker/web
     GRYPE_DB_CACHE_DIR: $(Pipeline.Workspace)/.grype
+    SCCACHE_ARCHIVE_DIR: $(Pipeline.Workspace)/.sccache-archive
+    SCCACHE_DIR: $(Pipeline.Workspace)/.sccache
+    SCCACHE_CACHE_SIZE: '1G'
+    SCCACHE_IDLE_TIMEOUT: '900'
+    SCCACHE_EXE: $(Agent.TempDirectory)/fleet-sccache/sccache
+    RUSTC_WRAPPER: $(SCCACHE_EXE)
+    CARGO_INCREMENTAL: '0'
+    CARGO_PROFILE_DEV_DEBUG: '0'
+    CARGO_PROFILE_TEST_DEBUG: '0'
   steps:
   - checkout: self
     clean: true
@@ -969,7 +1112,7 @@ jobs:
     persistCredentials: false
   - bash: |
       set -euo pipefail
-      mkdir -p "$(CARGO_HOME)/registry" "$(CARGO_HOME)/git" "$(RUSTUP_HOME)/toolchains" "$(CARGO_TARGET_DIR)" "$(BUN_INSTALL_CACHE_DIR)" "$(NPM_CONFIG_CACHE)" "$(QUALIFICATION_TOOLS_ROOT)" "$(FORMAL_TOOLS_ROOT)" "$(FORMAL_RESULTS_ROOT)" "$(TOOLS_DIR)" "$(TF_PLUGIN_CACHE_DIR)" "$(PIP_CACHE_DIR)" "$(DOCKER_CACHE_DIR)" "$(GRYPE_DB_CACHE_DIR)"
+      mkdir -p "$(CARGO_HOME)/registry" "$(CARGO_HOME)/git" "$(RUSTUP_HOME)/toolchains" "$(CARGO_TARGET_DIR)" "$(BUN_INSTALL_CACHE_DIR)" "$(NPM_CONFIG_CACHE)" "$(QUALIFICATION_TOOLS_ROOT)" "$(FORMAL_TOOLS_ROOT)" "$(FORMAL_RESULTS_ROOT)" "$(TOOLS_DIR)" "$(TF_PLUGIN_CACHE_DIR)" "$(PIP_CACHE_DIR)" "$(DOCKER_CACHE_DIR)" "$(GRYPE_DB_CACHE_DIR)" "$(SCCACHE_ARCHIVE_DIR)" "$(SCCACHE_DIR)"
   - bash: |
       set -euo pipefail
       tree="$(git rev-parse 'HEAD^{tree}')"
@@ -1164,7 +1307,7 @@ jobs:
       PY
       mode=prepare
       if [[ "${FLEET_REUSE_FOUND:-false}" == true ]]; then mode=restore; fi
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/web' "${FLEET_SOURCE_TREE:?}" '40015377872b0c9fba3d5364596ca3ea1e1d0b769b4accbda589957d4532fac8' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/web' "${FLEET_SOURCE_TREE:?}" 'fa7a78b8e186f8c7fb231c2d663208c26f19e44dd7d94ce72a397bdaf565e0b0' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Verify and restore exact successful job result
   - task: Cache@2
@@ -1182,6 +1325,40 @@ jobs:
         "cargo-registry-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/registry
       cacheHitVar: FLEET_CACHE_CARGO_REGISTRY
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    displayName: Restore pinned compiler-cache archive
+    inputs:
+      key: '"sccache-tool-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "0.17.0" | "67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006"'
+      path: $(SCCACHE_ARCHIVE_DIR)
+      cacheHitVar: FLEET_CACHE_SCCACHE_TOOL
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - bash: |
+      set -euo pipefail
+      archive="$SCCACHE_ARCHIVE_DIR/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz"
+      if [[ ! -f "$archive" ]]; then curl --fail --location --proto '=https' --tlsv1.3 'https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz' --output "$archive"; fi
+      [[ "$(wc -c < "$archive")" -le 104857600 ]]
+      printf '%s  %s\n' '67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006' "$archive" | sha256sum --check --strict
+      extract="$AGENT_TEMPDIRECTORY/fleet-sccache"
+      rm -rf -- "$extract"
+      mkdir -p "$extract"
+      tar -xzf "$archive" -C "$extract"
+      [[ "$(find "$extract" -type f -name 'sccache' -print | wc -l | tr -d ' ')" == 1 ]]
+      binary="$(find "$extract" -type f -name 'sccache' -print)"
+      install -m 0755 "$binary" "$SCCACHE_EXE"
+      "$SCCACHE_EXE" --version
+    displayName: Verify pinned compiler-cache tool
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    displayName: Restore content-addressed compiler outputs
+    inputs:
+      key: '"sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock | "web" | "$(Build.SourceVersion)"'
+      restoreKeys: |
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock | "web"
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml
+      path: $(SCCACHE_DIR)
+      cacheHitVar: FLEET_CACHE_SCCACHE
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
   - task: Cache@2
     inputs:
@@ -1221,6 +1398,13 @@ jobs:
       GECKODRIVER="$(command -v geckodriver)" cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
     displayName: browsers
+  - bash: |
+      set +e
+      if [[ -x "$SCCACHE_EXE" ]]; then "$SCCACHE_EXE" --show-stats; "$SCCACHE_EXE" --stop-server; fi
+      rm -rf -- "$AGENT_TEMPDIRECTORY/fleet-sccache"
+      exit 0
+    condition: and(always(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
+    displayName: Stop compiler-cache server
   - bash: |
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
@@ -1354,7 +1538,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/web' "${FLEET_SOURCE_TREE:?}" '40015377872b0c9fba3d5364596ca3ea1e1d0b769b4accbda589957d4532fac8' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/web' "${FLEET_SOURCE_TREE:?}" 'fa7a78b8e186f8c7fb231c2d663208c26f19e44dd7d94ce72a397bdaf565e0b0' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
@@ -1397,6 +1581,15 @@ jobs:
     PIP_CACHE_DIR: $(Pipeline.Workspace)/.pip
     DOCKER_CACHE_DIR: $(Pipeline.Workspace)/.docker/linux-arm64
     GRYPE_DB_CACHE_DIR: $(Pipeline.Workspace)/.grype
+    SCCACHE_ARCHIVE_DIR: $(Pipeline.Workspace)/.sccache-archive
+    SCCACHE_DIR: $(Pipeline.Workspace)/.sccache
+    SCCACHE_CACHE_SIZE: '1G'
+    SCCACHE_IDLE_TIMEOUT: '900'
+    SCCACHE_EXE: $(Agent.TempDirectory)/fleet-sccache/sccache
+    RUSTC_WRAPPER: $(SCCACHE_EXE)
+    CARGO_INCREMENTAL: '0'
+    CARGO_PROFILE_DEV_DEBUG: '0'
+    CARGO_PROFILE_TEST_DEBUG: '0'
   steps:
   - checkout: self
     clean: true
@@ -1404,7 +1597,7 @@ jobs:
     persistCredentials: false
   - bash: |
       set -euo pipefail
-      mkdir -p "$(CARGO_HOME)/registry" "$(CARGO_HOME)/git" "$(RUSTUP_HOME)/toolchains" "$(CARGO_TARGET_DIR)" "$(BUN_INSTALL_CACHE_DIR)" "$(NPM_CONFIG_CACHE)" "$(QUALIFICATION_TOOLS_ROOT)" "$(FORMAL_TOOLS_ROOT)" "$(FORMAL_RESULTS_ROOT)" "$(TOOLS_DIR)" "$(TF_PLUGIN_CACHE_DIR)" "$(PIP_CACHE_DIR)" "$(DOCKER_CACHE_DIR)" "$(GRYPE_DB_CACHE_DIR)"
+      mkdir -p "$(CARGO_HOME)/registry" "$(CARGO_HOME)/git" "$(RUSTUP_HOME)/toolchains" "$(CARGO_TARGET_DIR)" "$(BUN_INSTALL_CACHE_DIR)" "$(NPM_CONFIG_CACHE)" "$(QUALIFICATION_TOOLS_ROOT)" "$(FORMAL_TOOLS_ROOT)" "$(FORMAL_RESULTS_ROOT)" "$(TOOLS_DIR)" "$(TF_PLUGIN_CACHE_DIR)" "$(PIP_CACHE_DIR)" "$(DOCKER_CACHE_DIR)" "$(GRYPE_DB_CACHE_DIR)" "$(SCCACHE_ARCHIVE_DIR)" "$(SCCACHE_DIR)"
   - bash: |
       set -euo pipefail
       tree="$(git rev-parse 'HEAD^{tree}')"
@@ -1599,7 +1792,7 @@ jobs:
       PY
       mode=prepare
       if [[ "${FLEET_REUSE_FOUND:-false}" == true ]]; then mode=restore; fi
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" '0ea020cdd8f92023e6aa8b10aa827086c9655a501682e18c187b9865fa0328fd' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" 'ec69da37edc3c14393527a0ffee604ceafb156e5a40baa4a4ac5425e7b3e0c3e' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Verify and restore exact successful job result
   - task: Cache@2
@@ -1625,6 +1818,48 @@ jobs:
         "cargo-git-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/git
       cacheHitVar: FLEET_CACHE_CARGO_GIT
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    displayName: Restore pinned compiler-cache archive
+    inputs:
+      key: '"sccache-tool-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "0.17.0" | "821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77"'
+      path: $(SCCACHE_ARCHIVE_DIR)
+      cacheHitVar: FLEET_CACHE_SCCACHE_TOOL
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - bash: |
+      set -euo pipefail
+      archive="$SCCACHE_ARCHIVE_DIR/sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz"
+      if [[ ! -f "$archive" ]]; then curl --fail --location --proto '=https' --tlsv1.3 'https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz' --output "$archive"; fi
+      [[ "$(wc -c < "$archive")" -le 104857600 ]]
+      printf '%s  %s\n' '821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77' "$archive" | sha256sum --check --strict
+      extract="$AGENT_TEMPDIRECTORY/fleet-sccache"
+      rm -rf -- "$extract"
+      mkdir -p "$extract"
+      tar -xzf "$archive" -C "$extract"
+      [[ "$(find "$extract" -type f -name 'sccache' -print | wc -l | tr -d ' ')" == 1 ]]
+      binary="$(find "$extract" -type f -name 'sccache' -print)"
+      install -m 0755 "$binary" "$SCCACHE_EXE"
+      "$SCCACHE_EXE" --version
+    displayName: Verify pinned compiler-cache tool
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    displayName: Restore content-addressed compiler outputs
+    inputs:
+      key: '"sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock | "linux-arm64" | "$(Build.SourceVersion)"'
+      restoreKeys: |
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock | "linux-arm64"
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml
+      path: $(SCCACHE_DIR)
+      cacheHitVar: FLEET_CACHE_SCCACHE
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    inputs:
+      key: '"bun-v3" | "$(Agent.OS)" | "sdk" | "$(Build.SourceVersion)"'
+      restoreKeys: |
+        "bun-v3" | "$(Agent.OS)" | "sdk"
+      path: $(Pipeline.Workspace)/.bun
+      cacheHitVar: FLEET_CACHE_BUN
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
   - task: Cache@2
     inputs:
@@ -1656,6 +1891,32 @@ jobs:
     displayName: Restore exact Rust toolchain
   - bash: |
       set -euo pipefail
+      version='1.3.14'
+      archive_name='bun-linux-aarch64.zip'
+      directory_name='bun-linux-aarch64'
+      expected='a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b'
+      prefix="$(Pipeline.Workspace)/.bun/runtime/$version"
+      bun="$prefix/bin/bun"
+      if [[ ! -x "$bun" ]]; then
+        mkdir -p "$prefix/bin"
+        archive="$prefix/$archive_name"
+        temporary="$archive.tmp"
+        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --max-filesize 134217728 "https://github.com/oven-sh/bun/releases/download/bun-v$version/$archive_name" --output "$temporary"
+        printf '%s  %s\n' "$expected" "$temporary" | sha256sum --check
+        mv "$temporary" "$archive"
+        rm -rf "$prefix/extract"
+        mkdir -p "$prefix/extract"
+        if command -v unzip >/dev/null 2>&1; then unzip -q "$archive" -d "$prefix/extract"; else python3 -m zipfile -e "$archive" "$prefix/extract"; fi
+        mv "$prefix/extract/$directory_name/bun" "$bun"
+        chmod 0755 "$bun"
+        rm -rf "$prefix/extract"
+      fi
+      echo "##vso[task.prependpath]$prefix/bin"
+      "$bun" --version
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    displayName: Restore exact Bun runtime
+  - bash: |
+      set -euo pipefail
       set -euo pipefail
       if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || ! command -v pkg-config >/dev/null || ! pkg-config --exists fuse3; then sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libfuse3-dev unzip; fi
       source scripts/ensure-bun.sh
@@ -1665,6 +1926,13 @@ jobs:
       bun scripts/check-filesystem-napi.mjs
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
     displayName: native
+  - bash: |
+      set +e
+      if [[ -x "$SCCACHE_EXE" ]]; then "$SCCACHE_EXE" --show-stats; "$SCCACHE_EXE" --stop-server; fi
+      rm -rf -- "$AGENT_TEMPDIRECTORY/fleet-sccache"
+      exit 0
+    condition: and(always(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
+    displayName: Stop compiler-cache server
   - bash: |
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
@@ -1798,7 +2066,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" '0ea020cdd8f92023e6aa8b10aa827086c9655a501682e18c187b9865fa0328fd' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" 'ec69da37edc3c14393527a0ffee604ceafb156e5a40baa4a4ac5425e7b3e0c3e' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
@@ -1841,6 +2109,15 @@ jobs:
     PIP_CACHE_DIR: $(Pipeline.Workspace)/.pip
     DOCKER_CACHE_DIR: $(Pipeline.Workspace)/.docker/windows
     GRYPE_DB_CACHE_DIR: $(Pipeline.Workspace)/.grype
+    SCCACHE_ARCHIVE_DIR: $(Pipeline.Workspace)/.sccache-archive
+    SCCACHE_DIR: $(Pipeline.Workspace)/.sccache
+    SCCACHE_CACHE_SIZE: '1G'
+    SCCACHE_IDLE_TIMEOUT: '900'
+    SCCACHE_EXE: $(Agent.TempDirectory)/fleet-sccache/sccache.exe
+    RUSTC_WRAPPER: $(SCCACHE_EXE)
+    CARGO_INCREMENTAL: '0'
+    CARGO_PROFILE_DEV_DEBUG: '0'
+    CARGO_PROFILE_TEST_DEBUG: '0'
   steps:
   - checkout: self
     clean: true
@@ -1848,7 +2125,7 @@ jobs:
     persistCredentials: false
   - pwsh: |
       $ErrorActionPreference = 'Stop'
-      New-Item -ItemType Directory -Force -Path '$(CARGO_HOME)/registry','$(CARGO_HOME)/git','$(RUSTUP_HOME)/toolchains','$(CARGO_TARGET_DIR)','$(BUN_INSTALL_CACHE_DIR)','$(NPM_CONFIG_CACHE)','$(QUALIFICATION_TOOLS_ROOT)','$(FORMAL_TOOLS_ROOT)','$(FORMAL_RESULTS_ROOT)','$(TOOLS_DIR)','$(TF_PLUGIN_CACHE_DIR)','$(PIP_CACHE_DIR)','$(DOCKER_CACHE_DIR)','$(GRYPE_DB_CACHE_DIR)' | Out-Null
+      New-Item -ItemType Directory -Force -Path '$(CARGO_HOME)/registry','$(CARGO_HOME)/git','$(RUSTUP_HOME)/toolchains','$(CARGO_TARGET_DIR)','$(BUN_INSTALL_CACHE_DIR)','$(NPM_CONFIG_CACHE)','$(QUALIFICATION_TOOLS_ROOT)','$(FORMAL_TOOLS_ROOT)','$(FORMAL_RESULTS_ROOT)','$(TOOLS_DIR)','$(TF_PLUGIN_CACHE_DIR)','$(PIP_CACHE_DIR)','$(DOCKER_CACHE_DIR)','$(GRYPE_DB_CACHE_DIR)','$(SCCACHE_ARCHIVE_DIR)','$(SCCACHE_DIR)' | Out-Null
   - pwsh: |
       $ErrorActionPreference = 'Stop'
       $tree = (git rev-parse 'HEAD^{tree}').Trim()
@@ -2044,7 +2321,7 @@ jobs:
       $helperPath = Join-Path '$(Agent.TempDirectory)' 'fleet-exact-reuse.py'
       [System.IO.File]::WriteAllText($helperPath, $helper, [System.Text.UTF8Encoding]::new($false))
       $mode = if ($env:FLEET_REUSE_FOUND -eq 'true') { 'restore' } else { 'prepare' }
-      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '26c7a653697353229b25c8b98ee50e52054230b39ef93f318db54d426499bb4a' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '25ffd54124b13cdb2a8e1736f7acc5e0386b521957a121ca8910e370a3962187' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       Remove-Item -LiteralPath $helperPath -Force
     displayName: Verify and restore exact successful job result
   - task: Cache@2
@@ -2070,6 +2347,48 @@ jobs:
         "cargo-git-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/git
       cacheHitVar: FLEET_CACHE_CARGO_GIT
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    displayName: Restore pinned compiler-cache archive
+    inputs:
+      key: '"sccache-tool-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "0.17.0" | "e94cfc5b58cbe439302f586c1d1bd7980c2cd371d47bdf385ade657411e6f3ac"'
+      path: $(SCCACHE_ARCHIVE_DIR)
+      cacheHitVar: FLEET_CACHE_SCCACHE_TOOL
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+      $archive = Join-Path $env:SCCACHE_ARCHIVE_DIR 'sccache-v0.17.0-x86_64-pc-windows-msvc.zip'
+      if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-pc-windows-msvc.zip' -OutFile $archive }
+      if ((Get-Item -LiteralPath $archive).Length -gt 104857600) { throw 'compiler-cache archive exceeds its bound' }
+      if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant() -ne 'e94cfc5b58cbe439302f586c1d1bd7980c2cd371d47bdf385ade657411e6f3ac') { throw 'compiler-cache archive digest mismatch' }
+      $extract = Join-Path $env:AGENT_TEMPDIRECTORY 'fleet-sccache'
+      if (Test-Path -LiteralPath $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }
+      New-Item -ItemType Directory -Path $extract | Out-Null
+      Expand-Archive -LiteralPath $archive -DestinationPath $extract
+      $binaries = @(Get-ChildItem -LiteralPath $extract -Recurse -File -Filter 'sccache.exe')
+      if ($binaries.Count -ne 1) { throw 'compiler-cache archive has an invalid executable inventory' }
+      Copy-Item -LiteralPath $binaries[0].FullName -Destination $env:SCCACHE_EXE
+      & $env:SCCACHE_EXE --version
+    displayName: Verify pinned compiler-cache tool
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    displayName: Restore content-addressed compiler outputs
+    inputs:
+      key: '"sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock | "windows" | "$(Build.SourceVersion)"'
+      restoreKeys: |
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock | "windows"
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml
+      path: $(SCCACHE_DIR)
+      cacheHitVar: FLEET_CACHE_SCCACHE
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    inputs:
+      key: '"bun-v3" | "$(Agent.OS)" | "sdk" | "$(Build.SourceVersion)"'
+      restoreKeys: |
+        "bun-v3" | "$(Agent.OS)" | "sdk"
+      path: $(Pipeline.Workspace)/.bun
+      cacheHitVar: FLEET_CACHE_BUN
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
   - task: Cache@2
     inputs:
@@ -2100,6 +2419,31 @@ jobs:
     displayName: Restore exact Rust toolchain
   - pwsh: |
       $ErrorActionPreference = 'Stop'
+      $version = '1.3.14'
+      $archiveName = 'bun-windows-x64.zip'
+      $directoryName = 'bun-windows-x64'
+      $expected = '0a0620930b6675d7ba440e81f4e0e00d3cfbe096c4b140d3fff02205e9e18922'
+      $prefix = Join-Path '$(Pipeline.Workspace)' ".bun/runtime/$version"
+      $bun = Join-Path $prefix 'bun.exe'
+      if (-not (Test-Path -LiteralPath $bun)) {
+        New-Item -ItemType Directory -Force -Path $prefix | Out-Null
+        $archive = Join-Path $prefix $archiveName
+        $temporary = "$archive.tmp"
+        & curl.exe --fail --silent --show-error --location --proto '=https' --tlsv1.2 --max-filesize 134217728 "https://github.com/oven-sh/bun/releases/download/bun-v$version/$archiveName" --output $temporary
+        if ($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Bun archive verification failed' }
+        Move-Item -LiteralPath $temporary -Destination $archive -Force
+        $extract = Join-Path $prefix 'extract'
+        Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue
+        Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+        Move-Item -LiteralPath (Join-Path $extract "$directoryName/bun.exe") -Destination $bun -Force
+        Remove-Item -LiteralPath $extract -Recurse -Force
+      }
+      Write-Host "##vso[task.prependpath]$prefix"
+      & $bun --version
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    displayName: Restore exact Bun runtime
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
       . .\scripts\ensure-bun.ps1
       cargo test --workspace --all-features --locked
       cargo test -p acyclic-fs --features native-mount --locked --lib native_mount::adapter::tests::writable_projfs_captures_closes_renames_links_and_deletes -- --ignored --test-threads=1
@@ -2109,6 +2453,14 @@ jobs:
       cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
     displayName: native
+  - pwsh: |
+      $ErrorActionPreference = 'Continue'
+      if (Test-Path -LiteralPath $env:SCCACHE_EXE -PathType Leaf) { & $env:SCCACHE_EXE --show-stats; & $env:SCCACHE_EXE --stop-server }
+      $extract = Join-Path $env:AGENT_TEMPDIRECTORY 'fleet-sccache'
+      if (Test-Path -LiteralPath $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }
+      exit 0
+    condition: and(always(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
+    displayName: Stop compiler-cache server
   - pwsh: |
       $ErrorActionPreference = 'Stop'
       $helper = @'
@@ -2243,7 +2595,7 @@ jobs:
       $helperPath = Join-Path '$(Agent.TempDirectory)' 'fleet-exact-reuse.py'
       [System.IO.File]::WriteAllText($helperPath, $helper, [System.Text.UTF8Encoding]::new($false))
       $mode = 'stage'
-      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '26c7a653697353229b25c8b98ee50e52054230b39ef93f318db54d426499bb4a' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '25ffd54124b13cdb2a8e1736f7acc5e0386b521957a121ca8910e370a3962187' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       Remove-Item -LiteralPath $helperPath -Force
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
@@ -2287,6 +2639,15 @@ jobs:
     PIP_CACHE_DIR: $(Pipeline.Workspace)/.pip
     DOCKER_CACHE_DIR: $(Pipeline.Workspace)/.docker/macos
     GRYPE_DB_CACHE_DIR: $(Pipeline.Workspace)/.grype
+    SCCACHE_ARCHIVE_DIR: $(Pipeline.Workspace)/.sccache-archive
+    SCCACHE_DIR: $(Pipeline.Workspace)/.sccache
+    SCCACHE_CACHE_SIZE: '1G'
+    SCCACHE_IDLE_TIMEOUT: '900'
+    SCCACHE_EXE: $(Agent.TempDirectory)/fleet-sccache/sccache
+    RUSTC_WRAPPER: $(SCCACHE_EXE)
+    CARGO_INCREMENTAL: '0'
+    CARGO_PROFILE_DEV_DEBUG: '0'
+    CARGO_PROFILE_TEST_DEBUG: '0'
   steps:
   - checkout: self
     clean: true
@@ -2294,7 +2655,7 @@ jobs:
     persistCredentials: false
   - bash: |
       set -euo pipefail
-      mkdir -p "$(CARGO_HOME)/registry" "$(CARGO_HOME)/git" "$(RUSTUP_HOME)/toolchains" "$(CARGO_TARGET_DIR)" "$(BUN_INSTALL_CACHE_DIR)" "$(NPM_CONFIG_CACHE)" "$(QUALIFICATION_TOOLS_ROOT)" "$(FORMAL_TOOLS_ROOT)" "$(FORMAL_RESULTS_ROOT)" "$(TOOLS_DIR)" "$(TF_PLUGIN_CACHE_DIR)" "$(PIP_CACHE_DIR)" "$(DOCKER_CACHE_DIR)" "$(GRYPE_DB_CACHE_DIR)"
+      mkdir -p "$(CARGO_HOME)/registry" "$(CARGO_HOME)/git" "$(RUSTUP_HOME)/toolchains" "$(CARGO_TARGET_DIR)" "$(BUN_INSTALL_CACHE_DIR)" "$(NPM_CONFIG_CACHE)" "$(QUALIFICATION_TOOLS_ROOT)" "$(FORMAL_TOOLS_ROOT)" "$(FORMAL_RESULTS_ROOT)" "$(TOOLS_DIR)" "$(TF_PLUGIN_CACHE_DIR)" "$(PIP_CACHE_DIR)" "$(DOCKER_CACHE_DIR)" "$(GRYPE_DB_CACHE_DIR)" "$(SCCACHE_ARCHIVE_DIR)" "$(SCCACHE_DIR)"
   - bash: |
       set -euo pipefail
       tree="$(git rev-parse 'HEAD^{tree}')"
@@ -2489,7 +2850,7 @@ jobs:
       PY
       mode=prepare
       if [[ "${FLEET_REUSE_FOUND:-false}" == true ]]; then mode=restore; fi
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '7f92200352fb874154108ff9c9325c73a1384cf7c4a60ba72a83e475b6941970' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '94f24755f9e127863c72c0524c8a427d90aeb1cc99d1ee2e4ec1864ae1c109ea' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Verify and restore exact successful job result
   - task: Cache@2
@@ -2515,6 +2876,48 @@ jobs:
         "cargo-git-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/git
       cacheHitVar: FLEET_CACHE_CARGO_GIT
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    displayName: Restore pinned compiler-cache archive
+    inputs:
+      key: '"sccache-tool-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "0.17.0" | "0c560bfba31aef5bdfb4fb3d2677f6e61d71c5c00952f2a83344f47aa31f00f1"'
+      path: $(SCCACHE_ARCHIVE_DIR)
+      cacheHitVar: FLEET_CACHE_SCCACHE_TOOL
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - bash: |
+      set -euo pipefail
+      archive="$SCCACHE_ARCHIVE_DIR/sccache-v0.17.0-aarch64-apple-darwin.tar.gz"
+      if [[ ! -f "$archive" ]]; then curl --fail --location --proto '=https' --tlsv1.2 'https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-aarch64-apple-darwin.tar.gz' --output "$archive"; fi
+      [[ "$(wc -c < "$archive")" -le 104857600 ]]
+      [[ "$(shasum -a 256 "$archive" | awk '{print $1}')" == '0c560bfba31aef5bdfb4fb3d2677f6e61d71c5c00952f2a83344f47aa31f00f1' ]]
+      extract="$AGENT_TEMPDIRECTORY/fleet-sccache"
+      rm -rf -- "$extract"
+      mkdir -p "$extract"
+      tar -xzf "$archive" -C "$extract"
+      [[ "$(find "$extract" -type f -name 'sccache' -print | wc -l | tr -d ' ')" == 1 ]]
+      binary="$(find "$extract" -type f -name 'sccache' -print)"
+      install -m 0755 "$binary" "$SCCACHE_EXE"
+      "$SCCACHE_EXE" --version
+    displayName: Verify pinned compiler-cache tool
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    displayName: Restore content-addressed compiler outputs
+    inputs:
+      key: '"sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock | "macos" | "$(Build.SourceVersion)"'
+      restoreKeys: |
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock | "macos"
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml | Cargo.lock
+        "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml
+      path: $(SCCACHE_DIR)
+      cacheHitVar: FLEET_CACHE_SCCACHE
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+  - task: Cache@2
+    inputs:
+      key: '"bun-v3" | "$(Agent.OS)" | "sdk" | "$(Build.SourceVersion)"'
+      restoreKeys: |
+        "bun-v3" | "$(Agent.OS)" | "sdk"
+      path: $(Pipeline.Workspace)/.bun
+      cacheHitVar: FLEET_CACHE_BUN
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
   - task: Cache@2
     inputs:
@@ -2546,6 +2949,32 @@ jobs:
     displayName: Restore exact Rust toolchain
   - bash: |
       set -euo pipefail
+      version='1.3.14'
+      archive_name='bun-darwin-aarch64.zip'
+      directory_name='bun-darwin-aarch64'
+      expected='d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620'
+      prefix="$(Pipeline.Workspace)/.bun/runtime/$version"
+      bun="$prefix/bin/bun"
+      if [[ ! -x "$bun" ]]; then
+        mkdir -p "$prefix/bin"
+        archive="$prefix/$archive_name"
+        temporary="$archive.tmp"
+        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --max-filesize 134217728 "https://github.com/oven-sh/bun/releases/download/bun-v$version/$archive_name" --output "$temporary"
+        printf '%s  %s\n' "$expected" "$temporary" | shasum -a 256 --check
+        mv "$temporary" "$archive"
+        rm -rf "$prefix/extract"
+        mkdir -p "$prefix/extract"
+        if command -v unzip >/dev/null 2>&1; then unzip -q "$archive" -d "$prefix/extract"; else python3 -m zipfile -e "$archive" "$prefix/extract"; fi
+        mv "$prefix/extract/$directory_name/bun" "$bun"
+        chmod 0755 "$bun"
+        rm -rf "$prefix/extract"
+      fi
+      echo "##vso[task.prependpath]$prefix/bin"
+      "$bun" --version
+    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    displayName: Restore exact Bun runtime
+  - bash: |
+      set -euo pipefail
       set -euo pipefail
       source scripts/ensure-bun.sh
       cargo test --workspace --all-features --locked
@@ -2556,6 +2985,13 @@ jobs:
       cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target x86_64-apple-darwin --locked
     condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
     displayName: native
+  - bash: |
+      set +e
+      if [[ -x "$SCCACHE_EXE" ]]; then "$SCCACHE_EXE" --show-stats; "$SCCACHE_EXE" --stop-server; fi
+      rm -rf -- "$AGENT_TEMPDIRECTORY/fleet-sccache"
+      exit 0
+    condition: and(always(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
+    displayName: Stop compiler-cache server
   - bash: |
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
@@ -2689,7 +3125,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '7f92200352fb874154108ff9c9325c73a1384cf7c4a60ba72a83e475b6941970' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '94f24755f9e127863c72c0524c8a427d90aeb1cc99d1ee2e4ec1864ae1c109ea' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
