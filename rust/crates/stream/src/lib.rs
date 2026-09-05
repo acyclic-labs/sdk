@@ -24,7 +24,7 @@ pub mod wire {
 /// Canonical public descriptor set used by compatibility gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v2/stream_descriptor.bin");
 #[cfg(feature = "local")]
-pub use local::{LocalStream, LocalStreamError, LocalStreamLimits};
+pub use local::{LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits};
 pub use memory::{MemoryLimits, MemoryStream};
 
 /// Maximum opaque record body.

@@ -28,7 +28,26 @@ const CHUNK_BYTES: usize = 1_024 * 1_024;
 const MANIFEST_MAGIC: &[u8; 16] = b"ACYCLIC-BODY\0\0\0\x01";
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Exact durable-local capacity contract. Reopening requires the same limits.
+/// How journal frames and immutable bodies are made durable before they become observable.
+///
+/// A per-open policy, not part of the on-disk contract: a store written under one policy
+/// reopens under any other.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LocalDurability {
+    /// Every publication waits for the storage device to flush its cache (`F_FULLFSYNC` on
+    /// Apple platforms, `fsync`/`fdatasync` elsewhere), so acknowledged writes survive power
+    /// loss.
+    #[default]
+    FullFlush,
+    /// Every publication is ordered behind earlier writes without waiting for the device
+    /// cache (`F_BARRIERFSYNC` on Apple platforms, `fdatasync` elsewhere). Acknowledged
+    /// writes survive process crashes; a power loss before the device drains its cache can
+    /// lose the newest ones, which startup recovery discards as a torn tail.
+    Barrier,
+}
+
+/// Exact durable-local capacity contract. Reopening requires the same capacity limits;
+/// `durability` is a per-open policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LocalObjectsLimits {
     /// Largest body admitted by a single completed object version.
@@ -39,6 +58,9 @@ pub struct LocalObjectsLimits {
     pub maximum_journal_operations: u64,
     /// Maximum journal bytes including its durable header and frame checksums.
     pub maximum_journal_bytes: u64,
+    /// Synchronization policy for journal frames and bodies. Not recorded in the durable
+    /// header.
+    pub durability: LocalDurability,
 }
 
 impl Default for LocalObjectsLimits {
@@ -48,6 +70,7 @@ impl Default for LocalObjectsLimits {
             maximum_bytes: 4 * 1_024 * 1_024 * 1_024,
             maximum_journal_operations: 1_000_000,
             maximum_journal_bytes: 1_024 * 1_024 * 1_024,
+            durability: LocalDurability::FullFlush,
         }
     }
 }
@@ -186,8 +209,9 @@ impl LocalObjects {
         let _mutation = self.mutation.lock().await;
         let live_manifests = self.semantic.local_body_digests().await;
         let root = self.persistence.root.clone();
+        let durability = self.persistence.limits.durability;
         tokio::task::spawn_blocking(move || {
-            collect_physical_garbage(&root, &live_manifests, maximum_candidates)
+            collect_physical_garbage(&root, &live_manifests, maximum_candidates, durability)
         })
         .await
         .map_err(|_| LocalObjectsError::Corrupt)?
@@ -213,7 +237,7 @@ impl LocalObjects {
         fs::create_dir_all(root.join("chunks"))?;
         fs::create_dir_all(root.join("manifests"))?;
         fs::create_dir_all(root.join("quarantine"))?;
-        sync_parent(&root)?;
+        sync_parent(&root, limits.durability)?;
 
         let ownership = OpenOptions::new()
             .create(true)
@@ -280,7 +304,8 @@ impl LocalObjects {
         {
             return Err(ObjectsError::Capacity);
         }
-        append_frame(&mut journal, &payload).map_err(|_| ObjectsError::Unavailable)?;
+        append_frame(&mut journal, &payload, self.persistence.limits.durability)
+            .map_err(|_| ObjectsError::Unavailable)?;
         self.persistence
             .journal_operations
             .fetch_add(1, Ordering::Release);
@@ -288,7 +313,12 @@ impl LocalObjects {
     }
 
     fn persist_body(&self, body: &[u8]) -> Result<([u8; 32], PathBuf), ObjectsError> {
-        persist_body(&self.persistence.root, body).map_err(|_| ObjectsError::Unavailable)
+        persist_body(
+            &self.persistence.root,
+            body,
+            self.persistence.limits.durability,
+        )
+        .map_err(|_| ObjectsError::Unavailable)
     }
 }
 
@@ -610,7 +640,7 @@ async fn replay(
     let mut operations = 0_u64;
     loop {
         let frame_start = journal.stream_position()?;
-        let Some(payload) = read_frame(journal, frame_start)? else {
+        let Some(payload) = read_frame(journal, frame_start, limits.durability)? else {
             break;
         };
         let record =
@@ -779,7 +809,7 @@ fn initialize_or_validate_header(
         journal.write_all(&limits.maximum_bytes.to_le_bytes())?;
         journal.write_all(&limits.maximum_journal_operations.to_le_bytes())?;
         journal.write_all(&limits.maximum_journal_bytes.to_le_bytes())?;
-        journal.sync_all()?;
+        sync_file(journal, limits.durability)?;
         return Ok(());
     }
     if length < JOURNAL_HEADER_BYTES {
@@ -809,16 +839,24 @@ fn initialize_or_validate_header(
     Ok(())
 }
 
-fn append_frame(journal: &mut File, payload: &[u8]) -> std::io::Result<()> {
+fn append_frame(
+    journal: &mut File,
+    payload: &[u8],
+    durability: LocalDurability,
+) -> std::io::Result<()> {
     let length = u32::try_from(payload.len())
         .map_err(|_| std::io::Error::other("local mutation record is too large"))?;
     journal.write_all(&length.to_le_bytes())?;
     journal.write_all(blake3::hash(payload).as_bytes())?;
     journal.write_all(payload)?;
-    journal.sync_data()
+    sync_file_data(journal, durability)
 }
 
-fn read_frame(journal: &mut File, frame_start: u64) -> Result<Option<Vec<u8>>, LocalObjectsError> {
+fn read_frame(
+    journal: &mut File,
+    frame_start: u64,
+    durability: LocalDurability,
+) -> Result<Option<Vec<u8>>, LocalObjectsError> {
     let mut length = [0; 4];
     let read = journal.read(&mut length)?;
     if read == 0 {
@@ -826,7 +864,7 @@ fn read_frame(journal: &mut File, frame_start: u64) -> Result<Option<Vec<u8>>, L
     }
     if read != length.len() {
         journal.set_len(frame_start)?;
-        journal.sync_data()?;
+        sync_file_data(journal, durability)?;
         return Ok(None);
     }
     let length = u32::from_le_bytes(length) as usize;
@@ -837,7 +875,7 @@ fn read_frame(journal: &mut File, frame_start: u64) -> Result<Option<Vec<u8>>, L
     let mut payload = vec![0; length];
     if journal.read_exact(&mut checksum).is_err() || journal.read_exact(&mut payload).is_err() {
         journal.set_len(frame_start)?;
-        journal.sync_data()?;
+        sync_file_data(journal, durability)?;
         return Ok(None);
     }
     if blake3::hash(&payload).as_bytes() != &checksum {
@@ -846,7 +884,11 @@ fn read_frame(journal: &mut File, frame_start: u64) -> Result<Option<Vec<u8>>, L
     Ok(Some(payload))
 }
 
-fn persist_body(root: &Path, body: &[u8]) -> Result<([u8; 32], PathBuf), LocalObjectsError> {
+fn persist_body(
+    root: &Path,
+    body: &[u8],
+    durability: LocalDurability,
+) -> Result<([u8; 32], PathBuf), LocalObjectsError> {
     let digest = *blake3::hash(body).as_bytes();
     let mut manifest = Vec::new();
     manifest.extend_from_slice(MANIFEST_MAGIC);
@@ -858,11 +900,18 @@ fn persist_body(root: &Path, body: &[u8]) -> Result<([u8; 32], PathBuf), LocalOb
         let chunk_digest = *blake3::hash(chunk).as_bytes();
         manifest.extend_from_slice(&chunk_digest);
         manifest.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
-        persist_exact(root, "chunks", &chunk_digest, "chunk", chunk)?;
+        persist_exact(root, "chunks", &chunk_digest, "chunk", chunk, durability)?;
     }
     let checksum = blake3::hash(&manifest);
     manifest.extend_from_slice(checksum.as_bytes());
-    let path = persist_exact(root, "manifests", &digest, "manifest", &manifest)?;
+    let path = persist_exact(
+        root,
+        "manifests",
+        &digest,
+        "manifest",
+        &manifest,
+        durability,
+    )?;
     Ok((digest, path))
 }
 
@@ -872,6 +921,7 @@ fn persist_exact(
     digest: &[u8; 32],
     extension: &str,
     bytes: &[u8],
+    durability: LocalDurability,
 ) -> Result<PathBuf, LocalObjectsError> {
     let identity = hex(digest);
     let parent = root.join(family).join(&identity[..2]);
@@ -882,7 +932,7 @@ fn persist_exact(
         if existing == bytes {
             return Ok(destination);
         }
-        quarantine(root, &destination, &identity)?;
+        quarantine(root, &destination, &identity, durability)?;
     }
     let nonce = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temporary = parent.join(format!(".{identity}.{}-{nonce}.tmp", std::process::id()));
@@ -890,7 +940,10 @@ fn persist_exact(
         .create_new(true)
         .write(true)
         .open(&temporary)?;
-    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+    if let Err(error) = file
+        .write_all(bytes)
+        .and_then(|()| sync_file(&file, durability))
+    {
         let _ = fs::remove_file(&temporary);
         return Err(error.into());
     }
@@ -908,7 +961,7 @@ fn persist_exact(
         }
     }
     fs::remove_file(&temporary)?;
-    sync_parent(&parent)?;
+    sync_parent(&parent, durability)?;
     Ok(destination)
 }
 
@@ -916,6 +969,7 @@ fn collect_physical_garbage(
     root: &Path,
     live_manifests: &BTreeSet<[u8; 32]>,
     maximum_candidates: u64,
+    durability: LocalDurability,
 ) -> Result<LocalObjectsGarbageCollection, LocalObjectsError> {
     let mut candidates = 0_u64;
     let mut temporary = Vec::new();
@@ -993,7 +1047,7 @@ fn collect_physical_garbage(
         }
     }
     for parent in changed_parents {
-        sync_parent(&parent)?;
+        sync_parent(&parent, durability)?;
     }
     Ok(report)
 }
@@ -1095,12 +1149,17 @@ fn hex_nibble(byte: u8) -> Result<u8, LocalObjectsError> {
     }
 }
 
-fn quarantine(root: &Path, source: &Path, identity: &str) -> Result<(), LocalObjectsError> {
+fn quarantine(
+    root: &Path,
+    source: &Path,
+    identity: &str,
+    durability: LocalDurability,
+) -> Result<(), LocalObjectsError> {
     let destination = root
         .join("quarantine")
         .join(format!("{identity}-{}.corrupt", std::process::id()));
     fs::rename(source, destination)?;
-    sync_parent(&root.join("quarantine"))
+    sync_parent(&root.join("quarantine"), durability)
 }
 
 pub(crate) fn read_body(
@@ -1273,14 +1332,48 @@ fn hex(bytes: &[u8]) -> String {
     output
 }
 
+fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
+    match durability {
+        LocalDurability::FullFlush => file.sync_all(),
+        LocalDurability::Barrier => barrier_sync(file),
+    }
+}
+
+fn sync_file_data(file: &File, durability: LocalDurability) -> std::io::Result<()> {
+    match durability {
+        LocalDurability::FullFlush => file.sync_data(),
+        LocalDurability::Barrier => barrier_sync(file),
+    }
+}
+
+/// Orders every earlier write to `file` ahead of later ones without waiting for the device
+/// cache. Falls back to a full flush where the filesystem cannot issue a barrier.
+#[cfg(target_vendor = "apple")]
+#[allow(unsafe_code)]
+fn barrier_sync(file: &File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+    // SAFETY: `F_BARRIERFSYNC` takes no argument and only acts on the descriptor, which
+    // `file` keeps open for the duration of the call.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC) } == 0 {
+        Ok(())
+    } else {
+        file.sync_all()
+    }
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn barrier_sync(file: &File) -> std::io::Result<()> {
+    file.sync_data()
+}
+
 #[cfg(unix)]
-fn sync_parent(path: &Path) -> Result<(), LocalObjectsError> {
-    File::open(path)?.sync_all()?;
+fn sync_parent(path: &Path, durability: LocalDurability) -> Result<(), LocalObjectsError> {
+    sync_file(&File::open(path)?, durability)?;
     Ok(())
 }
 
 #[cfg(windows)]
-fn sync_parent(_path: &Path) -> Result<(), LocalObjectsError> {
+fn sync_parent(_path: &Path, _durability: LocalDurability) -> Result<(), LocalObjectsError> {
     Ok(())
 }
 
@@ -1449,8 +1542,8 @@ mod tests {
             })
             .await
             .unwrap_or_else(|_| unreachable!());
-        let (orphan, _) =
-            persist_body(root.path(), b"orphan body").unwrap_or_else(|_| unreachable!());
+        let (orphan, _) = persist_body(root.path(), b"orphan body", LocalDurability::FullFlush)
+            .unwrap_or_else(|_| unreachable!());
         assert!(matches!(
             provider.collect_garbage(1).await,
             Err(LocalObjectsError::Invalid(
