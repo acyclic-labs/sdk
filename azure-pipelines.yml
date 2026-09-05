@@ -320,7 +320,7 @@ jobs:
         "rustup-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)"
       path: $(Pipeline.Workspace)/.rust-runtime
       cacheHitVar: FLEET_CACHE_RUSTUP
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"cargo-registry-v2" | "$(Agent.OS)" | rust-toolchain.toml | Cargo.lock'
@@ -328,7 +328,7 @@ jobs:
         "cargo-registry-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/registry
       cacheHitVar: FLEET_CACHE_CARGO_REGISTRY
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"cargo-git-v2" | "$(Agent.OS)" | rust-toolchain.toml | Cargo.lock'
@@ -336,14 +336,14 @@ jobs:
         "cargo-git-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/git
       cacheHitVar: FLEET_CACHE_CARGO_GIT
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     displayName: Restore pinned compiler-cache archive
     inputs:
       key: '"sccache-tool-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "0.17.0" | "67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006"'
       path: $(SCCACHE_ARCHIVE_DIR)
       cacheHitVar: FLEET_CACHE_SCCACHE_TOOL
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - bash: |
       set -euo pipefail
       archive="$SCCACHE_ARCHIVE_DIR/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz"
@@ -359,7 +359,7 @@ jobs:
       install -m 0755 "$binary" "$SCCACHE_EXE"
       "$SCCACHE_EXE" --version
     displayName: Verify pinned compiler-cache tool
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     displayName: Restore content-addressed compiler outputs
     inputs:
@@ -370,21 +370,21 @@ jobs:
         "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml
       path: $(SCCACHE_DIR)
       cacheHitVar: FLEET_CACHE_SCCACHE
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
-      key: '"bun-v3" | "$(Agent.OS)" | "sdk" | "$(Build.SourceVersion)"'
+      key: '"bun-v4-951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f" | "$(Agent.OS)" | "sdk" | "$(Build.SourceVersion)"'
       restoreKeys: |
-        "bun-v3" | "$(Agent.OS)" | "sdk"
+        "bun-v4-951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f" | "$(Agent.OS)" | "sdk"
       path: $(Pipeline.Workspace)/.bun
       cacheHitVar: FLEET_CACHE_BUN
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"tools-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk"'
       path: $(TOOLS_DIR)
       cacheHitVar: FLEET_CACHE_TOOLS
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - bash: |
       set -euo pipefail
       version='1.28.2'
@@ -405,7 +405,7 @@ jobs:
       echo '##vso[task.prependpath]$(RUSTUP_BIN)'
       export PATH="$(RUSTUP_BIN):$PATH"
       rustup show active-toolchain
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Restore exact Rust toolchain
   - bash: |
       set -euo pipefail
@@ -413,7 +413,7 @@ jobs:
       archive_name='bun-linux-x64.zip'
       directory_name='bun-linux-x64'
       expected='951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f'
-      prefix="$(Pipeline.Workspace)/.bun/runtime/$version"
+      prefix="$(Pipeline.Workspace)/.bun/runtime/$version/$directory_name"
       bun="$prefix/bin/bun"
       if [[ ! -x "$bun" ]]; then
         mkdir -p "$prefix/bin"
@@ -431,7 +431,7 @@ jobs:
       fi
       echo "##vso[task.prependpath]$prefix/bin"
       "$bun" --version
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Restore exact Bun runtime
   - bash: |
       set -euo pipefail
@@ -459,7 +459,7 @@ jobs:
         base=${base#refs/heads/}
         bun x buf breaking --against ".git#ref=origin/$base" --exclude-path proto/inference/v1/inference.proto --exclude-path proto/filesystem/v1 --exclude-path proto/filesystem/daemon/v1
       fi
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: qualify
   - bash: |
       set +e
@@ -1011,7 +1011,7 @@ jobs:
         "rustup-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)"
       path: $(Pipeline.Workspace)/.rust-runtime
       cacheHitVar: FLEET_CACHE_RUSTUP
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"cargo-registry-v2" | "$(Agent.OS)" | rust-toolchain.toml | Cargo.lock'
@@ -1019,13 +1019,13 @@ jobs:
         "cargo-registry-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/registry
       cacheHitVar: FLEET_CACHE_CARGO_REGISTRY
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"tools-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk"'
       path: $(TOOLS_DIR)
       cacheHitVar: FLEET_CACHE_TOOLS
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - bash: |
       set -euo pipefail
       version='1.28.2'
@@ -1046,7 +1046,7 @@ jobs:
       echo '##vso[task.prependpath]$(RUSTUP_BIN)'
       export PATH="$(RUSTUP_BIN):$PATH"
       rustup show active-toolchain
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Restore exact Rust toolchain
   - bash: |
       set -euo pipefail
@@ -1080,7 +1080,7 @@ jobs:
         tar --extract --gzip --file "$archive" --directory "$TOOLS_DIR/gitleaks-8.30.1" gitleaks
       fi
       "$TOOLS_DIR/gitleaks-8.30.1/gitleaks" detect --source . --no-banner --redact
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: policy
   - bash: |
       set -euo pipefail
@@ -1628,7 +1628,7 @@ jobs:
         "rustup-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)"
       path: $(Pipeline.Workspace)/.rust-runtime
       cacheHitVar: FLEET_CACHE_RUSTUP
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"cargo-registry-v2" | "$(Agent.OS)" | rust-toolchain.toml | Cargo.lock'
@@ -1636,14 +1636,14 @@ jobs:
         "cargo-registry-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/registry
       cacheHitVar: FLEET_CACHE_CARGO_REGISTRY
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     displayName: Restore pinned compiler-cache archive
     inputs:
       key: '"sccache-tool-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "0.17.0" | "67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006"'
       path: $(SCCACHE_ARCHIVE_DIR)
       cacheHitVar: FLEET_CACHE_SCCACHE_TOOL
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - bash: |
       set -euo pipefail
       archive="$SCCACHE_ARCHIVE_DIR/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz"
@@ -1659,7 +1659,7 @@ jobs:
       install -m 0755 "$binary" "$SCCACHE_EXE"
       "$SCCACHE_EXE" --version
     displayName: Verify pinned compiler-cache tool
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     displayName: Restore content-addressed compiler outputs
     inputs:
@@ -1670,13 +1670,13 @@ jobs:
         "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml
       path: $(SCCACHE_DIR)
       cacheHitVar: FLEET_CACHE_SCCACHE
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"tools-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk"'
       path: $(TOOLS_DIR)
       cacheHitVar: FLEET_CACHE_TOOLS
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - bash: |
       set -euo pipefail
       version='1.28.2'
@@ -1697,7 +1697,7 @@ jobs:
       echo '##vso[task.prependpath]$(RUSTUP_BIN)'
       export PATH="$(RUSTUP_BIN):$PATH"
       rustup show active-toolchain
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Restore exact Rust toolchain
   - bash: |
       set -euo pipefail
@@ -1707,7 +1707,7 @@ jobs:
       export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
       CHROMEDRIVER="$(command -v chromedriver)" cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
       GECKODRIVER="$(command -v geckodriver)" cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: browsers
   - bash: |
       set +e
@@ -2262,7 +2262,7 @@ jobs:
         "rustup-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)"
       path: $(Pipeline.Workspace)/.rust-runtime
       cacheHitVar: FLEET_CACHE_RUSTUP
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"cargo-registry-v2" | "$(Agent.OS)" | rust-toolchain.toml | Cargo.lock'
@@ -2270,7 +2270,7 @@ jobs:
         "cargo-registry-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/registry
       cacheHitVar: FLEET_CACHE_CARGO_REGISTRY
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"cargo-git-v2" | "$(Agent.OS)" | rust-toolchain.toml | Cargo.lock'
@@ -2278,14 +2278,14 @@ jobs:
         "cargo-git-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/git
       cacheHitVar: FLEET_CACHE_CARGO_GIT
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     displayName: Restore pinned compiler-cache archive
     inputs:
       key: '"sccache-tool-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "0.17.0" | "821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77"'
       path: $(SCCACHE_ARCHIVE_DIR)
       cacheHitVar: FLEET_CACHE_SCCACHE_TOOL
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - bash: |
       set -euo pipefail
       archive="$SCCACHE_ARCHIVE_DIR/sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz"
@@ -2301,7 +2301,7 @@ jobs:
       install -m 0755 "$binary" "$SCCACHE_EXE"
       "$SCCACHE_EXE" --version
     displayName: Verify pinned compiler-cache tool
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     displayName: Restore content-addressed compiler outputs
     inputs:
@@ -2312,21 +2312,21 @@ jobs:
         "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml
       path: $(SCCACHE_DIR)
       cacheHitVar: FLEET_CACHE_SCCACHE
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
-      key: '"bun-v3" | "$(Agent.OS)" | "sdk" | "$(Build.SourceVersion)"'
+      key: '"bun-v4-a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b" | "$(Agent.OS)" | "sdk" | "$(Build.SourceVersion)"'
       restoreKeys: |
-        "bun-v3" | "$(Agent.OS)" | "sdk"
+        "bun-v4-a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b" | "$(Agent.OS)" | "sdk"
       path: $(Pipeline.Workspace)/.bun
       cacheHitVar: FLEET_CACHE_BUN
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"tools-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk"'
       path: $(TOOLS_DIR)
       cacheHitVar: FLEET_CACHE_TOOLS
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - bash: |
       set -euo pipefail
       version='1.28.2'
@@ -2347,7 +2347,7 @@ jobs:
       echo '##vso[task.prependpath]$(RUSTUP_BIN)'
       export PATH="$(RUSTUP_BIN):$PATH"
       rustup show active-toolchain
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Restore exact Rust toolchain
   - bash: |
       set -euo pipefail
@@ -2355,7 +2355,7 @@ jobs:
       archive_name='bun-linux-aarch64.zip'
       directory_name='bun-linux-aarch64'
       expected='a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b'
-      prefix="$(Pipeline.Workspace)/.bun/runtime/$version"
+      prefix="$(Pipeline.Workspace)/.bun/runtime/$version/$directory_name"
       bun="$prefix/bin/bun"
       if [[ ! -x "$bun" ]]; then
         mkdir -p "$prefix/bin"
@@ -2373,7 +2373,7 @@ jobs:
       fi
       echo "##vso[task.prependpath]$prefix/bin"
       "$bun" --version
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Restore exact Bun runtime
   - bash: |
       set -euo pipefail
@@ -2384,7 +2384,7 @@ jobs:
       cargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1
       cargo build -p acyclic-fs-napi --locked
       bun scripts/check-filesystem-napi.mjs "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: native
   - bash: |
       set +e
@@ -2945,7 +2945,7 @@ jobs:
         "rustup-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)"
       path: $(Pipeline.Workspace)/.rust-runtime
       cacheHitVar: FLEET_CACHE_RUSTUP
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"cargo-registry-v2" | "$(Agent.OS)" | rust-toolchain.toml | Cargo.lock'
@@ -2953,7 +2953,7 @@ jobs:
         "cargo-registry-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/registry
       cacheHitVar: FLEET_CACHE_CARGO_REGISTRY
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"cargo-git-v2" | "$(Agent.OS)" | rust-toolchain.toml | Cargo.lock'
@@ -2961,14 +2961,14 @@ jobs:
         "cargo-git-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/git
       cacheHitVar: FLEET_CACHE_CARGO_GIT
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     displayName: Restore pinned compiler-cache archive
     inputs:
       key: '"sccache-tool-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "0.17.0" | "e94cfc5b58cbe439302f586c1d1bd7980c2cd371d47bdf385ade657411e6f3ac"'
       path: $(SCCACHE_ARCHIVE_DIR)
       cacheHitVar: FLEET_CACHE_SCCACHE_TOOL
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - pwsh: |
       $ErrorActionPreference = 'Stop'
       $archive = Join-Path $env:SCCACHE_ARCHIVE_DIR 'sccache-v0.17.0-x86_64-pc-windows-msvc.zip'
@@ -2984,7 +2984,7 @@ jobs:
       Copy-Item -LiteralPath $binaries[0].FullName -Destination $env:SCCACHE_EXE
       & $env:SCCACHE_EXE --version
     displayName: Verify pinned compiler-cache tool
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     displayName: Restore content-addressed compiler outputs
     inputs:
@@ -2995,21 +2995,21 @@ jobs:
         "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml
       path: $(SCCACHE_DIR)
       cacheHitVar: FLEET_CACHE_SCCACHE
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
-      key: '"bun-v3" | "$(Agent.OS)" | "sdk" | "$(Build.SourceVersion)"'
+      key: '"bun-v4-0a0620930b6675d7ba440e81f4e0e00d3cfbe096c4b140d3fff02205e9e18922" | "$(Agent.OS)" | "sdk" | "$(Build.SourceVersion)"'
       restoreKeys: |
-        "bun-v3" | "$(Agent.OS)" | "sdk"
+        "bun-v4-0a0620930b6675d7ba440e81f4e0e00d3cfbe096c4b140d3fff02205e9e18922" | "$(Agent.OS)" | "sdk"
       path: $(Pipeline.Workspace)/.bun
       cacheHitVar: FLEET_CACHE_BUN
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"tools-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk"'
       path: $(TOOLS_DIR)
       cacheHitVar: FLEET_CACHE_TOOLS
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - pwsh: |
       $ErrorActionPreference = 'Stop'
       $version = '1.28.2'
@@ -3029,7 +3029,7 @@ jobs:
       if (-not (Test-Path -LiteralPath $rustup)) { $savedCargoHome = $env:CARGO_HOME; $env:CARGO_HOME = '$(Pipeline.Workspace)/.rust-runtime/cargo'; try { & $installer -y --profile minimal --default-toolchain none --no-modify-path } finally { $env:CARGO_HOME = $savedCargoHome } }
       Write-Host '##vso[task.prependpath]$(RUSTUP_BIN)'
       & $rustup show active-toolchain
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Restore exact Rust toolchain
   - pwsh: |
       $ErrorActionPreference = 'Stop'
@@ -3037,7 +3037,7 @@ jobs:
       $archiveName = 'bun-windows-x64.zip'
       $directoryName = 'bun-windows-x64'
       $expected = '0a0620930b6675d7ba440e81f4e0e00d3cfbe096c4b140d3fff02205e9e18922'
-      $prefix = Join-Path '$(Pipeline.Workspace)' ".bun/runtime/$version"
+      $prefix = Join-Path '$(Pipeline.Workspace)' ".bun/runtime/$version/$directoryName"
       $bun = Join-Path $prefix 'bun.exe'
       if (-not (Test-Path -LiteralPath $bun)) {
         New-Item -ItemType Directory -Force -Path $prefix | Out-Null
@@ -3054,7 +3054,7 @@ jobs:
       }
       Write-Host "##vso[task.prependpath]$prefix"
       & $bun --version
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Restore exact Bun runtime
   - pwsh: |
       if ($PSVersionTable.PSVersion -lt [version]'7.4') { throw 'PowerShell 7.4 or newer is required' }
@@ -3067,7 +3067,7 @@ jobs:
       bun scripts/check-filesystem-napi.mjs "$env:BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
       rustup target add aarch64-pc-windows-msvc
       cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: native
   - pwsh: |
       $ErrorActionPreference = 'Continue'
@@ -3630,7 +3630,7 @@ jobs:
         "rustup-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)"
       path: $(Pipeline.Workspace)/.rust-runtime
       cacheHitVar: FLEET_CACHE_RUSTUP
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"cargo-registry-v2" | "$(Agent.OS)" | rust-toolchain.toml | Cargo.lock'
@@ -3638,7 +3638,7 @@ jobs:
         "cargo-registry-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/registry
       cacheHitVar: FLEET_CACHE_CARGO_REGISTRY
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"cargo-git-v2" | "$(Agent.OS)" | rust-toolchain.toml | Cargo.lock'
@@ -3646,14 +3646,14 @@ jobs:
         "cargo-git-v2" | "$(Agent.OS)" | rust-toolchain.toml
       path: $(CARGO_HOME)/git
       cacheHitVar: FLEET_CACHE_CARGO_GIT
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     displayName: Restore pinned compiler-cache archive
     inputs:
       key: '"sccache-tool-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "0.17.0" | "0c560bfba31aef5bdfb4fb3d2677f6e61d71c5c00952f2a83344f47aa31f00f1"'
       path: $(SCCACHE_ARCHIVE_DIR)
       cacheHitVar: FLEET_CACHE_SCCACHE_TOOL
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - bash: |
       set -euo pipefail
       archive="$SCCACHE_ARCHIVE_DIR/sccache-v0.17.0-aarch64-apple-darwin.tar.gz"
@@ -3669,7 +3669,7 @@ jobs:
       install -m 0755 "$binary" "$SCCACHE_EXE"
       "$SCCACHE_EXE" --version
     displayName: Verify pinned compiler-cache tool
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     displayName: Restore content-addressed compiler outputs
     inputs:
@@ -3680,21 +3680,21 @@ jobs:
         "sccache-v1" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk" | rust-toolchain.toml
       path: $(SCCACHE_DIR)
       cacheHitVar: FLEET_CACHE_SCCACHE
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
-      key: '"bun-v3" | "$(Agent.OS)" | "sdk" | "$(Build.SourceVersion)"'
+      key: '"bun-v4-d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620" | "$(Agent.OS)" | "sdk" | "$(Build.SourceVersion)"'
       restoreKeys: |
-        "bun-v3" | "$(Agent.OS)" | "sdk"
+        "bun-v4-d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620" | "$(Agent.OS)" | "sdk"
       path: $(Pipeline.Workspace)/.bun
       cacheHitVar: FLEET_CACHE_BUN
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - task: Cache@2
     inputs:
       key: '"tools-v3" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "sdk"'
       path: $(TOOLS_DIR)
       cacheHitVar: FLEET_CACHE_TOOLS
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
   - bash: |
       set -euo pipefail
       version='1.28.2'
@@ -3715,7 +3715,7 @@ jobs:
       echo '##vso[task.prependpath]$(RUSTUP_BIN)'
       export PATH="$(RUSTUP_BIN):$PATH"
       rustup show active-toolchain
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Restore exact Rust toolchain
   - bash: |
       set -euo pipefail
@@ -3723,7 +3723,7 @@ jobs:
       archive_name='bun-darwin-aarch64.zip'
       directory_name='bun-darwin-aarch64'
       expected='d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620'
-      prefix="$(Pipeline.Workspace)/.bun/runtime/$version"
+      prefix="$(Pipeline.Workspace)/.bun/runtime/$version/$directory_name"
       bun="$prefix/bin/bun"
       if [[ ! -x "$bun" ]]; then
         mkdir -p "$prefix/bin"
@@ -3741,7 +3741,7 @@ jobs:
       fi
       echo "##vso[task.prependpath]$prefix/bin"
       "$bun" --version
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Restore exact Bun runtime
   - bash: |
       set -euo pipefail
@@ -3753,7 +3753,7 @@ jobs:
       bun scripts/check-filesystem-napi.mjs "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
       rustup target add x86_64-apple-darwin
       cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target x86_64-apple-darwin --locked
-    condition: ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true')
+    condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: native
   - bash: |
       set +e
