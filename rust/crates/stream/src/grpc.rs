@@ -311,13 +311,27 @@ fn retryable(error: &Status) -> bool {
     if matches!(error.code(), Code::Unavailable | Code::DeadlineExceeded) {
         return true;
     }
-    // Tonic reports an interrupted HTTP/2 response body as Unknown. Only
-    // locally retained transport causes qualify, never a peer's status text.
+    // Missing final trailers become Unknown without a retained transport cause.
+    // Treat that outcome as ambiguous, never successful: every mutation retains
+    // its idempotency key and every resumed read retains its cursor/deadline.
+    // An explicit peer Unknown is indistinguishable and gets the same bounded retry.
+    if error.code() == Code::Unknown && std::error::Error::source(error).is_none() {
+        return true;
+    }
     if !matches!(error.code(), Code::Unknown | Code::Cancelled) {
         return false;
     }
     let mut cause = std::error::Error::source(error);
     while let Some(current) = cause {
+        // Hyper cancels queued dispatch when its connection driver disappears. This is
+        // transport uncertainty, unlike a peer's application-level Cancelled status.
+        if error.code() == Code::Cancelled
+            && current
+                .downcast_ref::<hyper::Error>()
+                .is_some_and(hyper::Error::is_canceled)
+        {
+            return true;
+        }
         if error.code() == Code::Cancelled
             && current.downcast_ref::<h2::Error>().is_some_and(|error| {
                 error.is_remote() && error.reason() == Some(h2::Reason::CANCEL)
@@ -1154,6 +1168,120 @@ mod tests {
     use wire::stream_service_server::StreamService;
 
     #[tokio::test]
+    async fn lost_connection_dispatch_retries_but_peer_cancellation_does_not()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (client_io, _peer) = tokio::io::duplex(4096);
+        let (mut sender, connection) = hyper::client::conn::http2::handshake(
+            hyper_util::rt::TokioExecutor::new(),
+            hyper_util::rt::TokioIo::new(client_io),
+        )
+        .await?;
+        // Losing the driver closes Hyper's dispatch queue, independently of a peer status.
+        // No background task or network listener is needed to reproduce this transport error.
+        drop(connection);
+        let request = tonic::codegen::http::Request::new(tonic::body::Body::empty());
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            sender.send_request(request),
+        )
+        .await?
+        .err()
+        .ok_or("closed connection accepted a request")?;
+        assert!(error.is_canceled());
+        let error = Status::from_error(Box::new(error));
+        assert_eq!(error.code(), Code::Cancelled);
+        assert!(retryable(&error), "{error:?}");
+        assert_unary_retry(error, true).await?;
+        assert_unary_retry(Status::cancelled("application cancellation"), false).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn incomplete_response_keeps_the_same_request_retryable()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use tonic::codec::Codec;
+        let mut codec =
+            tonic_prost::ProstCodec::<wire::AppendResponse, wire::AppendResponse>::default();
+        let mut response = tonic::Streaming::new_response(
+            codec.decoder(),
+            tonic::body::Body::empty(),
+            tonic::codegen::http::StatusCode::OK,
+            None,
+            Some(1024),
+        );
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), response.message())
+            .await?
+            .err()
+            .ok_or("missing terminal status must not succeed")?;
+        assert_eq!(error.code(), Code::Unknown);
+        assert!(std::error::Error::source(&error).is_none());
+        assert!(
+            retryable(&error),
+            "incomplete response must preserve the retry identity: {error}"
+        );
+        assert_unary_retry(error, true).await?;
+        assert_unary_retry(Status::unknown("peer outcome unknown"), true).await?;
+        Ok(())
+    }
+
+    async fn assert_unary_retry(
+        error: Status,
+        retry: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let body = wire::AppendRequest {
+            path: "/fixture".to_owned(),
+            records: vec![Bytes::from_static(b"mutation")],
+            if_tail: Some(3),
+            idempotency_key: Some(Bytes::from_static(b"stable-key")),
+        };
+        let mut attempts = Vec::new();
+        let mut first = Some(error);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            client.unary(body.clone(), |_, request| {
+                attempts.push(request.into_inner());
+                let result = first.take().map_or_else(|| Ok(Response::new(())), Err);
+                Box::pin(async move { result })
+            }),
+        )
+        .await?;
+        if retry {
+            assert_eq!(result, Ok(()));
+            assert_eq!(attempts, vec![body.clone(), body]);
+        } else {
+            assert!(result.is_err());
+            assert_eq!(attempts, vec![body]);
+        }
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn persistent_unknown_expires_without_changing_request_identity()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let started = tokio::time::Instant::now();
+        let mut attempts = 0;
+        let result: Result<(), StreamError> = client
+            .unary(Bytes::from_static(b"stable-key-and-body"), |_, request| {
+                assert_eq!(
+                    request.into_inner(),
+                    Bytes::from_static(b"stable-key-and-body")
+                );
+                attempts += 1;
+                Box::pin(async {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    Err(Status::unknown("outcome unavailable"))
+                })
+            })
+            .await;
+        assert_eq!(result, Err(StreamError::Unavailable));
+        assert_eq!(tokio::time::Instant::now() - started, OPERATION_DEADLINE);
+        assert!((2..=100).contains(&attempts));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn remote_request_reset_is_retryable_without_retrying_protocol_errors()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         for reason in [h2::Reason::CANCEL, h2::Reason::PROTOCOL_ERROR] {
@@ -1187,31 +1315,7 @@ mod tests {
             assert!(error.is_remote());
             let error = Status::from_error(Box::new(error));
             assert_eq!(retryable(&error), reason == h2::Reason::CANCEL, "{error:?}");
-            let client = Client::connect("https://fixture.invalid", "fixture").await?;
-            let body = wire::AppendRequest {
-                path: "/fixture".to_owned(),
-                records: vec![Bytes::from_static(b"mutation")],
-                if_tail: Some(3),
-                idempotency_key: Some(Bytes::from_static(b"stable-key")),
-            };
-            let mut attempts = Vec::new();
-            let mut first = Some(error);
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                client.unary(body.clone(), |_, request| {
-                    attempts.push(request.into_inner());
-                    let result = first.take().map_or_else(|| Ok(Response::new(())), Err);
-                    Box::pin(async move { result })
-                }),
-            )
-            .await?;
-            if reason == h2::Reason::CANCEL {
-                assert_eq!(result, Ok(()));
-                assert_eq!(attempts, vec![body.clone(), body]);
-            } else {
-                assert!(result.is_err());
-                assert_eq!(attempts, vec![body]);
-            }
+            assert_unary_retry(error, reason == h2::Reason::CANCEL).await?;
         }
         Ok(())
     }
@@ -1231,7 +1335,6 @@ mod tests {
             assert!(retryable(&error), "{kind:?}");
         }
         for error in [
-            Status::unknown("response body interrupted"),
             Status::internal("protocol error"),
             Status::data_loss("corrupt record"),
             Status::permission_denied("denied"),
