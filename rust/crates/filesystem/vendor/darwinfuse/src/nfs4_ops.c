@@ -1311,23 +1311,33 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
     uint32_t create_bitmap[2] = {0, 0};
     int create_nwords = 0;
 
+    uint32_t createmode = UNCHECKED4;
     if (opentype == OPEN4_CREATE) {
-        uint32_t createmode = xdr_decode_uint32(req);
-        (void)createmode;
-        /* Decode createattrs (bitmap + attr data) */
-        decode_bitmap(req, create_bitmap, &create_nwords);
-        /* Decode attr data */
-        uint8_t create_attr_data[1024];
-        uint32_t cad_len = xdr_decode_opaque(req, create_attr_data, sizeof(create_attr_data));
+        createmode = xdr_decode_uint32(req);
+        if (createmode == EXCLUSIVE4) {
+            /* createhow4 is a union: EXCLUSIVE4 carries an 8-byte
+             * createverf and NO createattrs (RFC 7530 s16.16). Decoding
+             * attrs here misread the verifier as a bitmap and every
+             * O_CREAT|O_EXCL open (mkstemp, git index.lock, editor
+             * atomic saves) failed with EIO. The client sends the mode
+             * in a follow-up SETATTR, so 0644 is only a placeholder. */
+            xdr_decode_uint64(req);
+        } else {
+            /* Decode createattrs (bitmap + attr data) */
+            decode_bitmap(req, create_bitmap, &create_nwords);
+            /* Decode attr data */
+            uint8_t create_attr_data[1024];
+            uint32_t cad_len = xdr_decode_opaque(req, create_attr_data, sizeof(create_attr_data));
 
-        /* Extract mode from create attrs if present */
-        if (bitmap_isset(create_bitmap, create_nwords, FATTR4_MODE)) {
-            xdr_buf_t cad;
-            xdr_init(&cad, create_attr_data, cad_len);
-            /* Must skip any attrs before MODE (bit 33) that are set */
-            if (bitmap_isset(create_bitmap, create_nwords, FATTR4_SIZE))
-                xdr_decode_uint64(&cad);  /* skip size */
-            create_mode = (mode_t)xdr_decode_uint32(&cad);
+            /* Extract mode from create attrs if present */
+            if (bitmap_isset(create_bitmap, create_nwords, FATTR4_MODE)) {
+                xdr_buf_t cad;
+                xdr_init(&cad, create_attr_data, cad_len);
+                /* Must skip any attrs before MODE (bit 33) that are set */
+                if (bitmap_isset(create_bitmap, create_nwords, FATTR4_SIZE))
+                    xdr_decode_uint64(&cad);  /* skip size */
+                create_mode = (mode_t)xdr_decode_uint32(&cad);
+            }
         }
     }
 
@@ -1461,9 +1471,14 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
                     free(target_path);
                     return NFS4_OK;
                 }
-                /* create failed — fall through to try open if EEXIST */
+                /* create failed — fall through to try open if EEXIST,
+                 * but only for UNCHECKED4: GUARDED4 and EXCLUSIVE4 must
+                 * report the existing file, or O_EXCL would silently
+                 * succeed on a file someone else created. */
                 if (rc != -EEXIST)
                     return errno_to_nfs4(rc);
+                if (createmode != UNCHECKED4)
+                    return NFS4ERR_EXIST;
             } else if (config->ops->mknod) {
                 /* Fallback: use mknod + open */
                 int rc = config->ops->mknod(path_buf, S_IFREG | create_mode, 0);
