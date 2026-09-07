@@ -323,6 +323,15 @@ fn retryable(error: &Status) -> bool {
     }
     let mut cause = std::error::Error::source(error);
     while let Some(current) = cause {
+        // Hyper cancels queued dispatch when its connection driver disappears. This is
+        // transport uncertainty, unlike a peer's application-level Cancelled status.
+        if error.code() == Code::Cancelled
+            && current
+                .downcast_ref::<hyper::Error>()
+                .is_some_and(hyper::Error::is_canceled)
+        {
+            return true;
+        }
         if error.code() == Code::Cancelled
             && current.downcast_ref::<h2::Error>().is_some_and(|error| {
                 error.is_remote() && error.reason() == Some(h2::Reason::CANCEL)
@@ -1157,6 +1166,35 @@ mod tests {
     use super::*;
     use crate::MemoryStream;
     use wire::stream_service_server::StreamService;
+
+    #[tokio::test]
+    async fn lost_connection_dispatch_retries_but_peer_cancellation_does_not()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (client_io, _peer) = tokio::io::duplex(4096);
+        let (mut sender, connection) = hyper::client::conn::http2::handshake(
+            hyper_util::rt::TokioExecutor::new(),
+            hyper_util::rt::TokioIo::new(client_io),
+        )
+        .await?;
+        // Losing the driver closes Hyper's dispatch queue, independently of a peer status.
+        // No background task or network listener is needed to reproduce this transport error.
+        drop(connection);
+        let request = tonic::codegen::http::Request::new(tonic::body::Body::empty());
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            sender.send_request(request),
+        )
+        .await?
+        .err()
+        .ok_or("closed connection accepted a request")?;
+        assert!(error.is_canceled());
+        let error = Status::from_error(Box::new(error));
+        assert_eq!(error.code(), Code::Cancelled);
+        assert!(retryable(&error), "{error:?}");
+        assert_unary_retry(error, true).await?;
+        assert_unary_retry(Status::cancelled("application cancellation"), false).await?;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn incomplete_response_keeps_the_same_request_retryable()

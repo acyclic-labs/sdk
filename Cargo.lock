@@ -223,6 +223,8 @@ dependencies = [
  "fs2",
  "futures",
  "h2",
+ "hyper",
+ "hyper-util",
  "libc",
  "prost",
  "protoc-bin-vendored",

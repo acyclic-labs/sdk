@@ -11,7 +11,7 @@ build = "build.rs"
 
 [features]
 default = ["grpc"]
-grpc = ["dep:h2", "dep:tonic", "dep:tonic-prost"]
+grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost"]
 local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
 
 [dependencies]
@@ -19,6 +19,7 @@ async-trait.workspace = true
 bytes.workspace = true
 futures.workspace = true
 h2 = { version = "0.4.19", optional = true }
+hyper = { version = "1.11.0", default-features = false, optional = true }
 fs2 = { workspace = true, optional = true }
 prost.workspace = true
 sha2.workspace = true
@@ -36,6 +37,8 @@ protoc-bin-vendored.workspace = true
 tonic-prost-build.workspace = true
 
 [dev-dependencies]
+hyper = { version = "1.11.0", default-features = false, features = ["client", "http2"] }
+hyper-util.workspace = true
 tempfile = "3.27.0"
 tokio = { version = "1.48.0", features = ["test-util"] }
 
