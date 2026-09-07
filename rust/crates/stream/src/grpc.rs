@@ -313,27 +313,36 @@ fn retryable(error: &Status) -> bool {
     }
     // Tonic reports an interrupted HTTP/2 response body as Unknown. Only
     // locally retained transport causes qualify, never a peer's status text.
-    if error.code() != Code::Unknown {
+    if !matches!(error.code(), Code::Unknown | Code::Cancelled) {
         return false;
     }
     let mut cause = std::error::Error::source(error);
     while let Some(current) = cause {
+        if error.code() == Code::Cancelled
+            && current.downcast_ref::<h2::Error>().is_some_and(|error| {
+                error.is_remote() && error.reason() == Some(h2::Reason::CANCEL)
+            })
+        {
+            return true;
+        }
         let io = current.downcast_ref::<std::io::Error>().or_else(|| {
             current
                 .downcast_ref::<h2::Error>()
                 .and_then(h2::Error::get_io)
         });
-        if io.is_some_and(|error| {
-            matches!(
-                error.kind(),
-                std::io::ErrorKind::UnexpectedEof
-                    | std::io::ErrorKind::ConnectionReset
-                    | std::io::ErrorKind::ConnectionAborted
-                    | std::io::ErrorKind::BrokenPipe
-                    | std::io::ErrorKind::NotConnected
-                    | std::io::ErrorKind::TimedOut
-            )
-        }) {
+        if error.code() == Code::Unknown
+            && io.is_some_and(|error| {
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::UnexpectedEof
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::NotConnected
+                        | std::io::ErrorKind::TimedOut
+                )
+            })
+        {
             return true;
         }
         cause = current.source();
@@ -1143,6 +1152,69 @@ mod tests {
     use super::*;
     use crate::MemoryStream;
     use wire::stream_service_server::StreamService;
+
+    #[tokio::test]
+    async fn remote_request_reset_is_retryable_without_retrying_protocol_errors()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for reason in [h2::Reason::CANCEL, h2::Reason::PROTOCOL_ERROR] {
+            let mut tasks = tokio::task::JoinSet::new();
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                let (client_io, server_io) = tokio::io::duplex(4096);
+                tasks.spawn(async move {
+                    let mut connection = h2::server::handshake(server_io).await?;
+                    let (_, mut response) = connection.accept().await.ok_or("request absent")??;
+                    response.send_reset(reason);
+                    connection.graceful_shutdown();
+                    while connection.accept().await.is_some() {}
+                    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                });
+                let (mut sender, connection) = h2::client::handshake(client_io).await?;
+                tasks.spawn(async move {
+                    connection.await?;
+                    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                });
+                let request = tonic::codegen::http::Request::builder()
+                    .uri("http://fixture.invalid/stream")
+                    .body(())?;
+                let (response, _) = sender.send_request(request, true)?;
+                response.await.err().ok_or_else(|| {
+                    Box::<dyn std::error::Error + Send + Sync>::from("reset response succeeded")
+                })
+            })
+            .await;
+            tasks.shutdown().await;
+            let error = outcome??;
+            assert!(error.is_remote());
+            let error = Status::from_error(Box::new(error));
+            assert_eq!(retryable(&error), reason == h2::Reason::CANCEL, "{error:?}");
+            let client = Client::connect("https://fixture.invalid", "fixture").await?;
+            let body = wire::AppendRequest {
+                path: "/fixture".to_owned(),
+                records: vec![Bytes::from_static(b"mutation")],
+                if_tail: Some(3),
+                idempotency_key: Some(Bytes::from_static(b"stable-key")),
+            };
+            let mut attempts = Vec::new();
+            let mut first = Some(error);
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                client.unary(body.clone(), |_, request| {
+                    attempts.push(request.into_inner());
+                    let result = first.take().map_or_else(|| Ok(Response::new(())), Err);
+                    Box::pin(async move { result })
+                }),
+            )
+            .await?;
+            if reason == h2::Reason::CANCEL {
+                assert_eq!(result, Ok(()));
+                assert_eq!(attempts, vec![body.clone(), body]);
+            } else {
+                assert!(result.is_err());
+                assert_eq!(attempts, vec![body]);
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn retries_transport_loss_but_not_peer_errors_or_corrupt_data() {
