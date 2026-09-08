@@ -42,7 +42,52 @@ if [[ -n "${CARGO_HOME:-}" ]]; then
   wasm_bindgen_bin="$CARGO_HOME/bin/wasm-bindgen"
   [[ "$bun_platform" == "win32" ]] && wasm_bindgen_bin="${wasm_bindgen_bin}.exe"
 fi
-"$rustup_bin" target add wasm32-unknown-unknown
+wasm_target=wasm32-unknown-unknown
+if ! "$rustup_bin" target list --installed | grep -Fqx "$wasm_target"; then
+  rustup_log="$work/rustup-target-add.log"
+  if ! "$rustup_bin" target add "$wasm_target" 2>&1 | tee "$rustup_log"; then
+    grep -Eqi 'detected conflict|could not rename|File exists' "$rustup_log" || exit 1
+    rustc_bin=rustc
+    [[ "$rustup_bin" == *.exe ]] && rustc_bin=rustc.exe
+    sysroot="$("$rustc_bin" --print sysroot | tr -d '\r')"
+    rustup_home="$("$rustup_bin" show home | tr -d '\r')"
+    if [[ "$rustup_bin" == *.exe ]]; then
+      if command -v cygpath >/dev/null 2>&1; then
+        sysroot="$(cygpath -u "$sysroot")"
+        rustup_home="$(cygpath -u "$rustup_home")"
+      elif command -v wslpath >/dev/null 2>&1; then
+        sysroot="$(wslpath -u "$sysroot")"
+        rustup_home="$(wslpath -u "$rustup_home")"
+      else
+        echo 'cannot resolve the Windows Rust sysroot from this shell' >&2
+        exit 1
+      fi
+    fi
+    [[ -d "$sysroot" && -d "$rustup_home" ]] || {
+      echo 'refusing to repair an invalid Rust toolchain' >&2
+      exit 1
+    }
+    sysroot="$(cd "$sysroot" && pwd -P)"
+    rustup_home="$(cd "$rustup_home" && pwd -P)"
+    [[ "$sysroot" == "$rustup_home"/toolchains/* ]] || {
+      echo 'refusing to repair a Rust target outside the rustup toolchain root' >&2
+      exit 1
+    }
+    rustlib="$sysroot/lib/rustlib"
+    [[ -d "$rustlib" && ! -L "$rustlib" && "$rustlib" != / ]] || {
+      echo 'refusing to repair an invalid Rust sysroot' >&2
+      exit 1
+    }
+    rustlib="$(cd "$rustlib" && pwd -P)"
+    target_dir="$rustlib/$wasm_target"
+    [[ "$target_dir" == "$rustlib/$wasm_target" && -d "$target_dir" && ! -L "$target_dir" ]] || {
+      echo 'refusing to repair an unexpected Rust target path' >&2
+      exit 1
+    }
+    rm -rf -- "$target_dir"
+    "$rustup_bin" target add "$wasm_target"
+  fi
+fi
 if [[ "$("$wasm_bindgen_bin" --version 2>/dev/null || true)" != "wasm-bindgen 0.2.117" ]]; then
   "$cargo_bin" install --locked wasm-bindgen-cli --version 0.2.117
 fi
