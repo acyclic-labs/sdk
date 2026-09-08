@@ -3,8 +3,12 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const cargo = process.env.ACYCLIC_CARGO_BIN || "cargo";
-const wasmBindgen = process.env.ACYCLIC_WASM_BINDGEN_BIN || "wasm-bindgen";
+const [outputArgument, cargoArgument, wasmBindgenArgument, ...unexpected] = process.argv.slice(2);
+if (unexpected.length > 0) {
+  throw new Error("usage: build-harness-wasm.mjs [OUTPUT_DIR [CARGO [WASM_BINDGEN]]]");
+}
+const cargo = cargoArgument || process.env.ACYCLIC_CARGO_BIN || "cargo";
+const wasmBindgen = wasmBindgenArgument || process.env.ACYCLIC_WASM_BINDGEN_BIN || "wasm-bindgen";
 const run = (executable, args, options = {}) => {
   const result = spawnSync(executable, args, { cwd: root, stdio: "inherit", ...options });
   if (result.error) throw result.error;
@@ -32,9 +36,12 @@ if (metadata.status !== 0) {
   process.exit(metadata.status ?? 1);
 }
 const targetDirectory = JSON.parse(metadata.stdout).target_directory;
+const outputDirectory = outputArgument || process.env.ACYCLIC_HARNESS_WASM_OUT_DIR
+  ? resolve(outputArgument || process.env.ACYCLIC_HARNESS_WASM_OUT_DIR)
+  : resolve(root, "typescript/packages/harness/generated/wasm");
 run(wasmBindgen, [
   resolve(targetDirectory, "wasm32-unknown-unknown", "wasm-release", "acyclic_harness.wasm"),
   "--target", "web",
-  "--out-dir", resolve(root, "typescript/packages/harness/generated/wasm"),
+  "--out-dir", outputDirectory,
   "--out-name", "acyclic_harness_wasm",
 ]);

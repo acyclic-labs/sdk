@@ -15,14 +15,18 @@ else
 fi
 trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 archive="$work/acyclic-harness.tgz"
+wasm_output="$work/generated-wasm"
 bun_archive="$archive"
 bun_archive_url="$archive"
+bun_wasm_output="$wasm_output"
 if [[ "$bun_platform" == "win32" ]] && command -v cygpath >/dev/null 2>&1; then
   bun_archive="$(cygpath -w "$archive")"
   bun_archive_url="$(cygpath -m "$archive")"
+  bun_wasm_output="$(cygpath -w "$wasm_output")"
 elif [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1; then
   bun_archive="$(wslpath -w "$archive")"
   bun_archive_url="$(wslpath -m "$archive")"
+  bun_wasm_output="$(wslpath -w "$wasm_output")"
 fi
 
 cd "$root"
@@ -42,11 +46,29 @@ fi
 if [[ "$("$wasm_bindgen_bin" --version 2>/dev/null || true)" != "wasm-bindgen 0.2.117" ]]; then
   "$cargo_bin" install --locked wasm-bindgen-cli --version 0.2.117
 fi
-export ACYCLIC_CARGO_BIN="$cargo_bin"
-export ACYCLIC_WASM_BINDGEN_BIN="$wasm_bindgen_bin"
+bun_wasm_bindgen_bin="$wasm_bindgen_bin"
+if [[ "$bun_platform" == "win32" && "$bun_wasm_bindgen_bin" == /* ]]; then
+  if command -v cygpath >/dev/null 2>&1; then
+    bun_wasm_bindgen_bin="$(cygpath -w "$bun_wasm_bindgen_bin")"
+  elif command -v wslpath >/dev/null 2>&1; then
+    bun_wasm_bindgen_bin="$(wslpath -w "$bun_wasm_bindgen_bin")"
+  fi
+fi
 bun scripts/check-metadata.mjs
-bun run --filter '@acyclic/harness' build
-cd typescript/packages/harness
+mkdir -p "$wasm_output"
+bun scripts/build-harness-wasm.mjs "$bun_wasm_output" "$cargo_bin" "$bun_wasm_bindgen_bin"
+bun x tsc -p typescript/packages/harness/tsconfig.json
+for generated in acyclic_harness_wasm.js acyclic_harness_wasm.d.ts \
+  acyclic_harness_wasm_bg.wasm acyclic_harness_wasm_bg.wasm.d.ts; do
+  [[ -s "$wasm_output/$generated" ]] || { echo "missing generated Harness artifact: $generated" >&2; exit 1; }
+done
+npm_stage="$work/npm-package"
+mkdir -p "$npm_stage/generated"
+install -m 0644 typescript/packages/harness/package.json typescript/packages/harness/README.md "$npm_stage/"
+cp -R typescript/packages/harness/dist "$npm_stage/dist"
+cp -R typescript/packages/harness/generated/proto "$npm_stage/generated/proto"
+cp -R "$wasm_output" "$npm_stage/generated/wasm"
+cd "$npm_stage"
 bun pm pack --ignore-scripts --filename "$bun_archive" --quiet
 
 mkdir "$work/consumer"
