@@ -42,7 +42,10 @@ if [[ -n "${CARGO_HOME:-}" ]]; then
   wasm_bindgen_bin="$CARGO_HOME/bin/wasm-bindgen"
   [[ "$bun_platform" == "win32" ]] && wasm_bindgen_bin="${wasm_bindgen_bin}.exe"
 fi
-"$rustup_bin" target add wasm32-unknown-unknown
+wasm_target=wasm32-unknown-unknown
+rustc_bin=rustc
+[[ "$rustup_bin" == *.exe ]] && rustc_bin=rustc.exe
+bash "$root/scripts/ensure-rust-target.sh" "$wasm_target" "$rustup_bin" "$rustc_bin"
 if [[ "$("$wasm_bindgen_bin" --version 2>/dev/null || true)" != "wasm-bindgen 0.2.117" ]]; then
   "$cargo_bin" install --locked wasm-bindgen-cli --version 0.2.117
 fi
