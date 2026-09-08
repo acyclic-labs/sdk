@@ -23,6 +23,28 @@ for (const item of provenance.imports) if (item.auditResult !== "approved") thro
 
 const digest = async path => `sha256:${createHash("sha256").update(await readFile(new URL(path, root))).digest("hex")}`;
 const compatibility = await load("compatibility/manifest.json");
+const harnessVersion = compatibility.families.harness.version;
+const streamVersion = compatibility.families.stream.version;
+const harnessPackage = await load("typescript/packages/harness/package.json");
+const sdkPackage = await load("typescript/packages/sdk/package.json");
+if (harnessPackage.version !== harnessVersion || sdkPackage.dependencies["@acyclic/harness"] !== harnessVersion) {
+  throw new Error("Harness npm and umbrella dependency versions must match compatibility metadata");
+}
+const workspaceManifest = await readFile(new URL("Cargo.toml", root), "utf8");
+const workspaceVersion = workspaceManifest.match(/\[workspace\.package\][\s\S]*?\nversion = "([^"]+)"/)?.[1];
+const harnessManifest = await readFile(new URL("rust/crates/harness/Cargo.toml", root), "utf8");
+const streamManifest = await readFile(new URL("rust/crates/stream/Cargo.toml", root), "utf8");
+const rustStreamVersion = streamManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1];
+const harnessStreamRequirement = harnessManifest.match(/acyclic-stream = \{ version = "([^"]+)"/)?.[1];
+if (
+  workspaceVersion !== harnessVersion || !harnessManifest.includes("version.workspace = true") ||
+  rustStreamVersion !== streamVersion || harnessStreamRequirement !== streamVersion
+) {
+  throw new Error("Harness Rust version or exact Stream dependency does not match compatibility metadata");
+}
+if ((await load("typescript/packages/inference/package.json")).version !== compatibility.families.inference.version) {
+  throw new Error("TypeScript inference package version mismatch");
+}
 const filesystemVersion = compatibility.families.filesystem.version;
 for (const path of [
   "typescript/packages/filesystem/package.json",

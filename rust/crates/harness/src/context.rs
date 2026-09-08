@@ -6,6 +6,279 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+#[cfg(feature = "host")]
+use acyclic_stream::{
+    AppendOutcome, AppendRequest, IdempotencyKey as StreamIdempotencyKey, MAX_RECORD_BYTES,
+    ReadRequest, StreamError, StreamPath, StreamProvider,
+};
+#[cfg(feature = "host")]
+use bytes::Bytes;
+#[cfg(feature = "host")]
+use futures::StreamExt as _;
+
+/// Immutable reference proving which pre-compaction context was summarized.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CompactionReference {
+    /// BLAKE3 digest of the exact serialized source context.
+    pub source_digest: [u8; 32],
+    /// Number of source messages before compaction.
+    pub source_messages: u32,
+    /// Number of model-visible messages retained after compaction.
+    pub retained_messages: u32,
+}
+
+/// One versioned durable context revision.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContextRevision {
+    /// Stable record format version.
+    pub format_version: u32,
+    /// One-based gapless journal revision.
+    pub revision: u64,
+    /// Logical provider role such as `memory`, `retrieval`, or `skills`.
+    pub source: String,
+    /// Exact provider implementation revision.
+    pub source_revision: String,
+    /// Reconstructable context value.
+    pub context: Context,
+    /// Present only when this revision deterministically compacts another context.
+    pub compaction: Option<CompactionReference>,
+}
+
+/// Stream-backed context source shared by memory, retrieval, skills, and compaction stages.
+#[cfg(feature = "host")]
+pub struct DurableContextProvider {
+    provider: Arc<dyn StreamProvider>,
+    path: StreamPath,
+    source: String,
+    source_revision: String,
+    maximum_revisions: u32,
+}
+
+#[cfg(feature = "host")]
+impl DurableContextProvider {
+    /// Creates a bounded durable provider over one permanent Stream path.
+    pub fn new(
+        provider: Arc<dyn StreamProvider>,
+        path: StreamPath,
+        source: impl Into<String>,
+        source_revision: impl Into<String>,
+        maximum_revisions: u32,
+    ) -> Result<Self> {
+        let source = source.into();
+        let source_revision = source_revision.into();
+        if source.trim().is_empty() || source_revision.trim().is_empty() || maximum_revisions == 0 {
+            return Err(crate::Error::Invalid(
+                "durable context source, revision, and bound are required".into(),
+            ));
+        }
+        Ok(Self {
+            provider,
+            path,
+            source,
+            source_revision,
+            maximum_revisions,
+        })
+    }
+
+    /// Appends one immutable context revision with exact retry and tail-CAS semantics.
+    pub async fn append(
+        &self,
+        expected_revision: u64,
+        context: Context,
+        compaction: Option<CompactionReference>,
+        idempotency_key: impl Into<Bytes>,
+    ) -> Result<ContextRevision> {
+        let revision = expected_revision
+            .checked_add(1)
+            .ok_or_else(|| crate::Error::Invalid("context revision exhausted".into()))?;
+        if revision > u64::from(self.maximum_revisions) {
+            return Err(crate::Error::Invalid(
+                "durable context revision bound exceeded".into(),
+            ));
+        }
+        if let Some(reference) = &compaction {
+            let revisions = self.revisions().await?;
+            let source = expected_revision
+                .checked_sub(1)
+                .and_then(|index| revisions.get(index as usize))
+                .ok_or_else(|| {
+                    crate::Error::Invalid(
+                        "compaction must reference the immediately preceding context".into(),
+                    )
+                })?;
+            validate_compaction(reference, &source.context, &context)?;
+        }
+        let record = ContextRevision {
+            format_version: 1,
+            revision,
+            source: self.source.clone(),
+            source_revision: self.source_revision.clone(),
+            context,
+            compaction,
+        };
+        let encoded = serde_json::to_vec(&record)
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        if encoded.len() > MAX_RECORD_BYTES {
+            return Err(crate::Error::Invalid(
+                "durable context record exceeds Stream limit".into(),
+            ));
+        }
+        let key = StreamIdempotencyKey::new(idempotency_key)
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        match self
+            .provider
+            .append(AppendRequest {
+                path: self.path.clone(),
+                records: vec![Bytes::from(encoded)],
+                if_tail: Some(expected_revision),
+                idempotency_key: Some(key),
+            })
+            .await
+            .map_err(|error| crate::Error::Storage(error.to_string()))?
+        {
+            AppendOutcome::Committed(receipt) if receipt.tail == revision => Ok(record),
+            AppendOutcome::Committed(_) => Err(crate::Error::Storage(
+                "context append returned an invalid tail".into(),
+            )),
+            AppendOutcome::TailConflict { actual_tail } => Err(crate::Error::Conflict(format!(
+                "context revision {expected_revision} is stale; actual revision is {actual_tail}"
+            ))),
+        }
+    }
+
+    /// Replays and validates the complete bounded revision history.
+    pub async fn revisions(&self) -> Result<Vec<ContextRevision>> {
+        let tail = match self.provider.tail(self.path.clone()).await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(crate::Error::Storage(error.to_string())),
+        };
+        if tail > u64::from(self.maximum_revisions) {
+            return Err(crate::Error::Storage(
+                "durable context history exceeds configured revision bound".into(),
+            ));
+        }
+        if tail == 0 {
+            return Ok(Vec::new());
+        }
+        let mut stream = self
+            .provider
+            .read(ReadRequest {
+                path: self.path.clone(),
+                from: 0,
+                limit: self.maximum_revisions,
+            })
+            .await
+            .map_err(|error| crate::Error::Storage(error.to_string()))?;
+        let mut revisions: Vec<ContextRevision> = Vec::new();
+        while let Some(record) = stream.next().await {
+            let record = record.map_err(|error| crate::Error::Storage(error.to_string()))?;
+            let revision: ContextRevision = serde_json::from_slice(&record.value)
+                .map_err(|error| crate::Error::Storage(error.to_string()))?;
+            let expected = record.sequence + 1;
+            if revision.format_version != 1
+                || revision.revision != expected
+                || revision.source != self.source
+                || revision.source_revision != self.source_revision
+            {
+                return Err(crate::Error::Storage(
+                    "durable context history failed identity or revision validation".into(),
+                ));
+            }
+            if let Some(reference) = &revision.compaction {
+                let source = revisions.last().ok_or_else(|| {
+                    crate::Error::Storage(
+                        "durable context compaction has no preceding source".into(),
+                    )
+                })?;
+                validate_compaction(reference, &source.context, &revision.context)
+                    .map_err(|error| crate::Error::Storage(error.to_string()))?;
+            }
+            revisions.push(revision);
+        }
+        if revisions.len() as u64 != tail {
+            return Err(crate::Error::Storage(
+                "durable context tail changed during replay".into(),
+            ));
+        }
+        Ok(revisions)
+    }
+
+    /// Returns the latest reconstructed context, or an empty context before the first append.
+    pub async fn latest(&self) -> Result<Context> {
+        Ok(self
+            .revisions()
+            .await?
+            .last()
+            .map(|revision| revision.context.clone())
+            .unwrap_or_default())
+    }
+
+    /// Deterministically compacts a context and returns its immutable source reference.
+    pub fn compact(
+        context: &Context,
+        max_messages: usize,
+        summary: Option<ModelMessage>,
+    ) -> Result<(Context, CompactionReference)> {
+        if max_messages == 0 {
+            return Err(crate::Error::Invalid(
+                "compaction max_messages must be positive".into(),
+            ));
+        }
+        let source = serde_json::to_vec(context)
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let mut compacted = context.clone();
+        if compacted.messages.len() > max_messages {
+            let keep = max_messages.saturating_sub(usize::from(summary.is_some()));
+            let split = compacted.messages.len().saturating_sub(keep);
+            let mut retained = compacted.messages.split_off(split);
+            if let Some(summary) = summary {
+                retained.insert(0, summary);
+            }
+            compacted.messages = retained;
+        }
+        let reference = CompactionReference {
+            source_digest: *blake3::hash(&source).as_bytes(),
+            source_messages: u32::try_from(context.messages.len())
+                .map_err(|_| crate::Error::Invalid("too many context messages".into()))?,
+            retained_messages: u32::try_from(compacted.messages.len())
+                .map_err(|_| crate::Error::Invalid("too many retained messages".into()))?,
+        };
+        Ok((compacted, reference))
+    }
+}
+
+#[cfg(feature = "host")]
+fn validate_compaction(
+    reference: &CompactionReference,
+    source: &Context,
+    compacted: &Context,
+) -> Result<()> {
+    let encoded =
+        serde_json::to_vec(source).map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    let source_messages = u32::try_from(source.messages.len())
+        .map_err(|_| crate::Error::Invalid("too many context messages".into()))?;
+    let retained_messages = u32::try_from(compacted.messages.len())
+        .map_err(|_| crate::Error::Invalid("too many retained messages".into()))?;
+    if reference.source_digest != *blake3::hash(&encoded).as_bytes()
+        || reference.source_messages != source_messages
+        || reference.retained_messages != retained_messages
+        || reference.retained_messages > reference.source_messages
+    {
+        return Err(crate::Error::Invalid(
+            "compaction reference does not bind the source and retained context".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "host")]
+impl ContextSource for DurableContextProvider {
+    fn load<'a>(&'a self, _: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+        Box::pin(async move { Ok(self.latest().await?.messages) })
+    }
+}
+
 /// Replaceable memory/retrieval/skill source used by reusable stock stages.
 pub trait ContextSource: Send + Sync {
     /// Resolves model-visible messages for the current step.
@@ -207,5 +480,107 @@ impl ContextPipeline {
     #[must_use]
     pub fn contracts(&self) -> Vec<Value> {
         self.0.iter().map(|stage| stage.contract()).collect()
+    }
+}
+
+#[cfg(all(test, feature = "host"))]
+mod tests {
+    use super::*;
+    use acyclic_stream::MemoryStream;
+    use serde_json::json;
+
+    fn message(role: &str, text: &str) -> ModelMessage {
+        ModelMessage {
+            role: role.into(),
+            content: json!(text),
+        }
+    }
+
+    #[tokio::test]
+    async fn durable_sources_and_compaction_reopen_exactly() -> Result<()> {
+        let stream = Arc::new(MemoryStream::default());
+        let path = StreamPath::new("runtime/context/memory")
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let provider = DurableContextProvider::new(stream.clone(), path.clone(), "memory", "1", 2)?;
+        assert_eq!(provider.latest().await?, Context::default());
+        let original = Context {
+            messages: vec![
+                message("user", "one"),
+                message("assistant", "two"),
+                message("user", "three"),
+            ],
+            metadata: json!({"source": "test"}),
+        };
+        provider
+            .append(0, original.clone(), None, Bytes::from_static(b"context-1"))
+            .await?;
+        let (compacted, reference) =
+            DurableContextProvider::compact(&original, 2, Some(message("system", "summary")))?;
+        let mut forged = reference.clone();
+        forged.source_digest[0] ^= 1;
+        assert!(
+            provider
+                .append(
+                    1,
+                    compacted.clone(),
+                    Some(forged),
+                    Bytes::from_static(b"forged-context"),
+                )
+                .await
+                .is_err()
+        );
+        provider
+            .append(
+                1,
+                compacted.clone(),
+                Some(reference.clone()),
+                Bytes::from_static(b"context-2"),
+            )
+            .await?;
+        provider
+            .append(
+                1,
+                compacted.clone(),
+                Some(reference.clone()),
+                Bytes::from_static(b"context-2"),
+            )
+            .await?;
+        assert!(
+            provider
+                .append(2, compacted.clone(), None, Bytes::from_static(b"context-3"),)
+                .await
+                .is_err()
+        );
+
+        let reopened = Arc::new(DurableContextProvider::new(
+            stream.clone(),
+            path.clone(),
+            "memory",
+            "1",
+            2,
+        )?);
+        let revisions = reopened.revisions().await?;
+        assert_eq!(revisions.len(), 2);
+        assert_eq!(revisions[1].compaction, Some(reference));
+        assert_eq!(reopened.latest().await?, compacted);
+
+        let pipeline = ContextPipeline::new([Arc::new(SourceStage::new(
+            "memory",
+            "1",
+            reopened,
+            ContextPlacement::Prepend,
+        )) as Arc<dyn ContextStage>]);
+        let assembled = pipeline
+            .run(&ContextInput {
+                input: Value::Null,
+                step: 0,
+                prior_messages: vec![message("user", "current")],
+            })
+            .await?;
+        assert_eq!(assembled.messages.len(), 3);
+        assert_eq!(assembled.messages[2], message("user", "current"));
+        let undersized = DurableContextProvider::new(stream, path, "memory", "1", 1)?;
+        assert!(undersized.latest().await.is_err());
+        Ok(())
     }
 }

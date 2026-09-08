@@ -76,7 +76,7 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
         return Err("valid stdin report did not qualify".into());
     }
     let receipt: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    if receipt["qualified"] != true || receipt["total"] != 17 {
+    if receipt["qualified"] != true || receipt["total"] != 23 {
         return Err("successful CLI receipt is incomplete".into());
     }
 
@@ -97,7 +97,7 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
         return Err("failed case returned a successful process status".into());
     }
     let receipt: serde_json::Value = serde_json::from_slice(&failed_output.stdout)?;
-    if receipt["qualified"] != false || receipt["passed"] != 16 {
+    if receipt["qualified"] != false || receipt["passed"] != 22 {
         return Err("failed CLI receipt did not preserve the result".into());
     }
     Ok(())

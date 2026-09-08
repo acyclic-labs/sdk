@@ -445,8 +445,8 @@ mod tests {
         let bytes = encode(&report());
         let receipt = validate_harness_report(&bytes)?;
         assert!(receipt.qualified);
-        assert_eq!(receipt.passed, 17);
-        assert_eq!(receipt.total, 17);
+        assert_eq!(receipt.passed, 23);
+        assert_eq!(receipt.total, 23);
         assert_eq!(receipt.report_digest, digest(&bytes));
         Ok(())
     }

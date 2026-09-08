@@ -2,8 +2,11 @@
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
-    let proto = "../../../proto/harness/v1/harness.proto";
-    let include = "../../../proto";
+    // This checked mirror is generated from the repository's canonical schema.
+    // Keeping the build input inside the crate makes crates.io archives
+    // independently buildable instead of depending on the monorepo layout.
+    let proto = "proto/harness/v1/harness.proto";
+    let include = "proto";
     println!("cargo:rerun-if-changed={proto}");
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc);

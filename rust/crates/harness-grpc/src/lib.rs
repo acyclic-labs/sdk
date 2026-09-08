@@ -4,7 +4,9 @@
 use acyclic_harness::{
     Error, wire,
     wire_api::{
-        HarnessWireApi, validate_admission, validate_command_protocol, validate_resume_protocol,
+        HarnessWireApi, validate_admission, validate_cancel_request, validate_cancel_response,
+        validate_command_protocol, validate_observe_request, validate_operation_status,
+        validate_resume_protocol,
     },
 };
 use futures::{StreamExt as _, stream::BoxStream};
@@ -76,6 +78,36 @@ impl transport::harness_service_server::HarnessService for HarnessGrpcService {
             .map(|item| item.map_err(status));
         Ok(Response::new(Box::pin(stream)))
     }
+
+    async fn observe(
+        &self,
+        request: Request<wire::ObserveRequest>,
+    ) -> Result<Response<wire::OperationStatus>, Status> {
+        let control = validate_observe_request(request.get_ref()).map_err(status)?;
+        self.api
+            .authorize_operation_control(&control)
+            .await
+            .map_err(status)?;
+        let request = request.into_inner();
+        let response = self.api.observe(request.clone()).await.map_err(status)?;
+        validate_operation_status(&request, &response).map_err(status)?;
+        Ok(Response::new(response))
+    }
+
+    async fn cancel(
+        &self,
+        request: Request<wire::CancelRequest>,
+    ) -> Result<Response<wire::CancelResponse>, Status> {
+        let (control, _, _) = validate_cancel_request(request.get_ref()).map_err(status)?;
+        self.api
+            .authorize_operation_control(&control)
+            .await
+            .map_err(status)?;
+        let request = request.into_inner();
+        let response = self.api.cancel(request.clone()).await.map_err(status)?;
+        validate_cancel_response(&request, &response).map_err(status)?;
+        Ok(Response::new(response))
+    }
 }
 
 fn status(error: Error) -> Status {
@@ -104,6 +136,13 @@ mod tests {
     struct FakeApi;
 
     impl HarnessWireApi for FakeApi {
+        fn authorize_operation_control<'a>(
+            &'a self,
+            _: &'a acyclic_harness::wire_api::OperationControlRequest,
+        ) -> futures::future::BoxFuture<'a, Result<()>> {
+            async { Ok(()) }.boxed()
+        }
+
         fn handshake<'a>(
             &'a self,
             request: wire::HandshakeRequest,
@@ -146,6 +185,57 @@ mod tests {
             }
             .boxed()
         }
+
+        fn observe<'a>(
+            &'a self,
+            request: wire::ObserveRequest,
+        ) -> futures::future::BoxFuture<'a, Result<wire::OperationStatus>> {
+            async move {
+                Ok(wire::OperationStatus {
+                    operation: Some(wire::OperationIdentity {
+                        operation_id: request.operation_id,
+                        idempotency_key: String::new(),
+                    }),
+                    state: wire::CompletionState::Running as i32,
+                    error: None,
+                    protocol: request.protocol,
+                    owner: request.owner,
+                    cancellation_requested: false,
+                    revision: 1,
+                })
+            }
+            .boxed()
+        }
+
+        fn cancel<'a>(
+            &'a self,
+            request: wire::CancelRequest,
+        ) -> futures::future::BoxFuture<'a, Result<wire::CancelResponse>> {
+            async move {
+                let operation = Some(wire::OperationIdentity {
+                    operation_id: request.operation_id,
+                    idempotency_key: request.idempotency_key,
+                });
+                Ok(wire::CancelResponse {
+                    status: Some(wire::OperationStatus {
+                        operation: Some(wire::OperationIdentity {
+                            operation_id: operation
+                                .as_ref()
+                                .map_or_else(String::new, |value| value.operation_id.clone()),
+                            idempotency_key: String::new(),
+                        }),
+                        state: wire::CompletionState::Cancelled as i32,
+                        error: None,
+                        protocol: request.protocol,
+                        owner: request.owner,
+                        cancellation_requested: false,
+                        revision: 2,
+                    }),
+                    operation,
+                })
+            }
+            .boxed()
+        }
     }
 
     #[tokio::test]
@@ -176,6 +266,51 @@ mod tests {
             .ok_or_else(|| Error::Storage("missing delivery".into()))?
             .map_err(|error| Error::Storage(error.to_string()))?;
         assert!(replay.live);
+
+        let operation_id = acyclic_harness::OperationId::from_bytes([12; 16]).to_string();
+        let owner = wire::Authority {
+            kind: wire::AggregateKind::Task as i32,
+            id: "owner".into(),
+        };
+        let scope = wire::Scope {
+            id: "control".into(),
+            capabilities: vec!["operation:observe".into(), "operation:cancel".into()],
+            issuer: "runtime".into(),
+            parent_proof: Vec::new(),
+            proof: vec![1; 32],
+        };
+        let observed = service
+            .observe(Request::new(wire::ObserveRequest {
+                protocol: Some(current_protocol()),
+                owner: Some(owner.clone()),
+                operation_id: operation_id.clone(),
+                scope: Some(scope.clone()),
+            }))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .into_inner();
+        assert_eq!(
+            observed.operation.map(|value| value.operation_id),
+            Some(operation_id.clone())
+        );
+
+        let operation = wire::OperationIdentity {
+            operation_id: operation_id.clone(),
+            idempotency_key: "cancel-1".into(),
+        };
+        let cancelled = service
+            .cancel(Request::new(wire::CancelRequest {
+                operation_id,
+                protocol: Some(current_protocol()),
+                owner: Some(owner),
+                scope: Some(scope),
+                recursive: true,
+                idempotency_key: operation.idempotency_key.clone(),
+            }))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .into_inner();
+        assert_eq!(cancelled.operation, Some(operation));
         Ok(())
     }
 }

@@ -19,5 +19,5 @@
     "test": "bun run build && bun test test"
   },
   "dependencies": { "@bufbuild/protobuf": "2.14.1" },
-  "devDependencies": { "@types/bun": "1.4.0", "typescript": "7.0.2" }
+  "devDependencies": { "@types/bun": "1.4.0", "fake-indexeddb": "6.2.4", "typescript": "7.0.2" }
 }

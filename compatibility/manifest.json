@@ -5,13 +5,13 @@
   "families": {
     "harness": {
       "version": "0.1.0-rc.1",
-      "schemaDigest": "sha256:860a235bda4573f89388b7fbdf61315a246db47e4309af0831b8dffbd19703df",
-      "conformanceDigest": "sha256:6b4da21ba1d0d6fcce1408ed08a5817f750ebc8697bf585ba31414dfd8ab1d4b"
+      "schemaDigest": "sha256:fbdb2ccaf9a7fdf64d5959f4b01d471bf23524ddf6cb5355aac6741d6be9a8b3",
+      "conformanceDigest": "sha256:aa8c338e694ba2e9d31beec258a64fe12358d78981eaf08143c7909e2ce2220d"
     },
     "filesystem": {
       "version": "0.2.0-rc.1",
       "schemaDigest": "sha256:c7806fb6fbef07e47e157fdd3ef18dc17883c266e2a8eecd52a723ee05d810b0",
-      "descriptorDigest": "sha256:3698c885fd0f424ebf08344c70e8bcc96b54ffcdfe1b9b70854a0976be50ebef",
+      "descriptorDigest": "sha256:e3c64a6af662d64c1c77bf5432e80fa75a9de86ecc47654841cdb7a0dbf7aba1",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {

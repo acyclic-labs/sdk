@@ -5,7 +5,9 @@ use acyclic_harness::{
     Error,
     wire::{self, client_frame, server_frame},
     wire_api::{
-        HarnessWireApi, validate_admission, validate_command_protocol, validate_resume_protocol,
+        HarnessWireApi, validate_admission, validate_cancel_request, validate_cancel_response,
+        validate_command_protocol, validate_observe_request, validate_operation_status,
+        validate_resume_protocol,
     },
 };
 use axum::{
@@ -51,6 +53,8 @@ pub fn router(api: Arc<dyn HarnessWireApi>, maximum_frame_bytes: usize) -> Route
         .route("/v1/harness/handshake", post(handshake))
         .route("/v1/harness/commands", post(submit))
         .route("/v1/harness/replay", post(replay))
+        .route("/v1/harness/operations/observe", post(observe))
+        .route("/v1/harness/operations/cancel", post(cancel))
         .route("/v1/harness/ws", get(websocket))
         .with_state(state)
 }
@@ -135,6 +139,56 @@ async fn replay(State(state): State<AppState>, body: Bytes) -> Response {
         HeaderValue::from_static("text/event-stream"),
     );
     response
+}
+
+async fn observe(State(state): State<AppState>, body: Bytes) -> Response {
+    let request = match decode_json::<wire::ObserveRequest>(
+        "acyclic.harness.v1.ObserveRequest",
+        &body,
+        state.maximum_frame_bytes,
+    ) {
+        Ok(value) => value,
+        Err(error) => return wire_error_response(error),
+    };
+    let control = match validate_observe_request(&request) {
+        Ok(value) => value,
+        Err(error) => return wire_error_response(error),
+    };
+    if let Err(error) = state.api.authorize_operation_control(&control).await {
+        return wire_error_response(error);
+    }
+    match state.api.observe(request.clone()).await {
+        Ok(status) => match validate_operation_status(&request, &status) {
+            Ok(()) => message_response("acyclic.harness.v1.OperationStatus", &status),
+            Err(error) => wire_error_response(error),
+        },
+        Err(error) => wire_error_response(error),
+    }
+}
+
+async fn cancel(State(state): State<AppState>, body: Bytes) -> Response {
+    let request = match decode_json::<wire::CancelRequest>(
+        "acyclic.harness.v1.CancelRequest",
+        &body,
+        state.maximum_frame_bytes,
+    ) {
+        Ok(value) => value,
+        Err(error) => return wire_error_response(error),
+    };
+    let (control, _, _) = match validate_cancel_request(&request) {
+        Ok(value) => value,
+        Err(error) => return wire_error_response(error),
+    };
+    if let Err(error) = state.api.authorize_operation_control(&control).await {
+        return wire_error_response(error);
+    }
+    match state.api.cancel(request.clone()).await {
+        Ok(response) => match validate_cancel_response(&request, &response) {
+            Ok(()) => message_response("acyclic.harness.v1.CancelResponse", &response),
+            Err(error) => wire_error_response(error),
+        },
+        Err(error) => wire_error_response(error),
+    }
 }
 
 async fn websocket(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> impl IntoResponse {
@@ -283,6 +337,81 @@ async fn websocket_session(state: AppState, mut socket: WebSocket) {
                     }
                 }));
             }
+            Some(client_frame::Frame::Observe(request)) => {
+                let frame = match validate_observe_request(&request) {
+                    Ok(control) => match state.api.authorize_operation_control(&control).await {
+                        Ok(()) => match state.api.observe(request.clone()).await {
+                            Ok(status) if validate_operation_status(&request, &status).is_ok() => {
+                                server_frame::Frame::Status(status)
+                            }
+                            Ok(_) => server_frame::Frame::Error(control_error(
+                                &Error::Conflict("operation status identity mismatch".into()),
+                                &request.operation_id,
+                            )),
+                            Err(error) => server_frame::Frame::Error(control_error(
+                                &error,
+                                &request.operation_id,
+                            )),
+                        },
+                        Err(error) => {
+                            server_frame::Frame::Error(control_error(&error, &request.operation_id))
+                        }
+                    },
+                    Err(error) => {
+                        server_frame::Frame::Error(control_error(&error, &request.operation_id))
+                    }
+                };
+                if tx
+                    .send(Outbound {
+                        replay_epoch: None,
+                        frame: wire::ServerFrame { frame: Some(frame) },
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Some(client_frame::Frame::Cancel(request)) => {
+                let frame = match validate_cancel_request(&request) {
+                    Ok((control, _, _)) => {
+                        match state.api.authorize_operation_control(&control).await {
+                            Ok(()) => match state.api.cancel(request.clone()).await {
+                                Ok(response)
+                                    if validate_cancel_response(&request, &response).is_ok() =>
+                                {
+                                    server_frame::Frame::Cancellation(response)
+                                }
+                                Ok(_) => server_frame::Frame::Error(control_error(
+                                    &Error::Conflict("cancellation identity mismatch".into()),
+                                    &request.operation_id,
+                                )),
+                                Err(error) => server_frame::Frame::Error(control_error(
+                                    &error,
+                                    &request.operation_id,
+                                )),
+                            },
+                            Err(error) => server_frame::Frame::Error(control_error(
+                                &error,
+                                &request.operation_id,
+                            )),
+                        }
+                    }
+                    Err(error) => {
+                        server_frame::Frame::Error(control_error(&error, &request.operation_id))
+                    }
+                };
+                if tx
+                    .send(Outbound {
+                        replay_epoch: None,
+                        frame: wire::ServerFrame { frame: Some(frame) },
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
             Some(client_frame::Frame::Acknowledge(_)) => {}
             Some(client_frame::Frame::Handshake(_)) | None => break,
         }
@@ -309,6 +438,12 @@ fn admission_from_error(
         state: state as i32,
         error: Some(acyclic_harness::encode_error(&error)),
     }
+}
+
+fn control_error(error: &Error, operation_id: &str) -> wire::Error {
+    let mut encoded = acyclic_harness::encode_error(error);
+    encoded.operation_id = operation_id.into();
+    encoded
 }
 
 fn decode_ws(message: &Message, maximum: usize) -> Result<wire::ClientFrame, Error> {
@@ -376,15 +511,30 @@ fn message_response<M: prost::Message>(name: &str, message: &M) -> Response {
 }
 
 fn error_response(error: Error) -> Response {
-    let status = match error {
+    let status = error_status(&error);
+    (status, error.to_string()).into_response()
+}
+
+fn wire_error_response(error: Error) -> Response {
+    let status = error_status(&error);
+    match encode_json(
+        "acyclic.harness.v1.Error",
+        &acyclic_harness::encode_error(&error),
+    ) {
+        Ok(body) => (status, [(header::CONTENT_TYPE, "application/json")], body).into_response(),
+        Err(encoding) => error_response(encoding),
+    }
+}
+
+fn error_status(error: &Error) -> StatusCode {
+    match error {
         Error::Invalid(_) => StatusCode::BAD_REQUEST,
         Error::Unauthorized(_) => StatusCode::FORBIDDEN,
         Error::NotFound(_) => StatusCode::NOT_FOUND,
         Error::Unsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
         Error::Conflict(_) => StatusCode::CONFLICT,
         Error::Storage(_) | Error::Indeterminate(_) => StatusCode::SERVICE_UNAVAILABLE,
-    };
-    (status, error.to_string()).into_response()
+    }
 }
 
 #[cfg(test)]
@@ -397,9 +547,26 @@ mod tests {
     use futures::{FutureExt as _, stream};
     use tower::ServiceExt as _;
 
-    struct FakeApi;
+    #[derive(Default)]
+    struct FakeApi {
+        deny_control: bool,
+    }
 
     impl HarnessWireApi for FakeApi {
+        fn authorize_operation_control<'a>(
+            &'a self,
+            _: &'a acyclic_harness::wire_api::OperationControlRequest,
+        ) -> futures::future::BoxFuture<'a, Result<()>> {
+            async move {
+                if self.deny_control {
+                    Err(Error::Unauthorized("scope proof is invalid".into()))
+                } else {
+                    Ok(())
+                }
+            }
+            .boxed()
+        }
+
         fn handshake<'a>(
             &'a self,
             request: wire::HandshakeRequest,
@@ -441,11 +608,62 @@ mod tests {
             }
             .boxed()
         }
+
+        fn observe<'a>(
+            &'a self,
+            request: wire::ObserveRequest,
+        ) -> futures::future::BoxFuture<'a, Result<wire::OperationStatus>> {
+            async move {
+                Ok(wire::OperationStatus {
+                    operation: Some(wire::OperationIdentity {
+                        operation_id: request.operation_id,
+                        idempotency_key: String::new(),
+                    }),
+                    state: wire::CompletionState::Running as i32,
+                    error: None,
+                    protocol: request.protocol,
+                    owner: request.owner,
+                    cancellation_requested: false,
+                    revision: 1,
+                })
+            }
+            .boxed()
+        }
+
+        fn cancel<'a>(
+            &'a self,
+            request: wire::CancelRequest,
+        ) -> futures::future::BoxFuture<'a, Result<wire::CancelResponse>> {
+            async move {
+                let operation = Some(wire::OperationIdentity {
+                    operation_id: request.operation_id,
+                    idempotency_key: request.idempotency_key,
+                });
+                Ok(wire::CancelResponse {
+                    status: Some(wire::OperationStatus {
+                        operation: Some(wire::OperationIdentity {
+                            operation_id: operation
+                                .as_ref()
+                                .map_or_else(String::new, |value| value.operation_id.clone()),
+                            idempotency_key: String::new(),
+                        }),
+                        state: wire::CompletionState::Cancelled as i32,
+                        error: None,
+                        protocol: request.protocol,
+                        owner: request.owner,
+                        cancellation_requested: false,
+                        revision: 2,
+                    }),
+                    operation,
+                })
+            }
+            .boxed()
+        }
     }
 
     #[tokio::test]
     async fn http_routes_share_protocol_json_and_sse_framing() -> Result<()> {
-        let app = router(Arc::new(FakeApi), DEFAULT_MAX_FRAME_BYTES);
+        let app = router(Arc::new(FakeApi::default()), DEFAULT_MAX_FRAME_BYTES);
         let request = wire::HandshakeRequest {
             protocol: Some(current_protocol()),
             required: Some(wire::CapabilitySet::default()),
@@ -499,8 +717,124 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn http_operation_control_routes_preserve_identity() -> Result<()> {
+        let app = router(Arc::new(FakeApi::default()), DEFAULT_MAX_FRAME_BYTES);
+        let operation_id = crate_operation_id();
+        let owner = wire::Authority {
+            kind: wire::AggregateKind::Task as i32,
+            id: "owner".into(),
+        };
+        let scope = wire::Scope {
+            id: "control".into(),
+            capabilities: vec!["operation:observe".into(), "operation:cancel".into()],
+            issuer: "runtime".into(),
+            parent_proof: Vec::new(),
+            proof: vec![1; 32],
+        };
+        let observe = wire::ObserveRequest {
+            protocol: Some(current_protocol()),
+            owner: Some(owner.clone()),
+            operation_id: operation_id.clone(),
+            scope: Some(scope.clone()),
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/v1/harness/operations/observe")
+                    .body(Body::from(encode_json(
+                        "acyclic.harness.v1.ObserveRequest",
+                        &observe,
+                    )?))
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            )
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let operation = wire::OperationIdentity {
+            operation_id: operation_id.clone(),
+            idempotency_key: "cancel-1".into(),
+        };
+        let cancel = wire::CancelRequest {
+            operation_id,
+            protocol: Some(current_protocol()),
+            owner: Some(owner),
+            scope: Some(scope),
+            recursive: true,
+            idempotency_key: operation.idempotency_key.clone(),
+        };
+        let response = app
+            .oneshot(
+                axum::http::Request::post("/v1/harness/operations/cancel")
+                    .body(Body::from(encode_json(
+                        "acyclic.harness.v1.CancelRequest",
+                        &cancel,
+                    )?))
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            )
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), DEFAULT_MAX_FRAME_BYTES)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let decoded: wire::CancelResponse = decode_json(
+            "acyclic.harness.v1.CancelResponse",
+            &body,
+            DEFAULT_MAX_FRAME_BYTES,
+        )?;
+        assert_eq!(decoded.operation, Some(operation));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn http_operation_control_requires_the_api_authorizer() -> Result<()> {
+        let request = wire::ObserveRequest {
+            operation_id: crate_operation_id(),
+            protocol: Some(current_protocol()),
+            owner: Some(wire::Authority {
+                kind: wire::AggregateKind::Task as i32,
+                id: "owner".into(),
+            }),
+            scope: Some(wire::Scope {
+                id: "control".into(),
+                capabilities: vec!["operation:observe".into()],
+                issuer: "runtime".into(),
+                parent_proof: Vec::new(),
+                proof: vec![1; 32],
+            }),
+        };
+        let response = router(
+            Arc::new(FakeApi { deny_control: true }),
+            DEFAULT_MAX_FRAME_BYTES,
+        )
+        .oneshot(
+            axum::http::Request::post("/v1/harness/operations/observe")
+                .body(Body::from(encode_json(
+                    "acyclic.harness.v1.ObserveRequest",
+                    &request,
+                )?))
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        )
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), DEFAULT_MAX_FRAME_BYTES)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let error: wire::Error =
+            decode_json("acyclic.harness.v1.Error", &body, DEFAULT_MAX_FRAME_BYTES)?;
+        assert_eq!(error.code, wire::ErrorCode::Unauthorized as i32);
+        Ok(())
+    }
+
+    fn crate_operation_id() -> String {
+        acyclic_harness::OperationId::from_bytes([11; 16]).to_string()
+    }
+
+    #[tokio::test]
     async fn oversized_frames_fail_before_the_api() -> Result<()> {
-        let response = router(Arc::new(FakeApi), 2)
+        let response = router(Arc::new(FakeApi::default()), 2)
             .oneshot(
                 axum::http::Request::post("/v1/harness/handshake")
                     .body(Body::from("{}\n"))

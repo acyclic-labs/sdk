@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $# == 1 && "$1" == /* ]] || { echo 'usage: check-harness-package.sh ABSOLUTE_OUTPUT' >&2; exit 2; }
+output="$1"
+[[ ! -e "$output" && ! -L "$output" ]] || { echo 'package output must be absent' >&2; exit 2; }
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
+  windows_temp="$(cmd.exe /d /c echo %TEMP% | tr -d '\r')"
+  work_parent="$(wslpath -u "$windows_temp")"
+  work="$(mktemp -d "$work_parent/sdk-harness-package.XXXXXXXX")"
+else
+  work="$(mktemp -d -t sdk-harness-package.XXXXXXXX)"
+fi
+trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
+archive="$work/acyclic-harness.tgz"
+bun_archive="$archive"
+bun_archive_url="$archive"
+if command -v cygpath >/dev/null 2>&1; then
+  bun_archive="$(cygpath -w "$archive")"
+  bun_archive_url="$(cygpath -m "$archive")"
+elif command -v wslpath >/dev/null 2>&1; then
+  bun_archive="$(wslpath -w "$archive")"
+  bun_archive_url="$(wslpath -m "$archive")"
+fi
+
+cd "$root"
+bun scripts/check-metadata.mjs
+bun run --filter '@acyclic/harness' build
+cd typescript/packages/harness
+bun pm pack --ignore-scripts --filename "$bun_archive" --quiet
+
+mkdir "$work/consumer"
+cat >"$work/consumer/package.json" <<EOF
+{"private":true,"type":"module","dependencies":{"@acyclic/harness":"file:$bun_archive_url","@bufbuild/protobuf":"2.14.1","fake-indexeddb":"6.2.4"}}
+EOF
+cd "$work/consumer"
+bun install --ignore-scripts
+mkdir -p src test generated/wasm
+install -m 0644 "$root/scripts/fixtures/installed-harness/src/index.js" src/index.js
+install -m 0644 "$root/scripts/fixtures/installed-harness/src/proto.js" src/proto.js
+install -m 0644 "$root/scripts/fixtures/installed-harness/test/"*.test.ts test/
+install -m 0644 "$root/typescript/packages/harness/test/"*.test.ts test/
+install -m 0644 "$root/conformance/vectors/harness/native-wasm-event-v1.json" native-wasm-event-v1.json
+install -m 0644 node_modules/@acyclic/harness/generated/wasm/acyclic_harness_wasm_bg.wasm \
+  generated/wasm/acyclic_harness_wasm_bg.wasm
+bun test test 2>&1 | tee "$work/typescript-package-test.log"
+
+cd "$root"
+# Stage the exact public dependency closure. Harness cannot be registry-verified
+# until Stream is published, so test the extracted archives together and keep the
+# release order explicit.
+cargo_bin="cargo"
+if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
+  cargo_bin="cargo.exe"
+fi
+"$cargo_bin" package --locked --no-verify --allow-dirty -p acyclic-stream -p acyclic-harness
+metadata="$("$cargo_bin" metadata --locked --no-deps --format-version 1)"
+stream_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-stream").version)')"
+harness_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-harness").version)')"
+stream_crate="$root/target/package/acyclic-stream-$stream_version.crate"
+harness_crate="$root/target/package/acyclic-harness-$harness_version.crate"
+
+mkdir "$work/crates"
+tar -xf "$stream_crate" -C "$work/crates"
+tar -xf "$harness_crate" -C "$work/crates"
+mkdir -p "$work/crates/.cargo"
+stream_patch_path="$work/crates/acyclic-stream-$stream_version"
+if [[ "$cargo_bin" == "cargo.exe" ]]; then
+  stream_patch_path="$(wslpath -m "$stream_patch_path")"
+fi
+cat >"$work/crates/.cargo/config.toml" <<EOF
+[patch.crates-io]
+acyclic-stream = { path = "$stream_patch_path" }
+EOF
+cd "$work/crates"
+"$cargo_bin" test --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
+  -- --test-threads=1 2>&1 | tee "$work/rust-package-test.log"
+
+mkdir -p "$output"
+install -m 0644 "$archive" "$output/"
+install -m 0644 "$stream_crate" "$harness_crate" "$output/"
+cmp --silent "$archive" "$output/acyclic-harness.tgz"
+cmp --silent "$stream_crate" "$output/acyclic-stream-$stream_version.crate"
+cmp --silent "$harness_crate" "$output/acyclic-harness-$harness_version.crate"
+normalizer="$root/scripts/normalize-harness-evidence.mjs"
+rust_log="$work/rust-package-test.log"
+typescript_log="$work/typescript-package-test.log"
+evidence_output="$output/CONFORMANCE-EVIDENCE.json"
+evidence_artifacts=(
+  "$output/acyclic-harness.tgz"
+  "$output/acyclic-stream-$stream_version.crate"
+  "$output/acyclic-harness-$harness_version.crate"
+)
+if command -v wslpath >/dev/null 2>&1; then
+  normalizer="$(wslpath -w "$normalizer")"
+  rust_log="$(wslpath -w "$rust_log")"
+  typescript_log="$(wslpath -w "$typescript_log")"
+  evidence_output="$(wslpath -w "$evidence_output")"
+  for index in "${!evidence_artifacts[@]}"; do
+    evidence_artifacts[$index]="$(wslpath -w "${evidence_artifacts[$index]}")"
+  done
+fi
+bun "$normalizer" "$rust_log" "$typescript_log" "$evidence_output" "${evidence_artifacts[@]}"
+repeat_evidence="$work/CONFORMANCE-EVIDENCE.repeat.json"
+if command -v wslpath >/dev/null 2>&1; then
+  repeat_evidence="$(wslpath -w "$repeat_evidence")"
+fi
+bun "$normalizer" "$rust_log" "$typescript_log" "$repeat_evidence" "${evidence_artifacts[@]}"
+if command -v wslpath >/dev/null 2>&1; then
+  repeat_evidence="$(wslpath -u "$repeat_evidence")"
+fi
+cmp --silent "$output/CONFORMANCE-EVIDENCE.json" "$repeat_evidence"
+cd "$output"
+sha256sum acyclic-harness.tgz acyclic-*.crate CONFORMANCE-EVIDENCE.json > SHA256SUMS

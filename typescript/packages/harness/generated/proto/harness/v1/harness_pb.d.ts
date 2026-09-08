@@ -11,7 +11,7 @@ import type { Message } from "@bufbuild/protobuf";
 export declare const file_harness_v1_harness: GenFile;
 
 /**
- * Shared draft contract types. These become stable only in a tagged release.
+ * Stable v1 contract types. Compatibility is bound to ProtocolIdentity.
  *
  * @generated from message acyclic.harness.v1.OperationIdentity
  */
@@ -203,6 +203,26 @@ export declare type OperationStatus = Message<"acyclic.harness.v1.OperationStatu
    * @generated from field: acyclic.harness.v1.Error error = 3;
    */
   error?: Error | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v1.ProtocolIdentity protocol = 4;
+   */
+  protocol?: ProtocolIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v1.Authority owner = 5;
+   */
+  owner?: Authority | undefined;
+
+  /**
+   * @generated from field: bool cancellation_requested = 6;
+   */
+  cancellationRequested: boolean;
+
+  /**
+   * @generated from field: uint64 revision = 7;
+   */
+  revision: bigint;
 };
 
 /**
@@ -219,6 +239,21 @@ export declare type ObserveRequest = Message<"acyclic.harness.v1.ObserveRequest"
    * @generated from field: string operation_id = 1;
    */
   operationId: string;
+
+  /**
+   * @generated from field: acyclic.harness.v1.ProtocolIdentity protocol = 2;
+   */
+  protocol?: ProtocolIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v1.Authority owner = 3;
+   */
+  owner?: Authority | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v1.Scope scope = 4;
+   */
+  scope?: Scope | undefined;
 };
 
 /**
@@ -235,6 +270,31 @@ export declare type CancelRequest = Message<"acyclic.harness.v1.CancelRequest"> 
    * @generated from field: string operation_id = 1;
    */
   operationId: string;
+
+  /**
+   * @generated from field: acyclic.harness.v1.ProtocolIdentity protocol = 2;
+   */
+  protocol?: ProtocolIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v1.Authority owner = 3;
+   */
+  owner?: Authority | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v1.Scope scope = 4;
+   */
+  scope?: Scope | undefined;
+
+  /**
+   * @generated from field: bool recursive = 5;
+   */
+  recursive: boolean;
+
+  /**
+   * @generated from field: string idempotency_key = 6;
+   */
+  idempotencyKey: string;
 };
 
 /**
@@ -251,6 +311,11 @@ export declare type CancelResponse = Message<"acyclic.harness.v1.CancelResponse"
    * @generated from field: acyclic.harness.v1.OperationStatus status = 1;
    */
   status?: OperationStatus | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v1.OperationIdentity operation = 2;
+   */
+  operation?: OperationIdentity | undefined;
 };
 
 /**
@@ -690,6 +755,18 @@ export declare type ClientFrame = Message<"acyclic.harness.v1.ClientFrame"> & {
      */
     value: HandshakeRequest;
     case: "handshake";
+  } | {
+    /**
+     * @generated from field: acyclic.harness.v1.ObserveRequest observe = 5;
+     */
+    value: ObserveRequest;
+    case: "observe";
+  } | {
+    /**
+     * @generated from field: acyclic.harness.v1.CancelRequest cancel = 6;
+     */
+    value: CancelRequest;
+    case: "cancel";
   } | { case: undefined; value?: undefined };
 };
 
@@ -730,6 +807,18 @@ export declare type ServerFrame = Message<"acyclic.harness.v1.ServerFrame"> & {
      */
     value: HandshakeResponse;
     case: "handshake";
+  } | {
+    /**
+     * @generated from field: acyclic.harness.v1.OperationStatus status = 5;
+     */
+    value: OperationStatus;
+    case: "status";
+  } | {
+    /**
+     * @generated from field: acyclic.harness.v1.CancelResponse cancellation = 6;
+     */
+    value: CancelResponse;
+    case: "cancellation";
   } | { case: undefined; value?: undefined };
 };
 
@@ -996,6 +1085,22 @@ export declare const HarnessService: GenService<{
     methodKind: "server_streaming";
     input: typeof ResumeRequestSchema;
     output: typeof DeliverySchema;
+  },
+  /**
+   * @generated from rpc acyclic.harness.v1.HarnessService.Observe
+   */
+  observe: {
+    methodKind: "unary";
+    input: typeof ObserveRequestSchema;
+    output: typeof OperationStatusSchema;
+  },
+  /**
+   * @generated from rpc acyclic.harness.v1.HarnessService.Cancel
+   */
+  cancel: {
+    methodKind: "unary";
+    input: typeof CancelRequestSchema;
+    output: typeof CancelResponseSchema;
   },
 }>;
 

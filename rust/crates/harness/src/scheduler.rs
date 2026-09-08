@@ -54,6 +54,14 @@ pub enum DurableOwner {
     },
 }
 
+impl DurableOwner {
+    fn authority(&self) -> &Authority {
+        match self {
+            Self::Attached { authority } | Self::Detached { authority } => authority,
+        }
+    }
+}
+
 /// Stable parent link and child slot.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ParentLink {
@@ -245,6 +253,9 @@ pub enum SchedulerEvent {
     CancellationRequested {
         /// Operation whose cancellation should propagate.
         operation_id: OperationId,
+        /// Whether cancellation propagates through the complete structured subtree.
+        #[serde(default, skip_serializing_if = "is_false")]
+        recursive: bool,
     },
     /// A terminal or indeterminate observation was recorded.
     Completed {
@@ -623,26 +634,45 @@ impl Scheduler {
                     operation.phase = OperationPhase::WaitingForCapacity;
                 }
             }
-            SchedulerEvent::CancellationRequested { operation_id } => {
-                let operation = self.mutable(operation_id)?;
-                if operation.phase == OperationPhase::Terminal {
-                    return Err(Error::Conflict(
-                        "terminal operation cannot be cancelled".into(),
-                    ));
+            SchedulerEvent::CancellationRequested {
+                operation_id,
+                recursive,
+            } => {
+                let frontier = self.cancellation_frontier(operation_id, recursive);
+                if !self.operations.contains_key(&operation_id) {
+                    return Err(Error::NotFound(format!("operation {operation_id}")));
                 }
-                if matches!(
-                    operation.phase,
-                    OperationPhase::WaitingForDependencies
-                        | OperationPhase::WaitingForCapacity
-                        | OperationPhase::Admitted
-                        | OperationPhase::WaitingForChildren
-                ) {
-                    operation.reservation = None;
-                    operation.phase = OperationPhase::Terminal;
-                    operation.outcome = Some(Outcome::Cancelled);
-                    self.completion_order.push(operation_id);
-                } else {
-                    operation.cancellation_requested = true;
+                for target in frontier {
+                    let mut terminalized = false;
+                    {
+                        let operation = self.mutable(target)?;
+                        if operation.phase == OperationPhase::Terminal {
+                            continue;
+                        }
+                        if matches!(
+                            operation.phase,
+                            OperationPhase::WaitingForDependencies
+                                | OperationPhase::WaitingForCapacity
+                                | OperationPhase::Admitted
+                                | OperationPhase::WaitingForChildren
+                        ) {
+                            operation.reservation = None;
+                            operation.phase = OperationPhase::Terminal;
+                            operation.outcome = Some(Outcome::Cancelled);
+                            terminalized = true;
+                        } else {
+                            operation.cancellation_requested = true;
+                        }
+                        if target != operation_id {
+                            operation.revision =
+                                operation.revision.checked_add(1).ok_or_else(|| {
+                                    Error::Invalid("operation revision exhausted".into())
+                                })?;
+                        }
+                    }
+                    if terminalized {
+                        self.completion_order.push(target);
+                    }
                 }
             }
             SchedulerEvent::Completed {
@@ -943,11 +973,19 @@ impl Scheduler {
     ) -> Vec<OperationId> {
         let mut frontier = vec![operation_id];
         if recursive {
+            let owner = self
+                .operations
+                .get(&operation_id)
+                .map(|operation| operation.spec.owner.authority());
             let mut index = 0;
             while index < frontier.len() {
                 let parent = frontier[index];
                 frontier.extend(
                     self.children(parent)
+                        // A recursive command is authorized for the root owner. A
+                        // differently owned child is an authority boundary, not a
+                        // cancellation edge.
+                        .filter(|(_, child)| owner == Some(child.spec.owner.authority()))
                         .map(|(_, child)| child.spec.operation_id)
                         .filter(|child| !frontier.contains(child))
                         .collect::<Vec<_>>(),
@@ -1136,10 +1174,14 @@ fn event_operation(event: &SchedulerEvent) -> OperationId {
         | SchedulerEvent::Checkpointed { operation_id, .. }
         | SchedulerEvent::WaitingForChildren { operation_id, .. }
         | SchedulerEvent::LeaseReleased { operation_id, .. }
-        | SchedulerEvent::CancellationRequested { operation_id }
+        | SchedulerEvent::CancellationRequested { operation_id, .. }
         | SchedulerEvent::Completed { operation_id, .. }
         | SchedulerEvent::Orchestrated { operation_id, .. } => *operation_id,
     }
+}
+
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// One durable typed inbox item with a gapless per-task sequence.
@@ -1397,6 +1439,7 @@ mod tests {
         scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Join))?)?;
         scheduler.apply(SchedulerEvent::CancellationRequested {
             operation_id: id(1),
+            recursive: false,
         })?;
         let mut child = spec(id(2), Orchestration::Leaf);
         child.parent = Some(ParentLink {
@@ -1404,6 +1447,86 @@ mod tests {
             slot: "late".into(),
         });
         assert!(matches!(scheduler.declare(child), Err(Error::Conflict(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_cancellation_records_remain_non_recursive() -> Result<()> {
+        let operation_id = id(1);
+        let event: SchedulerEvent = serde_json::from_value(serde_json::json!({
+            "kind": "cancellation_requested",
+            "operation_id": operation_id,
+        }))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(
+            event,
+            SchedulerEvent::CancellationRequested {
+                operation_id,
+                recursive: false,
+            }
+        );
+        let canonical =
+            serde_json::to_value(&event).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(canonical.get("recursive"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn recursive_cancellation_stops_at_owner_boundaries() -> Result<()> {
+        let mut scheduler = Scheduler::new();
+        let mut parent = spec(id(20), Orchestration::Join);
+        let authority = parent.owner.authority().clone();
+        parent.owner = DurableOwner::Attached {
+            authority: authority.clone(),
+        };
+        scheduler.apply(scheduler.declare(parent)?)?;
+
+        let mut owned_child = spec(id(21), Orchestration::Leaf);
+        owned_child.owner = DurableOwner::Detached {
+            authority: authority.clone(),
+        };
+        owned_child.parent = Some(ParentLink {
+            operation_id: id(20),
+            slot: "owned".into(),
+        });
+        scheduler.apply(scheduler.declare(owned_child)?)?;
+
+        let mut owned_grandchild = spec(id(23), Orchestration::Leaf);
+        owned_grandchild.owner = DurableOwner::Attached { authority };
+        owned_grandchild.parent = Some(ParentLink {
+            operation_id: id(21),
+            slot: "owned-grandchild".into(),
+        });
+        scheduler.apply(scheduler.declare(owned_grandchild)?)?;
+
+        let mut foreign_child = spec(id(22), Orchestration::Leaf);
+        foreign_child.parent = Some(ParentLink {
+            operation_id: id(20),
+            slot: "foreign".into(),
+        });
+        scheduler.apply(scheduler.declare(foreign_child)?)?;
+
+        scheduler.apply(SchedulerEvent::CancellationRequested {
+            operation_id: id(20),
+            recursive: true,
+        })?;
+
+        assert_eq!(
+            scheduler
+                .operation(id(21))
+                .and_then(|state| state.outcome.as_ref()),
+            Some(&Outcome::Cancelled)
+        );
+        assert_eq!(
+            scheduler
+                .operation(id(23))
+                .and_then(|state| state.outcome.as_ref()),
+            Some(&Outcome::Cancelled)
+        );
+        assert_eq!(
+            scheduler.operation(id(22)).map(|state| state.phase),
+            Some(OperationPhase::WaitingForDependencies)
+        );
         Ok(())
     }
 
@@ -1427,6 +1550,7 @@ mod tests {
         })?;
         scheduler.apply(SchedulerEvent::CancellationRequested {
             operation_id: id(9),
+            recursive: false,
         })?;
         scheduler.apply(SchedulerEvent::LeaseReleased {
             operation_id: id(9),
@@ -1469,6 +1593,7 @@ mod tests {
             .revision;
         scheduler.apply(SchedulerEvent::CancellationRequested {
             operation_id: id(10),
+            recursive: false,
         })?;
         assert_eq!(
             scheduler

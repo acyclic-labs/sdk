@@ -2,12 +2,13 @@
 
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
+    core::{Authority, AuthorityVerifier, Scope},
     scheduler::{
-        EntrypointRef, LeaseFence, OperationSpec, OrchestrationDecision, Reservation,
-        ResourceSnapshot, Scheduler, SchedulerEvent, reduction_invocation_digest,
+        DurableOwner, EntrypointRef, LeaseFence, OperationSpec, OperationState,
+        OrchestrationDecision, Reservation, ResourceSnapshot, Scheduler, SchedulerEvent,
+        reduction_invocation_digest,
     },
     wire,
-    wire_codec::{protocol_identity, validate_protocol},
 };
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, Stream,
@@ -21,6 +22,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 const COORDINATOR_PATH: &str = "harness/coordinator/events";
 const READ_PAGE_SIZE: u32 = 1_024;
+const COORDINATOR_WIRE_VERSION: &str = "1";
+const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v1";
+const LEGACY_HARNESS_DESCRIPTOR_DIGEST: &str =
+    "b7506282912690d6a9cd875ca426b3b4f3c9dd937b457377f6865d83c1d2b3d9";
 
 /// Pull worker capacity and placement identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -155,6 +160,78 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     #[must_use]
     pub const fn scheduler(&self) -> &Scheduler {
         &self.scheduler
+    }
+
+    /// Returns one operation only after verifying the owner's signed scope.
+    pub fn observe_operation(
+        &self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+    ) -> Result<OperationState> {
+        self.authorize_operation(owner, scope, verifier, operation_id, "operation:observe")
+            .cloned()
+    }
+
+    /// Durably requests cancellation with exact retry and optional subtree propagation.
+    pub async fn cancel_operation(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        recursive: bool,
+    ) -> Result<(CoordinatorApply, OperationState)> {
+        self.authorize_operation(owner, scope, verifier, operation_id, "operation:cancel")?;
+        let applied = self
+            .apply(
+                operation_id,
+                idempotency_key,
+                SchedulerEvent::CancellationRequested {
+                    operation_id,
+                    recursive,
+                },
+            )
+            .await?;
+        let state = self
+            .scheduler
+            .operation(operation_id)
+            .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?
+            .clone();
+        Ok((applied, state))
+    }
+
+    fn authorize_operation<'a>(
+        &'a self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        capability: &str,
+    ) -> Result<&'a OperationState> {
+        verifier.verify_audience(owner)?;
+        verifier.verify(scope)?;
+        if !scope.capabilities().contains(capability) {
+            return Err(Error::Unauthorized(format!(
+                "scope {} lacks capability {capability}",
+                scope.id()
+            )));
+        }
+        let operation = self
+            .scheduler
+            .operation(operation_id)
+            .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
+        let declared_owner = match &operation.spec.owner {
+            DurableOwner::Attached { authority } | DurableOwner::Detached { authority } => {
+                authority
+            }
+        };
+        if declared_owner != owner {
+            return Err(Error::NotFound(format!("operation {operation_id}")));
+        }
+        Ok(operation)
     }
 
     /// Durably applies one scheduler event with exact retry semantics.
@@ -461,7 +538,7 @@ fn scheduler_event_operation(event: &SchedulerEvent) -> OperationId {
         | SchedulerEvent::Checkpointed { operation_id, .. }
         | SchedulerEvent::WaitingForChildren { operation_id, .. }
         | SchedulerEvent::LeaseReleased { operation_id, .. }
-        | SchedulerEvent::CancellationRequested { operation_id }
+        | SchedulerEvent::CancellationRequested { operation_id, .. }
         | SchedulerEvent::Completed { operation_id, .. }
         | SchedulerEvent::Orchestrated { operation_id, .. } => *operation_id,
     }
@@ -475,7 +552,7 @@ fn encode(
     canonical: Vec<u8>,
 ) -> Vec<u8> {
     wire::SchedulerEventEnvelope {
-        protocol: Some(protocol_identity()),
+        protocol: Some(coordinator_protocol_identity()),
         revision,
         operation_id: operation_id.to_string(),
         idempotency_key: key.into(),
@@ -488,7 +565,7 @@ fn encode(
 fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], SchedulerEvent)> {
     let envelope = wire::SchedulerEventEnvelope::decode(bytes)
         .map_err(|error| Error::Storage(error.to_string()))?;
-    validate_protocol(envelope.protocol.as_ref())?;
+    validate_coordinator_protocol(envelope.protocol.as_ref())?;
     let digest: [u8; 32] = envelope
         .event_digest
         .try_into()
@@ -507,6 +584,29 @@ fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], Scheduler
     ))
 }
 
+fn coordinator_protocol_identity() -> wire::ProtocolIdentity {
+    wire::ProtocolIdentity {
+        version: COORDINATOR_WIRE_VERSION.into(),
+        descriptor_digest: blake3::hash(COORDINATOR_WIRE_CONTRACT).to_hex().to_string(),
+    }
+}
+
+fn validate_coordinator_protocol(protocol: Option<&wire::ProtocolIdentity>) -> Result<()> {
+    let actual =
+        protocol.ok_or_else(|| Error::Storage("coordinator event protocol is missing".into()))?;
+    let current = coordinator_protocol_identity();
+    if actual.version == COORDINATOR_WIRE_VERSION
+        && (actual.descriptor_digest == current.descriptor_digest
+            || actual.descriptor_digest == LEGACY_HARNESS_DESCRIPTOR_DIGEST)
+    {
+        Ok(())
+    } else {
+        Err(Error::Unsupported(
+            "unsupported coordinator event wire version".into(),
+        ))
+    }
+}
+
 fn stream_key(key: &str) -> Result<StreamIdempotencyKey> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic-harness-coordinator-v1");
@@ -519,8 +619,11 @@ fn stream_key(key: &str) -> Result<StreamIdempotencyKey> {
 mod tests {
     use super::*;
     use crate::{
-        core::{AggregateKind, Authority},
-        scheduler::{DurableOwner, EntrypointRef, Orchestration, ResourceRequest},
+        Capabilities,
+        core::{AggregateKind, Authority, AuthorityIssuer},
+        scheduler::{
+            DurableOwner, EntrypointRef, OperationPhase, Orchestration, ParentLink, ResourceRequest,
+        },
     };
     use acyclic_stream::MemoryStream;
     use serde_json::Value;
@@ -563,6 +666,188 @@ mod tests {
             orchestration: Orchestration::Leaf,
             state: Value::Null,
         }
+    }
+
+    fn historical_coordinator_record(
+        revision: u64,
+        operation_id: OperationId,
+        key: &str,
+        event: &SchedulerEvent,
+    ) -> Result<Bytes> {
+        let canonical =
+            serde_json::to_vec(event).map_err(|error| Error::Invalid(error.to_string()))?;
+        let digest = *blake3::hash(&canonical).as_bytes();
+        Ok(Bytes::from(
+            wire::SchedulerEventEnvelope {
+                protocol: Some(wire::ProtocolIdentity {
+                    version: COORDINATOR_WIRE_VERSION.into(),
+                    descriptor_digest: LEGACY_HARNESS_DESCRIPTOR_DIGEST.into(),
+                }),
+                revision,
+                operation_id: operation_id.to_string(),
+                idempotency_key: key.into(),
+                canonical_event_json: canonical,
+                event_digest: digest.to_vec(),
+            }
+            .encode_to_vec(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn authenticated_recursive_cancel_is_atomic_durable_and_exactly_replayable() -> Result<()>
+    {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let owner = Authority {
+            kind: AggregateKind::Task,
+            id: "owner".into(),
+        };
+        let issuer = AuthorityIssuer::new("runtime", [9; 32], owner.clone());
+        let scope = issuer.root(
+            "operation-control",
+            Capabilities::new(["operation:observe", "operation:cancel"]),
+        );
+        let parent = OperationId::from_bytes([31; 16]);
+        let child = OperationId::from_bytes([32; 16]);
+        let mut coordinator = DistributedCoordinator::open(&client).await?;
+        coordinator
+            .apply(
+                parent,
+                IdempotencyKey::new("declare-control-parent")?,
+                coordinator.scheduler().declare(spec(parent, 0))?,
+            )
+            .await?;
+        let mut child_spec = spec(child, 0);
+        child_spec.parent = Some(ParentLink {
+            operation_id: parent,
+            slot: "child".into(),
+        });
+        coordinator
+            .apply(
+                child,
+                IdempotencyKey::new("declare-control-child")?,
+                coordinator.scheduler().declare(child_spec)?,
+            )
+            .await?;
+
+        assert_eq!(
+            coordinator
+                .observe_operation(&owner, &scope, &issuer.verifier(), parent)?
+                .phase,
+            OperationPhase::WaitingForDependencies
+        );
+        let (applied, status) = coordinator
+            .cancel_operation(
+                &owner,
+                &scope,
+                &issuer.verifier(),
+                parent,
+                IdempotencyKey::new("cancel-control-tree")?,
+                true,
+            )
+            .await?;
+        assert_eq!(applied, CoordinatorApply::Applied);
+        assert_eq!(status.outcome, Some(crate::Outcome::Cancelled));
+        assert_eq!(
+            coordinator
+                .scheduler()
+                .operation(child)
+                .map(|value| value.outcome.clone()),
+            Some(Some(crate::Outcome::Cancelled))
+        );
+
+        let (replayed, _) = coordinator
+            .cancel_operation(
+                &owner,
+                &scope,
+                &issuer.verifier(),
+                parent,
+                IdempotencyKey::new("cancel-control-tree")?,
+                true,
+            )
+            .await?;
+        assert_eq!(replayed, CoordinatorApply::Replayed);
+        assert!(matches!(
+            coordinator
+                .cancel_operation(
+                    &owner,
+                    &scope,
+                    &issuer.verifier(),
+                    parent,
+                    IdempotencyKey::new("cancel-control-tree")?,
+                    false,
+                )
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        let reopened = DistributedCoordinator::open(&client).await?;
+        assert_eq!(
+            reopened
+                .observe_operation(&owner, &scope, &issuer.verifier(), child)?
+                .outcome,
+            Some(crate::Outcome::Cancelled)
+        );
+
+        let observe_only = issuer.root("observe-only", Capabilities::new(["operation:observe"]));
+        let mut reopened = reopened;
+        assert!(matches!(
+            reopened
+                .cancel_operation(
+                    &owner,
+                    &observe_only,
+                    &issuer.verifier(),
+                    child,
+                    IdempotencyKey::new("unauthorized-cancel")?,
+                    false,
+                )
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_non_recursive_cancel_reopens_and_retries_exactly() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let operation_id = OperationId::from_bytes([33; 16]);
+        let declaration = Scheduler::new().declare(spec(operation_id, 0))?;
+        let cancellation = SchedulerEvent::CancellationRequested {
+            operation_id,
+            recursive: false,
+        };
+        let stream = client
+            .stream(COORDINATOR_PATH)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        stream
+            .append_batch(
+                vec![
+                    historical_coordinator_record(
+                        1,
+                        operation_id,
+                        "declare-legacy-cancel",
+                        &declaration,
+                    )?,
+                    historical_coordinator_record(2, operation_id, "legacy-cancel", &cancellation)?,
+                ],
+                Some(0),
+                Some(stream_key("seed-legacy-history")?),
+            )
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let mut reopened = DistributedCoordinator::open(&client).await?;
+        assert_eq!(
+            reopened
+                .apply(
+                    operation_id,
+                    IdempotencyKey::new("legacy-cancel")?,
+                    SchedulerEvent::CancellationRequested {
+                        operation_id,
+                        recursive: false,
+                    },
+                )
+                .await?,
+            CoordinatorApply::Replayed
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -691,6 +976,7 @@ mod tests {
                 IdempotencyKey::new("cancel-before-pull")?,
                 SchedulerEvent::CancellationRequested {
                     operation_id: cancelled,
+                    recursive: false,
                 },
             )
             .await?;

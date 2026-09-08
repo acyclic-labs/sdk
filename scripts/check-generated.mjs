@@ -14,6 +14,27 @@ const packageEsm = source => source
     specifier.endsWith(".js") ? statement : `from "${specifier}.js";`);
 const temporary = mkdtempSync(join(tmpdir(), "acyclic-sdk-codegen-"));
 try {
+  const harnessProto = readFileSync(join(root, "proto/harness/v1/harness.proto"));
+  const packagedHarnessProto = readFileSync(
+    join(root, "rust/crates/harness/proto/harness/v1/harness.proto"),
+  );
+  if (!harnessProto.equals(packagedHarnessProto)) {
+    throw new Error("packaged harness schema is stale; run bun run generate");
+  }
+  if (!readFileSync(join(root, "conformance/vectors/harness/native-wasm-event-v1.json")).equals(
+    readFileSync(join(root, "rust/crates/harness/conformance/native-wasm-event-v1.json")),
+  )) {
+    throw new Error("packaged native/WASM conformance vector is stale; run bun run generate");
+  }
+  const harnessSuite = JSON.parse(readFileSync(join(root, "conformance/vectors/core.json"), "utf8"));
+  const nativeWasmCase = harnessSuite.cases.find(item => item.name === "native-wasm-replay-is-byte-equivalent");
+  const nativeWasmVector = JSON.parse(
+    readFileSync(join(root, "conformance/vectors/harness/native-wasm-event-v1.json"), "utf8"),
+  );
+  if (JSON.stringify(nativeWasmCase?.vector) !== JSON.stringify(nativeWasmVector)) {
+    throw new Error("native/WASM fixture is not bound into the Harness suite");
+  }
+
   const descriptor = join(temporary, "filesystem.bin");
   const executable = join(root, "node_modules", ".bin", process.platform === "win32" ? "buf.exe" : "buf");
   const built = spawnSync(executable, ["build", "--path", "proto/filesystem", "-o", descriptor], {
@@ -57,6 +78,15 @@ try {
       "utf8",
     );
     if (canonical !== packaged) throw new Error(`packaged harness TypeScript drift: ${relative}`);
+  }
+
+  for (const relative of ["inference/v1/inference_pb.js", "inference/v1/inference_pb.d.ts"]) {
+    const canonical = readFileSync(join(root, "generated/typescript", relative), "utf8");
+    const packaged = readFileSync(
+      join(root, "typescript/packages/inference/generated/proto", relative),
+      "utf8",
+    );
+    if (canonical !== packaged) throw new Error(`packaged inference TypeScript drift: ${relative}`);
   }
 } finally {
   rmSync(temporary, { recursive: true, force: true });

@@ -36,6 +36,7 @@ jobs:
           version="${GITHUB_REF_NAME#inference-v}"
           gh release create "$GITHUB_REF_NAME" \
             "target/release-assets/inference-sdk-${version}.crate" \
+            target/release-assets/acyclic-inference.tgz \
             proto/inference/v1/inference.proto \
             rust/crates/inference/inference_descriptor.bin \
             conformance/vectors/inference.json \

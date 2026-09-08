@@ -222,7 +222,7 @@ fn action_type(action: &Action) -> &'static str {
     }
 }
 
-fn encode_authority(authority: &Authority) -> wire::Authority {
+pub(crate) fn encode_authority(authority: &Authority) -> wire::Authority {
     wire::Authority {
         kind: match authority.kind {
             AggregateKind::Agent => wire::AggregateKind::Agent as i32,
@@ -235,7 +235,7 @@ fn encode_authority(authority: &Authority) -> wire::Authority {
     }
 }
 
-fn decode_authority(authority: wire::Authority) -> Result<Authority> {
+pub(crate) fn decode_authority(authority: wire::Authority) -> Result<Authority> {
     let kind = match wire::AggregateKind::try_from(authority.kind)
         .map_err(|_| Error::Storage("event aggregate kind is invalid".into()))?
     {
@@ -275,8 +275,8 @@ fn decode_reference(reference: wire::EventReference) -> Result<EventReference> {
     })
 }
 
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-fn decode_scope(scope: wire::Scope) -> Result<Scope> {
+#[cfg(any(feature = "host", all(feature = "wasm", target_arch = "wasm32")))]
+pub(crate) fn decode_scope(scope: wire::Scope) -> Result<Scope> {
     let parent_proof = if scope.parent_proof.is_empty() {
         None
     } else {
@@ -303,7 +303,8 @@ fn decode_scope(scope: wire::Scope) -> Result<Scope> {
 #[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
-    use crate::OperationId;
+    use crate::core::{Action, ApplyResult, AuthorityIssuer, Command, Reducer, SchemaRegistry};
+    use crate::{Capabilities, IdempotencyKey, OperationId};
 
     #[test]
     fn protocol_digest_and_error_semantics_are_preserved() -> Result<()> {
@@ -347,6 +348,62 @@ mod tests {
         let encoded = encode_error(&Error::Indeterminate(operation));
         assert_eq!(encoded.code, wire::ErrorCode::Indeterminate as i32);
         assert_eq!(encoded.operation_id, operation.to_string());
+        Ok(())
+    }
+
+    #[test]
+    fn native_event_bytes_match_cross_language_fixture() -> Result<()> {
+        let authority = Authority {
+            kind: AggregateKind::Conversation,
+            id: "conversation-1".into(),
+        };
+        let issuer = AuthorityIssuer::new("test", [7; 32], authority.clone());
+        let mut schemas = SchemaRegistry::new();
+        schemas.register(
+            "example.message",
+            1,
+            serde_json::json!({
+                "type": "object",
+                "required": ["text"],
+                "properties": { "text": { "type": "string" } }
+            }),
+        )?;
+        let mut reducer = Reducer::new(authority.clone(), issuer.verifier(), schemas);
+        let command = Command {
+            operation_id: OperationId::from_bytes([1; 16]),
+            idempotency_key: IdempotencyKey("append-1".into()),
+            expected_revision: 0,
+            scope: issuer.root("root", Capabilities::new(["event:append"])),
+            causal_parent: None,
+            action: Action::AppendCustom {
+                schema: "example.message".into(),
+                version: 1,
+                value: serde_json::json!({ "text": "hello" }),
+            },
+        };
+        let ApplyResult::Applied { event } = reducer.apply(command.clone())? else {
+            return Err(Error::Conflict("first vector application replayed".into()));
+        };
+        let ApplyResult::Replayed { event: replayed } = reducer.apply(command)? else {
+            return Err(Error::Conflict("vector retry was not replayed".into()));
+        };
+        let native = encode_event(&authority, &event)?;
+        assert_eq!(native, encode_event(&authority, &replayed)?);
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../conformance/native-wasm-event-v1.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        let expected = fixture
+            .get("event_wire_hex")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| Error::Invalid("native/WASM fixture is missing event bytes".into()))?;
+        let actual = native
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            actual, expected,
+            "replace the native/WASM fixture with: {actual}"
+        );
         Ok(())
     }
 }

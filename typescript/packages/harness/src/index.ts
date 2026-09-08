@@ -94,7 +94,7 @@ export interface HarnessOptions {
   readonly schemas?: readonly ExtensionSchema[];
 }
 
-interface ProtocolIdentityValue {
+export interface ProtocolIdentityValue {
   readonly version: string;
   readonly descriptor_digest: string;
 }
@@ -147,6 +147,14 @@ export class Harness {
         options.schemas ?? [],
       ),
     );
+  }
+
+  /** Returns the exact wire protocol identity compiled into the native/WASM reducer. */
+  protocolIdentity(): { readonly version: string; readonly descriptorDigest: string } {
+    return {
+      version: this.#protocol.version,
+      descriptorDigest: this.#protocol.descriptor_digest,
+    };
   }
 
   /** Issues an explicit root grant from this host. */

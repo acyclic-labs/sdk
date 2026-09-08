@@ -2,25 +2,39 @@ import { create, fromJson, toJsonString } from "@bufbuild/protobuf";
 import {
   AdmissionSchema,
   AdmissionState,
+  CancelRequestSchema,
+  CancelResponseSchema,
   ClientFrameSchema,
   CommandEnvelopeSchema,
+  CompletionState,
   ErrorCode,
+  ErrorSchema,
   HandshakeRequestSchema,
   HandshakeResponseSchema,
+  ObserveRequestSchema,
+  OperationStatusSchema,
   ResumeRequestSchema,
   ServerFrameSchema,
   type Admission,
+  type Authority,
   type CommandEnvelope,
+  type CancelRequest,
+  type CancelResponse,
   type Delivery,
   type HandshakeRequest,
   type HandshakeResponse,
+  type ObserveRequest,
+  type OperationStatus,
   type ResumeRequest,
+  type Scope,
   type ServerFrame,
 } from "../generated/proto/harness/v1/harness_pb.js";
 import { TerminalAdmissionError } from "./client.js";
 
 export interface WireConnection extends AsyncIterable<Delivery> {
   send(command: CommandEnvelope): Promise<void>;
+  observe(request: ObserveRequest): Promise<OperationStatus>;
+  cancel(request: CancelRequest): Promise<CancelResponse>;
   close(): Promise<void> | void;
 }
 
@@ -28,10 +42,40 @@ export interface WireTransport {
   connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection>;
 }
 
+/** Typed control handle over the exact wire connection used for replay and submit. */
+export class WireOperationHandle {
+  constructor(
+    readonly connection: WireConnection,
+    readonly owner: Authority,
+    readonly operationId: string,
+    readonly scope: Scope,
+  ) {}
+
+  observe(): Promise<OperationStatus> {
+    return this.connection.observe(create(ObserveRequestSchema, {
+      owner: this.owner,
+      operationId: this.operationId,
+      scope: this.scope,
+    }));
+  }
+
+  cancel(idempotencyKey: string, recursive = false): Promise<CancelResponse> {
+    return this.connection.cancel(create(CancelRequestSchema, {
+      owner: this.owner,
+      operationId: this.operationId,
+      scope: this.scope,
+      idempotencyKey,
+      recursive,
+    }));
+  }
+}
+
 export interface EmbeddedWireApi {
   handshake(request: HandshakeRequest): Promise<HandshakeResponse>;
   replay(resume: ResumeRequest, signal?: AbortSignal): AsyncIterable<Delivery>;
   submit(command: CommandEnvelope): Promise<void>;
+  observe(request: ObserveRequest): Promise<OperationStatus>;
+  cancel(request: CancelRequest): Promise<CancelResponse>;
 }
 
 export class EmbeddedWireTransport implements WireTransport {
@@ -43,6 +87,16 @@ export class EmbeddedWireTransport implements WireTransport {
     const deliveries = this.api.replay(resume, signal);
     return {
       send: command => this.api.submit(withProtocol(command, this.negotiation)),
+      observe: async request => {
+        request = withObserveProtocol(request, this.negotiation);
+        return validateStatus(request, this.negotiation, await this.api.observe(request));
+      },
+      cancel: async request => {
+        request = withCancelProtocol(request, this.negotiation);
+        const response = await this.api.cancel(request);
+        validateCancelIdentity(request, this.negotiation, response);
+        return response;
+      },
       close() {},
       [Symbol.asyncIterator]: () => deliveries[Symbol.asyncIterator](),
     };
@@ -174,6 +228,30 @@ export class HttpSseWireTransport implements WireTransport {
           );
         }
       },
+      async observe(request) {
+        request = withObserveProtocol(request, negotiation);
+        const observed = await fetcher(new URL("v1/harness/operations/observe", withSlash(baseUrl)), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: toJsonString(ObserveRequestSchema, request),
+          ...(signal === undefined ? {} : { signal }),
+        });
+        if (!observed.ok) throw await httpWireError(observed, "observe");
+        return validateStatus(request, negotiation, fromJson(OperationStatusSchema, await observed.json()));
+      },
+      async cancel(request) {
+        request = withCancelProtocol(request, negotiation);
+        const cancelled = await fetcher(new URL("v1/harness/operations/cancel", withSlash(baseUrl)), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: toJsonString(CancelRequestSchema, request),
+          ...(signal === undefined ? {} : { signal }),
+        });
+        if (!cancelled.ok) throw await httpWireError(cancelled, "cancel");
+        const response = fromJson(CancelResponseSchema, await cancelled.json());
+        validateCancelIdentity(request, negotiation, response);
+        return response;
+      },
       async close() {},
       async *[Symbol.asyncIterator]() {
         for await (const data of sseData(response.body!)) {
@@ -200,6 +278,16 @@ export class GrpcWireTransport implements WireTransport {
     const connection = await this.connectGrpc(resume, signal);
     return {
       send: command => connection.send(withProtocol(command, this.negotiation)),
+      observe: async request => {
+        request = withObserveProtocol(request, this.negotiation);
+        return validateStatus(request, this.negotiation, await connection.observe(request));
+      },
+      cancel: async request => {
+        request = withCancelProtocol(request, this.negotiation);
+        const response = await connection.cancel(request);
+        validateCancelIdentity(request, this.negotiation, response);
+        return response;
+      },
       close: () => connection.close(),
       [Symbol.asyncIterator]: () => connection[Symbol.asyncIterator](),
     };
@@ -215,6 +303,16 @@ export class WireError extends Error {
 class FramedConnection implements WireConnection {
   readonly #deliveries = new AsyncQueue<Delivery>();
   readonly #pending = new Map<string, { idempotencyKey: string; resolve(): void; reject(error: unknown): void }>();
+  readonly #observations = new Map<string, {
+    request: ObserveRequest;
+    resolve(status: OperationStatus): void;
+    reject(error: unknown): void;
+  }>();
+  readonly #cancellations = new Map<string, {
+    request: CancelRequest;
+    resolve(response: CancelResponse): void;
+    reject(error: unknown): void;
+  }>();
 
   constructor(
     source: AsyncIterator<string>,
@@ -242,6 +340,45 @@ class FramedConnection implements WireConnection {
       throw error;
     }
     return admission;
+  }
+
+  async observe(request: ObserveRequest): Promise<OperationStatus> {
+    request = withObserveProtocol(request, this.negotiation);
+    const operationId = request.operationId;
+    if (!operationId) throw new TypeError("observe operation identity is missing");
+    if (this.#observations.has(operationId) || this.#cancellations.has(operationId)) {
+      throw new Error("operation control request is already pending");
+    }
+    const observed = new Promise<OperationStatus>((resolve, reject) =>
+      this.#observations.set(operationId, { request, resolve, reject }),
+    );
+    try {
+      await this.write(clientFrameJson("observe", request));
+    } catch (error) {
+      this.#observations.delete(operationId);
+      throw error;
+    }
+    return observed;
+  }
+
+  async cancel(request: CancelRequest): Promise<CancelResponse> {
+    request = withCancelProtocol(request, this.negotiation);
+    const operationId = request.operationId;
+    const idempotencyKey = request.idempotencyKey;
+    if (!operationId || !idempotencyKey) throw new TypeError("cancel operation identity is missing");
+    if (this.#cancellations.has(operationId) || this.#observations.has(operationId)) {
+      throw new Error("operation control request is already pending");
+    }
+    const cancelled = new Promise<CancelResponse>((resolve, reject) =>
+      this.#cancellations.set(operationId, { request, resolve, reject }),
+    );
+    try {
+      await this.write(clientFrameJson("cancel", request));
+    } catch (error) {
+      this.#cancellations.delete(operationId);
+      throw error;
+    }
+    return cancelled;
   }
 
   async close(): Promise<void> {
@@ -276,13 +413,46 @@ class FramedConnection implements WireConnection {
             pending.reject(new WireError(ErrorCode.INDETERMINATE, "command outcome is indeterminate"));
           }
         } else if (frame.frame.case === "error") {
-          throw new WireError(frame.frame.value.code, frame.frame.value.message);
+          const error = new WireError(frame.frame.value.code, frame.frame.value.message);
+          const operationId = frame.frame.value.operationId;
+          let correlated = false;
+          const observation = this.#observations.get(operationId);
+          if (observation) {
+            this.#observations.delete(operationId);
+            observation.reject(error);
+            correlated = true;
+          }
+          const cancellation = this.#cancellations.get(operationId);
+          if (cancellation) {
+            this.#cancellations.delete(operationId);
+            cancellation.reject(error);
+            correlated = true;
+          }
+          if (!correlated) throw error;
+        } else if (frame.frame.case === "status") {
+          const operationId = frame.frame.value.operation?.operationId ?? "";
+          const pending = this.#observations.get(operationId);
+          if (!pending) throw new Error("operation status has no matching observation");
+          const status = validateStatus(pending.request, this.negotiation, frame.frame.value);
+          this.#observations.delete(operationId);
+          pending.resolve(status);
+        } else if (frame.frame.case === "cancellation") {
+          const operationId = frame.frame.value.operation?.operationId;
+          const pending = operationId ? this.#cancellations.get(operationId) : undefined;
+          if (!pending) throw new Error("cancellation has no matching request");
+          this.#cancellations.delete(operationId!);
+          try {
+            validateCancelIdentity(pending.request, this.negotiation, frame.frame.value);
+            pending.resolve(frame.frame.value);
+          } catch (error) {
+            pending.reject(error);
+          }
         }
       }
-      if (this.#pending.size > 0) {
+      if (this.#pending.size > 0 || this.#observations.size > 0 || this.#cancellations.size > 0) {
         const error = new WireError(ErrorCode.INDETERMINATE, "connection ended before admission");
-        for (const pending of this.#pending.values()) pending.reject(error);
-        this.#pending.clear();
+        this.#fail(error);
+        return;
       }
       this.#deliveries.end();
     } catch (error) {
@@ -293,6 +463,10 @@ class FramedConnection implements WireConnection {
   #fail(error: unknown): void {
     for (const pending of this.#pending.values()) pending.reject(error);
     this.#pending.clear();
+    for (const pending of this.#observations.values()) pending.reject(error);
+    this.#observations.clear();
+    for (const pending of this.#cancellations.values()) pending.reject(error);
+    this.#cancellations.clear();
     this.#deliveries.fail(error);
   }
 }
@@ -303,6 +477,14 @@ function withProtocol(command: CommandEnvelope, negotiation: HandshakeRequest): 
 
 function withResumeProtocol(resume: ResumeRequest, negotiation: HandshakeRequest): ResumeRequest {
   return create(ResumeRequestSchema, { ...resume, protocol: negotiation.protocol });
+}
+
+function withObserveProtocol(request: ObserveRequest, negotiation: HandshakeRequest): ObserveRequest {
+  return create(ObserveRequestSchema, { ...request, protocol: negotiation.protocol });
+}
+
+function withCancelProtocol(request: CancelRequest, negotiation: HandshakeRequest): CancelRequest {
+  return create(CancelRequestSchema, { ...request, protocol: negotiation.protocol });
 }
 
 class AsyncQueue<T> implements AsyncIterable<T> {
@@ -338,11 +520,57 @@ class AsyncQueue<T> implements AsyncIterable<T> {
 }
 
 function clientFrameJson(
-  case_: "handshake" | "resume" | "command",
-  value: HandshakeRequest | ResumeRequest | CommandEnvelope,
+  case_: "handshake" | "resume" | "command" | "observe" | "cancel",
+  value: HandshakeRequest | ResumeRequest | CommandEnvelope | ObserveRequest | CancelRequest,
 ): string {
   const frame = create(ClientFrameSchema, { frame: { case: case_, value } } as never);
   return `${toJsonString(ClientFrameSchema, frame)}\n`;
+}
+
+function validateStatus(
+  request: ObserveRequest,
+  negotiation: HandshakeRequest,
+  status: OperationStatus,
+): OperationStatus {
+  if (
+    request.operationId.length === 0 || status.operation?.operationId !== request.operationId ||
+    request.owner === undefined || status.owner === undefined ||
+    request.owner.kind !== status.owner.kind || request.owner.id !== status.owner.id ||
+    (status.error?.operationId !== undefined && status.error.operationId.length > 0 &&
+      status.error.operationId !== request.operationId) ||
+    status.protocol === undefined || negotiation.protocol === undefined ||
+    status.protocol.version !== negotiation.protocol.version ||
+    status.protocol.descriptorDigest !== negotiation.protocol.descriptorDigest ||
+    status.state < CompletionState.RUNNING || status.state > CompletionState.INDETERMINATE
+  ) {
+    throw new WireError(ErrorCode.CONFLICT, "operation status identity mismatch");
+  }
+  return status;
+}
+
+function validateCancelIdentity(
+  request: CancelRequest,
+  negotiation: HandshakeRequest,
+  response: CancelResponse,
+): void {
+  const expected = {
+    operationId: request.operationId,
+    idempotencyKey: request.idempotencyKey,
+  };
+  const actual = response.operation;
+  if (
+    actual === undefined || response.status === undefined ||
+    expected.operationId.length === 0 || expected.idempotencyKey.length === 0 ||
+    expected.operationId !== actual.operationId || expected.idempotencyKey !== actual.idempotencyKey
+  ) {
+    throw new WireError(ErrorCode.CONFLICT, "cancellation identity mismatch");
+  }
+  validateStatus(create(ObserveRequestSchema, {
+    protocol: request.protocol,
+    owner: request.owner,
+    operationId: request.operationId,
+    scope: request.scope,
+  }), negotiation, response.status);
 }
 
 function parseServerFrame(value: string): ServerFrame {
@@ -414,6 +642,16 @@ async function websocketText(value: unknown): Promise<string> {
 
 function withSlash(value: string): string {
   return value.endsWith("/") ? value : `${value}/`;
+}
+
+async function httpWireError(response: Response, operation: string): Promise<WireError> {
+  try {
+    const error = fromJson(ErrorSchema, await response.json());
+    if (error.code !== ErrorCode.UNSPECIFIED && error.message.length > 0) {
+      return new WireError(error.code, error.message);
+    }
+  } catch {}
+  return new WireError(ErrorCode.INDETERMINATE, `${operation} failed: ${response.status}`);
 }
 
 async function* sseData(stream: ReadableStream<Uint8Array>): AsyncIterable<string> {

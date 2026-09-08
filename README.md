@@ -15,13 +15,18 @@ until their family version is published and tagged.
 - Direct Stream-backed Agent, Conversation, Session, Turn, and Task histories,
   with deterministic native/WASM replay and snapshot-assisted restoration.
 - Provider-neutral model, context-stage, tool definition/executor/projection,
-  and custom-executor APIs plus ordinary code-defined bundles.
+  and custom-executor APIs; Stream-backed memory/retrieval/skills revisions,
+  digest-bound compaction, and a complete coding host-adapter bundle remain
+  ordinary code-defined compositions.
 - A framework-neutral `@acyclic/harness` WASM/client package with reconnect,
-  generation-fenced cursors, a safe offline outbox, bounded hydration, and
+  generation-fenced cursors, an explicit-namespace atomic bounded IndexedDB cursor/outbox store,
+  bounded hydration, and
   bidirectional pagination; thin React and Svelte bindings remain separate.
 - One transport-neutral Rust server port with separate HTTP/SSE/WebSocket and
   gRPC adapter crates; embedded, JSONL/stdio, browser/Bun WebSocket, HTTP/SSE,
-  and gRPC clients negotiate the same descriptor and capabilities first.
+  and gRPC clients negotiate the same descriptor and capabilities first. The
+  same owner- and scope-bound operation status and exact-retry cancellation
+  contract is available on every transport, including atomic recursive cancel.
 - Explicit Filesystem and Machines integration crates. Filesystem workspaces
   support exact-generation reads and atomic idempotent mutation batches;
   Machines references remain opaque and provider-bound.
@@ -47,11 +52,16 @@ until their family version is published and tagged.
 - An Inference v1 Rust client with immutable item-addressed Context revisions,
   independent forks, exact edit/compact/transfer, recoverable Runs, inclusive
   event replay, cancellation, four work meters, and admitted warm commitments.
+- A generated-contract TypeScript Inference client covering the same Context,
+  warm-retention, recoverable Run, watch, and cancellation lifecycle through an
+  authenticated protobuf-JSON transport.
 - A shape-free Machines v1 contract with immutable image qualification, exact
   idempotency, checkpoints, fork sets, lifecycle recovery, stable endpoints,
   events, usage receipts, a mutual-TLS/Unix client, and one bounded deterministic
   simulator.
-- An executable bounded recursive workload and black-box provider conformance tests.
+- An executable bounded recursive workload and package-bound cross-language
+  conformance runner that retains per-case evidence, an immutable source identity,
+  and a deterministic qualification receipt with the exact release archives.
 - TypeScript contract facades for families whose public contract includes JavaScript.
 - Protobuf package boundaries ready for audited service schemas.
 
