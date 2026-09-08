@@ -70,5 +70,18 @@ target_dir="$rustlib/$target"
   echo 'refusing to repair an unexpected Rust target path' >&2
   exit 1
 }
+manifest="$rustlib/manifest-rust-std-$target"
+[[ "$(dirname "$manifest")" == "$rustlib" \
+  && "$(basename "$manifest")" == "manifest-rust-std-$target" ]] || {
+  echo 'refusing to repair an unexpected Rust target manifest path' >&2
+  exit 1
+}
+if [[ -e "$manifest" || -L "$manifest" ]]; then
+  [[ -f "$manifest" && ! -L "$manifest" ]] || {
+    echo 'refusing to repair an unexpected Rust target manifest' >&2
+    exit 1
+  }
+fi
 rm -rf -- "$target_dir"
+rm -f -- "$manifest"
 "$rustup_bin" target add "$target"

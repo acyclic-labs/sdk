@@ -34,6 +34,11 @@ case "${1:-} ${2:-}" in
       echo "error: detected conflict: lib/rustlib/$FAKE_TARGET/lib/libaddr2line.rlib" >&2
       exit 1
     fi
+    manifest="$FAKE_FS_SYSROOT/lib/rustlib/manifest-rust-std-$FAKE_TARGET"
+    if [[ -e "$manifest" ]]; then
+      echo "error: detected conflict: lib/rustlib/manifest-rust-std-$FAKE_TARGET" >&2
+      exit 1
+    fi
     mkdir -p "$target_dir"
     : > "$FAKE_STATE/installed"
     ;;
@@ -104,10 +109,12 @@ invoke
 prepare_case conflict
 mkdir -p "$FAKE_FS_SYSROOT/lib/rustlib/$FAKE_TARGET/lib"
 : > "$FAKE_FS_SYSROOT/lib/rustlib/$FAKE_TARGET/lib/libaddr2line.rlib"
+: > "$FAKE_FS_SYSROOT/lib/rustlib/manifest-rust-std-$FAKE_TARGET"
 : > "$FAKE_STATE/unrelated"
 invoke
 [[ "$(wc -l < "$FAKE_STATE/add-calls" | tr -d ' ')" == 2 ]]
 [[ -f "$FAKE_STATE/installed" && -d "$FAKE_FS_SYSROOT/lib/rustlib/$FAKE_TARGET" ]]
+[[ ! -e "$FAKE_FS_SYSROOT/lib/rustlib/manifest-rust-std-$FAKE_TARGET" ]]
 [[ -f "$FAKE_STATE/unrelated" ]]
 
 prepare_case unrelated-error
@@ -124,6 +131,15 @@ mkdir -p "$outside_target"
 ln -s "$outside_target" "$FAKE_FS_SYSROOT/lib/rustlib/$FAKE_TARGET"
 expect_failure symlink-target
 [[ -f "$outside_target/preserved" && -L "$FAKE_FS_SYSROOT/lib/rustlib/$FAKE_TARGET" ]]
+
+prepare_case symlink-manifest
+mkdir -p "$FAKE_FS_SYSROOT/lib/rustlib/$FAKE_TARGET"
+outside_manifest="$FAKE_STATE/outside-manifest"
+: > "$outside_manifest"
+ln -s "$outside_manifest" "$FAKE_FS_SYSROOT/lib/rustlib/manifest-rust-std-$FAKE_TARGET"
+expect_failure symlink-manifest
+[[ -f "$outside_manifest" && -L "$FAKE_FS_SYSROOT/lib/rustlib/manifest-rust-std-$FAKE_TARGET" ]]
+[[ -d "$FAKE_FS_SYSROOT/lib/rustlib/$FAKE_TARGET" ]]
 
 prepare_case redirected-rustlib
 outside_rustlib="$FAKE_STATE/outside-rustlib"
