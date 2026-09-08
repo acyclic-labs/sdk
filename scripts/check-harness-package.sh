@@ -25,6 +25,21 @@ elif command -v wslpath >/dev/null 2>&1; then
 fi
 
 cd "$root"
+cargo_bin="cargo"
+rustup_bin="rustup"
+wasm_bindgen_bin="wasm-bindgen"
+if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
+  cargo_bin="cargo.exe"
+  rustup_bin="rustup.exe"
+  wasm_bindgen_bin="wasm-bindgen.exe"
+fi
+if [[ -n "${CARGO_HOME:-}" ]]; then
+  export PATH="$CARGO_HOME/bin:$PATH"
+fi
+"$rustup_bin" target add wasm32-unknown-unknown
+if [[ "$("$wasm_bindgen_bin" --version 2>/dev/null || true)" != "wasm-bindgen 0.2.117" ]]; then
+  "$cargo_bin" install --locked wasm-bindgen-cli --version 0.2.117
+fi
 bun scripts/check-metadata.mjs
 bun run --filter '@acyclic/harness' build
 cd typescript/packages/harness
@@ -50,16 +65,18 @@ cd "$root"
 # Stage the exact public dependency closure. Harness cannot be registry-verified
 # until Stream is published, so test the extracted archives together and keep the
 # release order explicit.
-cargo_bin="cargo"
-if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
-  cargo_bin="cargo.exe"
-fi
-"$cargo_bin" package --locked --no-verify --allow-dirty -p acyclic-stream -p acyclic-harness
 metadata="$("$cargo_bin" metadata --locked --no-deps --format-version 1)"
 stream_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-stream").version)')"
 harness_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-harness").version)')"
-stream_crate="$root/target/package/acyclic-stream-$stream_version.crate"
-harness_crate="$root/target/package/acyclic-harness-$harness_version.crate"
+package_target="$work/package-target"
+cargo_package_target="$package_target"
+if [[ "$cargo_bin" == "cargo.exe" ]]; then
+  cargo_package_target="$(wslpath -w "$cargo_package_target")"
+fi
+"$cargo_bin" package --locked --no-verify --allow-dirty --target-dir "$cargo_package_target" \
+  -p acyclic-stream -p acyclic-harness
+stream_crate="$package_target/package/acyclic-stream-$stream_version.crate"
+harness_crate="$package_target/package/acyclic-harness-$harness_version.crate"
 
 mkdir "$work/crates"
 tar -xf "$stream_crate" -C "$work/crates"
