@@ -35,14 +35,15 @@ if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1 && com
   wasm_bindgen_bin="wasm-bindgen.exe"
 fi
 if [[ -n "${CARGO_HOME:-}" ]]; then
-  export PATH="$CARGO_HOME/bin:$PATH"
+  wasm_bindgen_bin="$CARGO_HOME/bin/wasm-bindgen"
+  [[ "$bun_platform" == "win32" ]] && wasm_bindgen_bin="${wasm_bindgen_bin}.exe"
 fi
-export ACYCLIC_CARGO_BIN="$cargo_bin"
-export ACYCLIC_WASM_BINDGEN_BIN="$wasm_bindgen_bin"
 "$rustup_bin" target add wasm32-unknown-unknown
 if [[ "$("$wasm_bindgen_bin" --version 2>/dev/null || true)" != "wasm-bindgen 0.2.117" ]]; then
   "$cargo_bin" install --locked wasm-bindgen-cli --version 0.2.117
 fi
+export ACYCLIC_CARGO_BIN="$cargo_bin"
+export ACYCLIC_WASM_BINDGEN_BIN="$wasm_bindgen_bin"
 bun scripts/check-metadata.mjs
 bun run --filter '@acyclic/harness' build
 cd typescript/packages/harness
