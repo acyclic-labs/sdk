@@ -5,7 +5,8 @@ set -euo pipefail
 output="$1"
 [[ ! -e "$output" && ! -L "$output" ]] || { echo 'package output must be absent' >&2; exit 2; }
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
+bun_platform="$(bun -e 'process.stdout.write(process.platform)')"
+if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
   windows_temp="$(cmd.exe /d /c echo %TEMP% | tr -d '\r')"
   work_parent="$(wslpath -u "$windows_temp")"
   work="$(mktemp -d "$work_parent/sdk-harness-package.XXXXXXXX")"
@@ -16,10 +17,10 @@ trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 archive="$work/acyclic-harness.tgz"
 bun_archive="$archive"
 bun_archive_url="$archive"
-if command -v cygpath >/dev/null 2>&1; then
+if [[ "$bun_platform" == "win32" ]] && command -v cygpath >/dev/null 2>&1; then
   bun_archive="$(cygpath -w "$archive")"
   bun_archive_url="$(cygpath -m "$archive")"
-elif command -v wslpath >/dev/null 2>&1; then
+elif [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1; then
   bun_archive="$(wslpath -w "$archive")"
   bun_archive_url="$(wslpath -m "$archive")"
 fi
@@ -28,7 +29,7 @@ cd "$root"
 cargo_bin="cargo"
 rustup_bin="rustup"
 wasm_bindgen_bin="wasm-bindgen"
-if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
+if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
   cargo_bin="cargo.exe"
   rustup_bin="rustup.exe"
   wasm_bindgen_bin="wasm-bindgen.exe"
@@ -36,6 +37,8 @@ fi
 if [[ -n "${CARGO_HOME:-}" ]]; then
   export PATH="$CARGO_HOME/bin:$PATH"
 fi
+export ACYCLIC_CARGO_BIN="$cargo_bin"
+export ACYCLIC_WASM_BINDGEN_BIN="$wasm_bindgen_bin"
 "$rustup_bin" target add wasm32-unknown-unknown
 if [[ "$("$wasm_bindgen_bin" --version 2>/dev/null || true)" != "wasm-bindgen 0.2.117" ]]; then
   "$cargo_bin" install --locked wasm-bindgen-cli --version 0.2.117
@@ -109,7 +112,7 @@ evidence_artifacts=(
   "$output/acyclic-stream-$stream_version.crate"
   "$output/acyclic-harness-$harness_version.crate"
 )
-if command -v wslpath >/dev/null 2>&1; then
+if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1; then
   normalizer="$(wslpath -w "$normalizer")"
   rust_log="$(wslpath -w "$rust_log")"
   typescript_log="$(wslpath -w "$typescript_log")"
@@ -120,11 +123,11 @@ if command -v wslpath >/dev/null 2>&1; then
 fi
 bun "$normalizer" "$rust_log" "$typescript_log" "$evidence_output" "${evidence_artifacts[@]}"
 repeat_evidence="$work/CONFORMANCE-EVIDENCE.repeat.json"
-if command -v wslpath >/dev/null 2>&1; then
+if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1; then
   repeat_evidence="$(wslpath -w "$repeat_evidence")"
 fi
 bun "$normalizer" "$rust_log" "$typescript_log" "$repeat_evidence" "${evidence_artifacts[@]}"
-if command -v wslpath >/dev/null 2>&1; then
+if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1; then
   repeat_evidence="$(wslpath -u "$repeat_evidence")"
 fi
 cmp --silent "$output/CONFORMANCE-EVIDENCE.json" "$repeat_evidence"

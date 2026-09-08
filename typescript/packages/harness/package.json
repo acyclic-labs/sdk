@@ -13,7 +13,7 @@
     "./proto": { "types": "./dist/proto.d.ts", "default": "./dist/proto.js" }
   },
   "scripts": {
-    "build:wasm": "cargo build --manifest-path ../../../Cargo.toml -p acyclic-harness --no-default-features --features wasm --target wasm32-unknown-unknown --profile wasm-release --locked && wasm-bindgen ../../../target/wasm32-unknown-unknown/wasm-release/acyclic_harness.wasm --target web --out-dir generated/wasm --out-name acyclic_harness_wasm",
+    "build:wasm": "bun ../../../scripts/build-harness-wasm.mjs",
     "build": "bun run build:wasm && bun x tsc -p tsconfig.json",
     "check": "bun x tsc -p tsconfig.json --noEmit",
     "test": "bun run build && bun test test"
