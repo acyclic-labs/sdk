@@ -1,0 +1,28 @@
+[package]
+name = "acyclic-harness-filesystem"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Acyclic Harness adapter for versioned Filesystem workspaces"
+readme = "../../../README.md"
+
+[features]
+default = ["memory"]
+memory = ["acyclic-fs/memory"]
+local = ["acyclic-fs/local"]
+
+[dependencies]
+acyclic-fs = { version = "0.2.0-rc.1", path = "../filesystem", default-features = false }
+acyclic-harness = { version = "0.1.0-rc.1", path = "../harness", default-features = false }
+blake3.workspace = true
+bytes.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

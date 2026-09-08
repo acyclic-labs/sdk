@@ -1,0 +1,27 @@
+[package]
+name = "acyclic-harness-grpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "gRPC server adapter for Acyclic Harness"
+readme = "../../../README.md"
+build = "build.rs"
+
+[dependencies]
+acyclic-harness = { version = "0.1.0-rc.1", path = "../harness" }
+futures.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[build-dependencies]
+protoc-bin-vendored.workspace = true
+tonic-prost-build.workspace = true
+
+[lints]
+workspace = true

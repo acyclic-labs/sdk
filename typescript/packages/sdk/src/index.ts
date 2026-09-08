@@ -1,3 +1,4 @@
+export * as harness from "@acyclic/harness";
 export * as filesystem from "@acyclic/fs";
 export * as stream from "@acyclic/stream";
 export * as objects from "@acyclic/objects";

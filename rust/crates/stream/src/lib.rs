@@ -491,9 +491,16 @@ pub trait StreamProvider: Send + Sync + 'static {
 }
 
 /// Minimal provider-bound client.
-#[derive(Clone)]
 pub struct StreamClient<P> {
     provider: Arc<P>,
+}
+
+impl<P> Clone for StreamClient<P> {
+    fn clone(&self) -> Self {
+        Self {
+            provider: Arc::clone(&self.provider),
+        }
+    }
 }
 
 impl<P: StreamProvider> StreamClient<P> {
@@ -558,10 +565,18 @@ impl StreamClient<grpc::Client> {
 }
 
 /// Handle to one permanent Stream path.
-#[derive(Clone)]
 pub struct Stream<P> {
     client: StreamClient<P>,
     path: StreamPath,
+}
+
+impl<P> Clone for Stream<P> {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            path: self.path.clone(),
+        }
+    }
 }
 
 impl<P: StreamProvider> Stream<P> {

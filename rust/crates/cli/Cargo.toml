@@ -9,7 +9,6 @@ publish.workspace = true
 description = "Command-line runner for the Acyclic SDK local profile"
 
 [dependencies]
-acyclic-contracts = { version = "0.1.0-rc.1", path = "../contracts" }
 acyclic-harness = { version = "0.1.0-rc.1", path = "../harness" }
 tokio.workspace = true
 

@@ -22,8 +22,11 @@ four exact public Bun archive digests on complete generated cache-key lines in
 The policy lane verifies and runs the pinned upstream cargo-deny archive from the
 tool cache; it never compiles the checker or restores an unused compiler cache.
 
-The Linux lane retains the isolated, tested Inference crate and filesystem npm
-archive with SHA-256 inventories in `packages-linux`. The filesystem archive runs
+The Linux lane retains the isolated, tested Inference crate, Agent Runtime Rust/npm
+archives, and filesystem npm archive with SHA-256 inventories in `packages-linux`.
+The Runtime archive executes its packaged WASM and Protobuf exports outside the
+workspace, and its extracted Rust crate is tested against the exact staged Stream
+dependency archive. The filesystem archive runs
 the existing public-export/WASM composition test outside the workspace; a missing
 packaged WASM must fail. Cargo packages and verifies the public Objects, Streams,
 and Filesystem dependency closure together with all features. Registry publication

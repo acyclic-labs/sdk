@@ -12,6 +12,7 @@ publish = true
 
 [workspace.dependencies]
 async-trait = "0.1.89"
+axum = { version = "0.8.9", features = ["ws"] }
 blake3 = "1.8.2"
 bytes = "1.10.1"
 fs2 = "0.4.3"
@@ -20,6 +21,7 @@ hex = "0.4.3"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 indexed_db_futures = { version = "0.6.4", features = ["tx-done", "typed-arrays"] }
+jsonschema = { version = "0.55.0", default-features = false }
 js-sys = "0.3.94"
 napi = { version = "3.6.1", features = ["async", "napi8", "serde-json"] }
 napi-derive = "3.3.3"
@@ -27,6 +29,7 @@ notify = "8.2.0"
 prost = "0.14.4"
 prost-build = "0.14.4"
 prost-types = "0.14.4"
+prost-reflect = { version = "0.16.3", features = ["serde"] }
 protoc-bin-vendored = "3.2.0"
 rustix = { version = "1.1.4", features = ["process"] }
 serde = { version = "1.0.228", features = ["derive"] }

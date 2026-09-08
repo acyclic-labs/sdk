@@ -7,7 +7,8 @@ more code, schemas, wrappers, and tests across both repositories than it adds.
 
 The dependency graph is one way:
 
-1. `proto/<family>` and `acyclic-contracts` own public wire and lifecycle types.
+1. `proto/<family>` owns stable wire schemas; the Rust crate for that family owns
+   its public lifecycle semantics and generated bindings.
 2. Each `rust/crates/<family>` owns that family's public types, provider trait,
    customer client adapter, and deterministic in-memory implementation.
 3. Each `typescript/packages/<family>` owns its idiomatic facade and generated
@@ -16,14 +17,22 @@ The dependency graph is one way:
    semantics never live in the profile crate.
 5. `acyclic-conformance` and `conformance/vectors` own black-box assertions used
    unchanged against memory, customer, and Acyclic implementations.
-6. `acyclic-harness` may consume public provider traits. No family crate depends
-   on harness internals.
+6. `acyclic-harness` owns durable agent/task semantics, the replaceable runtime,
+   and opaque cross-family references. Host adapters consume public provider
+   traits; no family crate depends on harness internals.
 7. `acyclic-sdk`, the CLI, and examples are composition leaves.
+8. `acyclic-harness-http` and `acyclic-harness-grpc` contain framing and server
+   dependencies only. Both delegate to the same `HarnessWireApi`; neither owns
+   reducer, admission, replay, or scheduling semantics.
+9. `acyclic-harness-filesystem` and `acyclic-harness-machines` are genuine
+   cross-family adapter boundaries. Provider-specific types never enter the
+   pure/WASM harness core.
 
 ## Consumption rules
 
-- A family may depend on `acyclic-contracts`, transport libraries, and ordinary
-  third-party libraries. It must not depend on a sibling family's implementation.
+- A family may depend on its generated wire schema, transport libraries, and
+  ordinary third-party libraries. It must not depend on a sibling family's
+  implementation.
 - Cross-family values travel as public IDs, immutable references, or caller-owned
   provider traits. A family never reaches through one client into another service.
 - The harness accepts family provider traits and composes them. Service clients
@@ -47,7 +56,7 @@ local recovery, model adapters, and customer-hosted providers.
 
 Private services consume their exact SDK family commit or release and keep only
 Acyclic-operated infrastructure: multi-tenant control planes, distributed
-replication and consensus, cloud placement and scheduling, tenant authority,
+  replication and consensus, multi-tenant regional control planes, tenant authority,
 internal admin protocols, billing, operations, and private qualification
 evidence. The SDK never depends on a private path, package, registry, namespace,
 descriptor, or implementation.

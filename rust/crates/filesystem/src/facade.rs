@@ -218,7 +218,10 @@ impl<A, O> Fs<A, O> {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "native-watch", feature = "s3-http")
+    ))]
     pub(crate) fn authority(&self) -> &A {
         &self.inner.authority
     }

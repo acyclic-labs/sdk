@@ -5,6 +5,10 @@ import { readFile } from "node:fs/promises";
 const root = new URL("..", import.meta.url);
 const load = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
 const ajv = new Ajv2020({ allErrors: true });
+ajv.compile(await load("rust/crates/conformance/schemas/runner-report.schema.json"));
+new Ajv2020({ allErrors: true }).compile(
+  await load("rust/crates/conformance/schemas/qualification-receipt.schema.json"),
+);
 const documents = [
   ["provenance/manifest.json", "compatibility/schemas/provenance.schema.json"],
   ["languages/package-names.json", "compatibility/schemas/package-names.schema.json"],
@@ -19,6 +23,28 @@ for (const item of provenance.imports) if (item.auditResult !== "approved") thro
 
 const digest = async path => `sha256:${createHash("sha256").update(await readFile(new URL(path, root))).digest("hex")}`;
 const compatibility = await load("compatibility/manifest.json");
+const harnessVersion = compatibility.families.harness.version;
+const streamVersion = compatibility.families.stream.version;
+const harnessPackage = await load("typescript/packages/harness/package.json");
+const sdkPackage = await load("typescript/packages/sdk/package.json");
+if (harnessPackage.version !== harnessVersion || sdkPackage.dependencies["@acyclic/harness"] !== harnessVersion) {
+  throw new Error("Harness npm and umbrella dependency versions must match compatibility metadata");
+}
+const workspaceManifest = await readFile(new URL("Cargo.toml", root), "utf8");
+const workspaceVersion = workspaceManifest.match(/\[workspace\.package\][\s\S]*?\nversion = "([^"]+)"/)?.[1];
+const harnessManifest = await readFile(new URL("rust/crates/harness/Cargo.toml", root), "utf8");
+const streamManifest = await readFile(new URL("rust/crates/stream/Cargo.toml", root), "utf8");
+const rustStreamVersion = streamManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1];
+const harnessStreamRequirement = harnessManifest.match(/acyclic-stream = \{ version = "([^"]+)"/)?.[1];
+if (
+  workspaceVersion !== harnessVersion || !harnessManifest.includes("version.workspace = true") ||
+  rustStreamVersion !== streamVersion || harnessStreamRequirement !== streamVersion
+) {
+  throw new Error("Harness Rust version or exact Stream dependency does not match compatibility metadata");
+}
+if ((await load("typescript/packages/inference/package.json")).version !== compatibility.families.inference.version) {
+  throw new Error("TypeScript inference package version mismatch");
+}
 const filesystemVersion = compatibility.families.filesystem.version;
 for (const path of [
   "typescript/packages/filesystem/package.json",
@@ -50,6 +76,7 @@ if (!inferenceRelease || inferenceRelease.name !== "inference-sdk" || !/^[0-9a-f
 const familyArtifacts = {
   harness: {
     schemaDigest: "proto/harness/v1/harness.proto",
+    conformanceDigest: "conformance/vectors/core.json",
   },
   filesystem: {
     schemaDigest: "proto/filesystem/v2/filesystem.proto",
@@ -86,6 +113,7 @@ for (const [family, artifacts] of Object.entries(familyArtifacts)) {
 }
 
 for (const [canonical, packaged] of [
+  ["conformance/vectors/core.json", "rust/crates/conformance/vectors/harness.json"],
   ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],
   ["conformance/vectors/stream.json", "rust/crates/conformance/vectors/stream.json"],
   ["conformance/vectors/objects.json", "rust/crates/conformance/vectors/objects.json"],

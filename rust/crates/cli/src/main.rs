@@ -1,7 +1,6 @@
 //! Local SDK command-line demonstration.
 
-use acyclic_contracts::Outcome;
-use acyclic_harness::{TaskGroup, recursive_sum};
+use acyclic_harness::{Outcome, TaskGroup, recursive_sum};
 
 #[tokio::main]
 async fn main() {

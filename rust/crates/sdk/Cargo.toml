@@ -9,14 +9,17 @@ publish.workspace = true
 description = "Umbrella SDK for the Acyclic harness and infrastructure provider families"
 
 [dependencies]
-acyclic-contracts = { version = "0.1.0-rc.1", path = "../contracts" }
 acyclic-fs = { version = "0.2.0-rc.1", path = "../filesystem" }
 acyclic-harness = { version = "0.1.0-rc.1", path = "../harness" }
+acyclic-harness-filesystem = { version = "0.1.0-rc.1", path = "../harness-filesystem" }
+acyclic-harness-grpc = { version = "0.1.0-rc.1", path = "../harness-grpc" }
+acyclic-harness-http = { version = "0.1.0-rc.1", path = "../harness-http" }
+acyclic-harness-machines = { version = "0.1.0-rc.1", path = "../harness-machines" }
 inference-sdk = { version = "1.0.0-rc.2", path = "../inference" }
 acyclic-machines = { version = "1.0.0-rc.1", path = "../machines" }
 acyclic-memory = { version = "0.1.0-rc.1", path = "../memory" }
 acyclic-objects = { version = "1.0.0-rc.1", path = "../objects" }
-acyclic-stream = { version = "1.0.0-rc.1", path = "../stream" }
+acyclic-stream = { version = "1.0.0-rc.3", path = "../stream" }
 
 [lints]
 workspace = true
