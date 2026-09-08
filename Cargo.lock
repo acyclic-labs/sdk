@@ -27,6 +27,7 @@ name = "acyclic-conformance"
 version = "0.1.0-rc.1"
 dependencies = [
  "acyclic-fs",
+ "acyclic-harness",
  "acyclic-machines",
  "acyclic-memory",
  "acyclic-objects",

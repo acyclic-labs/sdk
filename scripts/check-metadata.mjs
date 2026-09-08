@@ -5,6 +5,10 @@ import { readFile } from "node:fs/promises";
 const root = new URL("..", import.meta.url);
 const load = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
 const ajv = new Ajv2020({ allErrors: true });
+ajv.compile(await load("rust/crates/conformance/schemas/runner-report.schema.json"));
+new Ajv2020({ allErrors: true }).compile(
+  await load("rust/crates/conformance/schemas/qualification-receipt.schema.json"),
+);
 const documents = [
   ["provenance/manifest.json", "compatibility/schemas/provenance.schema.json"],
   ["languages/package-names.json", "compatibility/schemas/package-names.schema.json"],
@@ -50,6 +54,7 @@ if (!inferenceRelease || inferenceRelease.name !== "inference-sdk" || !/^[0-9a-f
 const familyArtifacts = {
   harness: {
     schemaDigest: "proto/harness/v1/harness.proto",
+    conformanceDigest: "conformance/vectors/core.json",
   },
   filesystem: {
     schemaDigest: "proto/filesystem/v2/filesystem.proto",
@@ -86,6 +91,7 @@ for (const [family, artifacts] of Object.entries(familyArtifacts)) {
 }
 
 for (const [canonical, packaged] of [
+  ["conformance/vectors/core.json", "rust/crates/conformance/vectors/harness.json"],
   ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],
   ["conformance/vectors/stream.json", "rust/crates/conformance/vectors/stream.json"],
   ["conformance/vectors/objects.json", "rust/crates/conformance/vectors/objects.json"],

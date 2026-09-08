@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.acyclic.dev/conformance/qualification-receipt.v1.schema.json",
+  "title": "Acyclic conformance qualification receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "family", "suite_version", "suite_digest", "subject", "runner", "protocol_identity", "capability_profile", "qualified", "passed", "total", "report_digest", "cases"],
+  "properties": {
+    "protocol": { "const": "acyclic.conformance.receipt.v1" },
+    "family": { "const": "harness" },
+    "suite_version": { "type": "integer", "minimum": 1 },
+    "suite_digest": { "$ref": "#/$defs/digest" },
+    "subject": { "$ref": "#/$defs/subject" },
+    "runner": { "$ref": "#/$defs/runner" },
+    "protocol_identity": { "$ref": "#/$defs/protocolIdentity" },
+    "capability_profile": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/nonempty" }
+    },
+    "qualified": { "type": "boolean" },
+    "passed": { "type": "integer", "minimum": 0 },
+    "total": { "type": "integer", "minimum": 1 },
+    "report_digest": { "$ref": "#/$defs/digest" },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/case" }
+    }
+  },
+  "$defs": {
+    "nonempty": { "type": "string", "minLength": 1 },
+    "digest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "source_revision", "artifact_digest"],
+      "properties": {
+        "name": { "$ref": "#/$defs/nonempty" },
+        "version": { "$ref": "#/$defs/nonempty" },
+        "source_revision": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+        "artifact_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "name", "version"],
+      "properties": {
+        "language": { "$ref": "#/$defs/nonempty" },
+        "name": { "$ref": "#/$defs/nonempty" },
+        "version": { "$ref": "#/$defs/nonempty" }
+      }
+    },
+    "protocolIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "descriptor_digest"],
+      "properties": {
+        "version": { "const": "1" },
+        "descriptor_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status", "evidence_digest"],
+      "properties": {
+        "name": { "$ref": "#/$defs/nonempty" },
+        "status": { "enum": ["passed", "failed", "skipped"] },
+        "evidence_digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "cases": [
+    { "name": "operation-identities-are-stable", "family": "harness" },
+    { "name": "native-wasm-replay-is-byte-equivalent", "family": "harness" },
+    { "name": "authority-scopes-cannot-cross-aggregate-audiences", "family": "harness" },
+    { "name": "stream-append-uncertainty-is-queryable", "family": "harness" },
+    { "name": "trimmed-history-restores-from-checked-snapshot", "family": "harness" },
+    { "name": "fork-publication-is-atomic", "family": "harness" },
+    { "name": "effect-attempts-respect-provider-guarantees", "family": "harness" },
+    { "name": "typed-approvals-bind-the-exact-action", "family": "harness" },
+    { "name": "structured-parent-waits-release-capacity", "family": "harness" },
+    { "name": "join-preserves-child-slot-order", "family": "harness" },
+    { "name": "race-uses-first-authoritative-success", "family": "harness" },
+    { "name": "quorum-fails-when-threshold-is-unreachable", "family": "harness" },
+    { "name": "stock-executor-replay-does-not-repeat-tools", "family": "harness" },
+    { "name": "custom-executor-owns-the-whole-turn-loop", "family": "harness" },
+    { "name": "client-replay-is-generation-fenced", "family": "harness" },
+    { "name": "client-outbox-clears-only-after-authority", "family": "harness" },
+    { "name": "pagination-is-bounded-and-rebase-safe", "family": "harness" },
+    { "name": "filesystem-conflicts-are-explicit", "family": "filesystem" },
+    { "name": "stream-cas-rejects-stale-offset", "family": "stream" },
+    { "name": "objects-are-content-addressed", "family": "objects" }
+  ]
+}

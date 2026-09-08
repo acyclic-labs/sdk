@@ -2,6 +2,8 @@
 
 /// Complete filesystem workload taxonomy, selectors, and portable vectors.
 pub mod filesystem;
+/// Machine-readable cross-language conformance reports and qualification receipts.
+pub mod runner;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs};
 use acyclic_machines::{
@@ -22,7 +24,7 @@ use std::num::NonZeroU32;
 pub const OBJECTS_SUITE: &[u8] = include_bytes!("../vectors/objects.json");
 
 /// Canonical language-neutral harness conformance inventory.
-pub const HARNESS_SUITE: &[u8] = include_bytes!("../../../../conformance/vectors/core.json");
+pub const HARNESS_SUITE: &[u8] = include_bytes!("../vectors/harness.json");
 
 /// Canonical language-neutral Machines conformance inventory.
 pub const MACHINES_SUITE: &[u8] = include_bytes!("../vectors/machines.json");
