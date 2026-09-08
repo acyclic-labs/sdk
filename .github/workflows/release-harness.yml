@@ -20,6 +20,8 @@ jobs:
           toolchain: 1.94.0
           targets: wasm32-unknown-unknown
       - name: Install pinned build tools
+        env:
+          TOOLS_DIR: ${{ runner.temp }}/tools/${{ runner.arch }}
         shell: bash
         run: |
           set -euo pipefail
@@ -27,6 +29,8 @@ jobs:
           cargo install --locked wasm-bindgen-cli --version 0.2.117
           bun install --frozen-lockfile
       - name: Verify tag, contracts, and isolated packages
+        env:
+          TOOLS_DIR: ${{ runner.temp }}/tools/${{ runner.arch }}
         shell: bash
         run: |
           set -euo pipefail
