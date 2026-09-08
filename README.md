@@ -9,9 +9,24 @@ until their family version is published and tagged.
 
 ## What works in this release candidate
 
-- Rust contracts for operation identity, admission, completion, cancellation,
-  capabilities, protocol versions, and descriptor digests.
-- A Tokio-based recursive task harness with bounded concurrency.
+- One `acyclic-harness` crate owning operation identities, authority, durable
+  reducer semantics, typed interactions, effects, atomic fork manifests,
+  resumable state machines, structured scheduling, and replaceable execution.
+- Direct Stream-backed Agent, Conversation, Session, Turn, and Task histories,
+  with deterministic native/WASM replay and snapshot-assisted restoration.
+- Provider-neutral model, context-stage, tool definition/executor/projection,
+  and custom-executor APIs plus ordinary code-defined bundles.
+- A framework-neutral `@acyclic/harness` WASM/client package with reconnect,
+  generation-fenced cursors, a safe offline outbox, bounded hydration, and
+  bidirectional pagination; thin React and Svelte bindings remain separate.
+- One transport-neutral Rust server port with separate HTTP/SSE/WebSocket and
+  gRPC adapter crates; embedded, JSONL/stdio, browser/Bun WebSocket, HTTP/SSE,
+  and gRPC clients negotiate the same descriptor and capabilities first.
+- Explicit Filesystem and Machines integration crates. Filesystem workspaces
+  support exact-generation reads and atomic idempotent mutation batches;
+  Machines references remain opaque and provider-bound.
+- Native dependency-free OpenAI-compatible streaming in `@acyclic/harness`,
+  plus separately versioned AI SDK, Pi, and OpenCode bridge packages.
 - In-memory Filesystem, Stream, Objects, Machines, and Inference providers.
 - A single canonical Filesystem engine over the public Stream and Objects
   provider traits, with memory and durable-local compositions, sparse
@@ -50,8 +65,8 @@ component has one public source of truth; private repositories consume released
 SDK contracts and code instead of keeping copies.
 
 Private repositories contain only Acyclic-operated infrastructure such as
-multi-tenant control planes, distributed replication and consensus, cloud
-placement and scheduling, internal administration, billing, and private
+  multi-tenant regional control planes, distributed replication and consensus,
+  internal administration, billing, and private
 qualification evidence.
 
 Run the local profile without an Acyclic account:

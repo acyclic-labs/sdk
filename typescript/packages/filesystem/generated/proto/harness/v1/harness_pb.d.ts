@@ -2,7 +2,7 @@
 // @generated from file harness/v1/harness.proto (package acyclic.harness.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
@@ -146,6 +146,11 @@ export declare type Error = Message<"acyclic.harness.v1.Error"> & {
    * @generated from field: string message = 2;
    */
   message: string;
+
+  /**
+   * @generated from field: string operation_id = 3;
+   */
+  operationId: string;
 };
 
 /**
@@ -271,6 +276,513 @@ export declare type Cursor = Message<"acyclic.harness.v1.Cursor"> & {
 export declare const CursorSchema: GenMessage<Cursor>;
 
 /**
+ * Stable identity of one aggregate history.
+ *
+ * @generated from message acyclic.harness.v1.Authority
+ */
+export declare type Authority = Message<"acyclic.harness.v1.Authority"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.AggregateKind kind = 1;
+   */
+  kind: AggregateKind;
+
+  /**
+   * @generated from field: string id = 2;
+   */
+  id: string;
+};
+
+/**
+ * Describes the message acyclic.harness.v1.Authority.
+ * Use `create(AuthoritySchema)` to create a new message.
+ */
+export declare const AuthoritySchema: GenMessage<Authority>;
+
+/**
+ * Exact causal predecessor in another aggregate.
+ *
+ * @generated from message acyclic.harness.v1.EventReference
+ */
+export declare type EventReference = Message<"acyclic.harness.v1.EventReference"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.Authority authority = 1;
+   */
+  authority?: Authority | undefined;
+
+  /**
+   * @generated from field: uint64 revision = 2;
+   */
+  revision: bigint;
+};
+
+/**
+ * Describes the message acyclic.harness.v1.EventReference.
+ * Use `create(EventReferenceSchema)` to create a new message.
+ */
+export declare const EventReferenceSchema: GenMessage<EventReference>;
+
+/**
+ * Complete attenuated grant captured at admission.
+ *
+ * @generated from message acyclic.harness.v1.Scope
+ */
+export declare type Scope = Message<"acyclic.harness.v1.Scope"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: repeated string capabilities = 2;
+   */
+  capabilities: string[];
+
+  /**
+   * @generated from field: string issuer = 3;
+   */
+  issuer: string;
+
+  /**
+   * @generated from field: bytes parent_proof = 4;
+   */
+  parentProof: Uint8Array;
+
+  /**
+   * @generated from field: bytes proof = 5;
+   */
+  proof: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.harness.v1.Scope.
+ * Use `create(ScopeSchema)` to create a new message.
+ */
+export declare const ScopeSchema: GenMessage<Scope>;
+
+/**
+ * Transport-neutral command whose canonical payload is interpreted by Rust.
+ *
+ * @generated from message acyclic.harness.v1.CommandEnvelope
+ */
+export declare type CommandEnvelope = Message<"acyclic.harness.v1.CommandEnvelope"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.ProtocolIdentity protocol = 1;
+   */
+  protocol?: ProtocolIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v1.Authority authority = 2;
+   */
+  authority?: Authority | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v1.OperationIdentity operation = 3;
+   */
+  operation?: OperationIdentity | undefined;
+
+  /**
+   * @generated from field: uint64 expected_revision = 4;
+   */
+  expectedRevision: bigint;
+
+  /**
+   * @generated from field: acyclic.harness.v1.Scope scope = 5;
+   */
+  scope?: Scope | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v1.EventReference causal_parent = 6;
+   */
+  causalParent?: EventReference | undefined;
+
+  /**
+   * @generated from field: string action_type = 7;
+   */
+  actionType: string;
+
+  /**
+   * @generated from field: bytes canonical_action_json = 8;
+   */
+  canonicalActionJson: Uint8Array;
+
+  /**
+   * @generated from field: bytes intent_digest = 9;
+   */
+  intentDigest: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.harness.v1.CommandEnvelope.
+ * Use `create(CommandEnvelopeSchema)` to create a new message.
+ */
+export declare const CommandEnvelopeSchema: GenMessage<CommandEnvelope>;
+
+/**
+ * Canonical durable event carried identically by every transport.
+ *
+ * @generated from message acyclic.harness.v1.EventEnvelope
+ */
+export declare type EventEnvelope = Message<"acyclic.harness.v1.EventEnvelope"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.ProtocolIdentity protocol = 1;
+   */
+  protocol?: ProtocolIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v1.Authority authority = 2;
+   */
+  authority?: Authority | undefined;
+
+  /**
+   * @generated from field: uint64 revision = 3;
+   */
+  revision: bigint;
+
+  /**
+   * @generated from field: string operation_id = 4;
+   */
+  operationId: string;
+
+  /**
+   * @generated from field: bytes intent_digest = 5;
+   */
+  intentDigest: Uint8Array;
+
+  /**
+   * @generated from field: acyclic.harness.v1.Scope scope = 6;
+   */
+  scope?: Scope | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v1.EventReference causal_parent = 7;
+   */
+  causalParent?: EventReference | undefined;
+
+  /**
+   * @generated from field: string event_type = 8;
+   */
+  eventType: string;
+
+  /**
+   * @generated from field: bytes canonical_payload_json = 9;
+   */
+  canonicalPayloadJson: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.harness.v1.EventEnvelope.
+ * Use `create(EventEnvelopeSchema)` to create a new message.
+ */
+export declare const EventEnvelopeSchema: GenMessage<EventEnvelope>;
+
+/**
+ * @generated from message acyclic.harness.v1.ApplyResponse
+ */
+export declare type ApplyResponse = Message<"acyclic.harness.v1.ApplyResponse"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.ApplyState state = 1;
+   */
+  state: ApplyState;
+
+  /**
+   * @generated from field: acyclic.harness.v1.EventEnvelope event = 2;
+   */
+  event?: EventEnvelope | undefined;
+};
+
+/**
+ * Describes the message acyclic.harness.v1.ApplyResponse.
+ * Use `create(ApplyResponseSchema)` to create a new message.
+ */
+export declare const ApplyResponseSchema: GenMessage<ApplyResponse>;
+
+/**
+ * Versioned restoration accelerator. Events remain authoritative.
+ *
+ * @generated from message acyclic.harness.v1.SnapshotEnvelope
+ */
+export declare type SnapshotEnvelope = Message<"acyclic.harness.v1.SnapshotEnvelope"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.ProtocolIdentity protocol = 1;
+   */
+  protocol?: ProtocolIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v1.Authority authority = 2;
+   */
+  authority?: Authority | undefined;
+
+  /**
+   * @generated from field: uint64 revision = 3;
+   */
+  revision: bigint;
+
+  /**
+   * @generated from field: uint32 format_version = 4;
+   */
+  formatVersion: number;
+
+  /**
+   * @generated from field: bytes canonical_state_json = 5;
+   */
+  canonicalStateJson: Uint8Array;
+
+  /**
+   * @generated from field: bytes state_digest = 6;
+   */
+  stateDigest: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.harness.v1.SnapshotEnvelope.
+ * Use `create(SnapshotEnvelopeSchema)` to create a new message.
+ */
+export declare const SnapshotEnvelopeSchema: GenMessage<SnapshotEnvelope>;
+
+/**
+ * Transport-independent resumable subscription cursor.
+ *
+ * @generated from message acyclic.harness.v1.ReplayCursor
+ */
+export declare type ReplayCursor = Message<"acyclic.harness.v1.ReplayCursor"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.Authority authority = 1;
+   */
+  authority?: Authority | undefined;
+
+  /**
+   * @generated from field: string generation = 2;
+   */
+  generation: string;
+
+  /**
+   * @generated from field: uint64 revision = 3;
+   */
+  revision: bigint;
+};
+
+/**
+ * Describes the message acyclic.harness.v1.ReplayCursor.
+ * Use `create(ReplayCursorSchema)` to create a new message.
+ */
+export declare const ReplayCursorSchema: GenMessage<ReplayCursor>;
+
+/**
+ * @generated from message acyclic.harness.v1.ResumeRequest
+ */
+export declare type ResumeRequest = Message<"acyclic.harness.v1.ResumeRequest"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.ProtocolIdentity protocol = 1;
+   */
+  protocol?: ProtocolIdentity | undefined;
+
+  /**
+   * @generated from field: repeated acyclic.harness.v1.ReplayCursor cursors = 2;
+   */
+  cursors: ReplayCursor[];
+};
+
+/**
+ * Describes the message acyclic.harness.v1.ResumeRequest.
+ * Use `create(ResumeRequestSchema)` to create a new message.
+ */
+export declare const ResumeRequestSchema: GenMessage<ResumeRequest>;
+
+/**
+ * One fully validated contiguous authoritative delivery.
+ *
+ * @generated from message acyclic.harness.v1.Delivery
+ */
+export declare type Delivery = Message<"acyclic.harness.v1.Delivery"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.Authority authority = 1;
+   */
+  authority?: Authority | undefined;
+
+  /**
+   * @generated from field: string generation = 2;
+   */
+  generation: string;
+
+  /**
+   * @generated from field: uint64 from_revision = 3;
+   */
+  fromRevision: bigint;
+
+  /**
+   * @generated from field: uint64 through_revision = 4;
+   */
+  throughRevision: bigint;
+
+  /**
+   * @generated from field: repeated acyclic.harness.v1.EventEnvelope events = 5;
+   */
+  events: EventEnvelope[];
+
+  /**
+   * @generated from field: bool live = 6;
+   */
+  live: boolean;
+};
+
+/**
+ * Describes the message acyclic.harness.v1.Delivery.
+ * Use `create(DeliverySchema)` to create a new message.
+ */
+export declare const DeliverySchema: GenMessage<Delivery>;
+
+/**
+ * @generated from message acyclic.harness.v1.Acknowledge
+ */
+export declare type Acknowledge = Message<"acyclic.harness.v1.Acknowledge"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.Authority authority = 1;
+   */
+  authority?: Authority | undefined;
+
+  /**
+   * @generated from field: string generation = 2;
+   */
+  generation: string;
+
+  /**
+   * @generated from field: uint64 through_revision = 3;
+   */
+  throughRevision: bigint;
+};
+
+/**
+ * Describes the message acyclic.harness.v1.Acknowledge.
+ * Use `create(AcknowledgeSchema)` to create a new message.
+ */
+export declare const AcknowledgeSchema: GenMessage<Acknowledge>;
+
+/**
+ * Framing used unchanged by embedded, HTTP/SSE, WebSocket, JSONL/stdio and gRPC adapters.
+ *
+ * @generated from message acyclic.harness.v1.ClientFrame
+ */
+export declare type ClientFrame = Message<"acyclic.harness.v1.ClientFrame"> & {
+  /**
+   * @generated from oneof acyclic.harness.v1.ClientFrame.frame
+   */
+  frame: {
+    /**
+     * @generated from field: acyclic.harness.v1.ResumeRequest resume = 1;
+     */
+    value: ResumeRequest;
+    case: "resume";
+  } | {
+    /**
+     * @generated from field: acyclic.harness.v1.CommandEnvelope command = 2;
+     */
+    value: CommandEnvelope;
+    case: "command";
+  } | {
+    /**
+     * @generated from field: acyclic.harness.v1.Acknowledge acknowledge = 3;
+     */
+    value: Acknowledge;
+    case: "acknowledge";
+  } | {
+    /**
+     * @generated from field: acyclic.harness.v1.HandshakeRequest handshake = 4;
+     */
+    value: HandshakeRequest;
+    case: "handshake";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message acyclic.harness.v1.ClientFrame.
+ * Use `create(ClientFrameSchema)` to create a new message.
+ */
+export declare const ClientFrameSchema: GenMessage<ClientFrame>;
+
+/**
+ * @generated from message acyclic.harness.v1.ServerFrame
+ */
+export declare type ServerFrame = Message<"acyclic.harness.v1.ServerFrame"> & {
+  /**
+   * @generated from oneof acyclic.harness.v1.ServerFrame.frame
+   */
+  frame: {
+    /**
+     * @generated from field: acyclic.harness.v1.Delivery delivery = 1;
+     */
+    value: Delivery;
+    case: "delivery";
+  } | {
+    /**
+     * @generated from field: acyclic.harness.v1.Admission admission = 2;
+     */
+    value: Admission;
+    case: "admission";
+  } | {
+    /**
+     * @generated from field: acyclic.harness.v1.Error error = 3;
+     */
+    value: Error;
+    case: "error";
+  } | {
+    /**
+     * @generated from field: acyclic.harness.v1.HandshakeResponse handshake = 4;
+     */
+    value: HandshakeResponse;
+    case: "handshake";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message acyclic.harness.v1.ServerFrame.
+ * Use `create(ServerFrameSchema)` to create a new message.
+ */
+export declare const ServerFrameSchema: GenMessage<ServerFrame>;
+
+/**
+ * Canonical record stored in the single logical distributed coordinator Stream.
+ *
+ * @generated from message acyclic.harness.v1.SchedulerEventEnvelope
+ */
+export declare type SchedulerEventEnvelope = Message<"acyclic.harness.v1.SchedulerEventEnvelope"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.ProtocolIdentity protocol = 1;
+   */
+  protocol?: ProtocolIdentity | undefined;
+
+  /**
+   * @generated from field: uint64 revision = 2;
+   */
+  revision: bigint;
+
+  /**
+   * @generated from field: string operation_id = 3;
+   */
+  operationId: string;
+
+  /**
+   * @generated from field: string idempotency_key = 4;
+   */
+  idempotencyKey: string;
+
+  /**
+   * @generated from field: bytes canonical_event_json = 5;
+   */
+  canonicalEventJson: Uint8Array;
+
+  /**
+   * @generated from field: bytes event_digest = 6;
+   */
+  eventDigest: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.harness.v1.SchedulerEventEnvelope.
+ * Use `create(SchedulerEventEnvelopeSchema)` to create a new message.
+ */
+export declare const SchedulerEventEnvelopeSchema: GenMessage<SchedulerEventEnvelope>;
+
+/**
  * @generated from enum acyclic.harness.v1.ErrorCode
  */
 export enum ErrorCode {
@@ -303,6 +815,16 @@ export enum ErrorCode {
    * @generated from enum value: ERROR_CODE_UNAUTHORIZED = 5;
    */
   UNAUTHORIZED = 5,
+
+  /**
+   * @generated from enum value: ERROR_CODE_STORAGE = 6;
+   */
+  STORAGE = 6,
+
+  /**
+   * @generated from enum value: ERROR_CODE_INDETERMINATE = 7;
+   */
+  INDETERMINATE = 7,
 }
 
 /**
@@ -379,4 +901,101 @@ export enum CompletionState {
  * Describes the enum acyclic.harness.v1.CompletionState.
  */
 export declare const CompletionStateSchema: GenEnum<CompletionState>;
+
+/**
+ * Kind of independently ordered durable aggregate.
+ *
+ * @generated from enum acyclic.harness.v1.AggregateKind
+ */
+export enum AggregateKind {
+  /**
+   * @generated from enum value: AGGREGATE_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: AGGREGATE_KIND_AGENT = 1;
+   */
+  AGENT = 1,
+
+  /**
+   * @generated from enum value: AGGREGATE_KIND_CONVERSATION = 2;
+   */
+  CONVERSATION = 2,
+
+  /**
+   * @generated from enum value: AGGREGATE_KIND_SESSION = 3;
+   */
+  SESSION = 3,
+
+  /**
+   * @generated from enum value: AGGREGATE_KIND_TURN = 4;
+   */
+  TURN = 4,
+
+  /**
+   * @generated from enum value: AGGREGATE_KIND_TASK = 5;
+   */
+  TASK = 5,
+}
+
+/**
+ * Describes the enum acyclic.harness.v1.AggregateKind.
+ */
+export declare const AggregateKindSchema: GenEnum<AggregateKind>;
+
+/**
+ * @generated from enum acyclic.harness.v1.ApplyState
+ */
+export enum ApplyState {
+  /**
+   * @generated from enum value: APPLY_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: APPLY_STATE_APPLIED = 1;
+   */
+  APPLIED = 1,
+
+  /**
+   * @generated from enum value: APPLY_STATE_REPLAYED = 2;
+   */
+  REPLAYED = 2,
+}
+
+/**
+ * Describes the enum acyclic.harness.v1.ApplyState.
+ */
+export declare const ApplyStateSchema: GenEnum<ApplyState>;
+
+/**
+ * @generated from service acyclic.harness.v1.HarnessService
+ */
+export declare const HarnessService: GenService<{
+  /**
+   * @generated from rpc acyclic.harness.v1.HarnessService.Handshake
+   */
+  handshake: {
+    methodKind: "unary";
+    input: typeof HandshakeRequestSchema;
+    output: typeof HandshakeResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.harness.v1.HarnessService.Submit
+   */
+  submit: {
+    methodKind: "unary";
+    input: typeof CommandEnvelopeSchema;
+    output: typeof AdmissionSchema;
+  },
+  /**
+   * @generated from rpc acyclic.harness.v1.HarnessService.Replay
+   */
+  replay: {
+    methodKind: "server_streaming";
+    input: typeof ResumeRequestSchema;
+    output: typeof DeliverySchema;
+  },
+}>;
 

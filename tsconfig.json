@@ -1,6 +1,12 @@
 {
   "files": [],
   "references": [
+    { "path": "./typescript/packages/harness" },
+    { "path": "./typescript/packages/react" },
+    { "path": "./typescript/packages/svelte" },
+    { "path": "./typescript/packages/ai-sdk" },
+    { "path": "./typescript/packages/pi" },
+    { "path": "./typescript/packages/opencode" },
     { "path": "./typescript/packages/filesystem" },
     { "path": "./typescript/packages/stream" },
     { "path": "./typescript/packages/objects" },

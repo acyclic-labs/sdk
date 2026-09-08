@@ -47,6 +47,17 @@ try {
     );
     if (canonical !== packaged) throw new Error(`packaged TypeScript drift: ${relative}`);
   }
+
+  for (const relative of ["harness/v1/harness_pb.js", "harness/v1/harness_pb.d.ts"]) {
+    const canonical = packageEsm(
+      readFileSync(join(root, "generated/typescript", relative), "utf8"),
+    );
+    const packaged = readFileSync(
+      join(root, "typescript/packages/harness/generated/proto", relative),
+      "utf8",
+    );
+    if (canonical !== packaged) throw new Error(`packaged harness TypeScript drift: ${relative}`);
+  }
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }

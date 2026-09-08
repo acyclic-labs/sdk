@@ -48,10 +48,26 @@ for (const file of [
   }
 }
 
+for (const file of ["harness/v1/harness_pb.js", "harness/v1/harness_pb.d.ts"]) {
+  const source = join(root, "generated/typescript", file);
+  const destination = join(root, "typescript/packages/harness/generated/proto", file);
+  if (!existsSync(source)) {
+    throw new Error(`harness TypeScript generation path is missing: ${file}`);
+  }
+  mkdirSync(dirname(destination), { recursive: true });
+  copyFileSync(source, destination);
+  if (file.endsWith(".js")) {
+    const normalized = `${readFileSync(source, "utf8").trimEnd()}\n`;
+    writeFileSync(source, normalized);
+    writeFileSync(destination, normalized);
+  }
+}
+
 const digest = path =>
   `sha256:${createHash("sha256").update(readFileSync(join(root, path))).digest("hex")}`;
 const compatibilityPath = join(root, "compatibility/manifest.json");
 const compatibility = JSON.parse(readFileSync(compatibilityPath, "utf8"));
+compatibility.families.harness.schemaDigest = digest("proto/harness/v1/harness.proto");
 compatibility.families.filesystem.schemaDigest = digest("proto/filesystem/v2/filesystem.proto");
 compatibility.families.filesystem.descriptorDigest = digest(
   "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin",

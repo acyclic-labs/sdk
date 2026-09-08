@@ -6,12 +6,36 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Composable bounded task harness for recursive fork-join workloads"
+description = "Generic durable substrate and fully composable agent runtime"
+readme = "../../../README.md"
+build = "build.rs"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = ["host"]
+host = ["dep:acyclic-stream", "dep:bytes", "dep:futures", "dep:tokio"]
+wasm = ["dep:serde-wasm-bindgen", "dep:wasm-bindgen"]
 
 [dependencies]
-acyclic-contracts = { version = "0.1.0-rc.1", path = "../contracts" }
-futures.workspace = true
-tokio.workspace = true
+acyclic-stream = { version = "1.0.0-rc.3", path = "../stream", default-features = false, optional = true }
+blake3.workspace = true
+bytes = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+jsonschema.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, optional = true }
+uuid.workspace = true
+serde-wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+
+[build-dependencies]
+prost-build.workspace = true
+protoc-bin-vendored.workspace = true
 
 [lints]
 workspace = true

@@ -35,10 +35,13 @@ enum ErrorCode {
   ERROR_CODE_UNSUPPORTED = 3;
   ERROR_CODE_INVALID = 4;
   ERROR_CODE_UNAUTHORIZED = 5;
+  ERROR_CODE_STORAGE = 6;
+  ERROR_CODE_INDETERMINATE = 7;
 }
 message Error {
   ErrorCode code = 1;
   string message = 2;
+  string operation_id = 3;
 }
 
 enum AdmissionState {
@@ -77,4 +80,145 @@ message CancelResponse {
 }
 message Cursor {
   bytes opaque = 1;
+}
+
+// Kind of independently ordered durable aggregate.
+enum AggregateKind {
+  AGGREGATE_KIND_UNSPECIFIED = 0;
+  AGGREGATE_KIND_AGENT = 1;
+  AGGREGATE_KIND_CONVERSATION = 2;
+  AGGREGATE_KIND_SESSION = 3;
+  AGGREGATE_KIND_TURN = 4;
+  AGGREGATE_KIND_TASK = 5;
+}
+
+// Stable identity of one aggregate history.
+message Authority {
+  AggregateKind kind = 1;
+  string id = 2;
+}
+
+// Exact causal predecessor in another aggregate.
+message EventReference {
+  Authority authority = 1;
+  uint64 revision = 2;
+}
+
+// Complete attenuated grant captured at admission.
+message Scope {
+  string id = 1;
+  repeated string capabilities = 2;
+  string issuer = 3;
+  bytes parent_proof = 4;
+  bytes proof = 5;
+}
+
+// Transport-neutral command whose canonical payload is interpreted by Rust.
+message CommandEnvelope {
+  ProtocolIdentity protocol = 1;
+  Authority authority = 2;
+  OperationIdentity operation = 3;
+  uint64 expected_revision = 4;
+  Scope scope = 5;
+  EventReference causal_parent = 6;
+  string action_type = 7;
+  bytes canonical_action_json = 8;
+  bytes intent_digest = 9;
+}
+
+// Canonical durable event carried identically by every transport.
+message EventEnvelope {
+  ProtocolIdentity protocol = 1;
+  Authority authority = 2;
+  uint64 revision = 3;
+  string operation_id = 4;
+  bytes intent_digest = 5;
+  Scope scope = 6;
+  EventReference causal_parent = 7;
+  string event_type = 8;
+  bytes canonical_payload_json = 9;
+}
+
+enum ApplyState {
+  APPLY_STATE_UNSPECIFIED = 0;
+  APPLY_STATE_APPLIED = 1;
+  APPLY_STATE_REPLAYED = 2;
+}
+
+message ApplyResponse {
+  ApplyState state = 1;
+  EventEnvelope event = 2;
+}
+
+// Versioned restoration accelerator. Events remain authoritative.
+message SnapshotEnvelope {
+  ProtocolIdentity protocol = 1;
+  Authority authority = 2;
+  uint64 revision = 3;
+  uint32 format_version = 4;
+  bytes canonical_state_json = 5;
+  bytes state_digest = 6;
+}
+
+// Transport-independent resumable subscription cursor.
+message ReplayCursor {
+  Authority authority = 1;
+  string generation = 2;
+  uint64 revision = 3;
+}
+
+message ResumeRequest {
+  ProtocolIdentity protocol = 1;
+  repeated ReplayCursor cursors = 2;
+}
+
+// One fully validated contiguous authoritative delivery.
+message Delivery {
+  Authority authority = 1;
+  string generation = 2;
+  uint64 from_revision = 3;
+  uint64 through_revision = 4;
+  repeated EventEnvelope events = 5;
+  bool live = 6;
+}
+
+message Acknowledge {
+  Authority authority = 1;
+  string generation = 2;
+  uint64 through_revision = 3;
+}
+
+// Framing used unchanged by embedded, HTTP/SSE, WebSocket, JSONL/stdio and gRPC adapters.
+message ClientFrame {
+  oneof frame {
+    ResumeRequest resume = 1;
+    CommandEnvelope command = 2;
+    Acknowledge acknowledge = 3;
+    HandshakeRequest handshake = 4;
+  }
+}
+
+message ServerFrame {
+  oneof frame {
+    Delivery delivery = 1;
+    Admission admission = 2;
+    Error error = 3;
+    HandshakeResponse handshake = 4;
+  }
+}
+
+// Canonical record stored in the single logical distributed coordinator Stream.
+message SchedulerEventEnvelope {
+  ProtocolIdentity protocol = 1;
+  uint64 revision = 2;
+  string operation_id = 3;
+  string idempotency_key = 4;
+  bytes canonical_event_json = 5;
+  bytes event_digest = 6;
+}
+
+service HarnessService {
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+  rpc Submit(CommandEnvelope) returns (Admission);
+  rpc Replay(ResumeRequest) returns (stream Delivery);
 }
