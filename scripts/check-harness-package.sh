@@ -86,6 +86,7 @@ mkdir "$work/crates"
 tar -xf "$stream_crate" -C "$work/crates"
 tar -xf "$harness_crate" -C "$work/crates"
 mkdir -p "$work/crates/.cargo"
+install -m 0644 "$root/rust-toolchain.toml" "$work/crates/rust-toolchain.toml"
 stream_patch_path="$work/crates/acyclic-stream-$stream_version"
 if [[ "$cargo_bin" == "cargo.exe" ]]; then
   stream_patch_path="$(wslpath -m "$stream_patch_path")"
