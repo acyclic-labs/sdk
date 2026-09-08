@@ -51,7 +51,11 @@ if ! "$rustup_bin" target list --installed | grep -Fqx "$wasm_target"; then
     [[ "$rustup_bin" == *.exe ]] && rustc_bin=rustc.exe
     sysroot="$("$rustc_bin" --print sysroot | tr -d '\r')"
     rustup_home="$("$rustup_bin" show home | tr -d '\r')"
-    if [[ "$rustup_bin" == *.exe ]]; then
+    if [[ "$sysroot" =~ ^[A-Za-z]:[\\/].* || "$rustup_home" =~ ^[A-Za-z]:[\\/].* ]]; then
+      [[ "$sysroot" =~ ^[A-Za-z]:[\\/].* && "$rustup_home" =~ ^[A-Za-z]:[\\/].* ]] || {
+        echo 'refusing to repair inconsistent Windows Rust paths' >&2
+        exit 1
+      }
       if command -v cygpath >/dev/null 2>&1; then
         sysroot="$(cygpath -u "$sysroot")"
         rustup_home="$(cygpath -u "$rustup_home")"
@@ -79,8 +83,14 @@ if ! "$rustup_bin" target list --installed | grep -Fqx "$wasm_target"; then
       exit 1
     }
     rustlib="$(cd "$rustlib" && pwd -P)"
+    [[ "$rustlib" == "$sysroot/lib/rustlib" ]] || {
+      echo 'refusing to repair a Rust target through a redirected library path' >&2
+      exit 1
+    }
     target_dir="$rustlib/$wasm_target"
-    [[ "$target_dir" == "$rustlib/$wasm_target" && -d "$target_dir" && ! -L "$target_dir" ]] || {
+    [[ "$(dirname "$target_dir")" == "$rustlib" \
+      && "$(basename "$target_dir")" == "$wasm_target" \
+      && -d "$target_dir" && ! -L "$target_dir" ]] || {
       echo 'refusing to repair an unexpected Rust target path' >&2
       exit 1
     }
