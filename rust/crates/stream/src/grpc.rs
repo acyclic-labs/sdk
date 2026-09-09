@@ -32,7 +32,13 @@ use crate::{
 };
 
 const OPERATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
-const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(1);
+const OPERATION_ENDPOINT_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+const FOLLOW_ENDPOINT_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+/// Maximum independently reachable endpoints in one operation or follow pool.
+pub const MAX_ENDPOINTS: usize = 16;
+/// Maximum canonical URI bytes accepted for one endpoint.
+pub const MAX_ENDPOINT_URI_BYTES: usize = 2_048;
 
 /// Connection configuration failure.
 #[derive(Debug, Error)]
@@ -49,14 +55,19 @@ pub enum ConnectError {
     /// At least one independently reachable endpoint is required.
     #[error("at least one Stream endpoint is required")]
     NoEndpoints,
+    /// Endpoint count or URI bytes exceed the fixed client bound.
+    #[error("Stream endpoint pool exceeds its fixed bound")]
+    EndpointLimit,
 }
 
 /// Authenticated remote provider.
 #[derive(Clone)]
 pub struct Client {
     channels: Arc<[Channel]>,
+    follow_channels: Arc<[Channel]>,
     authorization: MetadataValue<Ascii>,
     preferred: Arc<AtomicUsize>,
+    follow_preferred: Arc<AtomicUsize>,
 }
 
 /// Thin server adapter from the canonical wire service to one provider.
@@ -101,6 +112,24 @@ impl Client {
         Self::connect_with_tls(endpoints, bearer_token, None)
     }
 
+    /// Connects ordinary operations and long-lived follows through independent endpoint pools.
+    ///
+    /// Follow endpoints may include disposable Relay processes followed by durable data endpoints;
+    /// every other operation always uses `endpoints`.
+    pub async fn connect_endpoints_with_follow_endpoints<I, S, F, T>(
+        endpoints: I,
+        follow_endpoints: F,
+        bearer_token: impl AsRef<str>,
+    ) -> Result<Self, ConnectError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+        F: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        Self::connect_pools_with_tls(endpoints, follow_endpoints, bearer_token, None)
+    }
+
     /// Connects to a TLS endpoint augmented by one caller-pinned private CA certificate.
     pub async fn connect_with_ca_certificate(
         endpoint: impl AsRef<str>,
@@ -131,6 +160,31 @@ impl Client {
         Self::connect_with_tls(endpoints, bearer_token, Some(certificate_pem))
     }
 
+    /// Connects independent operation and follow pools using one caller-pinned private CA.
+    pub async fn connect_endpoints_with_follow_endpoints_and_ca_certificate<I, S, F, T>(
+        endpoints: I,
+        follow_endpoints: F,
+        bearer_token: impl AsRef<str>,
+        certificate_pem: impl AsRef<[u8]>,
+    ) -> Result<Self, ConnectError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+        F: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        let certificate_pem = certificate_pem.as_ref();
+        if certificate_pem.is_empty() || certificate_pem.len() > 64 * 1024 {
+            return Err(ConnectError::InvalidCredential);
+        }
+        Self::connect_pools_with_tls(
+            endpoints,
+            follow_endpoints,
+            bearer_token,
+            Some(certificate_pem),
+        )
+    }
+
     fn connect_with_tls<I, S>(
         endpoints: I,
         bearer_token: impl AsRef<str>,
@@ -140,37 +194,99 @@ impl Client {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let channels = endpoints
-            .into_iter()
-            .map(|endpoint| {
-                let mut endpoint = Endpoint::from_shared(endpoint.as_ref().to_owned())?;
-                if endpoint.uri().scheme_str() != Some("https") {
-                    return Err(ConnectError::InsecureEndpoint);
-                }
-                if let Some(certificate_pem) = certificate_pem {
-                    endpoint = endpoint.tls_config(
-                        ClientTlsConfig::new()
-                            .ca_certificate(Certificate::from_pem(certificate_pem)),
-                    )?;
-                }
-                Ok(endpoint.connect_lazy())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let channels = Self::channels_with_tls(
+            endpoints,
+            certificate_pem,
+            OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+        )?;
+        let follow_channels = Arc::clone(&channels);
+        Self::from_pools(channels, follow_channels, bearer_token)
+    }
+
+    fn connect_pools_with_tls<I, S, F, T>(
+        endpoints: I,
+        follow_endpoints: F,
+        bearer_token: impl AsRef<str>,
+        certificate_pem: Option<&[u8]>,
+    ) -> Result<Self, ConnectError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+        F: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        let channels = Self::channels_with_tls(
+            endpoints,
+            certificate_pem,
+            OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+        )?;
+        let follow_channels = Self::channels_with_tls(
+            follow_endpoints,
+            certificate_pem,
+            FOLLOW_ENDPOINT_ATTEMPT_TIMEOUT,
+        )?;
+        Self::from_pools(channels, follow_channels, bearer_token)
+    }
+
+    fn channels_with_tls<I, S>(
+        endpoints: I,
+        certificate_pem: Option<&[u8]>,
+        connect_timeout: std::time::Duration,
+    ) -> Result<Arc<[Channel]>, ConnectError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut channels = Vec::new();
+        for endpoint in endpoints.into_iter().take(MAX_ENDPOINTS + 1) {
+            if channels.len() == MAX_ENDPOINTS {
+                return Err(ConnectError::EndpointLimit);
+            }
+            let endpoint = endpoint.as_ref();
+            if endpoint.len() > MAX_ENDPOINT_URI_BYTES {
+                return Err(ConnectError::EndpointLimit);
+            }
+            // `Endpoint::new` enables the compiled WebPKI roots for HTTPS. The lower-level
+            // `from_shared` constructor leaves TLS disabled and fails only on first use.
+            let mut endpoint = Endpoint::new(endpoint.to_owned())?.connect_timeout(connect_timeout);
+            if endpoint.uri().scheme_str() != Some("https") {
+                return Err(ConnectError::InsecureEndpoint);
+            }
+            if let Some(certificate_pem) = certificate_pem {
+                endpoint = endpoint.tls_config(
+                    ClientTlsConfig::new().ca_certificate(Certificate::from_pem(certificate_pem)),
+                )?;
+            }
+            channels.push(endpoint.connect_lazy());
+        }
         if channels.is_empty() {
             return Err(ConnectError::NoEndpoints);
         }
+        Ok(channels.into())
+    }
+
+    fn from_pools(
+        channels: Arc<[Channel]>,
+        follow_channels: Arc<[Channel]>,
+        bearer_token: impl AsRef<str>,
+    ) -> Result<Self, ConnectError> {
         let authorization = format!("Bearer {}", bearer_token.as_ref())
             .parse::<MetadataValue<Ascii>>()
             .map_err(|_| ConnectError::InvalidCredential)?;
         Ok(Self {
-            channels: channels.into(),
+            channels,
+            follow_channels,
             authorization,
             preferred: Arc::new(AtomicUsize::new(0)),
+            follow_preferred: Arc::new(AtomicUsize::new(0)),
         })
     }
 
-    fn service(&self, index: usize) -> wire::stream_service_client::StreamServiceClient<Channel> {
-        wire::stream_service_client::StreamServiceClient::new(self.channels[index].clone())
+    fn service(
+        channels: &[Channel],
+        index: usize,
+    ) -> wire::stream_service_client::StreamServiceClient<Channel> {
+        wire::stream_service_client::StreamServiceClient::new(channels[index].clone())
     }
 
     fn request<T>(&self, body: T) -> Request<T> {
@@ -189,25 +305,70 @@ impl Client {
             Request<T>,
         ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
     {
+        self.unary_on(
+            &self.channels,
+            &self.preferred,
+            body,
+            OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+            &mut call,
+        )
+        .await
+        .map(|(response, _)| response)
+    }
+
+    async fn follow_unary<T, U, F>(&self, body: T, mut call: F) -> Result<(U, usize), StreamError>
+    where
+        T: Clone,
+        F: FnMut(
+            wire::stream_service_client::StreamServiceClient<Channel>,
+            Request<T>,
+        ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
+    {
+        self.unary_on(
+            &self.follow_channels,
+            &self.follow_preferred,
+            body,
+            FOLLOW_ENDPOINT_ATTEMPT_TIMEOUT,
+            &mut call,
+        )
+        .await
+    }
+
+    async fn unary_on<T, U, F>(
+        &self,
+        channels: &[Channel],
+        preferred: &AtomicUsize,
+        body: T,
+        attempt_timeout: std::time::Duration,
+        call: &mut F,
+    ) -> Result<(U, usize), StreamError>
+    where
+        T: Clone,
+        F: FnMut(
+            wire::stream_service_client::StreamServiceClient<Channel>,
+            Request<T>,
+        ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
+    {
         let deadline = tokio::time::Instant::now() + OPERATION_DEADLINE;
         let mut last = None;
         loop {
-            let start = self.preferred.load(Ordering::Relaxed) % self.channels.len();
-            for offset in 0..self.channels.len() {
-                let index = (start + offset) % self.channels.len();
+            let start = preferred.load(Ordering::Relaxed) % channels.len();
+            for offset in 0..channels.len() {
+                let index = (start + offset) % channels.len();
+                let attempt_deadline = deadline.min(tokio::time::Instant::now() + attempt_timeout);
                 match tokio::time::timeout_at(
-                    deadline,
-                    call(self.service(index), self.request(body.clone())),
+                    attempt_deadline,
+                    call(Self::service(channels, index), self.request(body.clone())),
                 )
                 .await
                 {
                     Ok(Ok(response)) => {
-                        self.preferred.store(index, Ordering::Relaxed);
-                        return Ok(response.into_inner());
+                        preferred.store(index, Ordering::Relaxed);
+                        return Ok((response.into_inner(), index));
                     }
                     Ok(Err(error)) if retryable(&error) => last = Some(error),
                     Ok(Err(error)) => return Err(status(error)),
-                    Err(_) => return Err(last.map_or(StreamError::Unavailable, status)),
+                    Err(_) => last = Some(Status::deadline_exceeded("endpoint attempt expired")),
                 }
             }
             tokio::time::sleep_until((tokio::time::Instant::now() + RETRY_DELAY).min(deadline))
@@ -247,7 +408,8 @@ impl Client {
                     let Some(active) = cursor.active.as_mut() else {
                         return Some((Err(StreamError::Unavailable), cursor));
                     };
-                    match active.next().await {
+                    let active_endpoint = active.endpoint;
+                    match active.records.next().await {
                         Some(Ok(response)) => match read_response(response) {
                             Ok(record) if record.sequence == cursor.next => {
                                 cursor.next = cursor.next.saturating_add(1);
@@ -260,9 +422,17 @@ impl Client {
                             Ok(_) => return Some((Err(StreamError::Unavailable), cursor)),
                             Err(error) => return Some((Err(error), cursor)),
                         },
-                        Some(Err(error)) if retryable(&error) => cursor.active = None,
+                        Some(Err(error)) if retryable(&error) => {
+                            cursor.advance_follow(active_endpoint);
+                            tokio::time::sleep(RETRY_DELAY).await;
+                            cursor.active = None;
+                        }
                         Some(Err(error)) => return Some((Err(status(error)), cursor)),
-                        None if cursor.remaining.is_none() => cursor.active = None,
+                        None if cursor.remaining.is_none() => {
+                            cursor.advance_follow(active_endpoint);
+                            tokio::time::sleep(RETRY_DELAY).await;
+                            cursor.active = None;
+                        }
                         None => return None,
                     }
                 }
@@ -277,11 +447,29 @@ struct RecordCursor {
     path: StreamPath,
     next: u64,
     remaining: Option<u32>,
-    active: Option<tonic::Streaming<wire::ReadResponse>>,
+    active: Option<ActiveRecords>,
+}
+
+struct ActiveRecords {
+    records: tonic::Streaming<wire::ReadResponse>,
+    endpoint: usize,
 }
 
 impl RecordCursor {
-    async fn open(&self) -> Result<tonic::Streaming<wire::ReadResponse>, StreamError> {
+    fn advance_follow(&self, observed: usize) {
+        if self.remaining.is_some() {
+            return;
+        }
+        let next = (observed + 1) % self.client.follow_channels.len();
+        let _ = self.client.follow_preferred.compare_exchange(
+            observed,
+            next,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+
+    async fn open(&self) -> Result<ActiveRecords, StreamError> {
         if let Some(limit) = self.remaining {
             self.client
                 .unary(
@@ -293,9 +481,13 @@ impl RecordCursor {
                     |mut service, request| Box::pin(async move { service.read(request).await }),
                 )
                 .await
+                .map(|records| ActiveRecords {
+                    records,
+                    endpoint: 0,
+                })
         } else {
             self.client
-                .unary(
+                .follow_unary(
                     wire::FollowRequest {
                         path: self.path.to_string(),
                         from: self.next,
@@ -303,6 +495,7 @@ impl RecordCursor {
                     |mut service, request| Box::pin(async move { service.follow(request).await }),
                 )
                 .await
+                .map(|(records, endpoint)| ActiveRecords { records, endpoint })
         }
     }
 }
@@ -1165,7 +1358,336 @@ fn conflict_wire(value: CommitConflict) -> wire::CommitConflict {
 mod tests {
     use super::*;
     use crate::MemoryStream;
-    use wire::stream_service_server::StreamService;
+    use wire::stream_service_server::{StreamService, StreamServiceServer};
+
+    struct FiniteFollow {
+        inner: MemoryStream,
+        follows: AtomicUsize,
+        tail_delay: std::time::Duration,
+    }
+
+    #[async_trait]
+    impl StreamProvider for FiniteFollow {
+        async fn inspect_idempotency(
+            &self,
+            key: IdempotencyKey,
+        ) -> Result<Option<IdempotencyObservation>, StreamError> {
+            self.inner.inspect_idempotency(key).await
+        }
+
+        async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
+            tokio::time::sleep(self.tail_delay).await;
+            self.inner.tail(path).await
+        }
+
+        async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+            self.inner.append(request).await
+        }
+
+        async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
+            self.inner.fork(request).await
+        }
+
+        async fn trim(
+            &self,
+            path: StreamPath,
+            before: u64,
+            key: IdempotencyKey,
+        ) -> Result<TrimReceipt, StreamError> {
+            self.inner.trim(path, before, key).await
+        }
+
+        async fn delete(
+            &self,
+            path: StreamPath,
+            key: IdempotencyKey,
+        ) -> Result<DeleteReceipt, StreamError> {
+            self.inner.delete(path, key).await
+        }
+
+        async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+            self.inner.read(request).await
+        }
+
+        async fn follow(&self, _path: StreamPath, _from: u64) -> Result<RecordStream, StreamError> {
+            self.follows.fetch_add(1, Ordering::Relaxed);
+            Ok(stream::empty().boxed())
+        }
+
+        async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+            self.inner.children(request).await
+        }
+
+        async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
+            self.inner.commit(request).await
+        }
+
+        async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
+            self.inner.read_commit(commit_id).await
+        }
+    }
+
+    fn in_memory_channel(provider: Arc<MemoryStream>) -> Channel {
+        provider_channel(Service::new(provider))
+    }
+
+    fn provider_channel<P: StreamProvider>(service: Service<P>) -> Channel {
+        Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
+            tower::service_fn(move |_| {
+                let service = service.clone();
+                async move {
+                    let (client, server) = tokio::io::duplex(64 * 1024);
+                    tokio::spawn(async move {
+                        let incoming = stream::once(async { Ok::<_, std::io::Error>(server) });
+                        let _ = tonic::transport::Server::builder()
+                            .add_service(StreamServiceServer::new(service))
+                            .serve_with_incoming(incoming)
+                            .await;
+                    });
+                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
+                }
+            }),
+        )
+    }
+
+    fn unavailable_channel() -> Channel {
+        Endpoint::from_static("http://unavailable.invalid").connect_with_connector_lazy(
+            tower::service_fn(|_| async {
+                Err::<hyper_util::rt::TokioIo<tokio::io::DuplexStream>, _>(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "unavailable",
+                ))
+            }),
+        )
+    }
+
+    fn stalled_channel() -> Channel {
+        Endpoint::from_static("http://stalled.invalid").connect_with_connector_lazy(
+            tower::service_fn(|_| async {
+                let (client, server) = tokio::io::duplex(64 * 1024);
+                tokio::spawn(async move {
+                    let _server = server;
+                    std::future::pending::<()>().await;
+                });
+                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn endpoint_pools_are_explicit_bounded_and_default_to_one_authority()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let shared = Client::connect_endpoints(
+            ["https://data-a.invalid", "https://data-b.invalid"],
+            "fixture",
+        )
+        .await?;
+        assert_eq!(shared.channels.len(), 2);
+        assert!(Arc::ptr_eq(&shared.channels, &shared.follow_channels));
+
+        let split = Client::connect_endpoints_with_follow_endpoints(
+            ["https://data.invalid"],
+            ["https://relay-a.invalid", "https://data.invalid"],
+            "fixture",
+        )
+        .await?;
+        assert_eq!(split.channels.len(), 1);
+        assert_eq!(split.follow_channels.len(), 2);
+        assert!(!Arc::ptr_eq(&split.channels, &split.follow_channels));
+        assert!(!Arc::ptr_eq(&split.preferred, &split.follow_preferred));
+
+        assert!(matches!(
+            Client::connect_endpoints_with_follow_endpoints(
+                std::iter::empty::<&str>(),
+                ["https://relay.invalid"],
+                "fixture",
+            )
+            .await,
+            Err(ConnectError::NoEndpoints)
+        ));
+        assert!(matches!(
+            Client::connect_endpoints_with_follow_endpoints(
+                ["https://data.invalid"],
+                std::iter::empty::<&str>(),
+                "fixture",
+            )
+            .await,
+            Err(ConnectError::NoEndpoints)
+        ));
+        assert!(matches!(
+            Client::connect_endpoints(std::iter::repeat("https://data.invalid"), "fixture",).await,
+            Err(ConnectError::EndpointLimit)
+        ));
+        let oversized = format!("https://{}.invalid", "x".repeat(MAX_ENDPOINT_URI_BYTES));
+        assert!(matches!(
+            Client::connect_endpoints([oversized], "fixture").await,
+            Err(ConnectError::EndpointLimit)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn default_https_pool_installs_tls_before_first_use()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let client = Client::connect("https://127.0.0.1:1", "fixture").await?;
+        let mut service = Client::service(&client.channels, 0);
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            service.tail(Request::new(wire::TailRequest {
+                path: "accounts/events".to_owned(),
+            })),
+        )
+        .await?
+        .err()
+        .ok_or("closed local endpoint unexpectedly answered")?;
+        assert!(
+            !error.to_string().contains("TLS is not enabled"),
+            "HTTPS channel was built without TLS: {error}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hung_operation_fails_over_without_truncating_a_healthy_slow_response()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let provider = Arc::new(FiniteFollow {
+            inner: MemoryStream::default(),
+            follows: AtomicUsize::new(0),
+            tail_delay: std::time::Duration::from_millis(600),
+        });
+        provider
+            .inner
+            .append(AppendRequest {
+                path: StreamPath::new("accounts/events")?,
+                records: vec![Bytes::from_static(b"seed")],
+                if_tail: Some(0),
+                idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"slow-tail"))?),
+            })
+            .await?;
+        let transport = Client::from_pools(
+            Arc::from([stalled_channel(), provider_channel(Service::new(provider))]),
+            Arc::from([unavailable_channel()]),
+            "fixture",
+        )?;
+        let tail = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            transport.tail(StreamPath::new("accounts/events")?),
+        )
+        .await??;
+        assert_eq!(tail, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn finite_reads_use_data_while_follows_use_the_independent_pool()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let data = Arc::new(MemoryStream::default());
+        let relay = Arc::new(MemoryStream::default());
+        for (provider, value, key) in [
+            (&data, Bytes::from_static(b"durable"), b"data".as_slice()),
+            (&relay, Bytes::from_static(b"relayed"), b"relay".as_slice()),
+        ] {
+            provider
+                .append(AppendRequest {
+                    path: StreamPath::new("accounts/events")?,
+                    records: vec![value],
+                    if_tail: Some(0),
+                    idempotency_key: Some(IdempotencyKey::new(Bytes::copy_from_slice(key))?),
+                })
+                .await?;
+        }
+
+        let transport = Client::from_pools(
+            Arc::from([unavailable_channel(), in_memory_channel(data)]),
+            Arc::from([stalled_channel(), in_memory_channel(relay)]),
+            "fixture",
+        )?;
+        let data_preferred = Arc::clone(&transport.preferred);
+        let follow_preferred = Arc::clone(&transport.follow_preferred);
+        let stream = crate::StreamClient::new(Arc::new(transport)).stream("accounts/events")?;
+
+        let finite = stream
+            .read(0, 1)
+            .await?
+            .next()
+            .await
+            .ok_or("finite read ended")??;
+        assert_eq!(finite.value, Bytes::from_static(b"durable"));
+        assert_eq!(data_preferred.load(Ordering::Relaxed), 1);
+        assert_eq!(follow_preferred.load(Ordering::Relaxed), 0);
+
+        let followed = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            stream
+                .follow(0)
+                .await?
+                .next()
+                .await
+                .ok_or(StreamError::Unavailable)?
+        })
+        .await??;
+        assert_eq!(followed.value, Bytes::from_static(b"relayed"));
+        assert_eq!(follow_preferred.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn clean_follow_eof_advances_once_to_the_next_endpoint()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let ended = Arc::new(FiniteFollow {
+            inner: MemoryStream::default(),
+            follows: AtomicUsize::new(0),
+            tail_delay: std::time::Duration::ZERO,
+        });
+        let durable = Arc::new(MemoryStream::default());
+        durable
+            .append(AppendRequest {
+                path: StreamPath::new("accounts/events")?,
+                records: vec![Bytes::from_static(b"resumed")],
+                if_tail: Some(0),
+                idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"resume"))?),
+            })
+            .await?;
+        let transport = Client::from_pools(
+            Arc::from([in_memory_channel(Arc::clone(&durable))]),
+            Arc::from([
+                provider_channel(Service::new(Arc::clone(&ended))),
+                in_memory_channel(durable),
+            ]),
+            "fixture",
+        )?;
+        let preferred = Arc::clone(&transport.follow_preferred);
+        let stream = crate::StreamClient::new(Arc::new(transport)).stream("accounts/events")?;
+
+        let record = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            stream
+                .follow(0)
+                .await?
+                .next()
+                .await
+                .ok_or(StreamError::Unavailable)?
+        })
+        .await??;
+        assert_eq!(record.value, Bytes::from_static(b"resumed"));
+        assert_eq!(ended.follows.load(Ordering::Relaxed), 1);
+        assert_eq!(preferred.load(Ordering::Relaxed), 1);
+
+        // A stale cursor cannot overwrite a newer successful endpoint choice.
+        let stale = RecordCursor {
+            client: Client::from_pools(
+                Arc::from([unavailable_channel()]),
+                Arc::from([unavailable_channel(), unavailable_channel()]),
+                "fixture",
+            )?,
+            path: StreamPath::new("accounts/events")?,
+            next: 0,
+            remaining: None,
+            active: None,
+        };
+        stale.client.follow_preferred.store(1, Ordering::Relaxed);
+        stale.advance_follow(0);
+        assert_eq!(stale.client.follow_preferred.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn lost_connection_dispatch_retries_but_peer_cancellation_does_not()

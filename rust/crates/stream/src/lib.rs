@@ -562,6 +562,56 @@ impl StreamClient<grpc::Client> {
             grpc::Client::connect(endpoint, bearer_token).await?,
         )))
     }
+
+    /// Connects ordinary operations and long-lived follows through independent endpoint pools.
+    ///
+    /// Put disposable Relay endpoints first in `follow_endpoints` and durable data endpoints
+    /// afterward for transparent fallback. Every operation other than `follow` uses only
+    /// `endpoints`.
+    pub async fn connect_with_follow_endpoints<I, S, F, T>(
+        endpoints: I,
+        follow_endpoints: F,
+        bearer_token: impl AsRef<str>,
+    ) -> Result<Self, grpc::ConnectError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+        F: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        Ok(Self::new(Arc::new(
+            grpc::Client::connect_endpoints_with_follow_endpoints(
+                endpoints,
+                follow_endpoints,
+                bearer_token,
+            )
+            .await?,
+        )))
+    }
+
+    /// Connects independent operation and follow pools through one pinned private CA.
+    pub async fn connect_with_follow_endpoints_and_ca_certificate<I, S, F, T>(
+        endpoints: I,
+        follow_endpoints: F,
+        bearer_token: impl AsRef<str>,
+        certificate_pem: impl AsRef<[u8]>,
+    ) -> Result<Self, grpc::ConnectError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+        F: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        Ok(Self::new(Arc::new(
+            grpc::Client::connect_endpoints_with_follow_endpoints_and_ca_certificate(
+                endpoints,
+                follow_endpoints,
+                bearer_token,
+                certificate_pem,
+            )
+            .await?,
+        )))
+    }
 }
 
 /// Handle to one permanent Stream path.
