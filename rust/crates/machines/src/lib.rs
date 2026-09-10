@@ -401,7 +401,9 @@ pub struct UsageReceipt {
     pub dedicated_cpu_ns: u64,
     pub private_resident_byte_seconds: u64,
     pub durable_private_bytes: u64,
-    pub lineage_shared_bytes: u64,
+    /// Commitment to the separately signed account-lineage storage receipt.
+    /// Zero is permitted only for process-local simulation.
+    pub lineage_receipt_sha256: [u8; 32],
     pub egress_bytes: u64,
     /// Provider-authenticated canonical receipt bytes; empty only for the in-memory provider.
     pub receipt: Vec<u8>,
@@ -1310,7 +1312,7 @@ impl MachinesProvider for SimulatedMachines {
             dedicated_cpu_ns: 0,
             private_resident_byte_seconds: 0,
             durable_private_bytes: 0,
-            lineage_shared_bytes: 0,
+            lineage_receipt_sha256: [0; 32],
             egress_bytes: 0,
             receipt: Vec::new(),
         })

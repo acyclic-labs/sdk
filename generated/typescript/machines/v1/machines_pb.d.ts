@@ -1157,9 +1157,18 @@ export declare type UsageReceipt = Message<"acyclic.machines.v1.UsageReceipt"> &
   durablePrivateBytes: bigint;
 
   /**
-   * @generated from field: uint64 lineage_shared_bytes = 8;
+   * Wire tombstone retained for v1 binary compatibility. Servers MUST emit zero;
+   * public clients do not expose or consume it.
+   *
+   * @generated from field: uint64 lineage_shared_bytes = 8 [deprecated = true];
+   * @deprecated
    */
   lineageSharedBytes: bigint;
+
+  /**
+   * @generated from field: bytes lineage_receipt_sha256 = 11;
+   */
+  lineageReceiptSha256: Uint8Array;
 
   /**
    * @generated from field: uint64 egress_bytes = 9;
