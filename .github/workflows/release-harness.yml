@@ -110,7 +110,7 @@ jobs:
           test "$(find . -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 10
       - name: Upload verified release bundle
         id: upload
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: harness-release-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/release-bundle/
