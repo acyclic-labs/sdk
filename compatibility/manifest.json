@@ -27,9 +27,9 @@
       "conformanceDigest": "sha256:a473cb36590f3d05d7c749f2e35c13e9783c2cbc8ef0bb569b91b2e88dbaad7b"
     },
     "machines": {
-      "version": "1.0.0-rc.1",
-      "schemaDigest": "sha256:eefa696e67e6343d0577cc1ca87b2f4089dff2e3418080a3239f4969fb99f887",
-      "descriptorDigest": "sha256:4257b05998e4b988f682bbaef3789e7eb50e9c85c0689e3462869dd6eed11ccb",
+      "version": "1.0.0-rc.2",
+      "schemaDigest": "sha256:0a512bd7c81d2fdaf2d4790869da6ed9b30795575c146f9ec9ba9a5f05d5fa2a",
+      "descriptorDigest": "sha256:8e3d25a892f893af32296162fbaa76cc4ffdad13b0e9388db8d38b1a8831666b",
       "conformanceDigest": "sha256:f51d232ae2f6c1bdc6ab283dcd18a2a31ce022ebcd5780c556c674a53aacda50"
     },
     "inference": {

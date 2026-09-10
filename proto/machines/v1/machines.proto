@@ -295,7 +295,10 @@ message UsageReceipt {
   uint64 dedicated_cpu_ns = 5;
   uint64 private_resident_byte_seconds = 6;
   uint64 durable_private_bytes = 7;
-  uint64 lineage_shared_bytes = 8;
+  // Wire tombstone retained for v1 binary compatibility. Servers MUST emit zero;
+  // public clients do not expose or consume it.
+  uint64 lineage_shared_bytes = 8 [deprecated = true];
+  bytes lineage_receipt_sha256 = 11;
   uint64 egress_bytes = 9;
   bytes receipt = 10;
 }

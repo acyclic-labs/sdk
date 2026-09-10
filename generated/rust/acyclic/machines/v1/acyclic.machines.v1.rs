@@ -417,8 +417,13 @@ pub struct UsageReceipt {
     pub private_resident_byte_seconds: u64,
     #[prost(uint64, tag = "7")]
     pub durable_private_bytes: u64,
+    /// Wire tombstone retained for v1 binary compatibility. Servers MUST emit zero;
+    /// public clients do not expose or consume it.
+    #[deprecated]
     #[prost(uint64, tag = "8")]
     pub lineage_shared_bytes: u64,
+    #[prost(bytes = "vec", tag = "11")]
+    pub lineage_receipt_sha256: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint64, tag = "9")]
     pub egress_bytes: u64,
     #[prost(bytes = "vec", tag = "10")]

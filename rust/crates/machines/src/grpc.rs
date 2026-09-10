@@ -500,25 +500,7 @@ impl MachinesProvider for GrpcProvider {
             .await
             .map_err(read_error)?
             .into_inner();
-        if decode_machine(value.machine.as_ref())? != machine
-            || value.start_unix_ms != start_unix_ms
-            || value.end_unix_ms != end_unix_ms
-            || value.receipt.is_empty()
-        {
-            return Err(ProviderError::Rejected("usage receipt is malformed".into()));
-        }
-        Ok(UsageReceipt {
-            machine,
-            start_unix_ms,
-            end_unix_ms,
-            elastic_cpu_ns: value.elastic_cpu_ns,
-            dedicated_cpu_ns: value.dedicated_cpu_ns,
-            private_resident_byte_seconds: value.private_resident_byte_seconds,
-            durable_private_bytes: value.durable_private_bytes,
-            lineage_shared_bytes: value.lineage_shared_bytes,
-            egress_bytes: value.egress_bytes,
-            receipt: value.receipt,
-        })
+        decode_usage_receipt(value, machine, start_unix_ms, end_unix_ms)
     }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         let value = self
@@ -1268,6 +1250,42 @@ fn read_error(value: tonic::Status) -> ProviderError {
     }
 }
 
+fn decode_usage_receipt(
+    value: wire::UsageReceipt,
+    machine: MachineId,
+    start_unix_ms: u64,
+    end_unix_ms: u64,
+) -> Result<UsageReceipt, ProviderError> {
+    let lineage_receipt_sha256: [u8; 32] = value
+        .lineage_receipt_sha256
+        .as_slice()
+        .try_into()
+        .map_err(|_| ProviderError::Rejected("lineage receipt identity is malformed".into()))?;
+    #[allow(deprecated)]
+    let legacy_lineage_shared_bytes = value.lineage_shared_bytes;
+    if decode_machine(value.machine.as_ref())? != machine
+        || value.start_unix_ms != start_unix_ms
+        || value.end_unix_ms != end_unix_ms
+        || value.receipt.is_empty()
+        || lineage_receipt_sha256 == [0; 32]
+        || legacy_lineage_shared_bytes != 0
+    {
+        return Err(ProviderError::Rejected("usage receipt is malformed".into()));
+    }
+    Ok(UsageReceipt {
+        machine,
+        start_unix_ms,
+        end_unix_ms,
+        elastic_cpu_ns: value.elastic_cpu_ns,
+        dedicated_cpu_ns: value.dedicated_cpu_ns,
+        private_resident_byte_seconds: value.private_resident_byte_seconds,
+        durable_private_bytes: value.durable_private_bytes,
+        lineage_receipt_sha256,
+        egress_bytes: value.egress_bytes,
+        receipt: value.receipt,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1303,6 +1321,32 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn managed_usage_rejects_missing_lineage_authority_and_legacy_quantity() {
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000001")
+            .unwrap_or_else(|_| unreachable!());
+        let receipt = |lineage_receipt_sha256: Vec<u8>, lineage_shared_bytes| {
+            #[allow(deprecated)]
+            wire::UsageReceipt {
+                machine: Some(encode_machine(machine)),
+                start_unix_ms: 1,
+                end_unix_ms: 2,
+                elastic_cpu_ns: 0,
+                dedicated_cpu_ns: 0,
+                private_resident_byte_seconds: 0,
+                durable_private_bytes: 0,
+                lineage_shared_bytes,
+                lineage_receipt_sha256,
+                egress_bytes: 0,
+                receipt: vec![1],
+            }
+        };
+        assert!(decode_usage_receipt(receipt(vec![7; 32], 0), machine, 1, 2).is_ok());
+        assert!(decode_usage_receipt(receipt(Vec::new(), 0), machine, 1, 2).is_err());
+        assert!(decode_usage_receipt(receipt(vec![0; 32], 0), machine, 1, 2).is_err());
+        assert!(decode_usage_receipt(receipt(vec![7; 32], 1), machine, 1, 2).is_err());
     }
 
     #[tokio::test]
