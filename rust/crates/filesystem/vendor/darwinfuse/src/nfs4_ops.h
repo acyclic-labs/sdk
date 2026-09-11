@@ -195,6 +195,11 @@
 #define OPEN4_NOCREATE             0
 #define OPEN4_CREATE               1
 
+/* createmode4 (RFC 7530 s16.16) */
+#define UNCHECKED4                 0
+#define GUARDED4                   1
+#define EXCLUSIVE4                 2
+
 /* Open claim types */
 #define CLAIM_NULL                 0
 #define CLAIM_PREVIOUS             1
