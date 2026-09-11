@@ -1,3 +1,3 @@
-# @acyclic/opencode
+# @acyclic-labs/opencode
 
-Independently versioned OpenCode-compatible model bridge for `@acyclic/harness`.
+Independently versioned OpenCode-compatible model bridge for `@acyclic-labs/harness`.

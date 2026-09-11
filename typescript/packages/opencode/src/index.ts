@@ -1,4 +1,4 @@
-import type { ModelAttempt, ModelEvent, ModelProvider, ModelRequest } from "@acyclic/harness";
+import type { ModelAttempt, ModelEvent, ModelProvider, ModelRequest } from "@acyclic-labs/harness";
 
 /** Independently versioned adapter for public OpenCode-compatible clients. */
 export function openCodeProvider(

@@ -69,9 +69,9 @@ type NativeModuleNamespace = NativeBindings & {
 async function bindings(): Promise<NativeBindings> {
   const target = `${platform}-${arch}`;
   if (!TARGETS.has(target)) {
-    throw new Error(`@acyclic/fs has no native companion for ${target}`);
+    throw new Error(`@acyclic-labs/fs has no native companion for ${target}`);
   }
-  bindingPromise ??= import(`@acyclic/fs-${target}`).then((module): NativeBindings => {
+  bindingPromise ??= import(`@acyclic-labs/fs-${target}`).then((module): NativeBindings => {
     const namespace = module as NativeModuleNamespace;
     const candidate =
       typeof namespace.nativeCapabilities === "function" ? namespace : namespace.default;
@@ -80,7 +80,7 @@ async function bindings(): Promise<NativeBindings> {
     }
     const capabilities = candidate.nativeCapabilities();
     if (capabilities.version !== PACKAGE_VERSION) {
-      throw new Error("native companion version does not match @acyclic/fs");
+      throw new Error("native companion version does not match @acyclic-labs/fs");
     }
     if (
       nativePlatform(capabilities.platform) !== platform ||

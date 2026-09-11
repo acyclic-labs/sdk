@@ -1,4 +1,4 @@
-import type { ProjectionStore } from "@acyclic/harness";
+import type { ProjectionStore } from "@acyclic-labs/harness";
 
 /** Minimal Svelte-readable view over one authoritative harness projection. */
 export function harnessReadable<State>(store: ProjectionStore<State>) {

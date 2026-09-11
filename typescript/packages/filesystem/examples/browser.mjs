@@ -1,7 +1,7 @@
 import {
   DEFAULT_OBJECT_CACHE_OPTIONS,
   openBrowserFs,
-} from "@acyclic/fs/browser";
+} from "@acyclic-labs/fs/browser";
 
 const fs = await openBrowserFs({
   databaseName: "acyclic-fs-example",

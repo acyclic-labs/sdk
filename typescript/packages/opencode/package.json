@@ -1,5 +1,5 @@
 {
-  "name": "@acyclic/opencode",
+  "name": "@acyclic-labs/opencode",
   "version": "0.1.0-rc.1",
   "description": "OpenCode-compatible model bridge for the Acyclic Agent Runtime",
   "repository": "https://github.com/acyclic-labs/sdk",
@@ -11,6 +11,6 @@
   "types": "./dist/index.d.ts",
   "files": ["dist"],
   "scripts": { "build": "tsc -b", "test": "tsc -b --pretty false" },
-  "peerDependencies": { "@acyclic/harness": "0.1.0-rc.1" },
-  "devDependencies": { "@acyclic/harness": "workspace:*", "typescript": "7.0.2" }
+  "peerDependencies": { "@acyclic-labs/harness": "0.1.0-rc.1" },
+  "devDependencies": { "@acyclic-labs/harness": "workspace:*", "typescript": "7.0.2" }
 }

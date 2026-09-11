@@ -1,4 +1,4 @@
-import type { ModelAttempt, ModelEvent, ModelProvider, ModelRequest } from "@acyclic/harness";
+import type { ModelAttempt, ModelEvent, ModelProvider, ModelRequest } from "@acyclic-labs/harness";
 
 /** Independently versioned adapter for public Pi-compatible streaming clients. */
 export function piProvider(

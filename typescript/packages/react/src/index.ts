@@ -1,4 +1,4 @@
-import type { ProjectionStore } from "@acyclic/harness";
+import type { ProjectionStore } from "@acyclic-labs/harness";
 import { useSyncExternalStore } from "react";
 
 /** Reads an authoritative harness projection using React's external-store contract. */

@@ -1,3 +1,3 @@
-# @acyclic/pi
+# @acyclic-labs/pi
 
-Independently versioned Pi-compatible model bridge for `@acyclic/harness`.
+Independently versioned Pi-compatible model bridge for `@acyclic-labs/harness`.

@@ -1,5 +1,5 @@
 {
-  "name": "@acyclic/sdk-workspace",
+  "name": "@acyclic-labs/sdk-workspace",
   "private": true,
   "version": "0.0.0",
   "workspaces": ["typescript/packages/*"],
@@ -8,7 +8,7 @@
     "check": "tsc -b --force --pretty false",
     "generate": "bun x buf generate && bun x buf build --path proto/filesystem -o rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin && bun scripts/sync-filesystem-generated.mjs",
     "check:generated": "bun scripts/check-generated.mjs",
-    "test": "bun run check && bun test typescript/packages && bun run --filter '@acyclic/fs' test",
+    "test": "bun run check && bun test typescript/packages && bun run --filter '@acyclic-labs/fs' test",
     "licenses": "bun scripts/check-js-licenses.mjs"
   },
   "devDependencies": {

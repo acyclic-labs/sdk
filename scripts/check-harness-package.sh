@@ -76,7 +76,7 @@ bun pm pack --ignore-scripts --filename "$bun_archive" --quiet
 
 mkdir "$work/consumer"
 cat >"$work/consumer/package.json" <<EOF
-{"private":true,"type":"module","dependencies":{"@acyclic/harness":"file:$bun_archive_url","@bufbuild/protobuf":"2.14.1","fake-indexeddb":"6.2.4"}}
+{"private":true,"type":"module","dependencies":{"@acyclic-labs/harness":"file:$bun_archive_url","@bufbuild/protobuf":"2.14.1","fake-indexeddb":"6.2.4"}}
 EOF
 cd "$work/consumer"
 bun install --ignore-scripts
@@ -86,7 +86,7 @@ install -m 0644 "$root/scripts/fixtures/installed-harness/src/proto.js" src/prot
 install -m 0644 "$root/scripts/fixtures/installed-harness/test/"*.test.ts test/
 install -m 0644 "$root/typescript/packages/harness/test/"*.test.ts test/
 install -m 0644 "$root/conformance/vectors/harness/native-wasm-event-v1.json" native-wasm-event-v1.json
-install -m 0644 node_modules/@acyclic/harness/generated/wasm/acyclic_harness_wasm_bg.wasm \
+install -m 0644 node_modules/@acyclic-labs/harness/generated/wasm/acyclic_harness_wasm_bg.wasm \
   generated/wasm/acyclic_harness_wasm_bg.wasm
 bun test test 2>&1 | tee "$work/typescript-package-test.log"
 

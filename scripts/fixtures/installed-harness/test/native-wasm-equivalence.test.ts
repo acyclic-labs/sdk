@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { readFileSync } from "node:fs";
-import { Harness, type Event, type OperationId } from "@acyclic/harness";
-import { AggregateKind, EventEnvelopeSchema } from "@acyclic/harness/proto";
+import { Harness, type Event, type OperationId } from "@acyclic-labs/harness";
+import { AggregateKind, EventEnvelopeSchema } from "@acyclic-labs/harness/proto";
 
 const fixture = JSON.parse(readFileSync(new URL("../native-wasm-event-v1.json", import.meta.url), "utf8")) as {
   event_wire_hex: string;
