@@ -22,7 +22,7 @@ jobs:
   displayName: linux
   pool:
     name: graphcoder-ci-linux
-  timeoutInMinutes: 15
+  timeoutInMinutes: 30
   cancelTimeoutInMinutes: 1
   condition: not(canceled())
   variables:
@@ -38,6 +38,8 @@ jobs:
     RAYON_NUM_THREADS: '2'
     MAKEFLAGS: '-j2'
     npm_config_jobs: '2'
+    CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    GIT_TERMINAL_PROMPT: '0'
     CARGO_TARGET_DIR: $(Agent.TempDirectory)/target/linux
     BUN_INSTALL_CACHE_DIR: $(Pipeline.Workspace)/.bun/install/cache
     NPM_CONFIG_CACHE: $(Pipeline.Workspace)/.npm
@@ -69,11 +71,17 @@ jobs:
       mkdir -p "$(CARGO_HOME)/registry" "$(CARGO_HOME)/git" "$(RUSTUP_HOME)/toolchains" "$(CARGO_TARGET_DIR)" "$(BUN_INSTALL_CACHE_DIR)" "$(NPM_CONFIG_CACHE)" "$(QUALIFICATION_TOOLS_ROOT)" "$(FORMAL_TOOLS_ROOT)" "$(FORMAL_RESULTS_ROOT)" "$(TOOLS_DIR)" "$(TF_PLUGIN_CACHE_DIR)" "$(PIP_CACHE_DIR)" "$(DOCKER_CACHE_DIR)" "$(GRYPE_DB_CACHE_DIR)" "$(SCCACHE_ARCHIVE_DIR)" "$(SCCACHE_DIR)"
   - bash: |
       set -euo pipefail
-      tree="$(git rev-parse 'HEAD^{tree}')"
+      export GIT_INDEX_FILE="${AGENT_TEMPDIRECTORY:?}/fleet-reuse-index"
+      rm -f -- "$GIT_INDEX_FILE"
+      git read-tree 'HEAD^{tree}'
+      git rm -r --cached --quiet --ignore-unmatch -- '.github'
+      tree="$(git write-tree)"
+      rm -f -- "$GIT_INDEX_FILE"
+      unset GIT_INDEX_FILE
       [[ "$tree" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]
       printf '##vso[task.setvariable variable=FLEET_SOURCE_TREE]%s\n' "$tree"
       printf '##vso[build.addbuildtag]qualified-tree-%s\n' "$tree"
-    displayName: Compute exact source tree identity
+    displayName: Compute reusable source tree identity
   - bash: |
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
@@ -307,7 +315,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=fetch
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" 'caaaae5cf2ac4574b3e876e555ee8fc8e1767d5d2460ea09ad72eed7d5d1b9b9' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" '5b042512c6538af63a1ac45f1d3637ef985fa6e7cfa03e779d3791792ecd8d68' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       rm -f -- "$helper"
     displayName: Find, download and verify exact successful job result
     env:
@@ -709,7 +717,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" 'caaaae5cf2ac4574b3e876e555ee8fc8e1767d5d2460ea09ad72eed7d5d1b9b9' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux' "${FLEET_SOURCE_TREE:?}" '5b042512c6538af63a1ac45f1d3637ef985fa6e7cfa03e779d3791792ecd8d68' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
@@ -741,6 +749,8 @@ jobs:
     RAYON_NUM_THREADS: '2'
     MAKEFLAGS: '-j2'
     npm_config_jobs: '2'
+    CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    GIT_TERMINAL_PROMPT: '0'
     CARGO_TARGET_DIR: $(Agent.TempDirectory)/target/policy
     BUN_INSTALL_CACHE_DIR: $(Pipeline.Workspace)/.bun/install/cache
     NPM_CONFIG_CACHE: $(Pipeline.Workspace)/.npm
@@ -1001,7 +1011,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=fetch
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" '637a4227dcc2efb83ada26f11648dfeb6f809fbdf373d6c070f880e6ec295fb8' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" '84fe56edee526bf89e541fd305a2db480b1d599382bf9f5ce5ffe8d64e33a1a0' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Find, download and verify exact successful job result
     env:
@@ -1320,7 +1330,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" '637a4227dcc2efb83ada26f11648dfeb6f809fbdf373d6c070f880e6ec295fb8' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" '84fe56edee526bf89e541fd305a2db480b1d599382bf9f5ce5ffe8d64e33a1a0' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
@@ -1352,6 +1362,8 @@ jobs:
     RAYON_NUM_THREADS: '2'
     MAKEFLAGS: '-j2'
     npm_config_jobs: '2'
+    CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    GIT_TERMINAL_PROMPT: '0'
     CARGO_TARGET_DIR: $(Agent.TempDirectory)/target/web
     BUN_INSTALL_CACHE_DIR: $(Pipeline.Workspace)/.bun/install/cache
     NPM_CONFIG_CACHE: $(Pipeline.Workspace)/.npm
@@ -1382,11 +1394,17 @@ jobs:
       mkdir -p "$(CARGO_HOME)/registry" "$(CARGO_HOME)/git" "$(RUSTUP_HOME)/toolchains" "$(CARGO_TARGET_DIR)" "$(BUN_INSTALL_CACHE_DIR)" "$(NPM_CONFIG_CACHE)" "$(QUALIFICATION_TOOLS_ROOT)" "$(FORMAL_TOOLS_ROOT)" "$(FORMAL_RESULTS_ROOT)" "$(TOOLS_DIR)" "$(TF_PLUGIN_CACHE_DIR)" "$(PIP_CACHE_DIR)" "$(DOCKER_CACHE_DIR)" "$(GRYPE_DB_CACHE_DIR)" "$(SCCACHE_ARCHIVE_DIR)" "$(SCCACHE_DIR)"
   - bash: |
       set -euo pipefail
-      tree="$(git rev-parse 'HEAD^{tree}')"
+      export GIT_INDEX_FILE="${AGENT_TEMPDIRECTORY:?}/fleet-reuse-index"
+      rm -f -- "$GIT_INDEX_FILE"
+      git read-tree 'HEAD^{tree}'
+      git rm -r --cached --quiet --ignore-unmatch -- '.github'
+      tree="$(git write-tree)"
+      rm -f -- "$GIT_INDEX_FILE"
+      unset GIT_INDEX_FILE
       [[ "$tree" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]
       printf '##vso[task.setvariable variable=FLEET_SOURCE_TREE]%s\n' "$tree"
       printf '##vso[build.addbuildtag]qualified-tree-%s\n' "$tree"
-    displayName: Compute exact source tree identity
+    displayName: Compute reusable source tree identity
   - bash: |
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
@@ -1620,7 +1638,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=fetch
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/web' "${FLEET_SOURCE_TREE:?}" '50b081765835b6b1c1c6709841abb263ab97c6e69511454ee25c36b223e14a18' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/web' "${FLEET_SOURCE_TREE:?}" '44574aba95c4e76b016c62e73b792a06d3c6fbbc84b097f1ef56ed625d7723df' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Find, download and verify exact successful job result
     env:
@@ -1954,7 +1972,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/web' "${FLEET_SOURCE_TREE:?}" '50b081765835b6b1c1c6709841abb263ab97c6e69511454ee25c36b223e14a18' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/web' "${FLEET_SOURCE_TREE:?}" '44574aba95c4e76b016c62e73b792a06d3c6fbbc84b097f1ef56ed625d7723df' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
@@ -1986,6 +2004,8 @@ jobs:
     RAYON_NUM_THREADS: '2'
     MAKEFLAGS: '-j2'
     npm_config_jobs: '2'
+    CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    GIT_TERMINAL_PROMPT: '0'
     CARGO_TARGET_DIR: $(Agent.TempDirectory)/target/linux-arm64
     BUN_INSTALL_CACHE_DIR: $(Pipeline.Workspace)/.bun/install/cache
     NPM_CONFIG_CACHE: $(Pipeline.Workspace)/.npm
@@ -2016,11 +2036,17 @@ jobs:
       mkdir -p "$(CARGO_HOME)/registry" "$(CARGO_HOME)/git" "$(RUSTUP_HOME)/toolchains" "$(CARGO_TARGET_DIR)" "$(BUN_INSTALL_CACHE_DIR)" "$(NPM_CONFIG_CACHE)" "$(QUALIFICATION_TOOLS_ROOT)" "$(FORMAL_TOOLS_ROOT)" "$(FORMAL_RESULTS_ROOT)" "$(TOOLS_DIR)" "$(TF_PLUGIN_CACHE_DIR)" "$(PIP_CACHE_DIR)" "$(DOCKER_CACHE_DIR)" "$(GRYPE_DB_CACHE_DIR)" "$(SCCACHE_ARCHIVE_DIR)" "$(SCCACHE_DIR)"
   - bash: |
       set -euo pipefail
-      tree="$(git rev-parse 'HEAD^{tree}')"
+      export GIT_INDEX_FILE="${AGENT_TEMPDIRECTORY:?}/fleet-reuse-index"
+      rm -f -- "$GIT_INDEX_FILE"
+      git read-tree 'HEAD^{tree}'
+      git rm -r --cached --quiet --ignore-unmatch -- '.github'
+      tree="$(git write-tree)"
+      rm -f -- "$GIT_INDEX_FILE"
+      unset GIT_INDEX_FILE
       [[ "$tree" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]
       printf '##vso[task.setvariable variable=FLEET_SOURCE_TREE]%s\n' "$tree"
       printf '##vso[build.addbuildtag]qualified-tree-%s\n' "$tree"
-    displayName: Compute exact source tree identity
+    displayName: Compute reusable source tree identity
   - bash: |
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
@@ -2254,7 +2280,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=fetch
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" '4cd2b6e13b93afa3cf7930a532f7524922527752415ab70b90f30bd1878a06de' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux-arm64' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" 'ba23d075277bb674a47076f6b425f6da10ad5e8d6e1128200897d84dcfd1e383' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux-arm64' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       rm -f -- "$helper"
     displayName: Find, download and verify exact successful job result
     env:
@@ -2636,7 +2662,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" '4cd2b6e13b93afa3cf7930a532f7524922527752415ab70b90f30bd1878a06de' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux-arm64' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/linux-arm64' "${FLEET_SOURCE_TREE:?}" 'ba23d075277bb674a47076f6b425f6da10ad5e8d6e1128200897d84dcfd1e383' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-linux-arm64' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
@@ -2668,6 +2694,8 @@ jobs:
     RAYON_NUM_THREADS: '2'
     MAKEFLAGS: '-j2'
     npm_config_jobs: '2'
+    CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    GIT_TERMINAL_PROMPT: '0'
     CARGO_TARGET_DIR: $(Agent.TempDirectory)/target/windows
     BUN_INSTALL_CACHE_DIR: $(Pipeline.Workspace)/.bun/install/cache
     NPM_CONFIG_CACHE: $(Pipeline.Workspace)/.npm
@@ -2698,11 +2726,20 @@ jobs:
       New-Item -ItemType Directory -Force -Path '$(CARGO_HOME)/registry','$(CARGO_HOME)/git','$(RUSTUP_HOME)/toolchains','$(CARGO_TARGET_DIR)','$(BUN_INSTALL_CACHE_DIR)','$(NPM_CONFIG_CACHE)','$(QUALIFICATION_TOOLS_ROOT)','$(FORMAL_TOOLS_ROOT)','$(FORMAL_RESULTS_ROOT)','$(TOOLS_DIR)','$(TF_PLUGIN_CACHE_DIR)','$(PIP_CACHE_DIR)','$(DOCKER_CACHE_DIR)','$(GRYPE_DB_CACHE_DIR)','$(SCCACHE_ARCHIVE_DIR)','$(SCCACHE_DIR)' | Out-Null
   - pwsh: |
       $ErrorActionPreference = 'Stop'
-      $tree = (git rev-parse 'HEAD^{tree}').Trim()
+      $env:GIT_INDEX_FILE = Join-Path $env:AGENT_TEMPDIRECTORY 'fleet-reuse-index'
+      if (Test-Path $env:GIT_INDEX_FILE) { Remove-Item $env:GIT_INDEX_FILE }
+      git read-tree 'HEAD^{tree}'
+      if ($LASTEXITCODE -ne 0) { throw 'reuse identity read-tree failed' }
+      git rm -r --cached --quiet --ignore-unmatch -- '.github'
+      if ($LASTEXITCODE -ne 0) { throw 'reuse identity filter failed' }
+      $tree = (git write-tree).Trim()
+      if ($LASTEXITCODE -ne 0) { throw 'reuse identity write-tree failed' }
+      Remove-Item $env:GIT_INDEX_FILE
+      Remove-Item Env:GIT_INDEX_FILE
       if ($tree -notmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') { throw 'invalid Git tree identity' }
       Write-Host "##vso[task.setvariable variable=FLEET_SOURCE_TREE]$tree"
       Write-Host "##vso[build.addbuildtag]qualified-tree-$tree"
-    displayName: Compute exact source tree identity
+    displayName: Compute reusable source tree identity
   - pwsh: |
       $ErrorActionPreference = 'Stop'
       $helper = @'
@@ -2937,7 +2974,7 @@ jobs:
       $helperPath = Join-Path '$(Agent.TempDirectory)' 'fleet-exact-reuse.py'
       [System.IO.File]::WriteAllText($helperPath, $helper, [System.Text.UTF8Encoding]::new($false))
       $mode = 'fetch'
-      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '0902ded05584457b856b9cf830ac6beb785f0622f44e8274140dde8dab4f434f' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-windows' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
+      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '2c526cd156edd6e04f888ee952cc8469e932e29fce786b0e2284bc5f64f348d1' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-windows' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       Remove-Item -LiteralPath $helperPath -Force
     displayName: Find, download and verify exact successful job result
     env:
@@ -3321,7 +3358,7 @@ jobs:
       $helperPath = Join-Path '$(Agent.TempDirectory)' 'fleet-exact-reuse.py'
       [System.IO.File]::WriteAllText($helperPath, $helper, [System.Text.UTF8Encoding]::new($false))
       $mode = 'stage'
-      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '0902ded05584457b856b9cf830ac6beb785f0622f44e8274140dde8dab4f434f' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-windows' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
+      & python $helperPath 100000 2147483648 $mode '$(Pipeline.Workspace)/.qualified/windows' $env:FLEET_SOURCE_TREE '2c526cd156edd6e04f888ee952cc8469e932e29fce786b0e2284bc5f64f348d1' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-windows' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       Remove-Item -LiteralPath $helperPath -Force
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
@@ -3354,6 +3391,8 @@ jobs:
     RAYON_NUM_THREADS: '2'
     MAKEFLAGS: '-j2'
     npm_config_jobs: '2'
+    CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    GIT_TERMINAL_PROMPT: '0'
     CARGO_TARGET_DIR: $(Agent.TempDirectory)/target/macos
     BUN_INSTALL_CACHE_DIR: $(Pipeline.Workspace)/.bun/install/cache
     NPM_CONFIG_CACHE: $(Pipeline.Workspace)/.npm
@@ -3384,11 +3423,17 @@ jobs:
       mkdir -p "$(CARGO_HOME)/registry" "$(CARGO_HOME)/git" "$(RUSTUP_HOME)/toolchains" "$(CARGO_TARGET_DIR)" "$(BUN_INSTALL_CACHE_DIR)" "$(NPM_CONFIG_CACHE)" "$(QUALIFICATION_TOOLS_ROOT)" "$(FORMAL_TOOLS_ROOT)" "$(FORMAL_RESULTS_ROOT)" "$(TOOLS_DIR)" "$(TF_PLUGIN_CACHE_DIR)" "$(PIP_CACHE_DIR)" "$(DOCKER_CACHE_DIR)" "$(GRYPE_DB_CACHE_DIR)" "$(SCCACHE_ARCHIVE_DIR)" "$(SCCACHE_DIR)"
   - bash: |
       set -euo pipefail
-      tree="$(git rev-parse 'HEAD^{tree}')"
+      export GIT_INDEX_FILE="${AGENT_TEMPDIRECTORY:?}/fleet-reuse-index"
+      rm -f -- "$GIT_INDEX_FILE"
+      git read-tree 'HEAD^{tree}'
+      git rm -r --cached --quiet --ignore-unmatch -- '.github'
+      tree="$(git write-tree)"
+      rm -f -- "$GIT_INDEX_FILE"
+      unset GIT_INDEX_FILE
       [[ "$tree" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]
       printf '##vso[task.setvariable variable=FLEET_SOURCE_TREE]%s\n' "$tree"
       printf '##vso[build.addbuildtag]qualified-tree-%s\n' "$tree"
-    displayName: Compute exact source tree identity
+    displayName: Compute reusable source tree identity
   - bash: |
       set -euo pipefail
       helper='$(Agent.TempDirectory)/fleet-exact-reuse.py'
@@ -3622,7 +3667,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=fetch
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '258f25550446980fac054ea7b74c95f060b88c6873ab68f60c3cc27cc432b2f2' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-macos' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '0779820b271b2373c40baeb83fa771ad0d90b7c0e2781a3684d4677fe266e46a' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-macos' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       rm -f -- "$helper"
     displayName: Find, download and verify exact successful job result
     env:
@@ -4006,7 +4051,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '258f25550446980fac054ea7b74c95f060b88c6873ab68f60c3cc27cc432b2f2' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-macos' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/macos' "${FLEET_SOURCE_TREE:?}" '0779820b271b2373c40baeb83fa771ad0d90b7c0e2781a3684d4677fe266e46a' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)' 'packages-macos' '$(Build.ArtifactStagingDirectory)/packages' '$(Build.ArtifactStagingDirectory)/packages'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
