@@ -410,14 +410,14 @@ mod tests {
             suite_version: suite.version,
             suite_digest: harness_suite_digest(),
             subject: Subject {
-                name: "@acyclic/harness".into(),
+                name: "@acyclic-labs/harness".into(),
                 version: "0.1.0-rc.1".into(),
                 source_revision: "0123456789abcdef0123456789abcdef01234567".into(),
                 artifact_digest: digest(b"artifact"),
             },
             runner: RunnerIdentity {
                 language: "typescript".into(),
-                name: "@acyclic/harness/conformance".into(),
+                name: "@acyclic-labs/harness/conformance".into(),
                 version: "0.1.0-rc.1".into(),
             },
             protocol_identity: harness_protocol_identity(),
