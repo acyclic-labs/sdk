@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@acyclic/sdk-workspace",
+      "name": "@acyclic-labs/sdk-workspace",
       "devDependencies": {
         "@bufbuild/buf": "1.72.0",
         "@bufbuild/protoc-gen-es": "2.14.1",
