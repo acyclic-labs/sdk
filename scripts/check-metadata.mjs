@@ -27,7 +27,7 @@ const harnessVersion = compatibility.families.harness.version;
 const streamVersion = compatibility.families.stream.version;
 const harnessPackage = await load("typescript/packages/harness/package.json");
 const sdkPackage = await load("typescript/packages/sdk/package.json");
-if (harnessPackage.version !== harnessVersion || sdkPackage.dependencies["@acyclic/harness"] !== harnessVersion) {
+if (harnessPackage.version !== harnessVersion || sdkPackage.dependencies["@acyclic-labs/harness"] !== harnessVersion) {
   throw new Error("Harness npm and umbrella dependency versions must match compatibility metadata");
 }
 const workspaceManifest = await readFile(new URL("Cargo.toml", root), "utf8");

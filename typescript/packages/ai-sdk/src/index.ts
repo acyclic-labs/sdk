@@ -1,4 +1,4 @@
-import type { ModelAttempt, ModelEvent, ModelProvider, ModelRequest } from "@acyclic/harness";
+import type { ModelAttempt, ModelEvent, ModelProvider, ModelRequest } from "@acyclic-labs/harness";
 
 export interface AiSdkStreamResult { readonly fullStream: AsyncIterable<unknown> }
 export type AiSdkStreamText = (request: ModelRequest, providerModel: unknown) => AiSdkStreamResult | Promise<AiSdkStreamResult>;

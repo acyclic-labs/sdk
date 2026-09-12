@@ -21,17 +21,17 @@ elif command -v wslpath >/dev/null 2>&1; then
 fi
 
 cd "$root"
-bun run --filter '@acyclic/inference' build
+bun run --filter '@acyclic-labs/inference' build
 bun test typescript/packages/inference/test
 cd typescript/packages/inference
 bun pm pack --ignore-scripts --filename "$bun_archive" --quiet
 mkdir "$work/consumer"
 cat >"$work/consumer/package.json" <<EOF
-{"private":true,"type":"module","dependencies":{"@acyclic/inference":"file:$bun_archive_url"}}
+{"private":true,"type":"module","dependencies":{"@acyclic-labs/inference":"file:$bun_archive_url"}}
 EOF
 cat >"$work/consumer/smoke.mjs" <<'EOF'
-import { InferenceClient, ListModelsResponseSchema } from "@acyclic/inference";
-import { RunViewSchema } from "@acyclic/inference/proto";
+import { InferenceClient, ListModelsResponseSchema } from "@acyclic-labs/inference";
+import { RunViewSchema } from "@acyclic-labs/inference/proto";
 if (ListModelsResponseSchema.typeName !== "inference.customer.v1.ListModelsResponse" ||
     RunViewSchema.typeName !== "inference.customer.v1.RunView") throw new Error("inference schemas missing");
 const client = new InferenceClient({

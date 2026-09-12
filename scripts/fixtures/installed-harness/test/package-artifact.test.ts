@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { Harness } from "@acyclic/harness";
-import { HandshakeRequestSchema } from "@acyclic/harness/proto";
+import { Harness } from "@acyclic-labs/harness";
+import { HandshakeRequestSchema } from "@acyclic-labs/harness/proto";
 
 test("installed package resolves its protobuf and default WASM artifacts", async () => {
   expect(HandshakeRequestSchema.typeName).toBe("acyclic.harness.v1.HandshakeRequest");

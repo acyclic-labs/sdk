@@ -2,7 +2,7 @@
   "$schema": "../compatibility/schemas/package-names.schema.json",
   "families": {
     "rust": { "registry": "crates.io", "umbrella": "acyclic-sdk", "implemented": true },
-    "typescript": { "registry": "npm", "umbrella": "@acyclic/sdk", "implemented": true },
+    "typescript": { "registry": "npm", "umbrella": "@acyclic-labs/sdk", "implemented": true },
     "python": { "registry": "PyPI", "umbrella": "acyclic-sdk", "implemented": false },
     "go": { "registry": "Go modules", "umbrella": "github.com/acyclic-labs/sdk/go", "implemented": false },
     "jvm": { "registry": "Maven Central", "umbrella": "dev.acyclic:acyclic-sdk", "implemented": false },

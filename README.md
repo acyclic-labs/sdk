@@ -18,7 +18,7 @@ until their family version is published and tagged.
   and custom-executor APIs; Stream-backed memory/retrieval/skills revisions,
   digest-bound compaction, and a complete coding host-adapter bundle remain
   ordinary code-defined compositions.
-- A framework-neutral `@acyclic/harness` WASM/client package with reconnect,
+- A framework-neutral `@acyclic-labs/harness` WASM/client package with reconnect,
   generation-fenced cursors, an explicit-namespace atomic bounded IndexedDB cursor/outbox store,
   bounded hydration, and
   bidirectional pagination; thin React and Svelte bindings remain separate.
@@ -30,7 +30,7 @@ until their family version is published and tagged.
 - Explicit Filesystem and Machines integration crates. Filesystem workspaces
   support exact-generation reads and atomic idempotent mutation batches;
   Machines references remain opaque and provider-bound.
-- Native dependency-free OpenAI-compatible streaming in `@acyclic/harness`,
+- Native dependency-free OpenAI-compatible streaming in `@acyclic-labs/harness`,
   plus separately versioned AI SDK, Pi, and OpenCode bridge packages.
 - In-memory Filesystem, Stream, Objects, Machines, and Inference providers.
 - A single canonical Filesystem engine over the public Stream and Objects

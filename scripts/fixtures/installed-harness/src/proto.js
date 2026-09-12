@@ -1,1 +1,1 @@
-export * from "@acyclic/harness/proto";
+export * from "@acyclic-labs/harness/proto";

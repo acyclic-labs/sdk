@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@acyclic/sdk-workspace",
+      "name": "@acyclic-labs/sdk-workspace",
       "devDependencies": {
         "@bufbuild/buf": "1.72.0",
         "@bufbuild/protoc-gen-es": "2.14.1",
@@ -13,19 +13,19 @@
       },
     },
     "typescript/packages/ai-sdk": {
-      "name": "@acyclic/ai-sdk",
+      "name": "@acyclic-labs/ai-sdk",
       "version": "0.1.0-rc.1",
       "devDependencies": {
-        "@acyclic/harness": "workspace:*",
+        "@acyclic-labs/harness": "workspace:*",
         "typescript": "7.0.2",
       },
       "peerDependencies": {
-        "@acyclic/harness": "0.1.0-rc.1",
+        "@acyclic-labs/harness": "0.1.0-rc.1",
         "ai": ">=5",
       },
     },
     "typescript/packages/filesystem": {
-      "name": "@acyclic/fs",
+      "name": "@acyclic-labs/fs",
       "version": "0.2.0-rc.1",
       "dependencies": {
         "@bufbuild/protobuf": "2.14.1",
@@ -38,7 +38,7 @@
       },
     },
     "typescript/packages/harness": {
-      "name": "@acyclic/harness",
+      "name": "@acyclic-labs/harness",
       "version": "0.1.0-rc.1",
       "dependencies": {
         "@bufbuild/protobuf": "2.14.1",
@@ -50,7 +50,7 @@
       },
     },
     "typescript/packages/inference": {
-      "name": "@acyclic/inference",
+      "name": "@acyclic-labs/inference",
       "version": "1.0.0-rc.3",
       "dependencies": {
         "@bufbuild/protobuf": "2.14.1",
@@ -61,113 +61,113 @@
       },
     },
     "typescript/packages/machines": {
-      "name": "@acyclic/machines",
+      "name": "@acyclic-labs/machines",
       "version": "1.0.0-rc.1",
       "devDependencies": {
         "typescript": "7.0.2",
       },
     },
     "typescript/packages/objects": {
-      "name": "@acyclic/objects",
+      "name": "@acyclic-labs/objects",
       "version": "1.0.0-rc.1",
       "devDependencies": {
         "typescript": "7.0.2",
       },
     },
     "typescript/packages/opencode": {
-      "name": "@acyclic/opencode",
+      "name": "@acyclic-labs/opencode",
       "version": "0.1.0-rc.1",
       "devDependencies": {
-        "@acyclic/harness": "workspace:*",
+        "@acyclic-labs/harness": "workspace:*",
         "typescript": "7.0.2",
       },
       "peerDependencies": {
-        "@acyclic/harness": "0.1.0-rc.1",
+        "@acyclic-labs/harness": "0.1.0-rc.1",
       },
     },
     "typescript/packages/pi": {
-      "name": "@acyclic/pi",
+      "name": "@acyclic-labs/pi",
       "version": "0.1.0-rc.1",
       "devDependencies": {
-        "@acyclic/harness": "workspace:*",
+        "@acyclic-labs/harness": "workspace:*",
         "typescript": "7.0.2",
       },
       "peerDependencies": {
-        "@acyclic/harness": "0.1.0-rc.1",
+        "@acyclic-labs/harness": "0.1.0-rc.1",
       },
     },
     "typescript/packages/react": {
-      "name": "@acyclic/react",
+      "name": "@acyclic-labs/react",
       "version": "0.1.0-rc.1",
       "devDependencies": {
-        "@acyclic/harness": "workspace:*",
+        "@acyclic-labs/harness": "workspace:*",
         "@types/react": "19.1.12",
         "typescript": "7.0.2",
       },
       "peerDependencies": {
-        "@acyclic/harness": "0.1.0-rc.1",
+        "@acyclic-labs/harness": "0.1.0-rc.1",
         "react": ">=18",
       },
     },
     "typescript/packages/sdk": {
-      "name": "@acyclic/sdk",
+      "name": "@acyclic-labs/sdk",
       "version": "0.1.0-rc.1",
       "dependencies": {
-        "@acyclic/fs": "0.2.0-rc.1",
-        "@acyclic/harness": "0.1.0-rc.1",
-        "@acyclic/inference": "1.0.0-rc.1",
-        "@acyclic/machines": "1.0.0-rc.1",
-        "@acyclic/objects": "1.0.0-rc.1",
-        "@acyclic/stream": "1.0.0-rc.1",
+        "@acyclic-labs/fs": "0.2.0-rc.1",
+        "@acyclic-labs/harness": "0.1.0-rc.1",
+        "@acyclic-labs/inference": "1.0.0-rc.3",
+        "@acyclic-labs/machines": "1.0.0-rc.1",
+        "@acyclic-labs/objects": "1.0.0-rc.1",
+        "@acyclic-labs/stream": "1.0.0-rc.1",
       },
       "devDependencies": {
         "typescript": "7.0.2",
       },
     },
     "typescript/packages/stream": {
-      "name": "@acyclic/stream",
+      "name": "@acyclic-labs/stream",
       "version": "1.0.0-rc.1",
       "devDependencies": {
         "typescript": "7.0.2",
       },
     },
     "typescript/packages/svelte": {
-      "name": "@acyclic/svelte",
+      "name": "@acyclic-labs/svelte",
       "version": "0.1.0-rc.1",
       "devDependencies": {
-        "@acyclic/harness": "workspace:*",
+        "@acyclic-labs/harness": "workspace:*",
         "typescript": "7.0.2",
       },
       "peerDependencies": {
-        "@acyclic/harness": "0.1.0-rc.1",
+        "@acyclic-labs/harness": "0.1.0-rc.1",
         "svelte": ">=5",
       },
     },
   },
   "packages": {
-    "@acyclic/ai-sdk": ["@acyclic/ai-sdk@workspace:typescript/packages/ai-sdk"],
+    "@acyclic-labs/ai-sdk": ["@acyclic-labs/ai-sdk@workspace:typescript/packages/ai-sdk"],
 
-    "@acyclic/fs": ["@acyclic/fs@workspace:typescript/packages/filesystem"],
+    "@acyclic-labs/fs": ["@acyclic-labs/fs@workspace:typescript/packages/filesystem"],
 
-    "@acyclic/harness": ["@acyclic/harness@workspace:typescript/packages/harness"],
+    "@acyclic-labs/harness": ["@acyclic-labs/harness@workspace:typescript/packages/harness"],
 
-    "@acyclic/inference": ["@acyclic/inference@workspace:typescript/packages/inference"],
+    "@acyclic-labs/inference": ["@acyclic-labs/inference@workspace:typescript/packages/inference"],
 
-    "@acyclic/machines": ["@acyclic/machines@workspace:typescript/packages/machines"],
+    "@acyclic-labs/machines": ["@acyclic-labs/machines@workspace:typescript/packages/machines"],
 
-    "@acyclic/objects": ["@acyclic/objects@workspace:typescript/packages/objects"],
+    "@acyclic-labs/objects": ["@acyclic-labs/objects@workspace:typescript/packages/objects"],
 
-    "@acyclic/opencode": ["@acyclic/opencode@workspace:typescript/packages/opencode"],
+    "@acyclic-labs/opencode": ["@acyclic-labs/opencode@workspace:typescript/packages/opencode"],
 
-    "@acyclic/pi": ["@acyclic/pi@workspace:typescript/packages/pi"],
+    "@acyclic-labs/pi": ["@acyclic-labs/pi@workspace:typescript/packages/pi"],
 
-    "@acyclic/react": ["@acyclic/react@workspace:typescript/packages/react"],
+    "@acyclic-labs/react": ["@acyclic-labs/react@workspace:typescript/packages/react"],
 
-    "@acyclic/sdk": ["@acyclic/sdk@workspace:typescript/packages/sdk"],
+    "@acyclic-labs/sdk": ["@acyclic-labs/sdk@workspace:typescript/packages/sdk"],
 
-    "@acyclic/stream": ["@acyclic/stream@workspace:typescript/packages/stream"],
+    "@acyclic-labs/stream": ["@acyclic-labs/stream@workspace:typescript/packages/stream"],
 
-    "@acyclic/svelte": ["@acyclic/svelte@workspace:typescript/packages/svelte"],
+    "@acyclic-labs/svelte": ["@acyclic-labs/svelte@workspace:typescript/packages/svelte"],
 
     "@ai-sdk/gateway": ["@ai-sdk/gateway@4.0.75", "", { "dependencies": { "@ai-sdk/provider": "4.0.10", "@ai-sdk/provider-utils": "5.0.36", "@vercel/oidc": "3.2.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-HOnhw3oXtBnboBF7kAKipjToCN6+5w6EuukiUKiULcxBitS+vbHRRv9IUBcq+Z1wkXcJjfywKrt5r++I6OYyXg=="],
 
