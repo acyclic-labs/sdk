@@ -48,7 +48,7 @@ tonic-prost = "0.14.6"
 tonic-prost-build = "0.14.6"
 tonic-web = "0.14.2"
 tower = "0.5.3"
-tower-http = { version = "0.6.8", features = ["cors"] }
+tower-http = { version = "0.7.1", features = ["cors"] }
 unicode-normalization = "0.1.25"
 uuid = { version = "1.25.0", features = ["js", "serde", "v4", "v7"] }
 zeroize = "1.8.2"
