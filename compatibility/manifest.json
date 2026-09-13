@@ -15,7 +15,7 @@
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {
-      "version": "1.0.0-rc.3",
+      "version": "1.0.0-rc.4",
       "schemaDigest": "sha256:975f0a4ba0e24fe42316c86456e3870f61f07624eec0b430617fa8a3fdd0c305",
       "descriptorDigest": "sha256:d69361b6290d521113a65a35dfe1ff8988a8f670c6ddf6535242aee3df871d0b",
       "conformanceDigest": "sha256:a5f3b11cedd1df8b01ca9fdd9b1351475f2f2cd2bcf7ff46c332978f65336aae"

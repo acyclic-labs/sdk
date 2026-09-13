@@ -1,6 +1,6 @@
 [package]
 name = "acyclic-stream"
-version = "1.0.0-rc.3"
+version = "1.0.0-rc.4"
 edition.workspace = true
 rust-version = "1.92"
 license.workspace = true
@@ -39,8 +39,10 @@ tonic-prost-build.workspace = true
 [dev-dependencies]
 hyper = { version = "1.11.0", default-features = false, features = ["client", "http2"] }
 hyper-util.workspace = true
+rcgen = "0.14.10"
 tempfile = "3.27.0"
 tokio = { version = "1.48.0", features = ["test-util"] }
+tokio-stream.workspace = true
 tower.workspace = true
 
 [lints]

@@ -276,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-stream"
-version = "1.0.0-rc.3"
+version = "1.0.0-rc.4"
 dependencies = [
  "async-trait",
  "bytes",
@@ -288,10 +288,12 @@ dependencies = [
  "libc",
  "prost",
  "protoc-bin-vendored",
+ "rcgen",
  "sha2 0.10.9",
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
