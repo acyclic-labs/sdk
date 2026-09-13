@@ -7,8 +7,8 @@ pub mod runner;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs};
 use acyclic_machines::{
-    CreateMachine, IdempotencyKey, Image, MachineState, MachinesProvider, MutationOutcome,
-    OperationPhase, Performance,
+    Capability, CompatibilityPolicy, CreateMachine, IdempotencyKey, Image, MachineState,
+    MachinesProvider, MutationOutcome, OperationPhase, Performance, ProviderError,
 };
 use acyclic_objects::{GetRequest, ObjectsProvider, PutRequest, ReadTarget, wire};
 use acyclic_stream::{
@@ -281,12 +281,49 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
             .map_err(|error| error.to_string())
     };
     let assurance = provider.assurance();
+    let image = Image::custom([7; 32]).map_err(|error| error.to_string())?;
+    let qualification = provider
+        .qualify_image(image.clone())
+        .await
+        .map_err(|error| error.to_string())?;
+    if qualification.image != image {
+        return Err("image qualification substituted its immutable image".into());
+    }
+    let capability_cases = [
+        (Capability::ElasticCpu, 0x10, 0x20),
+        (Capability::ElasticMemory, 0x11, 0x21),
+        (Capability::LiveCheckpoint, 0x12, 0x22),
+        (Capability::LiveFork, 0x13, 0x23),
+        (Capability::SuspendResume, 0x14, 0x24),
+        (Capability::LiveMovement, 0x15, 0x25),
+    ];
+    for (capability, create_suffix, destroy_suffix) in capability_cases {
+        let required = std::collections::BTreeSet::from([capability]);
+        let mut capability_request =
+            CreateMachine::new(key(create_suffix)?, image.clone(), [8; 32]);
+        capability_request.compatibility = CompatibilityPolicy::Require(required.clone());
+        let admission = provider.create(capability_request).await;
+        if qualification.capabilities.contains(&capability) {
+            let MutationOutcome::Created(observation) =
+                admission.map_err(|error| error.to_string())?
+            else {
+                return Err("supported capability returned the wrong create outcome".into());
+            };
+            if observation.contract.compatibility != CompatibilityPolicy::Require(required)
+                || !observation.contract.capabilities.contains(&capability)
+            {
+                return Err("required capability was not retained in the machine contract".into());
+            }
+            provider
+                .destroy_machine(observation.id, key(destroy_suffix)?)
+                .await
+                .map_err(|error| error.to_string())?;
+        } else if !matches!(admission, Err(ProviderError::Unsupported(_))) {
+            return Err("unsupported capability intent did not fail explicitly".into());
+        }
+    }
     let create_key = key(1)?;
-    let request = CreateMachine::new(
-        create_key,
-        Image::custom([7; 32]).map_err(|error| error.to_string())?,
-        [8; 32],
-    );
+    let request = CreateMachine::new(create_key, image, [8; 32]);
     let created = provider
         .create(request.clone())
         .await

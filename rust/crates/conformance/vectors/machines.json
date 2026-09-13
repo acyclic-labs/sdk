@@ -16,6 +16,7 @@
     "usage-interval-is-half-open",
     "destroy-retains-terminal-observation",
     "indeterminate-recovery-never-redispatches",
-    "operation-inspect-cancel-and-watch-are-correlated"
+    "operation-inspect-cancel-and-watch-are-correlated",
+    "all-six-capability-intents-round-trip"
   ]
 }
