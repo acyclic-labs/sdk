@@ -8,12 +8,14 @@
 )]
 
 use async_trait::async_trait;
+use futures::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     num::NonZeroU32,
+    pin::Pin,
     sync::Arc,
     time::Duration,
 };
@@ -450,6 +452,10 @@ pub struct OperationObservation {
     pub phase: OperationPhase,
 }
 
+/// Bounded-memory stream of correlated operation observations.
+pub type OperationStream =
+    Pin<Box<dyn Stream<Item = Result<OperationObservation, ProviderError>> + Send + 'static>>;
+
 /// Provider-boundary failure.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ProviderError {
@@ -549,6 +555,10 @@ pub trait MachinesProvider: Send + Sync {
         operation: OperationId,
     ) -> Result<OperationObservation, ProviderError>;
     async fn cancel(&self, operation: OperationId) -> Result<OperationObservation, ProviderError>;
+    async fn watch_operation(
+        &self,
+        operation: OperationId,
+    ) -> Result<OperationStream, ProviderError>;
 }
 
 /// Customer-level client over one provider.
@@ -585,6 +595,27 @@ impl Machines {
     }
     pub async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         self.provider.recover(key).await
+    }
+    /// Reads the latest state of one exact admitted operation.
+    pub async fn inspect_operation(
+        &self,
+        operation: OperationId,
+    ) -> Result<OperationObservation, ProviderError> {
+        self.provider.inspect_operation(operation).await
+    }
+    /// Requests cancellation of one exact admitted operation and returns its latest state.
+    pub async fn cancel_operation(
+        &self,
+        operation: OperationId,
+    ) -> Result<OperationObservation, ProviderError> {
+        self.provider.cancel(operation).await
+    }
+    /// Watches correlated state changes for one exact admitted operation.
+    pub async fn watch_operation(
+        &self,
+        operation: OperationId,
+    ) -> Result<OperationStream, ProviderError> {
+        self.provider.watch_operation(operation).await
     }
     pub async fn list(
         &self,
@@ -1354,6 +1385,13 @@ impl MachinesProvider for SimulatedMachines {
             Ok(value)
         }
     }
+    async fn watch_operation(
+        &self,
+        operation: OperationId,
+    ) -> Result<OperationStream, ProviderError> {
+        let observation = self.inspect_operation(operation).await?;
+        Ok(stream::once(async move { Ok(observation) }).boxed())
+    }
 }
 
 fn transition(
@@ -1453,6 +1491,47 @@ mod tests {
             .unwrap_or_else(|_| unreachable!());
         assert!(machine.inspect().await.is_ok());
         assert!(children[0].inspect().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn operation_control_is_correlated_and_deterministic() {
+        let provider = Arc::new(SimulatedMachines::default());
+        let machines = Machines::new(provider);
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-00000000000c")
+            .unwrap_or_else(|_| unreachable!());
+        machines
+            .create(request(key))
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let operation = SimulatedMachines::operation(key);
+        let expected = OperationObservation {
+            id: operation,
+            phase: OperationPhase::Succeeded,
+        };
+
+        assert_eq!(machines.inspect_operation(operation).await, Ok(expected));
+        assert_eq!(machines.cancel_operation(operation).await, Ok(expected));
+        let mut observations = machines
+            .watch_operation(operation)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(observations.next().await, Some(Ok(expected)));
+        assert_eq!(observations.next().await, None);
+
+        let unknown = OperationId::parse("00000000-0000-0000-0000-00000000000d")
+            .unwrap_or_else(|_| unreachable!());
+        assert!(matches!(
+            machines.inspect_operation(unknown).await,
+            Err(ProviderError::NotFound(_))
+        ));
+        assert!(matches!(
+            machines.cancel_operation(unknown).await,
+            Err(ProviderError::NotFound(_))
+        ));
+        assert!(matches!(
+            machines.watch_operation(unknown).await,
+            Err(ProviderError::NotFound(_))
+        ));
     }
 
     #[test]

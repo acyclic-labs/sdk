@@ -533,6 +533,23 @@ impl MachinesProvider for GrpcProvider {
             .map_err(read_error)
             .and_then(|response| decode_operation_observation(response.into_inner(), operation))
     }
+    async fn watch_operation(
+        &self,
+        operation: OperationId,
+    ) -> Result<OperationStream, ProviderError> {
+        let stream = self
+            .client()
+            .watch_operation(operation_request(operation))
+            .await
+            .map_err(read_error)?
+            .into_inner()
+            .map(move |value| {
+                value
+                    .map_err(read_error)
+                    .and_then(|value| decode_operation_observation(value, operation))
+            });
+        Ok(Box::pin(stream))
+    }
 }
 
 enum MachineMutation {
@@ -1321,6 +1338,24 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn all_capability_intents_round_trip_through_the_wire() {
+        let capabilities = [
+            Capability::ElasticCpu,
+            Capability::ElasticMemory,
+            Capability::LiveCheckpoint,
+            Capability::LiveFork,
+            Capability::SuspendResume,
+            Capability::LiveMovement,
+        ];
+        for capability in capabilities {
+            assert_eq!(
+                decode_capability(encode_capability(capability)),
+                Ok(capability)
+            );
+        }
     }
 
     #[test]
