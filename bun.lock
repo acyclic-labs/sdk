@@ -118,7 +118,7 @@
         "@acyclic-labs/inference": "1.0.0-rc.3",
         "@acyclic-labs/machines": "1.0.0-rc.1",
         "@acyclic-labs/objects": "1.0.0-rc.1",
-        "@acyclic-labs/stream": "1.0.0-rc.1",
+        "@acyclic-labs/stream": "1.0.0-rc.4",
       },
       "devDependencies": {
         "typescript": "7.0.2",
@@ -126,7 +126,7 @@
     },
     "typescript/packages/stream": {
       "name": "@acyclic-labs/stream",
-      "version": "1.0.0-rc.1",
+      "version": "1.0.0-rc.4",
       "devDependencies": {
         "typescript": "7.0.2",
       },

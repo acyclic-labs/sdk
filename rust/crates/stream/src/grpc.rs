@@ -39,6 +39,8 @@ const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 pub const MAX_ENDPOINTS: usize = 16;
 /// Maximum canonical URI bytes accepted for one endpoint.
 pub const MAX_ENDPOINT_URI_BYTES: usize = 2_048;
+/// Maximum caller-supplied private CA bundle bytes.
+pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
 
 /// Connection configuration failure.
 #[derive(Debug, Error)]
@@ -52,6 +54,9 @@ pub enum ConnectError {
     /// Bearer credential cannot be represented as HTTP metadata.
     #[error("invalid Stream bearer credential")]
     InvalidCredential,
+    /// Caller-supplied private CA bundle is empty or exceeds its fixed bound.
+    #[error("invalid Stream private CA certificate")]
+    InvalidCaCertificate,
     /// At least one independently reachable endpoint is required.
     #[error("at least one Stream endpoint is required")]
     NoEndpoints,
@@ -136,11 +141,12 @@ impl Client {
         bearer_token: impl AsRef<str>,
         certificate_pem: impl AsRef<[u8]>,
     ) -> Result<Self, ConnectError> {
-        let certificate_pem = certificate_pem.as_ref();
-        if certificate_pem.is_empty() || certificate_pem.len() > 64 * 1024 {
-            return Err(ConnectError::InvalidCredential);
-        }
-        Self::connect_endpoints_with_ca_certificate([endpoint], bearer_token, certificate_pem).await
+        Self::connect_endpoints_with_ca_certificate(
+            [endpoint],
+            bearer_token,
+            certificate_pem.as_ref(),
+        )
+        .await
     }
 
     /// Connects to independently reachable endpoints using one caller-pinned private CA.
@@ -153,11 +159,7 @@ impl Client {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let certificate_pem = certificate_pem.as_ref();
-        if certificate_pem.is_empty() || certificate_pem.len() > 64 * 1024 {
-            return Err(ConnectError::InvalidCredential);
-        }
-        Self::connect_with_tls(endpoints, bearer_token, Some(certificate_pem))
+        Self::connect_with_tls(endpoints, bearer_token, Some(certificate_pem.as_ref()))
     }
 
     /// Connects independent operation and follow pools using one caller-pinned private CA.
@@ -173,15 +175,11 @@ impl Client {
         F: IntoIterator<Item = T>,
         T: AsRef<str>,
     {
-        let certificate_pem = certificate_pem.as_ref();
-        if certificate_pem.is_empty() || certificate_pem.len() > 64 * 1024 {
-            return Err(ConnectError::InvalidCredential);
-        }
         Self::connect_pools_with_tls(
             endpoints,
             follow_endpoints,
             bearer_token,
-            Some(certificate_pem),
+            Some(certificate_pem.as_ref()),
         )
     }
 
@@ -194,6 +192,7 @@ impl Client {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
         let channels = Self::channels_with_tls(
             endpoints,
             certificate_pem,
@@ -215,6 +214,7 @@ impl Client {
         F: IntoIterator<Item = T>,
         T: AsRef<str>,
     {
+        let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
         let channels = Self::channels_with_tls(
             endpoints,
             certificate_pem,
@@ -254,7 +254,9 @@ impl Client {
             }
             if let Some(certificate_pem) = certificate_pem {
                 endpoint = endpoint.tls_config(
-                    ClientTlsConfig::new().ca_certificate(Certificate::from_pem(certificate_pem)),
+                    ClientTlsConfig::new()
+                        .with_enabled_roots()
+                        .ca_certificate(Certificate::from_pem(certificate_pem)),
                 )?;
             }
             channels.push(endpoint.connect_lazy());
@@ -439,6 +441,14 @@ impl Client {
             },
         )
         .boxed())
+    }
+}
+
+fn bounded_ca_certificate(value: &[u8]) -> Result<&[u8], ConnectError> {
+    if value.is_empty() || value.len() > MAX_CA_CERTIFICATE_BYTES {
+        Err(ConnectError::InvalidCaCertificate)
+    } else {
+        Ok(value)
     }
 }
 
@@ -1358,6 +1368,10 @@ fn conflict_wire(value: CommitConflict) -> wire::CommitConflict {
 mod tests {
     use super::*;
     use crate::MemoryStream;
+    use rcgen::generate_simple_self_signed;
+    use tokio::net::TcpListener;
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::transport::{Identity, Server, ServerTlsConfig};
     use wire::stream_service_server::{StreamService, StreamServiceServer};
 
     struct FiniteFollow {
@@ -1448,6 +1462,22 @@ mod tests {
                 }
             }),
         )
+    }
+
+    #[test]
+    fn private_ca_bundle_is_exactly_bounded() {
+        assert!(matches!(
+            bounded_ca_certificate(&[]),
+            Err(ConnectError::InvalidCaCertificate)
+        ));
+        assert!(matches!(
+            bounded_ca_certificate(&vec![b'x'; MAX_CA_CERTIFICATE_BYTES]),
+            Ok(certificate) if certificate.len() == MAX_CA_CERTIFICATE_BYTES
+        ));
+        assert!(matches!(
+            bounded_ca_certificate(&vec![b'x'; MAX_CA_CERTIFICATE_BYTES + 1]),
+            Err(ConnectError::InvalidCaCertificate)
+        ));
     }
 
     fn unavailable_channel() -> Channel {
@@ -1544,6 +1574,71 @@ mod tests {
             !error.to_string().contains("TLS is not enabled"),
             "HTTPS channel was built without TLS: {error}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn private_ca_https_connection_preserves_ambient_roots_and_exact_bearer()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let certified = generate_simple_self_signed(["localhost".to_owned()])?;
+        let certificate_pem = certified.cert.pem();
+        let private_key_pem = certified.signing_key.serialize_pem();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server_certificate_pem = certificate_pem.clone();
+        let service = StreamServiceServer::with_interceptor(
+            Service::new(Arc::new(MemoryStream::default())),
+            |request: Request<()>| {
+                if request
+                    .metadata()
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    != Some("Bearer exact-token")
+                {
+                    return Err(Status::unauthenticated("missing exact bearer credential"));
+                }
+                Ok(request)
+            },
+        );
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .tls_config(
+                    ServerTlsConfig::new()
+                        .identity(Identity::from_pem(server_certificate_pem, private_key_pem)),
+                )?
+                .add_service(service)
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let endpoint = format!("https://localhost:{}", address.port());
+        let path = StreamPath::new("accounts/events")?;
+        let ambient = Client::connect(&endpoint, "exact-token").await?;
+        let mut ambient_service = Client::service(&ambient.channels, 0);
+        assert!(
+            ambient_service
+                .tail(Request::new(wire::TailRequest {
+                    path: path.to_string(),
+                }))
+                .await
+                .is_err()
+        );
+        let explicit = crate::StreamClient::connect_with_ca_certificate(
+            endpoint,
+            "exact-token",
+            certificate_pem,
+        )
+        .await?;
+        assert_eq!(
+            explicit.stream(path.as_str())?.tail().await,
+            Err(StreamError::NotFound)
+        );
+
+        let _ = shutdown_tx.send(());
+        server.await??;
         Ok(())
     }
 

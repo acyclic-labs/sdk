@@ -563,6 +563,18 @@ impl StreamClient<grpc::Client> {
         )))
     }
 
+    /// Connects the high-level API through ambient roots plus one caller-supplied private CA.
+    pub async fn connect_with_ca_certificate(
+        endpoint: impl AsRef<str>,
+        bearer_token: impl AsRef<str>,
+        certificate_pem: impl AsRef<[u8]>,
+    ) -> Result<Self, grpc::ConnectError> {
+        Ok(Self::new(Arc::new(
+            grpc::Client::connect_with_ca_certificate(endpoint, bearer_token, certificate_pem)
+                .await?,
+        )))
+    }
+
     /// Connects ordinary operations and long-lived follows through independent endpoint pools.
     ///
     /// Put disposable Relay endpoints first in `follow_endpoints` and durable data endpoints
@@ -589,7 +601,7 @@ impl StreamClient<grpc::Client> {
         )))
     }
 
-    /// Connects independent operation and follow pools through one pinned private CA.
+    /// Connects independent operation and follow pools through ambient roots plus one private CA.
     pub async fn connect_with_follow_endpoints_and_ca_certificate<I, S, F, T>(
         endpoints: I,
         follow_endpoints: F,

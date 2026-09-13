@@ -35,12 +35,28 @@ const workspaceVersion = workspaceManifest.match(/\[workspace\.package\][\s\S]*?
 const harnessManifest = await readFile(new URL("rust/crates/harness/Cargo.toml", root), "utf8");
 const streamManifest = await readFile(new URL("rust/crates/stream/Cargo.toml", root), "utf8");
 const rustStreamVersion = streamManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1];
-const harnessStreamRequirement = harnessManifest.match(/acyclic-stream = \{ version = "([^"]+)"/)?.[1];
+const typescriptStreamPackage = await load("typescript/packages/stream/package.json");
 if (
   workspaceVersion !== harnessVersion || !harnessManifest.includes("version.workspace = true") ||
-  rustStreamVersion !== streamVersion || harnessStreamRequirement !== streamVersion
+  rustStreamVersion !== streamVersion ||
+  typescriptStreamPackage.version !== streamVersion ||
+  sdkPackage.dependencies["@acyclic-labs/stream"] !== streamVersion
 ) {
-  throw new Error("Harness Rust version or exact Stream dependency does not match compatibility metadata");
+  throw new Error("Harness or Stream package versions do not match compatibility metadata");
+}
+for (const path of [
+  "rust/crates/conformance/Cargo.toml",
+  "rust/crates/filesystem/Cargo.toml",
+  "rust/crates/filesystem-wasm/Cargo.toml",
+  "rust/crates/harness/Cargo.toml",
+  "rust/crates/memory/Cargo.toml",
+  "rust/crates/sdk/Cargo.toml",
+]) {
+  const manifest = await readFile(new URL(path, root), "utf8");
+  const requirement = manifest.match(/acyclic-stream = \{ version = "([^"]+)"/)?.[1];
+  if (requirement !== `=${streamVersion}`) {
+    throw new Error(`Stream dependency version mismatch: ${path}`);
+  }
 }
 if ((await load("typescript/packages/inference/package.json")).version !== compatibility.families.inference.version) {
   throw new Error("TypeScript inference package version mismatch");

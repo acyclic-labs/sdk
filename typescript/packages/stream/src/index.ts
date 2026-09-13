@@ -39,6 +39,17 @@ export interface ForkReceipt {
   readonly commitId: CommitId;
 }
 
+export interface TrimReceipt {
+  readonly path: string;
+  readonly trimPoint: Sequence;
+  readonly commitId: CommitId;
+}
+
+export interface DeleteReceipt {
+  readonly path: string;
+  readonly commitId: CommitId;
+}
+
 export type CommitCondition =
   | { readonly path: string; readonly ifTail: Sequence }
   | { readonly path: string; readonly ifAbsent: true };
@@ -51,7 +62,9 @@ export type CommitMutation<T = Uint8Array> =
         readonly destination: string;
         readonly atTail: Sequence;
       };
-    };
+    }
+  | { readonly trim: { readonly path: string; readonly before: Sequence } }
+  | { readonly delete: { readonly path: string } };
 
 export type CommittedMutation<T = Uint8Array> =
   | {
@@ -68,7 +81,9 @@ export type CommittedMutation<T = Uint8Array> =
       readonly destination: string;
       readonly forkedAt: Sequence;
       readonly tail: Sequence;
-    };
+    }
+  | { readonly type: "trim"; readonly path: string; readonly trimPoint: Sequence }
+  | { readonly type: "delete"; readonly path: string };
 
 export interface CommittedEnvelope<T = Uint8Array> {
   readonly commitId: CommitId;
@@ -87,11 +102,27 @@ export type CommitOutcome<T = Uint8Array> =
   | { readonly ok: true; readonly envelope: CommittedEnvelope<T> }
   | { readonly ok: false; readonly code: "conflict"; readonly conflicts: readonly CommitConflict[] };
 
+export type IdempotencyOutcome<T = Uint8Array> =
+  | { readonly type: "append"; readonly outcome: AppendOutcome }
+  | { readonly type: "fork"; readonly receipt: ForkReceipt }
+  | { readonly type: "trim"; readonly receipt: TrimReceipt }
+  | { readonly type: "delete"; readonly receipt: DeleteReceipt }
+  | { readonly type: "commit"; readonly outcome: CommitOutcome<T> };
+
+export interface IdempotencyObservation<T = Uint8Array> {
+  readonly idempotencyKey: IdempotencyKey;
+  readonly requestDigest: Uint8Array;
+  readonly outcome: IdempotencyOutcome<T>;
+}
+
 /** One authenticated account provider. Transport, placement, and retries stay internal. */
 export interface StreamProvider<T = Uint8Array> {
+  inspectIdempotency(idempotencyKey: IdempotencyKey): Promise<IdempotencyObservation<T> | undefined>;
   tail(path: string): Promise<Sequence>;
   append(path: string, values: readonly T[], options?: AppendOptions): Promise<AppendOutcome>;
   fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt>;
+  trim(path: string, before: Sequence, idempotencyKey?: IdempotencyKey): Promise<TrimReceipt>;
+  delete(path: string, idempotencyKey?: IdempotencyKey): Promise<DeleteReceipt>;
   read(path: string, from: Sequence, limit: number): AsyncIterable<Record<T>>;
   follow(path: string, from: Sequence): AsyncIterable<Record<T>>;
   children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }>;
@@ -113,6 +144,10 @@ export class StreamClient<T = Uint8Array> {
 
   stream(path: string): Stream<T> {
     return new Stream(this.#provider, path);
+  }
+
+  inspectIdempotency(idempotencyKey: IdempotencyKey): Promise<IdempotencyObservation<T> | undefined> {
+    return this.#provider.inspectIdempotency(idempotencyKey);
   }
 
   children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }> {
@@ -157,6 +192,14 @@ export class Stream<T = Uint8Array> {
   async fork(destination: string, options?: ForkOptions): Promise<{ readonly stream: Stream<T>; readonly receipt: ForkReceipt }> {
     const receipt = await this.#provider.fork(this.path, destination, options);
     return { stream: new Stream(this.#provider, destination), receipt };
+  }
+
+  trim(before: Sequence, idempotencyKey?: IdempotencyKey): Promise<TrimReceipt> {
+    return this.#provider.trim(this.path, before, idempotencyKey);
+  }
+
+  delete(idempotencyKey?: IdempotencyKey): Promise<DeleteReceipt> {
+    return this.#provider.delete(this.path, idempotencyKey);
   }
 
   read(from: Sequence, limit: number): AsyncIterable<Record<T>> {
