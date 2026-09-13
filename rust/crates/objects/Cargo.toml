@@ -1,6 +1,6 @@
 [package]
 name = "acyclic-objects"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -33,5 +33,7 @@ libc = { version = "0.2.175", optional = true }
 workspace = true
 
 [dev-dependencies]
+rcgen = "0.14.10"
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "rt"] }
+tokio-stream.workspace = true
