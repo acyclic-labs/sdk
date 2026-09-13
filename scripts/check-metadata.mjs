@@ -24,6 +24,7 @@ for (const item of provenance.imports) if (item.auditResult !== "approved") thro
 const digest = async path => `sha256:${createHash("sha256").update(await readFile(new URL(path, root))).digest("hex")}`;
 const compatibility = await load("compatibility/manifest.json");
 const harnessVersion = compatibility.families.harness.version;
+const machinesVersion = compatibility.families.machines.version;
 const streamVersion = compatibility.families.stream.version;
 const harnessPackage = await load("typescript/packages/harness/package.json");
 const sdkPackage = await load("typescript/packages/sdk/package.json");
@@ -56,6 +57,23 @@ for (const path of [
   const requirement = manifest.match(/acyclic-stream = \{ version = "([^"]+)"/)?.[1];
   if (requirement !== `=${streamVersion}`) {
     throw new Error(`Stream dependency version mismatch: ${path}`);
+  }
+}
+const machinesManifest = await readFile(new URL("rust/crates/machines/Cargo.toml", root), "utf8");
+const rustMachinesVersion = machinesManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1];
+if (rustMachinesVersion !== machinesVersion) {
+  throw new Error("Machines package version does not match compatibility metadata");
+}
+for (const path of [
+  "rust/crates/conformance/Cargo.toml",
+  "rust/crates/harness-machines/Cargo.toml",
+  "rust/crates/memory/Cargo.toml",
+  "rust/crates/sdk/Cargo.toml",
+]) {
+  const manifest = await readFile(new URL(path, root), "utf8");
+  const requirement = manifest.match(/acyclic-machines = \{ version = "([^"]+)"/)?.[1];
+  if (requirement !== `=${machinesVersion}`) {
+    throw new Error(`Machines dependency version mismatch: ${path}`);
   }
 }
 if ((await load("typescript/packages/inference/package.json")).version !== compatibility.families.inference.version) {

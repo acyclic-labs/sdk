@@ -538,12 +538,23 @@ impl MachinesProvider for GrpcProvider {
             .watch_operation(operation_request(operation))
             .await
             .map_err(read_error)?
-            .into_inner()
-            .map(move |value| {
-                value
-                    .map_err(read_error)
-                    .and_then(|value| decode_operation_observation(value, operation))
-            });
+            .into_inner();
+        let stream = stream::unfold((stream, false), move |(mut stream, done)| async move {
+            if done {
+                return None;
+            }
+            match stream.message().await {
+                Ok(Some(value)) => {
+                    let value = decode_operation_observation(value, operation);
+                    let decode_failed = value.is_err();
+                    let terminal = value
+                        .as_ref()
+                        .is_ok_and(|value| !matches!(value.phase, OperationPhase::Pending));
+                    Some((value, (stream, terminal || decode_failed)))
+                }
+                Ok(None) | Err(_) => Some((Err(operation_watch_error(operation)), (stream, true))),
+            }
+        });
         Ok(Box::pin(stream))
     }
 }
@@ -571,7 +582,7 @@ impl GrpcProvider {
             .await
             .map_err(|error| recovery_error(key, error))?
             .into_inner();
-        let operation = decode_operation(value.operation.as_ref())?;
+        let operation = validate_recovered_admission(&value)?;
         Ok((operation, value))
     }
     async fn wait(&self, key: IdempotencyKey, operation: OperationId) -> Result<(), ProviderError> {
@@ -636,27 +647,20 @@ async fn decode_recovered(
     value: wire::RecoveredAdmission,
 ) -> Result<MutationOutcome, ProviderError> {
     use wire::recovered_admission::Result as ResultKind;
-    let outer = decode_operation(value.operation.as_ref())?;
+    validate_recovered_admission(&value)?;
     match value
         .result
         .ok_or_else(|| ProviderError::Rejected("recovery result is missing".into()))?
     {
-        ResultKind::Create(value) => {
-            exact_operation(value.operation.as_ref(), outer)?;
-            provider
-                .inspect_machine(decode_machine(value.machine.as_ref())?)
-                .await
-                .map(MutationOutcome::Created)
-        }
-        ResultKind::Checkpoint(value) => {
-            exact_operation(value.operation.as_ref(), outer)?;
-            provider
-                .inspect_checkpoint(decode_checkpoint(value.checkpoint.as_ref())?)
-                .await
-                .map(MutationOutcome::Checkpointed)
-        }
+        ResultKind::Create(value) => provider
+            .inspect_machine(decode_machine(value.machine.as_ref())?)
+            .await
+            .map(MutationOutcome::Created),
+        ResultKind::Checkpoint(value) => provider
+            .inspect_checkpoint(decode_checkpoint(value.checkpoint.as_ref())?)
+            .await
+            .map(MutationOutcome::Checkpointed),
         ResultKind::Fork(value) => {
-            exact_operation(value.operation.as_ref(), outer)?;
             if value.children.is_empty()
                 || value.children.len()
                     > usize::try_from(MAX_FORK_CHILDREN)
@@ -684,41 +688,49 @@ async fn decode_recovered(
             Ok(MutationOutcome::Forked(result))
         }
         ResultKind::Suspend(value) => {
-            exact_operation(value.operation.as_ref(), outer)?;
             decode_machine(value.machine.as_ref()).map(MutationOutcome::Suspended)
         }
         ResultKind::Wake(value) => {
-            exact_operation(value.operation.as_ref(), outer)?;
             decode_machine(value.machine.as_ref()).map(MutationOutcome::Woken)
         }
         ResultKind::DestroyMachine(value) => {
-            exact_operation(value.operation.as_ref(), outer)?;
             decode_machine(value.machine.as_ref()).map(MutationOutcome::MachineDestroyed)
         }
-        ResultKind::SetSuspensionPolicy(value) => {
-            exact_operation(value.operation.as_ref(), outer)?;
-            Ok(MutationOutcome::SuspensionPolicySet(
-                decode_machine(value.machine.as_ref())?,
-                decode_suspension(value.policy.as_ref())?,
-            ))
-        }
+        ResultKind::SetSuspensionPolicy(value) => Ok(MutationOutcome::SuspensionPolicySet(
+            decode_machine(value.machine.as_ref())?,
+            decode_suspension(value.policy.as_ref())?,
+        )),
         ResultKind::DestroyCheckpoint(value) => {
-            exact_operation(value.operation.as_ref(), outer)?;
             decode_checkpoint(value.checkpoint.as_ref()).map(MutationOutcome::CheckpointDestroyed)
         }
     }
 }
 
-fn exact_operation(
-    value: Option<&wire::OperationId>,
-    expected: OperationId,
-) -> Result<(), ProviderError> {
-    if decode_operation(value)? == expected {
-        Ok(())
-    } else {
+fn validate_recovered_admission(
+    value: &wire::RecoveredAdmission,
+) -> Result<OperationId, ProviderError> {
+    use wire::recovered_admission::Result as ResultKind;
+    let outer = decode_operation(value.operation.as_ref())?;
+    let nested = match value
+        .result
+        .as_ref()
+        .ok_or_else(|| ProviderError::Rejected("recovery result is missing".into()))?
+    {
+        ResultKind::Create(value) => value.operation.as_ref(),
+        ResultKind::Checkpoint(value) => value.operation.as_ref(),
+        ResultKind::Fork(value) => value.operation.as_ref(),
+        ResultKind::Suspend(value)
+        | ResultKind::Wake(value)
+        | ResultKind::DestroyMachine(value)
+        | ResultKind::DestroyCheckpoint(value) => value.operation.as_ref(),
+        ResultKind::SetSuspensionPolicy(value) => value.operation.as_ref(),
+    };
+    if decode_operation(nested)? != outer {
         Err(ProviderError::Rejected(
             "recovery operation identity was substituted".into(),
         ))
+    } else {
+        Ok(outer)
     }
 }
 
@@ -1262,6 +1274,9 @@ fn mutation_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
 fn watch_error(key: IdempotencyKey, _value: tonic::Status) -> ProviderError {
     ProviderError::Indeterminate(key)
 }
+fn operation_watch_error(operation: OperationId) -> ProviderError {
+    ProviderError::OperationIndeterminate(operation)
+}
 fn recovery_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
     match value.code() {
         tonic::Code::Unavailable
@@ -1322,6 +1337,250 @@ fn decode_usage_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream;
+    use tokio::net::TcpListener;
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::transport::Server;
+    use tonic::{Code, Request, Response, Status};
+    use wire::machines_service_server::{MachinesService, MachinesServiceServer};
+
+    #[derive(Clone)]
+    enum WatchReply {
+        Reject(Code),
+        Items(Vec<WatchItem>),
+    }
+
+    #[derive(Clone)]
+    enum WatchItem {
+        State(wire::OperationState),
+        Error(Code),
+    }
+
+    #[derive(Clone)]
+    struct OperationService {
+        expected_key: IdempotencyKey,
+        expected_operation: OperationId,
+        recovered: wire::RecoveredAdmission,
+        inspected: wire::OperationState,
+        cancelled: wire::OperationState,
+        watch: WatchReply,
+    }
+
+    #[tonic::async_trait]
+    impl MachinesService for OperationService {
+        async fn qualify_image(
+            &self,
+            _request: Request<wire::QualifyImageRequest>,
+        ) -> Result<Response<wire::ImageQualification>, Status> {
+            Err(Status::unimplemented("qualify_image"))
+        }
+        async fn create(
+            &self,
+            _request: Request<wire::CreateMachineRequest>,
+        ) -> Result<Response<wire::MachineAdmission>, Status> {
+            Err(Status::unimplemented("create"))
+        }
+        async fn checkpoint(
+            &self,
+            _request: Request<wire::CheckpointMachineRequest>,
+        ) -> Result<Response<wire::CheckpointAdmission>, Status> {
+            Err(Status::unimplemented("checkpoint"))
+        }
+        async fn fork(
+            &self,
+            _request: Request<wire::ForkCheckpointRequest>,
+        ) -> Result<Response<wire::ForkAdmission>, Status> {
+            Err(Status::unimplemented("fork"))
+        }
+        async fn suspend(
+            &self,
+            _request: Request<wire::MachineMutationRequest>,
+        ) -> Result<Response<wire::MutationAdmission>, Status> {
+            Err(Status::unimplemented("suspend"))
+        }
+        async fn wake(
+            &self,
+            _request: Request<wire::MachineMutationRequest>,
+        ) -> Result<Response<wire::MutationAdmission>, Status> {
+            Err(Status::unimplemented("wake"))
+        }
+        async fn set_suspension_policy(
+            &self,
+            _request: Request<wire::SetSuspensionPolicyRequest>,
+        ) -> Result<Response<wire::PolicyAdmission>, Status> {
+            Err(Status::unimplemented("set_suspension_policy"))
+        }
+        async fn destroy_machine(
+            &self,
+            _request: Request<wire::MachineMutationRequest>,
+        ) -> Result<Response<wire::MutationAdmission>, Status> {
+            Err(Status::unimplemented("destroy_machine"))
+        }
+        async fn destroy_checkpoint(
+            &self,
+            _request: Request<wire::CheckpointMutationRequest>,
+        ) -> Result<Response<wire::MutationAdmission>, Status> {
+            Err(Status::unimplemented("destroy_checkpoint"))
+        }
+
+        async fn recover(
+            &self,
+            request: Request<wire::RecoverRequest>,
+        ) -> Result<Response<wire::RecoveredAdmission>, Status> {
+            if request
+                .into_inner()
+                .idempotency_key
+                .as_ref()
+                .map(|value| value.value.as_slice())
+                != Some(self.expected_key.as_bytes().as_slice())
+            {
+                return Err(Status::invalid_argument("idempotency key was substituted"));
+            }
+            Ok(Response::new(self.recovered.clone()))
+        }
+
+        async fn inspect_machine(
+            &self,
+            _request: Request<wire::InspectMachineRequest>,
+        ) -> Result<Response<wire::MachineState>, Status> {
+            Err(Status::unimplemented("inspect_machine"))
+        }
+        async fn inspect_checkpoint(
+            &self,
+            _request: Request<wire::InspectCheckpointRequest>,
+        ) -> Result<Response<wire::CheckpointState>, Status> {
+            Err(Status::unimplemented("inspect_checkpoint"))
+        }
+        async fn list_machines(
+            &self,
+            _request: Request<wire::ListMachinesRequest>,
+        ) -> Result<Response<wire::MachinePage>, Status> {
+            Err(Status::unimplemented("list_machines"))
+        }
+        async fn events(
+            &self,
+            _request: Request<wire::EventsRequest>,
+        ) -> Result<Response<wire::EventPage>, Status> {
+            Err(Status::unimplemented("events"))
+        }
+        async fn usage(
+            &self,
+            _request: Request<wire::UsageRequest>,
+        ) -> Result<Response<wire::UsageReceipt>, Status> {
+            Err(Status::unimplemented("usage"))
+        }
+
+        async fn cancel(
+            &self,
+            request: Request<wire::OperationRequest>,
+        ) -> Result<Response<wire::OperationState>, Status> {
+            self.require_operation(request.into_inner())?;
+            Ok(Response::new(self.cancelled.clone()))
+        }
+
+        async fn inspect_operation(
+            &self,
+            request: Request<wire::OperationRequest>,
+        ) -> Result<Response<wire::OperationState>, Status> {
+            self.require_operation(request.into_inner())?;
+            Ok(Response::new(self.inspected.clone()))
+        }
+
+        type WatchOperationStream = Pin<
+            Box<dyn futures::Stream<Item = Result<wire::OperationState, Status>> + Send + 'static>,
+        >;
+
+        async fn watch_operation(
+            &self,
+            request: Request<wire::OperationRequest>,
+        ) -> Result<Response<Self::WatchOperationStream>, Status> {
+            self.require_operation(request.into_inner())?;
+            match &self.watch {
+                WatchReply::Reject(code) => Err(Status::new(*code, "watch rejected")),
+                WatchReply::Items(items) => {
+                    let items = items.clone().into_iter().map(|item| match item {
+                        WatchItem::State(value) => Ok(value),
+                        WatchItem::Error(code) => Err(Status::new(code, "watch interrupted")),
+                    });
+                    Ok(Response::new(Box::pin(stream::iter(items))))
+                }
+            }
+        }
+    }
+
+    impl OperationService {
+        fn require_operation(&self, request: wire::OperationRequest) -> Result<(), Status> {
+            if request
+                .operation
+                .as_ref()
+                .map(|value| value.value.as_slice())
+                != Some(self.expected_operation.as_bytes().as_slice())
+            {
+                return Err(Status::invalid_argument("operation was substituted"));
+            }
+            Ok(())
+        }
+    }
+
+    async fn serve_operation_service(
+        service: OperationService,
+    ) -> Result<
+        (
+            Machines,
+            tokio::sync::oneshot::Sender<()>,
+            tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        ),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(MachinesServiceServer::new(service))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+        let channel = TonicEndpoint::from_shared(format!("http://{address}"))?
+            .connect()
+            .await?;
+        Ok((Machines::grpc(channel), shutdown_tx, server))
+    }
+
+    fn operation_state(
+        operation: OperationId,
+        status: wire::OperationStatus,
+    ) -> wire::OperationState {
+        wire::OperationState {
+            operation: Some(wire::OperationId {
+                value: operation.as_bytes().to_vec(),
+            }),
+            status: status as i32,
+        }
+    }
+
+    fn recovered_suspend(
+        outer: OperationId,
+        nested: OperationId,
+        machine: MachineId,
+    ) -> wire::RecoveredAdmission {
+        wire::RecoveredAdmission {
+            operation: Some(wire::OperationId {
+                value: outer.as_bytes().to_vec(),
+            }),
+            result: Some(wire::recovered_admission::Result::Suspend(
+                wire::MutationAdmission {
+                    operation: Some(wire::OperationId {
+                        value: nested.as_bytes().to_vec(),
+                    }),
+                    machine: Some(encode_machine(machine)),
+                    checkpoint: None,
+                },
+            )),
+        }
+    }
 
     #[tokio::test]
     async fn remote_transport_rejects_plaintext_before_connecting() {
@@ -1335,6 +1594,198 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(ProviderError::Invalid(_))));
+    }
+
+    #[tokio::test]
+    async fn operation_for_rejects_a_substituted_nested_admission_operation()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000002")?;
+        let substituted = OperationId::parse("00000000-0000-0000-0000-000000000003")?;
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000004")?;
+        let service = OperationService {
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, substituted, machine),
+            inspected: operation_state(operation, wire::OperationStatus::Pending),
+            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
+            watch: WatchReply::Items(Vec::new()),
+        };
+        let (machines, shutdown, server) = serve_operation_service(service).await?;
+
+        assert_eq!(
+            machines.operation_for(key).await,
+            Err(ProviderError::Rejected(
+                "recovery operation identity was substituted".into()
+            ))
+        );
+
+        let _ = shutdown.send(());
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn operation_control_crosses_grpc_with_exact_identity_replay_and_terminal_state()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000011")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000012")?;
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000013")?;
+        let pending = operation_state(operation, wire::OperationStatus::Pending);
+        let succeeded = operation_state(operation, wire::OperationStatus::Succeeded);
+        let service = OperationService {
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: pending.clone(),
+            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
+            watch: WatchReply::Items(vec![
+                WatchItem::State(pending.clone()),
+                WatchItem::State(pending.clone()),
+                WatchItem::State(succeeded),
+                WatchItem::State(pending),
+            ]),
+        };
+        let (machines, shutdown, server) = serve_operation_service(service).await?;
+
+        assert_eq!(machines.operation_for(key).await?, operation);
+        assert_eq!(
+            machines.inspect_operation(operation).await?,
+            OperationObservation {
+                id: operation,
+                phase: OperationPhase::Pending,
+            }
+        );
+        assert_eq!(
+            machines.cancel_operation(operation).await?,
+            OperationObservation {
+                id: operation,
+                phase: OperationPhase::Cancelled,
+            }
+        );
+        let mut watch = machines.watch_operation(operation).await?;
+        assert_eq!(
+            watch.next().await.transpose()?.map(|value| value.phase),
+            Some(OperationPhase::Pending)
+        );
+        assert_eq!(
+            watch.next().await.transpose()?.map(|value| value.phase),
+            Some(OperationPhase::Pending)
+        );
+        assert_eq!(
+            watch.next().await.transpose()?.map(|value| value.phase),
+            Some(OperationPhase::Succeeded)
+        );
+        assert!(watch.next().await.is_none());
+
+        let _ = shutdown.send(());
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn all_operation_observation_paths_reject_substituted_identity()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000021")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000022")?;
+        let substituted = OperationId::parse("00000000-0000-0000-0000-000000000023")?;
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000024")?;
+        let substituted_state = operation_state(substituted, wire::OperationStatus::Pending);
+        let service = OperationService {
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: substituted_state.clone(),
+            cancelled: substituted_state.clone(),
+            watch: WatchReply::Items(vec![WatchItem::State(substituted_state)]),
+        };
+        let (machines, shutdown, server) = serve_operation_service(service).await?;
+
+        assert!(matches!(
+            machines.inspect_operation(operation).await,
+            Err(ProviderError::Rejected(message)) if message.contains("identity was substituted")
+        ));
+        assert!(matches!(
+            machines.cancel_operation(operation).await,
+            Err(ProviderError::Rejected(message)) if message.contains("identity was substituted")
+        ));
+        let mut watch = machines.watch_operation(operation).await?;
+        assert!(matches!(
+            watch.next().await,
+            Some(Err(ProviderError::Rejected(message))) if message.contains("identity was substituted")
+        ));
+
+        let _ = shutdown.send(());
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn operation_watch_distinguishes_pre_admission_rejection_from_post_admission_ambiguity()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000031")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000032")?;
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000033")?;
+        let base = OperationService {
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: operation_state(operation, wire::OperationStatus::Pending),
+            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
+            watch: WatchReply::Reject(Code::PermissionDenied),
+        };
+        let (machines, shutdown, server) = serve_operation_service(base.clone()).await?;
+        assert!(matches!(
+            machines.watch_operation(operation).await,
+            Err(ProviderError::Rejected(message)) if message == "watch rejected"
+        ));
+        let _ = shutdown.send(());
+        server.await??;
+
+        for code in [Code::Internal, Code::ResourceExhausted, Code::Unavailable] {
+            let service = OperationService {
+                watch: WatchReply::Items(vec![
+                    WatchItem::State(operation_state(operation, wire::OperationStatus::Pending)),
+                    WatchItem::Error(code),
+                ]),
+                ..base.clone()
+            };
+            let (machines, shutdown, server) = serve_operation_service(service).await?;
+            let mut watch = machines.watch_operation(operation).await?;
+            assert!(matches!(
+                watch.next().await,
+                Some(Ok(OperationObservation { id, phase: OperationPhase::Pending })) if id == operation
+            ));
+            assert_eq!(
+                watch.next().await,
+                Some(Err(ProviderError::OperationIndeterminate(operation)))
+            );
+            assert!(watch.next().await.is_none());
+            let _ = shutdown.send(());
+            server.await??;
+        }
+
+        let service = OperationService {
+            watch: WatchReply::Items(vec![WatchItem::State(operation_state(
+                operation,
+                wire::OperationStatus::Pending,
+            ))]),
+            ..base
+        };
+        let (machines, shutdown, server) = serve_operation_service(service).await?;
+        let mut watch = machines.watch_operation(operation).await?;
+        assert!(matches!(
+            watch.next().await,
+            Some(Ok(OperationObservation { id, phase: OperationPhase::Pending })) if id == operation
+        ));
+        assert_eq!(
+            watch.next().await,
+            Some(Err(ProviderError::OperationIndeterminate(operation)))
+        );
+        assert!(watch.next().await.is_none());
+        let _ = shutdown.send(());
+        server.await??;
+        Ok(())
     }
 
     #[test]
