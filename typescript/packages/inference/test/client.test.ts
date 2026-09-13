@@ -8,6 +8,9 @@ import {
   HttpInferenceTransport,
   InferenceClient,
   InferenceTransportError,
+  InspectContextRequestSchema,
+  InspectRunRequestSchema,
+  InspectWarmRequestSchema,
   ListModelsResponseSchema,
   MutateContextRequestSchema,
   MutationReceiptSchema,
@@ -18,6 +21,7 @@ import {
   RunTerminal,
   RunViewSchema,
   WarmViewSchema,
+  WatchRunRequestSchema,
   type InferenceTransport,
 } from "../src/index.js";
 
@@ -66,15 +70,114 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
     if (url.endsWith("/models/list")) {
       return new Response(toJsonString(ListModelsResponseSchema, create(ListModelsResponseSchema)));
     }
+    if (url.endsWith("/contexts/create") || url.endsWith("/contexts/mutate")) {
+      return new Response(toJsonString(MutationReceiptSchema, create(MutationReceiptSchema)));
+    }
+    if (url.endsWith("/contexts/inspect")) {
+      return new Response(toJsonString(ContextViewSchema, create(ContextViewSchema)));
+    }
+    if (url.includes("/warm/")) {
+      return new Response(toJsonString(WarmViewSchema, create(WarmViewSchema)));
+    }
+    if (url.endsWith("/runs/generate")) {
+      return new Response(toJsonString(GenerateRunResponseSchema, create(GenerateRunResponseSchema)));
+    }
+    if (url.endsWith("/runs/inspect") || url.endsWith("/runs/cancel")) {
+      return new Response(toJsonString(RunViewSchema, create(RunViewSchema)));
+    }
     if (url.endsWith("/runs/watch")) return new Response(`${terminal}\n`);
     throw new Error(`unexpected route ${url}`);
   };
   const transport = new HttpInferenceTransport("https://example.test", () => ({ authorization: "Bearer test" }), fetcher);
   await transport.listModels();
+  await transport.createContext(create(CreateContextRequestSchema));
+  await transport.inspectContext(create(InspectContextRequestSchema));
+  await transport.mutateContext(create(MutateContextRequestSchema));
+  await transport.retainWarm(create(RetainWarmRequestSchema));
+  await transport.inspectWarm(create(InspectWarmRequestSchema));
+  await transport.renewWarm(create(RenewWarmRequestSchema));
+  await transport.releaseWarm(create(ReleaseWarmRequestSchema));
+  await transport.generateRun(create(GenerateRunRequestSchema));
+  await transport.inspectRun(create(InspectRunRequestSchema));
+  await transport.cancelRun(create(InspectRunRequestSchema));
   const events = [];
-  for await (const event of transport.watchRun({ $typeName: "inference.customer.v1.WatchRunRequest", runId: bytes(4), fromSequence: 0n })) events.push(event);
+  for await (const event of transport.watchRun(create(WatchRunRequestSchema, { runId: bytes(4) }))) events.push(event);
   expect(events).toHaveLength(1);
 
   const unauthorized = new HttpInferenceTransport("https://example.test", () => ({}), fetcher);
   await expect(unauthorized.listModels()).rejects.toBeInstanceOf(InferenceTransportError);
+});
+
+test("HTTP transport applies one byte ceiling per message without conflating network chunks", async () => {
+  const terminal = toJsonString(RunEventSchema, create(RunEventSchema, {
+    sequence: 0n,
+    event: { case: "terminal", value: RunTerminal.COMPLETED },
+  }));
+  const maximumMessageBytes = new TextEncoder().encode(terminal).byteLength + 16;
+  const request = create(WatchRunRequestSchema, { runId: bytes(4) });
+  const transport = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(`${terminal}\n${terminal}\n`),
+    maximumMessageBytes,
+  );
+  const events = [];
+  for await (const event of transport.watchRun(request)) events.push(event);
+  expect(events).toHaveLength(2);
+  expect(transport.maximumMessageBytes).toBe(maximumMessageBytes);
+
+  const oversizedEvent = toJsonString(RunEventSchema, create(RunEventSchema, {
+    sequence: 0n,
+    event: { case: "progress", value: { kind: "x".repeat(maximumMessageBytes) } },
+  }));
+  const split = Math.floor(oversizedEvent.length / 2);
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const encoder = new TextEncoder();
+      controller.enqueue(encoder.encode(oversizedEvent.slice(0, split)));
+      controller.enqueue(encoder.encode(`${oversizedEvent.slice(split)}\n`));
+      controller.close();
+    },
+  });
+  const oversized = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(stream),
+    maximumMessageBytes,
+  );
+  await expect(async () => {
+    for await (const _event of oversized.watchRun(request)) { /* exhaust */ }
+  }).toThrow("run event exceeds configured bound");
+});
+
+test("HTTP transport rejects insecure endpoints and bounded request, unary, and error bodies", async () => {
+  expect(() => new HttpInferenceTransport("http://example.test", () => ({}))).toThrow(TypeError);
+
+  let calls = 0;
+  const requestBound = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => { calls += 1; return new Response("{}"); },
+    32,
+  );
+  await expect(requestBound.createContext(create(CreateContextRequestSchema, {
+    model: "x".repeat(64),
+  }))).rejects.toThrow("request exceeds configured bound");
+  expect(calls).toBe(0);
+
+  const unaryBound = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(" ".repeat(65)),
+    64,
+  );
+  await expect(unaryBound.listModels()).rejects.toThrow("unary response exceeds configured bound");
+
+  const errorBound = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response("x".repeat(65), { status: 400 }),
+    64,
+  );
+  await expect(errorBound.listModels()).rejects.toThrow("error response exceeds configured bound");
 });

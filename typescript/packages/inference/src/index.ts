@@ -85,6 +85,38 @@ export class InferenceClient {
 
 export type AuthorizationHeaders = () => HeadersInit | Promise<HeadersInit>;
 
+const utf8 = new TextEncoder();
+
+function utf8Length(value: string): number {
+  return utf8.encode(value).byteLength;
+}
+
+async function readBoundedText(response: Response, maximumBytes: number, kind: string): Promise<string> {
+  if (response.body === null) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let observed = 0;
+  let completed = false;
+  try {
+    for (;;) {
+      const item = await reader.read();
+      if (item.done) break;
+      observed += item.value.byteLength;
+      if (observed > maximumBytes) {
+        throw new InferenceTransportError(response.status, `${kind} exceeds configured bound`);
+      }
+      chunks.push(decoder.decode(item.value, { stream: true }));
+    }
+    chunks.push(decoder.decode());
+    completed = true;
+    return chunks.join("");
+  } finally {
+    if (!completed) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
+
 /** Authenticated protobuf-JSON/NDJSON transport for the public service contract. */
 export class HttpInferenceTransport implements InferenceTransport {
   constructor(
@@ -94,9 +126,21 @@ export class HttpInferenceTransport implements InferenceTransport {
     readonly maximumEventBytes = 1024 * 1024,
   ) {
     if (!Number.isSafeInteger(maximumEventBytes) || maximumEventBytes <= 0) {
-      throw new RangeError("maximumEventBytes must be a positive safe integer");
+      throw new RangeError("maximumEventBytes must be a positive safe integer byte ceiling");
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(endpoint);
+    } catch {
+      throw new TypeError("endpoint must be an absolute HTTPS URL");
+    }
+    if (parsed.protocol !== "https:" || parsed.username.length > 0 || parsed.password.length > 0 || parsed.search.length > 0 || parsed.hash.length > 0) {
+      throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment");
     }
   }
+
+  /** Shared UTF-8 ceiling for requests, unary/error responses, and each stream event. */
+  get maximumMessageBytes(): number { return this.maximumEventBytes; }
 
   listModels(): Promise<ListModelsResponse> {
     return this.#unary("models/list", ListModelsRequestSchema, create(ListModelsRequestSchema), ListModelsResponseSchema);
@@ -138,25 +182,34 @@ export class HttpInferenceTransport implements InferenceTransport {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let completed = false;
     try {
       for (;;) {
         const item = await reader.read();
         if (item.done) break;
         buffer += decoder.decode(item.value, { stream: true });
-        if (new TextEncoder().encode(buffer).byteLength > this.maximumEventBytes) {
-          throw new InferenceTransportError(response.status, "run event exceeds configured bound");
-        }
         for (;;) {
           const newline = buffer.indexOf("\n");
           if (newline < 0) break;
           const line = buffer.slice(0, newline).trim();
           buffer = buffer.slice(newline + 1);
+          if (utf8Length(line) > this.maximumMessageBytes) {
+            throw new InferenceTransportError(response.status, "run event exceeds configured bound");
+          }
           if (line.length > 0) yield fromJson(RunEventSchema, JSON.parse(line));
+        }
+        if (utf8Length(buffer) > this.maximumMessageBytes) {
+          throw new InferenceTransportError(response.status, "run event exceeds configured bound");
         }
       }
       const final = `${buffer}${decoder.decode()}`.trim();
+      if (utf8Length(final) > this.maximumMessageBytes) {
+        throw new InferenceTransportError(response.status, "run event exceeds configured bound");
+      }
       if (final.length > 0) yield fromJson(RunEventSchema, JSON.parse(final));
+      completed = true;
     } finally {
+      if (!completed) await reader.cancel().catch(() => undefined);
       reader.releaseLock();
     }
   }
@@ -168,10 +221,13 @@ export class HttpInferenceTransport implements InferenceTransport {
     responseSchema: ResponseSchema,
   ): Promise<MessageShape<ResponseSchema>> {
     const response = await this.#request(path, toJsonString(requestSchema, request));
-    return fromJson(responseSchema, JSON.parse(await response.text()));
+    return fromJson(responseSchema, JSON.parse(await readBoundedText(response, this.maximumMessageBytes, "unary response")));
   }
 
   async #request(path: string, body: string, signal?: AbortSignal): Promise<Response> {
+    if (utf8Length(body) > this.maximumMessageBytes) {
+      throw new InferenceTransportError(0, "request exceeds configured bound");
+    }
     const headers = new Headers(await this.authorization());
     if ((headers.get("authorization") ?? "").trim().length === 0) {
       throw new InferenceTransportError(0, "authorization header is required");
@@ -183,7 +239,12 @@ export class HttpInferenceTransport implements InferenceTransport {
       body,
       signal,
     });
-    if (!response.ok) throw new InferenceTransportError(response.status, await response.text());
+    if (!response.ok) {
+      throw new InferenceTransportError(
+        response.status,
+        await readBoundedText(response, this.maximumMessageBytes, "error response"),
+      );
+    }
     return response;
   }
 }

@@ -22,6 +22,8 @@ pub mod wire {
 pub const DESCRIPTOR: &[u8] = include_bytes!("../inference_descriptor.bin");
 /// Bounded customer transport ceiling, not a published retention entitlement.
 pub const MAXIMUM_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+/// Largest caller-supplied PEM trust bundle accepted by [`Inference::connect`].
+pub const MAXIMUM_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
 
 impl Drop for wire::Item {
     fn drop(&mut self) {
@@ -82,23 +84,31 @@ struct Connection {
 pub struct Inference(Arc<Connection>);
 
 impl Inference {
-    /// Connect using an explicit trusted CA and bounded TLS/RPC deadlines.
+    /// Connect using an explicit trusted CA, ambient WebPKI roots, and bounded TLS/RPC deadlines.
     ///
     /// # Errors
     /// Rejects non-HTTPS endpoints, invalid credentials and failed TLS setup.
     pub async fn connect(endpoint: &str, api_key: &str, ca_pem: &[u8]) -> Result<Self, Error> {
-        if !endpoint.starts_with("https://") || ca_pem.is_empty() {
+        let endpoint = Endpoint::new(endpoint.to_owned())?;
+        if endpoint.uri().scheme_str() != Some("https") {
+            return Err(Error::Invalid("HTTPS is required"));
+        }
+        if ca_pem.is_empty() || ca_pem.len() > MAXIMUM_CA_CERTIFICATE_BYTES {
             return Err(Error::Invalid(
-                "HTTPS and an explicit trust root are required",
+                "CA certificate must contain 1 to 65536 bytes",
             ));
         }
         let authorization = authorization(api_key)?;
-        let channel = Endpoint::from_shared(endpoint.to_owned())?
+        let channel = endpoint
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(60))
             .http2_keep_alive_interval(Duration::from_secs(30))
             .keep_alive_timeout(Duration::from_secs(10))
-            .tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca_pem)))?
+            .tls_config(
+                ClientTlsConfig::new()
+                    .with_enabled_roots()
+                    .ca_certificate(Certificate::from_pem(ca_pem)),
+            )?
             .connect()
             .await?;
         Ok(Self(Arc::new(Connection {
@@ -1089,6 +1099,27 @@ mod tests {
         assert!(bearer.is_sensitive());
         assert_eq!(client.0.authorization.as_str(), "Bearer secret");
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn connection_rejects_insecure_or_unbounded_trust_configuration() {
+        assert!(matches!(
+            Inference::connect("http://localhost", "secret", b"certificate").await,
+            Err(Error::Invalid("HTTPS is required"))
+        ));
+        assert!(matches!(
+            Inference::connect("https://localhost", "secret", b"").await,
+            Err(Error::Invalid(
+                "CA certificate must contain 1 to 65536 bytes"
+            ))
+        ));
+        let oversized = vec![b'x'; MAXIMUM_CA_CERTIFICATE_BYTES + 1];
+        assert!(matches!(
+            Inference::connect("https://localhost", "secret", &oversized).await,
+            Err(Error::Invalid(
+                "CA certificate must contain 1 to 65536 bytes"
+            ))
+        ));
     }
 
     #[test]

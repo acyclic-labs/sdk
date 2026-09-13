@@ -51,7 +51,7 @@
     },
     "typescript/packages/inference": {
       "name": "@acyclic-labs/inference",
-      "version": "1.0.0-rc.3",
+      "version": "1.0.0-rc.4",
       "dependencies": {
         "@bufbuild/protobuf": "2.14.1",
       },
@@ -115,7 +115,7 @@
       "dependencies": {
         "@acyclic-labs/fs": "0.2.0-rc.2",
         "@acyclic-labs/harness": "0.1.0-rc.1",
-        "@acyclic-labs/inference": "1.0.0-rc.3",
+        "@acyclic-labs/inference": "1.0.0-rc.4",
         "@acyclic-labs/machines": "1.0.0-rc.4",
         "@acyclic-labs/objects": "1.0.0-rc.2",
         "@acyclic-labs/stream": "1.0.0-rc.4",
