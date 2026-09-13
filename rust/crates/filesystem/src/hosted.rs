@@ -10,6 +10,8 @@ use crate::wire::harness::v1 as harness;
 use crate::{Fs, IdempotencyKey};
 use bytes::Bytes;
 use futures::Stream;
+#[cfg(test)]
+use prost::Message;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -21,7 +23,10 @@ type Client = wire::filesystem_service_client::FilesystemServiceClient<Channel>;
 
 /// Largest caller-supplied PEM trust bundle accepted by the hosted constructor.
 pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
-const MAX_PROTOBUF_BYTES_ENVELOPE_BYTES: u64 = 11;
+const MINIMUM_HANDSHAKE_RESPONSE_BYTES: usize = 512;
+// ExportChunk is the largest byte-bearing envelope: an eight-byte cursor,
+// 33-byte typed object ID, contents, terminal flag, tags, and length varints.
+const MAX_BYTE_RESPONSE_ENVELOPE_BYTES: u64 = 10 + 35 + 11 + 2;
 
 /// Connection and client-side response bounds for [`Fs::hosted`].
 #[derive(Clone, Eq, PartialEq)]
@@ -135,11 +140,10 @@ pub struct HostedFs {
 impl HostedFs {
     async fn connect(options: HostedFsOptions) -> Result<Self, HostedFsError> {
         if options.maximum_request_bytes == 0
-            || options.maximum_response_bytes
-                <= usize::try_from(MAX_PROTOBUF_BYTES_ENVELOPE_BYTES).unwrap_or(usize::MAX)
+            || options.maximum_response_bytes < MINIMUM_HANDSHAKE_RESPONSE_BYTES
         {
             return Err(HostedFsError::InvalidOptions(
-                "request bound must be nonzero and response bound must include protobuf headroom",
+                "request bound must be nonzero and response bound must admit the handshake",
             ));
         }
         if options.bearer_token.is_empty() {
@@ -221,15 +225,14 @@ impl HostedFs {
             .min(configured_request_bytes);
         capabilities.maximum_response_bytes = capabilities
             .maximum_response_bytes
-            .min(configured_response_bytes - MAX_PROTOBUF_BYTES_ENVELOPE_BYTES);
+            .min(configured_response_bytes - MAX_BYTE_RESPONSE_ENVELOPE_BYTES);
         let maximum_request_bytes =
             usize::try_from(capabilities.maximum_request_bytes).map_err(|_| {
                 HostedFsError::InvalidResponse("request bound does not fit this platform")
             })?;
         // The advertised limit is application payload, while Tonic bounds the complete
         // protobuf message. Retain the caller's encoded-frame ceiling and expose only
-        // the payload bytes that fit below it; otherwise an exact-limit ReadResponse
-        // is rejected solely because of its tag and length prefix.
+        // the payload bytes that fit below the largest byte-bearing response envelope.
         client = client
             .max_decoding_message_size(options.maximum_response_bytes)
             .max_encoding_message_size(maximum_request_bytes);
@@ -1250,9 +1253,17 @@ mod tests {
                 .await
         });
 
-        let mut options = HostedFsOptions::new(format!("http://{address}"), "test-account-token");
-        options.maximum_response_bytes =
-            1_024 + usize::try_from(MAX_PROTOBUF_BYTES_ENVELOPE_BYTES)?;
+        let endpoint = format!("http://{address}");
+        let mut minimum_options = HostedFsOptions::new(&endpoint, "test-account-token");
+        minimum_options.maximum_response_bytes = MINIMUM_HANDSHAKE_RESPONSE_BYTES;
+        let minimum_hosted = Fs::hosted(minimum_options).await?;
+        assert_eq!(
+            minimum_hosted.capabilities().maximum_response_bytes,
+            u64::try_from(MINIMUM_HANDSHAKE_RESPONSE_BYTES)? - MAX_BYTE_RESPONSE_ENVELOPE_BYTES
+        );
+
+        let mut options = HostedFsOptions::new(endpoint, "test-account-token");
+        options.maximum_response_bytes = 1_024 + usize::try_from(MAX_BYTE_RESPONSE_ENVELOPE_BYTES)?;
         let hosted = Fs::hosted(options).await?;
         assert_eq!(hosted.capabilities().maximum_response_bytes, 1_024);
         assert_eq!(hosted.capabilities().maximum_transaction_mutations, 2);
@@ -1392,6 +1403,26 @@ mod tests {
                 "CA certificate must contain 1 to 65536 bytes"
             ))
         ));
+
+        let mut undersized = HostedFsOptions::new("https://localhost", "token");
+        undersized.maximum_response_bytes = MINIMUM_HANDSHAKE_RESPONSE_BYTES - 1;
+        assert!(matches!(
+            Fs::hosted(undersized).await,
+            Err(HostedFsError::InvalidOptions(
+                "request bound must be nonzero and response bound must admit the handshake"
+            ))
+        ));
+
+        let largest_byte_envelope = wire::ExportChunk {
+            cursor: vec![0; 8],
+            object_id: vec![0; 33],
+            contents: vec![0; 1_024],
+            terminal: true,
+        };
+        assert!(
+            u64::try_from(largest_byte_envelope.encoded_len()).unwrap_or(u64::MAX)
+                <= 1_024 + MAX_BYTE_RESPONSE_ENVELOPE_BYTES
+        );
 
         let malformed = wire::HandshakeResponse {
             harness: Some(harness::HandshakeResponse {
