@@ -21,7 +21,7 @@ unicode-normalization.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 acyclic-objects = { version = "1.0.0-rc.1", path = "../objects", optional = true, default-features = false }
-acyclic-stream = { version = "1.0.0-rc.4", path = "../stream", optional = true, default-features = false }
+acyclic-stream = { version = "=1.0.0-rc.4", path = "../stream", optional = true, default-features = false }
 
 [dev-dependencies]
 http.workspace = true

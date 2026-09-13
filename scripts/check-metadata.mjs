@@ -54,7 +54,7 @@ for (const path of [
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-stream = \{ version = "([^"]+)"/)?.[1];
-  if (requirement !== streamVersion) {
+  if (requirement !== `=${streamVersion}`) {
     throw new Error(`Stream dependency version mismatch: ${path}`);
   }
 }
