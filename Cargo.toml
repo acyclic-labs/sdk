@@ -35,7 +35,7 @@ rustix = { version = "1.1.4", features = ["process"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_bytes = "0.11.19"
 serde_json = "1.0.145"
-s3s = "0.13.0"
+s3s = "0.15.0"
 serde-wasm-bindgen = "0.6.5"
 sha2 = "0.10.9"
 thiserror = "2.0.17"
