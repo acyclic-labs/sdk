@@ -2,6 +2,18 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+output=""
+if [[ "$#" -eq 1 ]]; then
+  output="$1"
+  [[ ! -e "$output" && ! -L "$output" ]] || {
+    echo "package output must be absent: $output" >&2
+    exit 2
+  }
+elif [[ "$#" -ne 0 ]]; then
+  echo "usage: check-machines-package.sh [OUTPUT]" >&2
+  exit 2
+fi
+
 if command -v wslpath >/dev/null 2>&1; then
   windows_temp="$(cmd.exe /d /c echo %TEMP% | tr -d '\r')"
   work="$(mktemp -d "$(wslpath -u "$windows_temp")/sdk-machines-package.XXXXXXXX")"
@@ -48,9 +60,7 @@ if [[ "$cargo_bin" == "cargo.exe" ]]; then
 fi
 "$cargo_bin" check --manifest-path "$test_manifest"
 
-if [[ "$#" -eq 1 ]]; then
-  output="$1"
-  test ! -e "$output"
+if [[ -n "$output" ]]; then
   mkdir -p "$(dirname "$output")"
   mkdir "$output"
   install -m 0644 "$crate" "$output/"
@@ -58,7 +68,4 @@ if [[ "$#" -eq 1 ]]; then
   cmp --silent "$crate" "$staged"
   strict_archive "$staged"
   (cd "$output" && sha256sum "$(basename "$crate")" > SHA256SUMS && sha256sum --strict --check SHA256SUMS)
-elif [[ "$#" -ne 0 ]]; then
-  echo "usage: check-machines-package.sh [OUTPUT]" >&2
-  exit 2
 fi
