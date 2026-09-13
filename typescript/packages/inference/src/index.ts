@@ -134,7 +134,7 @@ export class HttpInferenceTransport implements InferenceTransport {
     } catch {
       throw new TypeError("endpoint must be an absolute HTTPS URL");
     }
-    if (parsed.protocol !== "https:" || parsed.username.length > 0 || parsed.password.length > 0 || parsed.search.length > 0 || parsed.hash.length > 0) {
+    if (parsed.protocol !== "https:" || parsed.username.length > 0 || parsed.password.length > 0 || /[?#]/.test(endpoint)) {
       throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment");
     }
   }
@@ -191,21 +191,23 @@ export class HttpInferenceTransport implements InferenceTransport {
         for (;;) {
           const newline = buffer.indexOf("\n");
           if (newline < 0) break;
-          const line = buffer.slice(0, newline).trim();
+          const rawLine = buffer.slice(0, newline);
           buffer = buffer.slice(newline + 1);
-          if (utf8Length(line) > this.maximumMessageBytes) {
+          if (utf8Length(rawLine) > this.maximumMessageBytes) {
             throw new InferenceTransportError(response.status, "run event exceeds configured bound");
           }
+          const line = rawLine.trim();
           if (line.length > 0) yield fromJson(RunEventSchema, JSON.parse(line));
         }
         if (utf8Length(buffer) > this.maximumMessageBytes) {
           throw new InferenceTransportError(response.status, "run event exceeds configured bound");
         }
       }
-      const final = `${buffer}${decoder.decode()}`.trim();
-      if (utf8Length(final) > this.maximumMessageBytes) {
+      const rawFinal = `${buffer}${decoder.decode()}`;
+      if (utf8Length(rawFinal) > this.maximumMessageBytes) {
         throw new InferenceTransportError(response.status, "run event exceeds configured bound");
       }
+      const final = rawFinal.trim();
       if (final.length > 0) yield fromJson(RunEventSchema, JSON.parse(final));
       completed = true;
     } finally {

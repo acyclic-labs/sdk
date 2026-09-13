@@ -24,6 +24,7 @@ pub const DESCRIPTOR: &[u8] = include_bytes!("../inference_descriptor.bin");
 pub const MAXIMUM_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 /// Largest caller-supplied PEM trust bundle accepted by [`Inference::connect`].
 pub const MAXIMUM_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
+const INVALID_CA_CERTIFICATE_LENGTH: &str = "CA certificate must contain 1 to 65536 bytes";
 
 impl Drop for wire::Item {
     fn drop(&mut self) {
@@ -94,9 +95,7 @@ impl Inference {
             return Err(Error::Invalid("HTTPS is required"));
         }
         if ca_pem.is_empty() || ca_pem.len() > MAXIMUM_CA_CERTIFICATE_BYTES {
-            return Err(Error::Invalid(
-                "CA certificate must contain 1 to 65536 bytes",
-            ));
+            return Err(Error::Invalid(INVALID_CA_CERTIFICATE_LENGTH));
         }
         let authorization = authorization(api_key)?;
         let channel = endpoint
@@ -1109,16 +1108,12 @@ mod tests {
         ));
         assert!(matches!(
             Inference::connect("https://localhost", "secret", b"").await,
-            Err(Error::Invalid(
-                "CA certificate must contain 1 to 65536 bytes"
-            ))
+            Err(Error::Invalid(INVALID_CA_CERTIFICATE_LENGTH))
         ));
         let oversized = vec![b'x'; MAXIMUM_CA_CERTIFICATE_BYTES + 1];
         assert!(matches!(
             Inference::connect("https://localhost", "secret", &oversized).await,
-            Err(Error::Invalid(
-                "CA certificate must contain 1 to 65536 bytes"
-            ))
+            Err(Error::Invalid(INVALID_CA_CERTIFICATE_LENGTH))
         ));
     }
 

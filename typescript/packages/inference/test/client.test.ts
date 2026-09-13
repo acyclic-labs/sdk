@@ -152,6 +152,8 @@ test("HTTP transport applies one byte ceiling per message without conflating net
 
 test("HTTP transport rejects insecure endpoints and bounded request, unary, and error bodies", async () => {
   expect(() => new HttpInferenceTransport("http://example.test", () => ({}))).toThrow(TypeError);
+  expect(() => new HttpInferenceTransport("https://example.test?", () => ({}))).toThrow(TypeError);
+  expect(() => new HttpInferenceTransport("https://example.test#", () => ({}))).toThrow(TypeError);
 
   let calls = 0;
   const requestBound = new HttpInferenceTransport(
@@ -180,4 +182,14 @@ test("HTTP transport rejects insecure endpoints and bounded request, unary, and 
     64,
   );
   await expect(errorBound.listModels()).rejects.toThrow("error response exceeds configured bound");
+
+  const whitespaceBound = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(`${" ".repeat(65)}{}\n`),
+    64,
+  );
+  await expect(async () => {
+    for await (const _event of whitespaceBound.watchRun(create(WatchRunRequestSchema))) { /* exhaust */ }
+  }).toThrow("run event exceeds configured bound");
 });
