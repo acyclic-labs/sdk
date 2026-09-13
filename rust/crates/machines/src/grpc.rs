@@ -1259,16 +1259,8 @@ fn mutation_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
         _ => ProviderError::Rejected(value.message().into()),
     }
 }
-fn watch_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
-    match value.code() {
-        tonic::Code::Unavailable
-        | tonic::Code::DeadlineExceeded
-        | tonic::Code::Cancelled
-        | tonic::Code::Unknown
-        | tonic::Code::Internal
-        | tonic::Code::Unimplemented => ProviderError::Indeterminate(key),
-        _ => ProviderError::Rejected(value.message().into()),
-    }
+fn watch_error(key: IdempotencyKey, _value: tonic::Status) -> ProviderError {
+    ProviderError::Indeterminate(key)
 }
 fn recovery_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
     match value.code() {
@@ -1418,6 +1410,13 @@ mod tests {
         );
         assert_eq!(
             watch_error(key, tonic::Status::unimplemented("watch unavailable")),
+            ProviderError::Indeterminate(key)
+        );
+        assert_eq!(
+            watch_error(
+                key,
+                tonic::Status::resource_exhausted("watch capacity unavailable"),
+            ),
             ProviderError::Indeterminate(key)
         );
     }
