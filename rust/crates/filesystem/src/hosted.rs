@@ -6,25 +6,37 @@
 
 use crate::model::FilesystemProfile as EmbeddedProfile;
 use crate::wire::filesystem::v2 as wire;
+use crate::wire::harness::v1 as harness;
 use crate::{Fs, IdempotencyKey};
 use bytes::Bytes;
 use futures::Stream;
+#[cfg(test)]
+use prost::Message;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tonic::metadata::{Ascii, MetadataValue};
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 use tonic::{Request, Status};
 
 type Client = wire::filesystem_service_client::FilesystemServiceClient<Channel>;
 
+/// Largest caller-supplied PEM trust bundle accepted by the hosted constructor.
+pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
+const MINIMUM_HANDSHAKE_RESPONSE_BYTES: usize = 512;
+// ExportChunk is the largest byte-bearing envelope: an eight-byte cursor,
+// 33-byte typed object ID, contents, terminal flag, tags, and length varints.
+const MAX_BYTE_RESPONSE_ENVELOPE_BYTES: u64 = 10 + 35 + 11 + 2;
+
 /// Connection and client-side response bounds for [`Fs::hosted`].
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct HostedFsOptions {
     /// HTTPS endpoint of the hosted Filesystem service.
     pub endpoint: String,
     /// Opaque account-scoped bearer credential.
     pub bearer_token: String,
+    /// Optional PEM CA bundle added to, rather than replacing, ambient roots.
+    pub ca_certificate_pem: Option<Vec<u8>>,
     /// Maximum accepted encoded response size.
     pub maximum_response_bytes: usize,
     /// Maximum encoded request size sent by this client.
@@ -35,6 +47,24 @@ pub struct HostedFsOptions {
     pub request_timeout: Duration,
 }
 
+impl std::fmt::Debug for HostedFsOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HostedFsOptions")
+            .field("endpoint", &self.endpoint)
+            .field("bearer_token", &"[REDACTED]")
+            .field(
+                "ca_certificate_bytes",
+                &self.ca_certificate_pem.as_ref().map(Vec::len),
+            )
+            .field("maximum_response_bytes", &self.maximum_response_bytes)
+            .field("maximum_request_bytes", &self.maximum_request_bytes)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("request_timeout", &self.request_timeout)
+            .finish()
+    }
+}
+
 impl HostedFsOptions {
     /// Creates bounded hosted options with conservative transport defaults.
     #[must_use]
@@ -42,11 +72,19 @@ impl HostedFsOptions {
         Self {
             endpoint: endpoint.into(),
             bearer_token: bearer_token.into(),
+            ca_certificate_pem: None,
             maximum_response_bytes: 16 * 1024 * 1024,
             maximum_request_bytes: 16 * 1024 * 1024,
             connect_timeout: Duration::from_secs(10),
             request_timeout: Duration::from_secs(30),
         }
+    }
+
+    /// Adds a caller-supplied private CA while retaining ambient WebPKI roots.
+    #[must_use]
+    pub fn with_ca_certificate(mut self, certificate_pem: impl Into<Vec<u8>>) -> Self {
+        self.ca_certificate_pem = Some(certificate_pem.into());
+        self
     }
 }
 
@@ -56,6 +94,9 @@ pub enum HostedFsError {
     /// Hosted options are empty, unbounded, or use an unsupported endpoint.
     #[error("invalid hosted filesystem options: {0}")]
     InvalidOptions(&'static str),
+    /// A caller-supplied semantic bound exceeds the negotiated service limit.
+    #[error("hosted filesystem request exceeds negotiated limit: {0}")]
+    LimitExceeded(&'static str),
     /// The endpoint could not be parsed or connected.
     #[error("hosted filesystem transport failed: {0}")]
     Transport(#[from] tonic::transport::Error),
@@ -92,19 +133,33 @@ impl Fs<HostedAuthority, HostedObjects> {
 pub struct HostedFs {
     client: Client,
     authorization: MetadataValue<Ascii>,
+    capabilities: wire::Capabilities,
     owner: Arc<()>,
 }
 
 impl HostedFs {
     async fn connect(options: HostedFsOptions) -> Result<Self, HostedFsError> {
-        if options.maximum_request_bytes == 0 || options.maximum_response_bytes == 0 {
+        if options.maximum_request_bytes == 0
+            || options.maximum_response_bytes < MINIMUM_HANDSHAKE_RESPONSE_BYTES
+        {
             return Err(HostedFsError::InvalidOptions(
-                "request and response bounds must be nonzero",
+                "request bound must be nonzero and response bound must admit the handshake",
             ));
         }
         if options.bearer_token.is_empty() {
             return Err(HostedFsError::InvalidOptions(
                 "bearer credential must be nonempty",
+            ));
+        }
+        if options
+            .ca_certificate_pem
+            .as_ref()
+            .is_some_and(|certificate| {
+                certificate.is_empty() || certificate.len() > MAX_CA_CERTIFICATE_BYTES
+            })
+        {
+            return Err(HostedFsError::InvalidOptions(
+                "CA certificate must contain 1 to 65536 bytes",
             ));
         }
         if !(options.endpoint.starts_with("https://")
@@ -116,21 +171,83 @@ impl HostedFs {
                 "endpoint must use HTTPS or loopback HTTP",
             ));
         }
-        let authorization = format!("Bearer {}", options.bearer_token)
+        let authorization: MetadataValue<Ascii> = format!("Bearer {}", options.bearer_token)
             .parse()
             .map_err(|_| HostedFsError::InvalidOptions("bearer credential is not HTTP metadata"))?;
-        let endpoint = Endpoint::from_shared(options.endpoint)?
+        let is_https = options.endpoint.starts_with("https://");
+        let mut endpoint = Endpoint::new(options.endpoint)?
             .connect_timeout(options.connect_timeout)
             .timeout(options.request_timeout);
+        if let Some(certificate) = options.ca_certificate_pem {
+            if !is_https {
+                return Err(HostedFsError::InvalidOptions(
+                    "CA certificate requires an HTTPS endpoint",
+                ));
+            }
+            endpoint = endpoint.tls_config(
+                ClientTlsConfig::new()
+                    .with_enabled_roots()
+                    .ca_certificate(Certificate::from_pem(certificate)),
+            )?;
+        }
         let channel = endpoint.connect().await?;
-        let client = Client::new(channel)
+        let mut client = Client::new(channel)
             .max_decoding_message_size(options.maximum_response_bytes)
             .max_encoding_message_size(options.maximum_request_bytes);
+        let mut handshake = Request::new(wire::HandshakeRequest {
+            harness: Some(harness::HandshakeRequest {
+                protocol: Some(harness::ProtocolIdentity {
+                    version: "1".to_owned(),
+                    descriptor_digest: crate::descriptor_digest(),
+                }),
+                required: Some(harness::CapabilitySet {
+                    capabilities: vec![harness::Capability {
+                        name: "filesystem".to_owned(),
+                        version: "1".to_owned(),
+                    }],
+                }),
+            }),
+        });
+        handshake
+            .metadata_mut()
+            .insert("authorization", authorization.clone());
+        let mut capabilities = validate_handshake(client.handshake(handshake).await?.into_inner())?;
+        let configured_request_bytes =
+            u64::try_from(options.maximum_request_bytes).map_err(|_| {
+                HostedFsError::InvalidOptions("request bound does not fit the protocol")
+            })?;
+        let configured_response_bytes =
+            u64::try_from(options.maximum_response_bytes).map_err(|_| {
+                HostedFsError::InvalidOptions("response bound does not fit the protocol")
+            })?;
+        capabilities.maximum_request_bytes = capabilities
+            .maximum_request_bytes
+            .min(configured_request_bytes);
+        capabilities.maximum_response_bytes = capabilities
+            .maximum_response_bytes
+            .min(configured_response_bytes - MAX_BYTE_RESPONSE_ENVELOPE_BYTES);
+        let maximum_request_bytes =
+            usize::try_from(capabilities.maximum_request_bytes).map_err(|_| {
+                HostedFsError::InvalidResponse("request bound does not fit this platform")
+            })?;
+        // The advertised limit is application payload, while Tonic bounds the complete
+        // protobuf message. Retain the caller's encoded-frame ceiling and expose only
+        // the payload bytes that fit below the largest byte-bearing response envelope.
+        client = client
+            .max_decoding_message_size(options.maximum_response_bytes)
+            .max_encoding_message_size(maximum_request_bytes);
         Ok(Self {
             client,
             authorization,
+            capabilities,
             owner: Arc::new(()),
         })
+    }
+
+    /// Returns the authenticated server capabilities retained by this client.
+    #[must_use]
+    pub const fn capabilities(&self) -> &wire::Capabilities {
+        &self.capabilities
     }
 
     fn request<T>(&self, value: T) -> Request<T> {
@@ -139,6 +256,30 @@ impl HostedFs {
             .metadata_mut()
             .insert("authorization", self.authorization.clone());
         request
+    }
+
+    fn require_page_bound(&self, value: u32, name: &'static str) -> Result<(), HostedFsError> {
+        if value == 0 || value > self.capabilities.maximum_page_items {
+            Err(HostedFsError::LimitExceeded(name))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn require_response_bound(&self, value: u64, name: &'static str) -> Result<(), HostedFsError> {
+        if value == 0 || value > self.capabilities.maximum_response_bytes {
+            Err(HostedFsError::LimitExceeded(name))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn require_transaction_bound(&self, value: usize) -> Result<(), HostedFsError> {
+        if value == 0 || value > self.capabilities.maximum_transaction_mutations as usize {
+            Err(HostedFsError::LimitExceeded("transaction mutations"))
+        } else {
+            Ok(())
+        }
     }
 
     /// Creates one named workspace with a caller-owned retry identity.
@@ -373,6 +514,12 @@ impl HostedWorkspace {
         maximum_conflicts: u32,
         idempotency_key: IdempotencyKey,
     ) -> Result<wire::RebaseResponse, HostedFsError> {
+        self.filesystem
+            .require_page_bound(maximum_generations, "rebase generations")?;
+        self.filesystem
+            .require_page_bound(maximum_changes, "rebase changes")?;
+        self.filesystem
+            .require_page_bound(maximum_conflicts, "rebase conflicts")?;
         let mut client = self.filesystem.client.clone();
         Ok(client
             .rebase(self.filesystem.request(wire::RebaseRequest {
@@ -469,6 +616,9 @@ impl HostedGeneration {
         length: u64,
         maximum_bytes: u64,
     ) -> Result<Bytes, HostedFsError> {
+        self.workspace
+            .filesystem
+            .require_response_bound(maximum_bytes, "read bytes")?;
         let mut client = self.workspace.filesystem.client.clone();
         let response = client
             .read(self.workspace.filesystem.request(wire::ReadRequest {
@@ -488,6 +638,9 @@ impl HostedGeneration {
         path: impl Into<String>,
         maximum_bytes: u64,
     ) -> Result<Bytes, HostedFsError> {
+        self.workspace
+            .filesystem
+            .require_response_bound(maximum_bytes, "read bytes")?;
         let mut client = self.workspace.filesystem.client.clone();
         let response = client
             .read(self.workspace.filesystem.request(wire::ReadRequest {
@@ -522,6 +675,9 @@ impl HostedGeneration {
         after: Option<wire::LogicalName>,
         maximum_items: u32,
     ) -> Result<wire::DirectoryPage, HostedFsError> {
+        self.workspace
+            .filesystem
+            .require_page_bound(maximum_items, "directory items")?;
         let mut client = self.workspace.filesystem.client.clone();
         client
             .list_directory(
@@ -548,6 +704,9 @@ impl HostedGeneration {
         path: impl Into<String>,
         maximum_bytes: u64,
     ) -> Result<Bytes, HostedFsError> {
+        self.workspace
+            .filesystem
+            .require_response_bound(maximum_bytes, "symbolic-link bytes")?;
         let mut client = self.workspace.filesystem.client.clone();
         let response = client
             .read_link(self.workspace.filesystem.request(wire::ReadLinkRequest {
@@ -568,6 +727,9 @@ impl HostedGeneration {
         length: u64,
         maximum_extents: u32,
     ) -> Result<wire::PlanExtentsResponse, HostedFsError> {
+        self.workspace
+            .filesystem
+            .require_page_bound(maximum_extents, "extent items")?;
         let mut client = self.workspace.filesystem.client.clone();
         Ok(client
             .plan_extents(self.workspace.filesystem.request(wire::PlanExtentsRequest {
@@ -587,6 +749,9 @@ impl HostedGeneration {
         maximum_changes: u32,
     ) -> Result<wire::DiffResponse, HostedFsError> {
         self.workspace.filesystem.require_owner(&to.workspace)?;
+        self.workspace
+            .filesystem
+            .require_page_bound(maximum_changes, "diff changes")?;
         let mut client = self.workspace.filesystem.client.clone();
         Ok(client
             .diff(self.workspace.filesystem.request(wire::DiffRequest {
@@ -608,6 +773,15 @@ impl HostedGeneration {
         maximum_conflicts: u32,
     ) -> Result<wire::JoinPlan, HostedFsError> {
         self.workspace.filesystem.require_owner(&target.workspace)?;
+        self.workspace
+            .filesystem
+            .require_page_bound(maximum_generations, "join generations")?;
+        self.workspace
+            .filesystem
+            .require_page_bound(maximum_changes, "join changes")?;
+        self.workspace
+            .filesystem
+            .require_page_bound(maximum_conflicts, "join conflicts")?;
         let mut client = self.workspace.filesystem.client.clone();
         Ok(client
             .plan_join(self.workspace.filesystem.request(wire::PlanJoinRequest {
@@ -629,6 +803,12 @@ impl HostedGeneration {
         maximum_objects: u32,
         maximum_bytes: u64,
     ) -> Result<tonic::Streaming<wire::ExportChunk>, HostedFsError> {
+        self.workspace
+            .filesystem
+            .require_page_bound(maximum_objects, "export objects")?;
+        self.workspace
+            .filesystem
+            .require_response_bound(maximum_bytes, "export bytes")?;
         let mut client = self.workspace.filesystem.client.clone();
         Ok(client
             .export(self.workspace.filesystem.request(wire::ExportRequest {
@@ -893,6 +1073,12 @@ impl HostedTransaction {
         self,
         maximum_conflicts: u32,
     ) -> Result<wire::MutationResponse, HostedFsError> {
+        self.workspace
+            .filesystem
+            .require_transaction_bound(self.mutations.len())?;
+        self.workspace
+            .filesystem
+            .require_page_bound(maximum_conflicts, "transaction conflicts")?;
         let mut client = self.workspace.filesystem.client.clone();
         Ok(client
             .apply_transaction(
@@ -915,6 +1101,12 @@ impl HostedTransaction {
         &self,
         maximum_conflicts: u32,
     ) -> Result<wire::RebaseTransactionResponse, HostedFsError> {
+        self.workspace
+            .filesystem
+            .require_transaction_bound(self.mutations.len())?;
+        self.workspace
+            .filesystem
+            .require_page_bound(maximum_conflicts, "transaction conflicts")?;
         let mut client = self.workspace.filesystem.client.clone();
         Ok(client
             .rebase_transaction(
@@ -930,6 +1122,57 @@ impl HostedTransaction {
             .await?
             .into_inner())
     }
+}
+
+fn validate_handshake(
+    response: wire::HandshakeResponse,
+) -> Result<wire::Capabilities, HostedFsError> {
+    let handshake = response.harness.ok_or(HostedFsError::InvalidResponse(
+        "handshake response is absent",
+    ))?;
+    let protocol = handshake.protocol.ok_or(HostedFsError::InvalidResponse(
+        "handshake protocol is absent",
+    ))?;
+    if protocol.version != "1" {
+        return Err(HostedFsError::InvalidResponse(
+            "filesystem protocol version is unsupported",
+        ));
+    }
+    if protocol.descriptor_digest != crate::descriptor_digest() {
+        return Err(HostedFsError::InvalidResponse(
+            "filesystem descriptor digest does not match",
+        ));
+    }
+    let supported = handshake.supported.ok_or(HostedFsError::InvalidResponse(
+        "supported capabilities are absent",
+    ))?;
+    if !supported
+        .capabilities
+        .iter()
+        .any(|capability| capability.name == "filesystem" && capability.version == "1")
+    {
+        return Err(HostedFsError::InvalidResponse(
+            "filesystem capability version is unsupported",
+        ));
+    }
+    let capabilities = response.capabilities.ok_or(HostedFsError::InvalidResponse(
+        "filesystem capabilities are absent",
+    ))?;
+    if capabilities.contract_version != "1" {
+        return Err(HostedFsError::InvalidResponse(
+            "filesystem contract version is unsupported",
+        ));
+    }
+    if capabilities.maximum_request_bytes == 0
+        || capabilities.maximum_response_bytes == 0
+        || capabilities.maximum_transaction_mutations == 0
+        || capabilities.maximum_page_items == 0
+    {
+        return Err(HostedFsError::InvalidResponse(
+            "filesystem capabilities contain an unbounded limit",
+        ));
+    }
+    Ok(capabilities)
 }
 
 fn operation(idempotency_key: IdempotencyKey) -> wire::OperationOptions {
@@ -983,16 +1226,21 @@ mod tests {
     use super::*;
     use crate::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer;
     use crate::{EmbeddedCapabilities, FilesystemWireLimits, FilesystemWireService};
+    use rcgen::generate_simple_self_signed;
     use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::transport::{Identity, Server, ServerTlsConfig};
 
     #[tokio::test]
     async fn hosted_constructor_uses_the_same_canonical_engine_over_real_grpc()
     -> Result<(), Box<dyn std::error::Error>> {
         let embedded = crate::MemoryFs::memory();
-        let service = FilesystemServiceServer::new(FilesystemWireService::new(
-            embedded,
-            FilesystemWireLimits::default(),
-        )?);
+        let limits = FilesystemWireLimits {
+            maximum_response_bytes: 1_024,
+            maximum_transaction_mutations: 2,
+            maximum_page_items: 2,
+            ..FilesystemWireLimits::default()
+        };
+        let service = FilesystemServiceServer::new(FilesystemWireService::new(embedded, limits)?);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
@@ -1005,11 +1253,21 @@ mod tests {
                 .await
         });
 
-        let hosted = Fs::hosted(HostedFsOptions::new(
-            format!("http://{address}"),
-            "test-account-token",
-        ))
-        .await?;
+        let endpoint = format!("http://{address}");
+        let mut minimum_options = HostedFsOptions::new(&endpoint, "test-account-token");
+        minimum_options.maximum_response_bytes = MINIMUM_HANDSHAKE_RESPONSE_BYTES;
+        let minimum_hosted = Fs::hosted(minimum_options).await?;
+        assert_eq!(
+            minimum_hosted.capabilities().maximum_response_bytes,
+            u64::try_from(MINIMUM_HANDSHAKE_RESPONSE_BYTES)? - MAX_BYTE_RESPONSE_ENVELOPE_BYTES
+        );
+
+        let mut options = HostedFsOptions::new(endpoint, "test-account-token");
+        options.maximum_response_bytes = 1_024 + usize::try_from(MAX_BYTE_RESPONSE_ENVELOPE_BYTES)?;
+        let hosted = Fs::hosted(options).await?;
+        assert_eq!(hosted.capabilities().maximum_response_bytes, 1_024);
+        assert_eq!(hosted.capabilities().maximum_transaction_mutations, 2);
+        assert_eq!(hosted.capabilities().maximum_page_items, 2);
         let workspace = hosted
             .create_workspace(
                 "hosted",
@@ -1019,24 +1277,42 @@ mod tests {
             .await?;
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([2; 16]));
         transaction.create_directories("/tree");
-        transaction.put_file("/tree/value", b"canonical".to_vec());
-        let outcome = transaction.commit(32).await?;
+        transaction.put_file("/tree/value", vec![b'x'; 1_024]);
+        let outcome = transaction.commit(2).await?;
         assert!(matches!(
             wire::MutationStatus::try_from(outcome.status),
             Ok(wire::MutationStatus::Committed)
         ));
         let head = workspace.head().await?;
-        assert_eq!(
-            head.read("/tree/value", 64).await?,
-            Bytes::from_static(b"canonical")
-        );
+        assert_eq!(head.read("/tree/value", 1_024).await?.len(), 1_024);
         let child = head
             .fork("child", IdempotencyKey::from_bytes([3; 16]))
             .await?;
         assert_eq!(
-            child.head().await?.read("/tree/value", 64).await?,
-            b"canonical".as_slice()
+            child.head().await?.read("/tree/value", 1_024).await?.len(),
+            1_024
         );
+        assert!(matches!(
+            child.head().await?.read("/tree/value", 1_025).await,
+            Err(HostedFsError::LimitExceeded("read bytes"))
+        ));
+        assert!(matches!(
+            child.head().await?.list_directory("/tree", None, 3).await,
+            Err(HostedFsError::LimitExceeded("directory items"))
+        ));
+        let mut oversized = child.begin_transaction(IdempotencyKey::from_bytes([4; 16]));
+        oversized.create_directories("/one");
+        oversized.create_directories("/two");
+        oversized.create_directories("/three");
+        assert!(matches!(
+            oversized.commit(1).await,
+            Err(HostedFsError::LimitExceeded("transaction mutations"))
+        ));
+        let empty = child.begin_transaction(IdempotencyKey::from_bytes([5; 16]));
+        assert!(matches!(
+            empty.commit(1).await,
+            Err(HostedFsError::LimitExceeded("transaction mutations"))
+        ));
 
         stop_tx
             .send(())
@@ -1044,5 +1320,140 @@ mod tests {
         server.await??;
         let _ = EmbeddedCapabilities::MEMORY;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn private_ca_https_constructor_requires_handshake_and_exact_bearer()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let certified = generate_simple_self_signed(["localhost".to_owned()])?;
+        let certificate_pem = certified.cert.pem();
+        let private_key_pem = certified.signing_key.serialize_pem();
+        let embedded = crate::MemoryFs::memory();
+        let service = FilesystemServiceServer::with_interceptor(
+            FilesystemWireService::new(embedded, FilesystemWireLimits::default())?,
+            |request: Request<()>| {
+                if request
+                    .metadata()
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    != Some("Bearer exact-token")
+                {
+                    return Err(Status::unauthenticated("missing exact bearer credential"));
+                }
+                Ok(request)
+            },
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let server_certificate_pem = certificate_pem.clone();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .tls_config(
+                    ServerTlsConfig::new()
+                        .identity(Identity::from_pem(server_certificate_pem, private_key_pem)),
+                )?
+                .add_service(service)
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = stop_rx.await;
+                })
+                .await
+        });
+        let endpoint = format!("https://localhost:{}", address.port());
+
+        assert!(
+            Fs::hosted(HostedFsOptions::new(&endpoint, "exact-token"))
+                .await
+                .is_err()
+        );
+        assert!(matches!(
+            Fs::hosted(
+                HostedFsOptions::new(&endpoint, "wrong-token")
+                    .with_ca_certificate(certificate_pem.clone())
+            )
+            .await,
+            Err(HostedFsError::Status(status)) if status.code() == tonic::Code::Unauthenticated
+        ));
+        let hosted = Fs::hosted(
+            HostedFsOptions::new(endpoint, "exact-token").with_ca_certificate(certificate_pem),
+        )
+        .await?;
+        assert_eq!(hosted.capabilities().contract_version, "1");
+
+        stop_tx
+            .send(())
+            .map_err(|()| "hosted TLS test server disappeared")?;
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hosted_constructor_rejects_unbounded_ca_and_malformed_handshake() {
+        let debug = format!(
+            "{:?}",
+            HostedFsOptions::new("https://localhost", "secret-token")
+        );
+        assert!(!debug.contains("secret-token"));
+        assert!(debug.contains("[REDACTED]"));
+        let oversized = HostedFsOptions::new("https://localhost", "token")
+            .with_ca_certificate(vec![b'x'; MAX_CA_CERTIFICATE_BYTES + 1]);
+        assert!(matches!(
+            Fs::hosted(oversized).await,
+            Err(HostedFsError::InvalidOptions(
+                "CA certificate must contain 1 to 65536 bytes"
+            ))
+        ));
+
+        let mut undersized = HostedFsOptions::new("https://localhost", "token");
+        undersized.maximum_response_bytes = MINIMUM_HANDSHAKE_RESPONSE_BYTES - 1;
+        assert!(matches!(
+            Fs::hosted(undersized).await,
+            Err(HostedFsError::InvalidOptions(
+                "request bound must be nonzero and response bound must admit the handshake"
+            ))
+        ));
+
+        let largest_byte_envelope = wire::ExportChunk {
+            cursor: vec![0; 8],
+            object_id: vec![0; 33],
+            contents: vec![0; 1_024],
+            terminal: true,
+        };
+        assert!(
+            u64::try_from(largest_byte_envelope.encoded_len()).unwrap_or(u64::MAX)
+                <= 1_024 + MAX_BYTE_RESPONSE_ENVELOPE_BYTES
+        );
+
+        let malformed = wire::HandshakeResponse {
+            harness: Some(harness::HandshakeResponse {
+                protocol: Some(harness::ProtocolIdentity {
+                    version: "1".to_owned(),
+                    descriptor_digest: "substituted".to_owned(),
+                }),
+                supported: Some(harness::CapabilitySet {
+                    capabilities: vec![harness::Capability {
+                        name: "filesystem".to_owned(),
+                        version: "1".to_owned(),
+                    }],
+                }),
+            }),
+            capabilities: Some(wire::Capabilities {
+                contract_version: "1".to_owned(),
+                profiles: Vec::new(),
+                maximum_request_bytes: 1,
+                maximum_response_bytes: 1,
+                maximum_transaction_mutations: 1,
+                maximum_page_items: 1,
+                native_mount_credentials: false,
+                s3_credentials: false,
+                source_reconciliation: false,
+            }),
+        };
+        assert!(matches!(
+            validate_handshake(malformed),
+            Err(HostedFsError::InvalidResponse(
+                "filesystem descriptor digest does not match"
+            ))
+        ));
     }
 }

@@ -99,6 +99,11 @@ for (const path of [
     throw new Error(`filesystem package version mismatch: ${path}`);
   }
 }
+const nativeSource = await readFile(new URL("typescript/packages/filesystem/src/native.ts", root), "utf8");
+const nativePackageVersion = nativeSource.match(/const PACKAGE_VERSION = "([^"]+)";/)?.[1];
+if (nativePackageVersion !== filesystemVersion) {
+  throw new Error("filesystem native companion version does not match package metadata");
+}
 const inferenceIndex = (await readFile(new URL("registry/in/fe/inference-sdk", root), "utf8"))
   .trim()
   .split("\n")
