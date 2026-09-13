@@ -227,6 +227,9 @@ fn map_error(error: ProviderError, operation: Option<OperationId>) -> Error {
             || Error::Storage("Machines outcome is unknown".into()),
             Error::Indeterminate,
         ),
+        ProviderError::OperationIndeterminate(operation) => {
+            Error::Indeterminate(OperationId::from_bytes(operation.as_bytes()))
+        }
         ProviderError::Failed => Error::Storage("Machines operation failed".into()),
         ProviderError::Cancelled => Error::Storage("Machines operation was cancelled".into()),
     }
@@ -236,6 +239,17 @@ fn map_error(error: ProviderError, operation: Option<OperationId>) -> Error {
 mod tests {
     use super::*;
     use acyclic_machines::SimulatedMachines;
+
+    #[test]
+    fn operation_indeterminate_preserves_the_exact_provider_operation() -> Result<()> {
+        let operation = MachinesOperationId::parse("00000000-0000-0000-0000-000000000001")
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(
+            map_error(ProviderError::OperationIndeterminate(operation), None),
+            Error::Indeterminate(OperationId::from_bytes(operation.as_bytes()))
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn opaque_refs_round_trip_through_a_replaceable_provider() -> Result<()> {

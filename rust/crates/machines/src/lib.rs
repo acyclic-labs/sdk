@@ -473,6 +473,8 @@ pub enum ProviderError {
     Unavailable,
     #[error("operation is indeterminate: {0}")]
     Indeterminate(IdempotencyKey),
+    #[error("operation observation is indeterminate; inspect operation {0}")]
+    OperationIndeterminate(OperationId),
     #[error("operation failed")]
     Failed,
     #[error("operation cancelled")]
