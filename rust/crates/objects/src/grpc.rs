@@ -8,10 +8,12 @@ use thiserror::Error;
 use tonic::{
     Request,
     metadata::{Ascii, MetadataValue},
-    transport::{Channel, Endpoint},
+    transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
 };
 
 const BODY_FRAME_BYTES: usize = 64 * 1024;
+/// Maximum caller-supplied private CA bundle accepted by the client.
+pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
 
 /// Errors returned while constructing or using a client.
 #[derive(Debug, Error)]
@@ -25,6 +27,9 @@ pub enum Error {
     /// The supplied bearer credential could not be encoded as request metadata.
     #[error("invalid Objects bearer credential")]
     InvalidCredential,
+    /// The caller-supplied private CA bundle was empty or exceeded its fixed bound.
+    #[error("invalid Objects CA certificate bundle")]
+    InvalidCaCertificate,
     /// The service rejected a request with a canonical public semantic code.
     #[error("Objects request rejected ({code:?}, request {request_id}): {message}")]
     Rejected {
@@ -76,9 +81,42 @@ impl Client {
     ///
     /// Returns an error when the endpoint/credential is invalid or the TLS connection fails.
     pub async fn connect(endpoint: impl AsRef<str>, bearer_token: impl AsRef<str>) -> Result<Self> {
-        let endpoint = Endpoint::from_shared(endpoint.as_ref().to_owned())?;
+        Self::connect_with_tls(endpoint, bearer_token, None).await
+    }
+
+    /// Connect to an account endpoint augmented by one caller-supplied private CA bundle.
+    ///
+    /// The certificate augments the client's roots for this connection only. HTTPS remains
+    /// mandatory, and the process-wide trust store is never changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the endpoint, credential, or bounded CA bundle is invalid, or when
+    /// the authenticated TLS connection fails.
+    pub async fn connect_with_ca_certificate(
+        endpoint: impl AsRef<str>,
+        bearer_token: impl AsRef<str>,
+        certificate_pem: impl AsRef<[u8]>,
+    ) -> Result<Self> {
+        let certificate_pem = bounded_ca_certificate(certificate_pem.as_ref())?;
+        Self::connect_with_tls(endpoint, bearer_token, Some(certificate_pem)).await
+    }
+
+    async fn connect_with_tls(
+        endpoint: impl AsRef<str>,
+        bearer_token: impl AsRef<str>,
+        certificate_pem: Option<&[u8]>,
+    ) -> Result<Self> {
+        let mut endpoint = Endpoint::new(endpoint.as_ref().to_owned())?;
         if endpoint.uri().scheme_str() != Some("https") {
             return Err(Error::InsecureEndpoint);
+        }
+        if let Some(certificate_pem) = certificate_pem {
+            endpoint = endpoint.tls_config(
+                ClientTlsConfig::new()
+                    .with_enabled_roots()
+                    .ca_certificate(Certificate::from_pem(certificate_pem)),
+            )?;
         }
         let authorization = format!("Bearer {}", bearer_token.as_ref())
             .parse::<MetadataValue<Ascii>>()
@@ -146,6 +184,13 @@ impl Client {
     pub fn snapshot(&self, reference: wire::SnapshotRef) -> Snapshot {
         Snapshot::new(self, reference)
     }
+}
+
+fn bounded_ca_certificate(certificate_pem: &[u8]) -> Result<&[u8]> {
+    if certificate_pem.is_empty() || certificate_pem.len() > MAX_CA_CERTIFICATE_BYTES {
+        return Err(Error::InvalidCaCertificate);
+    }
+    Ok(certificate_pem)
 }
 
 /// Options common to retryable mutations.
@@ -1165,7 +1210,10 @@ fn provider_error(error: Error) -> crate::ObjectsError {
                 crate::ObjectsError::Unavailable
             }
         },
-        Error::InvalidEndpoint(_) | Error::InsecureEndpoint | Error::InvalidCredential => {
+        Error::InvalidEndpoint(_)
+        | Error::InsecureEndpoint
+        | Error::InvalidCredential
+        | Error::InvalidCaCertificate => {
             crate::ObjectsError::Invalid("invalid provider configuration")
         }
         Error::Transport(status)
@@ -1519,6 +1567,55 @@ impl crate::ObjectsProvider for Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcgen::generate_simple_self_signed;
+    use tokio::net::TcpListener;
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::{
+        Response, Status,
+        transport::{Identity, Server, ServerTlsConfig},
+    };
+    use wire::buckets_service_server::{BucketsService, BucketsServiceServer};
+
+    struct AuthenticatedBuckets;
+
+    #[tonic::async_trait]
+    impl BucketsService for AuthenticatedBuckets {
+        async fn create_bucket(
+            &self,
+            request: Request<wire::CreateBucketRequest>,
+        ) -> std::result::Result<Response<wire::Bucket>, Status> {
+            if request
+                .metadata()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                != Some("Bearer exact-token")
+            {
+                return Err(Status::unauthenticated("missing exact bearer credential"));
+            }
+            let name = request.into_inner().name;
+            Ok(Response::new(wire::Bucket {
+                bucket: Some(wire::BucketRef {
+                    bucket_id: "bucket-1".into(),
+                    name,
+                }),
+                created_at: Some(prost_types::Timestamp::default()),
+            }))
+        }
+
+        async fn head_bucket(
+            &self,
+            _request: Request<wire::HeadBucketRequest>,
+        ) -> std::result::Result<Response<wire::Bucket>, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+
+        async fn delete_bucket(
+            &self,
+            _request: Request<wire::DeleteBucketRequest>,
+        ) -> std::result::Result<Response<wire::DeleteBucketResponse>, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+    }
 
     fn assert_provider<T: crate::ObjectsProvider>() {}
 
@@ -1570,6 +1667,78 @@ mod tests {
             Client::connect("http://127.0.0.1:1", "token").await,
             Err(Error::InsecureEndpoint)
         ));
+        assert!(matches!(
+            Client::connect_with_ca_certificate("http://127.0.0.1:1", "token", b"certificate")
+                .await,
+            Err(Error::InsecureEndpoint)
+        ));
+    }
+
+    #[tokio::test]
+    async fn private_ca_connection_rejects_unrepresentable_bearer_before_network_io() {
+        assert!(matches!(
+            Client::connect_with_ca_certificate(
+                "https://127.0.0.1:1",
+                "invalid\nbearer",
+                b"certificate",
+            )
+            .await,
+            Err(Error::InvalidCredential)
+        ));
+    }
+
+    #[test]
+    fn private_ca_bundle_is_exactly_bounded() {
+        assert!(matches!(
+            bounded_ca_certificate(&[]),
+            Err(Error::InvalidCaCertificate)
+        ));
+        assert!(matches!(
+            bounded_ca_certificate(&vec![b'x'; MAX_CA_CERTIFICATE_BYTES]),
+            Ok(certificate) if certificate.len() == MAX_CA_CERTIFICATE_BYTES
+        ));
+        assert!(matches!(
+            bounded_ca_certificate(&vec![b'x'; MAX_CA_CERTIFICATE_BYTES + 1]),
+            Err(Error::InvalidCaCertificate)
+        ));
+    }
+
+    #[tokio::test]
+    async fn private_ca_https_connection_preserves_exact_bearer_authentication()
+    -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let certified = generate_simple_self_signed(["localhost".to_owned()])?;
+        let certificate_pem = certified.cert.pem();
+        let private_key_pem = certified.signing_key.serialize_pem();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server_certificate_pem = certificate_pem.clone();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .tls_config(
+                    ServerTlsConfig::new()
+                        .identity(Identity::from_pem(server_certificate_pem, private_key_pem)),
+                )?
+                .add_service(BucketsServiceServer::new(AuthenticatedBuckets))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let endpoint = format!("https://localhost:{}", address.port());
+        assert!(Client::connect(&endpoint, "exact-token").await.is_err());
+        let client =
+            Client::connect_with_ca_certificate(endpoint, "exact-token", certificate_pem).await?;
+        let bucket = client
+            .create_bucket("fixture", MutationOptions::default())
+            .await?;
+        assert_eq!(bucket.id(), "bucket-1");
+        assert_eq!(bucket.name(), "fixture");
+
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
     }
 
     #[test]
