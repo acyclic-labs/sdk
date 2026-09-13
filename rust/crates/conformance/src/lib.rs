@@ -314,10 +314,13 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
             {
                 return Err("required capability was not retained in the machine contract".into());
             }
-            provider
+            let destroyed = provider
                 .destroy_machine(observation.id, key(destroy_suffix)?)
                 .await
                 .map_err(|error| error.to_string())?;
+            if destroyed != MutationOutcome::MachineDestroyed(observation.id) {
+                return Err("capability conformance cleanup substituted its outcome".into());
+            }
         } else if !matches!(admission, Err(ProviderError::Unsupported(_))) {
             return Err("unsupported capability intent did not fail explicitly".into());
         }

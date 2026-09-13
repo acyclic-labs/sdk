@@ -1255,6 +1255,7 @@ fn mutation_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
         | tonic::Code::Cancelled
         | tonic::Code::Unknown
         | tonic::Code::Internal => ProviderError::Indeterminate(key),
+        tonic::Code::Unimplemented => ProviderError::Unsupported(value.message().into()),
         _ => ProviderError::Rejected(value.message().into()),
     }
 }
@@ -1394,6 +1395,16 @@ mod tests {
         assert!(decode_usage_receipt(receipt(Vec::new(), 0), machine, 1, 2).is_err());
         assert!(decode_usage_receipt(receipt(vec![0; 32], 0), machine, 1, 2).is_err());
         assert!(decode_usage_receipt(receipt(vec![7; 32], 1), machine, 1, 2).is_err());
+    }
+
+    #[test]
+    fn mutation_errors_preserve_unsupported_capabilities() {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            mutation_error(key, tonic::Status::unimplemented("capability unavailable"),),
+            ProviderError::Unsupported("capability unavailable".into())
+        );
     }
 
     #[tokio::test]
