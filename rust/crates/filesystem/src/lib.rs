@@ -45,6 +45,10 @@ pub use wire_service::{
 /// Canonical public descriptor set used by compatibility and conformance gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-filesystem-v2.bin");
 
+pub(crate) fn descriptor_digest() -> String {
+    blake3::hash(FILE_DESCRIPTOR_SET).to_hex().to_string()
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod public_contract_tests {
     use super::{FILE_DESCRIPTOR_SET, wire};

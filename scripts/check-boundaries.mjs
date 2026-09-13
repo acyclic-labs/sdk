@@ -51,3 +51,4 @@ for (const [path, content] of [
 failures.length = 0;
 await visit(root);
 if (failures.length) { console.error(failures.join("\n")); process.exitCode = 1; }
+await import("./check-method-matrix.mjs");

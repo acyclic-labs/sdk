@@ -236,7 +236,7 @@ where
                     "unsupported filesystem contract version",
                 ));
             }
-            let digest = descriptor_digest();
+            let digest = crate::descriptor_digest();
             if !requested.descriptor_digest.is_empty() && requested.descriptor_digest != digest {
                 return Err(Status::failed_precondition(
                     "filesystem descriptor digest mismatch",
@@ -245,7 +245,7 @@ where
         }
         let protocol = harness::ProtocolIdentity {
             version: "1".to_owned(),
-            descriptor_digest: descriptor_digest(),
+            descriptor_digest: crate::descriptor_digest(),
         };
         Ok(Response::new(wire::HandshakeResponse {
             harness: Some(harness::HandshakeResponse {
@@ -2120,12 +2120,6 @@ fn file_kind(value: EngineFileKind) -> i32 {
         EngineFileKind::ReparsePoint => wire::FileKind::ReparsePoint,
         EngineFileKind::MountBoundary => wire::FileKind::MountBoundary,
     }) as i32
-}
-
-fn descriptor_digest() -> String {
-    blake3::hash(crate::FILE_DESCRIPTOR_SET)
-        .to_hex()
-        .to_string()
 }
 
 fn required<T>(value: Option<T>, name: &'static str) -> Result<T, Status> {

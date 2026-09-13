@@ -1,0 +1,60 @@
+{
+  "revision": 1,
+  "families": [
+    {
+      "name": "objects",
+      "proto": "proto/objects/v1/objects.proto",
+      "publicSource": "rust/crates/objects/src/grpc.rs",
+      "transportSource": "rust/crates/objects/src/grpc.rs",
+      "conformanceSource": "rust/crates/objects/src/conformance.rs",
+      "methods": [
+        ["BucketsService/CreateBucket", "create_bucket"], ["BucketsService/HeadBucket", "open_bucket"], ["BucketsService/DeleteBucket", "destroy"],
+        ["ObjectsService/PutObject", "put"], ["ObjectsService/GetObject", "get"], ["ObjectsService/HeadObject", "head"], ["ObjectsService/DeleteObject", "delete"], ["ObjectsService/ListObjects", "list_page"],
+        ["MultipartService/CreateMultipart", "create_multipart"], ["MultipartService/UploadPart", "upload_part"], ["MultipartService/ListParts", "list_parts"], ["MultipartService/CompleteMultipart", "complete"], ["MultipartService/AbortMultipart", "abort"],
+        ["SnapshotsService/CreateSnapshot", "snapshot"], ["SnapshotsService/DestroySnapshot", "destroy"], ["SnapshotsService/ForkSnapshot", "fork"], ["SnapshotsService/ForkBucket", "fork_current"]
+      ]
+    },
+    {
+      "name": "streams",
+      "proto": "rust/crates/stream/proto/stream/v2/stream.proto",
+      "publicSource": "rust/crates/stream/src/lib.rs",
+      "transportSource": "rust/crates/stream/src/grpc.rs",
+      "conformanceSource": "rust/crates/stream/src/conformance.rs",
+      "methods": [
+        ["StreamService/InspectIdempotency", "inspect_idempotency"], ["StreamService/Append", "append"], ["StreamService/Tail", "tail"], ["StreamService/Fork", "fork"], ["StreamService/Trim", "trim"], ["StreamService/Delete", "delete"], ["StreamService/Read", "read"], ["StreamService/Follow", "follow"], ["StreamService/Children", "children"], ["StreamService/Commit", "commit"], ["StreamService/ReadCommit", "read_commit"]
+      ]
+    },
+    {
+      "name": "inference",
+      "proto": "proto/inference/v1/inference.proto",
+      "publicSource": "rust/crates/inference/src/lib.rs",
+      "transportSource": "rust/crates/inference/src/lib.rs",
+      "conformanceSource": "rust/crates/inference/src/lib.rs",
+      "methods": [
+        ["ModelsService/List", "models"], ["ContextsService/Create", "create"], ["ContextsService/Inspect", "inspect"], ["ContextsService/Mutate", "send"],
+        ["WarmContextsService/Retain", "retain"], ["WarmContextsService/Inspect", "inspect"], ["WarmContextsService/Renew", "renew"], ["WarmContextsService/Release", "release"],
+        ["RunsService/Generate", "generate"], ["RunsService/Inspect", "inspect"], ["RunsService/Watch", "watch"], ["RunsService/Cancel", "cancel"]
+      ]
+    },
+    {
+      "name": "machines",
+      "proto": "proto/machines/v1/machines.proto",
+      "publicSource": "rust/crates/machines/src/lib.rs",
+      "transportSource": "rust/crates/machines/src/grpc.rs",
+      "conformanceSource": "rust/crates/machines/src/grpc.rs",
+      "methods": [
+        ["MachinesService/QualifyImage", "qualify_image"], ["MachinesService/Create", "create"], ["MachinesService/Checkpoint", "checkpoint"], ["MachinesService/Fork", "fork"], ["MachinesService/Suspend", "suspend"], ["MachinesService/Wake", "wake"], ["MachinesService/SetSuspensionPolicy", "set_suspension_policy"], ["MachinesService/DestroyMachine", "destroy_machine"], ["MachinesService/DestroyCheckpoint", "destroy_checkpoint"], ["MachinesService/Recover", "recover"], ["MachinesService/InspectMachine", "inspect_machine"], ["MachinesService/InspectCheckpoint", "inspect_checkpoint"], ["MachinesService/ListMachines", "list_machines"], ["MachinesService/Events", "events"], ["MachinesService/Usage", "usage"], ["MachinesService/Cancel", "cancel_operation"], ["MachinesService/InspectOperation", "inspect_operation"], ["MachinesService/WatchOperation", "watch_operation"]
+      ]
+    },
+    {
+      "name": "filesystem",
+      "proto": "proto/filesystem/v2/filesystem.proto",
+      "publicSource": "rust/crates/filesystem/src/hosted.rs",
+      "transportSource": "rust/crates/filesystem/src/hosted.rs",
+      "conformanceSource": "rust/crates/filesystem/src/hosted.rs",
+      "methods": [
+        ["FilesystemService/Handshake", "hosted"], ["FilesystemService/CreateWorkspace", "create_workspace"], ["FilesystemService/OpenWorkspace", "open_workspace"], ["FilesystemService/DeleteWorkspace", "delete"], ["FilesystemService/GetHead", "head"], ["FilesystemService/GetGeneration", "generation"], ["FilesystemService/Read", "read"], ["FilesystemService/Stat", "stat"], ["FilesystemService/ListDirectory", "list_directory"], ["FilesystemService/ReadLink", "read_symbolic_link"], ["FilesystemService/PlanExtents", "plan_extents"], ["FilesystemService/ApplyTransaction", "commit"], ["FilesystemService/RebaseTransaction", "rebase"], ["FilesystemService/ForkWorkspace", "fork"], ["FilesystemService/Diff", "diff"], ["FilesystemService/Rebase", "rebase"], ["FilesystemService/PlanJoin", "plan_join"], ["FilesystemService/ApplyJoin", "apply_join"], ["FilesystemService/Checkpoint", "checkpoint"], ["FilesystemService/Pin", "pin"], ["FilesystemService/Export", "export"], ["FilesystemService/Import", "import"], ["FilesystemService/IssueMountCredential", "issue_mount_credential"], ["FilesystemService/IssueS3Credential", "issue_s3_credential"], ["FilesystemService/Observe", "observe"], ["FilesystemService/Cancel", "cancel"]
+      ]
+    }
+  ]
+}
