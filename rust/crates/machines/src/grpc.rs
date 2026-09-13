@@ -579,7 +579,7 @@ impl GrpcProvider {
             .client()
             .watch_operation(operation_request(operation))
             .await
-            .map_err(|error| mutation_error(key, error))?
+            .map_err(|error| watch_error(key, error))?
             .into_inner();
         loop {
             let next = tokio::time::timeout(WATCH_TIMEOUT, stream.message())
@@ -1259,6 +1259,17 @@ fn mutation_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
         _ => ProviderError::Rejected(value.message().into()),
     }
 }
+fn watch_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
+    match value.code() {
+        tonic::Code::Unavailable
+        | tonic::Code::DeadlineExceeded
+        | tonic::Code::Cancelled
+        | tonic::Code::Unknown
+        | tonic::Code::Internal
+        | tonic::Code::Unimplemented => ProviderError::Indeterminate(key),
+        _ => ProviderError::Rejected(value.message().into()),
+    }
+}
 fn recovery_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
     match value.code() {
         tonic::Code::Unavailable
@@ -1404,6 +1415,10 @@ mod tests {
         assert_eq!(
             mutation_error(key, tonic::Status::unimplemented("capability unavailable"),),
             ProviderError::Unsupported("capability unavailable".into())
+        );
+        assert_eq!(
+            watch_error(key, tonic::Status::unimplemented("watch unavailable")),
+            ProviderError::Indeterminate(key)
         );
     }
 
