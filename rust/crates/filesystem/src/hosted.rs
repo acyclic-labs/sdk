@@ -222,8 +222,12 @@ impl HostedFs {
             usize::try_from(capabilities.maximum_request_bytes).map_err(|_| {
                 HostedFsError::InvalidResponse("request bound does not fit this platform")
             })?;
+        let maximum_response_bytes =
+            usize::try_from(capabilities.maximum_response_bytes).map_err(|_| {
+                HostedFsError::InvalidResponse("response bound does not fit this platform")
+            })?;
         client = client
-            .max_decoding_message_size(options.maximum_response_bytes)
+            .max_decoding_message_size(maximum_response_bytes)
             .max_encoding_message_size(maximum_request_bytes);
         Ok(Self {
             client,
@@ -264,7 +268,7 @@ impl HostedFs {
     }
 
     fn require_transaction_bound(&self, value: usize) -> Result<(), HostedFsError> {
-        if value > self.capabilities.maximum_transaction_mutations as usize {
+        if value == 0 || value > self.capabilities.maximum_transaction_mutations as usize {
             Err(HostedFsError::LimitExceeded("transaction mutations"))
         } else {
             Ok(())
@@ -1291,6 +1295,11 @@ mod tests {
         oversized.create_directories("/three");
         assert!(matches!(
             oversized.commit(1).await,
+            Err(HostedFsError::LimitExceeded("transaction mutations"))
+        ));
+        let empty = child.begin_transaction(IdempotencyKey::from_bytes([5; 16]));
+        assert!(matches!(
+            empty.commit(1).await,
             Err(HostedFsError::LimitExceeded("transaction mutations"))
         ));
 
