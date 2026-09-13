@@ -21,6 +21,7 @@ type Client = wire::filesystem_service_client::FilesystemServiceClient<Channel>;
 
 /// Largest caller-supplied PEM trust bundle accepted by the hosted constructor.
 pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
+const MAX_PROTOBUF_BYTES_ENVELOPE_BYTES: u64 = 11;
 
 /// Connection and client-side response bounds for [`Fs::hosted`].
 #[derive(Clone, Eq, PartialEq)]
@@ -133,9 +134,12 @@ pub struct HostedFs {
 
 impl HostedFs {
     async fn connect(options: HostedFsOptions) -> Result<Self, HostedFsError> {
-        if options.maximum_request_bytes == 0 || options.maximum_response_bytes == 0 {
+        if options.maximum_request_bytes == 0
+            || options.maximum_response_bytes
+                <= usize::try_from(MAX_PROTOBUF_BYTES_ENVELOPE_BYTES).unwrap_or(usize::MAX)
+        {
             return Err(HostedFsError::InvalidOptions(
-                "request and response bounds must be nonzero",
+                "request bound must be nonzero and response bound must include protobuf headroom",
             ));
         }
         if options.bearer_token.is_empty() {
@@ -217,17 +221,17 @@ impl HostedFs {
             .min(configured_request_bytes);
         capabilities.maximum_response_bytes = capabilities
             .maximum_response_bytes
-            .min(configured_response_bytes);
+            .min(configured_response_bytes - MAX_PROTOBUF_BYTES_ENVELOPE_BYTES);
         let maximum_request_bytes =
             usize::try_from(capabilities.maximum_request_bytes).map_err(|_| {
                 HostedFsError::InvalidResponse("request bound does not fit this platform")
             })?;
-        let maximum_response_bytes =
-            usize::try_from(capabilities.maximum_response_bytes).map_err(|_| {
-                HostedFsError::InvalidResponse("response bound does not fit this platform")
-            })?;
+        // The advertised limit is application payload, while Tonic bounds the complete
+        // protobuf message. Retain the caller's encoded-frame ceiling and expose only
+        // the payload bytes that fit below it; otherwise an exact-limit ReadResponse
+        // is rejected solely because of its tag and length prefix.
         client = client
-            .max_decoding_message_size(maximum_response_bytes)
+            .max_decoding_message_size(options.maximum_response_bytes)
             .max_encoding_message_size(maximum_request_bytes);
         Ok(Self {
             client,
@@ -1246,11 +1250,10 @@ mod tests {
                 .await
         });
 
-        let hosted = Fs::hosted(HostedFsOptions::new(
-            format!("http://{address}"),
-            "test-account-token",
-        ))
-        .await?;
+        let mut options = HostedFsOptions::new(format!("http://{address}"), "test-account-token");
+        options.maximum_response_bytes =
+            1_024 + usize::try_from(MAX_PROTOBUF_BYTES_ENVELOPE_BYTES)?;
+        let hosted = Fs::hosted(options).await?;
         assert_eq!(hosted.capabilities().maximum_response_bytes, 1_024);
         assert_eq!(hosted.capabilities().maximum_transaction_mutations, 2);
         assert_eq!(hosted.capabilities().maximum_page_items, 2);
@@ -1263,23 +1266,20 @@ mod tests {
             .await?;
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([2; 16]));
         transaction.create_directories("/tree");
-        transaction.put_file("/tree/value", b"canonical".to_vec());
+        transaction.put_file("/tree/value", vec![b'x'; 1_024]);
         let outcome = transaction.commit(2).await?;
         assert!(matches!(
             wire::MutationStatus::try_from(outcome.status),
             Ok(wire::MutationStatus::Committed)
         ));
         let head = workspace.head().await?;
-        assert_eq!(
-            head.read("/tree/value", 64).await?,
-            Bytes::from_static(b"canonical")
-        );
+        assert_eq!(head.read("/tree/value", 1_024).await?.len(), 1_024);
         let child = head
             .fork("child", IdempotencyKey::from_bytes([3; 16]))
             .await?;
         assert_eq!(
-            child.head().await?.read("/tree/value", 64).await?,
-            b"canonical".as_slice()
+            child.head().await?.read("/tree/value", 1_024).await?.len(),
+            1_024
         );
         assert!(matches!(
             child.head().await?.read("/tree/value", 1_025).await,
