@@ -76,8 +76,20 @@ for (const path of [
     throw new Error(`Machines dependency version mismatch: ${path}`);
   }
 }
-if ((await load("typescript/packages/inference/package.json")).version !== compatibility.families.inference.version) {
+const inferenceVersion = compatibility.families.inference.version;
+if ((await load("typescript/packages/inference/package.json")).version !== inferenceVersion) {
   throw new Error("TypeScript inference package version mismatch");
+}
+const rustInferenceManifest = await readFile(new URL("rust/crates/inference/Cargo.toml", root), "utf8");
+if (rustInferenceManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1] !== inferenceVersion) {
+  throw new Error("Rust inference package version mismatch");
+}
+const rustSdkManifest = await readFile(new URL("rust/crates/sdk/Cargo.toml", root), "utf8");
+if (rustSdkManifest.match(/inference-sdk = \{ version = "([^"]+)"/)?.[1] !== `=${inferenceVersion}`) {
+  throw new Error("Rust SDK inference dependency version mismatch");
+}
+if ((await load("typescript/packages/sdk/package.json")).dependencies["@acyclic-labs/inference"] !== inferenceVersion) {
+  throw new Error("TypeScript SDK inference dependency version mismatch");
 }
 const filesystemVersion = compatibility.families.filesystem.version;
 for (const path of [
@@ -108,7 +120,7 @@ const inferenceIndex = (await readFile(new URL("registry/in/fe/inference-sdk", r
   .trim()
   .split("\n")
   .map(line => JSON.parse(line));
-const inferenceRelease = inferenceIndex.find(item => item.vers === compatibility.families.inference.version);
+const inferenceRelease = inferenceIndex.find(item => item.vers === inferenceVersion);
 if (!inferenceRelease || inferenceRelease.name !== "inference-sdk" || !/^[0-9a-f]{64}$/.test(inferenceRelease.cksum) || inferenceRelease.yanked) {
   throw new Error("current Inference family has no immutable sparse-registry package entry");
 }
