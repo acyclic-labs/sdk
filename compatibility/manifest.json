@@ -30,7 +30,7 @@
       "version": "1.0.0-rc.3",
       "schemaDigest": "sha256:0a512bd7c81d2fdaf2d4790869da6ed9b30795575c146f9ec9ba9a5f05d5fa2a",
       "descriptorDigest": "sha256:8e3d25a892f893af32296162fbaa76cc4ffdad13b0e9388db8d38b1a8831666b",
-      "conformanceDigest": "sha256:b32915837f981a26c4b6573f00feac9409f9392015c209d12ecbdce24e328dd0"
+      "conformanceDigest": "sha256:f4c641d06ae70a4c7dce3b4c1c63bd4cc27d6d1e73f777ef51d293102476954b"
     },
     "inference": {
       "version": "1.0.0-rc.3",

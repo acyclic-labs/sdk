@@ -503,18 +503,14 @@ impl MachinesProvider for GrpcProvider {
         decode_usage_receipt(value, machine, start_unix_ms, end_unix_ms)
     }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
-        let value = self
-            .client()
-            .recover(wire::RecoverRequest {
-                protocol: Some(protocol()),
-                idempotency_key: Some(encode_key(key)),
-            })
-            .await
-            .map_err(|error| recovery_error(key, error))?
-            .into_inner();
-        let operation = decode_operation(value.operation.as_ref())?;
+        let (operation, value) = self.recovered_admission(key).await?;
         self.wait(key, operation).await?;
         decode_recovered(self, value).await
+    }
+    async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
+        self.recovered_admission(key)
+            .await
+            .map(|(operation, _)| operation)
     }
     async fn inspect_operation(
         &self,
@@ -561,6 +557,22 @@ enum MachineMutation {
 impl GrpcProvider {
     fn client(&self) -> wire::machines_service_client::MachinesServiceClient<Channel> {
         self.client.clone()
+    }
+    async fn recovered_admission(
+        &self,
+        key: IdempotencyKey,
+    ) -> Result<(OperationId, wire::RecoveredAdmission), ProviderError> {
+        let value = self
+            .client()
+            .recover(wire::RecoverRequest {
+                protocol: Some(protocol()),
+                idempotency_key: Some(encode_key(key)),
+            })
+            .await
+            .map_err(|error| recovery_error(key, error))?
+            .into_inner();
+        let operation = decode_operation(value.operation.as_ref())?;
+        Ok((operation, value))
     }
     async fn wait(&self, key: IdempotencyKey, operation: OperationId) -> Result<(), ProviderError> {
         let mut stream = self

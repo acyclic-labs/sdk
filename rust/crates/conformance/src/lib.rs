@@ -8,7 +8,7 @@ pub mod runner;
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs};
 use acyclic_machines::{
     CreateMachine, IdempotencyKey, Image, MachineState, MachinesProvider, MutationOutcome,
-    Performance,
+    OperationPhase, Performance,
 };
 use acyclic_objects::{GetRequest, ObjectsProvider, PutRequest, ReadTarget, wire};
 use acyclic_stream::{
@@ -304,6 +304,37 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
     }
     if machine.state != MachineState::Running || machine.endpoints.len() != 1 {
         return Err("created machine is not ready with one stable endpoint".into());
+    }
+    let operation = provider
+        .recover_operation(create_key)
+        .await
+        .map_err(|error| error.to_string())?;
+    let expected_operation = provider
+        .inspect_operation(operation)
+        .await
+        .map_err(|error| error.to_string())?;
+    if expected_operation.id != operation || expected_operation.phase != OperationPhase::Succeeded {
+        return Err("create operation inspection is not correlated and terminal".into());
+    }
+    if provider
+        .cancel(operation)
+        .await
+        .map_err(|error| error.to_string())?
+        != expected_operation
+    {
+        return Err("terminal operation cancellation changed its observation".into());
+    }
+    let mut operation_stream = provider
+        .watch_operation(operation)
+        .await
+        .map_err(|error| error.to_string())?;
+    let watched = tokio::time::timeout(std::time::Duration::from_secs(1), operation_stream.next())
+        .await
+        .map_err(|_| "operation watch did not make bounded progress".to_owned())?
+        .ok_or_else(|| "operation watch ended before its current state".to_owned())?
+        .map_err(|error| error.to_string())?;
+    if watched != expected_operation {
+        return Err("operation watch substituted its requested identity or state".into());
     }
     let checkpointed = provider
         .checkpoint(machine.id, key(2)?)

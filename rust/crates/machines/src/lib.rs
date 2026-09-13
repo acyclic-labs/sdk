@@ -550,6 +550,7 @@ pub trait MachinesProvider: Send + Sync {
         end_unix_ms: u64,
     ) -> Result<UsageReceipt, ProviderError>;
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError>;
+    async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError>;
     async fn inspect_operation(
         &self,
         operation: OperationId,
@@ -595,6 +596,10 @@ impl Machines {
     }
     pub async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         self.provider.recover(key).await
+    }
+    /// Resolves the provider operation admitted for an exact idempotency key.
+    pub async fn operation_for(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
+        self.provider.recover_operation(key).await
     }
     /// Reads the latest state of one exact admitted operation.
     pub async fn inspect_operation(
@@ -1357,6 +1362,12 @@ impl MachinesProvider for SimulatedMachines {
             .map(|value| value.outcome.clone())
             .ok_or_else(|| ProviderError::NotFound(key.to_string()))
     }
+    async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
+        let operation = Self::operation(key);
+        self.inspect_operation(operation)
+            .await
+            .map(|value| value.id)
+    }
     async fn inspect_operation(
         &self,
         operation: OperationId,
@@ -1503,7 +1514,10 @@ mod tests {
             .create(request(key))
             .await
             .unwrap_or_else(|_| unreachable!());
-        let operation = SimulatedMachines::operation(key);
+        let operation = machines
+            .operation_for(key)
+            .await
+            .unwrap_or_else(|_| unreachable!());
         let expected = OperationObservation {
             id: operation,
             phase: OperationPhase::Succeeded,
@@ -1530,6 +1544,12 @@ mod tests {
         ));
         assert!(matches!(
             machines.watch_operation(unknown).await,
+            Err(ProviderError::NotFound(_))
+        ));
+        let unknown_key = IdempotencyKey::parse("00000000-0000-0000-0000-00000000000e")
+            .unwrap_or_else(|_| unreachable!());
+        assert!(matches!(
+            machines.operation_for(unknown_key).await,
             Err(ProviderError::NotFound(_))
         ));
     }
