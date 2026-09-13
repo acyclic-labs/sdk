@@ -62,7 +62,7 @@
     },
     "typescript/packages/machines": {
       "name": "@acyclic-labs/machines",
-      "version": "1.0.0-rc.4",
+      "version": "1.0.0-rc.5",
       "devDependencies": {
         "typescript": "7.0.2",
       },
@@ -116,7 +116,7 @@
         "@acyclic-labs/fs": "0.2.0-rc.2",
         "@acyclic-labs/harness": "0.1.0-rc.1",
         "@acyclic-labs/inference": "1.0.0-rc.4",
-        "@acyclic-labs/machines": "1.0.0-rc.4",
+        "@acyclic-labs/machines": "1.0.0-rc.5",
         "@acyclic-labs/objects": "1.0.0-rc.2",
         "@acyclic-labs/stream": "1.0.0-rc.4",
       },

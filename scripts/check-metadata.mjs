@@ -61,8 +61,13 @@ for (const path of [
 }
 const machinesManifest = await readFile(new URL("rust/crates/machines/Cargo.toml", root), "utf8");
 const rustMachinesVersion = machinesManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1];
-if (rustMachinesVersion !== machinesVersion) {
-  throw new Error("Machines package version does not match compatibility metadata");
+const typescriptMachinesPackage = await load("typescript/packages/machines/package.json");
+if (
+  rustMachinesVersion !== machinesVersion ||
+  typescriptMachinesPackage.version !== machinesVersion ||
+  sdkPackage.dependencies["@acyclic-labs/machines"] !== machinesVersion
+) {
+  throw new Error("Machines package versions do not match compatibility metadata");
 }
 for (const path of [
   "rust/crates/conformance/Cargo.toml",

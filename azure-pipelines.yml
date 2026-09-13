@@ -454,6 +454,7 @@ jobs:
       cargo build -p acyclic-fs-napi --locked
       bun scripts/check-filesystem-napi.mjs "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
       bash scripts/check-inference-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/inference"
+      bash scripts/check-machines-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/machines"
       cargo run --locked -p acyclic-cli
       bun run test
       bash scripts/check-filesystem-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/filesystem"
