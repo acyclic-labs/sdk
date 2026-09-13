@@ -204,9 +204,10 @@ dependencies = [
 
 [[package]]
 name = "acyclic-machines"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "async-trait",
+ "futures",
  "hex",
  "hyper-util",
  "prost",

@@ -503,18 +503,14 @@ impl MachinesProvider for GrpcProvider {
         decode_usage_receipt(value, machine, start_unix_ms, end_unix_ms)
     }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
-        let value = self
-            .client()
-            .recover(wire::RecoverRequest {
-                protocol: Some(protocol()),
-                idempotency_key: Some(encode_key(key)),
-            })
-            .await
-            .map_err(|error| recovery_error(key, error))?
-            .into_inner();
-        let operation = decode_operation(value.operation.as_ref())?;
+        let (operation, value) = self.recovered_admission(key).await?;
         self.wait(key, operation).await?;
         decode_recovered(self, value).await
+    }
+    async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
+        self.recovered_admission(key)
+            .await
+            .map(|(operation, _)| operation)
     }
     async fn inspect_operation(
         &self,
@@ -533,6 +529,23 @@ impl MachinesProvider for GrpcProvider {
             .map_err(read_error)
             .and_then(|response| decode_operation_observation(response.into_inner(), operation))
     }
+    async fn watch_operation(
+        &self,
+        operation: OperationId,
+    ) -> Result<OperationStream, ProviderError> {
+        let stream = self
+            .client()
+            .watch_operation(operation_request(operation))
+            .await
+            .map_err(read_error)?
+            .into_inner()
+            .map(move |value| {
+                value
+                    .map_err(read_error)
+                    .and_then(|value| decode_operation_observation(value, operation))
+            });
+        Ok(Box::pin(stream))
+    }
 }
 
 enum MachineMutation {
@@ -545,12 +558,28 @@ impl GrpcProvider {
     fn client(&self) -> wire::machines_service_client::MachinesServiceClient<Channel> {
         self.client.clone()
     }
+    async fn recovered_admission(
+        &self,
+        key: IdempotencyKey,
+    ) -> Result<(OperationId, wire::RecoveredAdmission), ProviderError> {
+        let value = self
+            .client()
+            .recover(wire::RecoverRequest {
+                protocol: Some(protocol()),
+                idempotency_key: Some(encode_key(key)),
+            })
+            .await
+            .map_err(|error| recovery_error(key, error))?
+            .into_inner();
+        let operation = decode_operation(value.operation.as_ref())?;
+        Ok((operation, value))
+    }
     async fn wait(&self, key: IdempotencyKey, operation: OperationId) -> Result<(), ProviderError> {
         let mut stream = self
             .client()
             .watch_operation(operation_request(operation))
             .await
-            .map_err(|error| mutation_error(key, error))?
+            .map_err(|error| watch_error(key, error))?
             .into_inner();
         loop {
             let next = tokio::time::timeout(WATCH_TIMEOUT, stream.message())
@@ -1226,8 +1255,12 @@ fn mutation_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
         | tonic::Code::Cancelled
         | tonic::Code::Unknown
         | tonic::Code::Internal => ProviderError::Indeterminate(key),
+        tonic::Code::Unimplemented => ProviderError::Unsupported(value.message().into()),
         _ => ProviderError::Rejected(value.message().into()),
     }
+}
+fn watch_error(key: IdempotencyKey, _value: tonic::Status) -> ProviderError {
+    ProviderError::Indeterminate(key)
 }
 fn recovery_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
     match value.code() {
@@ -1324,6 +1357,24 @@ mod tests {
     }
 
     #[test]
+    fn all_capability_intents_round_trip_through_the_wire() {
+        let capabilities = [
+            Capability::ElasticCpu,
+            Capability::ElasticMemory,
+            Capability::LiveCheckpoint,
+            Capability::LiveFork,
+            Capability::SuspendResume,
+            Capability::LiveMovement,
+        ];
+        for capability in capabilities {
+            assert_eq!(
+                decode_capability(encode_capability(capability)),
+                Ok(capability)
+            );
+        }
+    }
+
+    #[test]
     fn managed_usage_rejects_missing_lineage_authority_and_legacy_quantity() {
         let machine = MachineId::parse("00000000-0000-0000-0000-000000000001")
             .unwrap_or_else(|_| unreachable!());
@@ -1347,6 +1398,27 @@ mod tests {
         assert!(decode_usage_receipt(receipt(Vec::new(), 0), machine, 1, 2).is_err());
         assert!(decode_usage_receipt(receipt(vec![0; 32], 0), machine, 1, 2).is_err());
         assert!(decode_usage_receipt(receipt(vec![7; 32], 1), machine, 1, 2).is_err());
+    }
+
+    #[test]
+    fn mutation_errors_preserve_unsupported_capabilities() {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            mutation_error(key, tonic::Status::unimplemented("capability unavailable"),),
+            ProviderError::Unsupported("capability unavailable".into())
+        );
+        assert_eq!(
+            watch_error(key, tonic::Status::unimplemented("watch unavailable")),
+            ProviderError::Indeterminate(key)
+        );
+        assert_eq!(
+            watch_error(
+                key,
+                tonic::Status::resource_exhausted("watch capacity unavailable"),
+            ),
+            ProviderError::Indeterminate(key)
+        );
     }
 
     #[tokio::test]
