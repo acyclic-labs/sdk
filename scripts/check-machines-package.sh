@@ -39,6 +39,8 @@ clean_head() {
   local repository="$1"
   local expected="$2"
   [[ "$(git -C "$repository" rev-parse HEAD)" == "$expected" ]] &&
+    ! git -C "$repository" ls-files -v | grep --quiet '^[a-z]' &&
+    ! git -C "$repository" ls-files -t | grep --quiet '^S ' &&
     [[ -z "$(git -C "$repository" status --porcelain --untracked-files=all)" ]]
 }
 
@@ -59,6 +61,12 @@ git -C "$guard_repo" add fixture
 git -C "$guard_repo" commit --quiet -m initial
 guard_head="$(git -C "$guard_repo" rev-parse HEAD)"
 clean_head "$guard_repo" "$guard_head"
+git -C "$guard_repo" update-index --assume-unchanged fixture
+! clean_head "$guard_repo" "$guard_head"
+git -C "$guard_repo" update-index --no-assume-unchanged fixture
+git -C "$guard_repo" update-index --skip-worktree fixture
+! clean_head "$guard_repo" "$guard_head"
+git -C "$guard_repo" update-index --no-skip-worktree fixture
 printf 'untracked\n' > "$guard_repo/untracked"
 ! clean_head "$guard_repo" "$guard_head"
 rm "$guard_repo/untracked"
