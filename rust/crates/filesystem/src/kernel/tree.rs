@@ -39,7 +39,10 @@ pub(crate) fn encode_tree_leaf_entries(
     if u32::try_from(entries.len()).unwrap_or(u32::MAX) > maximum_items {
         return Err(invariant(TreePageError::TooManyItems));
     }
-    if entries.windows(2).any(|pair| pair[0].name >= pair[1].name) {
+    if entries
+        .windows(2)
+        .any(|pair| matches!(pair, [left, right] if left.name >= right.name))
+    {
         return Err(invariant(TreePageError::NamesNotStrictlyOrdered));
     }
     let mut encoded_length = DOMAIN

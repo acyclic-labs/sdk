@@ -361,11 +361,24 @@ impl<'a, F: Format> Machine<'a, F> {
         let end = start
             .saturating_add(remaining.saturating_add(1))
             .min(children.len());
+        // `end` is guarded by the `end < children.len()` check on this branch,
+        // so indexing at `end` here is in bounds.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "guarded by the immediately preceding `end < children.len()` check"
+        )]
         if end < children.len() {
             self.successor_page = Some(children[end].page);
         }
         let mut next_lower: Option<F::Key> = None;
         let mut transferred_upper = false;
+        // `end = start.saturating_add(...).min(children.len())` above, so every
+        // `index` produced by `(start..end).rev()` satisfies `index < end <=
+        // children.len()`.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "index is drawn from (start..end) where end = ...min(children.len()) was computed above"
+        )]
         for index in (start..end).rev() {
             let child = &children[index];
             let lower = self.clone_key(&child.first)?;
@@ -471,6 +484,11 @@ impl<'a, F: Format> Machine<'a, F> {
         let retained_children = remaining.saturating_add(1);
         let mut children = children;
         let retained_end = start.saturating_add(retained_children).min(children.len());
+        // Guarded by the `retained_end < children.len()` check immediately above.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "guarded by the immediately preceding `retained_end < children.len()` check"
+        )]
         if retained_end < children.len() {
             self.successor_page = Some(children[retained_end].page);
         }
@@ -636,6 +654,14 @@ fn upper_bound_values<F: Format>(values: &[F::Value], cursor: &F::Key) -> (usize
     while left < right {
         comparisons = comparisons.saturating_add(1);
         let middle = left + (right - left) / 2;
+        // Standard binary search invariant: the loop guard `left < right`
+        // holds here, and `right <= values.len()` is established at
+        // initialization and only ever shrinks, so `middle` (strictly
+        // between `left` and `right`) is always `< values.len()`.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "binary search invariant: left < middle_bound <= right <= values.len()"
+        )]
         if F::key(&values[middle]) <= cursor {
             left = middle + 1;
         } else {
@@ -652,6 +678,14 @@ fn upper_bound_children<K: Ord>(children: &[Child<K>], cursor: &K) -> (usize, u6
     while left < right {
         comparisons = comparisons.saturating_add(1);
         let middle = left + (right - left) / 2;
+        // Standard binary search invariant: the loop guard `left < right`
+        // holds here, and `right <= children.len()` is established at
+        // initialization and only ever shrinks, so `middle` (strictly
+        // between `left` and `right`) is always `< children.len()`.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "binary search invariant: left < middle_bound <= right <= children.len()"
+        )]
         if children[middle].first <= *cursor {
             left = middle + 1;
         } else {
