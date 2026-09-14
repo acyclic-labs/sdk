@@ -110,6 +110,10 @@ impl<'a, S> OperationReadCache<'a, S> {
         let mut examined = 0_u64;
         for _ in 0..state.slots.len() {
             examined = examined.saturating_add(1);
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "OperationReadCache::new computes slot_count via checked_next_power_of_two, so state.slots.len() is always a power of two; index is initialized as `object_hash(object_id) & mask` and updated only as `(index + 1) & mask` where `mask = state.slots.len() - 1`, so index is always < state.slots.len()"
+            )]
             match &state.slots[index] {
                 Some(entry) if entry.object_id == object_id => {
                     return Ok((
@@ -320,6 +324,10 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         };
         let work = merge_backend_peak(hit_work, receipt.work, resident, budget)?;
         let mut state = self.lock_state();
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "vacant_slot is the index returned by probe(), which only ever returns an index bounded by its own `& mask` invariant (see probe's match on state.slots[index]); state.slots is created once in OperationReadCache::new and never resized afterward, so that bound still holds against this (possibly different) MutexGuard borrow of the same Vec"
+        )]
         if state.entry_count < self.maximum_entries && state.slots[vacant_slot].is_none() {
             state.slots[vacant_slot] = Some(CachedObject {
                 object_id,
@@ -462,6 +470,10 @@ impl<'a> PathQueries<'a> {
         self.len() == 0
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "PathQueries is a private helper and every call site in this module indexes with a value already bounded by `0..self.len()` (loop bounds `for index in 0..paths.len()`, or path_index/query_indices values that were themselves drawn from such a loop and threaded through fixed-length, never-resized scratch vectors), matching the array-of-two-slice contract of Mutation::paths elsewhere in this crate"
+    )]
     fn get(self, index: usize) -> &'a NamespacePath {
         match self {
             Self::Owned(paths) => &paths[index],
@@ -1103,6 +1115,10 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
     let root_record = root
         .record
         .ok_or_else(|| OperationFailure::new(PathLookupError::MissingRootRecord, work))?;
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "entries, current, and done are each reserved and resized to exactly `count == paths.len()` above (reserve_fixed + entries.resize(count, ..)/current.resize(count, None)/done.resize(count, 0)) and are never resized again, so any index in 0..paths.len() is in bounds for all three"
+    )]
     for index in 0..paths.len() {
         let path = paths.get(index);
         if path.is_root() {
@@ -1120,6 +1136,10 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
     for depth in 0..maximum_depth {
         pending.clear();
         active.clear();
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "done and current are each resized to exactly `count == paths.len()` once, before this loop, and never resized again, so any index in 0..paths.len() is in bounds for both"
+        )]
         for index in 0..paths.len() {
             if done[index] != 0 || paths.get(index).depth() <= depth {
                 continue;
@@ -1151,18 +1171,34 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
             .map_err(|error| OperationFailure::new(error.into(), work))?;
         let mut cursor = 0_usize;
         while cursor < active.len() {
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "guarded by the enclosing `while cursor < active.len()` condition"
+            )]
             let directory = active[cursor].directory;
             let group_start = cursor;
             cursor += 1;
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "short-circuit: `cursor < active.len()` is checked first in the same `&&` expression before active[cursor] is evaluated"
+            )]
             while cursor < active.len() && active[cursor].directory == directory {
                 cursor += 1;
             }
             names.clear();
             query_indices.clear();
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "group_start starts each outer iteration equal to the prior cursor (<= active.len()) and only cursor advances (via the bounded while loops above) before this slice is taken, so group_start <= cursor <= active.len()"
+            )]
             for item in &active[group_start..cursor] {
                 query_indices.push(item.path_index);
             }
             let mut nested_bytes = 0_u64;
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "index is a path_index drawn from `active`, whose entries were pushed only when `paths.get(index).depth() > depth` in the loop above (the `if done[index] != 0 || paths.get(index).depth() <= depth { continue; }` guard), so depth < paths.get(*index).depth() == components().len()"
+            )]
             for index in &query_indices {
                 let source = &paths.get(*index).components()[depth];
                 let (name, owned_bytes) = copy_batch_name(
@@ -1201,6 +1237,10 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
                 orchestration_live(&cache, allocations)?,
                 budget,
             )?;
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "index is drawn from query_indices, whose entries are path_index values sourced from the earlier `0..paths.len()` loop; entries, current, and done are each resized to exactly `count == paths.len()` once and never resized again, so *index is always in bounds for all three"
+            )]
             for (index, binding) in query_indices.iter().zip(looked_up.entries) {
                 if let Some(binding) = binding {
                     pending.push(PendingBinding {
@@ -1251,6 +1291,10 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
             orchestration_live(&cache, allocations)?,
             budget,
         )?;
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "binding.path_index is a PendingBinding.path_index, which is always constructed from query_indices entries (see `pending.push(PendingBinding { path_index: *index, .. })` above), themselves sourced from the `0..paths.len()` loop; entries, current, and done are each resized to exactly `count == paths.len()` once and never resized again, so binding.path_index is always in bounds for all three"
+        )]
         for (binding, record) in pending.iter().zip(records.records) {
             let record =
                 record.ok_or_else(|| OperationFailure::new(PathLookupError::KindMismatch, work))?;

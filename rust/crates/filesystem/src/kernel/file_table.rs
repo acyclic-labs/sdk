@@ -45,6 +45,10 @@ impl InlineFileData {
             return Err(InlineFileDataError::TooLarge);
         }
         let mut stored = [0_u8; MAXIMUM_INLINE_FILE_BYTES];
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "bytes.len() <= MAXIMUM_INLINE_FILE_BYTES == stored.len() was just checked above (the `if bytes.len() > MAXIMUM_INLINE_FILE_BYTES` early return)"
+        )]
         stored[..bytes.len()].copy_from_slice(bytes);
         Ok(Self {
             length,
@@ -54,6 +58,10 @@ impl InlineFileData {
 
     /// Returns the exact semantic file bytes without allocation.
     #[must_use]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "self.length <= MAXIMUM_INLINE_FILE_BYTES == self.bytes.len() is the InlineFileData invariant maintained by every constructor: new() checks bytes.len() <= MAXIMUM_INLINE_FILE_BYTES before assigning length, and replace_range/truncate check logical_bytes against the same bound before assigning length"
+    )]
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes[..usize::from(self.length)]
     }
@@ -70,7 +78,15 @@ impl InlineFileData {
         if end > logical_bytes || logical_bytes > MAXIMUM_INLINE_FILE_BYTES {
             return Err(InlineFileDataError::TooLarge);
         }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "end <= logical_bytes <= MAXIMUM_INLINE_FILE_BYTES == self.bytes.len() and offset <= end (end = offset + replacement.len() via checked_add) are both established by the check just above"
+        )]
         self.bytes[offset..end].copy_from_slice(replacement);
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "logical_bytes <= MAXIMUM_INLINE_FILE_BYTES == self.bytes.len() is established by the check just above"
+        )]
         self.bytes[logical_bytes..].fill(0);
         self.length = u8::try_from(logical_bytes).map_err(|_| InlineFileDataError::TooLarge)?;
         Ok(self)
@@ -80,6 +96,10 @@ impl InlineFileData {
         if logical_bytes > self.as_bytes().len() {
             return Err(InlineFileDataError::TooLarge);
         }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "logical_bytes <= self.as_bytes().len() <= self.bytes.len() is established by the check just above (as_bytes() never exceeds the fixed-capacity buffer)"
+        )]
         self.bytes[logical_bytes..].fill(0);
         self.length = u8::try_from(logical_bytes).map_err(|_| InlineFileDataError::TooLarge)?;
         Ok(self)
@@ -216,10 +236,12 @@ impl FileTablePage {
     fn validate(&self, maximum_items: u32) -> Result<(), FileTableError> {
         let count = match self {
             Self::Leaf(records) => {
-                if records
-                    .windows(2)
-                    .any(|pair| pair[0].file_id >= pair[1].file_id)
-                {
+                if records.windows(2).any(|pair| {
+                    let [first, second] = pair else {
+                        return false;
+                    };
+                    first.file_id >= second.file_id
+                }) {
                     return Err(FileTableError::NotStrictlyOrdered);
                 }
                 for record in records {
@@ -229,9 +251,12 @@ impl FileTablePage {
             }
             Self::Internal(children) => {
                 if children.is_empty()
-                    || children
-                        .windows(2)
-                        .any(|pair| pair[0].first_file_id >= pair[1].first_file_id)
+                    || children.windows(2).any(|pair| {
+                        let [first, second] = pair else {
+                            return false;
+                        };
+                        first.first_file_id >= second.first_file_id
+                    })
                     || children
                         .iter()
                         .any(|child| child.page.kind != ObjectKind::FileTablePage)
@@ -275,10 +300,12 @@ pub(crate) fn encode_file_table_leaf_records(
     if u32::try_from(records.len()).unwrap_or(u32::MAX) > maximum_items {
         return Err(invariant(FileTableError::TooManyItems));
     }
-    if records
-        .windows(2)
-        .any(|pair| pair[0].file_id >= pair[1].file_id)
-    {
+    if records.windows(2).any(|pair| {
+        let [first, second] = pair else {
+            return false;
+        };
+        first.file_id >= second.file_id
+    }) {
         return Err(invariant(FileTableError::NotStrictlyOrdered));
     }
     let mut encoded_length = DOMAIN

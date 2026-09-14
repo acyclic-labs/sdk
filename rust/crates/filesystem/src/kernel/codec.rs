@@ -148,10 +148,15 @@ impl<'a> Decoder<'a> {
             .len()
             .checked_add(2)
             .ok_or(CanonicalDecodeError::LengthOverflow)?;
-        if bytes.len() < header_length || &bytes[..domain.len()] != domain {
+        let domain_prefix = bytes
+            .get(..domain.len())
+            .ok_or(CanonicalDecodeError::WrongDomain)?;
+        if bytes.len() < header_length || domain_prefix != domain {
             return Err(CanonicalDecodeError::WrongDomain);
         }
-        let version_bytes: [u8; 2] = bytes[domain.len()..header_length]
+        let version_bytes: [u8; 2] = bytes
+            .get(domain.len()..header_length)
+            .ok_or(CanonicalDecodeError::Truncated)?
             .try_into()
             .map_err(|_| CanonicalDecodeError::Truncated)?;
         let version = u16::from_le_bytes(version_bytes);

@@ -393,7 +393,10 @@ impl RangeMachine {
                             .and_then(|span| span.offset.checked_add(span.length))
                             != Some(self.range_end)
                         || self.spans.windows(2).any(|pair| {
-                            pair[0].offset.checked_add(pair[0].length) != Some(pair[1].offset)
+                            let [first, second] = pair else {
+                                return false;
+                            };
+                            first.offset.checked_add(first.length) != Some(second.offset)
                         }))
                 {
                     return Err(failed(ExtentReadError::IncompleteCoverage, self.work));
