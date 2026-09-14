@@ -38,28 +38,54 @@ publisher = load_script("publish-crate.py")
 fetcher = load_script("fetch-release-crate.py")
 
 
-def crate_bytes(*, trailing: bytes = b"", duplicate_manifest: bool = False) -> bytes:
+def crate_bytes(
+    *,
+    package: str = PACKAGE,
+    path_in_vcs: str = "rust/crates/machines",
+    trailing: bytes = b"",
+    duplicate_manifest: bool = False,
+) -> bytes:
+    prefix = f"{package}-{VERSION}"
     manifest = (
-        f'[package]\nname = "{PACKAGE}"\nversion = "{VERSION}"\n'
+        f'[package]\nname = "{package}"\nversion = "{VERSION}"\n'
         'edition = "2021"\nlicense = "Apache-2.0"\n'
     ).encode()
     vcs = json.dumps(
-        {"git": {"sha1": SOURCE_SHA}, "path_in_vcs": "rust/crates/machines"}
+        {"git": {"sha1": SOURCE_SHA}, "path_in_vcs": path_in_vcs}
     ).encode()
     payload = io.BytesIO()
     with tarfile.open(fileobj=payload, mode="w") as archive:
         for name, contents in (("Cargo.toml", manifest), (".cargo_vcs_info.json", vcs)):
-            member = tarfile.TarInfo(f"{PREFIX}/{name}")
+            member = tarfile.TarInfo(f"{prefix}/{name}")
             member.size = len(contents)
             archive.addfile(member, io.BytesIO(contents))
         if duplicate_manifest:
-            member = tarfile.TarInfo(f"{PREFIX}/Cargo.toml")
+            member = tarfile.TarInfo(f"{prefix}/Cargo.toml")
             member.size = len(manifest)
             archive.addfile(member, io.BytesIO(manifest))
     return gzip.compress(payload.getvalue(), mtime=0) + trailing
 
 
 class PublicationTests(unittest.TestCase):
+    def test_inference_uses_public_acyclic_name(self) -> None:
+        package = "acyclic-inference"
+        path_in_vcs = publisher.qualified_package_path(package)
+        self.assertEqual(path_in_vcs, "rust/crates/inference")
+        contents = crate_bytes(package=package, path_in_vcs=path_in_vcs)
+        with tempfile.TemporaryDirectory() as temporary:
+            crate = Path(temporary) / f"{package}-{VERSION}.crate"
+            crate.write_bytes(contents)
+            publisher.validate_archive(
+                crate,
+                package,
+                VERSION,
+                hashlib.sha256(contents).hexdigest(),
+                SOURCE_SHA,
+                path_in_vcs,
+            )
+        with self.assertRaisesRegex(RuntimeError, "no qualified release path"):
+            publisher.qualified_package_path("inference-sdk")
+
     def validate(self, contents: bytes, source_sha: str = SOURCE_SHA) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             crate = Path(temporary) / f"{PREFIX}.crate"
@@ -168,6 +194,34 @@ class PublicationTests(unittest.TestCase):
             )
             self.assertNotEqual(rejected.returncode, 0)
             self.assertIn("tag or commit", rejected.stderr)
+
+    def test_inference_release_family_uses_public_name(self) -> None:
+        script_path = Path(__file__).with_name("prepare-crate-publication.sh").resolve()
+        script = script_path.as_posix()
+        bash = os.environ.get("BASH", "bash")
+        command = (
+            f"source {shlex.quote(script)}; "
+            "qualified_release_family acyclic-inference"
+        )
+        resolved = subprocess.run(
+            [bash, "-c", command],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(resolved.stdout, "inference\n")
+
+        legacy = subprocess.run(
+            [
+                bash,
+                "-c",
+                f"source {shlex.quote(script)}; qualified_release_family inference-sdk",
+            ],
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertNotEqual(legacy.returncode, 0)
+        self.assertIn("no qualified release family", legacy.stderr)
 
 
 if __name__ == "__main__":

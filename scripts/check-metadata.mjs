@@ -90,7 +90,7 @@ if (rustInferenceManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1]
   throw new Error("Rust inference package version mismatch");
 }
 const rustSdkManifest = await readFile(new URL("rust/crates/sdk/Cargo.toml", root), "utf8");
-if (rustSdkManifest.match(/inference-sdk = \{ version = "([^"]+)"/)?.[1] !== `=${inferenceVersion}`) {
+if (rustSdkManifest.match(/acyclic-inference = \{ version = "([^"]+)"/)?.[1] !== `=${inferenceVersion}`) {
   throw new Error("Rust SDK inference dependency version mismatch");
 }
 if ((await load("typescript/packages/sdk/package.json")).dependencies["@acyclic-labs/inference"] !== inferenceVersion) {

@@ -27,10 +27,17 @@ MAX_TAR_BYTES = 536_870_912
 PACKAGE_PATHS = {
     "acyclic-objects": "rust/crates/objects",
     "acyclic-stream": "rust/crates/stream",
-    "inference-sdk": "rust/crates/inference",
+    "acyclic-inference": "rust/crates/inference",
     "acyclic-machines": "rust/crates/machines",
     "acyclic-fs": "rust/crates/filesystem",
 }
+
+
+def qualified_package_path(package: str) -> str:
+    try:
+        return PACKAGE_PATHS[package]
+    except KeyError as error:
+        raise RuntimeError("package has no qualified release path") from error
 
 
 def package_metadata(
@@ -278,10 +285,7 @@ def main() -> None:
     parser.add_argument("source_sha")
     arguments = parser.parse_args()
 
-    try:
-        path_in_vcs = PACKAGE_PATHS[arguments.package]
-    except KeyError as error:
-        raise RuntimeError("package has no qualified release path") from error
+    path_in_vcs = qualified_package_path(arguments.package)
     archive, normalized_manifest, archived_files = validate_archive(
         arguments.archive,
         arguments.package,
