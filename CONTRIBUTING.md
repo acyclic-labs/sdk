@@ -12,8 +12,9 @@ an entry to `provenance/manifest.json` before it is merged.
 authority. Independent platform and browser lanes run concurrently, cache only
 registries, tools, and compiler outputs, and reuse a successful result only for
 the exact source tree and semantic job identity.
-The current renderer is Fleet release 4858, source `bd46bdfeceaa224a6893dcbbd2cd48a4774588e7`,
-executable SHA-256 `84c3c90bec70032bab224e5baec6d14d8f7c2f06d0d77b541a953ed5db9f6fc0`.
+The current renderer is Fleet qualification build 5631, source
+`174a09df3ef32a8266c4c3fff8f37565b6207fbd`, executable SHA-256
+`a0403772fdc967e578e0f7b5fc5c56d5b254f1e1519e4073b3015548713a2826`.
 It isolates native Bun caches by pinned platform archive and stops success-only
 work after a setup failure, including when exact-tree reuse misses.
 The secret scanner keeps all default rules. Its only cache exception matches the

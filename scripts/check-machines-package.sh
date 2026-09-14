@@ -38,10 +38,15 @@ strict_archive() {
 clean_head() {
   local repository="$1"
   local expected="$2"
-  [[ "$(git -C "$repository" rev-parse HEAD)" == "$expected" ]] &&
-    ! git -C "$repository" ls-files -v | grep '^[a-z]' >/dev/null &&
-    ! git -C "$repository" ls-files -t | grep '^S ' >/dev/null &&
-    [[ -z "$(git -C "$repository" status --porcelain --untracked-files=all)" ]]
+  local actual flags status
+  actual="$(git -C "$repository" rev-parse HEAD)" || return 1
+  [[ "$actual" == "$expected" ]] || return 1
+  flags="$(git -C "$repository" ls-files -v)" || return 1
+  ! grep '^[a-z]' <<<"$flags" >/dev/null || return 1
+  flags="$(git -C "$repository" ls-files -t)" || return 1
+  ! grep '^S ' <<<"$flags" >/dev/null || return 1
+  status="$(git -C "$repository" status --porcelain --untracked-files=all)" || return 1
+  [[ -z "$status" ]]
 }
 
 valid_vcs_info() {
@@ -61,6 +66,11 @@ git -C "$guard_repo" add fixture
 git -C "$guard_repo" commit --quiet -m initial
 guard_head="$(git -C "$guard_repo" rev-parse HEAD)"
 clean_head "$guard_repo" "$guard_head"
+bad_index="$work/bad-index"
+# A directory makes Git fail; a missing index path is accepted as an empty index.
+mkdir "$bad_index"
+! GIT_INDEX_FILE="$bad_index" git -C "$guard_repo" ls-files -v
+! GIT_INDEX_FILE="$bad_index" clean_head "$guard_repo" "$guard_head"
 git -C "$guard_repo" update-index --assume-unchanged fixture
 ! clean_head "$guard_repo" "$guard_head"
 git -C "$guard_repo" update-index --no-assume-unchanged fixture
