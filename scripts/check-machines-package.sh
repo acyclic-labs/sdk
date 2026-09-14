@@ -67,6 +67,7 @@ git -C "$guard_repo" commit --quiet -m initial
 guard_head="$(git -C "$guard_repo" rev-parse HEAD)"
 clean_head "$guard_repo" "$guard_head"
 bad_index="$work/bad-index"
+# A directory makes Git fail; a missing index path is accepted as an empty index.
 mkdir "$bad_index"
 ! GIT_INDEX_FILE="$bad_index" git -C "$guard_repo" ls-files -v
 ! GIT_INDEX_FILE="$bad_index" clean_head "$guard_repo" "$guard_head"
