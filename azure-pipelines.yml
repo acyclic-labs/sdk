@@ -22,7 +22,7 @@ jobs:
   displayName: linux
   pool:
     name: graphcoder-ci-linux
-  timeoutInMinutes: 30
+  timeoutInMinutes: 15
   cancelTimeoutInMinutes: 1
   condition: not(canceled())
   variables:
@@ -447,16 +447,12 @@ jobs:
       bash scripts/test-ensure-rust-target.sh
       source scripts/ensure-bun.sh
       bun install --frozen-lockfile
-      cargo fmt --all -- --check
-      cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       cargo test --workspace --all-features --locked
       cargo test -p acyclic-fs --features native-mount --locked --lib -- --ignored --test-threads=1
       cargo build -p acyclic-fs-napi --locked
       bun scripts/check-filesystem-napi.mjs "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
       bash scripts/check-inference-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/inference"
       bash scripts/check-machines-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/machines"
-      cargo run --locked -p acyclic-cli
-      bun run test
       bash scripts/check-filesystem-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/filesystem"
       bash scripts/check-harness-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/harness"
       bun scripts/run-harness-conformance.mjs "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/harness" "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/harness/runner-report.json" "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/harness/qualification-receipt.json"
@@ -1066,6 +1062,8 @@ jobs:
       set -euo pipefail
       set -euo pipefail
       bash scripts/test-ensure-rust-target.sh
+      cargo fmt --all -- --check
+      cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       head="${SYSTEM_PULLREQUEST_SOURCECOMMITID:-$BUILD_SOURCEVERSION}"
       if [[ -n "${SYSTEM_PULLREQUEST_TARGETBRANCH:-}" ]]; then
         branch="${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
@@ -3104,6 +3102,7 @@ jobs:
       $ErrorActionPreference = 'Stop'
       $PSNativeCommandUseErrorActionPreference = $true
       . .\scripts\ensure-bun.ps1
+      bun install --frozen-lockfile
       try {
         & $env:SCCACHE_EXE --start-server
       } catch {
@@ -3114,6 +3113,8 @@ jobs:
       cargo test -p acyclic-fs --features native-mount --locked --lib native_mount::adapter::tests::writable_projfs_captures_closes_renames_links_and_deletes -- --ignored --test-threads=1
       cargo build -p acyclic-fs-napi --locked
       bun scripts/check-filesystem-napi.mjs "$env:BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
+      cargo run --locked -p acyclic-cli
+      bun run test
       rustup target add aarch64-pc-windows-msvc
       cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
