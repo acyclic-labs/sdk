@@ -195,6 +195,34 @@ class PublicationTests(unittest.TestCase):
             self.assertNotEqual(rejected.returncode, 0)
             self.assertIn("tag or commit", rejected.stderr)
 
+    def test_inference_release_family_uses_public_name(self) -> None:
+        script_path = Path(__file__).with_name("prepare-crate-publication.sh").resolve()
+        script = script_path.as_posix()
+        bash = os.environ.get("BASH", "bash")
+        command = (
+            f"source {shlex.quote(script)}; "
+            "qualified_release_family acyclic-inference"
+        )
+        resolved = subprocess.run(
+            [bash, "-c", command],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(resolved.stdout, "inference\n")
+
+        legacy = subprocess.run(
+            [
+                bash,
+                "-c",
+                f"source {shlex.quote(script)}; qualified_release_family inference-sdk",
+            ],
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertNotEqual(legacy.returncode, 0)
+        self.assertIn("no qualified release family", legacy.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

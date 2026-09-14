@@ -8,6 +8,17 @@ validate_release_object_type() {
   esac
 }
 
+qualified_release_family() {
+  case "$1" in
+    acyclic-objects) printf '%s\n' objects ;;
+    acyclic-stream) printf '%s\n' stream ;;
+    acyclic-inference) printf '%s\n' inference ;;
+    acyclic-machines) printf '%s\n' machines ;;
+    acyclic-fs) printf '%s\n' filesystem ;;
+    *) echo "package has no qualified release family" >&2; return 1 ;;
+  esac
+}
+
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   return 0
 fi
@@ -24,14 +35,7 @@ version=${subject#*/}
 [[ "$package" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]
 
-case "$package" in
-  acyclic-objects) family=objects ;;
-  acyclic-stream) family=stream ;;
-  acyclic-inference) family=inference ;;
-  acyclic-machines) family=machines ;;
-  acyclic-fs) family=filesystem ;;
-  *) echo "package has no qualified release family" >&2; exit 1 ;;
-esac
+family=$(qualified_release_family "$package")
 release_tag="${family}-v${version}"
 
 tag_oid=$(git rev-parse "$GITHUB_REF")
