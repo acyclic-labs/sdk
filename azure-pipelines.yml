@@ -3106,7 +3106,6 @@ jobs:
       . .\scripts\ensure-bun.ps1
       try {
         & $env:SCCACHE_EXE --start-server
-        if ($LASTEXITCODE -ne 0) { throw 'sccache server startup failed' }
       } catch {
         Write-Warning "sccache unavailable; continuing without compiler cache: $_"
         Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue

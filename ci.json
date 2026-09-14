@@ -135,7 +135,7 @@
           "action": {
             "kind": "shell",
             "working_directory": ".",
-            "command": ". .\\scripts\\ensure-bun.ps1\ntry {\n  & $env:SCCACHE_EXE --start-server\n  if ($LASTEXITCODE -ne 0) { throw 'sccache server startup failed' }\n} catch {\n  Write-Warning \"sccache unavailable; continuing without compiler cache: $_\"\n  Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue\n}\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib native_mount::adapter::tests::writable_projfs_captures_closes_renames_links_and_deletes -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs \"$env:BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native\"\nrustup target add aarch64-pc-windows-msvc\ncargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked"
+            "command": ". .\\scripts\\ensure-bun.ps1\ntry {\n  & $env:SCCACHE_EXE --start-server\n} catch {\n  Write-Warning \"sccache unavailable; continuing without compiler cache: $_\"\n  Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue\n}\ncargo test --workspace --all-features --locked\ncargo test -p acyclic-fs --features native-mount --locked --lib native_mount::adapter::tests::writable_projfs_captures_closes_renames_links_and_deletes -- --ignored --test-threads=1\ncargo build -p acyclic-fs-napi --locked\nbun scripts/check-filesystem-napi.mjs \"$env:BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native\"\nrustup target add aarch64-pc-windows-msvc\ncargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked"
           }
         }
       ],
