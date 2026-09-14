@@ -50,11 +50,18 @@ if [[ "$("$wasm_bindgen_bin" --version 2>/dev/null || true)" != "wasm-bindgen 0.
   if [[ "$bun_platform" != "win32" && "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
     wasm_bindgen_archive="${TOOLS_DIR:-$work/tools}/wasm-bindgen-0.2.117-x86_64-unknown-linux-musl.tar.gz"
     mkdir -p "$(dirname "$wasm_bindgen_archive")"
-    if [[ ! -f "$wasm_bindgen_archive" ]]; then
-      curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+    if [[ ! -f "$wasm_bindgen_archive" ]] ||
+      ! echo "97f527f7c7956f69a88a4bdb5176142ebc4e255c2dbe3805ec4f373421028240  $wasm_bindgen_archive" | sha256sum --check --status; then
+      temporary_archive="$(mktemp "${wasm_bindgen_archive}.XXXXXXXX")"
+      if ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
         --max-time 30 \
         https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.117/wasm-bindgen-0.2.117-x86_64-unknown-linux-musl.tar.gz \
-        --output "$wasm_bindgen_archive"
+        --output "$temporary_archive" ||
+        ! echo "97f527f7c7956f69a88a4bdb5176142ebc4e255c2dbe3805ec4f373421028240  $temporary_archive" | sha256sum --check --status; then
+        rm -f -- "$temporary_archive"
+        exit 1
+      fi
+      mv -- "$temporary_archive" "$wasm_bindgen_archive"
     fi
     echo "97f527f7c7956f69a88a4bdb5176142ebc4e255c2dbe3805ec4f373421028240  $wasm_bindgen_archive" | sha256sum --check
     wasm_bindgen_root="$work/wasm-bindgen-cli"
