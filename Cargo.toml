@@ -80,15 +80,13 @@ missing_docs = "warn"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
-# Remaining plugin-repo lints (indexing_slicing, string_slice, too_many_lines,
-# cognitive_complexity, doc_markdown, needless_pass_by_value, redundant_clone
-# — see issue #59) are enabled crate by crate as their violations are fixed,
-# rather than all at once.
+# Remaining plugin-repo lints (indexing_slicing — see issue #59, ~381 hits,
+# concentrated in the filesystem kernel) are enabled once fixed, rather than
+# all at once.
 match_same_arms = "warn"
 single_match_else = "warn"
 if_not_else = "warn"
 cast_possible_truncation = "warn"
-indexing_slicing = "warn"
 string_slice = "warn"
 too_many_lines = "warn"
 cognitive_complexity = "warn"

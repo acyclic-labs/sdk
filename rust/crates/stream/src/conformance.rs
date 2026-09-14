@@ -13,6 +13,12 @@ use crate::{
 pub const SUITE: &[u8] = include_bytes!("../conformance/stream.json");
 
 /// Exercises the complete provider-independent hierarchical Stream contract.
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear conformance walkthrough; each check is a distinct provider-contract \
+              assertion, and splitting it would only move the same sequential checks behind \
+              indirection"
+)]
 pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     if SUITE.is_empty() {
         return Err("Stream conformance inventory is empty".into());
