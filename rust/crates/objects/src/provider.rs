@@ -1078,10 +1078,11 @@ impl MemoryObjects {
                 break;
             }
             if let Some(delimiter) = delimiter
-                && let Some(position) = object_key[prefix.len()..].find(delimiter)
+                && let Some(remainder) = object_key.get(prefix.len()..)
+                && let Some(position) = remainder.find(delimiter)
+                && let Some(group) = object_key.get(..prefix.len() + position + delimiter.len())
             {
-                let end = prefix.len() + position + delimiter.len();
-                prefixes.insert(object_key[..end].to_owned());
+                prefixes.insert(group.to_owned());
                 continue;
             }
             if versions {
