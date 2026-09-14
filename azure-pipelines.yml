@@ -1007,7 +1007,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=fetch
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" 'b01a1004284930ff9e05fb0adf8b2550f4eb931f353374587137f1561ded0a7e' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" '1c0a741d71bff8ef9d95d4f04a320c550c286c7cf55291ee7544f0a10e61daa4' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Find, download and verify exact successful job result
     env:
@@ -1063,6 +1063,7 @@ jobs:
       bash scripts/test-ensure-rust-target.sh
       cargo fmt --all -- --check
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      cargo test --workspace --all-features --locked
       head="${SYSTEM_PULLREQUEST_SOURCECOMMITID:-$BUILD_SOURCEVERSION}"
       if [[ -n "${SYSTEM_PULLREQUEST_TARGETBRANCH:-}" ]]; then
         branch="${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
@@ -1328,7 +1329,7 @@ jobs:
       else: raise SystemExit('invalid exact reuse mode')
       PY
       mode=stage
-      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" 'b01a1004284930ff9e05fb0adf8b2550f4eb931f353374587137f1561ded0a7e' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
+      python3 "$helper" 100000 2147483648 "$mode" '$(Pipeline.Workspace)/.qualified/policy' "${FLEET_SOURCE_TREE:?}" '1c0a741d71bff8ef9d95d4f04a320c550c286c7cf55291ee7544f0a10e61daa4' 'rust-toolchain.toml' 'Cargo.lock' '$(Agent.OS)' '$(Agent.OSArchitecture)'
       rm -f -- "$helper"
     displayName: Retain exact successful job receipt and outputs
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
