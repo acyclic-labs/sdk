@@ -1,6 +1,6 @@
 //! AWS S3 HTTP translation over the canonical workspace S3 view.
 //!
-//! Request parsing, SigV4 verification, XML, and HTTP framing are delegated to
+//! Request parsing, `SigV4` verification, XML, and HTTP framing are delegated to
 //! `s3s`. This module contains no namespace or storage implementation: every
 //! accepted operation resolves one scoped workspace and invokes [`crate::S3Workspace`].
 
@@ -159,7 +159,7 @@ impl<P: acyclic_stream::StreamProvider> StreamBackedAuthority for StreamAuthorit
 /// One authenticated credential resolved to one exact workspace.
 #[derive(Clone)]
 pub struct FilesystemS3Principal<A, O> {
-    /// Secret used only by the SigV4 verifier.
+    /// Secret used only by the `SigV4` verifier.
     pub secret_key: SecretKey,
     /// Opaque bucket coordinate issued for this workspace.
     pub bucket: String,
@@ -175,10 +175,10 @@ pub struct FilesystemS3Principal<A, O> {
 /// revoke access keys before returning a workspace capability.
 #[async_trait]
 pub trait FilesystemS3Resolver<A, O>: Send + Sync + 'static {
-    /// Resolves only the signing secret required to authenticate SigV4.
+    /// Resolves only the signing secret required to authenticate `SigV4`.
     async fn resolve_secret_key(&self, access_key: &str) -> S3Result<SecretKey>;
 
-    /// Resolves and authorizes the complete request capability after SigV4.
+    /// Resolves and authorizes the complete request capability after `SigV4`.
     async fn resolve_principal(
         &self,
         access_key: &str,
@@ -187,7 +187,7 @@ pub trait FilesystemS3Resolver<A, O>: Send + Sync + 'static {
     ) -> S3Result<FilesystemS3Principal<A, O>>;
 }
 
-/// SigV4 secret lookup sharing the exact resolver used by semantic dispatch.
+/// `SigV4` secret lookup sharing the exact resolver used by semantic dispatch.
 pub struct FilesystemS3Authentication<R, A, O> {
     resolver: Arc<R>,
     marker: PhantomData<fn() -> (A, O)>,

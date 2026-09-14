@@ -17,7 +17,7 @@ mod memory;
 mod wire_codec;
 
 /// Generated canonical Stream v2 protocol.
-#[allow(missing_docs)]
+#[allow(missing_docs, clippy::pedantic, clippy::too_many_lines)]
 pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v2.rs"));
 }

@@ -90,7 +90,7 @@ pub enum CredentialGrant {
         /// Absolute Unix expiry enforced by the endpoint.
         expires_at_unix_seconds: i64,
     },
-    /// Standard S3 SigV4 coordinates scoped to one workspace.
+    /// Standard S3 `SigV4` coordinates scoped to one workspace.
     S3 {
         /// Customer S3 endpoint.
         endpoint: String,

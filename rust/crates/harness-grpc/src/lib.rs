@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 /// Generated tonic client and server surfaces using the canonical Harness messages.
-#[allow(missing_docs)]
+#[allow(missing_docs, clippy::pedantic, clippy::too_many_lines)]
 pub mod transport {
     include!(concat!(env!("OUT_DIR"), "/acyclic.harness.v1.rs"));
 }

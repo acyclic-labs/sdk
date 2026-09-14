@@ -3,7 +3,7 @@
 pub mod conformance;
 
 /// Generated public gRPC schema and client/server bindings.
-#[allow(missing_docs, clippy::all)]
+#[allow(missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]
 pub mod wire {
     include!("generated/acyclic.objects.v1.rs");
 }

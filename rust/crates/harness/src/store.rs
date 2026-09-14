@@ -360,7 +360,7 @@ mod tests {
             [7; 32],
             Authority {
                 kind: AggregateKind::Task,
-                id: authority().id.clone(),
+                id: authority().id,
             },
         );
         assert!(matches!(

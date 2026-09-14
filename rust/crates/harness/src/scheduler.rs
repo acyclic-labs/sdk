@@ -393,6 +393,11 @@ impl Scheduler {
     }
 
     /// Applies one committed scheduler event.
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "one arm per scheduler event variant; splitting would obscure the dispatch, \
+                  not simplify it"
+    )]
     pub fn apply(&mut self, event: SchedulerEvent) -> Result<()> {
         let primary = event_operation(&event);
         let declared_parent = match &event {

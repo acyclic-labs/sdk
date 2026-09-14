@@ -85,7 +85,7 @@ struct Connection {
 pub struct Inference(Arc<Connection>);
 
 impl Inference {
-    /// Connect using an explicit trusted CA, ambient WebPKI roots, and bounded TLS/RPC deadlines.
+    /// Connect using an explicit trusted CA, ambient `WebPKI` roots, and bounded TLS/RPC deadlines.
     ///
     /// # Errors
     /// Rejects non-HTTPS endpoints, invalid credentials and failed TLS setup.

@@ -1,3 +1,4 @@
+#![allow(clippy::indexing_slicing)]
 //! End-to-end checks for the machine-readable Harness qualification command.
 
 use acyclic_conformance::{

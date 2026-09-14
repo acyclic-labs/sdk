@@ -80,7 +80,7 @@ impl HostedFsOptions {
         }
     }
 
-    /// Adds a caller-supplied private CA while retaining ambient WebPKI roots.
+    /// Adds a caller-supplied private CA while retaining ambient `WebPKI` roots.
     #[must_use]
     pub fn with_ca_certificate(mut self, certificate_pem: impl Into<Vec<u8>>) -> Self {
         self.ca_certificate_pem = Some(certificate_pem.into());

@@ -44,7 +44,7 @@ pub use wire_codec::encode_error;
 pub mod workflow;
 
 /// Generated Protobuf envelopes shared by every transport.
-#[allow(missing_docs)]
+#[allow(missing_docs, clippy::pedantic, clippy::too_many_lines)]
 pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/acyclic.harness.v1.rs"));
 }

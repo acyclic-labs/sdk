@@ -1,4 +1,4 @@
-//! Self-contained macOS mount projection over loopback NFSv4.
+//! Self-contained macOS mount projection over loopback `NFSv4`.
 //!
 //! The embedded C transport translates NFS requests into this module's bounded
 //! callbacks; the canonical Rust checkout remains the only filesystem state.

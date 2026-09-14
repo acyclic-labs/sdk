@@ -197,6 +197,12 @@ async fn websocket(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> 
         .on_upgrade(move |socket| websocket_session(state, socket))
 }
 
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one connection's protocol state machine (handshake, frame decode, per-message-type \
+              dispatch); splitting the branches out would scatter one connection's lifecycle \
+              across multiple functions"
+)]
 async fn websocket_session(state: AppState, mut socket: WebSocket) {
     let Some(Ok(first)) = socket.recv().await else {
         return;
