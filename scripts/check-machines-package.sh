@@ -39,8 +39,8 @@ clean_head() {
   local repository="$1"
   local expected="$2"
   [[ "$(git -C "$repository" rev-parse HEAD)" == "$expected" ]] &&
-    ! git -C "$repository" ls-files -v | grep --quiet '^[a-z]' &&
-    ! git -C "$repository" ls-files -t | grep --quiet '^S ' &&
+    ! git -C "$repository" ls-files -v | grep '^[a-z]' >/dev/null &&
+    ! git -C "$repository" ls-files -t | grep '^S ' >/dev/null &&
     [[ -z "$(git -C "$repository" status --porcelain --untracked-files=all)" ]]
 }
 
