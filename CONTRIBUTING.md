@@ -35,7 +35,11 @@ packaged WASM must fail. Cargo packages and verifies the public Objects, Streams
 and Filesystem dependency closure together with all features. Registry publication
 must publish the exact Objects and Streams archives before Filesystem.
 Publication consumes these exact successful-run bytes,
-never a rebuild. A new crate may use the `CRATES_IO_BOOTSTRAP_TOKEN` environment
+never a rebuild. For Stream, Inference, and Filesystem, an operator creates the
+GitHub release from the retained `packages-linux` artifact and points its tag at
+the matching qualified main commit; tag workflows must not rebuild those release
+assets. A new
+crate may use the `CRATES_IO_BOOTSTRAP_TOKEN` environment
 secret only for its first publication. Set the `CRATES_IO_BOOTSTRAP_RELEASE`
 Actions configuration variable in the `crates-io` environment to the exact
 `<package>@<version>` for that one release, then remove both it and the secret after
