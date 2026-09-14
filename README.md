@@ -114,7 +114,7 @@ provider internals:
 ```rust,no_run
 use acyclic_inference::Inference;
 
-# async fn example() -> acyclic_inference::Result<(), acyclic_inference::Error> {
+# async fn example() -> Result<(), acyclic_inference::Error> {
 let inference = Inference::connect(
     "https://inference.example",
     "account-token",
