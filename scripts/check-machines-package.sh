@@ -61,7 +61,7 @@ test_manifest="$test_root/acyclic-machines-${version}/Cargo.toml"
 if [[ "$cargo_bin" == "cargo.exe" ]]; then
   test_manifest="$(wslpath -w "$test_manifest")"
 fi
-"$cargo_bin" check --manifest-path "$test_manifest"
+"$cargo_bin" check --manifest-path "$test_manifest" --target-dir "$package_target_argument"
 
 if [[ -n "$output" ]]; then
   mkdir -p "$(dirname "$output")"
