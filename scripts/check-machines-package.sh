@@ -38,8 +38,8 @@ strict_archive() {
 clean_head() {
   local repository="$1"
   local expected="$2"
-  [[ "$(git -C "$repository" rev-parse HEAD)" == "$expected" ]]
-  [[ -z "$(git -C "$repository" status --porcelain --untracked-files=all)" ]]
+  [[ "$(git -C "$repository" rev-parse HEAD)" == "$expected" ]] &&
+    [[ -z "$(git -C "$repository" status --porcelain --untracked-files=all)" ]]
 }
 
 valid_vcs_info() {
