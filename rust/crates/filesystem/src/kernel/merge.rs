@@ -561,9 +561,12 @@ async fn merge_regular_record_async<S: AsyncObjectStore>(
             }
         }
         offset = end;
-        for index in 0..3 {
-            if plans[index][indices[index]].offset + plans[index][indices[index]].length == end {
-                indices[index] += 1;
+        // `spans[index]` above is exactly `plans[index][indices[index]]`, fetched
+        // moments earlier in this same loop iteration and not mutated since, so
+        // reusing it here avoids re-indexing `plans`/`indices` by a loop variable.
+        for (index_slot, span) in indices.iter_mut().zip(spans.iter()) {
+            if span.offset + span.length == end {
+                *index_slot += 1;
             }
         }
     }
