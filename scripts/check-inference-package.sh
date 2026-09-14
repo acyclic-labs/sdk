@@ -9,6 +9,27 @@ else
   work="$(mktemp -d)"
 fi
 trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
+
+cd "$root"
+expected_source="${BUILD_SOURCEVERSION:-${GITHUB_SHA:-}}"
+source_sha=$(git rev-parse --verify HEAD)
+if [[ -n "$expected_source" && "$source_sha" != "$expected_source" ]]; then
+  echo "package checkout differs from the selected source commit" >&2
+  exit 1
+fi
+git_status="$work/git-status"
+git status --porcelain=v1 --untracked-files=all >"$git_status"
+if [[ -s "$git_status" ]]; then
+  echo "package checkout is not clean" >&2
+  exit 1
+fi
+git_index="$work/git-index"
+git ls-files -v >"$git_index"
+if grep -Eq '^[a-zS] ' "$git_index"; then
+  echo "package checkout contains concealed index changes" >&2
+  exit 1
+fi
+
 typescript_archive="$work/acyclic-inference.tgz"
 bun_archive="$typescript_archive"
 bun_archive_url="$typescript_archive"
@@ -46,19 +67,6 @@ bun smoke.mjs
 cd "$root"
 test_root="$work/test"
 mkdir -p "$test_root"
-expected_source="${BUILD_SOURCEVERSION:-${GITHUB_SHA:-}}"
-if [[ -n "$expected_source" && "$(git rev-parse HEAD)" != "$expected_source" ]]; then
-  echo "package checkout differs from the selected source commit" >&2
-  exit 1
-fi
-if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
-  echo "package checkout is not clean" >&2
-  exit 1
-fi
-if git ls-files -v | grep -qE '^[a-zS] '; then
-  echo "package checkout contains concealed index changes" >&2
-  exit 1
-fi
 
 cargo_bin="cargo"
 source_manifest="$root/Cargo.toml"
