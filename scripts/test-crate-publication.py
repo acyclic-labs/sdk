@@ -60,6 +60,13 @@ def crate_bytes(*, trailing: bytes = b"", duplicate_manifest: bool = False) -> b
 
 
 class PublicationTests(unittest.TestCase):
+    def test_inference_uses_public_acyclic_name(self) -> None:
+        self.assertEqual(
+            publisher.PACKAGE_PATHS["acyclic-inference"],
+            "rust/crates/inference",
+        )
+        self.assertNotIn("inference-sdk", publisher.PACKAGE_PATHS)
+
     def validate(self, contents: bytes, source_sha: str = SOURCE_SHA) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             crate = Path(temporary) / f"{PREFIX}.crate"
