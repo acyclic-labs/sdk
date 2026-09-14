@@ -80,9 +80,7 @@ missing_docs = "warn"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
-# Remaining plugin-repo lints (indexing_slicing — see issue #59, ~381 hits,
-# concentrated in the filesystem kernel) are enabled once fixed, rather than
-# all at once.
+indexing_slicing = "warn"
 match_same_arms = "warn"
 single_match_else = "warn"
 if_not_else = "warn"
