@@ -1544,7 +1544,11 @@ fn replace_prefix(
         return None;
     }
     let mut rebased = destination.clone();
-    for component in &path.components()[source.components().len()..] {
+    for component in path
+        .components()
+        .get(source.components().len()..)
+        .unwrap_or(&[])
+    {
         rebased = rebased.child(component.clone());
     }
     Some(rebased)
