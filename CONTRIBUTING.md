@@ -39,26 +39,21 @@ merge.
 Beyond rustfmt and clippy's defaults, the workspace enables an additional lint set in
 `Cargo.toml` (`[workspace.lints.clippy]`, thresholds in `clippy.toml`):
 
-- **Functions under 100 lines, cognitive complexity under 30.** Split anything that
-  trips this unless it's a single dispatcher (one arm per protocol op), which may
-  carry `#[allow(clippy::too_many_lines, reason = "...")]`.
-- **No identical match arms, no `match` for a single pattern, `let ... else` over
-  manual matches.**
-- **No hidden panics in non-test code.** `unwrap`, `expect`, `panic!`, and indexing
-  that can go out of bounds are lint errors outside tests. Reach for `?`, `get`,
-  `let ... else`. The few documented exceptions carry `#[allow(..., reason = "...")]`
-  naming the invariant that makes the panic unreachable.
-- **No lossy `as` casts** between integer widths or signs. Use `u64::from`,
-  `try_from`, or an `allow` that says why the value is in range.
-- **Duplication under 3% of tokens** (`jscpd`, config in `.jscpd.json`).
+- **No hidden panics in non-test code.** `unwrap`, `expect`, and `panic!` are lint
+  errors outside tests. Reach for `?`, `get`, `let ... else`. The few documented
+  exceptions carry `#[allow(..., reason = "...")]` naming the invariant that makes
+  the panic unreachable.
 - **`unsafe` is opt-in per function**, carrying `#[allow(unsafe_code, reason = "...")]`
   naming the invariant.
+- **Duplication under 3% of tokens** (`jscpd`, config in `.jscpd.json`, not yet wired
+  into CI — run manually with `npx jscpd@4.3.0 --config .jscpd.json`).
 
-Some of these lints (`indexing_slicing`, `doc_markdown`, `too_many_lines`,
-`cognitive_complexity`, `needless_pass_by_value`, `string_slice`, `redundant_clone`,
-`cast_possible_truncation`, `match_same_arms`, `single_match_else`, `if_not_else`)
-were enabled with pre-existing violations still outstanding; they are being worked
-through incrementally rather than blocking this change.
+A wider lint set from the same source — no identical match arms, functions under 100
+lines/cognitive complexity under 30, no lossy `as` casts, no out-of-bounds indexing or
+string slicing outside tests — is tracked in [#59](https://github.com/acyclic-labs/sdk/issues/59)
+rather than enabled here: the workspace currently has ~866 pre-existing hits against
+that set, so it lands together with the fixes in a follow-up PR instead of breaking
+`-D warnings` on `main`.
 
 ## Reporting bugs and security issues
 
