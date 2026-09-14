@@ -113,7 +113,9 @@ impl AttributePage {
     fn validate(&self, maximum_items: u32) -> Result<(), AttributeError> {
         let count = match self {
             Self::Leaf(entries) => {
-                if entries.windows(2).any(|pair| pair[0].name >= pair[1].name)
+                if entries
+                    .windows(2)
+                    .any(|pair| matches!(pair, [left, right] if left.name >= right.name))
                     || entries
                         .iter()
                         .any(|entry| entry.value.kind != ObjectKind::Blob)
@@ -124,9 +126,9 @@ impl AttributePage {
             }
             Self::Internal(children) => {
                 if children.is_empty()
-                    || children
-                        .windows(2)
-                        .any(|pair| pair[0].first_name >= pair[1].first_name)
+                    || children.windows(2).any(
+                        |pair| matches!(pair, [left, right] if left.first_name >= right.first_name),
+                    )
                     || children
                         .iter()
                         .any(|child| child.page.kind != ObjectKind::AttributePage)
@@ -263,7 +265,9 @@ fn validate_leaf_entries(
     maximum_items: u32,
 ) -> Result<(), CanonicalDecodeError> {
     if u32::try_from(entries.len()).unwrap_or(u32::MAX) > maximum_items
-        || entries.windows(2).any(|pair| pair[0].name >= pair[1].name)
+        || entries
+            .windows(2)
+            .any(|pair| matches!(pair, [left, right] if left.name >= right.name))
         || entries
             .iter()
             .any(|entry| entry.value.kind != ObjectKind::Blob)

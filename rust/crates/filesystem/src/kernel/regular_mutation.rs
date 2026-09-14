@@ -267,6 +267,15 @@ pub(crate) async fn apply_regular_clone_async<S: AsyncObjectStore>(
         };
         work.verify(budget)
             .map_err(|error| OperationFailure::before_work(error.into()))?;
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "`RegularStorage` is `Copy`, so `source_data` here is the same bytes that \
+                      `source.logical_bytes()` measured into `source_bytes` above; the earlier \
+                      `source_end > source_bytes` check (which returns \
+                      SourceRangeOutOfBounds otherwise) guarantees `source_limit == source_end \
+                      <= source_data.as_bytes().len()`, and `source_start == source_offset < \
+                      source_end` since the same check rejects `length == 0`"
+        )]
         let destination = destination_data
             .replace_range(
                 usize::try_from(destination_offset).map_err(|_| {
@@ -488,6 +497,15 @@ async fn try_inline<S: AsyncObjectStore>(
             work.verify(budget)
                 .map_err(|error| OperationFailure::before_work(error.into()))?;
             let zeros = [0_u8; MAXIMUM_INLINE_FILE_BYTES];
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "`logical_bytes <= MAXIMUM_INLINE_FILE_BYTES` is checked just above (else \
+                          this returns `Ok(None)`), `end = requested_end.min(logical_bytes)` so \
+                          `end <= logical_bytes <= MAXIMUM_INLINE_FILE_BYTES`, and \
+                          `copied = end.checked_sub(offset)` so `copied <= end`; hence `copied <= \
+                          MAXIMUM_INLINE_FILE_BYTES == zeros.len()`, so this slice never exceeds \
+                          the fixed-size `zeros` array"
+            )]
             let replacement = &zeros[..usize::try_from(copied)
                 .map_err(|_| OperationFailure::before_work(RegularMutationError::RangeOverflow))?];
             let payload = data
