@@ -40,7 +40,7 @@
           "action": {
             "kind": "shell",
             "working_directory": ".",
-            "command": "set -euo pipefail\nrustup component add llvm-tools-preview\ncargo install cargo-llvm-cov --locked\nmkdir -p \"$BUILD_ARTIFACTSTAGINGDIRECTORY/coverage\"\ncargo llvm-cov --workspace --all-features --locked --fail-under-lines 70 --lcov --output-path \"$BUILD_ARTIFACTSTAGINGDIRECTORY/coverage/lcov.info\"\ncargo llvm-cov report --summary-only"
+            "command": "set -euo pipefail\nrustup component add llvm-tools-preview\ncargo install cargo-llvm-cov --version 0.9.1 --locked\nmkdir -p \"$BUILD_ARTIFACTSTAGINGDIRECTORY/coverage\"\ncargo llvm-cov --workspace --all-features --locked --fail-under-lines 70 --lcov --output-path \"$BUILD_ARTIFACTSTAGINGDIRECTORY/coverage/lcov.info\"\ncargo llvm-cov report --summary-only"
           }
         }
       ],
@@ -51,7 +51,7 @@
       "runner": "linux",
       "timeout_minutes": 15,
       "checkout": "source_history",
-      "condition": { "kind": "always" },
+      "condition": "succeeded",
       "depends_on": ["gate"],
       "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "bun", "tools"],
       "reuse": "none",
@@ -85,7 +85,7 @@
       "runner": "linux_check",
       "timeout_minutes": 15,
       "checkout": "source_history",
-      "condition": { "kind": "always" },
+      "condition": "succeeded",
       "depends_on": ["gate"],
       "caches": ["rustup", "cargo_registry", "tools"],
       "reuse": "exact_tree",
@@ -110,7 +110,7 @@
       "runner": "linux",
       "timeout_minutes": 15,
       "checkout": "source",
-      "condition": { "kind": "always" },
+      "condition": "succeeded",
       "depends_on": ["gate"],
       "caches": ["rustup", "cargo_registry", "compiler", "tools"],
       "reuse": "exact_tree",
@@ -136,7 +136,7 @@
       "runner": "linux_arm64",
       "timeout_minutes": 15,
       "checkout": "source",
-      "condition": { "kind": "always" },
+      "condition": "succeeded",
       "depends_on": ["gate"],
       "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "bun", "tools"],
       "reuse": "exact_tree",
@@ -162,7 +162,7 @@
       "runner": "windows",
       "timeout_minutes": 15,
       "checkout": "source",
-      "condition": { "kind": "always" },
+      "condition": "succeeded",
       "depends_on": ["gate"],
       "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "bun", "tools"],
       "reuse": "exact_tree",
@@ -188,7 +188,7 @@
       "runner": "macos",
       "timeout_minutes": 15,
       "checkout": "source",
-      "condition": { "kind": "always" },
+      "condition": "succeeded",
       "depends_on": ["gate"],
       "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "bun", "tools"],
       "reuse": "exact_tree",

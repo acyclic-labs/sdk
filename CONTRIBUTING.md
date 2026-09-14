@@ -11,7 +11,7 @@ an entry to `provenance/manifest.json` before it is merged.
 
 ```sh
 bun install --frozen-lockfile
-bun run check   # tsc -b, type-check only, no emit
+bun run check   # tsc -b --force, project-wide type-check (also emits build output)
 bun run test    # type-check, then TypeScript and filesystem package tests
 cargo test --workspace --all-features --locked
 ```
@@ -30,9 +30,11 @@ cargo test --workspace --all-features --locked
 
 Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features
 --locked -- -D warnings`, and `cargo test --workspace --all-features --locked`
-locally — CI enforces all of them. Every PR needs review and approval from a code
-owner (`.github/CODEOWNERS`) and a passing automated Greptile review before it can
-merge.
+locally — CI enforces all of them. Every PR should get review and approval from a
+code owner (`.github/CODEOWNERS`) before it merges; branch protection does not yet
+require this (tracked in [#59](https://github.com/acyclic-labs/sdk/issues/59)), so
+treat it as a norm until it's enforced. An automated Greptile review already runs
+on every PR.
 
 ## Code quality rules
 
@@ -46,7 +48,7 @@ Beyond rustfmt and clippy's defaults, the workspace enables an additional lint s
 - **`unsafe` is opt-in per function**, carrying `#[allow(unsafe_code, reason = "...")]`
   naming the invariant.
 - **Duplication under 3% of tokens** (`jscpd`, config in `.jscpd.json`, not yet wired
-  into CI — run manually with `npx jscpd@4.3.0 --config .jscpd.json`).
+  into CI — run manually with `npx jscpd@4.3.0 --config .jscpd.json .`).
 
 A wider lint set from the same source — no identical match arms, functions under 100
 lines/cognitive complexity under 30, no lossy `as` casts, no out-of-bounds indexing or
