@@ -66,7 +66,10 @@ git -C "$guard_repo" add fixture
 git -C "$guard_repo" commit --quiet -m initial
 guard_head="$(git -C "$guard_repo" rev-parse HEAD)"
 clean_head "$guard_repo" "$guard_head"
-! GIT_INDEX_FILE="$guard_repo/missing/index" clean_head "$guard_repo" "$guard_head"
+bad_index="$work/bad-index"
+mkdir "$bad_index"
+! GIT_INDEX_FILE="$bad_index" git -C "$guard_repo" ls-files -v
+! GIT_INDEX_FILE="$bad_index" clean_head "$guard_repo" "$guard_head"
 git -C "$guard_repo" update-index --assume-unchanged fixture
 ! clean_head "$guard_repo" "$guard_head"
 git -C "$guard_repo" update-index --no-assume-unchanged fixture
