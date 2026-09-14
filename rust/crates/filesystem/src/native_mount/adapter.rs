@@ -936,7 +936,10 @@ impl<A, O> CheckoutMountSource<A, O> {
                 }
                 let units = bytes
                     .chunks_exact(2)
-                    .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+                    .map(|unit| {
+                        let bytes: [u8; 2] = unit.try_into().unwrap_or([0, 0]);
+                        u16::from_le_bytes(bytes)
+                    })
                     .collect::<Vec<_>>();
                 let value = String::from_utf16(&units).map_err(|_| {
                     MountSourceError::Unsupported(
@@ -1213,9 +1216,15 @@ where
                 )
                 .await
                 .map_err(engine_error)?;
-            let file_id = receipt.value.created_file_ids[0].ok_or_else(|| {
-                MountSourceError::Engine("create omitted file identity".to_owned())
-            })?;
+            let file_id = receipt
+                .value
+                .created_file_ids
+                .first()
+                .copied()
+                .flatten()
+                .ok_or_else(|| {
+                    MountSourceError::Engine("create omitted file identity".to_owned())
+                })?;
             checkout.publish_after_mutation(&self.cancellation).await?;
             Ok(MountLookup {
                 node: MountNode {
@@ -1247,9 +1256,15 @@ where
                 )
                 .await
                 .map_err(engine_error)?;
-            let file_id = receipt.value.created_file_ids[0].ok_or_else(|| {
-                MountSourceError::Engine("create omitted file identity".to_owned())
-            })?;
+            let file_id = receipt
+                .value
+                .created_file_ids
+                .first()
+                .copied()
+                .flatten()
+                .ok_or_else(|| {
+                    MountSourceError::Engine("create omitted file identity".to_owned())
+                })?;
             checkout.publish_after_mutation(&self.cancellation).await?;
             Ok(MountLookup {
                 node: MountNode {
@@ -1289,9 +1304,15 @@ where
                 )
                 .await
                 .map_err(engine_error)?;
-            let file_id = receipt.value.created_file_ids[0].ok_or_else(|| {
-                MountSourceError::Engine("create omitted file identity".to_owned())
-            })?;
+            let file_id = receipt
+                .value
+                .created_file_ids
+                .first()
+                .copied()
+                .flatten()
+                .ok_or_else(|| {
+                    MountSourceError::Engine("create omitted file identity".to_owned())
+                })?;
             checkout.publish_after_mutation(&self.cancellation).await?;
             Ok(MountLookup {
                 node: MountNode {
@@ -1364,9 +1385,15 @@ where
                 .apply_authored_transaction(vec![mutation], boundary_budget(), &self.cancellation)
                 .await
                 .map_err(engine_error)?;
-            let file_id = receipt.value.created_file_ids[0].ok_or_else(|| {
-                MountSourceError::Engine("create omitted file identity".to_owned())
-            })?;
+            let file_id = receipt
+                .value
+                .created_file_ids
+                .first()
+                .copied()
+                .flatten()
+                .ok_or_else(|| {
+                    MountSourceError::Engine("create omitted file identity".to_owned())
+                })?;
             checkout.publish_after_mutation(&self.cancellation).await?;
             Ok(MountLookup {
                 node: MountNode {

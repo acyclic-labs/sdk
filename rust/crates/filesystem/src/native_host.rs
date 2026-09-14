@@ -209,7 +209,10 @@ fn bind_unix_socket_in(parent: &Dir, name: &OsStr) -> io::Result<()> {
         .position(|byte| *byte == 0)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unterminated F_GETPATH"))?;
     let mut held_path = std::path::PathBuf::from(std::ffi::OsString::from_vec(
-        resolved[..terminator].to_vec(),
+        resolved
+            .get(..terminator)
+            .unwrap_or(resolved.as_slice())
+            .to_vec(),
     ));
     held_path.push(name);
     let sun_path_capacity =

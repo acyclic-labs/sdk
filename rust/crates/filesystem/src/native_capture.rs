@@ -1281,7 +1281,10 @@ fn capture_host_name(component: &LogicalName) -> Result<std::ffi::OsString, Capt
             let units = component
                 .as_bytes()
                 .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .map(|pair| {
+                    let bytes: [u8; 2] = pair.try_into().unwrap_or([0, 0]);
+                    u16::from_le_bytes(bytes)
+                })
                 .collect::<Vec<_>>();
             String::from_utf16(&units)
                 .map(std::ffi::OsString::from)

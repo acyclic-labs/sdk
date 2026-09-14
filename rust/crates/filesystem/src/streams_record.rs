@@ -113,7 +113,10 @@ impl StreamsDurableRecord {
         payload
             .try_reserve_exact(payload_len)
             .map_err(|_| StreamsAuthorityRecordError::AllocationFailed)?;
-        payload.extend_from_slice(&encoded[cursor..expected_end]);
+        let body = encoded
+            .get(cursor..expected_end)
+            .ok_or(StreamsAuthorityRecordError::Truncated)?;
+        payload.extend_from_slice(body);
         Ok(Self(DurableCommit {
             epoch,
             sequence,
@@ -208,7 +211,10 @@ impl StreamsAuthorityRecord {
         payload
             .try_reserve_exact(payload_len)
             .map_err(|_| StreamsAuthorityRecordError::AllocationFailed)?;
-        payload.extend_from_slice(&encoded[cursor..expected_end]);
+        let body = encoded
+            .get(cursor..expected_end)
+            .ok_or(StreamsAuthorityRecordError::Truncated)?;
+        payload.extend_from_slice(body);
         Ok(Self {
             epoch,
             operation_id,
@@ -283,25 +289,21 @@ fn take<'a>(encoded: &'a [u8], cursor: &mut usize, length: usize) -> &'a [u8] {
     let start = *cursor;
     let end = start.saturating_add(length).min(encoded.len());
     *cursor = end;
-    &encoded[start..end]
+    encoded.get(start..end).unwrap_or(&[])
 }
 
 fn read_u16(encoded: &[u8], cursor: &mut usize) -> Result<u16, StreamsAuthorityRecordError> {
-    let bytes = take(encoded, cursor, 2);
-    if bytes.len() != 2 {
-        return Err(StreamsAuthorityRecordError::Truncated);
-    }
-    Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
+    let bytes: [u8; 2] = take(encoded, cursor, 2)
+        .try_into()
+        .map_err(|_| StreamsAuthorityRecordError::Truncated)?;
+    Ok(u16::from_le_bytes(bytes))
 }
 
 fn read_u64(encoded: &[u8], cursor: &mut usize) -> Result<u64, StreamsAuthorityRecordError> {
-    let bytes = take(encoded, cursor, 8);
-    if bytes.len() != 8 {
-        return Err(StreamsAuthorityRecordError::Truncated);
-    }
-    Ok(u64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-    ]))
+    let bytes: [u8; 8] = take(encoded, cursor, 8)
+        .try_into()
+        .map_err(|_| StreamsAuthorityRecordError::Truncated)?;
+    Ok(u64::from_le_bytes(bytes))
 }
 
 fn read_array<const N: usize>(

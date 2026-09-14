@@ -1289,7 +1289,11 @@ fn decode_lineage_generation(encoded: &[u8]) -> Result<GenerationId, AuthoritySt
             "invalid Stream generation-lineage record".to_owned(),
         ));
     }
-    let digest = encoded[LINEAGE_DOMAIN.len()..]
+    let digest = encoded
+        .get(LINEAGE_DOMAIN.len()..)
+        .ok_or_else(|| {
+            AuthorityStoreError::Corrupt("truncated Stream generation-lineage record".to_owned())
+        })?
         .try_into()
         .map(Digest::from_bytes)
         .map_err(|_| {
@@ -1313,7 +1317,9 @@ fn decode_lineage_tail(encoded: &[u8]) -> Result<u64, AuthorityStoreError> {
             "invalid Stream generation locator".to_owned(),
         ));
     }
-    let bytes: [u8; 8] = encoded[LINEAGE_TAIL_DOMAIN.len()..]
+    let bytes: [u8; 8] = encoded
+        .get(LINEAGE_TAIL_DOMAIN.len()..)
+        .ok_or_else(|| AuthorityStoreError::Corrupt("truncated generation locator".to_owned()))?
         .try_into()
         .map_err(|_| AuthorityStoreError::Corrupt("truncated generation locator".to_owned()))?;
     Ok(u64::from_le_bytes(bytes))
@@ -1325,7 +1331,9 @@ fn decode_epoch(encoded: &[u8], domain: &[u8]) -> Result<Epoch, AuthorityStoreEr
             "invalid Stream epoch record".to_owned(),
         ));
     }
-    let bytes: [u8; 8] = encoded[domain.len()..]
+    let bytes: [u8; 8] = encoded
+        .get(domain.len()..)
+        .ok_or_else(|| AuthorityStoreError::Corrupt("truncated Stream epoch record".to_owned()))?
         .try_into()
         .map_err(|_| AuthorityStoreError::Corrupt("truncated Stream epoch record".to_owned()))?;
     Epoch::new(u64::from_le_bytes(bytes))

@@ -1564,7 +1564,11 @@ impl AsyncBlobSource for StreamingBodySource {
             }
         }
         let count = destination.len().min(self.pending.len());
-        destination[..count].copy_from_slice(&self.pending[..count]);
+        if let (Some(destination_slice), Some(pending_slice)) =
+            (destination.get_mut(..count), self.pending.get(..count))
+        {
+            destination_slice.copy_from_slice(pending_slice);
+        }
         self.pending.advance(count);
         Ok(count)
     }
@@ -1857,7 +1861,10 @@ impl<'a> RecordCursor<'a> {
     }
 
     fn u8(&mut self) -> S3Result<u8> {
-        Ok(self.take(1)?[0])
+        self.take(1)?
+            .first()
+            .copied()
+            .ok_or_else(|| s3s::s3_error!(InvalidRequest))
     }
 
     fn u32(&mut self) -> S3Result<u32> {

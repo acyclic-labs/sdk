@@ -10155,27 +10155,36 @@ fn merge_sorted_object_ids(
     merged
         .try_reserve_exact(maximum_items)
         .map_err(|_| OperationFailure::new(FsError::GarbageCollectionAllocationFailed, *work))?;
-    let mut left_index = 0;
-    let mut right_index = 0;
-    while left_index < reachable.len() && right_index < incoming.len() {
-        match reachable[left_index].cmp(&incoming[right_index]) {
-            std::cmp::Ordering::Less => {
-                merged.push(reachable[left_index]);
-                left_index += 1;
+    let mut left_iter = reachable.iter().copied().peekable();
+    let mut right_iter = incoming.iter().copied().peekable();
+    loop {
+        match (left_iter.peek(), right_iter.peek()) {
+            (Some(&left), Some(&right)) => match left.cmp(&right) {
+                std::cmp::Ordering::Less => {
+                    merged.push(left);
+                    left_iter.next();
+                }
+                std::cmp::Ordering::Greater => {
+                    merged.push(right);
+                    right_iter.next();
+                }
+                std::cmp::Ordering::Equal => {
+                    merged.push(left);
+                    left_iter.next();
+                    right_iter.next();
+                }
+            },
+            (Some(&left), None) => {
+                merged.push(left);
+                left_iter.next();
             }
-            std::cmp::Ordering::Greater => {
-                merged.push(incoming[right_index]);
-                right_index += 1;
+            (None, Some(&right)) => {
+                merged.push(right);
+                right_iter.next();
             }
-            std::cmp::Ordering::Equal => {
-                merged.push(reachable[left_index]);
-                left_index += 1;
-                right_index += 1;
-            }
+            (None, None) => break,
         }
     }
-    merged.extend_from_slice(&reachable[left_index..]);
-    merged.extend_from_slice(&incoming[right_index..]);
     let copied_bytes = u64::try_from(merged.len())
         .unwrap_or(u64::MAX)
         .saturating_mul(u64::try_from(size_of::<ObjectId>()).unwrap_or(u64::MAX));

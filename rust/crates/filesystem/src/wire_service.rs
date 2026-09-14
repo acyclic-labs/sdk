@@ -977,7 +977,9 @@ where
                 {
                     return Ok(None);
                 }
-                let object = objects[index];
+                let Some(&object) = objects.get(index) else {
+                    return Ok(None);
+                };
                 let remaining = maximum_bytes.saturating_sub(retained);
                 let body = filesystem
                     .export_object(
@@ -1895,9 +1897,12 @@ fn decode_object_id(bytes: &[u8]) -> Result<ObjectId, Status> {
             "object identity must contain kind and digest",
         ));
     }
-    let kind = ObjectKind::from_canonical_tag(bytes[0])
+    let (&tag, digest_bytes) = bytes
+        .split_first()
+        .ok_or_else(|| Status::invalid_argument("object identity must contain kind and digest"))?;
+    let kind = ObjectKind::from_canonical_tag(tag)
         .map_err(|error| Status::invalid_argument(error.to_string()))?;
-    let digest: [u8; 32] = bytes[1..]
+    let digest: [u8; 32] = digest_bytes
         .try_into()
         .map_err(|_| Status::invalid_argument("object digest is malformed"))?;
     Ok(ObjectId {
