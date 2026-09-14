@@ -5,6 +5,9 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 output=""
 if [[ "$#" -eq 1 ]]; then
   output="$1"
+  if [[ "$output" != /* ]]; then
+    output="$root/$output"
+  fi
   [[ ! -e "$output" && ! -L "$output" ]] || {
     echo "package output must be absent: $output" >&2
     exit 2
