@@ -35,11 +35,55 @@ strict_archive() {
   tar -tzf "$1" >/dev/null
 }
 
+clean_head() {
+  local repository="$1"
+  local expected="$2"
+  [[ "$(git -C "$repository" rev-parse HEAD)" == "$expected" ]]
+  [[ -z "$(git -C "$repository" status --porcelain --untracked-files=all)" ]]
+}
+
+valid_vcs_info() {
+  python3 -c 'import json,sys; expected={"git":{"sha1":sys.argv[1]},"path_in_vcs":"rust/crates/machines"}; raise SystemExit(json.load(sys.stdin) != expected)' "$1"
+}
+
 cd "$root"
+head="$(git rev-parse HEAD)"
+clean_head "$root" "$head"
+
+guard_repo="$work/guard-repository"
+git init --quiet "$guard_repo"
+git -C "$guard_repo" config user.email test@example.invalid
+git -C "$guard_repo" config user.name Test
+printf 'clean\n' > "$guard_repo/fixture"
+git -C "$guard_repo" add fixture
+git -C "$guard_repo" commit --quiet -m initial
+guard_head="$(git -C "$guard_repo" rev-parse HEAD)"
+clean_head "$guard_repo" "$guard_head"
+printf 'untracked\n' > "$guard_repo/untracked"
+! clean_head "$guard_repo" "$guard_head"
+rm "$guard_repo/untracked"
+printf 'dirty\n' >> "$guard_repo/fixture"
+! clean_head "$guard_repo" "$guard_head"
+git -C "$guard_repo" restore fixture
+printf 'staged\n' >> "$guard_repo/fixture"
+git -C "$guard_repo" add fixture
+! clean_head "$guard_repo" "$guard_head"
+git -C "$guard_repo" commit --quiet -m changed
+! clean_head "$guard_repo" "$guard_head"
+
+printf '{"git":{"sha1":"%s"},"path_in_vcs":"rust/crates/machines"}\n' "$head" | valid_vcs_info "$head"
+for invalid_vcs_info in \
+  '{}' \
+  '{"git":{"sha1":"wrong"},"path_in_vcs":"rust/crates/machines"}' \
+  "{\"git\":{\"sha1\":\"$head\"},\"path_in_vcs\":\"wrong\"}" \
+  "{\"git\":{\"sha1\":\"$head\",\"dirty\":false},\"path_in_vcs\":\"rust/crates/machines\"}"; do
+  ! printf '%s\n' "$invalid_vcs_info" | valid_vcs_info "$head"
+done
+
 source_root="$work/source"
 test_root="$work/test"
 mkdir -p "$source_root" "$test_root"
-git archive HEAD | tar -x -C "$source_root"
+git archive "$head" | tar -x -C "$source_root"
 
 cargo_bin="cargo"
 source_manifest="$source_root/Cargo.toml"
@@ -54,13 +98,13 @@ if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; t
 fi
 version="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$source_manifest" | python3 -c 'import json,sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "acyclic-machines"))')"
 "$cargo_bin" test --locked -p acyclic-machines -p acyclic-harness-machines --manifest-path "$source_manifest" --target-dir "$package_target_argument"
-git diff --quiet
-git diff --cached --quiet
+clean_head "$root" "$head"
 "$cargo_bin" package --locked --no-verify -p acyclic-machines --manifest-path "$package_manifest" --target-dir "$package_target_argument"
 crate="$package_target/package/acyclic-machines-${version}.crate"
 strict_archive "$crate"
 tar -xOf "$crate" "acyclic-machines-${version}/.cargo_vcs_info.json" |
-  python3 -c 'import json,sys; record=json.load(sys.stdin); assert record == {"git": {"sha1": sys.argv[1]}, "path_in_vcs": "rust/crates/machines"}' "$(git rev-parse HEAD)"
+  valid_vcs_info "$head"
+clean_head "$root" "$head"
 
 tar -xzf "$crate" -C "$test_root"
 test_manifest="$test_root/acyclic-machines-${version}/Cargo.toml"
