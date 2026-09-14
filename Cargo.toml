@@ -73,12 +73,35 @@ web-sys = { version = "0.3.94", features = [
 # Native filesystem and generated FFI crates isolate reviewed platform calls
 # with narrow module-level allowances; every other crate inherits denial.
 unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "warn"
 missing_docs = "warn"
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+# Verified zero pre-existing violations across the workspace before landing;
+# the remaining plugin-repo lint set (indexing_slicing, string_slice,
+# cast_possible_truncation, too_many_lines, cognitive_complexity,
+# doc_markdown, needless_pass_by_value, redundant_clone, match_same_arms,
+# single_match_else, if_not_else — ~866 hits, see issue #59) lands together
+# with its fixes in a follow-up PR rather than breaking `-D warnings` here.
+unwrap_in_result = "warn"
+fallible_impl_from = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+cast_precision_loss = "warn"
+cast_lossless = "warn"
+manual_let_else = "warn"
+inefficient_to_string = "warn"
+str_to_string = "warn"
+map_unwrap_or = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+missing_panics_doc = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
 
 [profile.release]
 incremental = true

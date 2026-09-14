@@ -7,6 +7,60 @@ Before opening a pull request, run the Rust, Bun/TypeScript, Protobuf, provenanc
 license, secret, and private-namespace checks used by CI. Imported code must add
 an entry to `provenance/manifest.json` before it is merged.
 
+## Build and test
+
+```sh
+bun install --frozen-lockfile
+bun run check   # tsc -b --force, project-wide type-check (also emits build output)
+bun run test    # type-check, then TypeScript and filesystem package tests
+cargo test --workspace --all-features --locked
+```
+
+## Commit messages
+
+- Summary line: imperative mood ("Add", "Fix", "Rename", not "Added"/"Fixes"), no
+  trailing period.
+- Blank line, then a body explaining *why* the change is needed, not a restatement
+  of the diff.
+- No AI attribution trailers or "Generated with ..." lines (`Co-Authored-By:` naming
+  an agent, session links, etc.) — the commit should read as yours, whatever tools
+  helped write it. `Signed-off-by:` is still required.
+
+## Before opening a PR
+
+Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features
+--locked -- -D warnings`, and `cargo test --workspace --all-features --locked`
+locally — CI enforces all of them. Every PR should get review and approval from a
+code owner (`.github/CODEOWNERS`) before it merges; branch protection does not yet
+require this, so treat it as a norm until it's enforced (not yet tracked in a
+dedicated issue). An automated Greptile review already runs on every PR.
+
+## Code quality rules
+
+Beyond rustfmt and clippy's defaults, the workspace enables an additional lint set in
+`Cargo.toml` (`[workspace.lints.clippy]`, thresholds in `clippy.toml`):
+
+- **No hidden panics in non-test code.** `unwrap`, `expect`, and `panic!` are lint
+  errors outside tests. Reach for `?`, `get`, `let ... else`. The few documented
+  exceptions carry `#[allow(..., reason = "...")]` naming the invariant that makes
+  the panic unreachable.
+- **`unsafe` is opt-in per function**, carrying `#[allow(unsafe_code, reason = "...")]`
+  naming the invariant.
+- **Duplication under 3% of tokens** (`jscpd`, config in `.jscpd.json`, not yet wired
+  into CI — run manually with `npx jscpd@4.3.0 --config .jscpd.json .`).
+
+A wider lint set from the same source — no identical match arms, functions under 100
+lines/cognitive complexity under 30, no lossy `as` casts, no out-of-bounds indexing or
+string slicing outside tests — is tracked in [#59](https://github.com/acyclic-labs/sdk/issues/59)
+rather than enabled here: the workspace currently has ~866 pre-existing hits against
+that set, so it lands together with the fixes in a follow-up PR instead of breaking
+`-D warnings` on `main`.
+
+## Reporting bugs and security issues
+
+Open a GitHub issue for regular bugs. For security vulnerabilities, follow
+[SECURITY.md](SECURITY.md) instead of filing a public issue.
+
 `ci.json` is the only authored CI graph. The immutable Fleet renderer generates
 `azure-pipelines.yml`; do not hand-edit the generated file or add a second CI
 authority. Independent platform and browser lanes run concurrently, cache only

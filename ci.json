@@ -1,5 +1,5 @@
 {
-  "revision": 6,
+  "revision": 7,
   "repository": "sdk",
   "default_branch": "main",
   "trigger": "continuous",
@@ -13,12 +13,46 @@
   "authority": null,
   "jobs": [
     {
+      "name": "gate",
+      "runner": "linux_check",
+      "timeout_minutes": 15,
+      "checkout": "source",
+      "condition": { "kind": "always" },
+      "depends_on": [],
+      "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "bun", "tools"],
+      "reuse": "exact_tree",
+      "inputs": [],
+      "qualifications": [],
+      "releases": [],
+      "steps": [
+        {
+          "name": "typecheck",
+          "condition": "succeeded",
+          "action": {
+            "kind": "shell",
+            "working_directory": ".",
+            "command": "set -euo pipefail\nsource scripts/ensure-bun.sh\nbun install --frozen-lockfile\nbun run check"
+          }
+        },
+        {
+          "name": "coverage",
+          "condition": "succeeded",
+          "action": {
+            "kind": "shell",
+            "working_directory": ".",
+            "command": "set -euo pipefail\nrustup component add llvm-tools-preview\ncargo install cargo-llvm-cov --version 0.9.1 --locked\nmkdir -p \"$BUILD_ARTIFACTSTAGINGDIRECTORY/coverage\"\ncargo llvm-cov --workspace --all-features --locked --fail-under-lines 70 --lcov --output-path \"$BUILD_ARTIFACTSTAGINGDIRECTORY/coverage/lcov.info\"\ncargo llvm-cov report --summary-only"
+          }
+        }
+      ],
+      "outputs": [{"name":"coverage","path":"$(Build.ArtifactStagingDirectory)/coverage","condition":"succeeded"}]
+    },
+    {
       "name": "linux",
       "runner": "linux",
       "timeout_minutes": 15,
       "checkout": "source_history",
-      "condition": { "kind": "always" },
-      "depends_on": [],
+      "condition": "succeeded",
+      "depends_on": ["gate"],
       "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "bun", "tools"],
       "reuse": "none",
       "inputs": [],
@@ -51,8 +85,8 @@
       "runner": "linux_check",
       "timeout_minutes": 15,
       "checkout": "source_history",
-      "condition": { "kind": "always" },
-      "depends_on": [],
+      "condition": "succeeded",
+      "depends_on": ["gate"],
       "caches": ["rustup", "cargo_registry", "tools"],
       "reuse": "exact_tree",
       "inputs": [],
@@ -76,8 +110,8 @@
       "runner": "linux",
       "timeout_minutes": 15,
       "checkout": "source",
-      "condition": { "kind": "always" },
-      "depends_on": [],
+      "condition": "succeeded",
+      "depends_on": ["gate"],
       "caches": ["rustup", "cargo_registry", "compiler", "tools"],
       "reuse": "exact_tree",
       "reuse_ignore": [".github"],
@@ -102,8 +136,8 @@
       "runner": "linux_arm64",
       "timeout_minutes": 15,
       "checkout": "source",
-      "condition": { "kind": "always" },
-      "depends_on": [],
+      "condition": "succeeded",
+      "depends_on": ["gate"],
       "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "bun", "tools"],
       "reuse": "exact_tree",
       "reuse_ignore": [".github"],
@@ -128,8 +162,8 @@
       "runner": "windows",
       "timeout_minutes": 15,
       "checkout": "source",
-      "condition": { "kind": "always" },
-      "depends_on": [],
+      "condition": "succeeded",
+      "depends_on": ["gate"],
       "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "bun", "tools"],
       "reuse": "exact_tree",
       "reuse_ignore": [".github"],
@@ -154,8 +188,8 @@
       "runner": "macos",
       "timeout_minutes": 15,
       "checkout": "source",
-      "condition": { "kind": "always" },
-      "depends_on": [],
+      "condition": "succeeded",
+      "depends_on": ["gate"],
       "caches": ["rustup", "cargo_registry", "cargo_git", "compiler", "bun", "tools"],
       "reuse": "exact_tree",
       "reuse_ignore": [".github"],

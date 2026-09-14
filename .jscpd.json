@@ -1,0 +1,9 @@
+{
+  "threshold": 3,
+  "minTokens": 60,
+  "minLines": 8,
+  "format": ["rust", "typescript", "shell"],
+  "ignore": ["**/target/**", "**/node_modules/**", "**/generated/**", "**/dist/**"],
+  "reporters": ["console"],
+  "gitignore": true
+}
