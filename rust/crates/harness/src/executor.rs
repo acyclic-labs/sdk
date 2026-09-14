@@ -897,8 +897,16 @@ mod tests {
                 )
                 .await?;
         }
-        assert_eq!(journal.replay(first).await?[0].sequence, 1);
-        assert_eq!(journal.replay(second).await?[0].sequence, 1);
+        let replayed_first = journal.replay(first).await?;
+        let [first_entry] = replayed_first.as_slice() else {
+            unreachable!("expected exactly one replayed event for the first operation");
+        };
+        assert_eq!(first_entry.sequence, 1);
+        let replayed_second = journal.replay(second).await?;
+        let [second_entry] = replayed_second.as_slice() else {
+            unreachable!("expected exactly one replayed event for the second operation");
+        };
+        assert_eq!(second_entry.sequence, 1);
         Ok(())
     }
 }

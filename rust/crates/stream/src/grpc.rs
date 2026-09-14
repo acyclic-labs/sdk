@@ -284,6 +284,10 @@ impl Client {
         })
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "callers derive index via `(start + offset) % channels.len()` against this same slice, so it is always in-bounds"
+    )]
     fn service(
         channels: &[Channel],
         index: usize,

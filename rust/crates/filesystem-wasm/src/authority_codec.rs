@@ -49,7 +49,7 @@ pub(crate) fn encode_head(head: Head) -> Vec<u8> {
 }
 
 pub(crate) fn decode_head(bytes: &[u8]) -> Result<Head, AuthorityCodecError> {
-    if bytes.len() != HEAD_BYTES || &bytes[..8] != HEAD_MAGIC {
+    if bytes.len() != HEAD_BYTES || bytes.get(..8) != Some(HEAD_MAGIC.as_slice()) {
         return Err(AuthorityCodecError::InvalidHead);
     }
     check_version(bytes)?;
@@ -86,7 +86,7 @@ pub(crate) fn decode_commit(
     bytes: &[u8],
     maximum_payload_bytes: u64,
 ) -> Result<DurableCommit, AuthorityCodecError> {
-    if bytes.len() < COMMIT_PREFIX_BYTES || &bytes[..8] != COMMIT_MAGIC {
+    if bytes.len() < COMMIT_PREFIX_BYTES || bytes.get(..8) != Some(COMMIT_MAGIC.as_slice()) {
         return Err(AuthorityCodecError::InvalidCommit);
     }
     check_version(bytes)?;
@@ -111,7 +111,10 @@ pub(crate) fn decode_commit(
     if bytes.len() != COMMIT_PREFIX_BYTES.saturating_add(payload_length) {
         return Err(AuthorityCodecError::InvalidCommit);
     }
-    let payload = Bytes::copy_from_slice(&bytes[COMMIT_PREFIX_BYTES..]);
+    let payload_bytes = bytes
+        .get(COMMIT_PREFIX_BYTES..)
+        .ok_or(AuthorityCodecError::Truncated)?;
+    let payload = Bytes::copy_from_slice(payload_bytes);
     let expected = authority_commit_digest(
         authority_id,
         epoch,
@@ -141,7 +144,7 @@ pub(crate) fn decode_commit_owned(
     bytes: Vec<u8>,
     maximum_payload_bytes: u64,
 ) -> Result<DurableCommit, AuthorityCodecError> {
-    if bytes.len() < COMMIT_PREFIX_BYTES || &bytes[..8] != COMMIT_MAGIC {
+    if bytes.len() < COMMIT_PREFIX_BYTES || bytes.get(..8) != Some(COMMIT_MAGIC.as_slice()) {
         return Err(AuthorityCodecError::InvalidCommit);
     }
     check_version(&bytes)?;
@@ -200,7 +203,7 @@ pub(crate) fn encode_operation(record: OperationRecord) -> Vec<u8> {
 }
 
 pub(crate) fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, AuthorityCodecError> {
-    if bytes.len() != OPERATION_BYTES || &bytes[..8] != OPERATION_MAGIC {
+    if bytes.len() != OPERATION_BYTES || bytes.get(..8) != Some(OPERATION_MAGIC.as_slice()) {
         return Err(AuthorityCodecError::InvalidOperation);
     }
     check_version(bytes)?;
@@ -238,6 +241,10 @@ fn read_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], Au
         .map_err(|_| AuthorityCodecError::Truncated)
 }
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "`byte >> 4` and `byte & 0x0f` are both bit operations on a u8 bounded to 0..16, always in range for the 16-entry HEX table"
+)]
 fn encode_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len().saturating_mul(2));

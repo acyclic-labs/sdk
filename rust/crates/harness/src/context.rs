@@ -498,6 +498,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "each index is preceded by an assert_eq! on the corresponding Vec's len(), proving it in-bounds"
+    )]
     async fn durable_sources_and_compaction_reopen_exactly() -> Result<()> {
         let stream = Arc::new(MemoryStream::default());
         let path = StreamPath::new("runtime/context/memory")

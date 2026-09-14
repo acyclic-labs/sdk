@@ -985,6 +985,10 @@ mod tests {
     use prost::Message;
 
     #[test]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "each index is preceded by an assert_eq! on the corresponding Vec's len(), so the index is proven in-bounds"
+    )]
     fn descriptor_contains_only_customer_contract() -> Result<(), Box<dyn std::error::Error>> {
         let descriptor = prost_types::FileDescriptorSet::decode(DESCRIPTOR)?;
         assert_eq!(descriptor.file.len(), 1);

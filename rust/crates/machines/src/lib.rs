@@ -934,6 +934,10 @@ impl SimulatedMachines {
     }
 }
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "`digest` is a Sha256::finalize() output, always exactly 32 bytes, so slicing the first 16 is always in bounds"
+)]
 fn derived_uuid(domain: &[u8], key: &[u8; 16], index: u32) -> Uuid {
     let mut hash = Sha256::new();
     hash.update(domain);
@@ -1467,6 +1471,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "indices are preceded by an assert_eq!(children.len(), 2), proving them in-bounds"
+    )]
     async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
         let provider = Arc::new(SimulatedMachines::default());
         let machines = Machines::new(provider.clone());
@@ -1563,6 +1571,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "indexes a repo-local `compatibility/manifest.json` fixture bundled via include_str!; a missing key means the fixture itself is broken and the test should panic loudly"
+    )]
     fn public_descriptor_is_pinned() {
         let digest: [u8; 32] = Sha256::digest(FILE_DESCRIPTOR_SET).into();
         let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(

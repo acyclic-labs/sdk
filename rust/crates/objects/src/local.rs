@@ -1141,7 +1141,11 @@ fn decode_lower_hex(encoded: &str, output: &mut [u8]) -> Result<(), LocalObjects
         return Err(LocalObjectsError::Corrupt);
     }
     for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
-        output[index] = (hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?;
+        let &[high, low] = pair else {
+            return Err(LocalObjectsError::Corrupt);
+        };
+        let value = (hex_nibble(high)? << 4) | hex_nibble(low)?;
+        *output.get_mut(index).ok_or(LocalObjectsError::Corrupt)? = value;
     }
     Ok(())
 }
@@ -1204,7 +1208,10 @@ pub(crate) fn read_body(
             }
             let selected_start = start.saturating_sub(offset).min(length);
             let selected_end = end.saturating_sub(offset).min(length);
-            output.extend_from_slice(&chunk[selected_start..selected_end]);
+            let selected = chunk
+                .get(selected_start..selected_end)
+                .ok_or(ObjectsError::Unavailable)?;
+            output.extend_from_slice(selected);
         }
         offset = chunk_end;
     }
@@ -1285,7 +1292,7 @@ fn parse_manifest(
         return Err(ObjectsError::Unavailable);
     }
     let mut cursor = MANIFEST_MAGIC.len();
-    if &payload[..cursor] != MANIFEST_MAGIC {
+    if payload.get(..cursor) != Some(MANIFEST_MAGIC) {
         return Err(ObjectsError::Unavailable);
     }
     let length = read_u64(payload, &mut cursor)?;
@@ -1332,6 +1339,10 @@ fn parse_digest(value: &[u8]) -> Result<[u8; 32], LocalObjectsError> {
     value.try_into().map_err(|_| LocalObjectsError::Corrupt)
 }
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "`byte >> 4` and `byte & 0x0f` are both bit operations on a u8 bounded to 0..16, always in range for the 16-entry DIGITS table"
+)]
 fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);

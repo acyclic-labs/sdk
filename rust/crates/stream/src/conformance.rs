@@ -112,9 +112,10 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         .map_err(|err| error(&err))?
         .collect::<Vec<_>>()
         .await;
-    if inherited.len() != 1
-        || inherited[0].as_ref().map_err(ToString::to_string)?.value != Bytes::from_static(b"one")
-    {
+    let [item] = inherited.as_slice() else {
+        return Err("forked history was not exact".into());
+    };
+    if item.as_ref().map_err(ToString::to_string)?.value != Bytes::from_static(b"one") {
         return Err("forked history was not exact".into());
     }
     let children = provider

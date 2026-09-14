@@ -330,19 +330,23 @@ impl Scheduler {
             return Err(Error::Conflict("operation dependency cycle".into()));
         }
         if let Some(parent) = &spec.parent {
-            if parent.slot.trim().is_empty() || !self.operations.contains_key(&parent.operation_id)
-            {
+            if parent.slot.trim().is_empty() {
                 return Err(Error::Invalid(
                     "structured child requires an existing parent and slot".into(),
                 ));
             }
+            let Some(parent_operation) = self.operations.get(&parent.operation_id) else {
+                return Err(Error::Invalid(
+                    "structured child requires an existing parent and slot".into(),
+                ));
+            };
             if self
                 .child_slots
                 .contains_key(&(parent.operation_id, parent.slot.clone()))
             {
                 return Err(Error::Conflict("parent child slot is already bound".into()));
             }
-            if self.operations[&parent.operation_id].phase == OperationPhase::Terminal {
+            if parent_operation.phase == OperationPhase::Terminal {
                 return Err(Error::Conflict(
                     "terminal parent cannot accept children".into(),
                 ));
@@ -997,7 +1001,9 @@ impl Scheduler {
                 .map(|operation| operation.spec.owner.authority());
             let mut index = 0;
             while index < frontier.len() {
-                let parent = frontier[index];
+                let Some(&parent) = frontier.get(index) else {
+                    break;
+                };
                 frontier.extend(
                     self.children(parent)
                         // A recursive command is authorized for the root owner. A

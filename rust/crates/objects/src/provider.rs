@@ -1616,7 +1616,11 @@ impl ObjectsProvider for MemoryObjects {
             .min(view.items.len());
         let mut entries = Vec::new();
         let mut common_prefixes = Vec::new();
-        for item in &view.items[offset..end] {
+        let page = view
+            .items
+            .get(offset..end)
+            .ok_or(ObjectsError::Invalid("invalid continuation"))?;
+        for item in page {
             match item {
                 ListingItem::Entry(value) => entries.push(value.as_ref().clone()),
                 ListingItem::Prefix(value) => common_prefixes.push(value.clone()),
