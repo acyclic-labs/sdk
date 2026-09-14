@@ -8,7 +8,10 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import shlex
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -142,6 +145,29 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(fetcher.read_bounded(io.BytesIO(b"abc"), 3), b"abc")
         with self.assertRaisesRegex(RuntimeError, "size bound"):
             fetcher.read_bounded(io.BytesIO(b"abcd"), 3)
+
+    def test_release_tag_object_types(self) -> None:
+        script_path = Path(__file__).with_name("prepare-crate-publication.sh").resolve()
+        script = script_path.as_posix()
+        bash = os.environ.get("BASH", "bash")
+        for object_type in ("commit", "tag"):
+            command = (
+                f"source {shlex.quote(script)}; "
+                f"validate_release_object_type {shlex.quote(object_type)}"
+            )
+            subprocess.run([bash, "-c", command], check=True)
+        for object_type in ("blob", "tree", ""):
+            command = (
+                f"source {shlex.quote(script)}; "
+                f"validate_release_object_type {shlex.quote(object_type)}"
+            )
+            rejected = subprocess.run(
+                [bash, "-c", command],
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("tag or commit", rejected.stderr)
 
 
 if __name__ == "__main__":
