@@ -443,8 +443,6 @@ jobs:
     displayName: Restore exact Bun runtime
   - bash: |
       set -euo pipefail
-      set -euo pipefail
-      bash scripts/test-ensure-rust-target.sh
       source scripts/ensure-bun.sh
       bun install --frozen-lockfile
       cargo test --workspace --all-features --locked
@@ -1060,7 +1058,6 @@ jobs:
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Restore exact Rust toolchain
   - bash: |
-      set -euo pipefail
       set -euo pipefail
       bash scripts/test-ensure-rust-target.sh
       cargo fmt --all -- --check
@@ -1723,7 +1720,6 @@ jobs:
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Restore exact Rust toolchain
   - bash: |
-      set -euo pipefail
       set -euo pipefail
       bash scripts/ensure-rust-target.sh wasm32-unknown-unknown
       if ! command -v wasm-bindgen-test-runner >/dev/null; then cargo install --locked wasm-bindgen-cli --version 0.2.117; fi
@@ -2407,7 +2403,6 @@ jobs:
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Restore exact Bun runtime
   - bash: |
-      set -euo pipefail
       set -euo pipefail
       if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || ! command -v pkg-config >/dev/null || ! pkg-config --exists fuse3; then sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libfuse3-dev unzip; fi
       source scripts/ensure-bun.sh
@@ -3803,7 +3798,6 @@ jobs:
     condition: and(succeeded(), ne(variables['FLEET_QUALIFICATION_RESTORED'], 'true'))
     displayName: Restore exact Bun runtime
   - bash: |
-      set -euo pipefail
       set -euo pipefail
       bash scripts/test-ensure-rust-target.sh
       source scripts/ensure-bun.sh
