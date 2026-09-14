@@ -112,9 +112,9 @@ authenticated service; placement, batching, KV movement, and rebalancing remain
 provider internals:
 
 ```rust,no_run
-use inference_sdk::Inference;
+use acyclic_inference::Inference;
 
-# async fn example() -> inference_sdk::Result<(), inference_sdk::Error> {
+# async fn example() -> acyclic_inference::Result<(), acyclic_inference::Error> {
 let inference = Inference::connect(
     "https://inference.example",
     "account-token",

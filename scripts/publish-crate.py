@@ -27,7 +27,7 @@ MAX_TAR_BYTES = 536_870_912
 PACKAGE_PATHS = {
     "acyclic-objects": "rust/crates/objects",
     "acyclic-stream": "rust/crates/stream",
-    "inference-sdk": "rust/crates/inference",
+    "acyclic-inference": "rust/crates/inference",
     "acyclic-machines": "rust/crates/machines",
     "acyclic-fs": "rust/crates/filesystem",
 }

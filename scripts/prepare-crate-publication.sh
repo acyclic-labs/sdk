@@ -27,7 +27,7 @@ version=${subject#*/}
 case "$package" in
   acyclic-objects) family=objects ;;
   acyclic-stream) family=stream ;;
-  inference-sdk) family=inference ;;
+  acyclic-inference) family=inference ;;
   acyclic-machines) family=machines ;;
   acyclic-fs) family=filesystem ;;
   *) echo "package has no qualified release family" >&2; exit 1 ;;
