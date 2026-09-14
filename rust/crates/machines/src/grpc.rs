@@ -168,7 +168,7 @@ impl MachinesProvider for GrpcProvider {
                 image: Some(encode_image(&image)?),
             })
             .await
-            .map_err(read_error)?
+            .map_err(|error| read_error(&error))?
             .into_inner();
         decode_qualification(response, &image)
     }
@@ -192,7 +192,7 @@ impl MachinesProvider for GrpcProvider {
                 }),
             })
             .await
-            .map_err(|error| mutation_error(key, error))?
+            .map_err(|error| mutation_error(key, &error))?
             .into_inner();
         let operation = decode_operation(response.operation.as_ref())?;
         let machine = decode_machine(response.machine.as_ref())?;
@@ -213,7 +213,7 @@ impl MachinesProvider for GrpcProvider {
                 machine: Some(encode_machine(machine)),
             })
             .await
-            .map_err(read_error)
+            .map_err(|error| read_error(&error))
             .and_then(|response| decode_machine_observation(response.into_inner(), machine))
     }
 
@@ -235,7 +235,7 @@ impl MachinesProvider for GrpcProvider {
                 limit,
             })
             .await
-            .map_err(read_error)?
+            .map_err(|error| read_error(&error))?
             .into_inner();
         let mut previous = after;
         let mut machines = Vec::with_capacity(page.machines.len());
@@ -279,7 +279,7 @@ impl MachinesProvider for GrpcProvider {
                 machine: Some(encode_machine(machine)),
             })
             .await
-            .map_err(|error| mutation_error(key, error))?
+            .map_err(|error| mutation_error(key, &error))?
             .into_inner();
         let operation = decode_operation(value.operation.as_ref())?;
         let checkpoint = decode_checkpoint(value.checkpoint.as_ref())?;
@@ -304,8 +304,8 @@ impl MachinesProvider for GrpcProvider {
                 checkpoint: Some(encode_checkpoint(checkpoint)),
             })
             .await
-            .map_err(read_error)
-            .and_then(|response| decode_checkpoint_observation(response.into_inner(), checkpoint))
+            .map_err(|error| read_error(&error))
+            .and_then(|response| decode_checkpoint_observation(&response.into_inner(), checkpoint))
     }
 
     async fn fork(
@@ -328,7 +328,7 @@ impl MachinesProvider for GrpcProvider {
                 performance: encode_performance(performance),
             })
             .await
-            .map_err(|error| mutation_error(key, error))?
+            .map_err(|error| mutation_error(key, &error))?
             .into_inner();
         if decode_checkpoint(value.checkpoint.as_ref())? != checkpoint
             || value.children.len()
@@ -386,7 +386,7 @@ impl MachinesProvider for GrpcProvider {
                 policy: Some(encode_suspension(policy)?),
             })
             .await
-            .map_err(|error| mutation_error(key, error))?
+            .map_err(|error| mutation_error(key, &error))?
             .into_inner();
         if decode_machine(value.machine.as_ref())? != machine
             || decode_suspension(value.policy.as_ref())? != policy
@@ -420,7 +420,7 @@ impl MachinesProvider for GrpcProvider {
                 checkpoint: Some(encode_checkpoint(checkpoint)),
             })
             .await
-            .map_err(|error| mutation_error(key, error))?
+            .map_err(|error| mutation_error(key, &error))?
             .into_inner();
         if decode_checkpoint(value.checkpoint.as_ref())? != checkpoint {
             return Err(ProviderError::Rejected(
@@ -451,12 +451,12 @@ impl MachinesProvider for GrpcProvider {
                 limit,
             })
             .await
-            .map_err(read_error)?
+            .map_err(|error| read_error(&error))?
             .into_inner();
         let mut previous = after_sequence.unwrap_or(0);
         let mut events = Vec::with_capacity(value.events.len());
         for item in value.events {
-            let event = decode_event(item, machine)?;
+            let event = decode_event(&item, machine)?;
             if event.sequence <= previous {
                 return Err(ProviderError::Rejected(
                     "event sequence is not increasing".into(),
@@ -498,7 +498,7 @@ impl MachinesProvider for GrpcProvider {
                 end_unix_ms,
             })
             .await
-            .map_err(read_error)?
+            .map_err(|error| read_error(&error))?
             .into_inner();
         decode_usage_receipt(value, machine, start_unix_ms, end_unix_ms)
     }
@@ -519,15 +519,15 @@ impl MachinesProvider for GrpcProvider {
         self.client()
             .inspect_operation(operation_request(operation))
             .await
-            .map_err(read_error)
-            .and_then(|response| decode_operation_observation(response.into_inner(), operation))
+            .map_err(|error| read_error(&error))
+            .and_then(|response| decode_operation_observation(&response.into_inner(), operation))
     }
     async fn cancel(&self, operation: OperationId) -> Result<OperationObservation, ProviderError> {
         self.client()
             .cancel(operation_request(operation))
             .await
-            .map_err(read_error)
-            .and_then(|response| decode_operation_observation(response.into_inner(), operation))
+            .map_err(|error| read_error(&error))
+            .and_then(|response| decode_operation_observation(&response.into_inner(), operation))
     }
     async fn watch_operation(
         &self,
@@ -537,7 +537,7 @@ impl MachinesProvider for GrpcProvider {
             .client()
             .watch_operation(operation_request(operation))
             .await
-            .map_err(read_error)?
+            .map_err(|error| read_error(&error))?
             .into_inner();
         let stream = stream::unfold((stream, false), move |(mut stream, done)| async move {
             if done {
@@ -545,7 +545,7 @@ impl MachinesProvider for GrpcProvider {
             }
             match stream.message().await {
                 Ok(Some(value)) => {
-                    let value = decode_operation_observation(value, operation);
+                    let value = decode_operation_observation(&value, operation);
                     let decode_failed = value.is_err();
                     let terminal = value
                         .as_ref()
@@ -580,7 +580,7 @@ impl GrpcProvider {
                 idempotency_key: Some(encode_key(key)),
             })
             .await
-            .map_err(|error| recovery_error(key, error))?
+            .map_err(|error| recovery_error(key, &error))?
             .into_inner();
         let operation = validate_recovered_admission(&value)?;
         Ok((operation, value))
@@ -600,7 +600,7 @@ impl GrpcProvider {
             let Some(value) = next else {
                 return Err(ProviderError::Indeterminate(key));
             };
-            match decode_operation_observation(value, operation)?.phase {
+            match decode_operation_observation(&value, operation)?.phase {
                 OperationPhase::Pending => {}
                 OperationPhase::Succeeded => return Ok(()),
                 OperationPhase::Cancelled => return Err(ProviderError::Cancelled),
@@ -625,7 +625,7 @@ impl GrpcProvider {
             MachineMutation::Wake => self.client().wake(request).await,
             MachineMutation::Destroy => self.client().destroy_machine(request).await,
         }
-        .map_err(|error| mutation_error(key, error))?
+        .map_err(|error| mutation_error(key, &error))?
         .into_inner();
         if decode_machine(value.machine.as_ref())? != machine {
             return Err(ProviderError::Rejected(
@@ -1042,7 +1042,7 @@ fn decode_qualification(
         .into_iter()
         .map(decode_capability)
         .collect::<Result<BTreeSet<_>, _>>()?;
-    let compatibility_revision = digest(value.compatibility_revision, "compatibility revision")?;
+    let compatibility_revision = digest(&value.compatibility_revision, "compatibility revision")?;
     Ok(ImageQualification {
         image,
         capabilities,
@@ -1072,23 +1072,19 @@ fn decode_contract(
         image: decode_image(value.image.as_ref())?,
         compatibility: decode_compatibility(value.compatibility.as_ref(), &capabilities)?,
         capabilities,
-        compatibility_revision: digest(
-            value.compatibility_revision.clone(),
-            "compatibility revision",
-        )?,
+        compatibility_revision: digest(&value.compatibility_revision, "compatibility revision")?,
         performance: decode_performance(value.performance)?,
         suspension: decode_suspension(value.suspension.as_ref())?,
         expiration: decode_expiration(value.expiration.as_ref())?,
-        network_policy_digest: digest(value.network_policy_digest.clone(), "network policy")?,
+        network_policy_digest: digest(&value.network_policy_digest, "network policy")?,
         budgets: Budgets {
             spend_micros: budgets.spend_micros,
             concurrency: budgets.concurrency,
         },
     })
 }
-fn digest(value: Vec<u8>, name: &str) -> Result<[u8; 32], ProviderError> {
+fn digest(value: &[u8], name: &str) -> Result<[u8; 32], ProviderError> {
     let value: [u8; 32] = value
-        .as_slice()
         .try_into()
         .map_err(|_| ProviderError::Rejected(format!("{name} digest width is invalid")))?;
     if value == [0; 32] {
@@ -1161,7 +1157,7 @@ fn decode_machine_observation(
     })
 }
 fn decode_checkpoint_observation(
-    value: wire::CheckpointState,
+    value: &wire::CheckpointState,
     expected: CheckpointId,
 ) -> Result<CheckpointObservation, ProviderError> {
     let id = decode_checkpoint(value.checkpoint.as_ref())?;
@@ -1179,7 +1175,7 @@ fn decode_checkpoint_observation(
     })
 }
 fn decode_event(
-    value: wire::MachineEvent,
+    value: &wire::MachineEvent,
     expected: MachineId,
 ) -> Result<MachineEvent, ProviderError> {
     let machine = decode_machine(value.machine.as_ref())?;
@@ -1235,7 +1231,7 @@ fn decode_machine_state(value: i32) -> Result<MachineState, ProviderError> {
     }
 }
 fn decode_operation_observation(
-    value: wire::OperationState,
+    value: &wire::OperationState,
     expected: OperationId,
 ) -> Result<OperationObservation, ProviderError> {
     let id = decode_operation(value.operation.as_ref())?;
@@ -1260,7 +1256,7 @@ fn decode_operation_observation(
     };
     Ok(OperationObservation { id, phase })
 }
-fn mutation_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
+fn mutation_error(key: IdempotencyKey, value: &tonic::Status) -> ProviderError {
     match value.code() {
         tonic::Code::Unavailable
         | tonic::Code::DeadlineExceeded
@@ -1277,7 +1273,7 @@ fn watch_error(key: IdempotencyKey, _value: tonic::Status) -> ProviderError {
 fn operation_watch_error(operation: OperationId) -> ProviderError {
     ProviderError::OperationIndeterminate(operation)
 }
-fn recovery_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
+fn recovery_error(key: IdempotencyKey, value: &tonic::Status) -> ProviderError {
     match value.code() {
         tonic::Code::Unavailable
         | tonic::Code::DeadlineExceeded
@@ -1287,7 +1283,7 @@ fn recovery_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
         _ => ProviderError::Rejected(value.message().into()),
     }
 }
-fn read_error(value: tonic::Status) -> ProviderError {
+fn read_error(value: &tonic::Status) -> ProviderError {
     match value.code() {
         tonic::Code::Unavailable
         | tonic::Code::DeadlineExceeded
@@ -1474,7 +1470,7 @@ mod tests {
             &self,
             request: Request<wire::OperationRequest>,
         ) -> Result<Response<wire::OperationState>, Status> {
-            self.require_operation(request.into_inner())?;
+            self.require_operation(&request.into_inner())?;
             Ok(Response::new(self.cancelled.clone()))
         }
 
@@ -1482,7 +1478,7 @@ mod tests {
             &self,
             request: Request<wire::OperationRequest>,
         ) -> Result<Response<wire::OperationState>, Status> {
-            self.require_operation(request.into_inner())?;
+            self.require_operation(&request.into_inner())?;
             Ok(Response::new(self.inspected.clone()))
         }
 
@@ -1494,7 +1490,7 @@ mod tests {
             &self,
             request: Request<wire::OperationRequest>,
         ) -> Result<Response<Self::WatchOperationStream>, Status> {
-            self.require_operation(request.into_inner())?;
+            self.require_operation(&request.into_inner())?;
             match &self.watch {
                 WatchReply::Reject(code) => Err(Status::new(*code, "watch rejected")),
                 WatchReply::Items(items) => {
@@ -1509,7 +1505,7 @@ mod tests {
     }
 
     impl OperationService {
-        fn require_operation(&self, request: wire::OperationRequest) -> Result<(), Status> {
+        fn require_operation(&self, request: &wire::OperationRequest) -> Result<(), Status> {
             if request
                 .operation
                 .as_ref()
@@ -1856,7 +1852,7 @@ mod tests {
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(
-            mutation_error(key, tonic::Status::unimplemented("capability unavailable"),),
+            mutation_error(key, &tonic::Status::unimplemented("capability unavailable"),),
             ProviderError::Unsupported("capability unavailable".into())
         );
         assert_eq!(

@@ -153,7 +153,7 @@ impl LocalStream {
             journal
                 .lock()
                 .map_err(|_| LocalStreamError::Corrupt)?
-                .prepare(command)
+                .prepare(&command)
         })
         .await
         .map_err(|_| LocalStreamError::Executor)
@@ -170,7 +170,7 @@ impl LocalStream {
             journal
                 .lock()
                 .map_err(|_| LocalStreamError::Corrupt)?
-                .append(frame)
+                .append(&frame)
         })
         .await
         .map_err(|_| LocalStreamError::Executor)
@@ -484,8 +484,8 @@ impl Journal {
         })
     }
 
-    fn prepare(&self, command: Command) -> Result<PreparedFrame, LocalStreamError> {
-        let encoded = encode_command(&command)?;
+    fn prepare(&self, command: &Command) -> Result<PreparedFrame, LocalStreamError> {
+        let encoded = encode_command(command)?;
         let command_length =
             u32::try_from(encoded.len()).map_err(|_| LocalStreamError::InvalidLimits)?;
         let length_bytes = command_length.to_le_bytes();
@@ -510,7 +510,7 @@ impl Journal {
         })
     }
 
-    fn append(&mut self, frame: PreparedFrame) -> Result<(), LocalStreamError> {
+    fn append(&mut self, frame: &PreparedFrame) -> Result<(), LocalStreamError> {
         self.file.write_all(&frame.length)?;
         self.file.write_all(&frame.command)?;
         self.file.write_all(&frame.checksum)?;
