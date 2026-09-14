@@ -35,7 +35,10 @@ packaged WASM must fail. Cargo packages and verifies the public Objects, Streams
 and Filesystem dependency closure together with all features. Registry publication
 must publish the exact Objects and Streams archives before Filesystem.
 Publication consumes these exact successful-run bytes,
-never a rebuild. Each native lane also retains the exact filesystem companion copy
+never a rebuild. A new crate may use the `CRATES_IO_BOOTSTRAP_TOKEN` environment
+secret only for its first publication; remove it after configuring crates.io Trusted
+Publishing for this workflow. Each native lane also retains the exact filesystem
+companion copy
 loaded by its successful ABI child, named by package version/host OS/architecture with
 a SHA-256 inventory. An existing output directory is rejected. These are host-qualified
 debug binaries, not optimized or cross-target binaries; cross-target `cargo check` does

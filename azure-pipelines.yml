@@ -206,6 +206,11 @@ jobs:
       fi
     displayName: qualify
   - bash: |
+      set -euo pipefail
+      python3 scripts/test-crate-publication.py
+      bash -n scripts/prepare-crate-publication.sh
+    displayName: publisher
+  - bash: |
       set +e
       if [[ -x "$SCCACHE_EXE" ]]; then "$SCCACHE_EXE" --show-stats; "$SCCACHE_EXE" --stop-server; fi
       rm -rf -- "$AGENT_TEMPDIRECTORY/fleet-sccache"

@@ -14,34 +14,23 @@ import struct
 import subprocess
 import sys
 import tarfile
+import tempfile
 import tomllib
 import urllib.error
 import urllib.request
+import zlib
 
 
 CRATES_IO_PUBLISH_URL = "https://crates.io/api/v1/crates/new"
-
-
-def workspace_package(package_name: str) -> dict[str, object]:
-    """Return one crates.io-publishable workspace package."""
-    completed = subprocess.run(
-        ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-    packages = [
-        package
-        for package in json.loads(completed.stdout)["packages"]
-        if package["name"] == package_name
-    ]
-    if len(packages) != 1:
-        raise RuntimeError("package does not identify exactly one workspace member")
-    package = packages[0]
-    allowed = package.get("publish")
-    if allowed == [] or (allowed is not None and "crates-io" not in allowed):
-        raise RuntimeError("package is not publishable to crates.io")
-    return package
+MAX_CRATE_BYTES = 104_857_600
+MAX_TAR_BYTES = 536_870_912
+PACKAGE_PATHS = {
+    "acyclic-objects": "rust/crates/objects",
+    "acyclic-stream": "rust/crates/stream",
+    "inference-sdk": "rust/crates/inference",
+    "acyclic-machines": "rust/crates/machines",
+    "acyclic-fs": "rust/crates/filesystem",
+}
 
 
 def package_metadata(
@@ -57,7 +46,7 @@ def package_metadata(
         normalized_package.get("name") != package["name"]
         or normalized_package.get("version") != package["version"]
     ):
-        raise RuntimeError("archive identity differs from workspace metadata")
+        raise RuntimeError("archive identity differs from Cargo metadata")
 
     def archived_path(field: str) -> str | None:
         value = normalized_package.get(field)
@@ -114,18 +103,40 @@ def package_metadata(
 
 
 def validate_archive(
-    archive_path: Path, package_name: str, version: str, expected_sha256: str
+    archive_path: Path,
+    package_name: str,
+    version: str,
+    expected_sha256: str,
+    source_sha: str,
+    path_in_vcs: str,
 ) -> tuple[bytes, dict[str, object], dict[str, bytes]]:
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
         raise RuntimeError("expected checksum must be lowercase SHA-256")
     archive = archive_path.read_bytes()
+    if not archive or len(archive) > MAX_CRATE_BYTES:
+        raise RuntimeError("crate archive exceeds its size bound")
     observed_sha256 = hashlib.sha256(archive).hexdigest()
     if observed_sha256 != expected_sha256:
         raise RuntimeError("verified crate checksum changed before upload")
 
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", source_sha):
+        raise RuntimeError("source commit must be a full Git object ID")
+    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    tar_payload = decompressor.decompress(archive, MAX_TAR_BYTES + 1)
+    if decompressor.unconsumed_tail or len(tar_payload) > MAX_TAR_BYTES:
+        raise RuntimeError("crate archive expands beyond its size bound")
+    tar_payload += decompressor.flush()
+    if (
+        not decompressor.eof
+        or decompressor.unused_data
+        or len(tar_payload) > MAX_TAR_BYTES
+    ):
+        raise RuntimeError("crate archive is not one complete gzip stream")
+
     expected_prefix = f"{package_name}-{version}/"
     archived_files: dict[str, bytes] = {}
-    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as crate:
+    archived_names: set[str] = set()
+    with tarfile.open(fileobj=io.BytesIO(tar_payload), mode="r:") as crate:
         members = crate.getmembers()
         if not members:
             raise RuntimeError("crate archive is empty")
@@ -134,8 +145,15 @@ def validate_archive(
                 raise RuntimeError("crate archive has an unexpected package root")
             relative_name = member.name.removeprefix(expected_prefix)
             relative_path = PurePosixPath(relative_name)
-            if relative_path.is_absolute() or ".." in relative_path.parts:
+            if (
+                relative_name in archived_names
+                or relative_path.is_absolute()
+                or ".." in relative_path.parts
+                or (relative_name and relative_path.as_posix() != relative_name)
+                or (not relative_name and not member.isdir())
+            ):
                 raise RuntimeError("crate archive contains an unsafe path")
+            archived_names.add(relative_name)
             if member.issym() or member.islnk():
                 raise RuntimeError("crate archive contains a link")
             if not member.isfile() and not member.isdir():
@@ -149,7 +167,51 @@ def validate_archive(
         normalized_manifest = tomllib.loads(archived_files["Cargo.toml"].decode("utf-8"))
     except KeyError as error:
         raise RuntimeError("crate archive has no normalized Cargo.toml") from error
+    try:
+        vcs_info = json.loads(archived_files[".cargo_vcs_info.json"])
+    except KeyError as error:
+        raise RuntimeError("crate archive has no Cargo VCS metadata") from error
+    if vcs_info != {"git": {"sha1": source_sha}, "path_in_vcs": path_in_vcs}:
+        raise RuntimeError("crate archive is not bound to the selected source commit")
     return archive, normalized_manifest, archived_files
+
+
+def archived_package(
+    package_name: str, version: str, archived_files: dict[str, bytes]
+) -> dict[str, object]:
+    """Read Cargo publication metadata from the already-validated archive."""
+    with tempfile.TemporaryDirectory(prefix="crate-metadata-") as temporary:
+        package_root = Path(temporary) / f"{package_name}-{version}"
+        for relative_name, contents in archived_files.items():
+            destination = package_root.joinpath(*PurePosixPath(relative_name).parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(contents)
+        completed = subprocess.run(
+            [
+                "cargo",
+                "metadata",
+                "--no-deps",
+                "--format-version",
+                "1",
+                "--manifest-path",
+                str(package_root / "Cargo.toml"),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+    packages = [
+        package
+        for package in json.loads(completed.stdout)["packages"]
+        if package["name"] == package_name and package["version"] == version
+    ]
+    if len(packages) != 1:
+        raise RuntimeError("archive does not identify exactly one selected crate")
+    package = packages[0]
+    allowed = package.get("publish")
+    if allowed == [] or (allowed is not None and "crates-io" not in allowed):
+        raise RuntimeError("archive is not publishable to crates.io")
+    return package
 
 
 def publish(metadata: dict[str, object], archive: bytes, token: str) -> None:
@@ -177,7 +239,10 @@ def publish(metadata: dict[str, object], archive: bytes, token: str) -> None:
     )
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
-            result = json.load(response)
+            payload = response.read(1_048_577)
+            if len(payload) > 1_048_576:
+                raise RuntimeError("crates.io response exceeds its size bound")
+            result = json.loads(payload)
     except urllib.error.HTTPError as error:
         detail = error.read(16_384).decode("utf-8", errors="replace")
         raise RuntimeError(f"crates.io rejected the verified archive: {detail}") from error
@@ -193,24 +258,34 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     parser.add_argument("package")
+    parser.add_argument("version")
     parser.add_argument("archive", type=Path)
     parser.add_argument("sha256")
+    parser.add_argument("source_sha")
     arguments = parser.parse_args()
 
-    package = workspace_package(arguments.package)
-    version = str(package["version"])
+    try:
+        path_in_vcs = PACKAGE_PATHS[arguments.package]
+    except KeyError as error:
+        raise RuntimeError("package has no qualified release path") from error
     archive, normalized_manifest, archived_files = validate_archive(
-        arguments.archive, arguments.package, version, arguments.sha256
+        arguments.archive,
+        arguments.package,
+        arguments.version,
+        arguments.sha256,
+        arguments.source_sha,
+        path_in_vcs,
     )
+    package = archived_package(arguments.package, arguments.version, archived_files)
     metadata = package_metadata(package, normalized_manifest, archived_files)
     if arguments.check:
         return
 
     token = os.environ.get("CARGO_REGISTRY_TOKEN")
-    if not token:
+    if not token or len(token) > 8192:
         raise RuntimeError("CARGO_REGISTRY_TOKEN is required")
     publish(metadata, archive, token)
-    print(f"Uploaded {arguments.package} {version} from verified archive")
+    print(f"Uploaded {arguments.package} {arguments.version} from verified archive")
 
 
 if __name__ == "__main__":
