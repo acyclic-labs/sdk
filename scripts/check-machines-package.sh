@@ -89,13 +89,17 @@ for invalid_vcs_info in \
 done
 
 source_root="$work/source"
+package_root="$work/package-source"
 test_root="$work/test"
 mkdir -p "$source_root" "$test_root"
 git archive "$head" | tar -x -C "$source_root"
+git clone --quiet --no-checkout -- "$root" "$package_root"
+git -C "$package_root" checkout --quiet --detach "$head"
+clean_head "$package_root" "$head"
 
 cargo_bin="cargo"
 source_manifest="$source_root/Cargo.toml"
-package_manifest="$root/Cargo.toml"
+package_manifest="$package_root/Cargo.toml"
 package_target="$work/package-target"
 package_target_argument="$package_target"
 if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
@@ -107,12 +111,14 @@ fi
 version="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$source_manifest" | python3 -c 'import json,sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "acyclic-machines"))')"
 "$cargo_bin" test --locked -p acyclic-machines -p acyclic-harness-machines --manifest-path "$source_manifest" --target-dir "$package_target_argument"
 clean_head "$root" "$head"
+clean_head "$package_root" "$head"
 "$cargo_bin" package --locked --no-verify -p acyclic-machines --manifest-path "$package_manifest" --target-dir "$package_target_argument"
 crate="$package_target/package/acyclic-machines-${version}.crate"
 strict_archive "$crate"
 tar -xOf "$crate" "acyclic-machines-${version}/.cargo_vcs_info.json" |
   valid_vcs_info "$head"
 clean_head "$root" "$head"
+clean_head "$package_root" "$head"
 
 tar -xzf "$crate" -C "$test_root"
 test_manifest="$test_root/acyclic-machines-${version}/Cargo.toml"
