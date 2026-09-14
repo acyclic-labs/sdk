@@ -46,8 +46,19 @@ bun smoke.mjs
 cd "$root"
 test_root="$work/test"
 mkdir -p "$test_root"
-git diff --quiet
-git diff --cached --quiet
+expected_source="${BUILD_SOURCEVERSION:-${GITHUB_SHA:-}}"
+if [[ -n "$expected_source" && "$(git rev-parse HEAD)" != "$expected_source" ]]; then
+  echo "package checkout differs from the selected source commit" >&2
+  exit 1
+fi
+if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+  echo "package checkout is not clean" >&2
+  exit 1
+fi
+if git ls-files -v | grep -qE '^[a-zS] '; then
+  echo "package checkout contains concealed index changes" >&2
+  exit 1
+fi
 
 cargo_bin="cargo"
 source_manifest="$root/Cargo.toml"
