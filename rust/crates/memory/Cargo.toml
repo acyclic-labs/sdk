@@ -9,10 +9,10 @@ publish.workspace = true
 description = "Deterministic in-memory provider profile for the Acyclic SDK"
 
 [dependencies]
-acyclic-fs = { version = "=0.2.0-rc.2", path = "../filesystem" }
+acyclic-fs = { version = "=0.2.0-rc.3", path = "../filesystem" }
 acyclic-machines = { version = "=1.0.0-rc.5", path = "../machines" }
 acyclic-objects = { version = "=1.0.0-rc.2", path = "../objects" }
-acyclic-stream = { version = "=1.0.0-rc.4", path = "../stream" }
+acyclic-stream = { version = "=1.0.0-rc.5", path = "../stream" }
 
 [dev-dependencies]
 bytes.workspace = true

@@ -50,7 +50,7 @@ const changeSetHandles = new WeakMap<FsChangeSet, NativeRawChangeSet>();
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS } from "./contracts.js";
 
-const PACKAGE_VERSION = "0.2.0-rc.2";
+const PACKAGE_VERSION = "0.2.0-rc.3";
 const TARGETS = new Set([
   "win32-x64",
   "win32-arm64",
