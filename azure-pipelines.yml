@@ -3104,6 +3104,13 @@ jobs:
       $ErrorActionPreference = 'Stop'
       $PSNativeCommandUseErrorActionPreference = $true
       . .\scripts\ensure-bun.ps1
+      try {
+        & $env:SCCACHE_EXE --start-server
+        if ($LASTEXITCODE -ne 0) { throw 'sccache server startup failed' }
+      } catch {
+        Write-Warning "sccache unavailable; continuing without compiler cache: $_"
+        Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+      }
       cargo test --workspace --all-features --locked
       cargo test -p acyclic-fs --features native-mount --locked --lib native_mount::adapter::tests::writable_projfs_captures_closes_renames_links_and_deletes -- --ignored --test-threads=1
       cargo build -p acyclic-fs-napi --locked
