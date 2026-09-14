@@ -465,7 +465,11 @@ mod tests {
     #[test]
     fn failures_are_receipted_but_do_not_qualify() -> Result<(), ReportError> {
         let mut report = report();
-        report.cases[0].status = CaseStatus::Failed;
+        report
+            .cases
+            .first_mut()
+            .unwrap_or_else(|| unreachable!("report fixture always has at least one case"))
+            .status = CaseStatus::Failed;
         let receipt = validate_harness_report(&encode(&report))?;
         assert!(!receipt.qualified);
         assert_eq!(receipt.passed, receipt.total - 1);
@@ -483,7 +487,16 @@ mod tests {
         assert!(validate_harness_report(&encode(&reordered)).is_err());
 
         let mut duplicate = report();
-        duplicate.cases[1] = duplicate.cases[0].clone();
+        let first_case = duplicate
+            .cases
+            .first()
+            .cloned()
+            .unwrap_or_else(|| unreachable!("report fixture always has at least two cases"));
+        *duplicate
+            .cases
+            .get_mut(1)
+            .unwrap_or_else(|| unreachable!("report fixture always has at least two cases")) =
+            first_case;
         assert!(validate_harness_report(&encode(&duplicate)).is_err());
     }
 
@@ -491,7 +504,10 @@ mod tests {
     fn unknown_fields_and_unbound_digests_fail_closed() {
         let mut value = serde_json::to_value(report())
             .unwrap_or_else(|error| unreachable!("test runner report must serialize: {error}"));
-        value["untrusted"] = serde_json::json!(true);
+        value
+            .as_object_mut()
+            .unwrap_or_else(|| unreachable!("report value always serializes as a JSON object"))
+            .insert("untrusted".to_owned(), serde_json::json!(true));
         let bytes = serde_json::to_vec(&value)
             .unwrap_or_else(|error| unreachable!("test JSON value must serialize: {error}"));
         assert!(validate_harness_report(&bytes).is_err());

@@ -151,9 +151,10 @@ pub async fn stream(provider: &dyn StreamProvider) -> Result<(), String> {
         .map_err(|error| error.to_string())?
         .collect::<Vec<_>>()
         .await;
-    if inherited.len() != 1
-        || inherited[0].as_ref().map_err(ToString::to_string)?.value != Bytes::from_static(b"one")
-    {
+    let [record] = inherited.as_slice() else {
+        return Err("forked history was not exact".into());
+    };
+    if record.as_ref().map_err(ToString::to_string)?.value != Bytes::from_static(b"one") {
         return Err("forked history was not exact".into());
     }
     let mut follow = provider
@@ -408,7 +409,10 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
     let MutationOutcome::Forked(children) = forked else {
         return Err("fork returned the wrong outcome".into());
     };
-    if children.len() != 2 || children[0].id == children[1].id || children.contains(&machine) {
+    let [first_child, second_child] = children.as_slice() else {
+        return Err("fork identities are not an exact fresh set".into());
+    };
+    if first_child.id == second_child.id || children.contains(&machine) {
         return Err("fork identities are not an exact fresh set".into());
     }
     provider
