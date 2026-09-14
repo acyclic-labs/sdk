@@ -1,6 +1,5 @@
 # Every change should get a review from one of these before merging into
-# main. Not yet enforced by branch protection (tracked in
-# https://github.com/acyclic-labs/sdk/issues/59) — treat as a norm until it is.
+# main. Not yet enforced by branch protection — treat as a norm until it is.
 * @Var1377 @ramstar3000
 proto/ @Var1377 @ramstar3000
 provenance/ @Var1377 @ramstar3000

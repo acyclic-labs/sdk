@@ -32,9 +32,8 @@ Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-fea
 --locked -- -D warnings`, and `cargo test --workspace --all-features --locked`
 locally — CI enforces all of them. Every PR should get review and approval from a
 code owner (`.github/CODEOWNERS`) before it merges; branch protection does not yet
-require this (tracked in [#59](https://github.com/acyclic-labs/sdk/issues/59)), so
-treat it as a norm until it's enforced. An automated Greptile review already runs
-on every PR.
+require this, so treat it as a norm until it's enforced (not yet tracked in a
+dedicated issue). An automated Greptile review already runs on every PR.
 
 ## Code quality rules
 
