@@ -51,10 +51,12 @@ crate="${RUNNER_TEMP:?}/release-crate/${asset}"
 mkdir -p "$(dirname "$crate")"
 sha256=$(python3 scripts/fetch-release-crate.py "$release_tag" "$asset" "$crate")
 python3 scripts/publish-crate.py --check "$package" "$version" "$crate" "$sha256" "$source_sha"
+crate_size=$(stat -c %s "$crate")
 
 printf 'PACKAGE=%s\n' "$package" >> "$GITHUB_ENV"
 printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
 printf 'CRATE=%s\n' "$crate" >> "$GITHUB_ENV"
+printf 'CRATE_SIZE=%s\n' "$crate_size" >> "$GITHUB_ENV"
 printf 'CRATE_SHA256=%s\n' "$sha256" >> "$GITHUB_ENV"
 printf 'SOURCE_SHA=%s\n' "$source_sha" >> "$GITHUB_ENV"
 printf 'PUBLISH_SHA=%s\n' "$publish_sha" >> "$GITHUB_ENV"

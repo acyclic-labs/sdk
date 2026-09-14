@@ -74,18 +74,17 @@ jobs:
           trap 'rm -f "$published"' EXIT
           observed=
           for attempt in $(seq 1 12); do
-            if curl --fail --silent --show-error --max-time 30 \
-              --max-filesize 104857600 --output "$published" \
+            if ! curl --fail --silent --show-error --max-time 30 \
+              --max-filesize "$CRATE_SIZE" --output "$published" \
               "https://static.crates.io/crates/$PACKAGE/$PACKAGE-$VERSION.crate"; then
-              size=$(stat -c %s "$published")
-              if (( size > 0 && size <= 104857600 )); then
-                observed=$(sha256sum "$published" | cut -d ' ' -f 1)
-              fi
-              if [[ "$observed" == "$CRATE_SHA256" ]]; then
-                break
-              fi
+              echo "Public crate bytes are not available yet ($attempt/12)"
+            elif [[ "$(stat -c %s "$published")" != "$CRATE_SIZE" ]]; then
+              echo "Public crate size differs from the qualified asset ($attempt/12)"
+            else
+              observed=$(sha256sum "$published" | cut -d ' ' -f 1)
+              if [[ "$observed" == "$CRATE_SHA256" ]]; then break; fi
+              echo "Public crate checksum differs from the qualified asset ($attempt/12)"
             fi
-            echo "Waiting for crates.io index visibility ($attempt/12)"
             sleep 5
           done
           test "$observed" = "$CRATE_SHA256"
