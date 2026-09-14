@@ -725,12 +725,12 @@ fn validate_recovered_admission(
         | ResultKind::DestroyCheckpoint(value) => value.operation.as_ref(),
         ResultKind::SetSuspensionPolicy(value) => value.operation.as_ref(),
     };
-    if decode_operation(nested)? != outer {
+    if decode_operation(nested)? == outer {
+        Ok(outer)
+    } else {
         Err(ProviderError::Rejected(
             "recovery operation identity was substituted".into(),
         ))
-    } else {
-        Ok(outer)
     }
 }
 

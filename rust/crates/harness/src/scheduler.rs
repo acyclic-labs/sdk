@@ -1250,7 +1250,7 @@ impl<T: Clone + PartialEq> TaskInbox<T> {
     pub fn after(&self, sequence: u64, limit: usize) -> Vec<InboxItem<T>> {
         self.items
             .iter()
-            .skip(sequence as usize)
+            .skip(usize::try_from(sequence).unwrap_or(usize::MAX))
             .take(limit)
             .cloned()
             .collect()

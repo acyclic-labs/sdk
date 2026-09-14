@@ -977,9 +977,10 @@ fn condition_path(condition: &CommitCondition) -> &StreamPath {
 
 fn mutation_path(mutation: &CommitMutation) -> &StreamPath {
     match mutation {
-        CommitMutation::Append { path, .. } => path,
         CommitMutation::Fork { destination, .. } => destination,
-        CommitMutation::Trim { path, .. } | CommitMutation::Delete { path } => path,
+        CommitMutation::Append { path, .. }
+        | CommitMutation::Trim { path, .. }
+        | CommitMutation::Delete { path } => path,
     }
 }
 

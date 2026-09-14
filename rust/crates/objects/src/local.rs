@@ -895,10 +895,14 @@ fn persist_body(
     manifest.extend_from_slice(&(body.len() as u64).to_le_bytes());
     manifest.extend_from_slice(&digest);
     let chunk_count = body.len().div_ceil(CHUNK_BYTES);
-    manifest.extend_from_slice(&(chunk_count as u32).to_le_bytes());
+    manifest.extend_from_slice(&u32::try_from(chunk_count).unwrap_or(u32::MAX).to_le_bytes());
     for chunk in body.chunks(CHUNK_BYTES) {
         let chunk_digest = *blake3::hash(chunk).as_bytes();
         manifest.extend_from_slice(&chunk_digest);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "chunk length is bounded by CHUNK_BYTES (1 MiB), well under u32::MAX"
+        )]
         manifest.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
         persist_exact(root, "chunks", &chunk_digest, "chunk", chunk, durability)?;
     }

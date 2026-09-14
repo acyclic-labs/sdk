@@ -2768,13 +2768,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             initial_generation_root: generation_root,
         })
         .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let operation_id = match operation_id {
-            Some(operation_id) => operation_id,
-            None => {
-                let (operation_id, identity_work) = derived_operation_id(volume_id);
-                work = add(work, identity_work)?;
-                operation_id
-            }
+        let operation_id = if let Some(operation_id) = operation_id {
+            operation_id
+        } else {
+            let (operation_id, identity_work) = derived_operation_id(volume_id);
+            work = add(work, identity_work)?;
+            operation_id
         };
         let (commit, encoding_work) = creation_commit(operation_id, event);
         work = add(work, encoding_work)?;

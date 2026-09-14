@@ -100,7 +100,8 @@ impl DurableContextProvider {
             let revisions = self.revisions().await?;
             let source = expected_revision
                 .checked_sub(1)
-                .and_then(|index| revisions.get(index as usize))
+                .and_then(|index| usize::try_from(index).ok())
+                .and_then(|index| revisions.get(index))
                 .ok_or_else(|| {
                     crate::Error::Invalid(
                         "compaction must reference the immediately preceding context".into(),

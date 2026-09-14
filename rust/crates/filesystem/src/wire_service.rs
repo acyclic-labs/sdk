@@ -2134,8 +2134,8 @@ fn status(error: WorkspaceError) -> Status {
         }
         WorkspaceError::ForeignGeneration
         | WorkspaceError::IncompatibleWorkspace
-        | WorkspaceError::ChangeSetContinuity => Status::failed_precondition(error.to_string()),
-        WorkspaceError::RetentionConflict
+        | WorkspaceError::ChangeSetContinuity
+        | WorkspaceError::RetentionConflict
         | WorkspaceError::NoCommonAncestor
         | WorkspaceError::LineageLimit
         | WorkspaceError::JoinLimit
