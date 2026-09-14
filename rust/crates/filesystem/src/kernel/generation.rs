@@ -34,7 +34,9 @@ impl GenerationRoot {
         if self.parents.len() > usize::try_from(MAXIMUM_PARENTS).unwrap_or(usize::MAX) {
             return Err(invariant("generation has too many parents"));
         }
-        if self.parents.len() == 2 && self.parents[0] == self.parents[1] {
+        if let [first, second] = self.parents.as_slice()
+            && first == second
+        {
             return Err(invariant("generation parents are duplicated"));
         }
         if self.required_features != 0 {

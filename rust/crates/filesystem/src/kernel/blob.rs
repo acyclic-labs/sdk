@@ -432,6 +432,7 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
             if cancellation.is_cancelled() {
                 return Err(build_failed(BlobBuildError::Cancelled, work));
             }
+            #[allow(clippy::indexing_slicing, reason = "bounded by while loop above")]
             match AsyncBlobSource::read(source, &mut bytes[filled..], cancellation).await {
                 Ok(0) => break,
                 Ok(count) => {
@@ -579,9 +580,14 @@ impl BlobIndexBuilder {
         if items.is_empty() {
             return Ok(());
         }
+        let (first_offset, end_offset) = match items.as_slice() {
+            [only] => (only.first_offset, only.end_offset),
+            [first, .., last] => (first.first_offset, last.end_offset),
+            [] => unreachable!("checked items.is_empty() above"),
+        };
         let page = BlobPage {
-            first_offset: items[0].first_offset,
-            end_offset: items[items.len() - 1].end_offset,
+            first_offset,
+            end_offset,
             node: BlobNode::Leaf(items),
         };
         let page_id = put_blob_page(
@@ -609,6 +615,13 @@ impl BlobIndexBuilder {
             .await
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`self.ensure_level(level, ...)` runs immediately above every use of \
+                  `self.levels[level]` in this loop iteration; it loops `while self.levels.len() \
+                  <= level` pushing new levels, so afterwards `level < self.levels.len()` and \
+                  `self.levels` is not resized again before this iteration's accesses"
+    )]
     async fn push_child<S: AsyncObjectStore>(
         &mut self,
         store: &S,
@@ -640,6 +653,13 @@ impl BlobIndexBuilder {
         }
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`flush_internal` is only called from `push_child` (right after \
+                  `self.ensure_level(level, ...)` established `level < self.levels.len()`, with \
+                  no intervening resize) and from `finish` (with `level` taken from \
+                  `self.levels.iter().position(...)`, which is inherently `< self.levels.len()`)"
+    )]
     async fn flush_internal<S: AsyncObjectStore>(
         &mut self,
         store: &S,
@@ -649,9 +669,18 @@ impl BlobIndexBuilder {
         cancellation: &CancellationToken,
     ) -> Result<BlobChild, BlobBuildFailure> {
         let items = std::mem::take(&mut self.levels[level]);
+        let (first_offset, end_offset) = match items.as_slice() {
+            [only] => (only.first_offset, only.end_offset),
+            [first, .., last] => (first.first_offset, last.end_offset),
+            [] => unreachable!(
+                "flush_internal is only called once self.levels[level] is non-empty: from \
+                 push_child at self.width (>= 2) items, or from finish() for a level chosen via \
+                 self.levels.iter().position(|items| !items.is_empty())"
+            ),
+        };
         let page = BlobPage {
-            first_offset: items[0].first_offset,
-            end_offset: items[items.len() - 1].end_offset,
+            first_offset,
+            end_offset,
             node: BlobNode::Internal(items),
         };
         let page_id = put_blob_page(
@@ -735,7 +764,19 @@ impl BlobIndexBuilder {
             let Some(level) = self.levels.iter().position(|items| !items.is_empty()) else {
                 return Err(build_failed(BlobBuildError::InvalidIndexState, *work));
             };
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "`level` comes from `self.levels.iter().position(...)` above, so `level \
+                          < self.levels.len()` and `level + 1 <= self.levels.len()`, which is \
+                          in-bounds for a `RangeFrom` slice"
+            )]
             let higher_is_empty = self.levels[level + 1..].iter().all(Vec::is_empty);
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "`level < self.levels.len()` from `position(...)` above; the \
+                          `levels[level][0]` access is additionally guarded by the \
+                          `levels[level].len() == 1` check in this same condition"
+            )]
             if higher_is_empty && self.levels[level].len() == 1 {
                 return Ok(self.levels[level][0].page);
             }
@@ -1520,6 +1561,19 @@ impl BlobRangeMachine {
             usize::try_from(start).map_err(|_| failed(BlobReadError::InvalidRange, self.work))?;
         let end =
             usize::try_from(end).map_err(|_| failed(BlobReadError::InvalidRange, self.work))?;
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "start <= end <= receipt.value.len() by construction: `BlobPage::validate` \
+                      (run by `decode_blob_page` before any chunk reaches this machine) requires \
+                      `contiguous()` to hold, so `chunk.first_offset < chunk.end_offset`; only \
+                      chunks with `chunk.first_offset < self.range_end && chunk.end_offset > \
+                      self.range.offset` are ever queued (see the frontier filter above); \
+                      `self.range_end` is `range.offset + range.length` via `checked_add`, so \
+                      `range.offset <= self.range_end`; together these bound \
+                      `max(range.offset, chunk.first_offset) <= min(range_end, \
+                      chunk.end_offset)`, i.e. start <= end; and the length check just above \
+                      establishes `end <= chunk_length == receipt.value.len()`"
+        )]
         self.output.extend_from_slice(&receipt.value[start..end]);
         self.work = add_work(
             self.work,
