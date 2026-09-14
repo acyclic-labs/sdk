@@ -1,6 +1,6 @@
 {
   "name": "@acyclic-labs/fs",
-  "version": "0.2.0-rc.2",
+  "version": "0.2.0-rc.3",
   "license": "Apache-2.0",
   "private": false,
   "type": "module",

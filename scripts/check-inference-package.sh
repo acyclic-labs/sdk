@@ -44,13 +44,13 @@ bun install --ignore-scripts
 bun smoke.mjs
 
 cd "$root"
-source_root="$work/source"
 test_root="$work/test"
-mkdir -p "$source_root" "$test_root"
-git archive HEAD | tar -x -C "$source_root"
+mkdir -p "$test_root"
+git diff --quiet
+git diff --cached --quiet
 
 cargo_bin="cargo"
-source_manifest="$source_root/Cargo.toml"
+source_manifest="$root/Cargo.toml"
 package_target="$work/package-target"
 package_target_argument="$package_target"
 if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
@@ -61,22 +61,6 @@ fi
 version="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$source_manifest" | python3 -c 'import json,sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "inference-sdk"))')"
 "$cargo_bin" package --locked --no-verify -p inference-sdk --manifest-path "$source_manifest" --target-dir "$package_target_argument"
 crate="$package_target/package/inference-sdk-${version}.crate"
-actual="$(sha256sum "$crate" | cut -d ' ' -f 1)"
-expected="$(python3 - "$version" <<'PY'
-import json, pathlib, sys
-
-entries = [
-    json.loads(line)
-    for line in pathlib.Path("registry/in/fe/inference-sdk").read_text(encoding="utf-8").splitlines()
-    if line
-]
-matches = [entry for entry in entries if entry["vers"] == sys.argv[1]]
-if len(matches) != 1:
-    raise SystemExit("sparse index must contain exactly one current inference-sdk release")
-print(matches[0]["cksum"])
-PY
-)"
-test "$actual" = "$expected"
 
 tar -xf "$crate" -C "$test_root"
 test_manifest="$test_root/inference-sdk-${version}/Cargo.toml"

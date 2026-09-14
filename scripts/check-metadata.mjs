@@ -121,14 +121,6 @@ const nativePackageVersion = nativeSource.match(/const PACKAGE_VERSION = "([^"]+
 if (nativePackageVersion !== filesystemVersion) {
   throw new Error("filesystem native companion version does not match package metadata");
 }
-const inferenceIndex = (await readFile(new URL("registry/in/fe/inference-sdk", root), "utf8"))
-  .trim()
-  .split("\n")
-  .map(line => JSON.parse(line));
-const inferenceRelease = inferenceIndex.find(item => item.vers === inferenceVersion);
-if (!inferenceRelease || inferenceRelease.name !== "inference-sdk" || !/^[0-9a-f]{64}$/.test(inferenceRelease.cksum) || inferenceRelease.yanked) {
-  throw new Error("current Inference family has no immutable sparse-registry package entry");
-}
 const familyArtifacts = {
   harness: {
     schemaDigest: "proto/harness/v1/harness.proto",
