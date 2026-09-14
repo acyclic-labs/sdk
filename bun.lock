@@ -51,7 +51,7 @@
     },
     "typescript/packages/inference": {
       "name": "@acyclic-labs/inference",
-      "version": "1.0.0-rc.5",
+      "version": "1.0.0-rc.6",
       "dependencies": {
         "@bufbuild/protobuf": "2.14.1",
       },
