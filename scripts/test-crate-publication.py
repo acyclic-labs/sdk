@@ -70,6 +70,7 @@ class PublicationTests(unittest.TestCase):
     def test_inference_uses_public_acyclic_name(self) -> None:
         package = "acyclic-inference"
         path_in_vcs = publisher.qualified_package_path(package)
+        self.assertEqual(path_in_vcs, "rust/crates/inference")
         contents = crate_bytes(package=package, path_in_vcs=path_in_vcs)
         with tempfile.TemporaryDirectory() as temporary:
             crate = Path(temporary) / f"{package}-{VERSION}.crate"
