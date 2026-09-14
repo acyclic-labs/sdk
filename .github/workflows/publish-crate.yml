@@ -70,17 +70,28 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/publish-crate.py "$PACKAGE" "$VERSION" "$CRATE" "$CRATE_SHA256" "$SOURCE_SHA"
+          published=$(mktemp "${RUNNER_TEMP:?}/published-crate.XXXXXX")
+          trap 'rm -f "$published"' EXIT
           observed=
           for attempt in $(seq 1 12); do
-            if response=$(curl --fail --silent --show-error --max-time 30 \
-              "https://crates.io/api/v1/crates/$PACKAGE/$VERSION"); then
-              observed=$(printf '%s' "$response" | python3 -c \
-                'import json,sys; print(json.load(sys.stdin)["version"]["checksum"])')
-              if [[ "$observed" == "$CRATE_SHA256" ]]; then
-                break
+            if curl --fail --silent --show-error --max-time 30 \
+              --max-filesize "$CRATE_SIZE" --output "$published" \
+              "https://static.crates.io/crates/$PACKAGE/$PACKAGE-$VERSION.crate"; then
+              if [[ "$(stat -c %s "$published")" != "$CRATE_SIZE" ]]; then
+                echo "Public crate size differs from the qualified asset ($attempt/12)"
+              else
+                observed=$(sha256sum "$published" | cut -d ' ' -f 1)
+                if [[ "$observed" == "$CRATE_SHA256" ]]; then break; fi
+                echo "Public crate checksum differs from the qualified asset ($attempt/12)"
               fi
+            else
+              curl_status=$?
+              if (( curl_status == 63 )); then
+                echo "Public crate exceeds the qualified asset size" >&2
+                exit 1
+              fi
+              echo "Public crate bytes are not available yet ($attempt/12)"
             fi
-            echo "Waiting for crates.io index visibility ($attempt/12)"
             sleep 5
           done
           test "$observed" = "$CRATE_SHA256"
