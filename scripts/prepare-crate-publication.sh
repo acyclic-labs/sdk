@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+validate_release_object_type() {
+  case "$1" in
+    tag|commit) ;;
+    *) echo "release tag must resolve to a tag or commit" >&2; return 1 ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
+
 tag="${GITHUB_REF_NAME:?GitHub tag is required}"
 subject=${tag#publish/}
 if [[ "$subject" == "$tag" || "$subject" != */* || "${subject#*/}" == */* ]]; then
@@ -28,7 +39,7 @@ publish_sha=$(git rev-parse "$GITHUB_REF^{commit}")
 release_oid=$(git rev-parse "refs/tags/${release_tag}")
 source_sha=$(git rev-parse "refs/tags/${release_tag}^{commit}")
 test "$(git cat-file -t "$tag_oid")" = tag
-test "$(git cat-file -t "$release_oid")" = tag
+validate_release_object_type "$(git cat-file -t "$release_oid")"
 test "$(git rev-parse HEAD)" = "$publish_sha"
 test "$GITHUB_SHA" = "$publish_sha"
 git fetch --no-tags origin main
