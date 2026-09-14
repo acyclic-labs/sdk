@@ -1,3 +1,5 @@
+# Every change needs a review from one of these before it can merge into
+# main; see branch protection settings.
 * @Var1377 @ramstar3000
 proto/ @Var1377 @ramstar3000
 provenance/ @Var1377 @ramstar3000

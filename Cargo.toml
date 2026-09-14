@@ -73,12 +73,44 @@ web-sys = { version = "0.3.94", features = [
 # Native filesystem and generated FFI crates isolate reviewed platform calls
 # with narrow module-level allowances; every other crate inherits denial.
 unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "warn"
 missing_docs = "warn"
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+# Landed with known pre-existing violations (~866 hits, mostly
+# indexing_slicing in test code); CI is red until a follow-up PR works
+# through them crate by crate, per-site `#[allow(..., reason = "...")]`
+# where panicking/truncation is genuinely impossible, real fixes elsewhere.
+unwrap_in_result = "warn"
+indexing_slicing = "warn"
+string_slice = "warn"
+fallible_impl_from = "warn"
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+cast_precision_loss = "warn"
+cast_lossless = "warn"
+too_many_lines = "warn"
+cognitive_complexity = "warn"
+match_same_arms = "warn"
+single_match_else = "warn"
+manual_let_else = "warn"
+if_not_else = "warn"
+redundant_clone = "warn"
+needless_pass_by_value = "warn"
+inefficient_to_string = "warn"
+str_to_string = "warn"
+map_unwrap_or = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+doc_markdown = "warn"
+missing_panics_doc = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
 
 [profile.release]
 incremental = true

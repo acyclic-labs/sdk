@@ -7,6 +7,64 @@ Before opening a pull request, run the Rust, Bun/TypeScript, Protobuf, provenanc
 license, secret, and private-namespace checks used by CI. Imported code must add
 an entry to `provenance/manifest.json` before it is merged.
 
+## Build and test
+
+```sh
+bun install --frozen-lockfile
+bun run check   # tsc -b, type-check only, no emit
+bun run test    # type-check, then TypeScript and filesystem package tests
+cargo test --workspace --all-features --locked
+```
+
+## Commit messages
+
+- Summary line: imperative mood ("Add", "Fix", "Rename", not "Added"/"Fixes"), no
+  trailing period.
+- Blank line, then a body explaining *why* the change is needed, not a restatement
+  of the diff.
+- No AI attribution trailers or "Generated with ..." lines (`Co-Authored-By:` naming
+  an agent, session links, etc.) — the commit should read as yours, whatever tools
+  helped write it. `Signed-off-by:` is still required.
+
+## Before opening a PR
+
+Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features
+--locked -- -D warnings`, and `cargo test --workspace --all-features --locked`
+locally — CI enforces all of them. Every PR needs review and approval from a code
+owner (`.github/CODEOWNERS`) and a passing automated Greptile review before it can
+merge.
+
+## Code quality rules
+
+Beyond rustfmt and clippy's defaults, the workspace enables an additional lint set in
+`Cargo.toml` (`[workspace.lints.clippy]`, thresholds in `clippy.toml`):
+
+- **Functions under 100 lines, cognitive complexity under 30.** Split anything that
+  trips this unless it's a single dispatcher (one arm per protocol op), which may
+  carry `#[allow(clippy::too_many_lines, reason = "...")]`.
+- **No identical match arms, no `match` for a single pattern, `let ... else` over
+  manual matches.**
+- **No hidden panics in non-test code.** `unwrap`, `expect`, `panic!`, and indexing
+  that can go out of bounds are lint errors outside tests. Reach for `?`, `get`,
+  `let ... else`. The few documented exceptions carry `#[allow(..., reason = "...")]`
+  naming the invariant that makes the panic unreachable.
+- **No lossy `as` casts** between integer widths or signs. Use `u64::from`,
+  `try_from`, or an `allow` that says why the value is in range.
+- **Duplication under 3% of tokens** (`jscpd`, config in `.jscpd.json`).
+- **`unsafe` is opt-in per function**, carrying `#[allow(unsafe_code, reason = "...")]`
+  naming the invariant.
+
+Some of these lints (`indexing_slicing`, `doc_markdown`, `too_many_lines`,
+`cognitive_complexity`, `needless_pass_by_value`, `string_slice`, `redundant_clone`,
+`cast_possible_truncation`, `match_same_arms`, `single_match_else`, `if_not_else`)
+were enabled with pre-existing violations still outstanding; they are being worked
+through incrementally rather than blocking this change.
+
+## Reporting bugs and security issues
+
+Open a GitHub issue for regular bugs. For security vulnerabilities, follow
+[SECURITY.md](SECURITY.md) instead of filing a public issue.
+
 `ci.json` is the only authored CI graph. The immutable Fleet renderer generates
 `azure-pipelines.yml`; do not hand-edit the generated file or add a second CI
 authority. Independent platform and browser lanes run concurrently, cache only
