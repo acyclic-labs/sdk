@@ -398,6 +398,12 @@ impl Scheduler {
         reason = "one arm per scheduler event variant; splitting would obscure the dispatch, \
                   not simplify it"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "same one-arm-per-scheduler-event-variant dispatch as above; splitting per-arm \
+                  would scatter one event's application across many functions without \
+                  clarifying any of them"
+    )]
     pub fn apply(&mut self, event: SchedulerEvent) -> Result<()> {
         let primary = event_operation(&event);
         let declared_parent = match &event {
@@ -841,6 +847,13 @@ impl Scheduler {
 
     /// Computes the deterministic next decision for a structured parent.
     #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per Orchestration variant (Leaf, Join, Race, Quorum, Reduce), \
+                  each independently evaluating its own completion rule; splitting per-arm \
+                  would scatter one decision across many functions without clarifying any of \
+                  them"
+    )]
     pub fn orchestration(&self, parent: OperationId) -> OrchestrationDecision {
         let Some(parent_state) = self.operations.get(&parent) else {
             return OrchestrationDecision::Wait;

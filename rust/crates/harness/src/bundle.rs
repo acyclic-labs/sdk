@@ -109,6 +109,11 @@ impl ToolProjection for HostedCodingTool {
 }
 
 /// Constructs the complete validated coding registry over one explicit host boundary.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "public API of an already-published crate; taking a reference here would break \
+              existing external callers"
+)]
 pub fn coding_tools(host: Arc<dyn CodingToolHost>) -> Result<ToolRegistry> {
     let mut registry = ToolRegistry::new();
     for &(name, description) in CODING_TOOLS {
@@ -215,6 +220,11 @@ impl HarnessBundle {
     }
 
     /// Constructs the complete coding loop from one explicit host implementation.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "public API of an already-published crate; taking a reference here would break \
+                  existing external callers"
+    )]
     pub fn coding_with_host(
         model: Model,
         provider: Arc<dyn ModelProvider>,
@@ -261,7 +271,8 @@ mod tests {
 
     #[tokio::test]
     async fn coding_factory_builds_an_executable_complete_registry() -> Result<()> {
-        let registry = coding_tools(Arc::new(Host))?;
+        let host: Arc<dyn CodingToolHost> = Arc::new(Host);
+        let registry = coding_tools(host)?;
         assert_eq!(registry.definitions().len(), CODING_TOOLS.len());
         for &(name, _) in CODING_TOOLS {
             let tool = registry
