@@ -453,6 +453,7 @@ jobs:
       bun scripts/check-filesystem-napi.mjs "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
       bash scripts/check-inference-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/inference"
       bash scripts/check-machines-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/machines"
+      bun run build
       bash scripts/check-filesystem-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/filesystem"
       bash scripts/check-harness-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/harness"
       bun scripts/run-harness-conformance.mjs "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/harness" "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/harness/runner-report.json" "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/harness/qualification-receipt.json"
