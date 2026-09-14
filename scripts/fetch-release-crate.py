@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 
@@ -100,10 +101,16 @@ def main() -> None:
     request = urllib.request.Request(
         expected_url, headers={"User-Agent": "acyclic-sdk-exact-crate-publisher"}
     )
-    created = False
+    temporary = tempfile.NamedTemporaryFile(
+        mode="w+b",
+        prefix=f".{output.name}.",
+        suffix=".tmp",
+        dir=output.parent,
+        delete=False,
+    )
+    temporary_path = Path(temporary.name)
     try:
-        with opener.open(request, timeout=120) as response, output.open("xb") as target:
-            created = True
+        with temporary as target, opener.open(request, timeout=120) as response:
             digest = hashlib.sha256()
             size = 0
             while block := response.read(min(1_048_576, expected_size - size + 1)):
@@ -112,14 +119,12 @@ def main() -> None:
                     raise RuntimeError("release asset exceeds its declared size")
                 digest.update(block)
                 target.write(block)
-    except Exception:
-        if created:
-            output.unlink(missing_ok=True)
-        raise
-    observed_digest = digest.hexdigest()
-    if size != expected_size or f"sha256:{observed_digest}" != expected_digest:
-        output.unlink(missing_ok=True)
-        raise RuntimeError("release asset bytes differ from GitHub metadata")
+        observed_digest = digest.hexdigest()
+        if size != expected_size or f"sha256:{observed_digest}" != expected_digest:
+            raise RuntimeError("release asset bytes differ from GitHub metadata")
+        os.link(temporary_path, output)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     print(observed_digest)
 
 

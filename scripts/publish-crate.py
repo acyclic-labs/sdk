@@ -112,9 +112,12 @@ def validate_archive(
 ) -> tuple[bytes, dict[str, object], dict[str, bytes]]:
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
         raise RuntimeError("expected checksum must be lowercase SHA-256")
-    archive = archive_path.read_bytes()
-    if not archive or len(archive) > MAX_CRATE_BYTES:
+    archive_size = archive_path.stat().st_size
+    if not 0 < archive_size <= MAX_CRATE_BYTES:
         raise RuntimeError("crate archive exceeds its size bound")
+    archive = archive_path.read_bytes()
+    if len(archive) != archive_size:
+        raise RuntimeError("crate archive changed while it was being read")
     observed_sha256 = hashlib.sha256(archive).hexdigest()
     if observed_sha256 != expected_sha256:
         raise RuntimeError("verified crate checksum changed before upload")
@@ -136,6 +139,7 @@ def validate_archive(
     expected_prefix = f"{package_name}-{version}/"
     archived_files: dict[str, bytes] = {}
     archived_names: set[str] = set()
+    extracted_bytes = 0
     with tarfile.open(fileobj=io.BytesIO(tar_payload), mode="r:") as crate:
         members = crate.getmembers()
         if not members:
@@ -159,10 +163,20 @@ def validate_archive(
             if not member.isfile() and not member.isdir():
                 raise RuntimeError("crate archive contains a special file")
             if member.isfile():
+                if (
+                    member.sparse is not None
+                    or member.size < 0
+                    or member.size > MAX_TAR_BYTES - extracted_bytes
+                ):
+                    raise RuntimeError("crate archive members exceed their size bound")
+                extracted_bytes += member.size
                 source = crate.extractfile(member)
                 if source is None:
                     raise RuntimeError("crate archive member cannot be read")
-                archived_files[relative_name] = source.read()
+                contents = source.read(member.size + 1)
+                if len(contents) != member.size:
+                    raise RuntimeError("crate archive member size is inconsistent")
+                archived_files[relative_name] = contents
     try:
         normalized_manifest = tomllib.loads(archived_files["Cargo.toml"].decode("utf-8"))
     except KeyError as error:

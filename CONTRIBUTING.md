@@ -37,8 +37,9 @@ must publish the exact Objects and Streams archives before Filesystem.
 Publication consumes these exact successful-run bytes,
 never a rebuild. A new crate may use the `CRATES_IO_BOOTSTRAP_TOKEN` environment
 secret only for its first publication. Set the `CRATES_IO_BOOTSTRAP_RELEASE`
-environment variable to the exact `<package>@<version>` for that one release, then
-remove both after configuring crates.io Trusted
+Actions configuration variable in the `crates-io` environment to the exact
+`<package>@<version>` for that one release, then remove both it and the secret after
+configuring crates.io Trusted
 Publishing for this workflow. Each native lane also retains the exact filesystem
 companion copy
 loaded by its successful ABI child, named by package version/host OS/architecture with

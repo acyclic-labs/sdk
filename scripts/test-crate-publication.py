@@ -12,6 +12,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 
 SOURCE_SHA = "1" * 40
@@ -83,6 +84,59 @@ class PublicationTests(unittest.TestCase):
     def test_rejects_duplicate_tar_members(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "unsafe path"):
             self.validate(crate_bytes(duplicate_manifest=True))
+
+    def test_rejects_oversize_archive_before_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            crate = Path(temporary) / f"{PREFIX}.crate"
+            with crate.open("wb") as archive:
+                archive.truncate(publisher.MAX_CRATE_BYTES + 1)
+            with mock.patch.object(Path, "read_bytes", side_effect=AssertionError):
+                with self.assertRaisesRegex(RuntimeError, "size bound"):
+                    publisher.validate_archive(
+                        crate,
+                        PACKAGE,
+                        VERSION,
+                        "0" * 64,
+                        SOURCE_SHA,
+                        "rust/crates/machines",
+                    )
+
+    def test_fetcher_preserves_preexisting_output(self) -> None:
+        asset = f"{PREFIX}.crate"
+        tag = f"machines-v{VERSION}"
+        release = {
+            "tag_name": tag,
+            "draft": False,
+            "assets": [
+                {
+                    "name": asset,
+                    "size": 1,
+                    "digest": f"sha256:{hashlib.sha256(b'x').hexdigest()}",
+                    "state": "uploaded",
+                    "browser_download_url": (
+                        f"https://github.com/acyclic-labs/sdk/releases/download/"
+                        f"{tag}/{asset}"
+                    ),
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / asset
+            output.write_bytes(b"preserve")
+            response = io.BytesIO(json.dumps(release).encode())
+            with (
+                mock.patch.dict(
+                    fetcher.os.environ,
+                    {"GITHUB_REPOSITORY": "acyclic-labs/sdk", "GITHUB_TOKEN": "token"},
+                ),
+                mock.patch.object(fetcher.sys, "argv", ["fetch", tag, asset, str(output)]),
+                mock.patch.object(fetcher.urllib.request, "urlopen", return_value=response),
+                mock.patch.object(fetcher.urllib.request, "build_opener") as build_opener,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "already exists"):
+                    fetcher.main()
+            self.assertEqual(output.read_bytes(), b"preserve")
+            build_opener.assert_not_called()
 
     def test_bounds_metadata_reads(self) -> None:
         self.assertEqual(fetcher.read_bounded(io.BytesIO(b"abc"), 3), b"abc")
