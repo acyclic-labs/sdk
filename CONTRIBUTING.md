@@ -61,19 +61,19 @@ that set, so it lands together with the fixes in a follow-up PR instead of break
 Open a GitHub issue for regular bugs. For security vulnerabilities, follow
 [SECURITY.md](SECURITY.md) instead of filing a public issue.
 
-`ci.json` is the only authored qualification graph. Fleet's released CI renderer
-generates `azure-pipelines.yml`; the generated file must never be edited by hand.
-The seven Linux, Linux ARM64, Windows, macOS, browser, coverage, and policy lanes
-form a bounded graph, and every lane has a 15-minute deadline. Fleet caps Cargo,
-LLVM, linker, and test parallelism at two processes even when an agent exposes
-more CPUs. Its 1 GiB content-addressed sccache and dependency/tool caches make
-cold runs bounded and warm runs fast without archiving Cargo target directories.
+`.github/workflows/qualification.yml` is the only authored qualification graph.
+Its seven Linux, Linux ARM64, Windows, macOS, browser, coverage, and policy lanes
+run on Blacksmith and form a bounded graph. Every lane caps Cargo, CMake, Make,
+Rayon, and test parallelism at four processes. The macOS runner is Blacksmith's
+smallest six-vCPU image but still uses only four processes. Blacksmith's colocated
+dependency/tool cache and sccache make cold and warm runs fast without archiving
+Cargo target directories.
 Successful jobs and their declared outputs may be reused only for the identical
 source tree, manifest semantics, toolchain, lockfile, operating system, and
 architecture.
 
 The policy lane verifies and runs pinned cargo-deny and gitleaks archives from the
-tool cache. The secret scanner keeps all default rules. Fleet's Windows image does
+tool cache. The secret scanner keeps all default rules. Blacksmith's Windows image does
 not enable the `Client-ProjFS` optional component: the Windows lane
 executes the portable workspace and TypeScript suites and compiles all ProjFS paths,
 while Linux and macOS execute native-mount behavior.

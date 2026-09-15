@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Force -Path `
 . .\scripts\ensure-bun.ps1
 bun install --frozen-lockfile
 
-# Fleet's Windows image does not enable the Client-ProjFS optional component.
+# Blacksmith's Windows image does not enable the Client-ProjFS optional component.
 # Exercise the portable workspace here and compile every ProjFS path; Linux and
 # macOS execute the native-mount behavior. The Server image cannot load
 # ProjectedFSLib.dll, so execute the portable feature set and still compile and
@@ -46,7 +46,7 @@ $clangDirectory = $clangDirectories | Where-Object {
     Test-Path -LiteralPath (Join-Path $_ 'clang.exe')
 } | Select-Object -First 1
 if (-not $clangDirectory) {
-    throw 'The Windows ARM64 cross-check requires the image-provided clang.'
+    throw 'The Windows ARM64 cross-check requires the pinned clang toolchain.'
 }
 $env:PATH = "$clangDirectory;$env:PATH"
 $env:CC_aarch64_pc_windows_msvc = Join-Path $clangDirectory 'clang.exe'
