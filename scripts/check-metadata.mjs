@@ -175,3 +175,28 @@ for (const [canonical, packaged] of [
 
 const validateProvenance = new Ajv2020().compile(await load("compatibility/schemas/provenance.schema.json"));
 if (validateProvenance({ imports: [{ sourceCommit: "short" }] })) throw new Error("malformed provenance fixture was accepted");
+
+// Inference 1.0.0-rc.3 is a released compatibility dependency. Keep its
+// historical sparse-index entry available even after newer SDK releases move
+// to crates.io.
+const legacyRegistry = await load("registry/config.json");
+if (
+  legacyRegistry.dl !== "https://github.com/acyclic-labs/sdk/releases/download/inference-v{version}/{crate}-{version}.crate" ||
+  legacyRegistry.api !== "https://github.com/acyclic-labs/sdk"
+) {
+  throw new Error("legacy sparse registry endpoints changed");
+}
+const legacyIndex = (await readFile(new URL("registry/in/fe/inference-sdk", root), "utf8"))
+  .trim()
+  .split("\n")
+  .map(line => JSON.parse(line));
+if (new Set(legacyIndex.map(entry => entry.vers)).size !== legacyIndex.length) {
+  throw new Error("legacy sparse registry contains duplicate versions");
+}
+const legacyInference = legacyIndex.find(entry => entry.name === "inference-sdk" && entry.vers === "1.0.0-rc.3");
+if (
+  !legacyInference || legacyInference.yanked !== false ||
+  legacyInference.cksum !== "b6ca7d6658bfe0b14728e25bad4caeb7ad6f4d74589c089ebbdf3c00d2fb846f"
+) {
+  throw new Error("released inference-sdk 1.0.0-rc.3 registry entry changed");
+}
