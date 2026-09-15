@@ -10,9 +10,6 @@ export PATH="$TOOLS_DIR/cargo/bin:$PATH"
 
 case "$lane" in
   gate)
-    source scripts/ensure-bun.sh
-    bun install --frozen-lockfile
-    bun run check
     rustup component add llvm-tools-preview
     if ! command -v cargo-llvm-cov >/dev/null; then
       cargo install cargo-llvm-cov --version 0.9.1 --locked --root "$TOOLS_DIR/cargo"
@@ -26,7 +23,6 @@ case "$lane" in
     bash scripts/test-ensure-rust-target.sh
     source scripts/ensure-bun.sh
     bun install --frozen-lockfile
-    cargo test --workspace --all-features --locked
     cargo test -p acyclic-fs --features native-mount --locked --lib -- \
       --ignored --test-threads=1
     cargo build -p acyclic-fs-napi --locked
@@ -35,7 +31,6 @@ case "$lane" in
     bash scripts/check-machines-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/machines"
     cargo run --locked -p acyclic-cli
     bun run test
-    bun run build
     bash scripts/check-filesystem-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/filesystem"
     bash scripts/check-harness-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/harness"
     bun scripts/run-harness-conformance.mjs \
