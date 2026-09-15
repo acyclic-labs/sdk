@@ -106,6 +106,14 @@ jobs:
           toolchain: 1.94.0
           components: clippy, rustfmt
 
+      - name: Install Windows ARM64 compiler
+        if: runner.os == 'Windows'
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: 20.1.8
+          directory: ${{ runner.temp }}/llvm
+          env: false
+
       - name: Run qualification lane
         if: runner.os != 'Windows'
         shell: bash

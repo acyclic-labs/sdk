@@ -27,7 +27,11 @@ bun run check
 bun test typescript/packages
 bun run --filter '@acyclic-labs/fs' test:composition
 
-$clangDirectories = @((Join-Path $env:ProgramFiles 'LLVM\bin'))
+$clangDirectories = @()
+if ($env:LLVM_PATH) {
+    $clangDirectories += Join-Path $env:LLVM_PATH 'bin'
+}
+$clangDirectories += Join-Path $env:ProgramFiles 'LLVM\bin'
 $vswhere = Join-Path ${env:ProgramFiles(x86)} `
     'Microsoft Visual Studio\Installer\vswhere.exe'
 if (Test-Path -LiteralPath $vswhere) {
