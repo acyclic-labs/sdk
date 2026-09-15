@@ -111,7 +111,7 @@
     },
     "typescript/packages/sdk": {
       "name": "@acyclic-labs/sdk",
-      "version": "0.1.0-rc.2",
+      "version": "0.1.0-rc.3",
       "dependencies": {
         "@acyclic-labs/fs": "0.2.0-rc.3",
         "@acyclic-labs/harness": "0.1.0-rc.1",
