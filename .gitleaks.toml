@@ -5,7 +5,7 @@ useDefault = true
 id = "generic-api-key"
 
 [[rules.allowlists]]
-description = "Exact public Bun archive digests in Fleet-generated Azure cache identities"
+description = "Exact public Bun archive digests in deleted Fleet-generated Azure cache identities"
 condition = "AND"
 paths = ['''^azure-pipelines\.yml$''']
 regexTarget = "line"

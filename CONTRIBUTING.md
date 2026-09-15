@@ -61,21 +61,19 @@ that set, so it lands together with the fixes in a follow-up PR instead of break
 Open a GitHub issue for regular bugs. For security vulnerabilities, follow
 [SECURITY.md](SECURITY.md) instead of filing a public issue.
 
-`ci.json` is the only authored CI graph. The immutable Fleet renderer generates
-`azure-pipelines.yml`; do not hand-edit the generated file or add a second CI
-authority. Independent platform and browser lanes run concurrently, cache only
-registries, tools, and compiler outputs, and reuse a successful result only for
-the exact source tree and semantic job identity.
-The current renderer is Fleet qualification build 5631, source
-`174a09df3ef32a8266c4c3fff8f37565b6207fbd`, executable SHA-256
-`a0403772fdc967e578e0f7b5fc5c56d5b254f1e1519e4073b3015548713a2826`.
-It isolates native Bun caches by pinned platform archive and stops success-only
-work after a setup failure, including when exact-tree reuse misses.
-The secret scanner keeps all default rules. Its only cache exception matches the
-four exact public Bun archive digests on complete generated cache-key lines in
-`azure-pipelines.yml`; bounded negative tests cover other hashes, paths and context.
-The policy lane verifies and runs the pinned upstream cargo-deny archive from the
-tool cache; it never compiles the checker or restores an unused compiler cache.
+`.github/workflows/qualification.yml` is the only authored qualification graph.
+Its independent Linux, Linux ARM64, Windows, macOS, browser, coverage, and policy
+lanes run concurrently on Blacksmith. Per-lane caches restore the exact toolchain,
+dependency, tool, and incremental-build state first by source commit and then by
+locked dependency identity, so retries are exact and new commits can safely reuse
+prior compilation. Heavy compilation uses 16-vCPU runners with 12 build jobs;
+browser work uses 8 vCPUs, macOS uses 12, and the aggregate gate uses 2.
+
+The policy lane verifies and runs pinned cargo-deny and gitleaks archives from the
+tool cache. The secret scanner keeps all default rules. Blacksmith's Windows Server
+2025 image does not ship the `Client-ProjFS` optional component: the Windows lane
+executes the portable workspace and TypeScript suites and compiles all ProjFS paths,
+while Linux and macOS execute native-mount behavior.
 
 The Linux lane never reuses a prior job result because its Cargo archives bind the
 exact source commit in `.cargo_vcs_info.json`. It retains the isolated, tested Rust
@@ -89,10 +87,11 @@ must publish the exact Objects and Streams archives before Filesystem.
 Publication consumes these exact successful-run bytes, never a rebuild. An operator
 creates an immutable family or TypeScript GitHub release from the retained artifact
 and points its tag at the matching qualified main commit. The crates.io publisher
-stays on Blacksmith; npm trusted publishing runs on a GitHub-hosted runner because
-npm does not accept OIDC from self-hosted runners. Each native lane also retains
-the exact filesystem
-companion copy
+stays on Blacksmith. npm trusted publishing is the sole CI exception: npm requires
+a GitHub-hosted runner for OIDC, and its publisher is stage-only. CI submits exact
+qualified archives with `npm stage publish`; a maintainer must review and approve
+each staged package with 2FA before it becomes public. Each executable native lane
+also retains the exact filesystem companion copy
 loaded by its successful ABI child, named by package version/host OS/architecture with
 a SHA-256 inventory. An existing output directory is rejected. These are host-qualified
 debug binaries, not optimized or cross-target binaries; cross-target `cargo check` does
