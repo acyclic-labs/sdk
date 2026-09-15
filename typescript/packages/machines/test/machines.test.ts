@@ -20,6 +20,29 @@ describe("Machines simulation", () => {
     await expect(provider.create({ ...request("create-1"), performance: "dedicated" })).rejects.toThrow("bound to another intent");
   });
 
+  test("recovers and observes durable mutation operations", async () => {
+    const provider = new SimulatedMachines();
+    await provider.create(request("operation-1"));
+    const operation = await provider.recoverOperation("operation-1");
+    const expected = { id: operation, phase: "succeeded" };
+    expect(await provider.inspectOperation(operation)).toEqual(expected);
+    expect(await provider.cancel(operation)).toEqual(expected);
+    const observations = [];
+    for await (const observation of provider.watchOperation(operation)) observations.push(observation);
+    expect(observations).toEqual([expected]);
+    await expect(provider.recoverOperation("unknown")).rejects.toThrow("resource not found");
+    await expect(provider.inspectOperation("operation:unknown:0")).rejects.toThrow("resource not found");
+  });
+
+  test("uses the lineage receipt commitment instead of the retired quantity", async () => {
+    const provider = new SimulatedMachines();
+    const created = await provider.create(request("usage-1"));
+    if (created.kind !== "created") throw new Error("wrong create outcome");
+    const usage = await provider.usage(created.machine.id, 1, 2);
+    expect(usage.lineageReceiptSha256).toEqual(new Uint8Array(32));
+    expect("lineageSharedBytes" in usage).toBe(false);
+  });
+
   test("canonical replay ignores object insertion order", async () => {
     const provider = new SimulatedMachines();
     const original = request("canonical");

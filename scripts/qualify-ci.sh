@@ -10,7 +10,23 @@ export PATH="$TOOLS_DIR/cargo/bin:$PATH"
 
 case "$lane" in
   gate)
-    rustup component add llvm-tools-preview
+    if ! rustup component list --installed | grep -Eq '^llvm-tools-'; then
+      component_log="$(mktemp "${AGENT_TEMPDIRECTORY}/rustup-component.XXXXXXXX")"
+      trap 'rm -f -- "${component_log:-}"' EXIT
+      if ! rustup component add llvm-tools-preview 2>&1 | tee "$component_log"; then
+        grep -Eqi 'detected conflict|could not rename|File exists|already exists' "$component_log" || exit 1
+        toolchain="$(rustup show active-toolchain | awk 'NR == 1 { print $1 }')"
+        [[ "$toolchain" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[a-zA-Z0-9_.-]+$ ]] || {
+          echo 'refusing to repair an unexpected Rust toolchain' >&2
+          exit 1
+        }
+        rustup toolchain uninstall "$toolchain"
+        rustup toolchain install "$toolchain" --profile minimal \
+          --component clippy --component rustfmt --component llvm-tools-preview
+      fi
+      rm -f -- "$component_log"
+      trap - EXIT
+    fi
     if ! command -v cargo-llvm-cov >/dev/null; then
       cargo install cargo-llvm-cov --version 0.9.1 --locked --root "$TOOLS_DIR/cargo"
     fi
@@ -58,6 +74,7 @@ case "$lane" in
     ;;
   policy)
     bash scripts/test-ensure-rust-target.sh
+    bash scripts/test-qualify-gate-rustup.sh
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     head="${SYSTEM_PULLREQUEST_SOURCECOMMITID:-$BUILD_SOURCEVERSION}"
