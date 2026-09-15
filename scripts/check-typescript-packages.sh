@@ -15,7 +15,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work="$(mktemp -d -t sdk-typescript-package.XXXXXXXX)"
 trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 cd "$root"
-expected_source="${BUILD_SOURCEVERSION:-${GITHUB_SHA:-}}"
+expected_source="${CI_HEAD_SHA:-${GITHUB_SHA:-}}"
 source_sha=$(git rev-parse --verify HEAD)
 [[ -z "$expected_source" || "$source_sha" == "$expected_source" ]] || { echo 'package checkout differs from the selected source commit' >&2; exit 1; }
 git status --porcelain=v1 --untracked-files=all >"$work/git-status"

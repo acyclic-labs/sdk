@@ -11,7 +11,7 @@ fi
 trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 
 cd "$root"
-expected_source="${BUILD_SOURCEVERSION:-${GITHUB_SHA:-}}"
+expected_source="${CI_HEAD_SHA:-${GITHUB_SHA:-}}"
 source_sha=$(git rev-parse --verify HEAD)
 if [[ -n "$expected_source" && "$source_sha" != "$expected_source" ]]; then
   echo "package checkout differs from the selected source commit" >&2

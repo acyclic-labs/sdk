@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Force -Path `
 . .\scripts\ensure-bun.ps1
 bun install --frozen-lockfile
 
-# Fleet's Windows image does not enable the Client-ProjFS optional component.
+# Blacksmith's Windows image does not enable the Client-ProjFS optional component.
 # Exercise the portable workspace here and compile every ProjFS path; Linux and
 # macOS execute the native-mount behavior. The Server image cannot load
 # ProjectedFSLib.dll, so execute the portable feature set and still compile and

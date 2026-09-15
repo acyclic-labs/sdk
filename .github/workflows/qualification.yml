@@ -1,0 +1,155 @@
+name: SDK Qualification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-qualification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_BUILD_JOBS: '4'
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_TERM_COLOR: always
+  CMAKE_BUILD_PARALLEL_LEVEL: '4'
+  MAKEFLAGS: -j4
+  RAYON_NUM_THREADS: '4'
+  RUSTC_WRAPPER: sccache
+  RUST_TEST_THREADS: '4'
+  SCCACHE_GHA_ENABLED: 'true'
+  CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  CI_TARGET_BRANCH: ${{ github.event.pull_request.base.ref || '' }}
+
+jobs:
+  qualification:
+    name: ${{ matrix.lane }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: gate
+            runner: blacksmith-4vcpu-ubuntu-2404
+            artifact: coverage
+            artifact_path: coverage
+          - lane: linux
+            runner: blacksmith-4vcpu-ubuntu-2404
+            artifact: packages-linux
+            artifact_path: packages
+          - lane: policy
+            runner: blacksmith-4vcpu-ubuntu-2404
+            artifact: ''
+            artifact_path: ''
+          - lane: web
+            runner: blacksmith-4vcpu-ubuntu-2404
+            artifact: ''
+            artifact_path: ''
+          - lane: linux-arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            artifact: packages-linux-arm64
+            artifact_path: packages
+          - lane: windows
+            runner: blacksmith-4vcpu-windows-2025
+            artifact: ''
+            artifact_path: ''
+          - lane: macos
+            runner: blacksmith-6vcpu-macos-15
+            artifact: packages-macos
+            artifact_path: packages
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      CARGO_TARGET_DIR: ${{ runner.temp }}/target
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Restore shared dependencies
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.rustup
+          key: sdk-deps-v4-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'bun.lock') }}
+          restore-keys: |
+            sdk-deps-v4-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Restore lane tools
+        id: lane-tools
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ${{ runner.temp }}/tools
+            ${{ runner.temp }}/llvm
+          key: sdk-tools-v4-llvm20.1.8-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/qualify-ci.sh', 'scripts/qualify-ci.ps1') }}
+
+      - name: Install exact Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.94.0
+          components: clippy, rustfmt
+
+      - name: Enable compiler cache
+        uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
+
+      - name: Install Windows ARM64 compiler
+        if: runner.os == 'Windows'
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: 20.1.8
+          directory: ${{ runner.temp }}/llvm
+          cached: ${{ steps.lane-tools.outputs.cache-hit }}
+          env: false
+
+      - name: Run qualification lane
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          AGENT_TEMPDIRECTORY: ${{ runner.temp }}/sdk
+          BUILD_ARTIFACTSTAGINGDIRECTORY: ${{ runner.temp }}/artifacts
+          TOOLS_DIR: ${{ runner.temp }}/tools/${{ matrix.lane }}-${{ runner.arch }}
+        run: bash scripts/qualify-ci.sh "${{ matrix.lane }}"
+
+      - name: Run Windows qualification lane
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          AGENT_TEMPDIRECTORY: ${{ runner.temp }}/sdk
+          BUILD_ARTIFACTSTAGINGDIRECTORY: ${{ runner.temp }}/artifacts
+          TOOLS_DIR: ${{ runner.temp }}/tools/${{ matrix.lane }}-${{ runner.arch }}
+        run: .\scripts\qualify-ci.ps1 -Lane windows
+
+      - name: Retain qualified outputs
+        if: matrix.artifact != '' && success()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ${{ matrix.artifact }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/artifacts/${{ matrix.artifact_path }}
+          compression-level: 0
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 1
+
+  gate:
+    name: SDK Qualification
+    if: always()
+    needs: qualification
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 2
+    steps:
+      - name: Require every qualification lane
+        env:
+          RESULT: ${{ needs.qualification.result }}
+        run: test "$RESULT" = success

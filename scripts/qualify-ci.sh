@@ -59,9 +59,8 @@ case "$lane" in
     bun run check:generated
     bun scripts/check-boundaries.mjs
     bun scripts/check-metadata.mjs
-    base="${SYSTEM_PULLREQUEST_TARGETBRANCH:-}"
+    base="${CI_TARGET_BRANCH:-}"
     if [[ -n "$base" ]]; then
-      base=${base#refs/heads/}
       bun x buf breaking --against ".git#ref=origin/$base" \
         --exclude-path proto/inference/v1/inference.proto \
         --exclude-path proto/filesystem/v1 \
@@ -77,9 +76,9 @@ case "$lane" in
     bash scripts/test-qualify-gate-rustup.sh
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-    head="${SYSTEM_PULLREQUEST_SOURCECOMMITID:-$BUILD_SOURCEVERSION}"
-    if [[ -n "${SYSTEM_PULLREQUEST_TARGETBRANCH:-}" ]]; then
-      branch="${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
+    head="${CI_HEAD_SHA:-$(git rev-parse HEAD)}"
+    if [[ -n "${CI_TARGET_BRANCH:-}" ]]; then
+      branch="$CI_TARGET_BRANCH"
       git fetch --no-tags origin "$branch"
       base="$(git merge-base "$head" "origin/$branch")"
     else
