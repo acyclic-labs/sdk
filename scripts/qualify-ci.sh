@@ -2,16 +2,16 @@
 set -euo pipefail
 
 lane="${1:?qualification lane is required}"
-: "${AGENT_TEMPDIRECTORY:?}"
-: "${BUILD_ARTIFACTSTAGINGDIRECTORY:?}"
+: "${SDK_TEMP_DIR:?}"
+: "${SDK_ARTIFACT_DIR:?}"
 : "${TOOLS_DIR:?}"
-mkdir -p "$AGENT_TEMPDIRECTORY" "$BUILD_ARTIFACTSTAGINGDIRECTORY" "$TOOLS_DIR"
+mkdir -p "$SDK_TEMP_DIR" "$SDK_ARTIFACT_DIR" "$TOOLS_DIR"
 export PATH="$TOOLS_DIR/cargo/bin:$PATH"
 
 case "$lane" in
   gate)
     if ! rustup component list --installed | grep -Eq '^llvm-tools-'; then
-      component_log="$(mktemp "${AGENT_TEMPDIRECTORY}/rustup-component.XXXXXXXX")"
+      component_log="$(mktemp "${SDK_TEMP_DIR}/rustup-component.XXXXXXXX")"
       trap 'rm -f -- "${component_log:-}"' EXIT
       if ! rustup component add llvm-tools-preview 2>&1 | tee "$component_log"; then
         grep -Eqi 'detected conflict|could not rename|File exists|already exists' "$component_log" || exit 1
@@ -30,9 +30,9 @@ case "$lane" in
     if ! command -v cargo-llvm-cov >/dev/null; then
       cargo install cargo-llvm-cov --version 0.9.1 --locked --root "$TOOLS_DIR/cargo"
     fi
-    mkdir -p "$BUILD_ARTIFACTSTAGINGDIRECTORY/coverage"
+    mkdir -p "$SDK_ARTIFACT_DIR/coverage"
     cargo llvm-cov --workspace --all-features --locked --fail-under-lines 70 \
-      --lcov --output-path "$BUILD_ARTIFACTSTAGINGDIRECTORY/coverage/lcov.info"
+      --lcov --output-path "$SDK_ARTIFACT_DIR/coverage/lcov.info"
     cargo llvm-cov report --summary-only
     ;;
   linux)
@@ -42,17 +42,17 @@ case "$lane" in
     cargo test -p acyclic-fs --features native-mount --locked --lib -- \
       --ignored --test-threads=1
     cargo build -p acyclic-fs-napi --locked
-    bun scripts/check-filesystem-napi.mjs "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
-    bash scripts/check-inference-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/inference"
-    bash scripts/check-machines-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/machines"
+    bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
+    bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
+    bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     cargo run --locked -p acyclic-cli
     bun run test
-    bash scripts/check-filesystem-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/filesystem"
-    bash scripts/check-harness-package.sh "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/harness"
+    bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
+    bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
     bun scripts/run-harness-conformance.mjs \
-      "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/harness" \
-      "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/harness/runner-report.json" \
-      "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/harness/qualification-receipt.json"
+      "$SDK_ARTIFACT_DIR/packages/harness" \
+      "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" \
+      "$SDK_ARTIFACT_DIR/packages/harness/qualification-receipt.json"
     bun run licenses
     bun x buf format -d --exit-code
     bun x buf lint
@@ -99,7 +99,7 @@ case "$lane" in
         --output "$archive"
     fi
     echo "0e8c2aa59128612c90d9e09c02204e912f29a5b8d9a64671b94608cbe09e064f  $archive" | sha256sum --check
-    deny_root="$(mktemp -d "$AGENT_TEMPDIRECTORY/cargo-deny.XXXXXXXX")"
+    deny_root="$(mktemp -d "$SDK_TEMP_DIR/cargo-deny.XXXXXXXX")"
     trap 'rm -rf -- "$deny_root"' EXIT
     tar -xzf "$archive" -C "$deny_root" --strip-components=1 \
       cargo-deny-0.19.0-x86_64-unknown-linux-musl/cargo-deny
@@ -115,7 +115,8 @@ case "$lane" in
       tar --extract --gzip --file "$archive" --directory \
         "$TOOLS_DIR/gitleaks-8.30.1" gitleaks
     fi
-    "$TOOLS_DIR/gitleaks-8.30.1/gitleaks" detect --source . --no-banner --redact
+    "$TOOLS_DIR/gitleaks-8.30.1/gitleaks" detect --source . --no-banner --redact \
+      --log-opts "$base..$head"
     ;;
   web)
     bash scripts/ensure-rust-target.sh wasm32-unknown-unknown
@@ -140,7 +141,7 @@ case "$lane" in
     cargo test -p acyclic-fs --features native-mount --locked --lib -- \
       --ignored --test-threads=1
     cargo build -p acyclic-fs-napi --locked
-    bun scripts/check-filesystem-napi.mjs "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
+    bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
     ;;
   macos)
     bash scripts/test-ensure-rust-target.sh
@@ -149,7 +150,7 @@ case "$lane" in
     cargo test -p acyclic-fs --features native-mount --locked --lib -- \
       --ignored --test-threads=1
     cargo build -p acyclic-fs-napi --locked
-    bun scripts/check-filesystem-napi.mjs "$BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
+    bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
     bash scripts/ensure-rust-target.sh x86_64-apple-darwin
     cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
       --target x86_64-apple-darwin --locked

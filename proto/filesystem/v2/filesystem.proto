@@ -154,6 +154,41 @@ message Capabilities {
   bool source_reconciliation = 9;
 }
 
+enum SourceState {
+  SOURCE_STATE_UNSPECIFIED = 0;
+  SOURCE_STATE_CLEAN = 1;
+  SOURCE_STATE_PENDING_CAPTURE = 2;
+  SOURCE_STATE_NEEDS_RESCAN = 3;
+  SOURCE_STATE_CONFLICT = 4;
+  SOURCE_STATE_SEALED = 5;
+}
+
+enum SourceInvalidationReason {
+  SOURCE_INVALIDATION_REASON_UNSPECIFIED = 0;
+  SOURCE_INVALIDATION_REASON_INITIAL_SNAPSHOT_REQUIRED = 1;
+  SOURCE_INVALIDATION_REASON_QUEUE_OVERFLOW = 2;
+  SOURCE_INVALIDATION_REASON_NATIVE_RESCAN_REQUIRED = 3;
+  SOURCE_INVALIDATION_REASON_BACKEND_ERROR = 4;
+  SOURCE_INVALIDATION_REASON_UNREPRESENTABLE_PATH = 5;
+  SOURCE_INVALIDATION_REASON_AMBIGUOUS_RENAME = 6;
+  SOURCE_INVALIDATION_REASON_ROOT_CHANGED = 7;
+}
+
+message SourceStateRequest {
+  WorkspaceRef workspace = 1;
+}
+
+message SourceOperationRequest {
+  WorkspaceRef workspace = 1;
+  OperationOptions operation = 2;
+}
+
+message SourceResponse {
+  SourceState state = 1;
+  SourceInvalidationReason reason = 2;
+  GenerationRef generation = 3;
+}
+
 message Workspace {
   WorkspaceRef workspace = 1;
   string name = 2;
@@ -632,6 +667,10 @@ service FilesystemService {
   rpc Import(stream ImportChunk) returns (ImportResponse);
   rpc IssueMountCredential(CredentialRequest) returns (CredentialResponse);
   rpc IssueS3Credential(CredentialRequest) returns (CredentialResponse);
+  rpc GetSourceState(SourceStateRequest) returns (SourceResponse);
+  rpc ReconcileSource(SourceOperationRequest) returns (SourceResponse);
+  rpc RescanSource(SourceOperationRequest) returns (SourceResponse);
+  rpc SealSource(SourceOperationRequest) returns (SourceResponse);
   rpc Observe(ObserveRequest) returns (ObserveResponse);
   rpc Cancel(CancelRequest) returns (CancelResponse);
 }

@@ -118,4 +118,11 @@ compatibility.families.objects.schemaDigest = digest("proto/objects/v1/objects.p
 compatibility.families.objects.descriptorDigest = digest(
   "rust/crates/objects/src/generated/acyclic-objects-v1.bin",
 );
+compatibility.families.inference.schemaDigest = digest("proto/inference/v1/inference.proto");
+compatibility.families.inference.descriptorDigest = digest(
+  "rust/crates/inference/inference_descriptor.bin",
+);
+compatibility.families.inference.conformanceDigest = digest(
+  "conformance/vectors/inference.json",
+);
 writeFileSync(compatibilityPath, `${JSON.stringify(compatibility, null, 2)}\n`);

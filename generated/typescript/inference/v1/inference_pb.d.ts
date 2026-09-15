@@ -256,6 +256,410 @@ export declare type WarmView = Message<"inference.customer.v1.WarmView"> & {
 export declare const WarmViewSchema: GenMessage<WarmView>;
 
 /**
+ * @generated from message inference.customer.v1.EvaluationArtifact
+ */
+export declare type EvaluationArtifact = Message<"inference.customer.v1.EvaluationArtifact"> & {
+  /**
+   * @generated from field: bytes digest = 1;
+   */
+  digest: Uint8Array;
+
+  /**
+   * @generated from field: string media_type = 2;
+   */
+  mediaType: string;
+
+  /**
+   * @generated from field: uint64 logical_size = 3;
+   */
+  logicalSize: bigint;
+};
+
+/**
+ * Describes the message inference.customer.v1.EvaluationArtifact.
+ * Use `create(EvaluationArtifactSchema)` to create a new message.
+ */
+export declare const EvaluationArtifactSchema: GenMessage<EvaluationArtifact>;
+
+/**
+ * @generated from message inference.customer.v1.EvaluationCase
+ */
+export declare type EvaluationCase = Message<"inference.customer.v1.EvaluationCase"> & {
+  /**
+   * @generated from field: bytes case_id = 1;
+   */
+  caseId: Uint8Array;
+
+  /**
+   * @generated from field: bytes input = 2;
+   */
+  input: Uint8Array;
+
+  /**
+   * @generated from field: optional bytes input_artifact_digest = 3;
+   */
+  inputArtifactDigest?: Uint8Array | undefined;
+};
+
+/**
+ * Describes the message inference.customer.v1.EvaluationCase.
+ * Use `create(EvaluationCaseSchema)` to create a new message.
+ */
+export declare const EvaluationCaseSchema: GenMessage<EvaluationCase>;
+
+/**
+ * @generated from message inference.customer.v1.EvaluationSuite
+ */
+export declare type EvaluationSuite = Message<"inference.customer.v1.EvaluationSuite"> & {
+  /**
+   * @generated from field: string identity = 1;
+   */
+  identity: string;
+
+  /**
+   * @generated from field: bytes digest = 2;
+   */
+  digest: Uint8Array;
+
+  /**
+   * @generated from field: repeated inference.customer.v1.EvaluationCase cases = 3;
+   */
+  cases: EvaluationCase[];
+};
+
+/**
+ * Describes the message inference.customer.v1.EvaluationSuite.
+ * Use `create(EvaluationSuiteSchema)` to create a new message.
+ */
+export declare const EvaluationSuiteSchema: GenMessage<EvaluationSuite>;
+
+/**
+ * @generated from message inference.customer.v1.EvaluationGrader
+ */
+export declare type EvaluationGrader = Message<"inference.customer.v1.EvaluationGrader"> & {
+  /**
+   * @generated from field: bytes handle = 1;
+   */
+  handle: Uint8Array;
+
+  /**
+   * @generated from field: bytes artifact_digest = 2;
+   */
+  artifactDigest: Uint8Array;
+};
+
+/**
+ * Describes the message inference.customer.v1.EvaluationGrader.
+ * Use `create(EvaluationGraderSchema)` to create a new message.
+ */
+export declare const EvaluationGraderSchema: GenMessage<EvaluationGrader>;
+
+/**
+ * @generated from message inference.customer.v1.EvaluationMetric
+ */
+export declare type EvaluationMetric = Message<"inference.customer.v1.EvaluationMetric"> & {
+  /**
+   * @generated from field: string identity = 1;
+   */
+  identity: string;
+
+  /**
+   * @generated from field: inference.customer.v1.EvaluationAggregation aggregation = 2;
+   */
+  aggregation: EvaluationAggregation;
+};
+
+/**
+ * Describes the message inference.customer.v1.EvaluationMetric.
+ * Use `create(EvaluationMetricSchema)` to create a new message.
+ */
+export declare const EvaluationMetricSchema: GenMessage<EvaluationMetric>;
+
+/**
+ * @generated from message inference.customer.v1.EvaluationSpec
+ */
+export declare type EvaluationSpec = Message<"inference.customer.v1.EvaluationSpec"> & {
+  /**
+   * @generated from field: repeated inference.customer.v1.EvaluationArtifact candidates = 1;
+   */
+  candidates: EvaluationArtifact[];
+
+  /**
+   * @generated from field: inference.customer.v1.EvaluationSuite suite = 2;
+   */
+  suite?: EvaluationSuite | undefined;
+
+  /**
+   * @generated from field: inference.customer.v1.EvaluationGrader grader = 3;
+   */
+  grader?: EvaluationGrader | undefined;
+
+  /**
+   * @generated from field: repeated inference.customer.v1.EvaluationMetric metrics = 4;
+   */
+  metrics: EvaluationMetric[];
+
+  /**
+   * @generated from field: uint64 maximum_case_results = 5;
+   */
+  maximumCaseResults: bigint;
+
+  /**
+   * @generated from field: bytes spec_digest = 6;
+   */
+  specDigest: Uint8Array;
+};
+
+/**
+ * Describes the message inference.customer.v1.EvaluationSpec.
+ * Use `create(EvaluationSpecSchema)` to create a new message.
+ */
+export declare const EvaluationSpecSchema: GenMessage<EvaluationSpec>;
+
+/**
+ * @generated from message inference.customer.v1.CreateEvaluationRequest
+ */
+export declare type CreateEvaluationRequest = Message<"inference.customer.v1.CreateEvaluationRequest"> & {
+  /**
+   * @generated from field: inference.customer.v1.RequestIdentity identity = 1;
+   */
+  identity?: RequestIdentity | undefined;
+
+  /**
+   * @generated from field: inference.customer.v1.EvaluationSpec spec = 2;
+   */
+  spec?: EvaluationSpec | undefined;
+};
+
+/**
+ * Describes the message inference.customer.v1.CreateEvaluationRequest.
+ * Use `create(CreateEvaluationRequestSchema)` to create a new message.
+ */
+export declare const CreateEvaluationRequestSchema: GenMessage<CreateEvaluationRequest>;
+
+/**
+ * @generated from message inference.customer.v1.InspectEvaluationRequest
+ */
+export declare type InspectEvaluationRequest = Message<"inference.customer.v1.InspectEvaluationRequest"> & {
+  /**
+   * @generated from field: bytes evaluation_id = 1;
+   */
+  evaluationId: Uint8Array;
+};
+
+/**
+ * Describes the message inference.customer.v1.InspectEvaluationRequest.
+ * Use `create(InspectEvaluationRequestSchema)` to create a new message.
+ */
+export declare const InspectEvaluationRequestSchema: GenMessage<InspectEvaluationRequest>;
+
+/**
+ * @generated from message inference.customer.v1.ExactRational
+ */
+export declare type ExactRational = Message<"inference.customer.v1.ExactRational"> & {
+  /**
+   * @generated from field: sint64 numerator = 1;
+   */
+  numerator: bigint;
+
+  /**
+   * @generated from field: uint64 denominator = 2;
+   */
+  denominator: bigint;
+};
+
+/**
+ * Describes the message inference.customer.v1.ExactRational.
+ * Use `create(ExactRationalSchema)` to create a new message.
+ */
+export declare const ExactRationalSchema: GenMessage<ExactRational>;
+
+/**
+ * @generated from message inference.customer.v1.EvaluationMetricValue
+ */
+export declare type EvaluationMetricValue = Message<"inference.customer.v1.EvaluationMetricValue"> & {
+  /**
+   * @generated from field: string metric_identity = 1;
+   */
+  metricIdentity: string;
+
+  /**
+   * @generated from field: inference.customer.v1.ExactRational value = 2;
+   */
+  value?: ExactRational | undefined;
+};
+
+/**
+ * Describes the message inference.customer.v1.EvaluationMetricValue.
+ * Use `create(EvaluationMetricValueSchema)` to create a new message.
+ */
+export declare const EvaluationMetricValueSchema: GenMessage<EvaluationMetricValue>;
+
+/**
+ * @generated from message inference.customer.v1.EvaluationCaseResult
+ */
+export declare type EvaluationCaseResult = Message<"inference.customer.v1.EvaluationCaseResult"> & {
+  /**
+   * @generated from field: bytes candidate_digest = 1;
+   */
+  candidateDigest: Uint8Array;
+
+  /**
+   * @generated from field: bytes case_id = 2;
+   */
+  caseId: Uint8Array;
+
+  /**
+   * @generated from field: inference.customer.v1.EvaluationGraderObservation observation = 3;
+   */
+  observation?: EvaluationGraderObservation | undefined;
+
+  /**
+   * @generated from field: repeated inference.customer.v1.EvaluationMetricValue metrics = 4;
+   */
+  metrics: EvaluationMetricValue[];
+
+  /**
+   * @generated from field: inference.customer.v1.EvaluationCaseOutcome outcome = 5;
+   */
+  outcome: EvaluationCaseOutcome;
+};
+
+/**
+ * Describes the message inference.customer.v1.EvaluationCaseResult.
+ * Use `create(EvaluationCaseResultSchema)` to create a new message.
+ */
+export declare const EvaluationCaseResultSchema: GenMessage<EvaluationCaseResult>;
+
+/**
+ * The binding is SHA-256("acyclic.inference.grader-observation.v1\0" ||
+ * native_output_digest || observation_digest). It proves which exact native
+ * device output the grader observed without exposing either payload.
+ *
+ * @generated from message inference.customer.v1.EvaluationGraderObservation
+ */
+export declare type EvaluationGraderObservation = Message<"inference.customer.v1.EvaluationGraderObservation"> & {
+  /**
+   * @generated from field: bytes native_output_digest = 1;
+   */
+  nativeOutputDigest: Uint8Array;
+
+  /**
+   * @generated from field: bytes observation_digest = 2;
+   */
+  observationDigest: Uint8Array;
+
+  /**
+   * @generated from field: bytes binding_digest = 3;
+   */
+  bindingDigest: Uint8Array;
+};
+
+/**
+ * Describes the message inference.customer.v1.EvaluationGraderObservation.
+ * Use `create(EvaluationGraderObservationSchema)` to create a new message.
+ */
+export declare const EvaluationGraderObservationSchema: GenMessage<EvaluationGraderObservation>;
+
+/**
+ * @generated from message inference.customer.v1.EvaluationAggregate
+ */
+export declare type EvaluationAggregate = Message<"inference.customer.v1.EvaluationAggregate"> & {
+  /**
+   * @generated from field: bytes candidate_digest = 1;
+   */
+  candidateDigest: Uint8Array;
+
+  /**
+   * @generated from field: string metric_identity = 2;
+   */
+  metricIdentity: string;
+
+  /**
+   * @generated from field: inference.customer.v1.EvaluationAggregation aggregation = 3;
+   */
+  aggregation: EvaluationAggregation;
+
+  /**
+   * @generated from field: inference.customer.v1.ExactRational value = 4;
+   */
+  value?: ExactRational | undefined;
+};
+
+/**
+ * Describes the message inference.customer.v1.EvaluationAggregate.
+ * Use `create(EvaluationAggregateSchema)` to create a new message.
+ */
+export declare const EvaluationAggregateSchema: GenMessage<EvaluationAggregate>;
+
+/**
+ * @generated from message inference.customer.v1.EvaluationResult
+ */
+export declare type EvaluationResult = Message<"inference.customer.v1.EvaluationResult"> & {
+  /**
+   * @generated from field: bytes spec_digest = 1;
+   */
+  specDigest: Uint8Array;
+
+  /**
+   * @generated from field: repeated inference.customer.v1.EvaluationCaseResult case_results = 2;
+   */
+  caseResults: EvaluationCaseResult[];
+
+  /**
+   * @generated from field: repeated inference.customer.v1.EvaluationAggregate aggregates = 3;
+   */
+  aggregates: EvaluationAggregate[];
+
+  /**
+   * @generated from field: bytes result_digest = 4;
+   */
+  resultDigest: Uint8Array;
+};
+
+/**
+ * Describes the message inference.customer.v1.EvaluationResult.
+ * Use `create(EvaluationResultSchema)` to create a new message.
+ */
+export declare const EvaluationResultSchema: GenMessage<EvaluationResult>;
+
+/**
+ * @generated from message inference.customer.v1.EvaluationView
+ */
+export declare type EvaluationView = Message<"inference.customer.v1.EvaluationView"> & {
+  /**
+   * @generated from field: bytes evaluation_id = 1;
+   */
+  evaluationId: Uint8Array;
+
+  /**
+   * @generated from field: inference.customer.v1.EvaluationSpec spec = 2;
+   */
+  spec?: EvaluationSpec | undefined;
+
+  /**
+   * @generated from field: inference.customer.v1.EvaluationState state = 3;
+   */
+  state: EvaluationState;
+
+  /**
+   * @generated from field: optional inference.customer.v1.EvaluationResult result = 4;
+   */
+  result?: EvaluationResult | undefined;
+
+  /**
+   * @generated from field: uint64 sequence = 5;
+   */
+  sequence: bigint;
+};
+
+/**
+ * Describes the message inference.customer.v1.EvaluationView.
+ * Use `create(EvaluationViewSchema)` to create a new message.
+ */
+export declare const EvaluationViewSchema: GenMessage<EvaluationView>;
+
+/**
  * @generated from message inference.customer.v1.RequestIdentity
  */
 export declare type RequestIdentity = Message<"inference.customer.v1.RequestIdentity"> & {
@@ -1141,6 +1545,111 @@ export enum WarmState {
 export declare const WarmStateSchema: GenEnum<WarmState>;
 
 /**
+ * @generated from enum inference.customer.v1.EvaluationAggregation
+ */
+export enum EvaluationAggregation {
+  /**
+   * @generated from enum value: EVALUATION_AGGREGATION_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: EVALUATION_AGGREGATION_MEAN = 1;
+   */
+  MEAN = 1,
+
+  /**
+   * @generated from enum value: EVALUATION_AGGREGATION_SUM = 2;
+   */
+  SUM = 2,
+
+  /**
+   * @generated from enum value: EVALUATION_AGGREGATION_MINIMUM = 3;
+   */
+  MINIMUM = 3,
+
+  /**
+   * @generated from enum value: EVALUATION_AGGREGATION_MAXIMUM = 4;
+   */
+  MAXIMUM = 4,
+}
+
+/**
+ * Describes the enum inference.customer.v1.EvaluationAggregation.
+ */
+export declare const EvaluationAggregationSchema: GenEnum<EvaluationAggregation>;
+
+/**
+ * @generated from enum inference.customer.v1.EvaluationCaseOutcome
+ */
+export enum EvaluationCaseOutcome {
+  /**
+   * @generated from enum value: EVALUATION_CASE_OUTCOME_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: EVALUATION_CASE_OUTCOME_SCORED = 1;
+   */
+  SCORED = 1,
+
+  /**
+   * @generated from enum value: EVALUATION_CASE_OUTCOME_CANDIDATE_FAILED = 2;
+   */
+  CANDIDATE_FAILED = 2,
+
+  /**
+   * @generated from enum value: EVALUATION_CASE_OUTCOME_GRADER_FAILED = 3;
+   */
+  GRADER_FAILED = 3,
+}
+
+/**
+ * Describes the enum inference.customer.v1.EvaluationCaseOutcome.
+ */
+export declare const EvaluationCaseOutcomeSchema: GenEnum<EvaluationCaseOutcome>;
+
+/**
+ * @generated from enum inference.customer.v1.EvaluationState
+ */
+export enum EvaluationState {
+  /**
+   * @generated from enum value: EVALUATION_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: EVALUATION_STATE_ADMITTED = 1;
+   */
+  ADMITTED = 1,
+
+  /**
+   * @generated from enum value: EVALUATION_STATE_RUNNING = 2;
+   */
+  RUNNING = 2,
+
+  /**
+   * @generated from enum value: EVALUATION_STATE_COMPLETED = 3;
+   */
+  COMPLETED = 3,
+
+  /**
+   * @generated from enum value: EVALUATION_STATE_FAILED = 4;
+   */
+  FAILED = 4,
+
+  /**
+   * @generated from enum value: EVALUATION_STATE_CANCELLED = 5;
+   */
+  CANCELLED = 5,
+}
+
+/**
+ * Describes the enum inference.customer.v1.EvaluationState.
+ */
+export declare const EvaluationStateSchema: GenEnum<EvaluationState>;
+
+/**
  * @generated from enum inference.customer.v1.ItemKind
  */
 export enum ItemKind {
@@ -1391,6 +1900,32 @@ export declare const RunsService: GenService<{
     methodKind: "unary";
     input: typeof InspectRunRequestSchema;
     output: typeof RunViewSchema;
+  },
+}>;
+
+/**
+ * Immutable, recoverable evaluation admissions. Candidate execution and grader
+ * placement remain private; the customer contract contains only exact artifacts,
+ * bounded suite inputs, metric semantics, and content-addressed observations.
+ *
+ * @generated from service inference.customer.v1.EvaluationsService
+ */
+export declare const EvaluationsService: GenService<{
+  /**
+   * @generated from rpc inference.customer.v1.EvaluationsService.Create
+   */
+  create: {
+    methodKind: "unary";
+    input: typeof CreateEvaluationRequestSchema;
+    output: typeof EvaluationViewSchema;
+  },
+  /**
+   * @generated from rpc inference.customer.v1.EvaluationsService.Inspect
+   */
+  inspect: {
+    methodKind: "unary";
+    input: typeof InspectEvaluationRequestSchema;
+    output: typeof EvaluationViewSchema;
   },
 }>;
 

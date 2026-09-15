@@ -4,6 +4,10 @@ import {
   ContextViewSchema,
   contextRevision,
   CreateContextRequestSchema,
+  CreateEvaluationRequestSchema,
+  EvaluationResultSchema,
+  EvaluationState,
+  EvaluationViewSchema,
   GenerateRunRequestSchema,
   GenerateRunResponseSchema,
   HttpInferenceTransport,
@@ -12,6 +16,7 @@ import {
   InferenceTransportError,
   WarmState,
   InspectContextRequestSchema,
+  InspectEvaluationRequestSchema,
   InspectRunRequestSchema,
   InspectWarmRequestSchema,
   ItemKind,
@@ -55,6 +60,12 @@ const warmView = (commitment: Uint8Array, context = revision(1), expiresAtMs = 1
   admissionReceiptId: revision(26),
   sequence: 1n,
 });
+const evaluationView = (evaluationId = runIdentity(5), specDigest = revision(30)) => create(EvaluationViewSchema, {
+  evaluationId,
+  spec: { specDigest },
+  state: EvaluationState.ADMITTED,
+  sequence: 1n,
+});
 
 test("generated lifecycle client covers contexts, warm commitments, runs, watch, and cancellation", async () => {
   const called: string[] = [];
@@ -71,6 +82,8 @@ test("generated lifecycle client covers contexts, warm commitments, runs, watch,
     async inspectRun(request) { called.push("inspect-run"); return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model" }); },
     async *watchRun(request) { called.push(`watch:${request.fromSequence}`); yield create(RunEventSchema, { sequence: request.fromSequence, event: { case: "terminal", value: RunTerminal.COMPLETED } }); },
     async cancelRun(request) { called.push("cancel"); return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model", cancellationRequested: true }); },
+    async createEvaluation(request) { called.push("create-evaluation"); return evaluationView(request.identity!.requestId, request.spec!.specDigest); },
+    async inspectEvaluation(request) { called.push("inspect-evaluation"); return evaluationView(request.evaluationId); },
   };
   const client = new InferenceClient(transport);
   await client.listModels();
@@ -85,7 +98,14 @@ test("generated lifecycle client covers contexts, warm commitments, runs, watch,
   await client.inspectRun(runIdentity(4));
   for await (const event of client.watchRun(runIdentity(4), 7n)) expect(event.sequence).toBe(7n);
   expect((await client.cancelRun(runIdentity(4))).cancellationRequested).toBeTrue();
-  expect(called).toEqual(["models", "create", "inspect:1", "mutate", "retain", "inspect-warm", "renew", "release", "generate", "inspect-run", "watch:7", "cancel"]);
+  const evaluationId = runIdentity(5);
+  const specDigest = revision(30);
+  await client.createEvaluation(create(CreateEvaluationRequestSchema, {
+    identity: { clientInstance: runIdentity(6), requestId: evaluationId },
+    spec: { specDigest },
+  }));
+  await client.inspectEvaluation(evaluationId);
+  expect(called).toEqual(["models", "create", "inspect:1", "mutate", "retain", "inspect-warm", "renew", "release", "generate", "inspect-run", "watch:7", "cancel", "create-evaluation", "inspect-evaluation"]);
 });
 
 test("high-level handles preserve typed context, run, and warm identities", async () => {
@@ -103,6 +123,8 @@ test("high-level handles preserve typed context, run, and warm identities", asyn
     async inspectRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(3), model: "model", result: create(RunResultSchema, { output: bytes(9), terminal: RunTerminal.COMPLETED, context: create(ContextViewSchema, { revision: revision(10) }) }) }); },
     async *watchRun(request) { yield create(RunEventSchema, { sequence: request.fromSequence, event: { case: "terminal", value: RunTerminal.COMPLETED } }); },
     async cancelRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(3), model: "model", cancellationRequested: true }); },
+    async createEvaluation(request) { return evaluationView(request.identity!.requestId, request.spec!.specDigest); },
+    async inspectEvaluation(request) { return evaluationView(request.evaluationId); },
   };
   const inference = new Inference(new InferenceClient(transport));
   const item = create(ItemSchema, { kind: ItemKind.USER, payload: bytes(1) });
@@ -140,6 +162,8 @@ test("run recovery rejects substituted or malformed streams and observes an incl
     async inspectRun(request) { inspectCount += 1; return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model", lastSequence: 0n, ...(inspectCount > 1 ? { result: create(RunResultSchema, { terminal: RunTerminal.COMPLETED }) } : {}) }); },
     async *watchRun(request) { expect(request.fromSequence).toBe(0n); yield create(RunEventSchema, { sequence: 0n, event: { case: "terminal", value: RunTerminal.COMPLETED } }); },
     async cancelRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model" }); },
+    async createEvaluation(request) { return evaluationView(request.identity!.requestId, request.spec!.specDigest); },
+    async inspectEvaluation(request) { return evaluationView(request.evaluationId); },
   };
   const result = await new Inference(new InferenceClient(transport)).run(runId(id)).result();
   expect(result.terminal).toBe("completed");
@@ -163,6 +187,36 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   await expect(substitutedWarm.inspectWarm(revision(8))).rejects.toThrow("warm commitment differs");
   const malformedReceipt = new InferenceClient({ ...transport, async createContext() { return create(MutationReceiptSchema); } });
   await expect(malformedReceipt.createContext(create(CreateContextRequestSchema))).rejects.toThrow("mutation revision");
+
+  const substitutedEvaluation = new InferenceClient({
+    ...transport,
+    async createEvaluation(request) { return evaluationView(request.identity!.requestId, revision(31)); },
+  });
+  await expect(substitutedEvaluation.createEvaluation(create(CreateEvaluationRequestSchema, {
+    identity: { clientInstance: runIdentity(6), requestId: runIdentity(5) },
+    spec: { specDigest: revision(30) },
+  }))).rejects.toThrow("evaluation spec differs");
+
+  const completedWithoutResult = new InferenceClient({
+    ...transport,
+    async inspectEvaluation(request) {
+      const view = evaluationView(request.evaluationId);
+      view.state = EvaluationState.COMPLETED;
+      return view;
+    },
+  });
+  await expect(completedWithoutResult.inspectEvaluation(runIdentity(5))).rejects.toThrow("inconsistent with its result");
+
+  const runningWithResult = new InferenceClient({
+    ...transport,
+    async inspectEvaluation(request) {
+      const view = evaluationView(request.evaluationId);
+      view.state = EvaluationState.RUNNING;
+      view.result = create(EvaluationResultSchema, { specDigest: revision(30), resultDigest: revision(31) });
+      return view;
+    },
+  });
+  await expect(runningWithResult.inspectEvaluation(runIdentity(5))).rejects.toThrow("inconsistent with its result");
 });
 
 test("HTTP lifecycle transport requires authorization and parses bounded run events", async () => {
@@ -191,6 +245,9 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
     if (url.endsWith("/runs/inspect") || url.endsWith("/runs/cancel")) {
       return new Response(toJsonString(RunViewSchema, create(RunViewSchema)));
     }
+    if (url.includes("/evaluations/")) {
+      return new Response(toJsonString(EvaluationViewSchema, evaluationView()));
+    }
     if (url.endsWith("/runs/watch")) return new Response(`${terminal}\n`);
     throw new Error(`unexpected route ${url}`);
   };
@@ -206,6 +263,8 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
   await transport.generateRun(create(GenerateRunRequestSchema));
   await transport.inspectRun(create(InspectRunRequestSchema));
   await transport.cancelRun(create(InspectRunRequestSchema));
+  await transport.createEvaluation(create(CreateEvaluationRequestSchema));
+  await transport.inspectEvaluation(create(InspectEvaluationRequestSchema));
   const events = [];
   for await (const event of transport.watchRun(create(WatchRunRequestSchema, { runId: bytes(4) }))) events.push(event);
   expect(events).toHaveLength(1);

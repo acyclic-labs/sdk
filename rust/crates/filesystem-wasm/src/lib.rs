@@ -6740,16 +6740,34 @@ mod bindings {
         }
 
         #[wasm_bindgen_test(async)]
-        async fn named_workspace_round_trips_binary_data_and_forks_exactly() -> Result<(), JsValue>
-        {
+        async fn named_workspace_round_trips_binary_data_and_exact_forks() -> Result<(), JsValue> {
             let fs = test_browser_fs()?;
             let workspace = fs.create_workspace("main".to_owned()).await?;
             let payload = vec![0, 255, 1, 0, 128];
             // Match separately awaited JavaScript calls without one giant debug
             // test poll frame consuming half of WebAssembly's default stack.
             let exact = Box::pin(prepare_workspace(&workspace, &payload)).await?;
-            Box::pin(mutate_workspace(&workspace, &exact)).await?;
+            Box::pin(mutate_workspace(&workspace, &exact)).await
+        }
+
+        #[wasm_bindgen_test(async)]
+        async fn workspace_fork_retains_independent_binary_data() -> Result<(), JsValue> {
+            let fs = test_browser_fs()?;
+            let workspace = fs.create_workspace("main".to_owned()).await?;
+            let payload = vec![0, 255, 1, 0, 128];
+            workspace
+                .write("/binary".to_owned(), payload.clone())
+                .await?;
             Box::pin(verify_workspace_fork(&workspace, &payload)).await
+        }
+
+        #[wasm_bindgen_test(async)]
+        async fn workspace_fork_preserves_post_transaction_tree() -> Result<(), JsValue> {
+            let fs = test_browser_fs()?;
+            let workspace = fs.create_workspace("main".to_owned()).await?;
+            let payload = vec![0, 255, 1, 0, 128];
+            Box::pin(build_transaction_tree(&workspace, &payload)).await?;
+            Box::pin(verify_transaction_tree_fork(&workspace, &payload)).await
         }
 
         async fn prepare_workspace(
@@ -6806,7 +6824,50 @@ mod bindings {
                     .await
                     .is_err()
             );
+            Ok(())
+        }
 
+        async fn build_transaction_tree(
+            workspace: &BrowserWorkspace,
+            payload: &[u8],
+        ) -> Result<(), JsValue> {
+            workspace
+                .write("/binary".to_owned(), payload.to_vec())
+                .await?;
+            let mut transaction = workspace.begin_transaction(Some(vec![10; 16])).await?;
+            transaction
+                .create_dir_all("/output/nested".to_owned())
+                .await?;
+            transaction
+                .copy("/binary".to_owned(), "/output/nested/copied".to_owned())
+                .await?;
+            transaction
+                .rename(
+                    "/output/nested/copied".to_owned(),
+                    "/output/result".to_owned(),
+                )
+                .await?;
+            transaction
+                .write("/output/status".to_owned(), b"ready".to_vec())
+                .await?;
+            transaction.commit().await.map(|_| ())
+        }
+
+        async fn verify_transaction_tree_fork(
+            workspace: &BrowserWorkspace,
+            payload: &[u8],
+        ) -> Result<(), JsValue> {
+            let fork = workspace.fork("mutated-fork".to_owned(), None).await?;
+            assert_eq!(fork.read("/output/result".to_owned(), 5).await?, payload);
+            assert_eq!(fork.read("/output/status".to_owned(), 5).await?, b"ready");
+            workspace.remove("/output/status".to_owned()).await?;
+            assert!(
+                workspace
+                    .read("/output/status".to_owned(), 5)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(fork.read("/output/status".to_owned(), 5).await?, b"ready");
             Ok(())
         }
 
@@ -6816,12 +6877,19 @@ mod bindings {
         ) -> Result<(), JsValue> {
             let fork = workspace.fork("fork".to_owned(), None).await?;
             assert_ne!(fork.id(), workspace.id());
-            assert_ne!(fork.head().await?, workspace.head().await?);
-            assert_eq!(fork.read("/binary".to_owned(), 5).await?, payload);
+            // Await independently so debug builds keep each WebAssembly poll
+            // frame bounded.
+            let fork_head = fork.head().await?;
+            let workspace_head = workspace.head().await?;
+            assert_ne!(fork_head, workspace_head);
+            let fork_payload = fork.read("/binary".to_owned(), 5).await?;
+            assert_eq!(fork_payload, payload);
 
             workspace.remove("/binary".to_owned()).await?;
-            assert!(workspace.read("/binary".to_owned(), 5).await.is_err());
-            assert_eq!(fork.read("/binary".to_owned(), 5).await?, payload);
+            let workspace_payload = workspace.read("/binary".to_owned(), 5).await;
+            assert!(workspace_payload.is_err());
+            let retained_payload = fork.read("/binary".to_owned(), 5).await?;
+            assert_eq!(retained_payload, payload);
             Ok(())
         }
     }

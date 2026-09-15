@@ -29,8 +29,17 @@ def load_script(name: str):
 validator = load_script("validate-npm-package.py")
 qualification = load_script("typescript-qualification.py")
 NAME = "@acyclic-labs/objects"
-VERSION = "1.0.0-rc.2"
 DIRECTORY = "typescript/packages/objects"
+ROOT = Path(__file__).parent.parent
+VERSION = json.loads((ROOT / DIRECTORY / "package.json").read_text(encoding="utf-8"))["version"]
+
+
+def bash_path(path: Path) -> str:
+    if os.name != "nt":
+        return str(path)
+    resolved = path.resolve()
+    drive = resolved.drive.rstrip(":").lower()
+    return f"/mnt/{drive}/{resolved.as_posix()[3:]}"
 
 
 def archive_bytes(
@@ -107,8 +116,9 @@ class NpmPublicationTests(unittest.TestCase):
         root = Path(__file__).parent
         bash = os.environ.get("BASH", "bash")
         scripts = [root / "prepare-npm-publication.sh", root / "check-typescript-packages.sh"]
-        subprocess.run([bash, "-n", *(str(path) for path in scripts)], check=True)
-        prepare = shlex.quote(str(scripts[0]))
+        shell_scripts = [bash_path(path) for path in scripts]
+        subprocess.run([bash, "-n", *shell_scripts], check=True)
+        prepare = shlex.quote(shell_scripts[0])
         for slug, expected in {
             "objects": "@acyclic-labs/objects\tobjects\tobjects",
             "stream": "@acyclic-labs/stream\tstream\tstream",
@@ -124,6 +134,25 @@ class NpmPublicationTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(result.stdout.rstrip("\n"), expected)
+
+    def test_qualification_run_selects_latest_exact_success(self) -> None:
+        bash = os.environ.get("BASH", "bash")
+        prepare = shlex.quote(bash_path(Path(__file__).with_name("prepare-npm-publication.sh")))
+        source_sha = "a" * 40
+        runs = json.dumps({"workflow_runs": [
+            {"id": 11, "head_sha": source_sha, "status": "completed", "conclusion": "failure", "run_number": 8, "run_attempt": 1},
+            {"id": 12, "head_sha": "b" * 40, "status": "completed", "conclusion": "success", "run_number": 9, "run_attempt": 1},
+            {"id": 13, "head_sha": source_sha, "status": "completed", "conclusion": "success", "run_number": 7, "run_attempt": 1},
+            {"id": 14, "head_sha": source_sha, "status": "completed", "conclusion": "success", "run_number": 7, "run_attempt": 2},
+        ]})
+        result = subprocess.run(
+            [bash, "-c", f"source {prepare}; qualified_run {source_sha}"],
+            input=runs,
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(result.stdout.rstrip("\n"), "14\t2")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 [package]
 name = "acyclic-inference"
-version = "1.0.0-rc.6"
+version = "1.0.0-rc.7"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -11,6 +11,7 @@ build = "build.rs"
 
 [dependencies]
 prost.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true

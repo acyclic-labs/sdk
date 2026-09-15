@@ -90,9 +90,8 @@ must publish the exact Objects and Streams archives before Filesystem.
 Publication consumes these exact successful-run bytes, never a rebuild. An operator
 creates an immutable family or TypeScript GitHub release from the retained artifact
 and points its tag at the matching qualified main commit. The crates.io publisher
-remains a separate, tag-triggered publication boundary. npm trusted publishing is
-the sole CI exception: npm requires
-a GitHub-hosted runner for OIDC, and its publisher is stage-only. CI submits exact
+remains a separate, tag-triggered publication boundary. Every CI and package-staging
+job runs on Blacksmith. The npm publisher is stage-only: it submits exact
 qualified archives with `npm stage publish`; a maintainer must review and approve
 each staged package with 2FA before it becomes public. Each executable native lane
 also retains the exact filesystem companion copy

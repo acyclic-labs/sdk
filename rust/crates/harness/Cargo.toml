@@ -19,7 +19,7 @@ host = ["dep:acyclic-stream", "dep:bytes", "dep:futures", "dep:tokio"]
 wasm = ["dep:serde-wasm-bindgen", "dep:wasm-bindgen"]
 
 [dependencies]
-acyclic-stream = { version = "=1.0.0-rc.5", path = "../stream", default-features = false, optional = true }
+acyclic-stream = { version = "=1.0.0-rc.6", path = "../stream", default-features = false, optional = true }
 blake3.workspace = true
 bytes = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }

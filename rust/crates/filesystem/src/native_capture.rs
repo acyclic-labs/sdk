@@ -468,74 +468,11 @@ fn logical_host_name(
     profile: FilesystemProfile,
     limits: crate::model::VolumeLimits,
 ) -> Result<LogicalName, CaptureError> {
-    let (encoding, bytes) = host_name_bytes(name, profile)?;
+    let (encoding, bytes) =
+        crate::native_name::host_name_bytes(name, profile, limits.maximum_component_bytes)
+            .map_err(|_| CaptureError::UnrepresentablePath)?;
     LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
         .map_err(|error| CaptureError::Engine(error.to_string()))
-}
-
-#[cfg(unix)]
-fn host_name_bytes(
-    name: &std::ffi::OsStr,
-    profile: FilesystemProfile,
-) -> Result<(NameEncoding, Vec<u8>), CaptureError> {
-    use std::os::unix::ffi::OsStrExt;
-    let raw = name.as_bytes();
-    match profile {
-        FilesystemProfile::Posix => Ok((NameEncoding::PosixBytes, raw.to_vec())),
-        FilesystemProfile::Windows => {
-            let text = std::str::from_utf8(raw).map_err(|_| CaptureError::UnrepresentablePath)?;
-            Ok((
-                NameEncoding::WindowsUtf16Le,
-                text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
-            ))
-        }
-        FilesystemProfile::Portable | FilesystemProfile::Browser => {
-            std::str::from_utf8(raw).map_err(|_| CaptureError::UnrepresentablePath)?;
-            Ok((NameEncoding::Utf8, raw.to_vec()))
-        }
-    }
-}
-
-#[cfg(windows)]
-fn host_name_bytes(
-    name: &std::ffi::OsStr,
-    profile: FilesystemProfile,
-) -> Result<(NameEncoding, Vec<u8>), CaptureError> {
-    use std::os::windows::ffi::OsStrExt;
-    match profile {
-        FilesystemProfile::Windows => Ok((
-            NameEncoding::WindowsUtf16Le,
-            name.encode_wide().flat_map(u16::to_le_bytes).collect(),
-        )),
-        FilesystemProfile::Posix => Ok((
-            NameEncoding::PosixBytes,
-            name.to_str()
-                .ok_or(CaptureError::UnrepresentablePath)?
-                .as_bytes()
-                .to_vec(),
-        )),
-        FilesystemProfile::Portable | FilesystemProfile::Browser => Ok((
-            NameEncoding::Utf8,
-            name.to_str()
-                .ok_or(CaptureError::UnrepresentablePath)?
-                .as_bytes()
-                .to_vec(),
-        )),
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn host_name_bytes(
-    name: &std::ffi::OsStr,
-    _profile: FilesystemProfile,
-) -> Result<(NameEncoding, Vec<u8>), CaptureError> {
-    Ok((
-        NameEncoding::Utf8,
-        name.to_str()
-            .ok_or(CaptureError::UnrepresentablePath)?
-            .as_bytes()
-            .to_vec(),
-    ))
 }
 
 /// Atomically captures one contiguous native-watcher batch.

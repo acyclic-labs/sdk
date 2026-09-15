@@ -16,9 +16,10 @@ jobs:
   stage:
     name: Stage qualified npm package
     environment: npmjs
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     permissions:
+      actions: read
       contents: read
       id-token: write
     steps:
@@ -45,7 +46,7 @@ jobs:
           echo 'b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943  '"$archive" | sha512sum --check --strict
           npm install --global --ignore-scripts "$archive"
 
-      - name: Download and verify exact release package
+      - name: Download and verify exact qualified package
         env:
           GITHUB_TOKEN: ${{ github.token }}
         shell: bash

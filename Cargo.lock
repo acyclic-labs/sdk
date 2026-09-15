@@ -211,11 +211,12 @@ dependencies = [
 
 [[package]]
 name = "acyclic-inference"
-version = "1.0.0-rc.6"
+version = "1.0.0-rc.7"
 dependencies = [
  "prost",
  "prost-types",
  "protoc-bin-vendored",
+ "sha2 0.10.9",
  "thiserror",
  "tokio",
  "tonic",
@@ -227,7 +228,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-machines"
-version = "1.0.0-rc.5"
+version = "1.0.0-rc.6"
 dependencies = [
  "async-trait",
  "futures",
@@ -300,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-stream"
-version = "1.0.0-rc.5"
+version = "1.0.0-rc.6"
 dependencies = [
  "async-trait",
  "bytes",
