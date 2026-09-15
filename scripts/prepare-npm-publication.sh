@@ -20,9 +20,9 @@ qualified_npm_package() {
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then return 0; fi
 
 tag="${GITHUB_REF_NAME:?GitHub tag is required}"
-subject=${tag#publish/npm/}
+subject=${tag#stage/npm/}
 if [[ "$subject" == "$tag" || "$subject" != */* || "${subject#*/}" == */* ]]; then
-  echo 'release tags must use publish/npm/<package>/<version>' >&2
+  echo 'staging tags must use stage/npm/<package>/<version>' >&2
   exit 1
 fi
 slug=${subject%%/*}
@@ -58,6 +58,6 @@ qualification="${RUNNER_TEMP}/release-npm/QUALIFICATION.json"
 python3 scripts/fetch-release-crate.py "$release_tag" QUALIFICATION.json "$qualification" >/dev/null
 python3 scripts/typescript-qualification.py verify "$qualification" "$source_sha" "$asset" "$archive"
 
-printf 'NPM_PACKAGE=%s\nNPM_VERSION=%s\nNPM_ARCHIVE=%s\nNPM_SIZE=%s\nNPM_SHA256=%s\nSOURCE_SHA=%s\nRELEASE_TAG=%s\n' \
-  "$package" "$version" "$archive" "$archive_size" "$sha256" "$source_sha" "$release_tag" >> "$GITHUB_ENV"
-printf '%s  %s\n' "$sha256" "$asset"
+printf 'NPM_PACKAGE=%s\nNPM_VERSION=%s\nNPM_ARCHIVE=%s\nSOURCE_SHA=%s\nRELEASE_TAG=%s\n' \
+  "$package" "$version" "$archive" "$source_sha" "$release_tag" >> "$GITHUB_ENV"
+printf '%s  %s  %s bytes\n' "$sha256" "$asset" "$archive_size"
