@@ -63,8 +63,8 @@ jobs:
             runner: blacksmith-16vcpu-windows-2025
             jobs: 12
             timeout: 15
-            artifact: ''
-            artifact_path: ''
+            artifact: packages-windows
+            artifact_path: packages
           - lane: macos
             runner: blacksmith-12vcpu-macos-15
             jobs: 10

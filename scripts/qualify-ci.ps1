@@ -8,24 +8,32 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Set-StrictMode -Version Latest
 
+$projfs = Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS
+if ($projfs.State -ne 'Enabled') {
+    $enabled = Enable-WindowsOptionalFeature -Online `
+        -FeatureName Client-ProjFS -NoRestart
+    if ($enabled.RestartNeeded) {
+        throw 'Client-ProjFS requires a restart on this runner image.'
+    }
+}
+
 New-Item -ItemType Directory -Force -Path `
     $env:BUILD_ARTIFACTSTAGINGDIRECTORY, $env:TOOLS_DIR | Out-Null
 . .\scripts\ensure-bun.ps1
 bun install --frozen-lockfile
 
-# Blacksmith's Windows Server 2025 image intentionally omits the Client-ProjFS
-# optional component. Exercise the portable workspace here and compile every
-# ProjFS path; Linux and macOS execute the native-mount behavior.
-# The Server image cannot load ProjectedFSLib.dll, so execute the portable
-# feature set and still compile and link every all-feature test binary.
-cargo test --workspace --exclude acyclic-fs-napi `
-    --exclude acyclic-fs-daemon --locked
-cargo test --workspace --all-features --no-run --locked
+cargo test --workspace --all-features --locked
+cargo test -p acyclic-fs --features native-mount --locked --lib `
+    native_mount::adapter::tests::writable_projfs_captures_closes_renames_links_and_deletes `
+    -- --ignored --test-threads=1
+cargo test -p acyclic-fs --features native-mount --locked --lib `
+    native_mount::usn::tests::live_journal_proves_unchanged_restart_and_fences_a_write `
+    -- --ignored --test-threads=1
 cargo build -p acyclic-fs-napi --locked
+bun scripts/check-filesystem-napi.mjs `
+    "$env:BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
 cargo run --locked -p acyclic-cli
-bun run check
-bun test typescript/packages
-bun run --filter '@acyclic-labs/fs' test:composition
+bun run test
 
 $clangDirectories = @()
 if ($env:LLVM_PATH) {

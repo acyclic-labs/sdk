@@ -71,9 +71,9 @@ browser work uses 8 vCPUs, macOS uses 12, and the aggregate gate uses 2.
 
 The policy lane verifies and runs pinned cargo-deny and gitleaks archives from the
 tool cache. The secret scanner keeps all default rules. Blacksmith's Windows Server
-2025 image does not ship the `Client-ProjFS` optional component: the Windows lane
-executes the portable workspace and TypeScript suites and compiles all ProjFS paths,
-while Linux and macOS execute native-mount behavior.
+2025 image does not enable the `Client-ProjFS` optional component by default, so the
+Windows lane enables it online before executing the writable ProjFS lifecycle, live
+USN continuity, N-API, daemon, and TypeScript runtime suites.
 
 The Linux lane never reuses a prior job result because its Cargo archives bind the
 exact source commit in `.cargo_vcs_info.json`. It retains the isolated, tested Rust
