@@ -5,6 +5,8 @@ set -euo pipefail
 output="$1"
 [[ ! -e "$output" && ! -L "$output" ]] || { echo 'package output must be absent' >&2; exit 2; }
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+inference_evidence="$(dirname "$output")/inference/acyclic-inference.tgz"
+[[ -f "$inference_evidence" ]] || { echo 'filesystem qualification requires the preceding inference package artifact' >&2; exit 2; }
 work="$(mktemp -d -t sdk-fs-package.XXXXXXXX)"
 trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 
@@ -42,3 +44,10 @@ while IFS= read -r archive; do
 done <<< "$archives"
 cd "$output"
 sha256sum acyclic-fs.tgz acyclic-*.crate > SHA256SUMS
+git -C "$root" rev-parse --verify HEAD > SOURCE_COMMIT
+
+package_root="$(dirname "$output")"
+bash "$root/scripts/check-typescript-packages.sh" \
+  "$package_root/typescript" \
+  "$inference_evidence" \
+  "$output/acyclic-fs.tgz"

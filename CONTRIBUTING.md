@@ -78,27 +78,20 @@ The policy lane verifies and runs the pinned upstream cargo-deny archive from th
 tool cache; it never compiles the checker or restores an unused compiler cache.
 
 The Linux lane never reuses a prior job result because its Cargo archives bind the
-exact source commit in `.cargo_vcs_info.json`. It retains the isolated, tested
-Inference crate, Agent Runtime Rust/npm
-archives, and filesystem npm archive with SHA-256 inventories in `packages-linux`.
-The Runtime archive executes its packaged WASM and Protobuf exports outside the
-workspace, and its extracted Rust crate is tested against the exact staged Stream
-dependency archive. The filesystem archive runs
+exact source commit in `.cargo_vcs_info.json`. It retains the isolated, tested Rust
+crates and the six core Objects, Stream, Inference, Machines, Filesystem, and SDK
+TypeScript archives with a source-bound qualification receipt and SHA-256 inventory
+in `packages-linux`. The filesystem archive runs
 the existing public-export/WASM composition test outside the workspace; a missing
 packaged WASM must fail. Cargo packages and verifies the public Objects, Streams,
 and Filesystem dependency closure together with all features. Registry publication
 must publish the exact Objects and Streams archives before Filesystem.
-Publication consumes these exact successful-run bytes,
-never a rebuild. For Stream, Inference, and Filesystem, an operator creates the
-GitHub release from the retained `packages-linux` artifact and points its tag at
-the matching qualified main commit; tag workflows must not rebuild those release
-assets. A new
-crate may use the `CRATES_IO_BOOTSTRAP_TOKEN` environment
-secret only for its first publication. Set the `CRATES_IO_BOOTSTRAP_RELEASE`
-Actions configuration variable in the `crates-io` environment to the exact
-`<package>@<version>` for that one release, then remove both it and the secret after
-configuring crates.io Trusted
-Publishing for this workflow. Each native lane also retains the exact filesystem
+Publication consumes these exact successful-run bytes, never a rebuild. An operator
+creates an immutable family or TypeScript GitHub release from the retained artifact
+and points its tag at the matching qualified main commit. The crates.io publisher
+stays on Blacksmith; npm trusted publishing runs on a GitHub-hosted runner because
+npm does not accept OIDC from self-hosted runners. Each native lane also retains
+the exact filesystem
 companion copy
 loaded by its successful ABI child, named by package version/host OS/architecture with
 a SHA-256 inventory. An existing output directory is rejected. These are host-qualified

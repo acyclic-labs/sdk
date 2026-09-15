@@ -93,6 +93,7 @@ if [[ "$#" -eq 1 ]]; then
   mkdir -p "$output"
   install -m 0644 "$crate" "$typescript_archive" "$output/"
   (cd "$output" && sha256sum "$(basename "$crate")" acyclic-inference.tgz > SHA256SUMS)
+  printf '%s\n' "$source_sha" >"$output/SOURCE_COMMIT"
 elif [[ "$#" -ne 0 ]]; then
   echo "usage: check-inference-package.sh [OUTPUT]" >&2
   exit 2
