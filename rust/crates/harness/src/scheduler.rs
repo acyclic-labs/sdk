@@ -330,19 +330,23 @@ impl Scheduler {
             return Err(Error::Conflict("operation dependency cycle".into()));
         }
         if let Some(parent) = &spec.parent {
-            if parent.slot.trim().is_empty() || !self.operations.contains_key(&parent.operation_id)
-            {
+            if parent.slot.trim().is_empty() {
                 return Err(Error::Invalid(
                     "structured child requires an existing parent and slot".into(),
                 ));
             }
+            let Some(parent_operation) = self.operations.get(&parent.operation_id) else {
+                return Err(Error::Invalid(
+                    "structured child requires an existing parent and slot".into(),
+                ));
+            };
             if self
                 .child_slots
                 .contains_key(&(parent.operation_id, parent.slot.clone()))
             {
                 return Err(Error::Conflict("parent child slot is already bound".into()));
             }
-            if self.operations[&parent.operation_id].phase == OperationPhase::Terminal {
+            if parent_operation.phase == OperationPhase::Terminal {
                 return Err(Error::Conflict(
                     "terminal parent cannot accept children".into(),
                 ));
@@ -393,6 +397,17 @@ impl Scheduler {
     }
 
     /// Applies one committed scheduler event.
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "one arm per scheduler event variant; splitting would obscure the dispatch, \
+                  not simplify it"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "same one-arm-per-scheduler-event-variant dispatch as above; splitting per-arm \
+                  would scatter one event's application across many functions without \
+                  clarifying any of them"
+    )]
     pub fn apply(&mut self, event: SchedulerEvent) -> Result<()> {
         let primary = event_operation(&event);
         let declared_parent = match &event {
@@ -836,6 +851,13 @@ impl Scheduler {
 
     /// Computes the deterministic next decision for a structured parent.
     #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per Orchestration variant (Leaf, Join, Race, Quorum, Reduce), \
+                  each independently evaluating its own completion rule; splitting per-arm \
+                  would scatter one decision across many functions without clarifying any of \
+                  them"
+    )]
     pub fn orchestration(&self, parent: OperationId) -> OrchestrationDecision {
         let Some(parent_state) = self.operations.get(&parent) else {
             return OrchestrationDecision::Wait;
@@ -979,7 +1001,9 @@ impl Scheduler {
                 .map(|operation| operation.spec.owner.authority());
             let mut index = 0;
             while index < frontier.len() {
-                let parent = frontier[index];
+                let Some(&parent) = frontier.get(index) else {
+                    break;
+                };
                 frontier.extend(
                     self.children(parent)
                         // A recursive command is authorized for the root owner. A
@@ -1250,7 +1274,7 @@ impl<T: Clone + PartialEq> TaskInbox<T> {
     pub fn after(&self, sequence: u64, limit: usize) -> Vec<InboxItem<T>> {
         self.items
             .iter()
-            .skip(sequence as usize)
+            .skip(usize::try_from(sequence).unwrap_or(usize::MAX))
             .take(limit)
             .cloned()
             .collect()

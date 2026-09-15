@@ -326,7 +326,9 @@ where
     let mut ordered = true;
     for adjacent in mutations.windows(2) {
         scan_comparisons = scan_comparisons.checked_add(1).ok_or(WorkError::Overflow)?;
-        if indexed_order::<F, M>(&adjacent[0], &adjacent[1]).is_gt() {
+        if let [left, right] = adjacent
+            && indexed_order::<F, M>(left, right).is_gt()
+        {
             ordered = false;
             break;
         }
@@ -383,6 +385,15 @@ where
         };
         let right = left + 1;
         let mut greater = left;
+        // `left < end` was just established by the `filter` above, and callers
+        // maintain `end <= mutations.len()` (it is either the original slice
+        // length or a shrinking heap boundary passed in by `sort_indexed`), so
+        // `left < mutations.len()`. `right` is only indexed inside the
+        // `right < end` guard, so it too is `< mutations.len()`.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "left < end and (guarded) right < end, with end <= mutations.len() maintained by callers"
+        )]
         if right < end {
             *comparisons = comparisons.checked_add(1).ok_or(WorkError::Overflow)?;
             if indexed_order::<F, M>(&mutations[left], &mutations[right]).is_lt() {
@@ -390,6 +401,14 @@ where
             }
         }
         *comparisons = comparisons.checked_add(1).ok_or(WorkError::Overflow)?;
+        // `root` is either the initial caller-supplied index (`< end` by
+        // construction in `sort_indexed`) or a previous `greater`, and
+        // `greater` is one of `left`/`right`, both shown `< end <=
+        // mutations.len()` above.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "root and greater are both < end <= mutations.len(), established above and by sort_indexed's callers"
+        )]
         if !indexed_order::<F, M>(&mutations[root], &mutations[greater]).is_lt() {
             return Ok(());
         }
@@ -510,6 +529,21 @@ where
         match page {
             Page::Leaf(entries) => {
                 validate_leaf::<F, M>(&entries, request.lower.as_ref(), request.upper.as_ref())?;
+                // `request.mutations` is a `Range<usize>` into this same
+                // `mutations` slice, threaded unchanged through the whole
+                // traversal (`rewrite` -> `enter_node`/`advance_frame`).
+                // The root request starts at `0..mutations.len()` (see
+                // `rewrite`), and every subsequent request is built in
+                // `advance_frame` as `selected_start..frame.mutation_cursor`,
+                // where `mutation_cursor` only ever advances while `<
+                // frame.mutation_end`, itself inherited from a prior
+                // request's (already valid) `.mutations.end`. So by
+                // induction every `request.mutations` satisfies `start <=
+                // end <= mutations.len()`.
+                #[allow(
+                    clippy::indexing_slicing,
+                    reason = "request.mutations is bounded by mutations.len() by induction from rewrite's root request and advance_frame's mutation_cursor bookkeeping"
+                )]
                 let result = self
                     .rewrite_leaf(request.page, entries, &mutations[request.mutations])
                     .await;
@@ -545,6 +579,13 @@ where
         while frame.next_child < frame.children.len() {
             let index = frame.next_child;
             frame.next_child += 1;
+            // `index` was captured as `frame.next_child` before the
+            // increment, while the loop guard above already established
+            // `frame.next_child < frame.children.len()`.
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "index captured from frame.next_child while the loop guard above holds next_child < frame.children.len()"
+            )]
             let child = &frame.children[index];
             let child_upper = frame
                 .children
@@ -555,6 +596,16 @@ where
             if let Some(next) = frame.children.get(index + 1) {
                 while frame.mutation_cursor < frame.mutation_end {
                     self.charge_items(1)?;
+                    // The loop guard establishes `frame.mutation_cursor <
+                    // frame.mutation_end`, and `frame.mutation_end` is
+                    // inherited from a prior `NodeRequest.mutations.end`,
+                    // which is bounded by `mutations.len()` (see the
+                    // invariant documented at the `enter_node` leaf-rewrite
+                    // call site).
+                    #[allow(
+                        clippy::indexing_slicing,
+                        reason = "frame.mutation_cursor < frame.mutation_end <= mutations.len(), per the loop guard and the request.mutations invariant"
+                    )]
                     if mutations[frame.mutation_cursor].key() >= &next.first {
                         break;
                     }
@@ -586,6 +637,14 @@ where
         &mut self,
         frame: InternalFrame<F>,
     ) -> Result<Vec<Summary<F::Key>>, Error<M::Error>> {
+        // This branch is only reached when `frame.rewritten` is non-empty
+        // (the `is_empty()` branch above already handled that case), and
+        // `unchanged` requires `rewritten.len() == children.len()`, so
+        // `frame.children` is non-empty here too.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "unchanged() requires children.len() == rewritten.len(), and rewritten is non-empty in this branch"
+        )]
         let result = if frame.rewritten.is_empty() {
             Ok(Vec::new())
         } else if unchanged(&frame.rewritten, &frame.children) {
@@ -621,6 +680,12 @@ where
             structural_allocation = rewritten.logical_bytes;
             entries != original
         };
+        // Guarded by the `entries.is_empty()` branch above: this branch is
+        // only reached when `entries` is non-empty.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "guarded by the preceding entries.is_empty() branch of this same if-chain"
+        )]
         let result = if entries.is_empty() {
             Ok(Vec::new())
         } else if !changed {
@@ -645,6 +710,15 @@ where
             let (found, comparisons) = search::<F>(entries, mutation.key());
             self.charge_items(comparisons)?;
             let index = found.ok();
+            // `search` only returns `Ok(middle)` when `entries[middle]`
+            // compared equal to the key, where `middle` was proven `<
+            // entries.len()` by that function's binary-search invariant.
+            // `entries` is not resliced or shortened between here and the
+            // indexing below.
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "index came from search()'s Ok(middle), which is always < entries.len() by its binary search invariant"
+            )]
             let prior = index.map(|index| entries[index].clone());
             let mut current = prior.clone();
             mutation
@@ -653,6 +727,10 @@ where
             if prior.is_some() != current.is_some() {
                 return Err(Error::MutationContract);
             }
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "same search()-derived index as above, still < entries.len()"
+            )]
             if let (Some(index), Some(replacement)) = (index, current) {
                 changed |= prior.as_ref() != Some(&replacement);
                 entries[index] = replacement;
@@ -682,22 +760,48 @@ where
         let mut entry_index = 0_usize;
         let mut mutation_index = 0_usize;
         while entry_index < entries.len() || mutation_index < mutations.len() {
+            // The outer while guard failed on the `mutation_index ==
+            // mutations.len()` disjunct being false only if this if is not
+            // taken; when it IS taken, the outer guard was satisfied via its
+            // other disjunct, `entry_index < entries.len()`.
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "when mutation_index == mutations.len(), the enclosing while guard's other disjunct entry_index < entries.len() must hold"
+            )]
             if mutation_index == mutations.len() {
                 self.charge_items(1)?;
                 output.push(entries[entry_index].clone());
                 entry_index += 1;
                 continue;
             }
+            // Falling through the `if` above means `mutation_index !=
+            // mutations.len()`; `mutation_index` only ever increases and is
+            // never set past `mutations.len()`, so it is `< mutations.len()`
+            // here.
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "mutation_index != mutations.len() here (the branch above already handled equality), and it never exceeds mutations.len()"
+            )]
             let mutation_key = mutations[mutation_index].key();
             let ordering = entries
                 .get(entry_index)
                 .map(|entry| F::key(entry).cmp(mutation_key));
             self.charge_items(u64::from(ordering.is_some()))?;
+            // `ordering` is `Some(_)` only when `entries.get(entry_index)`
+            // returned `Some`, i.e. `entry_index < entries.len()`.
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "matches!(ordering, Some(Less)) implies entries.get(entry_index) was Some, i.e. entry_index < entries.len()"
+            )]
             if matches!(ordering, Some(std::cmp::Ordering::Less)) {
                 output.push(entries[entry_index].clone());
                 entry_index += 1;
                 continue;
             }
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "matches!(ordering, Some(Equal)) implies entries.get(entry_index) was Some, i.e. entry_index < entries.len()"
+            )]
             let mut current = if matches!(ordering, Some(std::cmp::Ordering::Equal)) {
                 let value = entries[entry_index].clone();
                 entry_index += 1;
@@ -706,6 +810,15 @@ where
                 None
             };
             let key = mutation_key.clone();
+            // `mutation_index < mutations.len()` is checked immediately to
+            // the left of `&&` in this same condition (guaranteed
+            // short-circuit evaluation order), and the loop body only runs
+            // after that same condition succeeded, so the indexing in the
+            // body is covered by the same check.
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "mutation_index < mutations.len() is checked by the left operand of && in this same while condition (short-circuit evaluation)"
+            )]
             while mutation_index < mutations.len() && mutations[mutation_index].key() == &key {
                 self.charge_items(1)?;
                 mutations[mutation_index]
@@ -743,7 +856,19 @@ where
             let (end, examined) =
                 page_chunk_end(entries, start, self.limits, F::leaf_item_encoded_length)?;
             self.charge_items(examined)?;
+            // `page_chunk_end` only returns `Ok((end, _))` with `start < end
+            // <= entries.len()` (it errors with `PageItemTooLarge` instead
+            // of returning `end == start`), so this slice is in bounds and
+            // non-empty.
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "page_chunk_end guarantees start < end <= entries.len() on its Ok path"
+            )]
             let chunk = &entries[start..end];
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "chunk is non-empty per page_chunk_end's Ok-path guarantee (start < end)"
+            )]
             result.push(Summary {
                 first: F::key(&chunk[0]).clone(),
                 page: self.write_page(&PageRef::<F>::Leaf(chunk)).await?,
@@ -777,7 +902,17 @@ where
                 F::internal_item_encoded_length(&child.first)
             })?;
             self.charge_items(examined)?;
+            // Same page_chunk_end guarantee as in write_leaf_chunks: `start
+            // < end <= children.len()` on the Ok path.
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "page_chunk_end guarantees start < end <= children.len() on its Ok path"
+            )]
             let chunk = &children[start..end];
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "chunk is non-empty per page_chunk_end's Ok-path guarantee (start < end)"
+            )]
             result.push(Summary {
                 first: chunk[0].first.clone(),
                 page: self.write_page(&PageRef::<F>::Internal(chunk)).await?,
@@ -802,6 +937,18 @@ where
             }
             summaries = self.write_internal_chunks(&summaries).await?;
         }
+        // The early `summaries.is_empty()` return above rules out an
+        // initial empty vector, and each loop iteration calls
+        // `write_internal_chunks` only while `summaries.len() > 1`
+        // (i.e. non-empty input), which itself never returns an empty
+        // result for non-empty input (its two internal chunking loops each
+        // make at least one `page_chunk_end`-bounded step and push at
+        // least one summary). So the loop can only terminate with
+        // `summaries.len() == 1`.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "the loop above only exits with summaries.len() == 1: write_internal_chunks never returns empty for non-empty input, and the pre-loop check ruled out an initially empty vector"
+        )]
         Ok(summaries[0].page)
     }
 
@@ -919,6 +1066,11 @@ fn page_chunk_end<T, E: std::error::Error>(
     let mut examined = 0_u64;
     while end < items.len() && end - start < maximum_items {
         examined = examined.saturating_add(1);
+        // Guarded by the loop condition's `end < items.len()` conjunct.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "the enclosing while condition already established end < items.len()"
+        )]
         let item_bytes = encoded_length(&items[end])?;
         let next = bytes
             .checked_add(item_bytes)
@@ -945,6 +1097,14 @@ fn search<F: Format>(entries: &[F::Value], key: &F::Key) -> (Result<usize, usize
     while left < right {
         comparisons = comparisons.saturating_add(1);
         let middle = left + (right - left) / 2;
+        // Standard binary search invariant: the loop guard `left < right`
+        // holds here, and `right <= entries.len()` is established at
+        // initialization and only ever shrinks, so `middle` (strictly
+        // between `left` and `right`) is always `< entries.len()`.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "binary search invariant: left < middle_bound <= right <= entries.len()"
+        )]
         match F::key(&entries[middle]).cmp(key) {
             std::cmp::Ordering::Less => left = middle + 1,
             std::cmp::Ordering::Greater => right = middle,

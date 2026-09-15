@@ -1296,41 +1296,16 @@ impl
         }
         #[cfg(feature = "s3-http")]
         {
-            let multipart = crate::active_s3_multipart_objects(
-                self.inner.authority.provider().as_ref(),
-                &self.inner.objects,
-                crate::FilesystemS3Limits::default(),
-                crate::S3MultipartRetentionLimits {
-                    maximum_uploads: maximum_candidates.max(1),
-                    ..crate::S3MultipartRetentionLimits::default()
-                },
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|_| {
-                OperationFailure::new(
-                    FsError::Object(ObjectStoreError::Rejected(
-                        "active S3 multipart retention scan failed".to_owned(),
-                    )),
+            work = self
+                .merge_active_s3_multipart_reachable_objects(
+                    maximum_candidates,
+                    authority_live_bytes,
+                    &mut reachable,
                     work,
+                    budget,
+                    cancellation,
                 )
-            })?;
-            work = merge_simultaneous_work(
-                work,
-                multipart.work,
-                authority_live_bytes.saturating_add(object_vec_bytes(&reachable)),
-                budget,
-            )?;
-            let incoming_bytes = object_vec_bytes(&multipart.value);
-            merge_sorted_object_ids(
-                &mut reachable,
-                &multipart.value,
-                incoming_bytes,
-                authority_live_bytes,
-                &mut work,
-                budget,
-            )?;
+                .await?;
         }
         let collected = self
             .collect_unreachable_local_objects(
@@ -1346,6 +1321,56 @@ impl
             value: collected,
             work,
         })
+    }
+
+    /// Scans active S3 multipart staged content and merges its reachable
+    /// objects into the accumulating local garbage-collection reachable set.
+    #[cfg(feature = "s3-http")]
+    async fn merge_active_s3_multipart_reachable_objects(
+        &self,
+        maximum_candidates: u64,
+        authority_live_bytes: u64,
+        reachable: &mut Vec<ObjectId>,
+        work: WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkCounters, OperationFailure<FsError>> {
+        let multipart = crate::active_s3_multipart_objects(
+            self.inner.authority.provider().as_ref(),
+            &self.inner.objects,
+            crate::FilesystemS3Limits::default(),
+            crate::S3MultipartRetentionLimits {
+                maximum_uploads: maximum_candidates.max(1),
+                ..crate::S3MultipartRetentionLimits::default()
+            },
+            remaining(work, budget)?,
+            cancellation,
+        )
+        .await
+        .map_err(|_| {
+            OperationFailure::new(
+                FsError::Object(ObjectStoreError::Rejected(
+                    "active S3 multipart retention scan failed".to_owned(),
+                )),
+                work,
+            )
+        })?;
+        let mut work = merge_simultaneous_work(
+            work,
+            multipart.work,
+            authority_live_bytes.saturating_add(object_vec_bytes(reachable)),
+            budget,
+        )?;
+        let incoming_bytes = object_vec_bytes(&multipart.value);
+        merge_sorted_object_ids(
+            reachable,
+            &multipart.value,
+            incoming_bytes,
+            authority_live_bytes,
+            &mut work,
+            budget,
+        )?;
+        Ok(work)
     }
 
     async fn collect_unreachable_local_objects(
@@ -1365,6 +1390,74 @@ impl
                 *work,
             ));
         }
+        let (candidates, examined) = self
+            .list_unreachable_object_candidates(
+                reachable,
+                maximum_candidates,
+                retained_bytes,
+                work,
+                budget,
+                cancellation,
+            )
+            .await?;
+        let provider = self.inner.objects.inner().provider();
+        let bucket = self.inner.objects.inner().bucket().clone();
+        let mut removed = 0_u64;
+        for (object_key, version_id) in candidates {
+            cancellation
+                .check()
+                .map_err(|error| OperationFailure::new(error.into(), *work))?;
+            let identity = blake3::hash(format!("{object_key}\0{version_id}").as_bytes());
+            provider
+                .delete(
+                    bucket.clone(),
+                    object_key,
+                    Some(version_id),
+                    None,
+                    Some(format!("fs-gc-{}", identity.to_hex())),
+                )
+                .await
+                .map_err(|error| {
+                    OperationFailure::new(FsError::LocalObjectsBucket(error), *work)
+                })?;
+            removed = removed.saturating_add(1);
+            *work = work
+                .checked_add(WorkCounters {
+                    backend_write_operations: 1,
+                    items_examined: 1,
+                    ..WorkCounters::default()
+                })
+                .map_err(|error| OperationFailure::new(error.into(), *work))?;
+            work.verify(budget)
+                .map_err(|error| OperationFailure::new(error.into(), *work))?;
+        }
+        let physical = provider
+            .collect_garbage(maximum_candidates)
+            .await
+            .map_err(|error| OperationFailure::new(FsError::LocalObjects(error), *work))?;
+        Ok(LocalGarbageCollection {
+            examined,
+            removed,
+            manifests_removed: physical.manifests_removed,
+            chunks_removed: physical.chunks_removed,
+            temporary_files_removed: physical.temporary_files_removed,
+        })
+    }
+
+    /// Pages the local objects bucket and collects every stored object key
+    /// and version absent from the `reachable` set, up to `maximum_candidates`.
+    ///
+    /// Returns the unreachable candidates alongside the total number of
+    /// stored objects examined while paging.
+    async fn list_unreachable_object_candidates(
+        &self,
+        reachable: &[ObjectId],
+        maximum_candidates: u64,
+        retained_bytes: u64,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<(Vec<(String, String)>, u64), OperationFailure<FsError>> {
         let reachable_keys = reachable
             .iter()
             .copied()
@@ -1439,46 +1532,7 @@ impl
                 break;
             }
         }
-        let mut removed = 0_u64;
-        for (object_key, version_id) in candidates {
-            cancellation
-                .check()
-                .map_err(|error| OperationFailure::new(error.into(), *work))?;
-            let identity = blake3::hash(format!("{object_key}\0{version_id}").as_bytes());
-            provider
-                .delete(
-                    bucket.clone(),
-                    object_key,
-                    Some(version_id),
-                    None,
-                    Some(format!("fs-gc-{}", identity.to_hex())),
-                )
-                .await
-                .map_err(|error| {
-                    OperationFailure::new(FsError::LocalObjectsBucket(error), *work)
-                })?;
-            removed = removed.saturating_add(1);
-            *work = work
-                .checked_add(WorkCounters {
-                    backend_write_operations: 1,
-                    items_examined: 1,
-                    ..WorkCounters::default()
-                })
-                .map_err(|error| OperationFailure::new(error.into(), *work))?;
-            work.verify(budget)
-                .map_err(|error| OperationFailure::new(error.into(), *work))?;
-        }
-        let physical = provider
-            .collect_garbage(maximum_candidates)
-            .await
-            .map_err(|error| OperationFailure::new(FsError::LocalObjects(error), *work))?;
-        Ok(LocalGarbageCollection {
-            examined,
-            removed,
-            manifests_removed: physical.manifests_removed,
-            chunks_removed: physical.chunks_removed,
-            temporary_files_removed: physical.temporary_files_removed,
-        })
+        Ok((candidates, examined))
     }
 
     async fn local_authority_generation(
@@ -1755,6 +1809,63 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await
     }
 
+    /// Builds and stores the forked generation root for a new workspace, then
+    /// proves and returns its complete reachable closure and accrued work.
+    async fn materialize_forked_generation_root(
+        &self,
+        source: &crate::Generation<A, O>,
+        destination_id: crate::WorkspaceId,
+        config: VolumeConfig,
+        cancellation: &CancellationToken,
+    ) -> Result<(ObjectId, WorkCounters), crate::workspace::WorkspaceError> {
+        let source_object = ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: source.id.digest(),
+        };
+        let (source_root, work) = read_generation_root(
+            &self.inner.objects,
+            source_object,
+            config,
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        if source_root.volume_id != source.workspace.volume.id {
+            return Err(crate::workspace::WorkspaceError::ForeignGeneration);
+        }
+        let fork_root = GenerationRoot {
+            volume_id: destination_id.volume_id(),
+            root_file_id: source_root.root_file_id,
+            file_table: source_root.file_table,
+            parents: vec![source.id],
+            required_features: source_root.required_features,
+        };
+        let encoded =
+            encode_generation_root(&fork_root).map_err(crate::workspace::WorkspaceError::engine)?;
+        let (generation_root, work) = self
+            .put_encoded(
+                ObjectKind::GenerationRoot,
+                encoded,
+                work,
+                WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+            .await
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+        let proof = prove_generation_closure_async(
+            &self.inner.objects,
+            generation_root,
+            closure_limits(config),
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        let work = add(work, proof.work).map_err(crate::workspace::WorkspaceError::engine)?;
+        Ok((generation_root, work))
+    }
+
     /// Creates a new workspace at one exact immutable source generation while
     /// sharing the complete file table and every unchanged content object.
     ///
@@ -1773,52 +1884,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             crate::WorkspaceId::derive(self.inner.workspace_namespace, &destination);
         let config = source.workspace.volume.config;
         let cancellation = CancellationToken::new();
-        let source_object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: source.id.digest(),
-        };
-        let (source_root, mut work) = read_generation_root(
-            &self.inner.objects,
-            source_object,
-            config,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(crate::workspace::WorkspaceError::engine)?;
-        if source_root.volume_id != source.workspace.volume.id {
-            return Err(crate::workspace::WorkspaceError::ForeignGeneration);
-        }
-        let fork_root = GenerationRoot {
-            volume_id: destination_id.volume_id(),
-            root_file_id: source_root.root_file_id,
-            file_table: source_root.file_table,
-            parents: vec![source.id],
-            required_features: source_root.required_features,
-        };
-        let encoded =
-            encode_generation_root(&fork_root).map_err(crate::workspace::WorkspaceError::engine)?;
-        let (generation_root, next_work) = self
-            .put_encoded(
-                ObjectKind::GenerationRoot,
-                encoded,
-                work,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
-        work = next_work;
-        let proof = prove_generation_closure_async(
-            &self.inner.objects,
-            generation_root,
-            closure_limits(config),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(crate::workspace::WorkspaceError::engine)?;
-        work = add(work, proof.work).map_err(crate::workspace::WorkspaceError::engine)?;
+        let (generation_root, mut work) = self
+            .materialize_forked_generation_root(source, destination_id, config, &cancellation)
+            .await?;
         self.retain_workspace_generation(
             &source.workspace.volume,
             source.id,
@@ -2768,13 +2836,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             initial_generation_root: generation_root,
         })
         .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let operation_id = match operation_id {
-            Some(operation_id) => operation_id,
-            None => {
-                let (operation_id, identity_work) = derived_operation_id(volume_id);
-                work = add(work, identity_work)?;
-                operation_id
-            }
+        let operation_id = if let Some(operation_id) = operation_id {
+            operation_id
+        } else {
+            let (operation_id, identity_work) = derived_operation_id(volume_id);
+            work = add(work, identity_work)?;
+            operation_id
         };
         let (commit, encoding_work) = creation_commit(operation_id, event);
         work = add(work, encoding_work)?;
@@ -3129,6 +3196,58 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         })
     }
 
+    /// Resolves the exact generation root object and, for a writable
+    /// checkout, the authenticated authority head it must be fenced against.
+    async fn resolve_checkout_generation(
+        &self,
+        selector: GenerationSelector,
+        mode: CheckoutMode,
+        work: WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<(ObjectId, Option<Head>, WorkCounters), OperationFailure<FsError>> {
+        match selector {
+            GenerationSelector::Exact(generation_id) => {
+                let mut work = work;
+                let authority_head = if mode.access == AccessMode::ReadWrite {
+                    if mode.consistency != ConsistencyMode::TrackingSafe
+                        || mode.mutations != MutationMode::PrivateOverlay
+                    {
+                        return Err(OperationFailure::before_work(
+                            FsError::WritableCheckoutRequiresHead,
+                        ));
+                    }
+                    let resolved = self
+                        .resolve_head_generation(remaining(work, budget)?, cancellation)
+                        .await
+                        .map_err(|failure| {
+                            failure.map_with_prior_work(work, std::convert::identity)
+                        })?;
+                    work = add(work, resolved.2)?;
+                    Some(resolved.1)
+                } else {
+                    None
+                };
+                Ok((
+                    ObjectId {
+                        kind: ObjectKind::GenerationRoot,
+                        digest: generation_id.digest(),
+                    },
+                    authority_head,
+                    work,
+                ))
+            }
+            GenerationSelector::Head => {
+                let resolved = self
+                    .resolve_head_generation(remaining(work, budget)?, cancellation)
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                let work = add(work, resolved.2)?;
+                Ok((resolved.0, Some(resolved.1), work))
+            }
+        }
+    }
+
     /// Opens one immutable pinned checkout after authenticating its bounded root.
     ///
     /// # Errors
@@ -3149,44 +3268,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             .map_err(|error| OperationFailure::before_work(error.into()))?;
         validate_checkout(mode, self.config)?;
         let mut work = WorkCounters::default();
-        let (generation_root, mut authority_head) = match selector {
-            GenerationSelector::Exact(generation_id) => {
-                let authority_head = if mode.access == AccessMode::ReadWrite {
-                    if mode.consistency != ConsistencyMode::TrackingSafe
-                        || mode.mutations != MutationMode::PrivateOverlay
-                    {
-                        return Err(OperationFailure::before_work(
-                            FsError::WritableCheckoutRequiresHead,
-                        ));
-                    }
-                    let resolved = self
-                        .resolve_head_generation(remaining(work, budget)?, cancellation)
-                        .await
-                        .map_err(|failure| {
-                            failure.map_with_prior_work(work, std::convert::identity)
-                        })?;
-                    work = add(work, resolved.2)?;
-                    Some(resolved.1)
-                } else {
-                    None
-                };
-                (
-                    ObjectId {
-                        kind: ObjectKind::GenerationRoot,
-                        digest: generation_id.digest(),
-                    },
-                    authority_head,
-                )
-            }
-            GenerationSelector::Head => {
-                let resolved = self
-                    .resolve_head_generation(remaining(work, budget)?, cancellation)
-                    .await
-                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-                work = add(work, resolved.2)?;
-                (resolved.0, Some(resolved.1))
-            }
-        };
+        let (generation_root, mut authority_head, next_work) = self
+            .resolve_checkout_generation(selector, mode, work, budget, cancellation)
+            .await?;
+        work = next_work;
         let (root, root_work) = read_generation_root(
             &self.fs.inner.objects,
             generation_root,
@@ -10070,27 +10155,36 @@ fn merge_sorted_object_ids(
     merged
         .try_reserve_exact(maximum_items)
         .map_err(|_| OperationFailure::new(FsError::GarbageCollectionAllocationFailed, *work))?;
-    let mut left_index = 0;
-    let mut right_index = 0;
-    while left_index < reachable.len() && right_index < incoming.len() {
-        match reachable[left_index].cmp(&incoming[right_index]) {
-            std::cmp::Ordering::Less => {
-                merged.push(reachable[left_index]);
-                left_index += 1;
+    let mut left_iter = reachable.iter().copied().peekable();
+    let mut right_iter = incoming.iter().copied().peekable();
+    loop {
+        match (left_iter.peek(), right_iter.peek()) {
+            (Some(&left), Some(&right)) => match left.cmp(&right) {
+                std::cmp::Ordering::Less => {
+                    merged.push(left);
+                    left_iter.next();
+                }
+                std::cmp::Ordering::Greater => {
+                    merged.push(right);
+                    right_iter.next();
+                }
+                std::cmp::Ordering::Equal => {
+                    merged.push(left);
+                    left_iter.next();
+                    right_iter.next();
+                }
+            },
+            (Some(&left), None) => {
+                merged.push(left);
+                left_iter.next();
             }
-            std::cmp::Ordering::Greater => {
-                merged.push(incoming[right_index]);
-                right_index += 1;
+            (None, Some(&right)) => {
+                merged.push(right);
+                right_iter.next();
             }
-            std::cmp::Ordering::Equal => {
-                merged.push(reachable[left_index]);
-                left_index += 1;
-                right_index += 1;
-            }
+            (None, None) => break,
         }
     }
-    merged.extend_from_slice(&reachable[left_index..]);
-    merged.extend_from_slice(&incoming[right_index..]);
     let copied_bytes = u64::try_from(merged.len())
         .unwrap_or(u64::MAX)
         .saturating_mul(u64::try_from(size_of::<ObjectId>()).unwrap_or(u64::MAX));

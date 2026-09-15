@@ -1,4 +1,13 @@
 #![deny(unsafe_code)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::indexing_slicing,
+        clippy::cognitive_complexity,
+        clippy::redundant_clone,
+        clippy::too_many_lines
+    )
+)]
 //! Canonical Rust SDK for immutable, independently configured filesystem volumes.
 //!
 //! This crate owns its public contracts and first-party embedded backends so a
@@ -7,7 +16,7 @@
 
 /// Generated public gRPC schema and client/server bindings.
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(missing_docs, clippy::all)]
+#[allow(missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]
 pub mod wire {
     /// Shared operation and capability messages used by Filesystem.
     pub mod harness {

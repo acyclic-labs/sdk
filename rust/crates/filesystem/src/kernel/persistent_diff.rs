@@ -244,6 +244,17 @@ fn align_children<F: Format>(
     let mut common = Vec::new();
     let mut next_right = 0;
     for (left_index, left_child) in left.iter().enumerate() {
+        // `next_right` starts at 0 and is only ever reassigned below to
+        // `right_index + 1`, where `right_index = next_right + relative` and
+        // `relative` is a valid position within `right[next_right..]` (so
+        // `relative < right.len() - next_right`). That makes `right_index <
+        // right.len()`, hence `next_right <= right.len()` on every iteration;
+        // slicing at exactly `right.len()` yields an empty (not
+        // out-of-bounds) slice.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "next_right <= right.len() is maintained by the right_index + 1 update below"
+        )]
         if let Some(relative) = right[next_right..]
             .iter()
             .position(|right_child| right_child.page == left_child.page)
@@ -257,6 +268,16 @@ fn align_children<F: Format>(
     let mut right_start = 0;
     common.push((left.len(), right.len()));
     for (left_end, right_end) in common {
+        // `common` accumulates `(left_index, right_index)` pairs in strictly
+        // increasing order (both indices only grow across iterations of the
+        // loop above, and each is bounded above by the sentinel
+        // `(left.len(), right.len())` pushed after the loop). So
+        // `left_start <= left_end <= left.len()` and
+        // `right_start <= right_end <= right.len()` hold for every pair here.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "left_start..left_end and right_start..right_end are bounded by the strictly increasing (left_index, right_index) pairs built above, terminated by the (left.len(), right.len()) sentinel"
+        )]
         push_unmatched::<F>(
             &left[left_start..left_end],
             &right[right_start..right_end],

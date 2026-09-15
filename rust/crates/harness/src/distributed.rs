@@ -694,6 +694,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one linear end-to-end scenario asserting atomic, durable, exactly-once \
+                  recursive cancellation; splitting it into helpers would scatter one coherent \
+                  story across multiple functions without making any step clearer"
+    )]
     async fn authenticated_recursive_cancel_is_atomic_durable_and_exactly_replayable() -> Result<()>
     {
         let client = StreamClient::new(Arc::new(MemoryStream::default()));

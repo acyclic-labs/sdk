@@ -90,7 +90,7 @@ pub enum CredentialGrant {
         /// Absolute Unix expiry enforced by the endpoint.
         expires_at_unix_seconds: i64,
     },
-    /// Standard S3 SigV4 coordinates scoped to one workspace.
+    /// Standard S3 `SigV4` coordinates scoped to one workspace.
     S3 {
         /// Customer S3 endpoint.
         endpoint: String,
@@ -181,7 +181,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
             .filesystem
             .open_workspace(&reference.name)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         if workspace.id().into_bytes().as_slice() != reference.workspace_id {
             return Err(Status::failed_precondition(
                 "workspace name and identity disagree",
@@ -197,7 +197,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         let reference = required(reference, "generation")?;
         let workspace = self.workspace(reference.workspace).await?;
         let id = generation_id(&reference.generation_id)?;
-        workspace.generation(id).await.map_err(status)
+        workspace
+            .generation(id)
+            .await
+            .map_err(|error| status(&error))
     }
 
     fn admit<M: Message>(&self, request: &Request<M>) -> Result<(), Status> {
@@ -301,7 +304,7 @@ where
             .filesystem
             .create_workspace_with_config_operation(request.name, config, Some(operation_id))
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&workspace).await?),
             status: wire::MutationStatus::Committed as i32,
@@ -317,9 +320,11 @@ where
             wire::open_workspace_request::Selector::Workspace(reference) => {
                 self.workspace(Some(reference)).await?
             }
-            wire::open_workspace_request::Selector::Name(name) => {
-                self.filesystem.open_workspace(name).await.map_err(status)?
-            }
+            wire::open_workspace_request::Selector::Name(name) => self
+                .filesystem
+                .open_workspace(name)
+                .await
+                .map_err(|error| status(&error))?,
         };
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&workspace).await?),
@@ -337,7 +342,7 @@ where
         let outcome = workspace
             .delete(operation(request.operation)?)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let status = match outcome {
             WorkspaceDelete::Deleted => wire::MutationStatus::Committed,
             WorkspaceDelete::AlreadyDeleted => wire::MutationStatus::AlreadyCommitted,
@@ -353,7 +358,7 @@ where
     ) -> Result<Response<wire::GenerationResponse>, Status> {
         self.admit(&request)?;
         let workspace = self.workspace(request.into_inner().workspace).await?;
-        let generation = workspace.head().await.map_err(status)?;
+        let generation = workspace.head().await.map_err(|error| status(&error))?;
         Ok(Response::new(generation_message(&generation).await?))
     }
 
@@ -390,7 +395,7 @@ where
             }
             None => generation.read(&request.path, request.maximum_bytes).await,
         }
-        .map_err(status)?;
+        .map_err(|error| status(&error))?;
         Ok(Response::new(wire::ReadResponse {
             contents: bytes.to_vec(),
         }))
@@ -407,9 +412,9 @@ where
             .await?
             .stat(&request.path)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(wire::StatResponse {
-            stat: Some(stat_message(value)),
+            stat: Some(stat_message(&value)),
         }))
     }
 
@@ -428,7 +433,7 @@ where
         let listed = generation
             .list_directory(&request.path, after.as_ref(), page.maximum_items)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let next = listed
             .has_more
             .then(|| listed.entries.last().map(|entry| logical_name(&entry.name)))
@@ -445,7 +450,10 @@ where
             } else {
                 format!("{}/{name}", request.path.trim_end_matches('/'))
             };
-            let stat = generation.stat(&child).await.map_err(status)?;
+            let stat = generation
+                .stat(&child)
+                .await
+                .map_err(|error| status(&error))?;
             if stat.file_id != entry.file_id || stat.kind != entry.kind {
                 return Err(Status::data_loss(
                     "directory binding changed within immutable generation",
@@ -453,7 +461,7 @@ where
             }
             entries.push(wire::DirectoryEntry {
                 name: Some(logical_name(&entry.name)),
-                stat: Some(stat_message(stat)),
+                stat: Some(stat_message(&stat)),
             });
         }
         Ok(Response::new(wire::ListDirectoryResponse {
@@ -472,7 +480,7 @@ where
             .await?
             .read_symbolic_link(&request.path)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         if u64::try_from(contents.len()).unwrap_or(u64::MAX) > request.maximum_bytes
             || request.maximum_bytes > self.limits.maximum_response_bytes
         {
@@ -506,7 +514,7 @@ where
                 request.maximum_extents,
             )
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let truncated =
             u32::try_from(plan.spans.len()).unwrap_or(u32::MAX) == request.maximum_extents;
         Ok(Response::new(wire::PlanExtentsResponse {
@@ -557,21 +565,21 @@ where
         let mut transaction = workspace
             .begin_transaction_at(&base, operation(request.operation)?)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         for mutation in request.mutations {
             apply_mutation(&mut transaction, mutation).await?;
         }
-        let first = transaction.commit().await.map_err(status)?;
+        let first = transaction.commit().await.map_err(|error| status(&error))?;
         if !matches!(first, TransactionCommit::Conflict { .. }) {
             return Ok(Response::new(commit_message(first)));
         }
         match transaction
             .rebase(request.maximum_conflicts)
             .await
-            .map_err(status)?
+            .map_err(|error| status(&error))?
         {
             TransactionRebase::Rebased(_) => Ok(Response::new(commit_message(
-                transaction.commit().await.map_err(status)?,
+                transaction.commit().await.map_err(|error| status(&error))?,
             ))),
             TransactionRebase::Conflicted {
                 conflicts,
@@ -605,14 +613,14 @@ where
         let mut transaction = workspace
             .begin_transaction_at(&base, operation(request.operation)?)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         for mutation in request.mutations {
             apply_mutation(&mut transaction, mutation).await?;
         }
         match transaction
             .rebase(request.maximum_conflicts)
             .await
-            .map_err(status)?
+            .map_err(|error| status(&error))?
         {
             TransactionRebase::Rebased(generation) => {
                 Ok(Response::new(wire::RebaseTransactionResponse {
@@ -653,7 +661,7 @@ where
                 ForkOptions::from_generation(source, idempotency_key),
             )
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&destination).await?),
             status: wire::MutationStatus::Committed as i32,
@@ -676,7 +684,7 @@ where
         let changes = workspace
             .diff(&from, &to, request.maximum_changes)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(wire::DiffResponse {
             from: Some(generation_ref(changes.from())),
             to: Some(generation_ref(changes.to())),
@@ -721,7 +729,7 @@ where
                 request.maximum_conflicts,
             )
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(rebase_message(outcome)))
     }
 
@@ -745,8 +753,18 @@ where
         let target = self.generation(request.target).await?;
         let source_workspace = self.workspace(generation_ref(&source).workspace).await?;
         let target_workspace = self.workspace(generation_ref(&target).workspace).await?;
-        if source_workspace.head().await.map_err(status)?.id() != source.id()
-            || target_workspace.head().await.map_err(status)?.id() != target.id()
+        if source_workspace
+            .head()
+            .await
+            .map_err(|error| status(&error))?
+            .id()
+            != source.id()
+            || target_workspace
+                .head()
+                .await
+                .map_err(|error| status(&error))?
+                .id()
+                != target.id()
         {
             return Err(Status::failed_precondition(
                 "join endpoints must be current workspace heads",
@@ -762,13 +780,13 @@ where
             )
             .plan()
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let source_ref = generation_ref(&source);
         let target_ref = generation_ref(&target);
         let base = source_workspace
             .generation(plan.common_ancestor())
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let base_ref = generation_ref(&base);
         let plan_id = join_plan_id(
             &source_ref,
@@ -782,7 +800,7 @@ where
         let changes = source_workspace
             .diff(&base, &source, request.maximum_changes)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let file_changes = changes
             .changes()
             .files
@@ -859,12 +877,15 @@ where
             )
             .plan()
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         if plan.source_head() != source.id()
             || plan.target_head() != target.id()
             || plan.common_ancestor() != base.id()
         {
-            let actual = target_workspace.head().await.map_err(status)?;
+            let actual = target_workspace
+                .head()
+                .await
+                .map_err(|error| status(&error))?;
             return Ok(Response::new(wire::JoinResponse {
                 status: wire::JoinStatus::StaleTarget as i32,
                 generation: Some(generation_ref(&actual)),
@@ -878,7 +899,7 @@ where
                 idempotency_key: operation(request.operation)?,
             })
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(join_message(outcome)))
     }
 
@@ -919,7 +940,7 @@ where
                 crate::model::CheckoutMode::read_only_pinned(),
             )
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let manifest = checkout
             .export_manifest(crate::WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
@@ -956,7 +977,9 @@ where
                 {
                     return Ok(None);
                 }
-                let object = objects[index];
+                let Some(&object) = objects.get(index) else {
+                    return Ok(None);
+                };
                 let remaining = maximum_bytes.saturating_sub(retained);
                 let body = filesystem
                     .export_object(
@@ -1089,11 +1112,13 @@ where
             .filesystem
             .open_workspace(&workspace_ref.name)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         Ok(Response::new(wire::ImportResponse {
             outcome: Some(mutation(
                 wire::MutationStatus::Committed,
-                Some(generation_ref(&workspace.head().await.map_err(status)?)),
+                Some(generation_ref(
+                    &workspace.head().await.map_err(|error| status(&error))?,
+                )),
                 None,
             )),
         }))
@@ -1189,7 +1214,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 }
                 generation
             }
-            None => workspace.head().await.map_err(status)?,
+            None => workspace.head().await.map_err(|error| status(&error))?,
         };
         let issuer = self.credential_issuer.as_ref().ok_or_else(|| {
             Status::unimplemented("credential issuance is unavailable in this deployment")
@@ -1282,7 +1307,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
             let workspace = self
                 .workspace(generation_ref(&generation).workspace)
                 .await?;
-            let head = workspace.head().await.map_err(status)?;
+            let head = workspace.head().await.map_err(|error| status(&error))?;
             if head.id() != generation.id() {
                 return Err(Status::failed_precondition(
                     "checkpoint requires the current head",
@@ -1291,9 +1316,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
             workspace
                 .checkpoint(&request.identity)
                 .await
-                .map_err(status)?;
+                .map_err(|error| status(&error))?;
         } else {
-            generation.pin(&request.identity).await.map_err(status)?;
+            generation
+                .pin(&request.identity)
+                .await
+                .map_err(|error| status(&error))?;
         }
         Ok(Response::new(wire::RetainGenerationResponse {
             generation: Some(generation_ref(&generation)),
@@ -1322,7 +1350,7 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             transaction
                 .create_directory(&value.path)
                 .await
-                .map_err(status)?;
+                .map_err(|error| status(&error))?;
             transaction
                 .set_metadata(&value.path, metadata(value.metadata)?)
                 .await
@@ -1331,7 +1359,7 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             transaction
                 .create_symbolic_link(&value.path, Bytes::from(value.target))
                 .await
-                .map_err(status)?;
+                .map_err(|error| status(&error))?;
             transaction
                 .set_metadata(&value.path, metadata(value.metadata)?)
                 .await
@@ -1404,7 +1432,7 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
         Mutation::CopyFile(value) => transaction.copy(&value.source, &value.destination).await,
     }
-    .map_err(status)
+    .map_err(|error| status(&error))
 }
 
 fn metadata(value: Option<wire::Metadata>) -> Result<FileMetadata, Status> {
@@ -1565,7 +1593,7 @@ fn observed_mutation<A, O>(
 async fn workspace_message<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
 ) -> Result<wire::Workspace, Status> {
-    let head = workspace.head().await.map_err(status)?;
+    let head = workspace.head().await.map_err(|error| status(&error))?;
     Ok(wire::Workspace {
         workspace: Some(workspace_ref(workspace)),
         name: workspace.name().as_str().to_owned(),
@@ -1583,7 +1611,7 @@ async fn generation_message<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let parents = generation
         .parents()
         .await
-        .map_err(status)?
+        .map_err(|error| status(&error))?
         .into_iter()
         .map(|id| wire::GenerationRef {
             workspace: workspace.clone(),
@@ -1869,9 +1897,12 @@ fn decode_object_id(bytes: &[u8]) -> Result<ObjectId, Status> {
             "object identity must contain kind and digest",
         ));
     }
-    let kind = ObjectKind::from_canonical_tag(bytes[0])
+    let (&tag, digest_bytes) = bytes
+        .split_first()
+        .ok_or_else(|| Status::invalid_argument("object identity must contain kind and digest"))?;
+    let kind = ObjectKind::from_canonical_tag(tag)
         .map_err(|error| Status::invalid_argument(error.to_string()))?;
-    let digest: [u8; 32] = bytes[1..]
+    let digest: [u8; 32] = digest_bytes
         .try_into()
         .map_err(|_| Status::invalid_argument("object digest is malformed"))?;
     Ok(ObjectId {
@@ -2054,7 +2085,7 @@ fn rebase_message<A, O>(value: WorkspaceRebase<A, O>) -> wire::RebaseResponse {
     }
 }
 
-fn stat_message(value: crate::WorkspaceStat) -> wire::FileStat {
+fn stat_message(value: &crate::WorkspaceStat) -> wire::FileStat {
     wire::FileStat {
         file_id: value.file_id.into_bytes().to_vec(),
         kind: file_kind(value.kind),
@@ -2126,7 +2157,7 @@ fn required<T>(value: Option<T>, name: &'static str) -> Result<T, Status> {
     value.ok_or_else(|| Status::invalid_argument(format!("{name} is required")))
 }
 
-fn status(error: WorkspaceError) -> Status {
+fn status(error: &WorkspaceError) -> Status {
     match error {
         WorkspaceError::NotFound => Status::not_found(error.to_string()),
         WorkspaceError::Name(_) | WorkspaceError::Path(_) | WorkspaceError::ReadLimitExceeded => {
@@ -2134,8 +2165,8 @@ fn status(error: WorkspaceError) -> Status {
         }
         WorkspaceError::ForeignGeneration
         | WorkspaceError::IncompatibleWorkspace
-        | WorkspaceError::ChangeSetContinuity => Status::failed_precondition(error.to_string()),
-        WorkspaceError::RetentionConflict
+        | WorkspaceError::ChangeSetContinuity
+        | WorkspaceError::RetentionConflict
         | WorkspaceError::NoCommonAncestor
         | WorkspaceError::LineageLimit
         | WorkspaceError::JoinLimit

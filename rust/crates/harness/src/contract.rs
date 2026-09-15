@@ -229,7 +229,9 @@ pub fn resolve_policy_layers(layers: &[PolicyLayer]) -> Result<Capabilities> {
     if layers
         .first()
         .is_none_or(|layer| layer.level != AuthorityLevel::Runtime)
-        || layers.windows(2).any(|pair| pair[0].level >= pair[1].level)
+        || layers
+            .windows(2)
+            .any(|pair| matches!(pair, [left, right] if left.level >= right.level))
     {
         return Err(Error::Invalid(
             "policy layers must start at runtime and be strictly ordered".into(),

@@ -75,9 +75,12 @@ impl LogicalName {
                 if !bytes.len().is_multiple_of(2) {
                     return Err(TreePageError::InvalidName);
                 }
-                let units = bytes
-                    .chunks_exact(2)
-                    .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+                let units = bytes.chunks_exact(2).map(|pair| {
+                    let [low, high] = pair else {
+                        unreachable!("chunks_exact(2) always yields a length-2 slice")
+                    };
+                    u16::from_le_bytes([*low, *high])
+                });
                 if bytes == [b'.', 0]
                     || bytes == [b'.', 0, b'.', 0]
                     || units.clone().any(|unit| {
@@ -402,10 +405,12 @@ impl ExtentPage {
                 if children.is_empty() {
                     return Err(ExtentPageError::EmptyInternalPage);
                 }
-                if children
-                    .windows(2)
-                    .any(|pair| pair[0].end_offset != pair[1].first_offset)
-                {
+                if children.windows(2).any(|pair| {
+                    let [left, right] = pair else {
+                        unreachable!("windows(2) always yields exactly two elements")
+                    };
+                    left.end_offset != right.first_offset
+                }) {
                     return Err(ExtentPageError::NonContiguous);
                 }
                 if children

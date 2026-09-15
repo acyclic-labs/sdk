@@ -66,11 +66,11 @@ async fn handshake(State(state): State<AppState>, body: Bytes) -> Response {
         state.maximum_frame_bytes,
     ) {
         Ok(value) => value,
-        Err(error) => return error_response(error),
+        Err(error) => return error_response(&error),
     };
     match state.api.handshake(request).await {
         Ok(response) => message_response("acyclic.harness.v1.HandshakeResponse", &response),
-        Err(error) => error_response(error),
+        Err(error) => error_response(&error),
     }
 }
 
@@ -81,17 +81,17 @@ async fn submit(State(state): State<AppState>, body: Bytes) -> Response {
         state.maximum_frame_bytes,
     ) {
         Ok(value) => value,
-        Err(error) => return error_response(error),
+        Err(error) => return error_response(&error),
     };
     if let Err(error) = validate_command_protocol(&command) {
-        return error_response(error);
+        return error_response(&error);
     }
     let admission = match state.api.submit(command.clone()).await {
         Ok(value) => value,
-        Err(error) => admission_from_error(command.operation.clone(), error),
+        Err(error) => admission_from_error(command.operation.clone(), &error),
     };
     if let Err(error) = validate_admission(&command, &admission) {
-        return error_response(error);
+        return error_response(&error);
     }
     message_response("acyclic.harness.v1.Admission", &admission)
 }
@@ -103,14 +103,14 @@ async fn replay(State(state): State<AppState>, body: Bytes) -> Response {
         state.maximum_frame_bytes,
     ) {
         Ok(value) => value,
-        Err(error) => return error_response(error),
+        Err(error) => return error_response(&error),
     };
     if let Err(error) = validate_resume_protocol(&request) {
-        return error_response(error);
+        return error_response(&error);
     }
     let stream = match state.api.replay(request).await {
         Ok(value) => value,
-        Err(error) => return error_response(error),
+        Err(error) => return error_response(&error),
     };
     let body = stream.map(|item| {
         let frame = match item {
@@ -148,21 +148,21 @@ async fn observe(State(state): State<AppState>, body: Bytes) -> Response {
         state.maximum_frame_bytes,
     ) {
         Ok(value) => value,
-        Err(error) => return wire_error_response(error),
+        Err(error) => return wire_error_response(&error),
     };
     let control = match validate_observe_request(&request) {
         Ok(value) => value,
-        Err(error) => return wire_error_response(error),
+        Err(error) => return wire_error_response(&error),
     };
     if let Err(error) = state.api.authorize_operation_control(&control).await {
-        return wire_error_response(error);
+        return wire_error_response(&error);
     }
     match state.api.observe(request.clone()).await {
         Ok(status) => match validate_operation_status(&request, &status) {
             Ok(()) => message_response("acyclic.harness.v1.OperationStatus", &status),
-            Err(error) => wire_error_response(error),
+            Err(error) => wire_error_response(&error),
         },
-        Err(error) => wire_error_response(error),
+        Err(error) => wire_error_response(&error),
     }
 }
 
@@ -173,21 +173,21 @@ async fn cancel(State(state): State<AppState>, body: Bytes) -> Response {
         state.maximum_frame_bytes,
     ) {
         Ok(value) => value,
-        Err(error) => return wire_error_response(error),
+        Err(error) => return wire_error_response(&error),
     };
     let (control, _, _) = match validate_cancel_request(&request) {
         Ok(value) => value,
-        Err(error) => return wire_error_response(error),
+        Err(error) => return wire_error_response(&error),
     };
     if let Err(error) = state.api.authorize_operation_control(&control).await {
-        return wire_error_response(error);
+        return wire_error_response(&error);
     }
     match state.api.cancel(request.clone()).await {
         Ok(response) => match validate_cancel_response(&request, &response) {
             Ok(()) => message_response("acyclic.harness.v1.CancelResponse", &response),
-            Err(error) => wire_error_response(error),
+            Err(error) => wire_error_response(&error),
         },
-        Err(error) => wire_error_response(error),
+        Err(error) => wire_error_response(&error),
     }
 }
 
@@ -197,6 +197,18 @@ async fn websocket(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> 
         .on_upgrade(move |socket| websocket_session(state, socket))
 }
 
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one connection's protocol state machine (handshake, frame decode, per-message-type \
+              dispatch); splitting the branches out would scatter one connection's lifecycle \
+              across multiple functions"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "same one-connection protocol state machine as above; splitting the handshake and \
+              per-message-type dispatch into helpers would scatter one connection's lifecycle \
+              across multiple functions without clarifying any of them"
+)]
 async fn websocket_session(state: AppState, mut socket: WebSocket) {
     let Some(Ok(first)) = socket.recv().await else {
         return;
@@ -274,7 +286,7 @@ async fn websocket_session(state: AppState, mut socket: WebSocket) {
                 }
                 let admission = match state.api.submit(command.clone()).await {
                     Ok(value) => value,
-                    Err(error) => admission_from_error(command.operation.clone(), error),
+                    Err(error) => admission_from_error(command.operation.clone(), &error),
                 };
                 let frame = if validate_admission(&command, &admission).is_ok() {
                     server_frame::Frame::Admission(admission)
@@ -426,7 +438,7 @@ async fn websocket_session(state: AppState, mut socket: WebSocket) {
 
 fn admission_from_error(
     operation: Option<wire::OperationIdentity>,
-    error: Error,
+    error: &Error,
 ) -> wire::Admission {
     let state = if matches!(error, Error::Storage(_) | Error::Indeterminate(_)) {
         wire::AdmissionState::Indeterminate
@@ -436,7 +448,7 @@ fn admission_from_error(
     wire::Admission {
         operation,
         state: state as i32,
-        error: Some(acyclic_harness::encode_error(&error)),
+        error: Some(acyclic_harness::encode_error(error)),
     }
 }
 
@@ -506,23 +518,23 @@ fn pool() -> &'static DescriptorPool {
 fn message_response<M: prost::Message>(name: &str, message: &M) -> Response {
     match encode_json(name, message) {
         Ok(body) => ([(header::CONTENT_TYPE, "application/json")], body).into_response(),
-        Err(error) => error_response(error),
+        Err(error) => error_response(&error),
     }
 }
 
-fn error_response(error: Error) -> Response {
-    let status = error_status(&error);
+fn error_response(error: &Error) -> Response {
+    let status = error_status(error);
     (status, error.to_string()).into_response()
 }
 
-fn wire_error_response(error: Error) -> Response {
-    let status = error_status(&error);
+fn wire_error_response(error: &Error) -> Response {
+    let status = error_status(error);
     match encode_json(
         "acyclic.harness.v1.Error",
-        &acyclic_harness::encode_error(&error),
+        &acyclic_harness::encode_error(error),
     ) {
         Ok(body) => (status, [(header::CONTENT_TYPE, "application/json")], body).into_response(),
-        Err(encoding) => error_response(encoding),
+        Err(encoding) => error_response(&encoding),
     }
 }
 

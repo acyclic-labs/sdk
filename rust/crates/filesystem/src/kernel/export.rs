@@ -156,11 +156,12 @@ pub fn validate_generation_export_manifest(
     if !manifest.objects.contains(&manifest.generation_root) {
         return Err(GenerationExportManifestError::MissingRoot);
     }
-    if manifest
-        .objects
-        .windows(2)
-        .any(|pair| compare_object_id(pair[0], pair[1]) != Ordering::Less)
-    {
+    if manifest.objects.windows(2).any(|pair| {
+        let [left, right] = pair else {
+            unreachable!("windows(2) always yields exactly two elements")
+        };
+        compare_object_id(*left, *right) != Ordering::Less
+    }) {
         return Err(GenerationExportManifestError::NonCanonicalObjectOrder);
     }
     Ok(())

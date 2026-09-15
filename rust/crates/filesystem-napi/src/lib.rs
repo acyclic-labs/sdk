@@ -5678,10 +5678,16 @@ fn decode_object_id(bytes: &[u8]) -> Result<ObjectId> {
             "object identity must be exactly 33 bytes",
         ));
     }
-    let kind = ObjectKind::from_canonical_tag(bytes[0]).map_err(napi_error)?;
+    let (&tag, digest_bytes) = bytes.split_first().ok_or_else(|| {
+        Error::new(
+            Status::InvalidArg,
+            "object identity must be exactly 33 bytes",
+        )
+    })?;
+    let kind = ObjectKind::from_canonical_tag(tag).map_err(napi_error)?;
     Ok(ObjectId {
         kind,
-        digest: Digest::from_bytes(fixed_32(&bytes[1..], "object digest")?),
+        digest: Digest::from_bytes(fixed_32(digest_bytes, "object digest")?),
     })
 }
 
@@ -6917,12 +6923,15 @@ mod tests {
             .list_directory("/shapes".to_owned(), None, 1)
             .await?;
         assert!(first_page.has_more);
+        let Some(first_entry) = first_page.entries.first() else {
+            unreachable!("a page reporting has_more must contain at least one entry");
+        };
         let remaining_page = workspace
             .list_directory(
                 "/shapes".to_owned(),
                 Some(NativeWorkspaceName {
-                    encoding: first_page.entries[0].name.encoding.clone(),
-                    bytes: Buffer::from(first_page.entries[0].name.bytes.as_ref().to_vec()),
+                    encoding: first_entry.name.encoding.clone(),
+                    bytes: Buffer::from(first_entry.name.bytes.as_ref().to_vec()),
                 }),
                 16,
             )

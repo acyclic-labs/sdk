@@ -793,10 +793,13 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             }
             ReadPlan::Follower(flight) => {
                 if let Some(&index) = local_leaders.get(&request.object_id)
-                    && Arc::ptr_eq(&leaders[index].flight, &flight)
+                    && leaders
+                        .get(index)
+                        .is_some_and(|leader| Arc::ptr_eq(&leader.flight, &flight))
                 {
-                    leaders[index].maximum_bytes =
-                        leaders[index].maximum_bytes.max(request.maximum_bytes);
+                    if let Some(leader) = leaders.get_mut(index) {
+                        leader.maximum_bytes = leader.maximum_bytes.max(request.maximum_bytes);
+                    }
                     Ok(BatchSlot::LocalLeader(index))
                 } else {
                     Ok(BatchSlot::ExternalFollower(flight))
@@ -870,15 +873,20 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             return Err(ObjectFailure::new(ObjectStoreError::Corrupt, work));
         }
         let mut values = receipt.value;
-        for (index, leader) in prepared.leaders.iter().enumerate() {
-            let bytes = values[index].bytes.clone();
+        for ((leader, value), guard) in prepared
+            .leaders
+            .iter()
+            .zip(values.iter_mut())
+            .zip(guards.iter_mut())
+        {
+            let bytes = value.bytes.clone();
             let retained = self
                 .insert(leader.object_id, bytes.clone())
                 .map_err(|error| ObjectFailure::new(error, work))?;
             if retained {
-                values[index].retention = ObjectReadRetention::Shared;
+                value.retention = ObjectReadRetention::Shared;
             }
-            if let Some(guard) = guards[index].take() {
+            if let Some(guard) = guard.take() {
                 guard
                     .finish(retained.then_some(bytes))
                     .map_err(|error| ObjectFailure::new(error, work))?;

@@ -458,77 +458,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
                 return Ok(empty_list());
             }
         }
-        let mut pending = vec![(
+        let pending = vec![(
             frontier,
             frontier_key,
             (!frontier_name_prefix.is_empty()).then_some(frontier_name_prefix),
         )];
-        let mut objects = BTreeMap::new();
-        let mut prefixes = BTreeSet::new();
-        let mut examined = 0_u32;
-        while let Some((directory, directory_key, name_prefix)) = pending.pop() {
-            let mut after: Option<LogicalName> = None;
-            loop {
-                let page = checkout
-                    .list_directory_records(
-                        &directory,
-                        after.as_ref(),
-                        LIST_PAGE_ENTRIES,
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                    )
-                    .await
-                    .map_err(|failure| S3Error::Workspace(WorkspaceError::engine(failure)))?
-                    .value;
-                for entry in &page.entries {
-                    examined = examined.checked_add(1).ok_or(S3Error::ListLimit)?;
-                    if examined > options.maximum_entries_examined {
-                        return Err(S3Error::ListLimit);
-                    }
-                    let name = utf8_name(&entry.name)?;
-                    if name_prefix
-                        .as_ref()
-                        .is_some_and(|prefix| !name.starts_with(prefix))
-                    {
-                        continue;
-                    }
-                    let key = format!("{directory_key}{name}");
-                    match entry.record.kind {
-                        FileKind::Directory => {
-                            let mut components = directory.components().to_vec();
-                            components.push(entry.name.clone());
-                            pending.push((
-                                NamespacePath::new(components, limits)
-                                    .map_err(WorkspaceError::path)?,
-                                format!("{key}/"),
-                                None,
-                            ));
-                        }
-                        FileKind::Regular => match select_key(&key, &options) {
-                            Some(SelectedKey::Object) => {
-                                objects.insert(
-                                    key.clone(),
-                                    S3Object {
-                                        key: key.clone(),
-                                        content_length: regular_bytes(&entry.record.payload)?,
-                                        etag: etag(generation.id().digest().as_bytes(), &key),
-                                    },
-                                );
-                            }
-                            Some(SelectedKey::Prefix(prefix)) => {
-                                prefixes.insert(prefix);
-                            }
-                            None => {}
-                        },
-                        _ => {}
-                    }
-                }
-                after = page.entries.last().map(|entry| entry.name.clone());
-                if !page.has_more {
-                    break;
-                }
-            }
-        }
+        let (objects, prefixes, examined) =
+            walk_listing_directories(&mut checkout, &options, limits, &generation, pending).await?;
         finish_list(
             objects,
             prefixes,
@@ -538,6 +474,83 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
             query,
         )
     }
+}
+
+/// Walks every pending directory frontier, paging its records and sorting
+/// each entry into matched objects or common prefixes.
+async fn walk_listing_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut crate::Checkout<A, O>,
+    options: &S3ListOptions,
+    limits: crate::model::VolumeLimits,
+    generation: &crate::Generation<A, O>,
+    mut pending: Vec<(NamespacePath, String, Option<String>)>,
+) -> Result<(BTreeMap<String, S3Object>, BTreeSet<String>, u32), S3Error> {
+    let mut objects = BTreeMap::new();
+    let mut prefixes = BTreeSet::new();
+    let mut examined = 0_u32;
+    while let Some((directory, directory_key, name_prefix)) = pending.pop() {
+        let mut after: Option<LogicalName> = None;
+        loop {
+            let page = checkout
+                .list_directory_records(
+                    &directory,
+                    after.as_ref(),
+                    LIST_PAGE_ENTRIES,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(|failure| S3Error::Workspace(WorkspaceError::engine(failure)))?
+                .value;
+            for entry in &page.entries {
+                examined = examined.checked_add(1).ok_or(S3Error::ListLimit)?;
+                if examined > options.maximum_entries_examined {
+                    return Err(S3Error::ListLimit);
+                }
+                let name = utf8_name(&entry.name)?;
+                if name_prefix
+                    .as_ref()
+                    .is_some_and(|prefix| !name.starts_with(prefix))
+                {
+                    continue;
+                }
+                let key = format!("{directory_key}{name}");
+                match entry.record.kind {
+                    FileKind::Directory => {
+                        let mut components = directory.components().to_vec();
+                        components.push(entry.name.clone());
+                        pending.push((
+                            NamespacePath::new(components, limits).map_err(WorkspaceError::path)?,
+                            format!("{key}/"),
+                            None,
+                        ));
+                    }
+                    FileKind::Regular => match select_key(&key, options) {
+                        Some(SelectedKey::Object) => {
+                            objects.insert(
+                                key.clone(),
+                                S3Object {
+                                    key: key.clone(),
+                                    content_length: regular_bytes(&entry.record.payload)?,
+                                    etag: etag(generation.id().digest().as_bytes(), &key),
+                                },
+                            );
+                        }
+                        Some(SelectedKey::Prefix(prefix)) => {
+                            prefixes.insert(prefix);
+                        }
+                        None => {}
+                    },
+                    _ => {}
+                }
+            }
+            after = page.entries.last().map(|entry| entry.name.clone());
+            if !page.has_more {
+                break;
+            }
+        }
+    }
+    Ok((objects, prefixes, examined))
 }
 
 fn empty_list() -> S3List {
@@ -596,7 +609,9 @@ fn listing_frontier(
             prefix.to_owned(),
         ));
     };
-    let directory = &prefix[..separator];
+    let directory = prefix.get(..separator).ok_or(S3Error::InvalidRequest(
+        "listing prefix split point is invalid",
+    ))?;
     let path = if directory.is_empty() {
         NamespacePath::new(Vec::new(), limits).map_err(WorkspaceError::path)?
     } else {
@@ -604,8 +619,18 @@ fn listing_frontier(
     };
     Ok((
         path,
-        prefix[..=separator].to_owned(),
-        prefix[separator + 1..].to_owned(),
+        prefix
+            .get(..=separator)
+            .ok_or(S3Error::InvalidRequest(
+                "listing prefix split point is invalid",
+            ))?
+            .to_owned(),
+        prefix
+            .get(separator + 1..)
+            .ok_or(S3Error::InvalidRequest(
+                "listing prefix split point is invalid",
+            ))?
+            .to_owned(),
     ))
 }
 
@@ -687,17 +712,17 @@ fn select_key(key: &str, options: &S3ListOptions) -> Option<SelectedKey> {
         .as_ref()
         .map(|cursor| cursor.after.as_str())
         .or(options.start_after.as_deref());
-    if !key.starts_with(&options.prefix) || after.is_some_and(|after| key <= after) {
+    let remainder = key.strip_prefix(options.prefix.as_str())?;
+    if after.is_some_and(|after| key <= after) {
         return None;
     }
-    let remainder = &key[options.prefix.len()..];
     if options.delimiter == Some('/')
         && let Some(index) = remainder.find('/')
     {
         return Some(SelectedKey::Prefix(format!(
             "{}{}",
             options.prefix,
-            &remainder[..=index]
+            remainder.get(..=index)?
         )));
     }
     Some(SelectedKey::Object)

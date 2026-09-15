@@ -18,6 +18,12 @@ use futures::StreamExt;
 use std::sync::Arc;
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear conformance walkthrough over one authority's lifecycle; each step is a \
+              distinct sequential assertion building on the prior step's state, and splitting \
+              it apart would only scatter the narrative across functions without clarifying it"
+)]
 async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = Arc::new(MemoryStream::default());

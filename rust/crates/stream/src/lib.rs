@@ -17,7 +17,7 @@ mod memory;
 mod wire_codec;
 
 /// Generated canonical Stream v2 protocol.
-#[allow(missing_docs)]
+#[allow(missing_docs, clippy::pedantic, clippy::too_many_lines)]
 pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v2.rs"));
 }
@@ -84,6 +84,11 @@ impl StreamPath {
 
     /// Immediate parent, if any.
     #[must_use]
+    #[allow(
+        clippy::string_slice,
+        reason = "`new` rejects any path that is not `is_ascii()`, so every byte offset from \
+                  `rfind` is a valid char boundary and this can never panic"
+    )]
     pub fn parent(&self) -> Option<Self> {
         self.0
             .rfind('/')

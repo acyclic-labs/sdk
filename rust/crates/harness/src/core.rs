@@ -742,6 +742,11 @@ impl Reducer {
     }
 
     /// Applies one deterministic command.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "public API of an already-published crate; taking a reference here would break \
+                  existing external callers"
+    )]
     pub fn apply(&mut self, command: Command) -> Result<ApplyResult> {
         match self.plan(&command)? {
             ApplyResult::Replayed { event } => Ok(ApplyResult::Replayed { event }),
@@ -974,6 +979,12 @@ impl Reducer {
         Ok(reducer)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per Action variant, each independently validating and building \
+                  its EventPayload; splitting per-arm would scatter one command's validation \
+                  across many functions without clarifying any of them"
+    )]
     fn transition(&self, action: &Action) -> Result<EventPayload> {
         match action {
             Action::TransitionLifecycle { to, reason } => {
@@ -1127,6 +1138,13 @@ impl Reducer {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per EventPayload variant, mirroring transition() above; each arm \
+                  independently re-validates and commits its own state, so splitting per-arm \
+                  would scatter one event's application across many functions without \
+                  clarifying any of them"
+    )]
     fn apply_payload(&mut self, payload: &EventPayload) -> Result<()> {
         match payload {
             EventPayload::LifecycleTransitioned { from, to, .. } => {

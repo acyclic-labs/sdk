@@ -80,12 +80,17 @@ missing_docs = "warn"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
-# Verified zero pre-existing violations across the workspace before landing;
-# the remaining plugin-repo lint set (indexing_slicing, string_slice,
-# cast_possible_truncation, too_many_lines, cognitive_complexity,
-# doc_markdown, needless_pass_by_value, redundant_clone, match_same_arms,
-# single_match_else, if_not_else — ~866 hits, see issue #59) lands together
-# with its fixes in a follow-up PR rather than breaking `-D warnings` here.
+indexing_slicing = "warn"
+match_same_arms = "warn"
+single_match_else = "warn"
+if_not_else = "warn"
+cast_possible_truncation = "warn"
+string_slice = "warn"
+too_many_lines = "warn"
+cognitive_complexity = "warn"
+doc_markdown = "warn"
+needless_pass_by_value = "warn"
+redundant_clone = "warn"
 unwrap_in_result = "warn"
 fallible_impl_from = "warn"
 cast_possible_wrap = "warn"

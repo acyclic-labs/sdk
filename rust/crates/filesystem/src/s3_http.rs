@@ -1,6 +1,6 @@
 //! AWS S3 HTTP translation over the canonical workspace S3 view.
 //!
-//! Request parsing, SigV4 verification, XML, and HTTP framing are delegated to
+//! Request parsing, `SigV4` verification, XML, and HTTP framing are delegated to
 //! `s3s`. This module contains no namespace or storage implementation: every
 //! accepted operation resolves one scoped workspace and invokes [`crate::S3Workspace`].
 
@@ -159,7 +159,7 @@ impl<P: acyclic_stream::StreamProvider> StreamBackedAuthority for StreamAuthorit
 /// One authenticated credential resolved to one exact workspace.
 #[derive(Clone)]
 pub struct FilesystemS3Principal<A, O> {
-    /// Secret used only by the SigV4 verifier.
+    /// Secret used only by the `SigV4` verifier.
     pub secret_key: SecretKey,
     /// Opaque bucket coordinate issued for this workspace.
     pub bucket: String,
@@ -175,10 +175,10 @@ pub struct FilesystemS3Principal<A, O> {
 /// revoke access keys before returning a workspace capability.
 #[async_trait]
 pub trait FilesystemS3Resolver<A, O>: Send + Sync + 'static {
-    /// Resolves only the signing secret required to authenticate SigV4.
+    /// Resolves only the signing secret required to authenticate `SigV4`.
     async fn resolve_secret_key(&self, access_key: &str) -> S3Result<SecretKey>;
 
-    /// Resolves and authorizes the complete request capability after SigV4.
+    /// Resolves and authorizes the complete request capability after `SigV4`.
     async fn resolve_principal(
         &self,
         access_key: &str,
@@ -187,7 +187,7 @@ pub trait FilesystemS3Resolver<A, O>: Send + Sync + 'static {
     ) -> S3Result<FilesystemS3Principal<A, O>>;
 }
 
-/// SigV4 secret lookup sharing the exact resolver used by semantic dispatch.
+/// `SigV4` secret lookup sharing the exact resolver used by semantic dispatch.
 pub struct FilesystemS3Authentication<R, A, O> {
     resolver: Arc<R>,
     marker: PhantomData<fn() -> (A, O)>,
@@ -299,6 +299,14 @@ enum MultipartTerminal {
     Aborted,
 }
 
+/// Outcome of driving one multipart upload toward its completion intent.
+enum MultipartCompletionIntent {
+    /// The upload is admitted at the requested part set and ready to commit.
+    Admitted(Box<MultipartSnapshot>),
+    /// The upload was already completed at this exact generation.
+    AlreadyCompleted(crate::GenerationId),
+}
+
 #[derive(Clone, Debug)]
 struct MultipartSnapshot {
     key: String,
@@ -381,6 +389,93 @@ pub async fn active_s3_multipart_objects<P: acyclic_stream::StreamProvider, O: A
     })
 }
 
+/// Reads one multipart upload registry stream to completion, validating and
+/// collecting every referenced upload path and accruing the work it took.
+async fn collect_registry_upload_paths<P: acyclic_stream::StreamProvider>(
+    provider: &P,
+    registry: acyclic_stream::StreamPath,
+    retention_limits: S3MultipartRetentionLimits,
+    upload_paths: &mut BTreeMap<String, acyclic_stream::StreamPath>,
+    examined: &mut u64,
+    work: &mut crate::WorkCounters,
+) -> S3Result<()> {
+    let suffix = registry
+        .as_str()
+        .strip_prefix("fs/s3-multipart/registry/")
+        .ok_or_else(|| s3s::s3_error!(InternalError))?;
+    if suffix.len() != 2 || !suffix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(s3s::s3_error!(InternalError));
+    }
+    let tail = provider
+        .tail(registry.clone())
+        .await
+        .map_err(|error| stream_read_error(&error))?;
+    work.backend_read_operations = work
+        .backend_read_operations
+        .checked_add(1)
+        .ok_or_else(|| s3s::s3_error!(InternalError))?;
+    let mut from = 0_u64;
+    while from < tail {
+        let available = retention_limits.maximum_uploads.saturating_sub(*examined);
+        if available == 0 {
+            return Err(s3s::s3_error!(SlowDown));
+        }
+        let limit = u32::try_from(
+            (tail - from)
+                .min(available)
+                .min(acyclic_stream::MAX_ITEMS as u64),
+        )
+        .map_err(|_| s3s::s3_error!(InternalError))?;
+        let mut records = provider
+            .read(acyclic_stream::ReadRequest {
+                path: registry.clone(),
+                from,
+                limit,
+            })
+            .await
+            .map_err(|error| stream_read_error(&error))?;
+        work.backend_read_operations = work
+            .backend_read_operations
+            .checked_add(1)
+            .ok_or_else(|| s3s::s3_error!(InternalError))?;
+        let before = *examined;
+        while let Some(record) = records.next().await {
+            let record = record.map_err(|error| stream_read_error(&error))?;
+            if record.sequence != from + (*examined - before) {
+                return Err(s3s::s3_error!(InternalError));
+            }
+            let path =
+                std::str::from_utf8(&record.value).map_err(|_| s3s::s3_error!(InternalError))?;
+            let path =
+                acyclic_stream::StreamPath::new(path).map_err(|_| s3s::s3_error!(InternalError))?;
+            validate_multipart_stream_path(&path)?;
+            upload_paths.insert(path.as_str().to_owned(), path);
+            work.authority_records_read = work
+                .authority_records_read
+                .checked_add(1)
+                .ok_or_else(|| s3s::s3_error!(InternalError))?;
+            work.authority_bytes_read = work
+                .authority_bytes_read
+                .checked_add(record.value.len() as u64)
+                .ok_or_else(|| s3s::s3_error!(InternalError))?;
+            work.items_examined = work
+                .items_examined
+                .checked_add(1)
+                .ok_or_else(|| s3s::s3_error!(InternalError))?;
+            *examined = examined
+                .checked_add(1)
+                .ok_or_else(|| s3s::s3_error!(InternalError))?;
+        }
+        if *examined == before {
+            return Err(s3s::s3_error!(InternalError));
+        }
+        from = from
+            .checked_add(*examined - before)
+            .ok_or_else(|| s3s::s3_error!(InternalError))?;
+    }
+    Ok(())
+}
+
 async fn discover_s3_multipart_roots<P: acyclic_stream::StreamProvider>(
     provider: &P,
     protocol_limits: FilesystemS3Limits,
@@ -393,80 +488,15 @@ async fn discover_s3_multipart_roots<P: acyclic_stream::StreamProvider>(
     let mut upload_paths = BTreeMap::new();
     let mut examined = 0_u64;
     for registry in registries {
-        let suffix = registry
-            .as_str()
-            .strip_prefix("fs/s3-multipart/registry/")
-            .ok_or_else(|| s3s::s3_error!(InternalError))?;
-        if suffix.len() != 2 || !suffix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(s3s::s3_error!(InternalError));
-        }
-        let tail = provider
-            .tail(registry.clone())
-            .await
-            .map_err(stream_read_error)?;
-        work.backend_read_operations = work
-            .backend_read_operations
-            .checked_add(1)
-            .ok_or_else(|| s3s::s3_error!(InternalError))?;
-        let mut from = 0_u64;
-        while from < tail {
-            let available = retention_limits.maximum_uploads.saturating_sub(examined);
-            if available == 0 {
-                return Err(s3s::s3_error!(SlowDown));
-            }
-            let limit = u32::try_from(
-                (tail - from)
-                    .min(available)
-                    .min(acyclic_stream::MAX_ITEMS as u64),
-            )
-            .map_err(|_| s3s::s3_error!(InternalError))?;
-            let mut records = provider
-                .read(acyclic_stream::ReadRequest {
-                    path: registry.clone(),
-                    from,
-                    limit,
-                })
-                .await
-                .map_err(stream_read_error)?;
-            work.backend_read_operations = work
-                .backend_read_operations
-                .checked_add(1)
-                .ok_or_else(|| s3s::s3_error!(InternalError))?;
-            let before = examined;
-            while let Some(record) = records.next().await {
-                let record = record.map_err(stream_read_error)?;
-                if record.sequence != from + (examined - before) {
-                    return Err(s3s::s3_error!(InternalError));
-                }
-                let path = std::str::from_utf8(&record.value)
-                    .map_err(|_| s3s::s3_error!(InternalError))?;
-                let path = acyclic_stream::StreamPath::new(path)
-                    .map_err(|_| s3s::s3_error!(InternalError))?;
-                validate_multipart_stream_path(&path)?;
-                upload_paths.insert(path.as_str().to_owned(), path);
-                work.authority_records_read = work
-                    .authority_records_read
-                    .checked_add(1)
-                    .ok_or_else(|| s3s::s3_error!(InternalError))?;
-                work.authority_bytes_read = work
-                    .authority_bytes_read
-                    .checked_add(record.value.len() as u64)
-                    .ok_or_else(|| s3s::s3_error!(InternalError))?;
-                work.items_examined = work
-                    .items_examined
-                    .checked_add(1)
-                    .ok_or_else(|| s3s::s3_error!(InternalError))?;
-                examined = examined
-                    .checked_add(1)
-                    .ok_or_else(|| s3s::s3_error!(InternalError))?;
-            }
-            if examined == before {
-                return Err(s3s::s3_error!(InternalError));
-            }
-            from = from
-                .checked_add(examined - before)
-                .ok_or_else(|| s3s::s3_error!(InternalError))?;
-        }
+        collect_registry_upload_paths(
+            provider,
+            registry,
+            retention_limits,
+            &mut upload_paths,
+            &mut examined,
+            &mut work,
+        )
+        .await?;
     }
     let mut roots = BTreeMap::new();
     for upload in upload_paths.into_values() {
@@ -525,14 +555,13 @@ async fn bounded_children<P: acyclic_stream::StreamProvider>(
             limit,
         })
         .await
-        .map_err(stream_read_error)?;
+        .map_err(|error| stream_read_error(&error))?;
     let mut children = Vec::new();
     while let Some(child) = stream.next().await {
-        let path = child.map_err(stream_read_error)?.path;
-        if !path.as_str().starts_with(exact_prefix)
-            || path.as_str()[exact_prefix.len()..].contains('/')
-        {
-            return Err(s3s::s3_error!(InternalError));
+        let path = child.map_err(|error| stream_read_error(&error))?.path;
+        match path.as_str().strip_prefix(exact_prefix) {
+            Some(remainder) if !remainder.contains('/') => {}
+            _ => return Err(s3s::s3_error!(InternalError)),
         }
         children.push(path);
     }
@@ -635,11 +664,110 @@ where
                 idempotency_key: Some(operation),
             })
             .await
-            .map_err(stream_write_error)?
+            .map_err(|error| stream_write_error(&error))?
         {
             acyclic_stream::AppendOutcome::Committed(_) => Ok(true),
             acyclic_stream::AppendOutcome::TailConflict { .. } => Ok(false),
         }
+    }
+
+    /// Drives the upload toward a `Completing(requested)` terminal intent,
+    /// retrying CAS conflicts up to the configured bound.
+    async fn admit_multipart_completion_intent(
+        &self,
+        workspace: &Workspace<A, O>,
+        upload_id: &str,
+        key: &str,
+        operation: IdempotencyKey,
+        requested: &[(u32, String)],
+    ) -> S3Result<MultipartCompletionIntent> {
+        for _ in 0..self.limits.maximum_multipart_cas_retries {
+            let mut snapshot = self.multipart_snapshot(workspace, upload_id).await?;
+            if snapshot.key != key {
+                return Err(s3s::s3_error!(NoSuchUpload));
+            }
+            match &snapshot.terminal {
+                Some(MultipartTerminal::Completed(generation)) => {
+                    return Ok(MultipartCompletionIntent::AlreadyCompleted(*generation));
+                }
+                Some(MultipartTerminal::Completing(existing))
+                    if existing.as_slice() == requested =>
+                {
+                    return Ok(MultipartCompletionIntent::Admitted(Box::new(snapshot)));
+                }
+                Some(_) => return Err(s3s::s3_error!(NoSuchUpload)),
+                None => {
+                    validate_completed_parts(
+                        &snapshot.parts,
+                        requested,
+                        snapshot.minimum_part_bytes,
+                    )?;
+                    if self
+                        .multipart_append(
+                            workspace,
+                            upload_id,
+                            snapshot.tail,
+                            encode_multipart_completing(requested)?,
+                            Self::multipart_cas_operation(
+                                upload_id,
+                                b"complete-intent\0",
+                                operation,
+                                snapshot.tail,
+                            )?,
+                        )
+                        .await?
+                    {
+                        snapshot.tail += 1;
+                        snapshot.terminal = Some(MultipartTerminal::Completing(requested.to_vec()));
+                        return Ok(MultipartCompletionIntent::Admitted(Box::new(snapshot)));
+                    }
+                }
+            }
+        }
+        Err(s3s::s3_error!(SlowDown))
+    }
+
+    /// Drives the upload from a `Completing` intent to a `Completed` terminal
+    /// record, retrying CAS conflicts up to the configured bound.
+    async fn terminalize_multipart_completion(
+        &self,
+        workspace: &Workspace<A, O>,
+        upload_id: &str,
+        operation: IdempotencyKey,
+        requested: &[(u32, String)],
+        generation: crate::GenerationId,
+    ) -> S3Result<bool> {
+        for _ in 0..self.limits.maximum_multipart_cas_retries {
+            let latest = self.multipart_snapshot(workspace, upload_id).await?;
+            match latest.terminal {
+                Some(MultipartTerminal::Completed(existing)) if existing == generation => {
+                    return Ok(true);
+                }
+                Some(MultipartTerminal::Completing(ref existing))
+                    if existing.as_slice() == requested =>
+                {
+                    if self
+                        .multipart_append(
+                            workspace,
+                            upload_id,
+                            latest.tail,
+                            encode_multipart_completed(generation),
+                            Self::multipart_cas_operation(
+                                upload_id,
+                                b"complete-terminal\0",
+                                operation,
+                                latest.tail,
+                            )?,
+                        )
+                        .await?
+                    {
+                        return Ok(true);
+                    }
+                }
+                _ => return Err(s3s::s3_error!(InternalError)),
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -686,7 +814,7 @@ where
                     },
                     0,
                 ),
-                Err(error) => return Err(stream_read_error(error)),
+                Err(error) => return Err(stream_read_error(&error)),
             };
             let attempt =
                 Self::multipart_cas_operation(&upload_id, b"create\0", operation, registry_tail)?;
@@ -709,7 +837,7 @@ where
                     idempotency_key: attempt,
                 })
                 .await
-                .map_err(stream_write_error)?
+                .map_err(|error| stream_write_error(&error))?
             {
                 acyclic_stream::CommitOutcome::Committed(_) => break,
                 acyclic_stream::CommitOutcome::Conflict(_) => {
@@ -752,12 +880,12 @@ where
         let transaction = workspace
             .begin_transaction(operation)
             .await
-            .map_err(|error| s3_error(S3Error::Workspace(error)))?;
+            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         let mut source = StreamingBodySource::new(request.input.body.take());
         let staged = transaction
             .stage_content(&mut source, self.limits.maximum_multipart_part_bytes)
             .await
-            .map_err(|error| s3_error(S3Error::Workspace(error)))?;
+            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         if request
             .input
             .content_length
@@ -883,63 +1011,30 @@ where
         reject_complete_multipart_extensions(&request.input)?;
         let operation = request_operation(&request)?;
         let requested = completed_parts(request.input.multipart_upload.as_ref())?;
-        let mut admitted = None;
-        let mut terminalized = false;
-        for _ in 0..self.limits.maximum_multipart_cas_retries {
-            let mut snapshot = self
-                .multipart_snapshot(&workspace, &request.input.upload_id)
-                .await?;
-            if snapshot.key != request.input.key {
-                return Err(s3s::s3_error!(NoSuchUpload));
+        let snapshot = match self
+            .admit_multipart_completion_intent(
+                &workspace,
+                &request.input.upload_id,
+                &request.input.key,
+                operation,
+                &requested,
+            )
+            .await?
+        {
+            MultipartCompletionIntent::AlreadyCompleted(generation) => {
+                return Ok(S3Response::new(CompleteMultipartUploadOutput {
+                    bucket: Some(request.input.bucket),
+                    key: Some(request.input.key.clone()),
+                    e_tag: Some(etag_for_generation(generation, &request.input.key)?),
+                    ..CompleteMultipartUploadOutput::default()
+                }));
             }
-            match &snapshot.terminal {
-                Some(MultipartTerminal::Completed(generation)) => {
-                    return Ok(S3Response::new(CompleteMultipartUploadOutput {
-                        bucket: Some(request.input.bucket),
-                        key: Some(request.input.key.clone()),
-                        e_tag: Some(etag_for_generation(*generation, &request.input.key)?),
-                        ..CompleteMultipartUploadOutput::default()
-                    }));
-                }
-                Some(MultipartTerminal::Completing(existing)) if existing == &requested => {
-                    admitted = Some(snapshot);
-                    break;
-                }
-                Some(_) => return Err(s3s::s3_error!(NoSuchUpload)),
-                None => {
-                    validate_completed_parts(
-                        &snapshot.parts,
-                        &requested,
-                        snapshot.minimum_part_bytes,
-                    )?;
-                    if self
-                        .multipart_append(
-                            &workspace,
-                            &request.input.upload_id,
-                            snapshot.tail,
-                            encode_multipart_completing(&requested)?,
-                            Self::multipart_cas_operation(
-                                &request.input.upload_id,
-                                b"complete-intent\0",
-                                operation,
-                                snapshot.tail,
-                            )?,
-                        )
-                        .await?
-                    {
-                        snapshot.tail += 1;
-                        snapshot.terminal = Some(MultipartTerminal::Completing(requested.clone()));
-                        admitted = Some(snapshot);
-                        break;
-                    }
-                }
-            }
-        }
-        let snapshot = admitted.ok_or_else(|| s3s::s3_error!(SlowDown))?;
+            MultipartCompletionIntent::Admitted(snapshot) => snapshot,
+        };
         let mut transaction = workspace
             .begin_transaction(operation)
             .await
-            .map_err(|error| s3_error(S3Error::Workspace(error)))?;
+            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         let staged = requested
             .iter()
             .map(|(number, _)| {
@@ -952,49 +1047,26 @@ where
             .collect::<S3Result<Vec<_>>>()?;
         crate::s3::create_parent_directories(&mut transaction, &request.input.key)
             .await
-            .map_err(s3_error)?;
+            .map_err(|error| s3_error(&error))?;
         transaction
             .write_staged(&format!("/{}", request.input.key), &staged)
             .await
-            .map_err(|error| s3_error(S3Error::Workspace(error)))?;
+            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         let generation = committed_generation(
             transaction
                 .commit()
                 .await
-                .map_err(|error| s3_error(S3Error::Workspace(error)))?,
+                .map_err(|error| s3_error(&S3Error::Workspace(error)))?,
         )?;
-        for _ in 0..self.limits.maximum_multipart_cas_retries {
-            let latest = self
-                .multipart_snapshot(&workspace, &request.input.upload_id)
-                .await?;
-            match latest.terminal {
-                Some(MultipartTerminal::Completed(existing)) if existing == generation.id() => {
-                    terminalized = true;
-                    break;
-                }
-                Some(MultipartTerminal::Completing(ref existing)) if existing == &requested => {
-                    if self
-                        .multipart_append(
-                            &workspace,
-                            &request.input.upload_id,
-                            latest.tail,
-                            encode_multipart_completed(generation.id()),
-                            Self::multipart_cas_operation(
-                                &request.input.upload_id,
-                                b"complete-terminal\0",
-                                operation,
-                                latest.tail,
-                            )?,
-                        )
-                        .await?
-                    {
-                        terminalized = true;
-                        break;
-                    }
-                }
-                _ => return Err(s3s::s3_error!(InternalError)),
-            }
-        }
+        let terminalized = self
+            .terminalize_multipart_completion(
+                &workspace,
+                &request.input.upload_id,
+                operation,
+                &requested,
+                generation.id(),
+            )
+            .await?;
         if !terminalized {
             return Err(s3s::s3_error!(SlowDown));
         }
@@ -1097,7 +1169,7 @@ where
             .as_deref()
             .map(|token| S3ListCursor::decode(token, self.limits.maximum_key_bytes))
             .transpose()
-            .map_err(s3_error)?;
+            .map_err(|error| s3_error(&error))?;
         let options = S3ListOptions {
             prefix: request.input.prefix.clone().unwrap_or_default(),
             delimiter,
@@ -1113,12 +1185,12 @@ where
                     .workspace
                     .generation(id)
                     .await
-                    .map_err(|error| s3_error(S3Error::Workspace(error)))?;
+                    .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
                 view.list_objects_at(&generation, options).await
             }
             None => view.list_objects(options).await,
         }
-        .map_err(s3_error)?;
+        .map_err(|error| s3_error(&error))?;
         let key_count = page
             .objects
             .len()
@@ -1176,12 +1248,12 @@ where
                     .workspace
                     .generation(id)
                     .await
-                    .map_err(|error| s3_error(S3Error::Workspace(error)))?;
+                    .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
                 view.head_object_at(&generation, &request.input.key).await
             }
             None => view.head_object(&request.input.key).await,
         }
-        .map_err(s3_error)?;
+        .map_err(|error| s3_error(&error))?;
         check_conditions(
             &head.etag,
             request.input.if_match.as_ref(),
@@ -1212,17 +1284,17 @@ where
                 .workspace
                 .generation(id)
                 .await
-                .map_err(|error| s3_error(S3Error::Workspace(error)))?,
+                .map_err(|error| s3_error(&S3Error::Workspace(error)))?,
             None => principal
                 .workspace
                 .head()
                 .await
-                .map_err(|error| s3_error(S3Error::Workspace(error)))?,
+                .map_err(|error| s3_error(&S3Error::Workspace(error)))?,
         };
         let head = view
             .head_object_at(&generation, &request.input.key)
             .await
-            .map_err(s3_error)?;
+            .map_err(|error| s3_error(&error))?;
         check_conditions(
             &head.etag,
             request.input.if_match.as_ref(),
@@ -1291,12 +1363,12 @@ where
         let mut transaction = workspace
             .begin_transaction(operation)
             .await
-            .map_err(|error| s3_error(S3Error::Workspace(error)))?;
+            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         let mut source = StreamingBodySource::new(request.input.body.take());
         let staged = transaction
             .stage_content(&mut source, self.limits.maximum_request_bytes)
             .await
-            .map_err(|error| s3_error(S3Error::Workspace(error)))?;
+            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         if request
             .input
             .content_length
@@ -1306,15 +1378,15 @@ where
         }
         crate::s3::create_parent_directories(&mut transaction, &request.input.key)
             .await
-            .map_err(s3_error)?;
+            .map_err(|error| s3_error(&error))?;
         transaction
             .write_staged(&format!("/{}", request.input.key), &[staged])
             .await
-            .map_err(|error| s3_error(S3Error::Workspace(error)))?;
+            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         let commit = transaction
             .commit()
             .await
-            .map_err(|error| s3_error(S3Error::Workspace(error)))?;
+            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         let generation = committed_generation(commit)?;
         Ok(S3Response::new(PutObjectOutput {
             e_tag: Some(etag_for_generation(generation.id(), &request.input.key)?),
@@ -1337,7 +1409,7 @@ where
             .s3()
             .delete_object(&request.input.key, request_operation(&request)?)
             .await
-            .map_err(s3_error)?;
+            .map_err(|error| s3_error(&error))?;
         Ok(S3Response::new(DeleteObjectOutput::default()))
     }
 
@@ -1365,7 +1437,7 @@ where
             .s3()
             .delete_objects(&keys, request_operation(&request)?)
             .await
-            .map_err(s3_error)?;
+            .map_err(|error| s3_error(&error))?;
         let deleted = (!request.input.delete.quiet.unwrap_or(false)).then(|| {
             keys.into_iter()
                 .map(|key| DeletedObject {
@@ -1409,7 +1481,7 @@ where
             .s3()
             .copy_object(source_key, &request.input.key, request_operation(&request)?)
             .await
-            .map_err(s3_error)?;
+            .map_err(|error| s3_error(&error))?;
         let generation = committed_generation(commit)?;
         Ok(S3Response::new(CopyObjectOutput {
             copy_object_result: Some(CopyObjectResult {
@@ -1492,7 +1564,11 @@ impl AsyncBlobSource for StreamingBodySource {
             }
         }
         let count = destination.len().min(self.pending.len());
-        destination[..count].copy_from_slice(&self.pending[..count]);
+        if let (Some(destination_slice), Some(pending_slice)) =
+            (destination.get_mut(..count), self.pending.get(..count))
+        {
+            destination_slice.copy_from_slice(pending_slice);
+        }
         self.pending.advance(count);
         Ok(count)
     }
@@ -1582,7 +1658,7 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
     let tail = provider
         .tail(path.clone())
         .await
-        .map_err(stream_read_error)?;
+        .map_err(|error| stream_read_error(&error))?;
     let maximum_records = u64::from(limits.maximum_multipart_records);
     if tail == 0 || tail > maximum_records {
         return Err(s3s::s3_error!(InvalidRequest));
@@ -1600,14 +1676,14 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
                 limit,
             })
             .await
-            .map_err(stream_read_error)?;
+            .map_err(|error| stream_read_error(&error))?;
         work.backend_read_operations = work
             .backend_read_operations
             .checked_add(1)
             .ok_or_else(|| s3s::s3_error!(InternalError))?;
         let before = records.len();
         while let Some(record) = page.next().await {
-            let record = record.map_err(stream_read_error)?;
+            let record = record.map_err(|error| stream_read_error(&error))?;
             if record.sequence != from + u64::try_from(records.len() - before).unwrap_or(u64::MAX) {
                 return Err(s3s::s3_error!(InternalError));
             }
@@ -1638,14 +1714,13 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
     Ok(snapshot)
 }
 
-fn decode_multipart(
-    records: Vec<Bytes>,
-    tail: u64,
+/// Decodes and validates the leading `created` record of a multipart record
+/// stream, returning the upload's key and its negotiated part bounds.
+fn decode_multipart_header(
+    created: &Bytes,
     limits: FilesystemS3Limits,
-) -> S3Result<MultipartSnapshot> {
-    let mut records = records.into_iter();
-    let created = records.next().ok_or_else(|| s3s::s3_error!(NoSuchUpload))?;
-    let mut cursor = RecordCursor::new(&created);
+) -> S3Result<(String, u32, u64, u64)> {
+    let mut cursor = RecordCursor::new(created);
     cursor.header(1)?;
     let key_length = cursor.u32()?;
     if key_length == 0 || key_length > limits.maximum_key_bytes {
@@ -1666,6 +1741,18 @@ fn decode_multipart(
     {
         return Err(s3s::s3_error!(InvalidRequest));
     }
+    Ok((key, maximum_parts, maximum_part_bytes, minimum_part_bytes))
+}
+
+fn decode_multipart(
+    records: Vec<Bytes>,
+    tail: u64,
+    limits: FilesystemS3Limits,
+) -> S3Result<MultipartSnapshot> {
+    let mut records = records.into_iter();
+    let created = records.next().ok_or_else(|| s3s::s3_error!(NoSuchUpload))?;
+    let (key, maximum_parts, maximum_part_bytes, minimum_part_bytes) =
+        decode_multipart_header(&created, limits)?;
     let mut parts = BTreeMap::new();
     let mut operations = BTreeMap::new();
     let mut terminal = None;
@@ -1774,7 +1861,10 @@ impl<'a> RecordCursor<'a> {
     }
 
     fn u8(&mut self) -> S3Result<u8> {
-        Ok(self.take(1)?[0])
+        self.take(1)?
+            .first()
+            .copied()
+            .ok_or_else(|| s3s::s3_error!(InvalidRequest))
     }
 
     fn u32(&mut self) -> S3Result<u32> {
@@ -1878,7 +1968,7 @@ fn validate_completed_parts(
     Ok(())
 }
 
-fn stream_read_error(error: acyclic_stream::StreamError) -> s3s::S3Error {
+fn stream_read_error(error: &acyclic_stream::StreamError) -> s3s::S3Error {
     match error {
         acyclic_stream::StreamError::NotFound => s3s::s3_error!(NoSuchUpload),
         acyclic_stream::StreamError::AccessDenied => s3s::s3_error!(AccessDenied),
@@ -1887,7 +1977,7 @@ fn stream_read_error(error: acyclic_stream::StreamError) -> s3s::S3Error {
     }
 }
 
-fn stream_write_error(error: acyclic_stream::StreamError) -> s3s::S3Error {
+fn stream_write_error(error: &acyclic_stream::StreamError) -> s3s::S3Error {
     match error {
         acyclic_stream::StreamError::IdempotencyMismatch => s3s::s3_error!(InvalidRequest),
         acyclic_stream::StreamError::Capacity | acyclic_stream::StreamError::LimitExceeded => {
@@ -2085,7 +2175,7 @@ fn reject_put_extensions(input: &PutObjectInput) -> S3Result {
     Ok(())
 }
 
-fn s3_error(error: S3Error) -> s3s::S3Error {
+fn s3_error(error: &S3Error) -> s3s::S3Error {
     match error {
         S3Error::InvalidKey | S3Error::InvalidRequest(_) | S3Error::InvalidContinuation => {
             s3s::s3_error!(InvalidArgument)

@@ -410,7 +410,15 @@ fn search_entries(entries: &[AttributeEntry], name: &AttributeName) -> (Result<u
     while left < right {
         comparisons = comparisons.saturating_add(1);
         let middle = left + (right - left) / 2;
-        match entries[middle].name.cmp(name) {
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "binary-search invariant: the loop guard `left < right` with `right` \
+                      initialized to entries.len() and only ever narrowed to `middle` keeps \
+                      `middle = left + (right - left) / 2` strictly within `[left, right)`, so \
+                      `middle < entries.len()` always holds here"
+        )]
+        let ordering = entries[middle].name.cmp(name);
+        match ordering {
             std::cmp::Ordering::Less => left = middle + 1,
             std::cmp::Ordering::Greater => right = middle,
             std::cmp::Ordering::Equal => return (Ok(middle), comparisons),
@@ -426,7 +434,15 @@ fn upper_bound_children(children: &[AttributeChild], name: &AttributeName) -> (u
     while left < right {
         comparisons = comparisons.saturating_add(1);
         let middle = left + (right - left) / 2;
-        if children[middle].first_name <= *name {
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "binary-search invariant: the loop guard `left < right` with `right` \
+                      initialized to children.len() and only ever narrowed to `middle` keeps \
+                      `middle = left + (right - left) / 2` strictly within `[left, right)`, so \
+                      `middle < children.len()` always holds here"
+        )]
+        let below_name = children[middle].first_name <= *name;
+        if below_name {
             left = middle + 1;
         } else {
             right = middle;

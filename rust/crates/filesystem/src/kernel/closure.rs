@@ -268,8 +268,8 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 }
                 FileTablePage::Internal(children) => {
                     validate_file_child_bounds(&children, lower, upper)?;
-                    for index in (0..children.len()).rev() {
-                        let child = children[index];
+                    for (index, child) in children.iter().enumerate().rev() {
+                        let child = *child;
                         let child_upper = children
                             .get(index + 1)
                             .map(|next| next.first_file_id)
@@ -370,8 +370,8 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 }
                 TreePage::Internal(children) => {
                     validate_tree_child_bounds(&children, lower.as_ref(), upper.as_ref())?;
-                    for index in (0..children.len()).rev() {
-                        let child = children[index].clone();
+                    for (index, child) in children.iter().enumerate().rev() {
+                        let child = child.clone();
                         let child_upper = children
                             .get(index + 1)
                             .map(|next| next.first_name.clone())
@@ -494,8 +494,8 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 }
                 AttributePage::Internal(children) => {
                     validate_attribute_child_bounds(&children, lower.as_ref(), upper.as_ref())?;
-                    for index in (0..children.len()).rev() {
-                        let child = children[index].clone();
+                    for (index, child) in children.iter().enumerate().rev() {
+                        let child = child.clone();
                         let child_upper = children
                             .get(index + 1)
                             .map(|next| next.first_name.clone())

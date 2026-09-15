@@ -13,6 +13,13 @@ use crate::{Condition, GetRequest, ObjectsError, ObjectsProvider, PutRequest, Re
 /// # Errors
 ///
 /// Returns the provider's typed failure or a conformance invariant failure.
+#[allow(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "linear conformance walkthrough; each ensure() is a distinct provider-contract \
+              assertion, and splitting it would only move the same sequential checks behind \
+              indirection"
+)]
 pub async fn verify(provider: &impl ObjectsProvider, namespace: &str) -> Result<(), ObjectsError> {
     let version_bucket = create(provider, &format!("{namespace}-versions"), "create-v").await?;
     ensure(

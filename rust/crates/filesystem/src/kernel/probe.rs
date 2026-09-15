@@ -500,6 +500,13 @@ impl<S> AuthenticatedGenerationProbe<'_, S> {
                 work,
             )
         })?;
+        // `end <= bytes.len()` was checked above (as u64) before the usize
+        // conversions, and `start <= end` since `end = offset + length` with
+        // `length >= 0`, so this range is always in bounds.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "end <= bytes.len() checked above; start <= end since end = offset + length"
+        )]
         hash_content_range(&bytes[start..end], budget, work)
     }
 }
@@ -526,6 +533,14 @@ impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
                                 .min(u64::try_from(ZERO_HASH_BLOCK.len()).unwrap_or(u64::MAX)),
                         )
                         .unwrap_or(ZERO_HASH_BLOCK.len());
+                        // `count = min(remaining_zeroes, ZERO_HASH_BLOCK.len())`
+                        // as computed immediately above (the `unwrap_or` fallback
+                        // is itself `ZERO_HASH_BLOCK.len()`), so `count <=
+                        // ZERO_HASH_BLOCK.len()` always holds.
+                        #[allow(
+                            clippy::indexing_slicing,
+                            reason = "count <= ZERO_HASH_BLOCK.len() by construction above (min() and its unwrap_or fallback are both bounded by ZERO_HASH_BLOCK.len())"
+                        )]
                         hasher.update(&ZERO_HASH_BLOCK[..count]);
                         remaining_zeroes -= u64::try_from(count).unwrap_or(0);
                     }
@@ -965,6 +980,14 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
                                 .min(u64::try_from(ZERO_HASH_BLOCK.len()).unwrap_or(u64::MAX)),
                         )
                         .unwrap_or(ZERO_HASH_BLOCK.len());
+                        // `count = min(remaining_zeroes, ZERO_HASH_BLOCK.len())`
+                        // as computed immediately above (the `unwrap_or` fallback
+                        // is itself `ZERO_HASH_BLOCK.len()`), so `count <=
+                        // ZERO_HASH_BLOCK.len()` always holds.
+                        #[allow(
+                            clippy::indexing_slicing,
+                            reason = "count <= ZERO_HASH_BLOCK.len() by construction above (min() and its unwrap_or fallback are both bounded by ZERO_HASH_BLOCK.len())"
+                        )]
                         hasher.update(&ZERO_HASH_BLOCK[..count]);
                         remaining_zeroes -= u64::try_from(count).unwrap_or(0);
                     }

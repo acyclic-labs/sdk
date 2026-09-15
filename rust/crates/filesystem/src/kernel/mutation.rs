@@ -493,11 +493,21 @@ impl MutationPlan {
 // `PathUse` is private and is constructed only after `Mutation::paths`
 // returns `Some`; retaining that proof here avoids cloning every path.
 #[allow(clippy::expect_used)]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "PathUse is private and is only ever constructed in MutationPlan::compile as `operation: u32::try_from(index)` for `index` in `operations.iter().enumerate()`; operations and ordered_paths are stored together in MutationPlan and neither is mutated afterward, so path_use.operation as usize is always < operations.len()"
+)]
 fn path_for(operations: &[Mutation], path_use: PathUse) -> &NamespacePath {
     let operation = &operations[usize::try_from(path_use.operation).unwrap_or(usize::MAX)];
-    operation
+    let [first, second] = operation
         .paths()
-        .expect("path use must reference a path mutation")[usize::from(path_use.endpoint)]
+        .expect("path use must reference a path mutation");
+    // PathUse::endpoint is only ever constructed as 0 or 1 (see `compile`),
+    // selecting between the two fixed positions of `Mutation::paths`.
+    match path_use.endpoint {
+        0 => first,
+        _ => second,
+    }
 }
 
 fn shared_prefix(left: &NamespacePath, right: &NamespacePath) -> usize {

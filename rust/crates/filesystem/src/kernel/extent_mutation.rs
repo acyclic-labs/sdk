@@ -542,6 +542,14 @@ fn normalize_raw_patches(
         let left = coordinate_index(&coordinates, start, work, budget)?;
         let right = coordinate_index(&coordinates, end, work, budget)?;
         let mut interval = find_next(&mut parents, left, work, budget)?;
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "coordinate_index's binary search only ever returns an index < \
+                      coordinates.len(), and coordinates.len() == interval_count + 1, so `right` \
+                      is at most interval_count; the loop guard `interval < right` therefore \
+                      keeps `interval < interval_count`, which is in bounds for \
+                      `assignments` (len interval_count) and `parents` (len interval_count + 1)"
+        )]
         while interval < right {
             charge_items(work, budget, 1)?;
             assignments[interval] = Some(patch_index);
@@ -556,7 +564,18 @@ fn normalize_raw_patches(
         let Some(patch_index) = assignment else {
             continue;
         };
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "patch_index came from raw.iter().enumerate() above, so it is always a \
+                      valid index into raw"
+        )]
         let source = &raw[patch_index];
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "interval is a valid index into assignments (len interval_count == \
+                      coordinates.len() - 1) via .enumerate() on assignments, so interval and \
+                      interval + 1 both stay within coordinates bounds"
+        )]
         let candidate = Patch {
             offset: coordinates[interval],
             end: coordinates[interval + 1],
@@ -593,6 +612,11 @@ fn radix_sort(
         charge_copied_bytes(work, budget, bytes_for::<u64>(values.len(), *work)?)?;
         let shift = byte * 8;
         let mut counts = [0_usize; 256];
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "the index is `usize::from(<u8>)`, always in 0..=255, matching the fixed \
+                      256-element `counts` array exactly"
+        )]
         for value in values.iter() {
             counts[usize::from(((value >> shift) & 0xff) as u8)] += 1;
         }
@@ -602,6 +626,15 @@ fn radix_sort(
             *count = offset;
             offset += current;
         }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "`bucket` is `usize::from(<u8>)`, always in 0..=255, so `counts[bucket]` is \
+                      in bounds of the fixed 256-element array; `counts[bucket]` itself is a \
+                      running offset seeded by the exclusive prefix sum computed just above from \
+                      a histogram over exactly `values.len()` elements, incremented once per \
+                      element placed, so it never reaches `values.len()` and stays in bounds of \
+                      `scratch` (resized to `values.len()` at the top of this function)"
+        )]
         for value in values.iter() {
             let bucket = usize::from(((value >> shift) & 0xff) as u8);
             scratch[counts[bucket]] = *value;
@@ -623,6 +656,13 @@ fn deduplicate_coordinates(
         u64::try_from(values.len()).unwrap_or(u64::MAX),
     )?;
     let mut write = 1_usize;
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`read` ranges over `1..values.len()` so `values[read]` is always in bounds; \
+                  `write` starts equal to `read` (both 1) and only increments together with \
+                  `read` (once per loop iteration, in this same branch), so `write <= read` is a \
+                  loop invariant, keeping `write - 1` and `write` in bounds too"
+    )]
     for read in 1..values.len() {
         if values[read] != values[write - 1] {
             values[write] = values[read];
@@ -644,7 +684,15 @@ fn coordinate_index(
     while left < right {
         charge_items(work, budget, 1)?;
         let middle = left + (right - left) / 2;
-        match values[middle].cmp(&target) {
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "binary-search invariant: the loop guard `left < right` with `right` \
+                      initialized to values.len() and only ever narrowed to `middle` keeps \
+                      `middle = left + (right - left) / 2` strictly within `[left, right)`, so \
+                      `middle < values.len()` always holds here"
+        )]
+        let ordering = values[middle].cmp(&target);
+        match ordering {
             std::cmp::Ordering::Less => left = middle + 1,
             std::cmp::Ordering::Greater => right = middle,
             std::cmp::Ordering::Equal => return Ok(middle),
@@ -656,6 +704,18 @@ fn coordinate_index(
     ))
 }
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "union-find domain invariant: `parents` is initialized in normalize_raw_patches as \
+              the identity permutation over `0..=interval_count` (`parents.extend(0..=interval_count)`), \
+              and both call sites there pass a `start` already shown to be `<= interval_count` \
+              (from coordinate_index's binary-search postcondition, or from `interval < right <= \
+              interval_count`). Every write to a `parents` slot (here, and in \
+              normalize_raw_patches) only ever stores a value returned by `find_next`, which by \
+              induction is always an existing valid index reached by following the chain from a \
+              valid `start`. So `root`, `current`, and every `parents[..]` entry stay within \
+              `0..parents.len()` for the lifetime of the vector"
+)]
 fn find_next(
     parents: &mut [usize],
     start: usize,
@@ -745,6 +805,11 @@ fn extent_chunk_end<T>(
     let mut examined = 0_u64;
     while end < items.len() && end - start < maximum_items {
         examined = examined.saturating_add(1);
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "the loop guard `end < items.len()` directly establishes `end` is in bounds \
+                      at this point in the loop body"
+        )]
         let next = bytes
             .checked_add(encoded_length(&items[end]))
             .ok_or(ExtentMutationError::PageItemTooLarge)?;
@@ -866,6 +931,12 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
         while frame.next_child < frame.children.len() {
             let index = frame.next_child;
             frame.next_child += 1;
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "`index` is captured from `frame.next_child` right after the loop guard \
+                          `frame.next_child < frame.children.len()` confirmed it in bounds, \
+                          before it is incremented"
+            )]
             let child = &frame.children[index];
             if child.first_offset >= frame.output_end {
                 self.charge_items(1)?;
@@ -943,6 +1014,14 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
             ..WorkCounters::default()
         })?;
         self.work.verify(self.budget)?;
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "overlapping_patch_range returns (first, after_last.max(first), _), where \
+                      `first` and `after_last` both come from lower_bound's postcondition of \
+                      `0 <= left <= patches.len()`; the explicit `.max(first)` clamp guarantees \
+                      `first_patch <= after_last_patch <= self.patches.len()`, so this slice is \
+                      always in bounds"
+        )]
         let (next, examined) =
             apply_patches_linear(rewritten, &self.patches[first_patch..after_last_patch])?;
         rewritten = next;
@@ -968,6 +1047,15 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
     ) -> Result<Vec<Summary>, ExtentMutationError> {
         let mut result = Vec::new();
         let mut start = 0_usize;
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "extent_leaf_chunk_end delegates to extent_chunk_end, which guarantees \
+                      `start <= end_index <= extents.len()` (the loop there only advances `end` \
+                      while `end < items.len()`) and returns `Err` rather than success when `end \
+                      == start` (see the `if end == start` check before its `Ok` return), so \
+                      `chunk` is always non-empty here and `chunk[0]` / `chunk[chunk.len() - 1]` \
+                      are in bounds"
+        )]
         while start < extents.len() {
             let (end_index, examined) = extent_leaf_chunk_end(extents, start, self.limits)?;
             self.charge_items(examined)?;
@@ -1001,6 +1089,15 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
         }
         let mut result = Vec::new();
         let mut start = 0_usize;
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "extent_internal_chunk_end delegates to extent_chunk_end, which guarantees \
+                      `start <= end_index <= children.len()` (the loop there only advances `end` \
+                      while `end < items.len()`) and returns `Err` rather than success when `end \
+                      == start` (see the `if end == start` check before its `Ok` return), so \
+                      `chunk` is always non-empty here and `chunk[0]` / `chunk[chunk.len() - 1]` \
+                      are in bounds"
+        )]
         while start < children.len() {
             let (end_index, examined) = extent_internal_chunk_end(children, start, self.limits)?;
             self.charge_items(examined)?;
@@ -1044,6 +1141,17 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
             }
             summaries = self.write_internal_chunks(&summaries).await?;
         }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "the early `if summaries.is_empty()` return above guarantees `summaries` \
+                      starts non-empty; write_internal_chunks preserves non-emptiness because \
+                      its output has one Summary per input chunk and every chunk it forms is \
+                      non-empty (see the `if end == start` guard in extent_chunk_end, which \
+                      write_internal_chunks relies on via extent_internal_chunk_end), so a \
+                      non-empty `summaries` can only stay non-empty across the `while \
+                      summaries.len() > 1` loop; combined with that loop's exit condition, \
+                      `summaries.len() == 1` here"
+        )]
         Ok(summaries[0].page)
     }
 
@@ -1415,7 +1523,15 @@ fn lower_bound(patches: &[Patch], before: impl Fn(&Patch) -> bool) -> (usize, u6
     while left < right {
         comparisons = comparisons.saturating_add(1);
         let middle = left + (right - left) / 2;
-        if before(&patches[middle]) {
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "binary-search invariant: the loop guard `left < right` with `right` \
+                      initialized to patches.len() and only ever narrowed to `middle` keeps \
+                      `middle = left + (right - left) / 2` strictly within `[left, right)`, so \
+                      `middle < patches.len()` always holds here"
+        )]
+        let below = before(&patches[middle]);
+        if below {
             left = middle + 1;
         } else {
             right = middle;

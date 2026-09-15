@@ -100,7 +100,8 @@ impl DurableContextProvider {
             let revisions = self.revisions().await?;
             let source = expected_revision
                 .checked_sub(1)
-                .and_then(|index| revisions.get(index as usize))
+                .and_then(|index| usize::try_from(index).ok())
+                .and_then(|index| revisions.get(index))
                 .ok_or_else(|| {
                     crate::Error::Invalid(
                         "compaction must reference the immediately preceding context".into(),
@@ -497,6 +498,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "each index is preceded by an assert_eq! on the corresponding Vec's len(), proving it in-bounds"
+    )]
     async fn durable_sources_and_compaction_reopen_exactly() -> Result<()> {
         let stream = Arc::new(MemoryStream::default());
         let path = StreamPath::new("runtime/context/memory")

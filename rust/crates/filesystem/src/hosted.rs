@@ -80,7 +80,7 @@ impl HostedFsOptions {
         }
     }
 
-    /// Adds a caller-supplied private CA while retaining ambient WebPKI roots.
+    /// Adds a caller-supplied private CA while retaining ambient `WebPKI` roots.
     #[must_use]
     pub fn with_ca_certificate(mut self, certificate_pem: impl Into<Vec<u8>>) -> Self {
         self.ca_certificate_pem = Some(certificate_pem.into());
@@ -137,40 +137,47 @@ pub struct HostedFs {
     owner: Arc<()>,
 }
 
+/// Rejects empty, unbounded, or unsupported hosted connection options before
+/// any transport or credential is touched.
+fn validate_hosted_options(options: &HostedFsOptions) -> Result<(), HostedFsError> {
+    if options.maximum_request_bytes == 0
+        || options.maximum_response_bytes < MINIMUM_HANDSHAKE_RESPONSE_BYTES
+    {
+        return Err(HostedFsError::InvalidOptions(
+            "request bound must be nonzero and response bound must admit the handshake",
+        ));
+    }
+    if options.bearer_token.is_empty() {
+        return Err(HostedFsError::InvalidOptions(
+            "bearer credential must be nonempty",
+        ));
+    }
+    if options
+        .ca_certificate_pem
+        .as_ref()
+        .is_some_and(|certificate| {
+            certificate.is_empty() || certificate.len() > MAX_CA_CERTIFICATE_BYTES
+        })
+    {
+        return Err(HostedFsError::InvalidOptions(
+            "CA certificate must contain 1 to 65536 bytes",
+        ));
+    }
+    if !(options.endpoint.starts_with("https://")
+        || options.endpoint.starts_with("http://127.0.0.1:")
+        || options.endpoint.starts_with("http://[::1]:")
+        || options.endpoint.starts_with("http://localhost:"))
+    {
+        return Err(HostedFsError::InvalidOptions(
+            "endpoint must use HTTPS or loopback HTTP",
+        ));
+    }
+    Ok(())
+}
+
 impl HostedFs {
     async fn connect(options: HostedFsOptions) -> Result<Self, HostedFsError> {
-        if options.maximum_request_bytes == 0
-            || options.maximum_response_bytes < MINIMUM_HANDSHAKE_RESPONSE_BYTES
-        {
-            return Err(HostedFsError::InvalidOptions(
-                "request bound must be nonzero and response bound must admit the handshake",
-            ));
-        }
-        if options.bearer_token.is_empty() {
-            return Err(HostedFsError::InvalidOptions(
-                "bearer credential must be nonempty",
-            ));
-        }
-        if options
-            .ca_certificate_pem
-            .as_ref()
-            .is_some_and(|certificate| {
-                certificate.is_empty() || certificate.len() > MAX_CA_CERTIFICATE_BYTES
-            })
-        {
-            return Err(HostedFsError::InvalidOptions(
-                "CA certificate must contain 1 to 65536 bytes",
-            ));
-        }
-        if !(options.endpoint.starts_with("https://")
-            || options.endpoint.starts_with("http://127.0.0.1:")
-            || options.endpoint.starts_with("http://[::1]:")
-            || options.endpoint.starts_with("http://localhost:"))
-        {
-            return Err(HostedFsError::InvalidOptions(
-                "endpoint must use HTTPS or loopback HTTP",
-            ));
-        }
+        validate_hosted_options(&options)?;
         let authorization: MetadataValue<Ascii> = format!("Bearer {}", options.bearer_token)
             .parse()
             .map_err(|_| HostedFsError::InvalidOptions("bearer credential is not HTTP metadata"))?;

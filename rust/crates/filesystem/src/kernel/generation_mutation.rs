@@ -325,7 +325,9 @@ async fn verify_created_identities<S: AsyncObjectStore>(
         duplicate_examined = duplicate_examined
             .checked_add(1)
             .ok_or_else(|| failed(WorkError::Overflow.into(), *work))?;
-        if pair[0] == pair[1] {
+        if let [left, right] = pair
+            && left == right
+        {
             charge_items(work, duplicate_examined, context.budget)?;
             return Err(failed(
                 GenerationMutationError::FileIdentityAlreadyExists,
@@ -581,11 +583,10 @@ impl TransactionState {
             budget,
         )?;
         let mut previous: Option<&NamespacePath> = None;
+        let mut previous_entry: Option<PathBatchEntry> = None;
         let mut current_state = usize::MAX;
-        for (index, ((operation, endpoint, path), entry)) in plan
-            .ordered_operation_paths()
-            .zip(lookup.iter())
-            .enumerate()
+        for ((operation, endpoint, path), entry) in
+            plan.ordered_operation_paths().zip(lookup.iter())
         {
             if previous != Some(path) {
                 current_state = paths.len();
@@ -606,12 +607,25 @@ impl TransactionState {
                     parent_state: None,
                 });
                 previous = Some(path);
-            } else if lookup[index] != lookup[index - 1] {
+            } else if previous_entry != Some(*entry) {
                 return Err(failed(GenerationMutationError::InconsistentState, work));
             }
-            operation_paths[operation][endpoint] = current_state;
-            if endpoint == 0 && operation_uses_one_path(&plan.operations()[operation]) {
-                operation_paths[operation][1] = current_state;
+            previous_entry = Some(*entry);
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "`operation` and `endpoint` come from `plan.ordered_operation_paths()`, \
+                          whose (operation, endpoint) pairs are built in \
+                          `MutationPlan::compile` from `operations.iter().enumerate()` (so \
+                          `operation < plan.operations().len()`) with `endpoint` only ever 0 or \
+                          1; `operation_paths` above is reserved and `resize`d to exactly \
+                          `operation_count == plan.operations().len()` entries of `[usize; 2]`, \
+                          so both index operations are in-bounds by construction"
+            )]
+            {
+                operation_paths[operation][endpoint] = current_state;
+                if endpoint == 0 && operation_uses_one_path(&plan.operations()[operation]) {
+                    operation_paths[operation][1] = current_state;
+                }
             }
             if let Some(record) = entry.record {
                 seeds.push(RecordSeed {
@@ -648,17 +662,14 @@ impl TransactionState {
         charge_items(&mut work, comparisons.get(), budget)?;
         let mut records =
             reserve_exact::<RecordState>(seeds.len(), &mut allocations, &mut work, budget)?;
-        let mut cursor = 0;
-        while cursor < seeds.len() {
-            let file_id = seeds[cursor].record.file_id;
+        for group in seeds.chunk_by(|left, right| left.record.file_id == right.record.file_id) {
             let mut base = None;
             let mut created = None;
             let mut group_examined = 0_u64;
-            while cursor < seeds.len() && seeds[cursor].record.file_id == file_id {
+            for seed in group {
                 group_examined = group_examined
                     .checked_add(1)
                     .ok_or_else(|| failed(WorkError::Overflow.into(), work))?;
-                let seed = seeds[cursor];
                 if seed.created {
                     if created.replace(seed.record).is_some() {
                         charge_items(&mut work, group_examined, budget)?;
@@ -676,7 +687,6 @@ impl TransactionState {
                 } else {
                     base = Some(seed.record);
                 }
-                cursor += 1;
             }
             charge_items(&mut work, group_examined, budget)?;
             if base.is_some() && created.is_some() {
@@ -695,6 +705,15 @@ impl TransactionState {
             });
         }
         let path_comparisons = Cell::new(0_u64);
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "`index` is bounded by the `for index in 0..paths.len()` loop here; each \
+                      iteration first reads `&paths[index]` and computes `find_path_state` from \
+                      the whole (unmutated) `paths` slice, then writes back to that same \
+                      in-bounds `paths[index]` — a manual split of read-all/write-one that \
+                      `iter_mut` cannot express without an extra untracked allocation, which \
+                      this budget-accounted kernel path avoids"
+        )]
         for index in 0..paths.len() {
             let path = state_path(plan, &paths[index]);
             let Some((parent, _)) = path.split_last() else {
@@ -1113,6 +1132,16 @@ impl TransactionState {
         Ok(())
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`operation` is always the enumerated ordinal from `simulate`'s \
+                  `for (ordinal, operation) in plan.operations().iter().enumerate()`, so \
+                  `operation < plan.operations().len() == self.operation_paths.len()`; this \
+                  method is only reached for `Mutation::Create`, whose `paths()` always returns \
+                  `Some`, so `TransactionState::new`'s construction loop already overwrote \
+                  `operation_paths[operation]` away from its `[usize::MAX; 2]` resize sentinel \
+                  with a valid index into `self.paths`"
+    )]
     fn create(
         &mut self,
         plan: &MutationPlan,
@@ -1152,6 +1181,16 @@ impl TransactionState {
         Ok(())
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`operation` is always the enumerated ordinal from `simulate`'s \
+                  `for (ordinal, operation) in plan.operations().iter().enumerate()`, so \
+                  `operation < plan.operations().len() == self.operation_paths.len()`; this \
+                  method is only reached for `Mutation::Remove`, whose `paths()` always returns \
+                  `Some`, so `TransactionState::new`'s construction loop already overwrote \
+                  `operation_paths[operation]` away from its `[usize::MAX; 2]` resize sentinel \
+                  with a valid index into `self.paths`"
+    )]
     fn remove(
         &mut self,
         plan: &MutationPlan,
@@ -1184,6 +1223,16 @@ impl TransactionState {
         self.drop_link(binding)
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`operation` is always the enumerated ordinal from `simulate`'s \
+                  `for (ordinal, operation) in plan.operations().iter().enumerate()`, so \
+                  `operation < plan.operations().len() == self.operation_paths.len()`; this \
+                  method is only reached for `Mutation::Rename`, whose `paths()` always returns \
+                  `Some` for both endpoints, so `TransactionState::new`'s construction loop \
+                  already overwrote `operation_paths[operation]` away from its \
+                  `[usize::MAX; 2]` resize sentinel with valid indices into `self.paths`"
+    )]
     fn rename(
         &mut self,
         plan: &MutationPlan,
@@ -1251,6 +1300,16 @@ impl TransactionState {
         Ok(())
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`operation` is always the enumerated ordinal from `simulate`'s \
+                  `for (ordinal, operation) in plan.operations().iter().enumerate()`, so \
+                  `operation < plan.operations().len() == self.operation_paths.len()`; this \
+                  method is only reached for `Mutation::Link`, whose `paths()` always returns \
+                  `Some` for both endpoints, so `TransactionState::new`'s construction loop \
+                  already overwrote `operation_paths[operation]` away from its \
+                  `[usize::MAX; 2]` resize sentinel with valid indices into `self.paths`"
+    )]
     fn link(
         &mut self,
         plan: &MutationPlan,
@@ -1293,6 +1352,17 @@ impl TransactionState {
         self.binding(operation, 0)
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`operation` is always the enumerated ordinal from `simulate`'s \
+                  `for (ordinal, operation) in plan.operations().iter().enumerate()`, so \
+                  `operation < plan.operations().len() == self.operation_paths.len()`; every \
+                  caller of `binding`/`source_binding` only does so for a `Mutation` variant \
+                  whose `paths()` returns `Some` for the requested `endpoint` (0 or 1), so \
+                  `TransactionState::new`'s construction loop already overwrote \
+                  `operation_paths[operation][endpoint]` away from its `[usize::MAX; 2]` resize \
+                  sentinel with a valid index into `self.paths`"
+    )]
     fn binding(
         &self,
         operation: usize,
@@ -1303,6 +1373,15 @@ impl TransactionState {
             .ok_or_else(|| failed(GenerationMutationError::MissingSource, self.work))
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`state` is always either an `operation_paths[operation][endpoint]` value \
+                  (see `binding`'s invariant above: a valid index into `self.paths`) or a \
+                  `PathState.parent_state`/`find_path_state` result, which is produced only by \
+                  `states.binary_search_by(...).ok()` over the very same `self.paths` slice \
+                  (`find_path_state`, below), so any `Some(parent_state)` it returns is also a \
+                  valid index into `self.paths`"
+    )]
     fn parent_directory(&mut self, state: usize) -> Result<FileId, GenerationMutationFailure> {
         let file_id = match self.paths[state].parent_state {
             Some(parent_state) => {
@@ -1388,6 +1467,15 @@ impl TransactionState {
     // Every caller obtains the operation from a planner-owned `PathState`,
     // which can only be constructed for a path-bearing mutation.
     #[allow(clippy::expect_used)]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "every caller reaches this only via `clone_terminal_name`, whose `operation` \
+                  is always the `simulate`-enumerated ordinal `< plan.operations().len()` and \
+                  whose `endpoint` argument is always the literal `0` or `1` (see the \
+                  `clone_terminal_name` call sites in `create`/`remove`/`rename`/`link`), and \
+                  `plan.operations()[operation].paths()` is `Some` for exactly those callers, \
+                  so both index operations are in-bounds by construction"
+    )]
     fn operation_path(plan: &MutationPlan, operation: usize, endpoint: usize) -> &NamespacePath {
         let paths = plan.operations()[operation]
             .paths()
@@ -1410,6 +1498,13 @@ impl TransactionState {
         });
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`record_index` returns `Ok(index)` only from a successful \
+                  `self.records.binary_search_by(...)` over this same `self.records` slice \
+                  (see `record_index` below), which guarantees `index < self.records.len()`, \
+                  and nothing resizes `self.records` between that call and this indexing"
+    )]
     fn record(&mut self, file_id: FileId) -> Result<&RecordState, GenerationMutationFailure> {
         let index = self.record_index(file_id)?;
         Ok(&self.records[index])
@@ -1426,6 +1521,13 @@ impl TransactionState {
         })
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`record_index` returns `Ok(index)` only from a successful \
+                  `self.records.binary_search_by(...)` over this same `self.records` slice \
+                  (see `record_index` below), which guarantees `index < self.records.len()`, \
+                  and nothing resizes `self.records` between that call and this indexing"
+    )]
     fn record_mut(
         &mut self,
         file_id: FileId,
@@ -1444,6 +1546,15 @@ impl TransactionState {
         result.map_err(|_| failed(GenerationMutationError::InconsistentState, self.work))
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`cursor` is only ever read after a `cursor < self.directory_edits.len()` \
+                  guard (the outer `while` here, and the inner `while` just below), so both \
+                  point reads of `self.directory_edits[cursor]` are in-bounds; `start` is the \
+                  `cursor` value captured before either loop advances it further, so \
+                  `start <= cursor <= self.directory_edits.len()` always holds, which is exactly \
+                  what makes `self.directory_edits[start..cursor]` a valid range"
+    )]
     async fn rewrite_directories<S: AsyncObjectStore>(
         &mut self,
         store: &S,
@@ -1551,6 +1662,14 @@ impl TransactionState {
             self.budget,
         )?;
         self.removed_directories.dedup();
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "`index` is bounded by the `for index in 0..self.removed_directories.len()` \
+                      loop here; a by-value `for file_id in &self.removed_directories` iterator \
+                      would hold an immutable borrow of `self` across the `self.record(file_id)` \
+                      call below, which needs `&mut self`, so the index form is required to \
+                      satisfy the borrow checker without cloning this ledger-tracked vector"
+        )]
         for index in 0..self.removed_directories.len() {
             let file_id = self.removed_directories[index];
             let record = self.record(file_id)?.working;
@@ -1801,6 +1920,15 @@ fn preflight_generation_mutations(
 
 // `PathState` is private and exists only for planner-validated path uses.
 #[allow(clippy::expect_used)]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "every `PathState` is built in `TransactionState::new` from a \
+              `plan.ordered_operation_paths()` tuple, whose `operation` and `endpoint` fields \
+              are always `< plan.operations().len()` and always `0` or `1` respectively (see \
+              `MutationPlan::ordered_operation_paths`/`compile` in mutation.rs), and only for \
+              operations whose `paths()` returns `Some`, so both index operations here are \
+              in-bounds by construction"
+)]
 fn state_path<'a>(plan: &'a MutationPlan, state: &PathState) -> &'a NamespacePath {
     plan.operations()[state.operation]
         .paths()

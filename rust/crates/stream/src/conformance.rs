@@ -13,6 +13,12 @@ use crate::{
 pub const SUITE: &[u8] = include_bytes!("../conformance/stream.json");
 
 /// Exercises the complete provider-independent hierarchical Stream contract.
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear conformance walkthrough; each check is a distinct provider-contract \
+              assertion, and splitting it would only move the same sequential checks behind \
+              indirection"
+)]
 pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     if SUITE.is_empty() {
         return Err("Stream conformance inventory is empty".into());
@@ -23,7 +29,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     if provider
         .inspect_idempotency(append_key.clone())
         .await
-        .map_err(error)?
+        .map_err(|err| error(&err))?
         .is_some()
     {
         return Err("unknown idempotency identity was reported as retained".into());
@@ -34,14 +40,17 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         if_tail: Some(0),
         idempotency_key: Some(append_key.clone()),
     };
-    let first = provider.append(initial.clone()).await.map_err(error)?;
+    let first = provider
+        .append(initial.clone())
+        .await
+        .map_err(|err| error(&err))?;
     let AppendOutcome::Committed(first_receipt) = &first else {
         return Err("initial tail CAS conflicted".into());
     };
     if first_receipt.start != 0
         || first_receipt.end != 2
         || first_receipt.tail != 2
-        || provider.append(initial).await.map_err(error)? != first
+        || provider.append(initial).await.map_err(|err| error(&err))? != first
     {
         return Err("atomic append or exact replay changed its receipt".into());
     }
@@ -60,7 +69,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     let append_observation = provider
         .inspect_idempotency(append_key.clone())
         .await
-        .map_err(error)?
+        .map_err(|err| error(&err))?
         .ok_or_else(|| "committed append identity was not retained".to_owned())?;
     if append_observation.idempotency_key != append_key
         || append_observation.request_digest == [0; 32]
@@ -76,7 +85,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             idempotency_key: None,
         })
         .await
-        .map_err(error)?
+        .map_err(|err| error(&err))?
         != (AppendOutcome::TailConflict { actual_tail: 2 })
     {
         return Err("tail conflict was not returned as data".into());
@@ -89,7 +98,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             idempotency_key: Some(key(b"stream-fork")?),
         })
         .await
-        .map_err(error)?;
+        .map_err(|err| error(&err))?;
     if fork.forked_at != 1 || fork.tail != 1 {
         return Err("fork did not retain the exact immutable prefix".into());
     }
@@ -100,12 +109,13 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             limit: 8,
         })
         .await
-        .map_err(error)?
+        .map_err(|err| error(&err))?
         .collect::<Vec<_>>()
         .await;
-    if inherited.len() != 1
-        || inherited[0].as_ref().map_err(ToString::to_string)?.value != Bytes::from_static(b"one")
-    {
+    let [item] = inherited.as_slice() else {
+        return Err("forked history was not exact".into());
+    };
+    if item.as_ref().map_err(ToString::to_string)?.value != Bytes::from_static(b"one") {
         return Err("forked history was not exact".into());
     }
     let children = provider
@@ -114,12 +124,12 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             limit: 8,
         })
         .await
-        .map_err(error)?
+        .map_err(|err| error(&err))?
         .collect::<Vec<_>>()
         .await
         .into_iter()
         .collect::<Result<Vec<_>, _>>()
-        .map_err(error)?;
+        .map_err(|err| error(&err))?;
     if children
         .into_iter()
         .map(|child| child.path)
@@ -128,7 +138,10 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     {
         return Err("direct child listing changed its fixed snapshot".into());
     }
-    let mut follow = provider.follow(child.clone(), 1).await.map_err(error)?;
+    let mut follow = provider
+        .follow(child.clone(), 1)
+        .await
+        .map_err(|err| error(&err))?;
     provider
         .append(AppendRequest {
             path: child.clone(),
@@ -137,12 +150,12 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             idempotency_key: None,
         })
         .await
-        .map_err(error)?;
+        .map_err(|err| error(&err))?;
     let live = tokio::time::timeout(std::time::Duration::from_secs(1), follow.next())
         .await
         .map_err(|_| "follow did not make bounded progress".to_owned())?
         .ok_or_else(|| "follow ended".to_owned())?
-        .map_err(error)?;
+        .map_err(|err| error(&err))?;
     if live.sequence != 1 || live.value != Bytes::from_static(b"live") {
         return Err("follow returned a gap or duplicate".into());
     }
@@ -150,12 +163,12 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     let trimmed = provider
         .trim(child.clone(), 1, trim_key.clone())
         .await
-        .map_err(error)?;
+        .map_err(|err| error(&err))?;
     if trimmed.trim_point != 1
         || provider
             .trim(child.clone(), 1, trim_key.clone())
             .await
-            .map_err(error)?
+            .map_err(|err| error(&err))?
             != trimmed
         || provider.trim(child.clone(), 2, trim_key).await != Err(StreamError::IdempotencyMismatch)
     {
@@ -180,11 +193,11 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     let deleted = provider
         .delete(child.clone(), delete_key.clone())
         .await
-        .map_err(error)?;
+        .map_err(|err| error(&err))?;
     if provider
         .delete(child.clone(), delete_key)
         .await
-        .map_err(error)?
+        .map_err(|err| error(&err))?
         != deleted
         || provider.tail(child.clone()).await != Err(StreamError::Retired)
     {
@@ -202,15 +215,18 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         }],
         idempotency_key: key(b"stream-commit")?,
     };
-    let committed = provider.commit(request.clone()).await.map_err(error)?;
+    let committed = provider
+        .commit(request.clone())
+        .await
+        .map_err(|err| error(&err))?;
     let CommitOutcome::Committed(envelope) = &committed else {
         return Err("valid coordinated commit conflicted".into());
     };
-    if provider.commit(request).await.map_err(error)? != committed
+    if provider.commit(request).await.map_err(|err| error(&err))? != committed
         || provider
             .read_commit(envelope.commit_id)
             .await
-            .map_err(error)?
+            .map_err(|err| error(&err))?
             != *envelope
     {
         return Err("coordinated commit replay or envelope changed".into());
@@ -236,9 +252,13 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     if provider
         .commit(absent_request.clone())
         .await
-        .map_err(error)?
+        .map_err(|err| error(&err))?
         != absent_conflict
-        || provider.commit(absent_request).await.map_err(error)? != absent_conflict
+        || provider
+            .commit(absent_request)
+            .await
+            .map_err(|err| error(&err))?
+            != absent_conflict
         || provider.tail(absent).await != Err(StreamError::NotFound)
     {
         return Err("absent tail condition did not return one replayable conflict".into());
@@ -246,7 +266,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     let absent_observation = provider
         .inspect_idempotency(absent_key.clone())
         .await
-        .map_err(error)?
+        .map_err(|err| error(&err))?
         .ok_or_else(|| "commit conflict identity was not retained".to_owned())?;
     if absent_observation.idempotency_key != absent_key
         || absent_observation.request_digest == [0; 32]
@@ -258,14 +278,14 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
 }
 
 fn path(value: &str) -> Result<StreamPath, String> {
-    StreamPath::new(value).map_err(error)
+    StreamPath::new(value).map_err(|err| error(&err))
 }
 
 fn key(value: &'static [u8]) -> Result<IdempotencyKey, String> {
-    IdempotencyKey::new(Bytes::from_static(value)).map_err(error)
+    IdempotencyKey::new(Bytes::from_static(value)).map_err(|err| error(&err))
 }
 
-fn error(error: impl ToString) -> String {
+fn error(error: &impl ToString) -> String {
     error.to_string()
 }
 

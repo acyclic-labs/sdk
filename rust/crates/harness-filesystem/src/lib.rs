@@ -258,8 +258,9 @@ fn map_error(error: WorkspaceError) -> Error {
     match error {
         WorkspaceError::NotFound => Error::NotFound("workspace path".into()),
         WorkspaceError::RetentionConflict => Error::Conflict(error.to_string()),
-        WorkspaceError::Name(_) | WorkspaceError::Path(_) => Error::Invalid(error.to_string()),
-        WorkspaceError::ReadLimitExceeded
+        WorkspaceError::Name(_)
+        | WorkspaceError::Path(_)
+        | WorkspaceError::ReadLimitExceeded
         | WorkspaceError::NotRegularFile
         | WorkspaceError::NotDirectory
         | WorkspaceError::ForeignGeneration

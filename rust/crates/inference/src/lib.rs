@@ -85,7 +85,7 @@ struct Connection {
 pub struct Inference(Arc<Connection>);
 
 impl Inference {
-    /// Connect using an explicit trusted CA, ambient WebPKI roots, and bounded TLS/RPC deadlines.
+    /// Connect using an explicit trusted CA, ambient `WebPKI` roots, and bounded TLS/RPC deadlines.
     ///
     /// # Errors
     /// Rejects non-HTTPS endpoints, invalid credentials and failed TLS setup.
@@ -985,6 +985,10 @@ mod tests {
     use prost::Message;
 
     #[test]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "each index is preceded by an assert_eq! on the corresponding Vec's len(), so the index is proven in-bounds"
+    )]
     fn descriptor_contains_only_customer_contract() -> Result<(), Box<dyn std::error::Error>> {
         let descriptor = prost_types::FileDescriptorSet::decode(DESCRIPTOR)?;
         assert_eq!(descriptor.file.len(), 1);

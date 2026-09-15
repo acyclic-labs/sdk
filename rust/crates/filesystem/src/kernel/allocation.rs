@@ -157,6 +157,13 @@ impl VisitedObjectSet {
         })
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`mask = self.slots.len() - 1` and `index`/`index + 1` are always combined with \
+                  `& mask` before indexing; `Self::slot_count` (called from `new` and `grow`) \
+                  builds `self.slots` via `checked_next_power_of_two`, so `self.slots.len()` is \
+                  always a nonzero power of two and `x & mask` is always `< self.slots.len()`"
+    )]
     pub(crate) fn insert(
         &mut self,
         object: ObjectId,
@@ -199,6 +206,13 @@ impl VisitedObjectSet {
         }
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`mask = slot_count - 1` and `index`/`index + 1` are always combined with \
+                  `& mask` before indexing; `Self::slot_count` builds `slot_count` via \
+                  `checked_next_power_of_two`, so it is always a nonzero power of two and \
+                  `x & mask` is always `< slots.len()`"
+    )]
     fn grow(
         &mut self,
         ledger: &mut AllocationLedger,

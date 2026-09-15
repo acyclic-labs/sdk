@@ -169,7 +169,8 @@ pub async fn recursive_sum(group: TaskGroup, values: Vec<u64>, leaf_size: usize)
             .await;
     }
     let midpoint = values.len() / 2;
-    let (left, right) = (values[..midpoint].to_vec(), values[midpoint..].to_vec());
+    let (left, right) = values.split_at(midpoint);
+    let (left, right) = (left.to_vec(), right.to_vec());
     let (left_result, right_result) = tokio::join!(
         recursive_sum_boxed(group.clone(), left, leaf_size),
         recursive_sum_boxed(group, right, leaf_size),

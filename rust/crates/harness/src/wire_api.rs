@@ -154,7 +154,7 @@ pub fn validate_observe_request(request: &wire::ObserveRequest) -> Result<Operat
     validate_protocol(request.protocol.as_ref())?;
     decode_control(
         request.owner.clone(),
-        request.operation_id.clone(),
+        &request.operation_id,
         request.scope.clone(),
         "operation:observe",
     )
@@ -168,7 +168,7 @@ pub fn validate_cancel_request(
     let key = IdempotencyKey::new(request.idempotency_key.clone())?;
     let control = decode_control(
         request.owner.clone(),
-        request.operation_id.clone(),
+        &request.operation_id,
         request.scope.clone(),
         "operation:cancel",
     )?;
@@ -277,7 +277,7 @@ pub fn validate_cancel_response(
 
 fn decode_control(
     owner: Option<wire::Authority>,
-    operation_id: String,
+    operation_id: &str,
     scope: Option<wire::Scope>,
     capability: &str,
 ) -> Result<OperationControlRequest> {
@@ -285,7 +285,7 @@ fn decode_control(
         decode_authority(owner.ok_or_else(|| Error::Invalid("operation owner is missing".into()))?)
             .map_err(as_invalid_control_input)?;
     owner.stream_path()?;
-    let operation_id = OperationId::parse(&operation_id)?;
+    let operation_id = OperationId::parse(operation_id)?;
     let scope = decode_scope(
         scope.ok_or_else(|| Error::Invalid("operation control scope is missing".into()))?,
     )?;

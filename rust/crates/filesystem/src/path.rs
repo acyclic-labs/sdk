@@ -37,7 +37,7 @@ impl PortablePath {
         }
 
         let mut depth = 0_u16;
-        for component in value[1..].split('/') {
+        for component in value.strip_prefix('/').unwrap_or(value).split('/') {
             if component.is_empty() {
                 return Err(PathError::EmptyComponent);
             }
@@ -88,7 +88,11 @@ impl PortablePath {
         if self.0 == Self::ROOT {
             0
         } else {
-            self.0[1..].split('/').count()
+            self.0
+                .strip_prefix('/')
+                .unwrap_or(&self.0)
+                .split('/')
+                .count()
         }
     }
 

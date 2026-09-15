@@ -284,6 +284,10 @@ impl Client {
         })
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "callers derive index via `(start + offset) % channels.len()` against this same slice, so it is always in-bounds"
+    )]
     fn service(
         channels: &[Channel],
         index: usize,
@@ -369,14 +373,14 @@ impl Client {
                         return Ok((response.into_inner(), index));
                     }
                     Ok(Err(error)) if retryable(&error) => last = Some(error),
-                    Ok(Err(error)) => return Err(status(error)),
+                    Ok(Err(error)) => return Err(status(&error)),
                     Err(_) => last = Some(Status::deadline_exceeded("endpoint attempt expired")),
                 }
             }
             tokio::time::sleep_until((tokio::time::Instant::now() + RETRY_DELAY).min(deadline))
                 .await;
             if tokio::time::Instant::now() >= deadline {
-                return Err(last.map_or(StreamError::Unavailable, status));
+                return Err(last.as_ref().map_or(StreamError::Unavailable, status));
             }
         }
     }
@@ -429,7 +433,7 @@ impl Client {
                             tokio::time::sleep(RETRY_DELAY).await;
                             cursor.active = None;
                         }
-                        Some(Err(error)) => return Some((Err(status(error)), cursor)),
+                        Some(Err(error)) => return Some((Err(status(&error)), cursor)),
                         None if cursor.remaining.is_none() => {
                             cursor.advance_follow(active_endpoint);
                             tokio::time::sleep(RETRY_DELAY).await;
@@ -583,7 +587,7 @@ impl StreamProvider for Client {
                 },
             )
             .await?;
-        bind_observation(idempotency_key, response.observation)
+        bind_observation(&idempotency_key, response.observation)
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
@@ -708,7 +712,7 @@ impl StreamProvider for Client {
             let collected = response
                 .map(|item| {
                     let child = item
-                        .map_err(status)?
+                        .map_err(|error| status(&error))?
                         .child
                         .ok_or(StreamError::Unavailable)?;
                     Ok(Child {
@@ -770,13 +774,13 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::InspectIdempotencyRequest>,
     ) -> Result<Response<wire::InspectIdempotencyResponse>, Status> {
-        let key =
-            IdempotencyKey::new(request.into_inner().idempotency_key).map_err(error_status)?;
+        let key = IdempotencyKey::new(request.into_inner().idempotency_key)
+            .map_err(|error| error_status(&error))?;
         let observation = self
             .provider
             .inspect_idempotency(key)
             .await
-            .map_err(error_status)?
+            .map_err(|error| error_status(&error))?
             .map(observation_wire);
         Ok(Response::new(wire::InspectIdempotencyResponse {
             observation,
@@ -791,13 +795,14 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         let outcome = self
             .provider
             .append(AppendRequest {
-                path: path(request.path).map_err(error_status)?,
+                path: path(request.path).map_err(|error| error_status(&error))?,
                 records: request.records,
                 if_tail: request.if_tail,
-                idempotency_key: optional_key(request.idempotency_key).map_err(error_status)?,
+                idempotency_key: optional_key(request.idempotency_key)
+                    .map_err(|error| error_status(&error))?,
             })
             .await
-            .map_err(error_status)?;
+            .map_err(|error| error_status(&error))?;
         Ok(Response::new(append_outcome_wire(outcome)))
     }
 
@@ -805,8 +810,12 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::TailRequest>,
     ) -> Result<Response<wire::TailResponse>, Status> {
-        let path = path(request.into_inner().path).map_err(error_status)?;
-        let tail = self.provider.tail(path).await.map_err(error_status)?;
+        let path = path(request.into_inner().path).map_err(|error| error_status(&error))?;
+        let tail = self
+            .provider
+            .tail(path)
+            .await
+            .map_err(|error| error_status(&error))?;
         Ok(Response::new(wire::TailResponse { tail }))
     }
 
@@ -818,14 +827,15 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         let receipt = self
             .provider
             .fork(ForkRequest {
-                source: path(request.source).map_err(error_status)?,
-                destination: path(request.destination).map_err(error_status)?,
+                source: path(request.source).map_err(|error| error_status(&error))?,
+                destination: path(request.destination).map_err(|error| error_status(&error))?,
                 at_tail: request.at_tail,
-                idempotency_key: optional_key(request.idempotency_key).map_err(error_status)?,
+                idempotency_key: optional_key(request.idempotency_key)
+                    .map_err(|error| error_status(&error))?,
             })
             .await
-            .map_err(error_status)?;
-        Ok(Response::new(fork_receipt_wire(receipt)))
+            .map_err(|error| error_status(&error))?;
+        Ok(Response::new(fork_receipt_wire(&receipt)))
     }
 
     async fn trim(
@@ -836,13 +846,13 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         let receipt = self
             .provider
             .trim(
-                path(request.path).map_err(error_status)?,
+                path(request.path).map_err(|error| error_status(&error))?,
                 request.before,
-                required_key(request.idempotency_key).map_err(error_status)?,
+                required_key(request.idempotency_key).map_err(|error| error_status(&error))?,
             )
             .await
-            .map_err(error_status)?;
-        Ok(Response::new(trim_receipt_wire(receipt)))
+            .map_err(|error| error_status(&error))?;
+        Ok(Response::new(trim_receipt_wire(&receipt)))
     }
 
     async fn delete(
@@ -853,12 +863,12 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         let receipt = self
             .provider
             .delete(
-                path(request.path).map_err(error_status)?,
-                required_key(request.idempotency_key).map_err(error_status)?,
+                path(request.path).map_err(|error| error_status(&error))?,
+                required_key(request.idempotency_key).map_err(|error| error_status(&error))?,
             )
             .await
-            .map_err(error_status)?;
-        Ok(Response::new(delete_receipt_wire(receipt)))
+            .map_err(|error| error_status(&error))?;
+        Ok(Response::new(delete_receipt_wire(&receipt)))
     }
 
     async fn read(
@@ -869,12 +879,12 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         let records = self
             .provider
             .read(ReadRequest {
-                path: path(request.path).map_err(error_status)?,
+                path: path(request.path).map_err(|error| error_status(&error))?,
                 from: request.from,
                 limit: request.limit,
             })
             .await
-            .map_err(error_status)?;
+            .map_err(|error| error_status(&error))?;
         Ok(Response::new(
             records
                 .map(|record| {
@@ -883,7 +893,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                         .map(|record| wire::ReadResponse {
                             record: Some(record),
                         })
-                        .map_err(error_status)
+                        .map_err(|error| error_status(&error))
                 })
                 .boxed(),
         ))
@@ -896,9 +906,12 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         let request = request.into_inner();
         let records = self
             .provider
-            .follow(path(request.path).map_err(error_status)?, request.from)
+            .follow(
+                path(request.path).map_err(|error| error_status(&error))?,
+                request.from,
+            )
             .await
-            .map_err(error_status)?;
+            .map_err(|error| error_status(&error))?;
         Ok(Response::new(
             records
                 .map(|record| {
@@ -907,7 +920,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                         .map(|record| wire::ReadResponse {
                             record: Some(record),
                         })
-                        .map_err(error_status)
+                        .map_err(|error| error_status(&error))
                 })
                 .boxed(),
         ))
@@ -921,11 +934,15 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         let children = self
             .provider
             .children(ChildrenRequest {
-                parent: request.parent.map(path).transpose().map_err(error_status)?,
+                parent: request
+                    .parent
+                    .map(path)
+                    .transpose()
+                    .map_err(|error| error_status(&error))?,
                 limit: request.limit,
             })
             .await
-            .map_err(error_status)?;
+            .map_err(|error| error_status(&error))?;
         Ok(Response::new(
             children
                 .map(|child| {
@@ -935,7 +952,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                                 path: child.path.to_string(),
                             }),
                         })
-                        .map_err(error_status)
+                        .map_err(|error| error_status(&error))
                 })
                 .boxed(),
         ))
@@ -954,18 +971,18 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .into_iter()
                     .map(condition_from_wire)
                     .collect::<Result<_, _>>()
-                    .map_err(error_status)?,
+                    .map_err(|error| error_status(&error))?,
                 mutations: request
                     .mutations
                     .into_iter()
                     .map(mutation_from_wire)
                     .collect::<Result<_, _>>()
-                    .map_err(error_status)?,
+                    .map_err(|error| error_status(&error))?,
                 idempotency_key: IdempotencyKey::new(request.idempotency_key)
-                    .map_err(error_status)?,
+                    .map_err(|error| error_status(&error))?,
             })
             .await
-            .map_err(error_status)?;
+            .map_err(|error| error_status(&error))?;
         Ok(Response::new(commit_outcome_wire(outcome)))
     }
 
@@ -973,12 +990,13 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::ReadCommitRequest>,
     ) -> Result<Response<wire::CommittedEnvelope>, Status> {
-        let commit_id = commit_id(&request.into_inner().commit_id).map_err(error_status)?;
+        let commit_id =
+            commit_id(&request.into_inner().commit_id).map_err(|error| error_status(&error))?;
         let envelope = self
             .provider
             .read_commit(commit_id)
             .await
-            .map_err(error_status)?;
+            .map_err(|error| error_status(&error))?;
         Ok(Response::new(envelope_wire(envelope)))
     }
 }
@@ -1026,13 +1044,13 @@ fn observation_from_wire(
 }
 
 fn bind_observation(
-    requested: IdempotencyKey,
+    requested: &IdempotencyKey,
     observation: Option<wire::IdempotencyObservation>,
 ) -> Result<Option<IdempotencyObservation>, StreamError> {
     let observation = observation.map(observation_from_wire).transpose()?;
     if observation
         .as_ref()
-        .is_some_and(|observation| observation.idempotency_key != requested)
+        .is_some_and(|observation| &observation.idempotency_key != requested)
     {
         return Err(StreamError::Unavailable);
     }
@@ -1045,13 +1063,13 @@ fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObservati
             wire::idempotency_observation::Outcome::Append(append_outcome_wire(value))
         }
         IdempotencyOutcome::Fork(value) => {
-            wire::idempotency_observation::Outcome::Fork(fork_receipt_wire(value))
+            wire::idempotency_observation::Outcome::Fork(fork_receipt_wire(&value))
         }
         IdempotencyOutcome::Trim(value) => {
-            wire::idempotency_observation::Outcome::Trim(trim_receipt_wire(value))
+            wire::idempotency_observation::Outcome::Trim(trim_receipt_wire(&value))
         }
         IdempotencyOutcome::Delete(value) => {
-            wire::idempotency_observation::Outcome::Delete(delete_receipt_wire(value))
+            wire::idempotency_observation::Outcome::Delete(delete_receipt_wire(&value))
         }
         IdempotencyOutcome::Commit(value) => {
             wire::idempotency_observation::Outcome::Commit(commit_outcome_wire(value))
@@ -1067,7 +1085,7 @@ fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObservati
 fn append_outcome_from_wire(value: wire::AppendResponse) -> Result<AppendOutcome, StreamError> {
     match value.outcome.ok_or(StreamError::Unavailable)? {
         wire::append_response::Outcome::Committed(receipt) => {
-            Ok(AppendOutcome::Committed(append_receipt(receipt)?))
+            Ok(AppendOutcome::Committed(append_receipt(&receipt)?))
         }
         wire::append_response::Outcome::Conflict(conflict) => Ok(AppendOutcome::TailConflict {
             actual_tail: conflict.actual_tail,
@@ -1078,7 +1096,7 @@ fn append_outcome_from_wire(value: wire::AppendResponse) -> Result<AppendOutcome
 fn append_outcome_wire(value: AppendOutcome) -> wire::AppendResponse {
     let outcome = match value {
         AppendOutcome::Committed(receipt) => {
-            wire::append_response::Outcome::Committed(append_receipt_wire(receipt))
+            wire::append_response::Outcome::Committed(append_receipt_wire(&receipt))
         }
         AppendOutcome::TailConflict { actual_tail } => {
             wire::append_response::Outcome::Conflict(wire::TailConflict { actual_tail })
@@ -1120,7 +1138,7 @@ fn commit_outcome_wire(value: CommitOutcome) -> wire::CommitResponse {
     }
 }
 
-fn error_status(error: StreamError) -> Status {
+fn error_status(error: &StreamError) -> Status {
     match error {
         StreamError::InvalidPath => Status::invalid_argument("invalid_path"),
         StreamError::InvalidArgument => Status::invalid_argument("invalid_argument"),
@@ -1137,7 +1155,7 @@ fn error_status(error: StreamError) -> Status {
     }
 }
 
-fn status(error: tonic::Status) -> StreamError {
+fn status(error: &tonic::Status) -> StreamError {
     match error.code() {
         Code::InvalidArgument if error.message() == "invalid_path" => StreamError::InvalidPath,
         Code::InvalidArgument if error.message() == "limit_exceeded" => StreamError::LimitExceeded,
@@ -1175,7 +1193,7 @@ fn read_response(value: wire::ReadResponse) -> Result<Record, StreamError> {
     record(value.record.ok_or(StreamError::Unavailable)?)
 }
 
-fn append_receipt(value: wire::AppendReceipt) -> Result<AppendReceipt, StreamError> {
+fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceipt, StreamError> {
     Ok(AppendReceipt {
         start: value.start,
         end: value.end,
@@ -1192,7 +1210,7 @@ fn record_wire(value: Record) -> wire::Record {
     }
 }
 
-fn append_receipt_wire(value: AppendReceipt) -> wire::AppendReceipt {
+fn append_receipt_wire(value: &AppendReceipt) -> wire::AppendReceipt {
     wire::AppendReceipt {
         start: value.start,
         end: value.end,
@@ -1201,7 +1219,7 @@ fn append_receipt_wire(value: AppendReceipt) -> wire::AppendReceipt {
     }
 }
 
-fn fork_receipt_wire(value: ForkReceipt) -> wire::ForkReceipt {
+fn fork_receipt_wire(value: &ForkReceipt) -> wire::ForkReceipt {
     wire::ForkReceipt {
         source: value.source.to_string(),
         destination: value.destination.to_string(),
@@ -1211,7 +1229,7 @@ fn fork_receipt_wire(value: ForkReceipt) -> wire::ForkReceipt {
     }
 }
 
-fn trim_receipt_wire(value: TrimReceipt) -> wire::TrimReceipt {
+fn trim_receipt_wire(value: &TrimReceipt) -> wire::TrimReceipt {
     wire::TrimReceipt {
         path: value.path.to_string(),
         trim_point: value.trim_point,
@@ -1219,7 +1237,7 @@ fn trim_receipt_wire(value: TrimReceipt) -> wire::TrimReceipt {
     }
 }
 
-fn delete_receipt_wire(value: DeleteReceipt) -> wire::DeleteReceipt {
+fn delete_receipt_wire(value: &DeleteReceipt) -> wire::DeleteReceipt {
     wire::DeleteReceipt {
         path: value.path.to_string(),
         commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
@@ -1975,7 +1993,7 @@ mod tests {
             )),
         };
         assert_eq!(
-            bind_observation(requested, Some(forged)),
+            bind_observation(&requested, Some(forged)),
             Err(StreamError::Unavailable)
         );
         Ok(())

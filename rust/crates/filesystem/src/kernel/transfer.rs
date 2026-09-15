@@ -258,6 +258,15 @@ pub async fn export_generation_batch_async<S: AsyncObjectStore + ?Sized>(
         .map_err(|_| OperationFailure::new(GenerationTransferError::AllocationFailed, work))?;
     let admitted_object_bytes =
         maximum_object_bytes.min(manifest.config.limits.maximum_object_bytes);
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`cursor.0 > object_count` was already rejected above, and `cursor.0 == \
+                  object_count` returns early, so `cursor.0 < object_count`; `count = \
+                  remaining_objects.min(maximum_objects)` where `remaining_objects = \
+                  object_count - cursor.0`, so `count <= remaining_objects`, giving `start + \
+                  count_usize <= start + remaining_objects == object_count == \
+                  manifest.objects.len()`"
+    )]
     for object_id in &manifest.objects[start..start + count_usize] {
         requests.push(ObjectReadRequest {
             object_id: *object_id,
@@ -358,6 +367,14 @@ pub async fn import_generation_batch_async<S: AsyncObjectStore + ?Sized>(
         cancellation
             .check()
             .map_err(|error| OperationFailure::new(error.into(), work))?;
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "the check above rejects `body_count > maximum_objects` or \
+                      `cursor.0.checked_add(body_count)` overflowing or exceeding `object_count`, \
+                      so `cursor.0 + body_count <= object_count` (== manifest.objects.len()); \
+                      `start == cursor.0` as usize and `offset < bodies.len() == body_count`, so \
+                      `start + offset < start + body_count <= manifest.objects.len()`"
+        )]
         let object_id = manifest.objects[start + offset];
         let receipt = store
             .put(

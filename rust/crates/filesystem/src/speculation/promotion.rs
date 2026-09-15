@@ -769,12 +769,14 @@ fn has_duplicate_tiers(tiers: &[StorageTier]) -> bool {
     tiers
         .iter()
         .enumerate()
-        .any(|(index, tier)| tiers[..index].contains(tier))
+        .any(|(index, tier)| tiers.get(..index).unwrap_or(&[]).contains(tier))
 }
 
 fn has_duplicate_residency_locations(residency: &[ObjectResidency]) -> bool {
     residency.iter().enumerate().any(|(index, fact)| {
-        residency[..index]
+        residency
+            .get(..index)
+            .unwrap_or(&[])
             .iter()
             .any(|prior| prior.location_id == fact.location_id)
     })
@@ -782,7 +784,9 @@ fn has_duplicate_residency_locations(residency: &[ObjectResidency]) -> bool {
 
 fn has_duplicate_destination_locations(destinations: &[PromotionDestination]) -> bool {
     destinations.iter().enumerate().any(|(index, destination)| {
-        destinations[..index]
+        destinations
+            .get(..index)
+            .unwrap_or(&[])
             .iter()
             .any(|prior| prior.location_id == destination.location_id)
     })

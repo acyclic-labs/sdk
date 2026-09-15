@@ -126,9 +126,21 @@ where
         {
             return Err(failed(Error::InvalidRouting, machine.work));
         }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "`frontier_count` is captured as `machine.requests.len()` immediately above \
+                      and nothing in this loop mutates `machine.requests`, so every `index` in \
+                      `0..frontier_count` stays `< machine.requests.len()`"
+        )]
         for index in (0..frontier_count).rev() {
             machine.visit(machine.requests[index].page)?;
         }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "`frontier_count == machine.requests.len()` here (captured above, unchanged \
+                      by the visit loop), so slicing `[..frontier_count]` is slicing to the full \
+                      length and cannot panic"
+        )]
         let mut pages = persistent_io::read_pages::<S, F, _>(
             store,
             machine.requests[..frontier_count]
@@ -334,6 +346,18 @@ impl<'a, F: Format> Machine<'a, F> {
         Ok(())
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`self.ordered.len() == keys.len()` for the machine's whole lifetime (set once \
+                  in `Machine::new` and only cleared in `abort_cleanup`/after `finish`); every \
+                  `Request::queries` range is a subrange of the root request's `0..keys.len()` \
+                  by induction (`accept_internal` only ever narrows `query..end` within the \
+                  parent's `request.queries`), so `query` here (bounded by `request.queries`) \
+                  and `first` (from `found.queries`, itself a subrange of `request.queries` \
+                  produced by `equal_group`) are always `< self.ordered.len()`; `ordinal` is an \
+                  `IndexedKey::ordinal` assigned in `Machine::new` via `keys.iter().enumerate()`, \
+                  so it is always `< self.values.len() == keys.len()`"
+    )]
     fn accept_leaf(
         &mut self,
         request: &Request<F::Key>,
@@ -388,6 +412,14 @@ impl<'a, F: Format> Machine<'a, F> {
             .map_err(|error| failed(map_allocation(error), self.work))
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`query` is only ever called with a value drawn from a `Match::queries` range \
+                  (see `accept_leaf`), which is a subrange of `request.queries` and therefore \
+                  `< self.ordered.len() == keys.len()`; the resulting `ordinal` is an \
+                  `IndexedKey::ordinal` from `Machine::new`'s `keys.iter().enumerate()`, so it is \
+                  always `< self.values.len() == keys.len()`"
+    )]
     fn clone_result(&mut self, query: usize, value: &F::Value, nested: u64) -> Result<(), Failure> {
         let next_nested = self
             .value_nested_bytes
@@ -406,6 +438,15 @@ impl<'a, F: Format> Machine<'a, F> {
         Ok(())
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`query` is bounded by `request.queries` and `end` by the `while end < \
+                  request.queries.end` loop condition directly above; every `Request::queries` \
+                  range is a subrange of the root request's `0..keys.len()` by induction (this \
+                  function only ever narrows `query..end` within `request.queries` when pushing \
+                  child requests), and `self.ordered.len() == keys.len()` for the machine's whole \
+                  lifetime, so both indices are always `< self.ordered.len()`"
+    )]
     fn accept_internal(
         &mut self,
         request: &mut Request<F::Key>,
@@ -551,7 +592,10 @@ fn sort_indexed<K: Ord>(
         scan_comparisons = scan_comparisons
             .checked_add(1)
             .ok_or(Error::Work(WorkError::Overflow))?;
-        if indexed_order(&adjacent[0], &adjacent[1]).is_gt() {
+        let [left, right] = adjacent else {
+            unreachable!("windows(2) always yields exactly two elements")
+        };
+        if indexed_order(left, right).is_gt() {
             ordered = false;
             break;
         }
@@ -622,6 +666,15 @@ const fn heap_parent_count(count: usize) -> usize {
     count >> 1
 }
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "both callers in `sort_indexed` pass `end <= values.len()` (`values.len()` itself, \
+              or a value counting down from it) and an initial `root < end`; within the loop, \
+              `left` is filtered to `*left < end` (or the function returns early), `right` is \
+              only read behind an `if right < end` guard, and `root` is only ever reassigned to \
+              `greater` (one of `left`/`right`, both proven `< end`), so `root`, `left`, and \
+              `greater` are always `< end <= values.len()`"
+)]
 fn sift_down<K: Ord>(
     values: &mut [IndexedKey<'_, K>],
     mut root: usize,
@@ -666,6 +719,13 @@ fn indexed_order<K: Ord>(
         .then(left.ordinal.cmp(&right.ordinal))
 }
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "`cursor` is bounded by the `while cursor < end` loop condition directly above; its \
+              only caller (`accept_leaf`) always passes `start = query < self.ordered.len()` \
+              (see the invariant on `accept_leaf`) and `end <= self.ordered.len()`, so both \
+              `values[cursor]` and `values[start]` are in bounds"
+)]
 fn equal_group<K: Eq>(values: &[IndexedKey<'_, K>], start: usize, end: usize) -> (usize, u64) {
     let mut cursor = start + 1;
     let mut comparisons = 0_u64;
@@ -679,6 +739,13 @@ fn equal_group<K: Eq>(values: &[IndexedKey<'_, K>], start: usize, end: usize) ->
     (cursor, comparisons)
 }
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "standard binary-search invariant: `right` starts at `values.len()` and only ever \
+              decreases (to `middle`), and the loop runs only while `left < right`, so `middle = \
+              left + (right - left) / 2` always satisfies `left <= middle < right <= \
+              values.len()`"
+)]
 fn search<F: Format>(values: &[F::Value], key: &F::Key) -> (Result<usize, usize>, u64) {
     let mut left = 0;
     let mut right = values.len();
@@ -695,6 +762,13 @@ fn search<F: Format>(values: &[F::Value], key: &F::Key) -> (Result<usize, usize>
     (Err(left), comparisons)
 }
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "standard binary-search invariant: `right` starts at `children.len()` and only ever \
+              decreases (to `middle`), and the loop runs only while `left < right`, so `middle = \
+              left + (right - left) / 2` always satisfies `left <= middle < right <= \
+              children.len()`"
+)]
 fn route<K: Ord>(children: &[Child<K>], key: &K) -> (usize, u64) {
     let mut left = 0;
     let mut right = children.len();

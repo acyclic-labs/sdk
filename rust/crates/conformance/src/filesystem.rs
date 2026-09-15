@@ -1097,15 +1097,18 @@ fn resolve_targeted_interaction_case(
         dimension: "",
         level: "",
     }; 3];
-    for (position, resolved_dimension) in dimensions.iter_mut().enumerate() {
-        let dimension_name = family.dimensions[position];
+    for ((resolved_dimension, dimension_name), level_index) in dimensions
+        .iter_mut()
+        .zip(family.dimensions)
+        .zip(case.levels)
+    {
         let dimension = DIMENSIONS
             .iter()
             .find(|candidate| candidate.name == dimension_name)
             .ok_or(TargetedInteractionSelectionError::InvalidCorpusCase { ordinal })?;
         let level = dimension
             .levels
-            .get(case.levels[position])
+            .get(level_index)
             .ok_or(TargetedInteractionSelectionError::InvalidCorpusCase { ordinal })?;
         *resolved_dimension = TargetedDimensionLevel {
             dimension: dimension_name,
@@ -1567,6 +1570,12 @@ pub fn manifest_json() -> Result<String, serde_json::Error> {
 
 /// Generates complete pairwise coverage over all declared dimension levels.
 #[must_use]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "first_dimension and second_dimension range over 0..DIMENSIONS.len() and `levels` \
+              is constructed with exactly DIMENSIONS.len() elements, so every index below is in \
+              bounds by construction"
+)]
 pub fn pairwise_cases() -> Vec<WorkloadCase> {
     let mut cases = BTreeSet::new();
     for first_dimension in 0..DIMENSIONS.len() {
@@ -1696,16 +1705,18 @@ pub fn select_workload_cases(
     for (index, case) in cases.into_iter().enumerate() {
         let matches = selected_case.is_none_or(|selected| selected == index)
             && selected_levels.iter().all(|(dimension, level)| {
-                let dimension_index = DIMENSIONS
+                let matched_dimension = DIMENSIONS
                     .iter()
-                    .position(|candidate| candidate.name == *dimension);
-                dimension_index.is_some_and(|dimension_index| {
-                    let level_index = DIMENSIONS[dimension_index]
+                    .enumerate()
+                    .find(|(_, candidate)| candidate.name == *dimension);
+                matched_dimension.is_some_and(|(dimension_index, matched_dimension)| {
+                    let level_index = matched_dimension
                         .levels
                         .iter()
                         .position(|candidate| candidate == level);
-                    level_index
-                        .is_some_and(|level_index| case.levels[dimension_index] == level_index)
+                    level_index.is_some_and(|level_index| {
+                        case.levels.get(dimension_index) == Some(&level_index)
+                    })
                 })
             });
         if matches {
@@ -1834,7 +1845,10 @@ impl std::io::Write for BoundedJsonWriter {
             ));
         }
         let required = required.unwrap_or(self.bytes.len());
-        self.bytes[self.written..required].copy_from_slice(bytes);
+        self.bytes
+            .get_mut(self.written..required)
+            .ok_or_else(|| std::io::Error::other("selected workload JSON limit exceeded"))?
+            .copy_from_slice(bytes);
         self.written = required;
         Ok(bytes.len())
     }
@@ -1977,7 +1991,10 @@ mod tests {
         for (dimension, definition) in DIMENSIONS.iter().enumerate() {
             for level in 0..definition.levels.len() {
                 let mut levels = vec![0; DIMENSIONS.len()];
-                levels[dimension] = level;
+                *levels
+                    .get_mut(dimension)
+                    .unwrap_or_else(|| unreachable!("dimension is bounded by DIMENSIONS.len()")) =
+                    level;
                 assert!(cases.binary_search(&WorkloadCase { levels }).is_ok());
             }
         }
@@ -1986,8 +2003,12 @@ mod tests {
                 for first_level in 0..first_dimension.levels.len() {
                     for second_level in 0..second_dimension.levels.len() {
                         let mut levels = vec![0; DIMENSIONS.len()];
-                        levels[first] = first_level;
-                        levels[second] = second_level;
+                        *levels.get_mut(first).unwrap_or_else(|| {
+                            unreachable!("first is bounded by DIMENSIONS.len()")
+                        }) = first_level;
+                        *levels.get_mut(second).unwrap_or_else(|| {
+                            unreachable!("second is bounded by DIMENSIONS.len()")
+                        }) = second_level;
                         assert!(cases.binary_search(&WorkloadCase { levels }).is_ok());
                     }
                 }
@@ -2000,16 +2021,32 @@ mod tests {
         let first = pairwise_cases();
         let second = pairwise_cases();
         assert_eq!(first, second);
-        assert!(first.windows(2).all(|window| window[0] < window[1]));
+        assert!(first.windows(2).all(|window| {
+            let [earlier, later] = window else {
+                return false;
+            };
+            earlier < later
+        }));
         let json = workload_corpus_json()?;
         let value: serde_json::Value = serde_json::from_str(&json)?;
-        assert_eq!(value["schema"], "acyclic-fs-pairwise-workload-corpus-v2");
         assert_eq!(
-            value["corpus_digest"],
-            "b1e9d1d438350fcc849459e2cf8d4b56c315113de9598872a81e3fb1eb0c1c78"
+            value.get("schema").and_then(serde_json::Value::as_str),
+            Some("acyclic-fs-pairwise-workload-corpus-v2")
+        );
+        assert_eq!(
+            value
+                .get("corpus_digest")
+                .and_then(serde_json::Value::as_str),
+            Some("b1e9d1d438350fcc849459e2cf8d4b56c315113de9598872a81e3fb1eb0c1c78")
         );
         assert_eq!(compute_workload_corpus_digest(), WORKLOAD_CORPUS_DIGEST);
-        assert_eq!(value["cases"].as_array().map(Vec::len), Some(first.len()));
+        assert_eq!(
+            value
+                .get("cases")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(first.len())
+        );
         Ok(())
     }
 
@@ -2034,8 +2071,15 @@ mod tests {
         let selected =
             select_workload_cases(std::slice::from_ref(&case), SelectionLimits::default())?;
         assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].index, 0);
-        assert_eq!(selected[0].case, pairwise_cases()[0]);
+        let only_selected = selected
+            .first()
+            .unwrap_or_else(|| unreachable!("checked selected.len() == 1 above"));
+        assert_eq!(only_selected.index, 0);
+        let first_pairwise_case = pairwise_cases()
+            .first()
+            .cloned()
+            .unwrap_or_else(|| unreachable!("pairwise_cases is never empty"));
+        assert_eq!(only_selected.case, first_pairwise_case);
 
         let memory =
             select_workload_cases(std::slice::from_ref(&backend), SelectionLimits::default())?;
@@ -2043,25 +2087,51 @@ mod tests {
             .iter()
             .position(|dimension| dimension.name == "backend")
             .ok_or_else(|| SelectorError::UnknownDimension("backend".to_owned()))?;
-        assert!(
-            memory
-                .windows(2)
-                .all(|window| window[0].index < window[1].index)
-        );
+        assert!(memory.windows(2).all(|window| {
+            let [earlier, later] = window else {
+                return false;
+            };
+            earlier.index < later.index
+        }));
         assert!(
             memory
                 .iter()
-                .all(|selected| selected.case.levels[backend_index] == 0)
+                .all(|selected| selected.case.levels.get(backend_index) == Some(&0))
         );
         let json = selected_workload_corpus_json(&[backend, case], SelectionLimits::default())
             .map_err(|error| SelectorError::Malformed(error.to_string()))?;
         let value: serde_json::Value = serde_json::from_str(&json)
             .map_err(|error| SelectorError::Malformed(error.to_string()))?;
-        assert_eq!(value["schema"], "acyclic-fs-selected-workload-corpus-v1");
-        assert_eq!(value["corpus_digest"], digest);
-        assert_eq!(value["selectors"][0], "backend=memory");
-        assert_eq!(value["selectors"][1], case_text);
-        assert_eq!(value["cases"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            value.get("schema").and_then(serde_json::Value::as_str),
+            Some("acyclic-fs-selected-workload-corpus-v1")
+        );
+        assert_eq!(
+            value
+                .get("corpus_digest")
+                .and_then(serde_json::Value::as_str),
+            Some(digest.as_str())
+        );
+        let selectors = value
+            .get("selectors")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        assert_eq!(
+            selectors.first().and_then(serde_json::Value::as_str),
+            Some("backend=memory")
+        );
+        assert_eq!(
+            selectors.get(1).and_then(serde_json::Value::as_str),
+            Some(case_text.as_str())
+        );
+        assert_eq!(
+            value
+                .get("cases")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
         assert!(matches!(
             selected_workload_corpus_json(
                 &["backend=memory".parse()?],
@@ -2211,13 +2281,20 @@ mod tests {
             assert!(!dimension.name.is_empty());
             assert!(!dimension.levels.is_empty());
             assert!(
-                !DIMENSIONS[..index]
+                !DIMENSIONS
                     .iter()
+                    .take(index)
                     .any(|prior| prior.name == dimension.name)
             );
             for (level, name) in dimension.levels.iter().enumerate() {
                 assert!(!name.is_empty());
-                assert!(!dimension.levels[..level].contains(name));
+                assert!(
+                    !dimension
+                        .levels
+                        .iter()
+                        .take(level)
+                        .any(|existing| existing == name)
+                );
             }
         }
     }
@@ -2236,9 +2313,12 @@ mod tests {
                 .filter(|contract| contract.operation == *name)
                 .collect();
             assert_eq!(matching.len(), 1);
-            assert!(!matching[0].dominant_work.is_empty());
-            assert!(!matching[0].required_plans.is_empty());
-            assert!(!matching[0].forbidden.is_empty());
+            let only = matching
+                .first()
+                .unwrap_or_else(|| unreachable!("checked matching.len() == 1 above"));
+            assert!(!only.dominant_work.is_empty());
+            assert!(!only.required_plans.is_empty());
+            assert!(!only.forbidden.is_empty());
         }
     }
 
@@ -2247,8 +2327,9 @@ mod tests {
         for (index, family) in TARGETED_INTERACTIONS.iter().enumerate() {
             assert!(!family.name.is_empty());
             assert!(
-                !TARGETED_INTERACTIONS[..index]
+                !TARGETED_INTERACTIONS
                     .iter()
+                    .take(index)
                     .any(|prior| prior.name == family.name)
             );
             for (position, dimension) in family.dimensions.iter().enumerate() {
@@ -2257,7 +2338,13 @@ mod tests {
                         .iter()
                         .any(|candidate| candidate.name == *dimension)
                 );
-                assert!(!family.dimensions[..position].contains(dimension));
+                assert!(
+                    !family
+                        .dimensions
+                        .iter()
+                        .take(position)
+                        .any(|existing| existing == dimension)
+                );
             }
         }
     }
@@ -2295,14 +2382,28 @@ mod tests {
     fn targeted_interaction_json_is_bound_to_the_locked_corpus()
     -> Result<(), Box<dyn std::error::Error>> {
         let value: serde_json::Value = serde_json::from_str(&targeted_interaction_corpus_json()?)?;
-        assert_eq!(value["schema"], "acyclic-fs-targeted-interaction-corpus-v1");
-        assert_eq!(value["corpus_digest"], TARGETED_INTERACTION_CORPUS_DIGEST);
         assert_eq!(
-            value["families"].as_array().map(Vec::len),
+            value.get("schema").and_then(serde_json::Value::as_str),
+            Some("acyclic-fs-targeted-interaction-corpus-v1")
+        );
+        assert_eq!(
+            value
+                .get("corpus_digest")
+                .and_then(serde_json::Value::as_str),
+            Some(TARGETED_INTERACTION_CORPUS_DIGEST)
+        );
+        assert_eq!(
+            value
+                .get("families")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
             Some(TARGETED_INTERACTIONS.len())
         );
         assert_eq!(
-            value["cases"].as_array().map(Vec::len),
+            value
+                .get("cases")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
             Some(targeted_interaction_cases().len())
         );
         Ok(())
@@ -2398,17 +2499,29 @@ mod tests {
     fn machine_manifest_is_stable_and_complete() -> Result<(), Box<dyn std::error::Error>> {
         let manifest = manifest_json()?;
         let value: serde_json::Value = serde_json::from_str(&manifest)?;
-        assert_eq!(value["schema"], "acyclic-fs-workload-manifest-v1");
         assert_eq!(
-            value["dimensions"].as_array().map(Vec::len),
+            value.get("schema").and_then(serde_json::Value::as_str),
+            Some("acyclic-fs-workload-manifest-v1")
+        );
+        assert_eq!(
+            value
+                .get("dimensions")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
             Some(DIMENSIONS.len())
         );
         assert_eq!(
-            value["operation_contracts"].as_array().map(Vec::len),
+            value
+                .get("operation_contracts")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
             Some(OPERATION_CONTRACTS.len())
         );
         assert_eq!(
-            value["targeted_interactions"].as_array().map(Vec::len),
+            value
+                .get("targeted_interactions")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
             Some(TARGETED_INTERACTIONS.len())
         );
         Ok(())

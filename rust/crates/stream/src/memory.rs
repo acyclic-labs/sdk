@@ -977,9 +977,10 @@ fn condition_path(condition: &CommitCondition) -> &StreamPath {
 
 fn mutation_path(mutation: &CommitMutation) -> &StreamPath {
     match mutation {
-        CommitMutation::Append { path, .. } => path,
         CommitMutation::Fork { destination, .. } => destination,
-        CommitMutation::Trim { path, .. } | CommitMutation::Delete { path } => path,
+        CommitMutation::Append { path, .. }
+        | CommitMutation::Trim { path, .. }
+        | CommitMutation::Delete { path } => path,
     }
 }
 
@@ -1011,11 +1012,10 @@ fn normalize_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
     if request
         .conditions
         .windows(2)
-        .any(|pair| condition_path(&pair[0]) == condition_path(&pair[1]))
-        || request
-            .mutations
-            .windows(2)
-            .any(|pair| mutation_path(&pair[0]) == mutation_path(&pair[1]))
+        .any(|pair| matches!(pair, [left, right] if condition_path(left) == condition_path(right)))
+        || request.mutations.windows(2).any(
+            |pair| matches!(pair, [left, right] if mutation_path(left) == mutation_path(right)),
+        )
     {
         return Err(StreamError::InvalidArgument);
     }
@@ -1286,6 +1286,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "indices are preceded by an assert_eq!(read.len(), 2), proving them in-bounds"
+    )]
     async fn append_fork_follow_and_replay_preserve_exact_lineage() -> Result<(), StreamError> {
         let provider = MemoryStream::default();
         let source = path("runs/a")?;
@@ -1349,6 +1353,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "index is preceded by an assert_eq!(forked.len(), 1), proving it in-bounds"
+    )]
     async fn coordinated_conflict_changes_nothing_and_success_has_one_envelope()
     -> Result<(), StreamError> {
         let provider = MemoryStream::default();

@@ -895,10 +895,16 @@ fn persist_body(
     manifest.extend_from_slice(&(body.len() as u64).to_le_bytes());
     manifest.extend_from_slice(&digest);
     let chunk_count = body.len().div_ceil(CHUNK_BYTES);
-    manifest.extend_from_slice(&(chunk_count as u32).to_le_bytes());
+    let chunk_count = u32::try_from(chunk_count)
+        .map_err(|_| LocalObjectsError::Invalid("body exceeds the maximum chunk count"))?;
+    manifest.extend_from_slice(&chunk_count.to_le_bytes());
     for chunk in body.chunks(CHUNK_BYTES) {
         let chunk_digest = *blake3::hash(chunk).as_bytes();
         manifest.extend_from_slice(&chunk_digest);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "chunk length is bounded by CHUNK_BYTES (1 MiB), well under u32::MAX"
+        )]
         manifest.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
         persist_exact(root, "chunks", &chunk_digest, "chunk", chunk, durability)?;
     }
@@ -924,9 +930,10 @@ fn persist_exact(
     durability: LocalDurability,
 ) -> Result<PathBuf, LocalObjectsError> {
     let identity = hex(digest);
-    let parent = root.join(family).join(&identity[..2]);
+    let (prefix, suffix) = split_identity(&identity);
+    let parent = root.join(family).join(prefix);
     fs::create_dir_all(&parent)?;
-    let destination = parent.join(format!("{}.{}", &identity[2..], extension));
+    let destination = parent.join(format!("{suffix}.{extension}"));
     if destination.exists() {
         let existing = fs::read(&destination)?;
         if existing == bytes {
@@ -1136,7 +1143,13 @@ fn decode_lower_hex(encoded: &str, output: &mut [u8]) -> Result<(), LocalObjects
         return Err(LocalObjectsError::Corrupt);
     }
     for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
-        output[index] = (hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?;
+        let &[high, low] = pair else {
+            unreachable!(
+                "the length check above guarantees encoded.len() is even, so chunks_exact(2) never yields a partial chunk"
+            )
+        };
+        let value = (hex_nibble(high)? << 4) | hex_nibble(low)?;
+        *output.get_mut(index).ok_or(LocalObjectsError::Corrupt)? = value;
     }
     Ok(())
 }
@@ -1173,10 +1186,11 @@ pub(crate) fn read_body(
         return Err(ObjectsError::Invalid("invalid range"));
     }
     let identity = hex(expected_digest);
+    let (identity_prefix, identity_suffix) = split_identity(&identity);
     let manifest_path = root
         .join("manifests")
-        .join(&identity[..2])
-        .join(format!("{}.manifest", &identity[2..]));
+        .join(identity_prefix)
+        .join(format!("{identity_suffix}.manifest"));
     let manifest = fs::read(manifest_path).map_err(|_| ObjectsError::Unavailable)?;
     let entries = parse_manifest(&manifest, expected_digest, expected_length)?;
     let mut output = Vec::with_capacity(end.saturating_sub(start));
@@ -1187,17 +1201,21 @@ pub(crate) fn read_body(
             .ok_or(ObjectsError::Unavailable)?;
         if chunk_end > start && offset < end {
             let chunk_identity = hex(&digest);
+            let (chunk_prefix, chunk_suffix) = split_identity(&chunk_identity);
             let path = root
                 .join("chunks")
-                .join(&chunk_identity[..2])
-                .join(format!("{}.chunk", &chunk_identity[2..]));
+                .join(chunk_prefix)
+                .join(format!("{chunk_suffix}.chunk"));
             let chunk = fs::read(path).map_err(|_| ObjectsError::Unavailable)?;
             if chunk.len() != length || blake3::hash(&chunk).as_bytes() != &digest {
                 return Err(ObjectsError::Unavailable);
             }
             let selected_start = start.saturating_sub(offset).min(length);
             let selected_end = end.saturating_sub(offset).min(length);
-            output.extend_from_slice(&chunk[selected_start..selected_end]);
+            let selected = chunk
+                .get(selected_start..selected_end)
+                .ok_or(ObjectsError::Unavailable)?;
+            output.extend_from_slice(selected);
         }
         offset = chunk_end;
     }
@@ -1217,19 +1235,21 @@ pub(crate) fn hash_body(
     hasher: &mut blake3::Hasher,
 ) -> Result<(), ObjectsError> {
     let identity = hex(expected_digest);
+    let (identity_prefix, identity_suffix) = split_identity(&identity);
     let manifest_path = root
         .join("manifests")
-        .join(&identity[..2])
-        .join(format!("{}.manifest", &identity[2..]));
+        .join(identity_prefix)
+        .join(format!("{identity_suffix}.manifest"));
     let manifest = fs::read(manifest_path).map_err(|_| ObjectsError::Unavailable)?;
     let entries = parse_manifest(&manifest, expected_digest, expected_length)?;
     let mut observed = 0usize;
     for (digest, length) in entries {
         let chunk_identity = hex(&digest);
+        let (chunk_prefix, chunk_suffix) = split_identity(&chunk_identity);
         let path = root
             .join("chunks")
-            .join(&chunk_identity[..2])
-            .join(format!("{}.chunk", &chunk_identity[2..]));
+            .join(chunk_prefix)
+            .join(format!("{chunk_suffix}.chunk"));
         let chunk = fs::read(path).map_err(|_| ObjectsError::Unavailable)?;
         if chunk.len() != length || blake3::hash(&chunk).as_bytes() != &digest {
             return Err(ObjectsError::Unavailable);
@@ -1250,10 +1270,11 @@ fn validate_live_body_manifest(
     expected_digest: &[u8; 32],
 ) -> Result<(), LocalObjectsError> {
     let identity = hex(expected_digest);
+    let (identity_prefix, identity_suffix) = split_identity(&identity);
     let path = root
         .join("manifests")
-        .join(&identity[..2])
-        .join(format!("{}.manifest", &identity[2..]));
+        .join(identity_prefix)
+        .join(format!("{identity_suffix}.manifest"));
     let bytes = fs::read(path)?;
     let (_, expected_length) = local_body_identity(&bytes, expected_digest)?;
     parse_manifest(&bytes, expected_digest, expected_length)
@@ -1275,7 +1296,7 @@ fn parse_manifest(
         return Err(ObjectsError::Unavailable);
     }
     let mut cursor = MANIFEST_MAGIC.len();
-    if &payload[..cursor] != MANIFEST_MAGIC {
+    if payload.get(..cursor) != Some(MANIFEST_MAGIC) {
         return Err(ObjectsError::Unavailable);
     }
     let length = read_u64(payload, &mut cursor)?;
@@ -1322,6 +1343,10 @@ fn parse_digest(value: &[u8]) -> Result<[u8; 32], LocalObjectsError> {
     value.try_into().map_err(|_| LocalObjectsError::Corrupt)
 }
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "`byte >> 4` and `byte & 0x0f` are both bit operations on a u8 bounded to 0..16, always in range for the 16-entry DIGITS table"
+)]
 fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -1330,6 +1355,18 @@ fn hex(bytes: &[u8]) -> String {
         output.push(char::from(DIGITS[(byte & 0x0f) as usize]));
     }
     output
+}
+
+/// Splits a hex-encoded digest `identity` into its two-character storage-directory
+/// prefix and the remaining suffix used as the file stem.
+///
+/// Every caller passes an `identity` produced by [`hex`] applied to a `[u8; 32]`
+/// digest, which always yields exactly 64 lowercase ASCII hex digits. Because the
+/// string is provably pure ASCII, splitting at the fixed byte offset `2` can never
+/// land inside a multi-byte character, so `split_at` (unlike byte-offset string
+/// indexing) is both panic-free here and exempt from `clippy::string_slice`.
+fn split_identity(identity: &str) -> (&str, &str) {
+    identity.split_at(2)
 }
 
 fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
@@ -1557,12 +1594,13 @@ mod tests {
         assert_eq!(report.manifests_removed, 1);
         assert_eq!(report.chunks_removed, 1);
         let orphan_identity = hex(&orphan);
+        let (orphan_prefix, orphan_suffix) = split_identity(&orphan_identity);
         assert!(
             !root
                 .path()
                 .join("manifests")
-                .join(&orphan_identity[..2])
-                .join(format!("{}.manifest", &orphan_identity[2..]))
+                .join(orphan_prefix)
+                .join(format!("{orphan_suffix}.manifest"))
                 .exists()
         );
         assert_eq!(

@@ -1,8 +1,8 @@
 //! Composed bounded regular-file reads across inline and sparse representations.
 
 use super::{
-    BlobReadError, DecodeLimits, ExtentKind, ExtentRangeRequest, ExtentReadError, FileKind,
-    FilePayload, FileRecord, plan_extent_range_async, read_blob_range_async,
+    BlobReadError, DecodeLimits, ExtentKind, ExtentRangeRequest, ExtentReadError, ExtentSlice,
+    FileKind, FilePayload, FileRecord, plan_extent_range_async, read_blob_range_async,
 };
 use crate::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
@@ -98,8 +98,13 @@ fn read_inline(
     };
     work.verify(request.budget)
         .map_err(|error| failed(error.into(), WorkCounters::default()))?;
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "end <= bytes.len() is checked above (end > bytes.len() as u64 returns InvalidRange before this point) and start <= end since start and end are both derived from the same validated request.range, so bytes[start..end] cannot panic"
+    )]
+    let region = &bytes[start..end];
     Ok(FileRangeRead {
-        bytes: Bytes::copy_from_slice(&bytes[start..end]),
+        bytes: Bytes::copy_from_slice(region),
         work,
     })
 }
@@ -149,48 +154,16 @@ async fn read_sparse<S: AsyncObjectStore>(
         .map_err(|_| failed(FileRangeReadError::AllocationFailed, work))?;
     output.resize(output_len, 0);
     for span in &plan.spans {
-        if let ExtentKind::Content {
-            object,
-            object_offset,
-        } = span.kind
-        {
-            let nested = read_blob_range_async(
-                store,
-                object,
-                ByteRange {
-                    offset: object_offset,
-                    length: span.length,
-                },
-                request.limits,
-                remaining(work, request.budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-            let simultaneous = initial_peak
-                .checked_add(nested.work.peak_allocation_bytes)
-                .ok_or_else(|| failed(FileRangeReadError::Work(WorkError::Overflow), work))?;
-            let mut nested_work = nested.work;
-            nested_work.peak_allocation_bytes = 0;
-            nested_work.output_bytes = 0;
-            work = add(work, nested_work)?;
-            work.peak_allocation_bytes = work.peak_allocation_bytes.max(simultaneous);
-            let destination = usize::try_from(span.offset - request.range.offset)
-                .map_err(|_| failed(FileRangeReadError::InvalidRange, work))?;
-            let end = destination
-                .checked_add(nested.bytes.len())
-                .ok_or_else(|| failed(FileRangeReadError::InvalidRange, work))?;
-            output[destination..end].copy_from_slice(&nested.bytes);
-            work = add(
-                work,
-                WorkCounters {
-                    bytes_copied: span.length,
-                    ..WorkCounters::default()
-                },
-            )?;
-            work.verify(request.budget)
-                .map_err(|error| failed(error.into(), work))?;
-        }
+        work = copy_content_span(
+            store,
+            span,
+            work,
+            initial_peak,
+            &mut output,
+            request,
+            cancellation,
+        )
+        .await?;
     }
     work = add(
         work,
@@ -206,6 +179,66 @@ async fn read_sparse<S: AsyncObjectStore>(
         bytes: Bytes::from(output),
         work,
     })
+}
+
+/// Copies one plan span's content into `output`, if it carries content at all.
+async fn copy_content_span<S: AsyncObjectStore>(
+    store: &S,
+    span: &ExtentSlice,
+    mut work: WorkCounters,
+    initial_peak: u64,
+    output: &mut [u8],
+    request: &FileRangeRequest,
+    cancellation: &CancellationToken,
+) -> Result<WorkCounters, FileRangeReadFailure> {
+    let ExtentKind::Content {
+        object,
+        object_offset,
+    } = span.kind
+    else {
+        return Ok(work);
+    };
+    let nested = read_blob_range_async(
+        store,
+        object,
+        ByteRange {
+            offset: object_offset,
+            length: span.length,
+        },
+        request.limits,
+        remaining(work, request.budget)?,
+        cancellation,
+    )
+    .await
+    .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
+    let simultaneous = initial_peak
+        .checked_add(nested.work.peak_allocation_bytes)
+        .ok_or_else(|| failed(FileRangeReadError::Work(WorkError::Overflow), work))?;
+    let mut nested_work = nested.work;
+    nested_work.peak_allocation_bytes = 0;
+    nested_work.output_bytes = 0;
+    work = add(work, nested_work)?;
+    work.peak_allocation_bytes = work.peak_allocation_bytes.max(simultaneous);
+    let destination = usize::try_from(span.offset - request.range.offset)
+        .map_err(|_| failed(FileRangeReadError::InvalidRange, work))?;
+    let end = destination
+        .checked_add(nested.bytes.len())
+        .ok_or_else(|| failed(FileRangeReadError::InvalidRange, work))?;
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "RangeMachine::finish (range.rs) only returns an ExtentPlan when spans exactly and contiguously tile [request.range.offset, request.range.offset + request.range.length) with no gaps or overlaps (ExtentReadError::IncompleteCoverage otherwise), and BlobRangeMachine::finish (blob.rs) only returns Ok when nested.bytes.len() == span.length exactly (BlobReadError::IncompleteCoverage otherwise); together these guarantee destination..end falls within output, which was sized to request.range.length"
+    )]
+    output[destination..end].copy_from_slice(&nested.bytes);
+    work = add(
+        work,
+        WorkCounters {
+            bytes_copied: span.length,
+            ..WorkCounters::default()
+        },
+    )?;
+    work.verify(request.budget)
+        .map_err(|error| failed(error.into(), work))?;
+    Ok(work)
 }
 
 fn add(prior: WorkCounters, next: WorkCounters) -> Result<WorkCounters, FileRangeReadFailure> {

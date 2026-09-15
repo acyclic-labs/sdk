@@ -1281,7 +1281,12 @@ fn capture_host_name(component: &LogicalName) -> Result<std::ffi::OsString, Capt
             let units = component
                 .as_bytes()
                 .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .map(|pair| {
+                    let [high, low] = pair else {
+                        unreachable!("chunks_exact(2) always yields exactly 2-byte chunks")
+                    };
+                    u16::from_le_bytes([*high, *low])
+                })
                 .collect::<Vec<_>>();
             String::from_utf16(&units)
                 .map(std::ffi::OsString::from)
@@ -1301,7 +1306,12 @@ fn capture_host_name(component: &LogicalName) -> Result<std::ffi::OsString, Capt
             let units = component
                 .as_bytes()
                 .chunks_exact(2)
-                .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+                .map(|unit| {
+                    let [high, low] = unit else {
+                        unreachable!("chunks_exact(2) always yields exactly 2-byte chunks")
+                    };
+                    u16::from_le_bytes([*high, *low])
+                })
                 .collect::<Vec<_>>();
             Ok(std::ffi::OsString::from_wide(&units))
         }

@@ -170,6 +170,282 @@ impl StockExecutor {
         .map_err(|error| Error::Invalid(error.to_string()))?;
         Ok(*blake3::hash(&canonical).as_bytes())
     }
+
+    /// Replays the durable journal for one turn, verifying it is gapless and bound to the
+    /// exact same request, and journals the initial `Started` marker on a fresh turn.
+    async fn ensure_started(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+    ) -> Result<Vec<ExecutionRecord>> {
+        let records = journal.replay(input.operation_id).await?;
+        for (index, record) in records.iter().enumerate() {
+            if record.operation_id != input.operation_id || record.sequence != index as u64 + 1 {
+                return Err(Error::Conflict(
+                    "execution journal is not gapless or belongs to another turn".into(),
+                ));
+            }
+        }
+        let request_digest = self.request_digest(input)?;
+        match records.first().map(|record| &record.event) {
+            Some(ExecutionEvent::Started {
+                request_digest: existing,
+            }) if existing == &request_digest => {}
+            Some(_) => {
+                return Err(Error::Conflict(
+                    "execution identity is bound to another request or configuration".into(),
+                ));
+            }
+            None => {
+                journal
+                    .append(
+                        input.operation_id,
+                        "execution:started".into(),
+                        ExecutionEvent::Started { request_digest },
+                    )
+                    .await?;
+            }
+        }
+        Ok(records)
+    }
+
+    /// Resolves one model step's events, replaying an already completed or started attempt
+    /// from the durable journal exactly once instead of re-invoking the provider.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exactly-once replay-or-generate operation for a single model step \
+                  (already-completed replay, in-flight reconcile, or fresh generate, each \
+                  interleaved with journal appends); splitting the branches further would \
+                  fragment one atomic step across more functions without clarifying it"
+    )]
+    async fn run_model_step(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        records: &[ExecutionRecord],
+        prior_messages: &[ModelMessage],
+    ) -> Result<Vec<ModelEvent>> {
+        let context = self
+            .context
+            .run(&ContextInput {
+                input: input.input.clone(),
+                step,
+                prior_messages: prior_messages.to_vec(),
+            })
+            .await?;
+        let replayed_model = records
+            .iter()
+            .filter_map(|record| match &record.event {
+                ExecutionEvent::Model {
+                    step: event_step,
+                    event,
+                } if *event_step == step => Some(event.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let request = ModelRequest {
+            model: self.model.clone(),
+            messages: context.messages,
+            tools: self.tools.definitions(),
+            max_output_tokens: None,
+        };
+        let request_digest = model_request_digest(&request)?;
+        let started = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ModelStarted {
+                step: event_step,
+                request_digest,
+                request,
+            } if *event_step == step => Some((*request_digest, request)),
+            _ => None,
+        });
+        if started.is_some_and(|(existing_digest, existing_request)| {
+            existing_digest != request_digest || existing_request != &request
+        }) {
+            return Err(Error::Conflict(
+                "model attempt identity is bound to another request".into(),
+            ));
+        }
+        let replay_completed = replayed_model
+            .iter()
+            .any(|event| matches!(event, ModelEvent::Completed { .. }));
+        let model_events = if replay_completed {
+            replayed_model
+        } else if started.is_some() {
+            let Some(mut continuation) = self
+                .provider
+                .reconcile(ModelAttempt {
+                    operation_id: input.operation_id,
+                    step,
+                    request_digest,
+                    observed: replayed_model.clone(),
+                })
+                .await?
+            else {
+                return Err(Error::Indeterminate(input.operation_id));
+            };
+            let mut observed = replayed_model;
+            for event in continuation.drain(..) {
+                journal
+                    .append(
+                        input.operation_id,
+                        format!("model:{step}:{}", observed.len()),
+                        ExecutionEvent::Model {
+                            step,
+                            event: event.clone(),
+                        },
+                    )
+                    .await?;
+                observed.push(event);
+            }
+            observed
+        } else {
+            journal
+                .append(
+                    input.operation_id,
+                    format!("model:{step}:started"),
+                    ExecutionEvent::ModelStarted {
+                        step,
+                        request_digest,
+                        request: request.clone(),
+                    },
+                )
+                .await?;
+            let mut stream = self.provider.generate(request);
+            let mut observed = Vec::new();
+            while let Some(event) = stream.next().await {
+                let event = event?;
+                journal
+                    .append(
+                        input.operation_id,
+                        format!("model:{step}:{}", observed.len()),
+                        ExecutionEvent::Model {
+                            step,
+                            event: event.clone(),
+                        },
+                    )
+                    .await?;
+                observed.push(event);
+            }
+            observed
+        };
+        validate_model_events(&model_events)?;
+        Ok(model_events)
+    }
+
+    /// Resolves one tool invocation against the durable journal, replaying an already
+    /// completed or started attempt exactly once, and appends the resulting message.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exactly-once replay-or-execute operation for a single tool call \
+                  (already-completed replay, in-flight reconcile, or fresh execute, each \
+                  interleaved with journal appends); splitting the branches further would \
+                  fragment one atomic invocation across more functions without clarifying it"
+    )]
+    async fn resolve_tool_call(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        records: &[ExecutionRecord],
+        invocation: ToolInvocation,
+        prior_messages: &mut Vec<ModelMessage>,
+    ) -> Result<()> {
+        let tool = self
+            .tools
+            .get(&invocation.name)
+            .ok_or_else(|| Error::NotFound(format!("tool {}", invocation.name)))?;
+        validate_value(
+            &tool.definition.input_schema,
+            &invocation.arguments,
+            "tool input",
+        )?;
+        let completed_tool = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ToolCompleted {
+                step: event_step,
+                invocation: existing,
+                result,
+                projection,
+            } if *event_step == step && existing.call_id == invocation.call_id => {
+                Some((result.clone(), projection.clone()))
+            }
+            _ => None,
+        });
+        let (result, projection) = if let Some(completed) = completed_tool {
+            completed
+        } else {
+            let started = records.iter().find_map(|record| match &record.event {
+                ExecutionEvent::ToolStarted {
+                    step: event_step,
+                    invocation: existing,
+                } if *event_step == step && existing.call_id == invocation.call_id => {
+                    Some(existing)
+                }
+                _ => None,
+            });
+            if let Some(existing) = started {
+                if existing != &invocation {
+                    return Err(Error::Conflict(
+                        "tool call identity is bound to another invocation".into(),
+                    ));
+                }
+                let Some(result) = tool.executor.reconcile(invocation.clone()).await? else {
+                    return Err(Error::Indeterminate(operation_id));
+                };
+                validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
+                let projection = tool.projection.project(&invocation, &result)?;
+                journal
+                    .append(
+                        operation_id,
+                        format!("tool:{step}:{}:completed", invocation.call_id),
+                        ExecutionEvent::ToolCompleted {
+                            step,
+                            invocation: invocation.clone(),
+                            result: result.clone(),
+                            projection: projection.clone(),
+                        },
+                    )
+                    .await?;
+                prior_messages.push(ModelMessage {
+                    role: "tool".into(),
+                    content: json!({"call_id": invocation.call_id, "name": invocation.name, "result": projection}),
+                });
+                return Ok(());
+            }
+            journal
+                .append(
+                    operation_id,
+                    format!("tool:{step}:{}:started", invocation.call_id),
+                    ExecutionEvent::ToolStarted {
+                        step,
+                        invocation: invocation.clone(),
+                    },
+                )
+                .await?;
+            let result = tool.executor.execute(invocation.clone()).await?;
+            validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
+            let projection = tool.projection.project(&invocation, &result)?;
+            journal
+                .append(
+                    operation_id,
+                    format!("tool:{step}:{}:completed", invocation.call_id),
+                    ExecutionEvent::ToolCompleted {
+                        step,
+                        invocation: invocation.clone(),
+                        result: result.clone(),
+                        projection: projection.clone(),
+                    },
+                )
+                .await?;
+            (result, projection)
+        };
+        validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
+        prior_messages.push(ModelMessage {
+            role: "tool".into(),
+            content: json!({"call_id": invocation.call_id, "name": invocation.name, "result": projection}),
+        });
+        Ok(())
+    }
 }
 
 impl Executor for StockExecutor {
@@ -182,144 +458,15 @@ impl Executor for StockExecutor {
             if input.max_steps == 0 {
                 return Err(Error::Invalid("max_steps must be positive".into()));
             }
-            let records = journal.replay(input.operation_id).await?;
-            for (index, record) in records.iter().enumerate() {
-                if record.operation_id != input.operation_id || record.sequence != index as u64 + 1
-                {
-                    return Err(Error::Conflict(
-                        "execution journal is not gapless or belongs to another turn".into(),
-                    ));
-                }
-            }
-            let request_digest = self.request_digest(&input)?;
-            match records.first().map(|record| &record.event) {
-                Some(ExecutionEvent::Started {
-                    request_digest: existing,
-                }) if existing == &request_digest => {}
-                Some(_) => {
-                    return Err(Error::Conflict(
-                        "execution identity is bound to another request or configuration".into(),
-                    ));
-                }
-                None => {
-                    journal
-                        .append(
-                            input.operation_id,
-                            "execution:started".into(),
-                            ExecutionEvent::Started { request_digest },
-                        )
-                        .await?;
-                }
-            }
+            let records = self.ensure_started(journal, &input).await?;
             let mut prior_messages = Vec::new();
             let mut text = String::new();
             for step in 0..input.max_steps {
-                let context = self
-                    .context
-                    .run(&ContextInput {
-                        input: input.input.clone(),
-                        step,
-                        prior_messages: prior_messages.clone(),
-                    })
-                    .await?;
                 let mut calls = Vec::new();
                 let mut completed = None;
-                let replayed_model = records
-                    .iter()
-                    .filter_map(|record| match &record.event {
-                        ExecutionEvent::Model {
-                            step: event_step,
-                            event,
-                        } if *event_step == step => Some(event.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                let request = ModelRequest {
-                    model: self.model.clone(),
-                    messages: context.messages,
-                    tools: self.tools.definitions(),
-                    max_output_tokens: None,
-                };
-                let request_digest = model_request_digest(&request)?;
-                let started = records.iter().find_map(|record| match &record.event {
-                    ExecutionEvent::ModelStarted {
-                        step: event_step,
-                        request_digest,
-                        request,
-                    } if *event_step == step => Some((*request_digest, request)),
-                    _ => None,
-                });
-                if started.is_some_and(|(existing_digest, existing_request)| {
-                    existing_digest != request_digest || existing_request != &request
-                }) {
-                    return Err(Error::Conflict(
-                        "model attempt identity is bound to another request".into(),
-                    ));
-                }
-                let replay_completed = replayed_model
-                    .iter()
-                    .any(|event| matches!(event, ModelEvent::Completed { .. }));
-                let model_events = if replay_completed {
-                    replayed_model
-                } else if started.is_some() {
-                    let Some(mut continuation) = self
-                        .provider
-                        .reconcile(ModelAttempt {
-                            operation_id: input.operation_id,
-                            step,
-                            request_digest,
-                            observed: replayed_model.clone(),
-                        })
-                        .await?
-                    else {
-                        return Err(Error::Indeterminate(input.operation_id));
-                    };
-                    let mut observed = replayed_model;
-                    for event in continuation.drain(..) {
-                        journal
-                            .append(
-                                input.operation_id,
-                                format!("model:{step}:{}", observed.len()),
-                                ExecutionEvent::Model {
-                                    step,
-                                    event: event.clone(),
-                                },
-                            )
-                            .await?;
-                        observed.push(event);
-                    }
-                    observed
-                } else {
-                    journal
-                        .append(
-                            input.operation_id,
-                            format!("model:{step}:started"),
-                            ExecutionEvent::ModelStarted {
-                                step,
-                                request_digest,
-                                request: request.clone(),
-                            },
-                        )
-                        .await?;
-                    let mut stream = self.provider.generate(request);
-                    let mut observed = Vec::new();
-                    while let Some(event) = stream.next().await {
-                        let event = event?;
-                        journal
-                            .append(
-                                input.operation_id,
-                                format!("model:{step}:{}", observed.len()),
-                                ExecutionEvent::Model {
-                                    step,
-                                    event: event.clone(),
-                                },
-                            )
-                            .await?;
-                        observed.push(event);
-                    }
-                    observed
-                };
-                validate_model_events(&model_events)?;
+                let model_events = self
+                    .run_model_step(journal, &input, step, &records, &prior_messages)
+                    .await?;
                 for event in model_events {
                     match event {
                         ModelEvent::Content { delta } => text.push_str(&delta),
@@ -353,108 +500,15 @@ impl Executor for StockExecutor {
                     content: json!({"tool_calls": &calls}),
                 });
                 for invocation in calls {
-                    let tool = self
-                        .tools
-                        .get(&invocation.name)
-                        .ok_or_else(|| Error::NotFound(format!("tool {}", invocation.name)))?;
-                    validate_value(
-                        &tool.definition.input_schema,
-                        &invocation.arguments,
-                        "tool input",
-                    )?;
-                    let completed_tool = records.iter().find_map(|record| match &record.event {
-                        ExecutionEvent::ToolCompleted {
-                            step: event_step,
-                            invocation: existing,
-                            result,
-                            projection,
-                        } if *event_step == step && existing.call_id == invocation.call_id => {
-                            Some((result.clone(), projection.clone()))
-                        }
-                        _ => None,
-                    });
-                    let (result, projection) = if let Some(completed) = completed_tool {
-                        completed
-                    } else {
-                        let started = records.iter().find_map(|record| match &record.event {
-                            ExecutionEvent::ToolStarted {
-                                step: event_step,
-                                invocation: existing,
-                            } if *event_step == step && existing.call_id == invocation.call_id => {
-                                Some(existing)
-                            }
-                            _ => None,
-                        });
-                        if let Some(existing) = started {
-                            if existing != &invocation {
-                                return Err(Error::Conflict(
-                                    "tool call identity is bound to another invocation".into(),
-                                ));
-                            }
-                            let Some(result) = tool.executor.reconcile(invocation.clone()).await?
-                            else {
-                                return Err(Error::Indeterminate(input.operation_id));
-                            };
-                            validate_value(
-                                &tool.definition.output_schema,
-                                &result.value,
-                                "tool output",
-                            )?;
-                            let projection = tool.projection.project(&invocation, &result)?;
-                            journal
-                                .append(
-                                    input.operation_id,
-                                    format!("tool:{step}:{}:completed", invocation.call_id),
-                                    ExecutionEvent::ToolCompleted {
-                                        step,
-                                        invocation: invocation.clone(),
-                                        result: result.clone(),
-                                        projection: projection.clone(),
-                                    },
-                                )
-                                .await?;
-                            prior_messages.push(ModelMessage {
-                                role: "tool".into(),
-                                content: json!({"call_id": invocation.call_id, "name": invocation.name, "result": projection}),
-                            });
-                            continue;
-                        }
-                        journal
-                            .append(
-                                input.operation_id,
-                                format!("tool:{step}:{}:started", invocation.call_id),
-                                ExecutionEvent::ToolStarted {
-                                    step,
-                                    invocation: invocation.clone(),
-                                },
-                            )
-                            .await?;
-                        let result = tool.executor.execute(invocation.clone()).await?;
-                        validate_value(
-                            &tool.definition.output_schema,
-                            &result.value,
-                            "tool output",
-                        )?;
-                        let projection = tool.projection.project(&invocation, &result)?;
-                        journal
-                            .append(
-                                input.operation_id,
-                                format!("tool:{step}:{}:completed", invocation.call_id),
-                                ExecutionEvent::ToolCompleted {
-                                    step,
-                                    invocation: invocation.clone(),
-                                    result: result.clone(),
-                                    projection: projection.clone(),
-                                },
-                            )
-                            .await?;
-                        (result, projection)
-                    };
-                    validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
-                    prior_messages.push(ModelMessage {
-                        role: "tool".into(),
-                        content: json!({"call_id": invocation.call_id, "name": invocation.name, "result": projection}),
-                    });
+                    self.resolve_tool_call(
+                        journal,
+                        input.operation_id,
+                        step,
+                        &records,
+                        invocation,
+                        &mut prior_messages,
+                    )
+                    .await?;
                 }
             }
             Err(Error::Conflict("executor step limit reached".into()))
@@ -843,8 +897,16 @@ mod tests {
                 )
                 .await?;
         }
-        assert_eq!(journal.replay(first).await?[0].sequence, 1);
-        assert_eq!(journal.replay(second).await?[0].sequence, 1);
+        let replayed_first = journal.replay(first).await?;
+        let [first_entry] = replayed_first.as_slice() else {
+            unreachable!("expected exactly one replayed event for the first operation");
+        };
+        assert_eq!(first_entry.sequence, 1);
+        let replayed_second = journal.replay(second).await?;
+        let [second_entry] = replayed_second.as_slice() else {
+            unreachable!("expected exactly one replayed event for the second operation");
+        };
+        assert_eq!(second_entry.sequence, 1);
         Ok(())
     }
 }
