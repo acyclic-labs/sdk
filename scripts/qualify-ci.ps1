@@ -23,7 +23,9 @@ cargo test --workspace --exclude acyclic-fs-napi `
 cargo test --workspace --all-features --no-run --locked
 cargo build -p acyclic-fs-napi --locked
 cargo run --locked -p acyclic-cli
-bun run test
+bun run check
+bun test typescript/packages
+bun run --filter '@acyclic-labs/fs' test:composition
 rustup target add aarch64-pc-windows-msvc
 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features `
     --target aarch64-pc-windows-msvc --locked
