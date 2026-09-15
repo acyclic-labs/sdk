@@ -236,9 +236,10 @@ export class HarnessBuilder {
 }
 
 interface AgentHarnessComponents { model?: ModelProvider; loop?: AgentLoop; context?: ContextBuilder; interactions?: InteractionHandler; policy?: Policy; host?: HarnessRuntimeHost }
+const boundedHarnesses = new WeakSet<AgentHarness>();
 export class AgentHarness {
   readonly #tasks: ReadonlyMap<string, TaskDefinition<any, any>>; readonly #tools: ReadonlyMap<string, ToolRef<any, any>>;
-  constructor(tasks: ReadonlyMap<string, TaskDefinition<any, any>>, tools: ReadonlyMap<string, ToolRef<any, any>>, readonly components: AgentHarnessComponents, readonly scope = ExecutionScope.create(), readonly running: Map<RuntimeTaskId, Task<unknown>> = new Map()) { this.#tasks = new Map(tasks); this.#tools = new Map(tools); }
+  constructor(tasks: ReadonlyMap<string, TaskDefinition<any, any>>, tools: ReadonlyMap<string, ToolRef<any, any>>, readonly components: AgentHarnessComponents, readonly scope = ExecutionScope.create(), readonly running: Map<RuntimeTaskId, Task<unknown>> = new Map()) { this.#tasks = new Map(tasks); this.#tools = new Map(tools); if (configuredScope(scope)) boundedHarnesses.add(this); }
   get interactions(): InteractionHandler | undefined { return this.scope.interactionHandler ?? this.components.interactions; }
   get host(): HarnessRuntimeHost | undefined { return this.components.host; }
   task<Input, Output>(name: string): TaskDefinition<Input, Output> { const value = this.#tasks.get(name); if (!value) throw new Error(`task is not registered: ${name}`); return value as TaskDefinition<Input, Output>; }
@@ -247,7 +248,7 @@ export class AgentHarness {
   group<Output>(policy: GroupPolicy): TaskGroup<Output> { return new TaskGroup(this, policy); }
   scoped(scope: ExecutionScope): AgentHarness {
     const parentPolicy = this.scope.policyProvider ?? this.components.policy;
-    const grants = narrowGrants(this.scope.grants, scope.grants);
+    const grants = narrowGrants(this.scope.grants, scope.grants, boundedHarnesses.has(this));
     const limits = narrowLimits(this.scope.limits, scope.limits);
     const policy = composePolicies(parentPolicy, scope.policyProvider);
     const narrowed = new ExecutionScope(
@@ -258,7 +259,9 @@ export class AgentHarness {
       grants,
       limits,
     );
-    return new AgentHarness(this.#tasks, this.#tools, this.components, narrowed, this.running);
+    const child = new AgentHarness(this.#tasks, this.#tools, this.components, narrowed, this.running);
+    boundedHarnesses.add(child);
+    return child;
   }
   async call<Input, Output>(tool: ToolRef<Input, Output>, input: Input, signal = new AbortController().signal, taskId?: RuntimeTaskId): Promise<Output> { signal.throwIfAborted(); const invocation = { callId: crypto.randomUUID(), name: tool.definition.name, arguments: input }; const policy = this.scope.policyProvider ?? this.components.policy; if (policy) { const decision = await policy.evaluate({ kind: "tool", tool: invocation.name, arguments: input }, { grants: this.scope.grants, limits: this.scope.limits }); if (decision.kind === "deny") throw new Error(decision.reason); if (decision.kind === "require-approval") { const answer = await this.interactions?.route({ id: invocation.callId, kind: "approval", prompt: decision.prompt }); if (answer?.kind !== "accepted") throw new Error("tool approval was not accepted"); } } if (tool.definition.handler) return tool.definition.handler(new ToolContext(this, signal, invocation.callId, taskId), input); if (!tool.executor) throw new Error(`tool has no executable binding: ${tool.definition.name}`); return (await tool.executor.execute(invocation)).value; }
   async run(prompt: string): Promise<RunOutput> {
@@ -289,6 +292,7 @@ export class AgentHarness {
     });
     const tasks = new Map(this.#tasks); tasks.set(definition.name, definition);
     const runtime = new AgentHarness(tasks, this.#tools, this.components, this.scope, this.running);
+    if (boundedHarnesses.has(this)) boundedHarnesses.add(runtime);
     const task = runtime.spawn(definition, { prompt });
     const outcome = await task.result();
     if (outcome.kind !== "succeeded") throw new TaskRunError(task.id(), outcome);
@@ -312,9 +316,10 @@ class ReplayQueue<Value> {
 function withOutcome<Output>(entry: GroupEntry<Output>, outcome: Outcome<Output>): GroupEntry<Output> { return { ...entry, outcome }; }
 function identity<Value extends string>(prefix: string): Value { return `${prefix}:${crypto.randomUUID()}` as Value; }
 function register<Value>(values: Map<string, Value>, name: string, value: Value, revision: string): void { if (values.has(name)) throw new Error(`conflicting registration for ${name}`); if (!revision.trim()) throw new TypeError("registration revision is required"); values.set(name, value); }
-function narrowGrants(parent: readonly string[], child: readonly string[]): readonly string[] {
+function configuredScope(scope: ExecutionScope): boolean { return scope.modelProvider !== undefined || scope.contextBuilder !== undefined || scope.interactionHandler !== undefined || scope.policyProvider !== undefined || scope.grants.length !== 0 || scope.limits.concurrency !== undefined || scope.limits.deadline !== undefined; }
+function narrowGrants(parent: readonly string[], child: readonly string[], hasParentScope: boolean): readonly string[] {
   if (child.length === 0) return parent;
-  if (parent.length !== 0 && child.some(grant => !parent.includes(grant))) throw new Error("child scope cannot widen grants");
+  if (hasParentScope && child.some(grant => !parent.includes(grant))) throw new Error("child scope cannot widen grants");
   return [...new Set(child)];
 }
 function narrowLimits(parent: EffectiveScope["limits"], child: EffectiveScope["limits"]): EffectiveScope["limits"] {
@@ -342,4 +347,11 @@ function composePolicies(parent: Policy | undefined, child: Policy | undefined):
     },
   };
 }
-async function abortableWait(milliseconds: number, signal: AbortSignal): Promise<void> { await new Promise<void>((resolve, reject) => { const timeout = setTimeout(resolve, milliseconds); signal.addEventListener("abort", () => { clearTimeout(timeout); reject(signal.reason); }, { once: true }); }); }
+async function abortableWait(milliseconds: number, signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    if (signal.aborted) { reject(signal.reason); return; }
+    const aborted = () => { clearTimeout(timeout); reject(signal.reason); };
+    const timeout = setTimeout(() => { signal.removeEventListener("abort", aborted); resolve(); }, milliseconds);
+    signal.addEventListener("abort", aborted, { once: true });
+  });
+}

@@ -119,6 +119,10 @@ export class MountedView {
     return from.mount.checkout.cloneFileRange(from.path, sourceOffset, to.path, destinationOffset, length);
   }
 
+  /**
+   * Builds independent immutable candidates for every mount. This relies on the FsCheckout
+   * contract that checkpointing neither publishes nor mutates pending checkout state.
+   */
   async checkpointSnapshot(): Promise<MountedSnapshot> {
     return {
       mounts: await Promise.all(this.#mounts.map(async (mount) => ({

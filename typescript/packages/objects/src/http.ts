@@ -34,7 +34,7 @@ async function boundedBytes(response: Response, maximum: number): Promise<Uint8A
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > maximum) { await reader.cancel(); throw new ObjectsTransportError("response exceeds configured bound", response.status); }
+      if (total > maximum) { await reader.cancel().catch(() => undefined); throw new ObjectsTransportError("response exceeds configured bound", response.status); }
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }

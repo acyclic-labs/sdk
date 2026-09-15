@@ -300,8 +300,8 @@ async function s3Access(
   requireName(credential.accessKeyId);
   requireName(credential.secretAccessKey);
   requireName(credential.sessionToken);
-  if (response.expiresAtUnixSeconds <= 0n) {
-    throw new HostedFsError("invalid_response", "S3 credential expiry must be positive");
+  if (response.expiresAtUnixSeconds <= BigInt(Math.floor(Date.now() / 1_000))) {
+    throw new HostedFsError("invalid_response", "S3 credential expiry must be in the future");
   }
   return {
     endpoint: response.endpoint,

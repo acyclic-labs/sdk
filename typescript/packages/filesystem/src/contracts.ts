@@ -845,6 +845,10 @@ export interface FsCheckout {
   /** Exact bounded work used to acquire this checkout handle. */
   readonly acquisitionWork: WorkCounters;
   applyTransaction(operations: readonly TransactionOperation[]): Promise<TransactionResult>;
+  /**
+   * Builds an immutable content-addressed candidate only. Implementations MUST NOT publish it or
+   * change the checkout's pending mutation state, so callers may safely checkpoint independently.
+   */
   checkpoint(): Promise<CheckpointResult>;
   refreshHead(): Promise<CheckpointResult>;
   refreshLive(): Promise<CheckpointResult>;

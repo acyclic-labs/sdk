@@ -129,10 +129,10 @@ describe("objects", () => {
     let cancelled = false;
     const body = new ReadableStream<Uint8Array>({
       start(controller) { controller.enqueue(new Uint8Array([1, 2, 3])); },
-      cancel() { cancelled = true; },
+      cancel() { cancelled = true; throw new Error("cancel failed"); },
     });
     const provider = new HttpObjectsProvider({ endpoint: "https://example.test", token: "x", maximumResponseBytes: 2, fetcher: async () => new Response(body) });
-    await expect(provider.deleteBucket({ bucketId: "id" as never, name: "x" })).rejects.toThrow("configured bound");
+    await expect(provider.deleteBucket({ bucketId: "id" as never, name: "x" })).rejects.toBeInstanceOf(ObjectsTransportError);
     expect(cancelled).toBeTrue();
   });
 });

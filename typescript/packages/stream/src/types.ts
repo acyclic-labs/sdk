@@ -1,6 +1,19 @@
-export type Sequence = number;
-export type CommitId = string;
-export type IdempotencyKey = string;
+declare const streamIdentityBrand: unique symbol;
+/** Exact unsigned 64-bit protocol position. */
+export type Sequence = bigint;
+/** Opaque stable 32-byte commit identity. */
+export type CommitId = Uint8Array & { readonly [streamIdentityBrand]: "CommitId" };
+/** Opaque non-empty caller retry identity, bounded to 256 bytes. */
+export type IdempotencyKey = Uint8Array & { readonly [streamIdentityBrand]: "IdempotencyKey" };
+
+export function commitId(value: Uint8Array): CommitId {
+  if (!(value instanceof Uint8Array) || value.byteLength !== 32) throw new RangeError("commit ID must contain exactly 32 bytes");
+  return value.slice() as CommitId;
+}
+export function idempotencyKey(value: Uint8Array): IdempotencyKey {
+  if (!(value instanceof Uint8Array) || value.byteLength < 1 || value.byteLength > 256) throw new RangeError("idempotency key must contain 1..256 bytes");
+  return value.slice() as IdempotencyKey;
+}
 
 export interface Record<Value = Uint8Array> {
   readonly sequence: Sequence;
@@ -47,7 +60,7 @@ export type IdempotencyOutcome =
   | { readonly type: "trim"; readonly receipt: TrimReceipt }
   | { readonly type: "delete"; readonly receipt: DeleteReceipt }
   | { readonly type: "commit"; readonly outcome: CommitResult };
-export interface IdempotencyObservation { readonly idempotencyKey: IdempotencyKey; readonly requestDigest: string; readonly outcome: IdempotencyOutcome }
+export interface IdempotencyObservation { readonly idempotencyKey: IdempotencyKey; readonly requestDigest: Uint8Array; readonly outcome: IdempotencyOutcome }
 export type TokenOperation = "list" | "read" | "follow" | "append" | "fork" | "create" | "trim" | "delete" | "commit";
 export interface TokenGrant { readonly path: string; readonly subtree?: boolean; readonly operations: readonly TokenOperation[] }
 export interface CreateTokenRequest { readonly expiresIn: string; readonly allow: readonly TokenGrant[] }

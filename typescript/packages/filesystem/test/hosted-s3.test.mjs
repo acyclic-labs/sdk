@@ -44,7 +44,7 @@ function frame(flag, payload) {
   return result;
 }
 
-function fixtureFetch(requests, credentialCase = "s3") {
+function fixtureFetch(requests, credentialCase = "s3", expiresAtUnixSeconds = BigInt(Math.floor(Date.now() / 1_000) + 60)) {
   return async (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
     const method = new URL(request.url).pathname.split("/").at(-1);
@@ -88,7 +88,7 @@ function fixtureFetch(requests, credentialCase = "s3") {
         : { case: "bearerToken", value: "wrong-kind" };
       return grpcWebResponse(CredentialResponseSchema, create(CredentialResponseSchema, {
         endpoint: "https://s3.example.test",
-        expiresAtUnixSeconds: 1234n,
+        expiresAtUnixSeconds,
         credential,
       }));
     }
@@ -98,10 +98,11 @@ function fixtureFetch(requests, credentialCase = "s3") {
 
 test("hosted S3 access preserves scope, expiry, idempotency, and response fields", async () => {
   const requests = [];
+  const expiresAtUnixSeconds = BigInt(Math.floor(Date.now() / 1_000) + 60);
   const fs = await openHostedFs({
     endpoint: "https://filesystem.example.test",
     bearerToken: "token",
-    fetch: fixtureFetch(requests),
+    fetch: fixtureFetch(requests, "s3", expiresAtUnixSeconds),
   });
   const workspace = await fs.createWorkspace("hosted-s3");
   const idempotencyKey = new Uint8Array(16).fill(3);
@@ -109,7 +110,7 @@ test("hosted S3 access preserves scope, expiry, idempotency, and response fields
 
   expect(access).toEqual({
     endpoint: "https://s3.example.test",
-    expiresAtUnixSeconds: 1234n,
+    expiresAtUnixSeconds,
     bucket: "bucket-1",
     region: "eu-west-2",
     accessKeyId: "access",
@@ -132,8 +133,21 @@ test("hosted S3 access rejects a credential of the wrong wire kind", async () =>
     fetch: fixtureFetch([], "bearerToken"),
   });
   const workspace = await fs.createWorkspace("hosted-s3");
-  expect(workspace.s3Access(false, 60n)).rejects.toEqual(
+  await expect(workspace.s3Access(false, 60n)).rejects.toEqual(
     new HostedFsError("protocol", "missing S3 credential"),
+  );
+  fs.close();
+});
+
+test("hosted S3 access rejects credentials that have already expired", async () => {
+  const fs = await openHostedFs({
+    endpoint: "https://filesystem.example.test",
+    bearerToken: "token",
+    fetch: fixtureFetch([], "s3", 1n),
+  });
+  const workspace = await fs.createWorkspace("hosted-s3");
+  await expect(workspace.s3Access(false, 60n)).rejects.toEqual(
+    new HostedFsError("invalid_response", "S3 credential expiry must be in the future"),
   );
   fs.close();
 });

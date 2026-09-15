@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
   Batch,
+  AgentHarness,
   ExecutionScope,
   GroupPolicies,
   Harness,
   TaskDefinition,
   Task,
+  TaskContext,
   defineTool,
   type BatchId,
   type EffectId,
@@ -67,6 +69,12 @@ describe("typed agent runtime", () => {
     expect(() => runtime.scoped(ExecutionScope.create().grant("admin"))).toThrow("child scope cannot widen grants");
     expect(() => runtime.scoped(ExecutionScope.create().withLimits({ concurrency: 3 }))).toThrow("child scope cannot widen concurrency");
     expect(() => runtime.scoped(ExecutionScope.create().withLimits({ deadline: new Date(deadline.getTime() + 1) }))).toThrow("child scope cannot extend deadline");
+    const grantless = Harness.builder().tool(tool).build().scoped(ExecutionScope.create());
+    expect(() => grantless.scoped(ExecutionScope.create().grant("admin"))).toThrow("child scope cannot widen grants");
+    const directlyRestricted = new AgentHarness(new Map(), new Map(), {}, ExecutionScope.create().grant("read"));
+    expect(() => directlyRestricted.scoped(ExecutionScope.create().grant("admin"))).toThrow("child scope cannot widen grants");
+    const forged = Reflect.construct(AgentHarness, [new Map(), new Map(), {}, ExecutionScope.create().grant("read"), new Map(), 0]) as AgentHarness;
+    expect(() => forged.scoped(ExecutionScope.create().grant("admin"))).toThrow("child scope cannot widen grants");
   });
 
   test("keeps rejected batch admissions explicit after close", async () => {
@@ -109,6 +117,16 @@ describe("typed agent runtime", () => {
     const runtime = Harness.builder().task(task).build();
     await expect(runtime.group<string>(GroupPolicies.cancelOnFailure).map(task, ["hang", "fail"])).rejects.toThrow();
     expect(aborted).toBeTrue();
+  });
+
+  test("observes cancellation when a wait starts after its signal was aborted", async () => {
+    const runtime = Harness.builder().build();
+    const controller = new AbortController();
+    controller.abort(new Error("already cancelled"));
+    const task = new Task("task:pre-aborted" as RuntimeTaskId, signal =>
+      new TaskContext(runtime, signal).sleepUntil(new Date(Date.now() + 60_000)), controller);
+
+    expect(await task.result()).toMatchObject({ kind: "cancelled" });
   });
 
   test("race ignores an early failure and returns the first observed success", async () => {

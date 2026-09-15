@@ -5,75 +5,75 @@ import type {
   FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation,
   IdempotencyOutcome, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider, TrimReceipt,
 } from "./types.js";
-import { StreamError } from "./types.js";
+import { StreamError, commitId as validateCommitId, idempotencyKey as validateIdempotencyKey } from "./types.js";
 
 interface MemoryPath { records: EncodedRecord[]; trimPoint: Sequence; retired: boolean }
 
 /** Deterministic, bounded local implementation. */
 export class MemoryStreamProvider implements StreamProvider {
   readonly #paths = new Map<string, MemoryPath>();
-  readonly #commits = new Map<CommitId, CommittedEnvelope>();
-  readonly #idempotency = new Map<IdempotencyKey, { digest: string; outcome: IdempotencyOutcome }>();
+  readonly #commits = new Map<string, CommittedEnvelope>();
+  readonly #idempotency = new Map<string, { key: IdempotencyKey; digest: string; outcome: IdempotencyOutcome }>();
   readonly #followers = new Map<string, Set<() => void>>();
-  #nextCommit = 1;
+  #mutationTail: Promise<void> = Promise.resolve();
+  #nextCommit = 1n;
 
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
-    const value = this.#idempotency.get(key);
-    return value === undefined ? undefined : { idempotencyKey: key, requestDigest: value.digest, outcome: structuredClone(value.outcome) };
+    const value = this.#idempotency.get(bytesKey(validateIdempotencyKey(key)));
+    return value === undefined ? undefined : { idempotencyKey: value.key.slice() as IdempotencyKey, requestDigest: await sha256(new TextEncoder().encode(value.digest)), outcome: structuredClone(value.outcome) };
   }
-  async tail(streamPath: string): Promise<Sequence> { return this.#active(streamPath).records.length; }
+  async tail(streamPath: string): Promise<Sequence> { return BigInt(this.#active(streamPath).records.length); }
   async append(streamPath: string, values: readonly Uint8Array[], options: AppendOptions = {}): Promise<AppendResult> {
-    return this.#replay(options.idempotencyKey, "append", { streamPath, values, ifTail: options.ifTail }, () => {
+    return this.#replay(options.idempotencyKey, "append", { streamPath, values, ifTail: options.ifTail }, async digest => {
       pathValue(streamPath);
-      if (!this.#paths.has(streamPath) && options.ifTail !== undefined && options.ifTail !== 0) {
-        return { ok: false, code: "tail_conflict", actualTail: 0 };
+      if (!this.#paths.has(streamPath) && options.ifTail !== undefined && options.ifTail !== 0n) {
+        return { ok: false, code: "tail_conflict", actualTail: 0n };
       }
       const state = this.#appendable(streamPath);
-      const tail = state.records.length;
+      const tail = BigInt(state.records.length);
       if (options.ifTail !== undefined && options.ifTail !== tail) return { ok: false, code: "tail_conflict", actualTail: tail };
-      if (tail + values.length > Number.MAX_SAFE_INTEGER) throw new StreamError("sequence_exhausted", "safe-integer sequence ceiling reached");
-      const commitId = this.#id();
+      const commitId = await this.#id(digest);
       const start = tail;
-      const records = values.map((value, index) => ({ sequence: start + index, value: value.slice(), commitId }));
+      const records = values.map((value, index) => ({ sequence: start + BigInt(index), value: value.slice(), commitId: commitId.slice() as CommitId }));
       state.records.push(...records);
-      const result = { ok: true, start, end: start + values.length, tail: state.records.length, commitId } as const;
-      this.#commits.set(commitId, { commitId, mutations: [{ type: "append", path: streamPath, start, end: result.end, tail: result.tail, records }] });
+      const result = { ok: true, start, end: start + BigInt(values.length), tail: BigInt(state.records.length), commitId: commitId.slice() as CommitId } as const;
+      this.#commits.set(bytesKey(commitId), { commitId: commitId.slice() as CommitId, mutations: [{ type: "append", path: streamPath, start, end: result.end, tail: result.tail, records }] });
       this.#notify(streamPath);
       return result;
     });
   }
   async fork(source: string, destination: string, options: ForkOptions = {}): Promise<ForkReceipt> {
-    return this.#replay(options.idempotencyKey, "fork", { source, destination, atTail: options.atTail }, () => {
+    return this.#replay(options.idempotencyKey, "fork", { source, destination, atTail: options.atTail }, async digest => {
       pathValue(destination);
       if (this.#paths.has(destination)) throw new StreamError("destination_exists", "fork destination already exists or is retired");
       const parent = this.#active(source);
-      const forkedAt = options.atTail ?? parent.records.length;
+      const forkedAt = options.atTail ?? BigInt(parent.records.length);
       sequence(forkedAt);
-      if (forkedAt < parent.trimPoint || forkedAt > parent.records.length) throw new StreamError("prefix_not_retained", "requested prefix is not retained");
-      const commitId = this.#id();
-      this.#paths.set(destination, { records: parent.records.slice(0, forkedAt), trimPoint: parent.trimPoint, retired: false });
-      const receipt = { source, destination, forkedAt, tail: forkedAt, commitId };
-      this.#commits.set(commitId, { commitId, mutations: [{ type: "fork", source, destination, forkedAt, tail: forkedAt }] });
+      if (forkedAt < parent.trimPoint || forkedAt > BigInt(parent.records.length)) throw new StreamError("prefix_not_retained", "requested prefix is not retained");
+      const commitId = await this.#id(digest);
+      this.#paths.set(destination, { records: parent.records.slice(0, index(forkedAt)), trimPoint: parent.trimPoint, retired: false });
+      const receipt = { source, destination, forkedAt, tail: forkedAt, commitId: commitId.slice() as CommitId };
+      this.#commits.set(bytesKey(commitId), { commitId: commitId.slice() as CommitId, mutations: [{ type: "fork", source, destination, forkedAt, tail: forkedAt }] });
       return receipt;
     });
   }
   async trim(streamPath: string, before: Sequence, key?: IdempotencyKey): Promise<TrimReceipt> {
-    return this.#replay(key, "trim", { streamPath, before }, () => {
+    return this.#replay(key, "trim", { streamPath, before }, async digest => {
       const state = this.#active(streamPath);
       sequence(before);
-      if (before > state.records.length) throw new StreamError("invalid_trim", "trim point is beyond the tail");
-      state.trimPoint = Math.max(state.trimPoint, before);
-      const receipt = { path: streamPath, trimPoint: state.trimPoint, commitId: this.#id() };
-      this.#commits.set(receipt.commitId, { commitId: receipt.commitId, mutations: [{ type: "trim", path: streamPath, trimPoint: receipt.trimPoint }] });
+      if (before > BigInt(state.records.length)) throw new StreamError("invalid_trim", "trim point is beyond the tail");
+      if (before > state.trimPoint) state.trimPoint = before;
+      const receipt = { path: streamPath, trimPoint: state.trimPoint, commitId: await this.#id(digest) };
+      this.#commits.set(bytesKey(receipt.commitId), { commitId: receipt.commitId.slice() as CommitId, mutations: [{ type: "trim", path: streamPath, trimPoint: receipt.trimPoint }] });
       return receipt;
     });
   }
   async delete(streamPath: string, key?: IdempotencyKey): Promise<DeleteReceipt> {
-    return this.#replay(key, "delete", { streamPath }, () => {
+    return this.#replay(key, "delete", { streamPath }, async digest => {
       const state = this.#active(streamPath);
       state.retired = true;
-      const receipt = { path: streamPath, commitId: this.#id() };
-      this.#commits.set(receipt.commitId, { commitId: receipt.commitId, mutations: [{ type: "delete", path: streamPath }] });
+      const receipt = { path: streamPath, commitId: await this.#id(digest) };
+      this.#commits.set(bytesKey(receipt.commitId), { commitId: receipt.commitId.slice() as CommitId, mutations: [{ type: "delete", path: streamPath }] });
       this.#notify(streamPath);
       return receipt;
     });
@@ -81,7 +81,8 @@ export class MemoryStreamProvider implements StreamProvider {
   async *read(streamPath: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
     const state = this.#active(streamPath);
     if (options.from < state.trimPoint) throw new StreamError("cursor_trimmed", "requested sequence is no longer retained");
-    for (const item of state.records.slice(options.from, options.from + options.limit)) yield clone(item);
+    const from = index(options.from);
+    for (const item of state.records.slice(from, from + options.limit)) yield clone(item);
   }
   async *follow(streamPath: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     let next = options.from;
@@ -89,7 +90,7 @@ export class MemoryStreamProvider implements StreamProvider {
       if (options.signal?.aborted) return;
       const state = this.#active(streamPath);
       if (next < state.trimPoint) throw new StreamError("cursor_trimmed", "requested sequence is no longer retained");
-      if (next < state.records.length) { yield clone(state.records[next]!); next += 1; continue; }
+      if (next < BigInt(state.records.length)) { yield clone(state.records[index(next)]!); next += 1n; continue; }
       await this.#wait(streamPath, options.signal);
     }
   }
@@ -106,17 +107,17 @@ export class MemoryStreamProvider implements StreamProvider {
     for (const child of found) yield { path: child };
   }
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
-    return this.#replay(options.idempotencyKey, "commit", request, () => {
+    return this.#replay(options.idempotencyKey, "commit", request, async digest => {
       const conflicts: CommitConflict[] = [];
       for (const condition of request.conditions) {
         const state = this.#paths.get(condition.path);
         if ("ifTail" in condition) {
-          const actualTail = state === undefined || state.retired ? 0 : state.records.length;
+          const actualTail = state === undefined || state.retired ? 0n : BigInt(state.records.length);
           if (actualTail !== condition.ifTail) conflicts.push({ path: condition.path, expectedTail: condition.ifTail, actualTail });
         } else if (state !== undefined) conflicts.push({ path: condition.path, expectedAbsent: true, actual: state.retired ? "retired" : "exists" });
       }
       if (conflicts.length) return { ok: false, code: "conflict", conflicts };
-      const commitId = this.#id();
+      const commitId = await this.#id(digest);
       const mutations: CommittedMutation[] = [];
       const tails: { [path: string]: Sequence } = {};
       const forks: { path: string; tail: Sequence }[] = [];
@@ -125,41 +126,40 @@ export class MemoryStreamProvider implements StreamProvider {
       try { for (const mutation of request.mutations) {
         if ("append" in mutation) {
           const state = this.#appendable(mutation.append.path);
-          const start = state.records.length;
-          if (start + mutation.append.values.length > Number.MAX_SAFE_INTEGER) throw new StreamError("sequence_exhausted", "safe-integer sequence ceiling reached");
-          const records = mutation.append.values.map((value, index) => ({ sequence: start + index, value: value.slice(), commitId }));
+          const start = BigInt(state.records.length);
+          const records = mutation.append.values.map((value, itemIndex) => ({ sequence: start + BigInt(itemIndex), value: value.slice(), commitId: commitId.slice() as CommitId }));
           state.records.push(...records);
-          tails[mutation.append.path] = state.records.length;
-          mutations.push({ type: "append", path: mutation.append.path, start, end: state.records.length, tail: state.records.length, records });
+          tails[mutation.append.path] = BigInt(state.records.length);
+          mutations.push({ type: "append", path: mutation.append.path, start, end: BigInt(state.records.length), tail: BigInt(state.records.length), records });
           changed.add(mutation.append.path);
         } else if ("fork" in mutation) {
           pathValue(mutation.fork.destination);
           sequence(mutation.fork.atTail);
           if (this.#paths.has(mutation.fork.destination)) throw new StreamError("destination_exists", "fork destination already exists or is retired");
           const source = this.#active(mutation.fork.source);
-          if (mutation.fork.atTail < source.trimPoint || mutation.fork.atTail > source.records.length) throw new StreamError("prefix_not_retained", "requested prefix is not retained");
-          this.#paths.set(mutation.fork.destination, { records: source.records.slice(0, mutation.fork.atTail), trimPoint: source.trimPoint, retired: false });
+          if (mutation.fork.atTail < source.trimPoint || mutation.fork.atTail > BigInt(source.records.length)) throw new StreamError("prefix_not_retained", "requested prefix is not retained");
+          this.#paths.set(mutation.fork.destination, { records: source.records.slice(0, index(mutation.fork.atTail)), trimPoint: source.trimPoint, retired: false });
           forks.push({ path: mutation.fork.destination, tail: mutation.fork.atTail });
           mutations.push({ type: "fork", source: mutation.fork.source, destination: mutation.fork.destination, forkedAt: mutation.fork.atTail, tail: mutation.fork.atTail });
         } else if ("trim" in mutation) {
           const state = this.#active(mutation.trim.path);
           sequence(mutation.trim.before);
-          if (mutation.trim.before > state.records.length) throw new StreamError("invalid_trim", "trim point is beyond the tail");
-          state.trimPoint = Math.max(state.trimPoint, mutation.trim.before);
+          if (mutation.trim.before > BigInt(state.records.length)) throw new StreamError("invalid_trim", "trim point is beyond the tail");
+          if (mutation.trim.before > state.trimPoint) state.trimPoint = mutation.trim.before;
           mutations.push({ type: "trim", path: mutation.trim.path, trimPoint: state.trimPoint });
         } else {
           this.#active(mutation.delete.path).retired = true;
           mutations.push({ type: "delete", path: mutation.delete.path });
           changed.add(mutation.delete.path);
         }
-      } } catch (error) { this.#paths.clear(); for (const [path, state] of before) this.#paths.set(path, state); this.#nextCommit -= 1; throw error; }
-      this.#commits.set(commitId, { commitId, mutations });
+      } } catch (error) { this.#paths.clear(); for (const [path, state] of before) this.#paths.set(path, state); this.#nextCommit -= 1n; throw error; }
+      this.#commits.set(bytesKey(commitId), { commitId: commitId.slice() as CommitId, mutations });
       for (const path of changed) this.#notify(path);
       return { ok: true, commitId, tails, forks };
     });
   }
   async readCommit(commitId: CommitId): Promise<CommittedEnvelope> {
-    const value = this.#commits.get(commitId);
+    const value = this.#commits.get(bytesKey(validateCommitId(commitId)));
     if (value === undefined) throw new StreamError("commit_not_found", "commit is unavailable");
     return structuredClone(value);
   }
@@ -178,24 +178,37 @@ export class MemoryStreamProvider implements StreamProvider {
     const value = this.#paths.get(streamPath);
     if (value?.retired) throw new StreamError("stream_retired", "Stream path is permanently retired");
     if (value) return value;
-    const created = { records: [], trimPoint: 0, retired: false };
+    const created: MemoryPath = { records: [], trimPoint: 0n, retired: false };
     this.#paths.set(streamPath, created);
     return created;
   }
-  #id(): CommitId { return `commit_${this.#nextCommit++}`; }
-  #replay<Result>(key: IdempotencyKey | undefined, type: IdempotencyOutcome["type"], intent: unknown, execute: () => Result): Result {
-    if (key === undefined) return execute();
-    if (key === "") throw new StreamError("invalid_idempotency_key", "idempotency key is empty");
-    const digest = canonical(intent);
-    const previous = this.#idempotency.get(key);
-    if (previous) {
-      if (previous.digest !== digest || previous.outcome.type !== type) throw new StreamError("idempotency_mismatch", "idempotency key is bound to another request");
-      return structuredClone("outcome" in previous.outcome ? previous.outcome.outcome : previous.outcome.receipt) as Result;
-    }
-    const result = execute();
-    const outcome = (type === "append" || type === "commit" ? { type, outcome: result } : { type, receipt: result }) as IdempotencyOutcome;
-    this.#idempotency.set(key, { digest, outcome: structuredClone(outcome) });
-    return result;
+  async #id(digest: string): Promise<CommitId> {
+    if (this.#nextCommit > 0xffff_ffff_ffff_ffffn) throw new StreamError("identity_exhausted", "commit identity space is exhausted");
+    const decision = new Uint8Array(8);
+    new DataView(decision.buffer).setBigUint64(0, this.#nextCommit++, true);
+    const domain = new TextEncoder().encode("acyclic.stream.commit.v1\0");
+    return validateCommitId(await sha256(join(domain, decision, await sha256(new TextEncoder().encode(digest)))));
+  }
+  async #replay<Result>(key: IdempotencyKey | undefined, type: IdempotencyOutcome["type"], intent: unknown, execute: (digest: string) => Result | Promise<Result>): Promise<Result> {
+    const prior = this.#mutationTail;
+    let release!: () => void;
+    this.#mutationTail = new Promise<void>(resolve => { release = resolve; });
+    await prior;
+    try {
+      const digest = canonical(intent);
+      if (key === undefined) return await execute(digest);
+      if (!(key instanceof Uint8Array) || key.byteLength < 1 || key.byteLength > 256) throw new StreamError("invalid_idempotency_key", "idempotency key must contain 1..256 bytes");
+      const identity = bytesKey(key);
+      const previous = this.#idempotency.get(identity);
+      if (previous) {
+        if (previous.digest !== digest || previous.outcome.type !== type) throw new StreamError("idempotency_mismatch", "idempotency key is bound to another request");
+        return structuredClone("outcome" in previous.outcome ? previous.outcome.outcome : previous.outcome.receipt) as Result;
+      }
+      const result = await execute(digest);
+      const outcome = (type === "append" || type === "commit" ? { type, outcome: result } : { type, receipt: result }) as IdempotencyOutcome;
+      this.#idempotency.set(identity, { key: key.slice() as IdempotencyKey, digest, outcome: structuredClone(outcome) });
+      return result;
+    } finally { release(); }
   }
   #notify(streamPath: string): void {
     for (const wake of this.#followers.get(streamPath) ?? []) wake();
@@ -218,14 +231,32 @@ export class MemoryStreamProvider implements StreamProvider {
   }
 }
 
-function clone(item: EncodedRecord): EncodedRecord { return { ...item, value: item.value.slice() }; }
+function clone(item: EncodedRecord): EncodedRecord { return { ...item, value: item.value.slice(), commitId: item.commitId.slice() as CommitId }; }
 function canonical(value: unknown): string {
   if (value instanceof Uint8Array) return `{"$bytes":${JSON.stringify(base64(value))}}`;
+  if (typeof value === "bigint") return `{"$uint64":${JSON.stringify(value.toString())}}`;
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value !== null && typeof value === "object") {
     return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
   }
   return JSON.stringify(value);
+}
+function index(value: Sequence): number {
+  sequence(value);
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new StreamError("sequence_unavailable", "the in-memory provider cannot index beyond JavaScript's exact array range");
+  return Number(value);
+}
+function bytesKey(value: Uint8Array): string { return base64(value); }
+async function sha256(value: Uint8Array): Promise<Uint8Array> {
+  const copied = new Uint8Array(value.byteLength);
+  copied.set(value);
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", copied.buffer));
+}
+function join(...values: readonly Uint8Array[]): Uint8Array {
+  const result = new Uint8Array(values.reduce((length, value) => length + value.byteLength, 0));
+  let offset = 0;
+  for (const value of values) { result.set(value, offset); offset += value.byteLength; }
+  return result;
 }
 function base64(value: Uint8Array): string {
   let binary = "";

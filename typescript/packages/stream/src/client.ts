@@ -126,8 +126,8 @@ export function pathValue(value: string): void {
     throw new StreamError("invalid_path", "path must contain canonical non-empty segments");
   }
 }
-export function sequence(value: number): number {
-  if (!Number.isSafeInteger(value) || value < 0) throw new RangeError("sequence must be a non-negative safe integer");
+export function sequence(value: bigint): bigint {
+  if (typeof value !== "bigint" || value < 0n || value > 0xffff_ffff_ffff_ffffn) throw new RangeError("sequence must be an unsigned 64-bit integer");
   return value;
 }
 export function positiveInteger(value: number, name: string): void {
