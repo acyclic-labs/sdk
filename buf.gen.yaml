@@ -10,6 +10,10 @@ plugins:
     types:
       - acyclic.filesystem.v2.FilesystemService
       - acyclic.filesystem.daemon.v2.FilesystemDaemonService
+      - acyclic.objects.v1.BucketsService
+      - acyclic.objects.v1.ObjectsService
+      - acyclic.objects.v1.MultipartService
+      - acyclic.objects.v1.SnapshotsService
   - local: [bun, x, protoc-gen-es]
     out: generated/typescript
     strategy: all

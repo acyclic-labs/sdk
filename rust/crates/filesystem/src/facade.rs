@@ -65,7 +65,7 @@ use crate::storage::{
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use acyclic_objects::ObjectsProvider as _;
 use bytes::Bytes;
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::mem::size_of;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use std::path::PathBuf;
@@ -105,6 +105,12 @@ pub(crate) struct WorkspaceJoinRequest<'a, A, O> {
     pub operation_id: OperationId,
     pub maximum_changes: u32,
     pub maximum_conflicts: u32,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct WorkspaceCommonAncestor {
+    pub id: GenerationId,
+    pub volume_id: VolumeId,
 }
 
 pub(crate) struct WorkspaceRebaseRequest<'a, A, O> {
@@ -2089,7 +2095,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         source: &crate::Generation<A, O>,
         target: &crate::Generation<A, O>,
         maximum_generations: u32,
-    ) -> Result<GenerationId, crate::workspace::WorkspaceError> {
+    ) -> Result<WorkspaceCommonAncestor, crate::workspace::WorkspaceError> {
         if maximum_generations == 0
             || !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
             || !Arc::ptr_eq(&self.inner, &target.workspace.volume.fs.inner)
@@ -2100,7 +2106,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             return Err(crate::workspace::WorkspaceError::IncompatibleWorkspace);
         }
         let cancellation = CancellationToken::new();
-        let target_ancestors = collect_generation_ancestors(
+        let (target_ancestors, target_truncated) = collect_generation_ancestors(
             &self.inner.objects,
             target.id,
             target.workspace.volume.config,
@@ -2114,9 +2120,72 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             source.workspace.volume.config,
             maximum_generations,
             &target_ancestors,
+            target_truncated,
             &cancellation,
         )
         .await
+    }
+
+    pub(crate) async fn workspace_join_changes(
+        &self,
+        base: GenerationId,
+        source: &crate::Generation<A, O>,
+        maximum_changes: u32,
+    ) -> Result<FsReceipt<GenerationDiff>, crate::workspace::WorkspaceError> {
+        if maximum_changes == 0 || !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner) {
+            return Err(crate::workspace::WorkspaceError::ForeignGeneration);
+        }
+        let cancellation = CancellationToken::new();
+        let config = source.workspace.volume.config;
+        let budget = WorkBudget::UNBOUNDED;
+        let mut work = WorkCounters::default();
+        let (base_root, base_work) = read_generation_root(
+            &self.inner.objects,
+            ObjectId {
+                kind: ObjectKind::GenerationRoot,
+                digest: base.digest(),
+            },
+            config,
+            remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
+            &cancellation,
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        work = add(work, base_work).map_err(crate::workspace::WorkspaceError::engine)?;
+        let (source_root, source_work) = read_generation_root(
+            &self.inner.objects,
+            ObjectId {
+                kind: ObjectKind::GenerationRoot,
+                digest: source.id.digest(),
+            },
+            config,
+            remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
+            &cancellation,
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        work = add(work, source_work).map_err(crate::workspace::WorkspaceError::engine)?;
+        if source_root.volume_id != source.workspace.volume.id
+            || base_root.root_file_id != source_root.root_file_id
+        {
+            return Err(crate::workspace::WorkspaceError::IncompatibleWorkspace);
+        }
+        let receipt = diff_generation_file_tables(
+            &self.inner.objects,
+            base_root.file_table,
+            source_root.file_table,
+            maximum_changes,
+            source.workspace.volume.config,
+            work,
+            budget,
+            &cancellation,
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        if receipt.value.truncated {
+            return Err(crate::workspace::WorkspaceError::JoinLimit);
+        }
+        Ok(receipt)
     }
 
     pub(crate) async fn workspace_head_state(
@@ -3068,7 +3137,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     ///
     /// Rejects zero bounds, foreign/malformed generations, storage corruption,
     /// cancellation, allocation failure, or work beyond the admitted budget.
-    #[allow(clippy::too_many_lines)]
     pub async fn diff_generations(
         &self,
         before: GenerationId,
@@ -3122,78 +3190,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         if before_root.volume_id != self.id || after_root.volume_id != self.id {
             return Err(OperationFailure::new(FsError::VolumeMismatch, work));
         }
-        let records = diff_file_records_async(
+        diff_generation_file_tables(
             &self.fs.inner.objects,
-            Some(before_root.file_table),
-            Some(after_root.file_table),
+            before_root.file_table,
+            after_root.file_table,
             maximum_changes,
-            decode_limits(self.config),
-            remaining(work, budget)?,
+            self.config,
+            work,
+            budget,
             cancellation,
         )
         .await
-        .map_err(|failure| map_diff_failure(failure, work))?;
-        work = add(work, records.work)?;
-        let maximum = usize::try_from(maximum_changes).unwrap_or(usize::MAX);
-        let mut files = Vec::new();
-        files
-            .try_reserve(records.changes.len())
-            .map_err(|_| OperationFailure::new(FsError::DiffAllocationFailed, work))?;
-        let mut bindings = Vec::new();
-        let mut truncated = records.truncated;
-        for change in records.changes {
-            if files.len() + bindings.len() >= maximum {
-                truncated = true;
-                break;
-            }
-            let before_entries = directory_entries(change.before);
-            let after_entries = directory_entries(change.after);
-            files.push(FileRecordChange {
-                file_id: change.key,
-                before: change.before,
-                after: change.after,
-            });
-            if before_entries == after_entries {
-                continue;
-            }
-            let remaining_changes = maximum.saturating_sub(files.len() + bindings.len());
-            if remaining_changes == 0 {
-                truncated = true;
-                continue;
-            }
-            let entries = diff_tree_entries_async(
-                &self.fs.inner.objects,
-                before_entries,
-                after_entries,
-                u32::try_from(remaining_changes).unwrap_or(u32::MAX),
-                decode_limits(self.config),
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| map_diff_failure(failure, work))?;
-            work = add(work, entries.work)?;
-            truncated |= entries.truncated;
-            bindings.extend(
-                entries
-                    .changes
-                    .into_iter()
-                    .map(|entry| DirectoryBindingChange {
-                        directory_id: change.key,
-                        name: entry.key,
-                        before: entry.before,
-                        after: entry.after,
-                    }),
-            );
-        }
-        Ok(OperationReceipt {
-            value: GenerationDiff {
-                files,
-                bindings,
-                truncated,
-            },
-            work,
-        })
     }
 
     /// Resolves the exact generation root object and, for a writable
@@ -9693,22 +9700,111 @@ fn generation_from_record(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn diff_generation_file_tables<O: AsyncObjectStore>(
+    objects: &O,
+    before: ObjectId,
+    after: ObjectId,
+    maximum_changes: u32,
+    config: VolumeConfig,
+    mut work: WorkCounters,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> FsResult<GenerationDiff> {
+    let records = diff_file_records_async(
+        objects,
+        Some(before),
+        Some(after),
+        maximum_changes,
+        decode_limits(config),
+        remaining(work, budget)?,
+        cancellation,
+    )
+    .await
+    .map_err(|failure| map_diff_failure(failure, work))?;
+    work = add(work, records.work)?;
+    let maximum = usize::try_from(maximum_changes).unwrap_or(usize::MAX);
+    let mut files = Vec::new();
+    files
+        .try_reserve(records.changes.len())
+        .map_err(|_| OperationFailure::new(FsError::DiffAllocationFailed, work))?;
+    let mut bindings = Vec::new();
+    let mut truncated = records.truncated;
+    for change in records.changes {
+        if files.len() + bindings.len() >= maximum {
+            truncated = true;
+            break;
+        }
+        let before_entries = directory_entries(change.before);
+        let after_entries = directory_entries(change.after);
+        files.push(FileRecordChange {
+            file_id: change.key,
+            before: change.before,
+            after: change.after,
+        });
+        if before_entries == after_entries {
+            continue;
+        }
+        let remaining_changes = maximum.saturating_sub(files.len() + bindings.len());
+        if remaining_changes == 0 {
+            truncated = true;
+            continue;
+        }
+        let entries = diff_tree_entries_async(
+            objects,
+            before_entries,
+            after_entries,
+            u32::try_from(remaining_changes).unwrap_or(u32::MAX),
+            decode_limits(config),
+            remaining(work, budget)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| map_diff_failure(failure, work))?;
+        work = add(work, entries.work)?;
+        truncated |= entries.truncated;
+        bindings.extend(
+            entries
+                .changes
+                .into_iter()
+                .map(|entry| DirectoryBindingChange {
+                    directory_id: change.key,
+                    name: entry.key,
+                    before: entry.before,
+                    after: entry.after,
+                }),
+        );
+    }
+    Ok(OperationReceipt {
+        value: GenerationDiff {
+            files,
+            bindings,
+            truncated,
+        },
+        work,
+    })
+}
+
 async fn collect_generation_ancestors<O: AsyncObjectStore>(
     objects: &O,
     start: GenerationId,
     config: VolumeConfig,
     maximum_generations: u32,
     cancellation: &CancellationToken,
-) -> Result<BTreeSet<GenerationId>, crate::workspace::WorkspaceError> {
+) -> Result<(BTreeMap<GenerationId, Option<VolumeId>>, bool), crate::workspace::WorkspaceError> {
     let maximum = usize::try_from(maximum_generations).unwrap_or(usize::MAX);
-    let mut visited = BTreeSet::new();
+    let mut visited = BTreeMap::new();
     let mut pending = VecDeque::from([start]);
     while let Some(generation) = pending.pop_front() {
-        if visited.contains(&generation) {
+        if visited.contains_key(&generation) {
             continue;
         }
         if visited.len() == maximum {
-            return Err(crate::workspace::WorkspaceError::LineageLimit);
+            for frontier in pending {
+                visited.entry(frontier).or_insert(None);
+            }
+            visited.entry(generation).or_insert(None);
+            return Ok((visited, true));
         }
         let (root, _) = read_generation_root(
             objects,
@@ -9722,10 +9818,10 @@ async fn collect_generation_ancestors<O: AsyncObjectStore>(
         )
         .await
         .map_err(crate::workspace::WorkspaceError::engine)?;
-        visited.insert(generation);
+        visited.insert(generation, Some(root.volume_id));
         pending.extend(root.parents);
     }
-    Ok(visited)
+    Ok((visited, false))
 }
 
 async fn find_first_generation_ancestor<O: AsyncObjectStore>(
@@ -9733,16 +9829,21 @@ async fn find_first_generation_ancestor<O: AsyncObjectStore>(
     start: GenerationId,
     config: VolumeConfig,
     maximum_generations: u32,
-    candidates: &BTreeSet<GenerationId>,
+    candidates: &BTreeMap<GenerationId, Option<VolumeId>>,
+    candidates_truncated: bool,
     cancellation: &CancellationToken,
-) -> Result<GenerationId, crate::workspace::WorkspaceError> {
+) -> Result<WorkspaceCommonAncestor, crate::workspace::WorkspaceError> {
     let maximum = usize::try_from(maximum_generations).unwrap_or(usize::MAX);
     let mut visited = BTreeSet::new();
     let mut pending = VecDeque::from([start]);
     while let Some(generation) = pending.pop_front() {
-        if candidates.contains(&generation) {
-            return Ok(generation);
+        if let Some(Some(volume_id)) = candidates.get(&generation) {
+            return Ok(WorkspaceCommonAncestor {
+                id: generation,
+                volume_id: *volume_id,
+            });
         }
+        let is_candidate_frontier = matches!(candidates.get(&generation), Some(None));
         if visited.contains(&generation) {
             continue;
         }
@@ -9762,9 +9863,19 @@ async fn find_first_generation_ancestor<O: AsyncObjectStore>(
         .await
         .map_err(crate::workspace::WorkspaceError::engine)?;
         visited.insert(generation);
+        if is_candidate_frontier {
+            return Ok(WorkspaceCommonAncestor {
+                id: generation,
+                volume_id: root.volume_id,
+            });
+        }
         pending.extend(root.parents);
     }
-    Err(crate::workspace::WorkspaceError::NoCommonAncestor)
+    if candidates_truncated {
+        Err(crate::workspace::WorkspaceError::LineageLimit)
+    } else {
+        Err(crate::workspace::WorkspaceError::NoCommonAncestor)
+    }
 }
 
 fn durable_head(commit: &DurableCommit) -> Head {

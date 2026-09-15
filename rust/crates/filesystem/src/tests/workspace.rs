@@ -526,6 +526,66 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
 }
 
 #[tokio::test]
+async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_frontier()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let main = fs.create_workspace("lineage-main").await?;
+    let base = main.head().await?;
+    let left = main
+        .fork(
+            "lineage-left",
+            ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+        )
+        .await?;
+    let right = main
+        .fork(
+            "lineage-right",
+            ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+        )
+        .await?;
+
+    assert_eq!(
+        main.join_into(&left)
+            .bounds(1, 32, 32)
+            .plan()
+            .await?
+            .common_ancestor(),
+        base.id()
+    );
+    assert_eq!(
+        left.join_into(&main)
+            .bounds(1, 32, 32)
+            .plan()
+            .await?
+            .common_ancestor(),
+        base.id()
+    );
+    assert!(matches!(
+        left.join_into(&right).bounds(1, 32, 32).plan().await,
+        Err(WorkspaceError::LineageLimit)
+    ));
+    assert!(matches!(
+        right.join_into(&left).bounds(1, 32, 32).plan().await,
+        Err(WorkspaceError::LineageLimit)
+    ));
+
+    let unrelated = fs.create_workspace("lineage-unrelated").await?;
+    assert!(matches!(
+        main.join_into(&unrelated).bounds(1, 32, 32).plan().await,
+        Err(WorkspaceError::NoCommonAncestor)
+    ));
+    assert!(matches!(
+        unrelated.join_into(&main).bounds(1, 32, 32).plan().await,
+        Err(WorkspaceError::NoCommonAncestor)
+    ));
+    assert!(matches!(
+        main.join_into(&left).bounds(0, 32, 32).plan().await,
+        Err(WorkspaceError::JoinLimit)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();

@@ -2048,7 +2048,7 @@ pub struct JoinPlan<A, O> {
     source_head: Generation<A, O>,
     target_head: Generation<A, O>,
     target_authority_head: crate::Head,
-    base: GenerationId,
+    base: crate::facade::WorkspaceCommonAncestor,
     history: JoinHistory,
     maximum_changes: u32,
     maximum_conflicts: u32,
@@ -2070,7 +2070,13 @@ impl<A, O> JoinPlan<A, O> {
     /// Exact discovered common ancestor.
     #[must_use]
     pub const fn common_ancestor(&self) -> GenerationId {
-        self.base
+        self.base.id
+    }
+
+    /// Workspace volume that authenticated the exact common ancestor.
+    #[must_use]
+    pub(crate) const fn common_ancestor_volume(&self) -> VolumeId {
+        self.base.volume_id
     }
 
     /// Source workspace retained by the plan.
@@ -2113,6 +2119,16 @@ pub enum JoinOutcome<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
+    pub(crate) async fn source_changes(
+        &self,
+    ) -> Result<crate::FsReceipt<GenerationDiff>, WorkspaceError> {
+        self.source
+            .volume
+            .fs
+            .workspace_join_changes(self.base.id, &self.source_head, self.maximum_changes)
+            .await
+    }
+
     /// Applies this immutable plan through one target-head CAS.
     ///
     /// # Errors
@@ -2129,7 +2145,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             .fs
             .apply_workspace_join(crate::facade::WorkspaceJoinRequest {
                 target: &self.target.volume,
-                base: self.base,
+                base: self.base.id,
                 source: &self.source_head,
                 expected_target: options.if_target,
                 expected_head: self.target_authority_head,

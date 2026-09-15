@@ -1,7 +1,7 @@
 {
   "$schema": "schemas/compatibility.schema.json",
   "status": "candidate",
-  "umbrellaVersion": "0.1.0-rc.1",
+  "umbrellaVersion": "0.1.0-rc.4",
   "families": {
     "harness": {
       "version": "0.1.0-rc.1",
@@ -9,7 +9,8 @@
       "conformanceDigest": "sha256:aa8c338e694ba2e9d31beec258a64fe12358d78981eaf08143c7909e2ce2220d"
     },
     "filesystem": {
-      "version": "0.2.0-rc.3",
+      "version": "0.2.0-rc.4",
+      "crateVersion": "0.2.0-rc.4",
       "schemaDigest": "sha256:c7806fb6fbef07e47e157fdd3ef18dc17883c266e2a8eecd52a723ee05d810b0",
       "descriptorDigest": "sha256:e3c64a6af662d64c1c77bf5432e80fa75a9de86ecc47654841cdb7a0dbf7aba1",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
@@ -22,8 +23,9 @@
     },
     "objects": {
       "version": "1.0.0-rc.2",
-      "schemaDigest": "sha256:b17f7501036b2219b67219fdbf8237f1f5cd5452ab98be9bae6dcd841b83e403",
-      "descriptorDigest": "sha256:3d6d2b2e7c9120b8effbad0969ec8b63824e495e879495ccf00420cb9457cbf5",
+      "crateVersion": "1.0.0-rc.3",
+      "schemaDigest": "sha256:4c7b8c63943a08e1bcebd4fb24d0671c5258cc0ce658e98b68abb2d4b162c735",
+      "descriptorDigest": "sha256:d9911c653465f15a4c44a1feaa8212d949eef177058d1232468532102eba2adb",
       "conformanceDigest": "sha256:a473cb36590f3d05d7c749f2e35c13e9783c2cbc8ef0bb569b91b2e88dbaad7b"
     },
     "machines": {

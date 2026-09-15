@@ -404,6 +404,43 @@ impl Default for ListOptions {
     }
 }
 
+impl ListOptions {
+    /// Restrict results to keys beginning with `value`.
+    #[must_use]
+    pub fn prefix(mut self, value: impl Into<String>) -> Self {
+        self.prefix = value.into();
+        self
+    }
+
+    /// Group keys at the first occurrence of `value` after the prefix.
+    #[must_use]
+    pub fn delimiter(mut self, value: impl Into<String>) -> Self {
+        self.delimiter = value.into();
+        self
+    }
+
+    /// Include every immutable version instead of only current live objects.
+    #[must_use]
+    pub fn versions(mut self, value: bool) -> Self {
+        self.versions = value;
+        self
+    }
+
+    /// Bound the combined number of entries and common prefixes.
+    #[must_use]
+    pub fn page_size(mut self, value: u32) -> Self {
+        self.page_size = value;
+        self
+    }
+
+    /// Continue a previous listing from its opaque token.
+    #[must_use]
+    pub fn continuation(mut self, value: impl Into<String>) -> Self {
+        self.continuation = value.into();
+        self
+    }
+}
+
 /// One typed stable listing page.
 #[derive(Clone, Debug)]
 pub struct ListPage {
@@ -413,6 +450,14 @@ pub struct ListPage {
     pub common_prefixes: Vec<String>,
     /// Opaque continuation token, absent on the final page.
     pub continuation: Option<String>,
+}
+
+impl ListPage {
+    /// Ordered object/version entries in this page.
+    #[must_use]
+    pub fn entries(&self) -> &[wire::ListEntry] {
+        &self.entries
+    }
 }
 
 /// A handle bound to one exact bucket identity.
@@ -734,6 +779,26 @@ impl Snapshot {
         self.reference.clone()
     }
 
+    /// Read immutable object metadata without transferring its body.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the service rejects or cannot complete the request.
+    pub async fn head(
+        &self,
+        object_key: impl Into<String>,
+        options: GetOptions,
+    ) -> Result<wire::ObjectVersion> {
+        head_from(
+            &self.channel,
+            &self.authorization,
+            snapshot_target(&self.reference),
+            object_key.into(),
+            options,
+        )
+        .await
+    }
+
     /// Open a streaming immutable object read.
     ///
     /// # Errors
@@ -1003,7 +1068,8 @@ async fn get_from(
     options: GetOptions,
 ) -> Result<StoredObject> {
     let requested_range = options.range;
-    let (range_start, range_end_inclusive) = requested_range.unwrap_or((0, None));
+    let (range_start, range_end_inclusive, range_requested) =
+        requested_range.map_or((0, None, false), |(start, end)| (start, end, true));
     let frame_body_limit = usize::try_from(options.maximum_bytes.min(BODY_FRAME_BYTES as u64))
         .map_err(|_| Error::Protocol("object response bound is not representable"))?;
     let decoding_limit = frame_body_limit
@@ -1022,6 +1088,7 @@ async fn get_from(
                 range_end_inclusive,
                 if_match: options.if_match,
                 if_none_match: options.if_none_match,
+                range_requested,
             },
         ))
         .await?
@@ -1575,8 +1642,102 @@ mod tests {
         transport::{Identity, Server, ServerTlsConfig},
     };
     use wire::buckets_service_server::{BucketsService, BucketsServiceServer};
+    use wire::objects_service_server::{ObjectsService, ObjectsServiceServer};
 
     struct AuthenticatedBuckets;
+
+    #[derive(Clone)]
+    struct AuthenticatedObjects {
+        requests: std::sync::Arc<std::sync::Mutex<Vec<wire::GetObjectRequest>>>,
+    }
+
+    #[tonic::async_trait]
+    impl ObjectsService for AuthenticatedObjects {
+        async fn put_object(
+            &self,
+            _request: Request<tonic::Streaming<wire::PutObjectRequest>>,
+        ) -> std::result::Result<Response<wire::ObjectVersion>, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+
+        type GetObjectStream = std::pin::Pin<
+            Box<
+                dyn tokio_stream::Stream<
+                        Item = std::result::Result<wire::GetObjectResponse, Status>,
+                    > + Send,
+            >,
+        >;
+
+        async fn get_object(
+            &self,
+            request: Request<wire::GetObjectRequest>,
+        ) -> std::result::Result<Response<Self::GetObjectStream>, Status> {
+            if request
+                .metadata()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                != Some("Bearer exact-token")
+            {
+                return Err(Status::unauthenticated("missing exact bearer credential"));
+            }
+            let request = request.into_inner();
+            let range_requested = request.range_requested
+                || request.range_start != 0
+                || request.range_end_inclusive.is_some();
+            let body = match (
+                range_requested,
+                request.range_start,
+                request.range_end_inclusive,
+            ) {
+                (true, 0, Some(1)) => b"ab".to_vec(),
+                (true, 1, Some(1)) => b"b".to_vec(),
+                _ => b"abc".to_vec(),
+            };
+            self.requests
+                .lock()
+                .map_err(|_| Status::internal("fixture request lock poisoned"))?
+                .push(request);
+            let frames = vec![
+                Ok(wire::GetObjectResponse {
+                    frame: Some(wire::get_object_response::Frame::Version(
+                        wire::ObjectVersion {
+                            version_id: "version-1".into(),
+                            etag: "etag-1".into(),
+                            size: 3,
+                            metadata: Some(wire::ObjectMetadata::default()),
+                            created_at: Some(prost_types::Timestamp::default()),
+                            ..wire::ObjectVersion::default()
+                        },
+                    )),
+                }),
+                Ok(wire::GetObjectResponse {
+                    frame: Some(wire::get_object_response::Frame::Body(body)),
+                }),
+            ];
+            Ok(Response::new(Box::pin(tokio_stream::iter(frames))))
+        }
+
+        async fn head_object(
+            &self,
+            _request: Request<wire::HeadObjectRequest>,
+        ) -> std::result::Result<Response<wire::HeadObjectResponse>, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+
+        async fn delete_object(
+            &self,
+            _request: Request<wire::DeleteObjectRequest>,
+        ) -> std::result::Result<Response<wire::DeleteObjectResponse>, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+
+        async fn list_objects(
+            &self,
+            _request: Request<wire::ListObjectsRequest>,
+        ) -> std::result::Result<Response<wire::ListObjectsResponse>, Status> {
+            Err(Status::unimplemented("fixture"))
+        }
+    }
 
     #[tonic::async_trait]
     impl BucketsService for AuthenticatedBuckets {
@@ -1618,6 +1779,37 @@ mod tests {
     }
 
     fn assert_provider<T: crate::ObjectsProvider>() {}
+
+    async fn assert_legacy_bounded_range(
+        client: &Client,
+        bucket: &Bucket,
+        start: u64,
+        end_inclusive: u64,
+        expected: &[u8],
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut legacy_client =
+            wire::objects_service_client::ObjectsServiceClient::new(client.channel.clone());
+        let mut stream = legacy_client
+            .get_object(authenticated(
+                &client.authorization,
+                wire::GetObjectRequest {
+                    target: Some(bucket_target(&bucket.reference())),
+                    object_key: "object".into(),
+                    range_start: start,
+                    range_end_inclusive: Some(end_inclusive),
+                    ..wire::GetObjectRequest::default()
+                },
+            ))
+            .await?
+            .into_inner();
+        let _version = stream.message().await?.ok_or("missing version frame")?;
+        let body = stream.message().await?.ok_or("missing body frame")?;
+        assert!(matches!(
+            body.frame,
+            Some(wire::get_object_response::Frame::Body(body)) if body == expected
+        ));
+        Ok(())
+    }
 
     #[test]
     fn remote_client_implements_the_public_provider_boundary() {
@@ -1712,6 +1904,10 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let object_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let object_service = AuthenticatedObjects {
+            requests: object_requests.clone(),
+        };
         let server_certificate_pem = certificate_pem.clone();
         let server = tokio::spawn(async move {
             Server::builder()
@@ -1720,6 +1916,7 @@ mod tests {
                         .identity(Identity::from_pem(server_certificate_pem, private_key_pem)),
                 )?
                 .add_service(BucketsServiceServer::new(AuthenticatedBuckets))
+                .add_service(ObjectsServiceServer::new(object_service))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     let _ = shutdown_rx.await;
                 })
@@ -1736,6 +1933,58 @@ mod tests {
         assert_eq!(bucket.id(), "bucket-1");
         assert_eq!(bucket.name(), "fixture");
 
+        let mut absent = bucket
+            .get("object", GetOptions::default().maximum_bytes(3))
+            .await?;
+        assert_eq!(absent.next_chunk().await?, Some(Bytes::from_static(b"abc")));
+        assert_eq!(absent.next_chunk().await?, None);
+        let mut open_from_zero = bucket
+            .get(
+                "object",
+                GetOptions::default().range(0, None).maximum_bytes(3),
+            )
+            .await?;
+        assert_eq!(
+            open_from_zero.next_chunk().await?,
+            Some(Bytes::from_static(b"abc"))
+        );
+        assert_eq!(open_from_zero.next_chunk().await?, None);
+        let mut bounded = bucket
+            .get(
+                "object",
+                GetOptions::default().range(1, Some(1)).maximum_bytes(1),
+            )
+            .await?;
+        assert_eq!(bounded.next_chunk().await?, Some(Bytes::from_static(b"b")));
+        assert_eq!(bounded.next_chunk().await?, None);
+        assert!(matches!(
+            bucket
+                .get("object", GetOptions::default().maximum_bytes(2))
+                .await,
+            Err(Error::Protocol("object body exceeds requested bound"))
+        ));
+        {
+            let requests = object_requests
+                .lock()
+                .map_err(|_| "fixture request lock poisoned")?;
+            let mut requests = requests.iter();
+            let unbounded = requests.next().ok_or("missing unbounded request")?;
+            assert!(!unbounded.range_requested);
+            assert_eq!(unbounded.range_start, 0);
+            assert_eq!(unbounded.range_end_inclusive, None);
+            let open_from_zero = requests.next().ok_or("missing zero range request")?;
+            assert!(open_from_zero.range_requested);
+            assert_eq!(open_from_zero.range_start, 0);
+            assert_eq!(open_from_zero.range_end_inclusive, None);
+            let bounded = requests.next().ok_or("missing bounded range request")?;
+            assert!(bounded.range_requested);
+            assert_eq!(bounded.range_start, 1);
+            assert_eq!(bounded.range_end_inclusive, Some(1));
+        }
+
+        assert_legacy_bounded_range(&client, &bucket, 1, 1, b"b").await?;
+        assert_legacy_bounded_range(&client, &bucket, 0, 1, b"ab").await?;
+
         let _ = shutdown_tx.send(());
         server.await??;
         Ok(())
@@ -1744,6 +1993,40 @@ mod tests {
     #[test]
     fn default_mutation_does_not_emit_an_empty_identity() {
         assert!(MutationOptions::default().wire().is_none());
+    }
+
+    #[test]
+    fn list_options_support_the_documented_fluent_contract() {
+        let options = ListOptions::default()
+            .prefix("logs/")
+            .delimiter("/")
+            .versions(true)
+            .page_size(17)
+            .continuation("next");
+        assert_eq!(options.prefix, "logs/");
+        assert_eq!(options.delimiter, "/");
+        assert!(options.versions);
+        assert_eq!(options.page_size, 17);
+        assert_eq!(options.continuation, "next");
+
+        let page = ListPage {
+            entries: vec![wire::ListEntry::default()],
+            common_prefixes: Vec::new(),
+            continuation: None,
+        };
+        assert_eq!(page.entries().len(), 1);
+    }
+
+    #[test]
+    fn wire_preserves_an_explicit_open_ended_range_from_zero() {
+        let absent = wire::GetObjectRequest::default().encode_to_vec();
+        let explicit = wire::GetObjectRequest {
+            range_start: 0,
+            range_requested: true,
+            ..wire::GetObjectRequest::default()
+        }
+        .encode_to_vec();
+        assert_ne!(absent, explicit);
     }
 
     #[test]

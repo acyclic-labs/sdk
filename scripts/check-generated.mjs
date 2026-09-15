@@ -37,6 +37,21 @@ try {
 
   const descriptor = join(temporary, "filesystem.bin");
   const executable = join(root, "node_modules", ".bin", process.platform === "win32" ? "buf.exe" : "buf");
+  const objectsGenerated = spawnSync(
+    executable,
+    ["generate", "--output", temporary],
+    { cwd: root, encoding: "utf8" },
+  );
+  if (objectsGenerated.status !== 0) {
+    process.stderr.write(objectsGenerated.stdout ?? "");
+    process.stderr.write(objectsGenerated.stderr ?? "");
+    throw new Error(`Objects generation failed with status ${objectsGenerated.status ?? "unknown"}`);
+  }
+  for (const relative of ["objects/v1/objects_pb.js", "objects/v1/objects_pb.d.ts"]) {
+    const fresh = readFileSync(join(temporary, "generated/typescript", relative));
+    const committed = readFileSync(join(root, "generated/typescript", relative));
+    if (!fresh.equals(committed)) throw new Error(`generated Objects TypeScript drift: ${relative}`);
+  }
   const built = spawnSync(executable, ["build", "--path", "proto/filesystem", "-o", descriptor], {
     cwd: root,
     encoding: "utf8",
@@ -49,6 +64,30 @@ try {
   const committed = join(root, "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin");
   if (!readFileSync(descriptor).equals(readFileSync(committed))) {
     throw new Error("filesystem descriptor is stale; run bun run generate");
+  }
+
+  const objectsDescriptor = join(temporary, "objects.bin");
+  const objectsBuilt = spawnSync(executable, ["build", "--path", "proto/objects", "-o", objectsDescriptor], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  if (objectsBuilt.status !== 0) {
+    process.stderr.write(objectsBuilt.stdout ?? "");
+    process.stderr.write(objectsBuilt.stderr ?? "");
+    throw new Error(`buf build failed with status ${objectsBuilt.status ?? "unknown"}`);
+  }
+  const committedObjects = join(root, "rust/crates/objects/src/generated/acyclic-objects-v1.bin");
+  if (!readFileSync(objectsDescriptor).equals(readFileSync(committedObjects))) {
+    throw new Error("objects descriptor is stale; run bun run generate");
+  }
+
+  for (const relative of [
+    "acyclic/objects/v1/acyclic.objects.v1.rs",
+    "acyclic/objects/v1/acyclic.objects.v1.tonic.rs",
+  ]) {
+    const canonical = readFileSync(join(root, "generated/rust", relative));
+    const packaged = readFileSync(join(root, "rust/crates/objects/src/generated", relative.split("/").at(-1)));
+    if (!canonical.equals(packaged)) throw new Error(`packaged Objects Rust drift: ${relative}`);
   }
 
   for (const relative of [

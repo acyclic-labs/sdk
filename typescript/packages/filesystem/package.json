@@ -1,6 +1,6 @@
 {
   "name": "@acyclic-labs/fs",
-  "version": "0.2.0-rc.3",
+  "version": "0.2.0-rc.4",
   "license": "Apache-2.0",
   "private": false,
   "repository": {
@@ -41,8 +41,9 @@
     "build:clean": "bun run clean && bun run build",
     "build:wasm": "cargo build --manifest-path ../../../Cargo.toml -p acyclic-fs-wasm --target wasm32-unknown-unknown --profile wasm-release --locked && wasm-bindgen ../../../target/wasm32-unknown-unknown/wasm-release/acyclic_fs_wasm.wasm --target web --out-dir generated/wasm --out-name acyclic_fs_wasm",
     "check": "bun x tsc -p tsconfig.json --noEmit",
-    "test": "bun run test:composition && bun run test:hosted",
+    "test": "bun run test:composition && bun run test:s3 && bun run test:hosted",
     "test:composition": "bun test/node-memory.mjs",
+    "test:s3": "bun test test/hosted-s3.test.mjs",
     "test:hosted": "cargo build --manifest-path ../../../Cargo.toml -p acyclic-fs-daemon --locked && bun test/hosted.mjs",
     "pack:dry": "bun run build:clean && bun pm pack --dry-run"
   },

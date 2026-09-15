@@ -34,6 +34,29 @@ export interface HostedFsOptions {
   readonly fetch?: typeof globalThis.fetch;
 }
 
+export interface S3Access {
+  readonly endpoint: string;
+  readonly expiresAtUnixSeconds: bigint;
+  readonly bucket: string;
+  readonly region: string;
+  readonly accessKeyId: string;
+  readonly secretAccessKey: string;
+  readonly sessionToken: string;
+}
+
+export interface HostedFsWorkspace extends FsWorkspace {
+  s3Access(
+    writable: boolean,
+    expiresAfterSeconds: bigint,
+    idempotencyKey?: Uint8Array,
+  ): Promise<S3Access>;
+}
+
+export interface HostedFsEngine extends FsEngine {
+  createWorkspace(name: string): Promise<HostedFsWorkspace>;
+  openWorkspace(name: string): Promise<HostedFsWorkspace>;
+}
+
 export type WorkspaceCommitStatus =
   | "committed"
   | "already-committed"
