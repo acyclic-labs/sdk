@@ -1,4 +1,4 @@
-import { create } from "@bufbuild/protobuf";
+import { create, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type Client, type Interceptor } from "@connectrpc/connect";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
 
@@ -15,6 +15,8 @@ import {
   NameEncoding,
   OperationOptionsSchema,
   RebaseStatus,
+  SourceInvalidationReason as WireSourceInvalidationReason,
+  SourceState as WireSourceState,
   SparseTarget,
   type Conflict as WireConflict,
   type DiffResponse,
@@ -27,6 +29,7 @@ import {
   type OptionalI64,
   type OptionalU32,
   type OptionalU64,
+  type SourceResponse as WireSourceResponse,
   type TreeEntrySnapshot as WireTreeEntrySnapshot,
   type WorkCounters as WireWorkCounters,
   type Workspace as WireWorkspace,
@@ -34,22 +37,25 @@ import {
 } from "../generated/proto/filesystem/v2/filesystem_pb.js";
 import type {
   DirectoryBindingChange,
-  EngineCapabilities,
   FileRecordChange,
   FileRecordSnapshot,
   FsChangeSet,
   FsGeneration,
   FsJoinPlan,
+  FsProfile,
   FsTransaction,
   FsWorkspace,
   GenerationDiff,
   HostedFsEngine,
+  HostedFsEnvironment,
+  HostedFsCapabilities,
   HostedFsOptions,
   HostedFsWorkspace,
   JoinOptions,
   JoinResult,
   JoinStatus,
   S3Access,
+  SourceResult,
   MergeConflict,
   TransactionConflict,
   TransactionRebaseResult,
@@ -75,6 +81,8 @@ export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts
 
 const DEFAULT_MAXIMUM_RESPONSE_BYTES = 24 * 1024 * 1024;
 const DEFAULT_MAXIMUM_CONFLICTS = 1_024;
+const PROTOCOL_VERSION = "1";
+const FILESYSTEM_DESCRIPTOR_DIGEST = "371d83258cb3ff55f97e01011ded1b0222e586df09c229c4f42dfb9a37952d4e";
 
 export class HostedFsError extends Error {
   constructor(readonly code: string, message: string) {
@@ -87,6 +95,9 @@ interface HostedClient {
   readonly rpc: Client<typeof FilesystemService>;
   readonly maximumResponseBytes: number;
   readonly maximumTransactionMutations: number;
+  readonly maximumPageItems: number;
+  readonly s3Credentials: boolean;
+  readonly sourceReconciliation: boolean;
   closed: boolean;
 }
 
@@ -97,24 +108,61 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
   positiveSafeInteger(maximumResponseBytes, "maximum response bytes");
   const send = options.fetch ?? globalThis.fetch;
   if (send === undefined) throw new TypeError("this runtime does not provide fetch");
+  let negotiatedMaximumRequestBytes: bigint | undefined;
   const authorize: Interceptor = (next) => async (request) => {
     request.header.set("authorization", `Bearer ${options.bearerToken}`);
     return next(request);
   };
+  const boundRequest: Interceptor = (next) => async (request) => {
+    if (!request.stream && negotiatedMaximumRequestBytes !== undefined) {
+      const bytes = toBinary(request.method.input, request.message).byteLength;
+      if (BigInt(bytes) > negotiatedMaximumRequestBytes) {
+        throw new HostedFsError("limit", "hosted filesystem request exceeds the negotiated byte limit");
+      }
+    }
+    return next(request);
+  };
   const rpcClient = createClient(FilesystemService, createGrpcWebTransport({
     baseUrl: endpoint.href.replace(/\/$/, ""),
-    interceptors: [authorize],
+    interceptors: [authorize, boundRequest],
     fetch: boundedFetch(send, maximumResponseBytes),
   }));
-  const handshake = await call(rpcClient.handshake({}));
+  const handshake = await call(rpcClient.handshake({
+    harness: {
+      protocol: { version: PROTOCOL_VERSION, descriptorDigest: FILESYSTEM_DESCRIPTOR_DIGEST },
+      required: { capabilities: [{ name: "filesystem", version: PROTOCOL_VERSION }] },
+    },
+  }));
+  const negotiated = required(handshake.harness, "handshake response");
+  const protocol = required(negotiated.protocol, "handshake protocol");
+  if (protocol.version !== PROTOCOL_VERSION) throw new HostedFsError("protocol", "filesystem protocol version is unsupported");
+  if (protocol.descriptorDigest !== FILESYSTEM_DESCRIPTOR_DIGEST) throw new HostedFsError("protocol", "filesystem descriptor digest does not match");
+  const supported = required(negotiated.supported, "supported capabilities");
+  if (!supported.capabilities.some(capability => capability.name === "filesystem" && capability.version === PROTOCOL_VERSION)) {
+    throw new HostedFsError("protocol", "filesystem capability version is unsupported");
+  }
   const advertised = required(handshake.capabilities, "filesystem capabilities");
+  if (advertised.contractVersion !== PROTOCOL_VERSION) throw new HostedFsError("protocol", "filesystem contract version is unsupported");
+  if (advertised.maximumRequestBytes <= 0n || advertised.maximumResponseBytes <= 0n) {
+    throw new HostedFsError("protocol", "filesystem capabilities contain an unbounded byte limit");
+  }
+  negotiatedMaximumRequestBytes = advertised.maximumRequestBytes;
+  positiveSafeInteger(advertised.maximumTransactionMutations, "maximum transaction mutations");
+  positiveSafeInteger(advertised.maximumPageItems, "maximum page items");
+  const profiles = advertised.profiles.map(profileFromWire);
+  const negotiatedResponseBytes = advertised.maximumResponseBytes < BigInt(maximumResponseBytes)
+    ? advertised.maximumResponseBytes
+    : BigInt(maximumResponseBytes);
   const client: HostedClient = {
     rpc: rpcClient,
-    maximumResponseBytes,
+    maximumResponseBytes: Number(negotiatedResponseBytes),
     maximumTransactionMutations: advertised.maximumTransactionMutations,
+    maximumPageItems: advertised.maximumPageItems,
+    s3Credentials: advertised.s3Credentials,
+    sourceReconciliation: advertised.sourceReconciliation,
     closed: false,
   };
-  const capabilities: EngineCapabilities = {
+  const capabilities: HostedFsCapabilities = {
     version: advertised.contractVersion,
     platform: "hosted",
     architecture: "service",
@@ -127,6 +175,14 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     nativeWatchPersistentRestart: false,
     nativeWatchRootIdentityFencing: false,
     providerProcessIoObservable: false,
+    profiles,
+    maximumRequestBytes: advertised.maximumRequestBytes,
+    maximumResponseBytes: negotiatedResponseBytes,
+    maximumTransactionMutations: advertised.maximumTransactionMutations,
+    maximumPageItems: advertised.maximumPageItems,
+    nativeMountCredentials: advertised.nativeMountCredentials,
+    s3Credentials: advertised.s3Credentials,
+    sourceReconciliation: advertised.sourceReconciliation,
   };
   return {
     capabilities,
@@ -150,6 +206,16 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     },
     close() { client.closed = true; },
   };
+}
+
+/** Opens hosted Filesystem using explicit overrides or the standard runtime environment. */
+export async function openHostedFsFromEnv(environment: HostedFsEnvironment = {}): Promise<HostedFsEngine> {
+  const runtime = typeof process === "undefined" ? undefined : process.env;
+  const endpoint = environment.endpoint ?? runtime?.ACYCLIC_FILESYSTEM_ENDPOINT;
+  const bearerToken = environment.token ?? runtime?.ACYCLIC_API_KEY;
+  if (endpoint === undefined || endpoint.length === 0) throw new RangeError("ACYCLIC_FILESYSTEM_ENDPOINT is required");
+  if (bearerToken === undefined || bearerToken.length === 0) throw new RangeError("ACYCLIC_API_KEY is required");
+  return openHostedFs({ endpoint, bearerToken });
 }
 
 type WorkspaceOwner = { readonly client: HostedClient; readonly reference: WireWorkspaceRef };
@@ -200,6 +266,36 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
     async s3Access(writable, expiresAfterSeconds, idempotencyKey) {
       return s3Access(client, reference, writable, expiresAfterSeconds, idempotencyKey);
     },
+    async sourceState() {
+      requireSourceReconciliation(client);
+      return sourceResult(reference, await call(client.rpc.getSourceState({ workspace: reference })));
+    },
+    async reconcileSource(idempotencyKey) {
+      requireSourceReconciliation(client);
+      return sourceResult(reference, await call(client.rpc.reconcileSource({
+        workspace: reference,
+        operation: operation(idempotencyKey),
+      })));
+    },
+    async rescanSource(idempotencyKey) {
+      requireSourceReconciliation(client);
+      return sourceResult(reference, await call(client.rpc.rescanSource({
+        workspace: reference,
+        operation: operation(idempotencyKey),
+      })));
+    },
+    async seal(idempotencyKey) {
+      requireSourceReconciliation(client);
+      const response = await call(client.rpc.sealSource({
+        workspace: reference,
+        operation: operation(idempotencyKey),
+      }));
+      const result = sourceResult(reference, response);
+      if (result.status !== "sealed" || response.generation === undefined) {
+        throw new HostedFsError("invalid_response", "seal did not return a sealed generation");
+      }
+      return generation(client, response.generation);
+    },
     async read(path, maximumBytes) {
       return read(client, await currentGeneration(client, reference), path, undefined, maximumBytes);
     },
@@ -237,6 +333,9 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
     },
     async liveRebase(options, idempotencyKey) {
       validateRebase(options);
+      requirePageBound(client, options.maximumGenerations, "maximum generations");
+      requirePageBound(client, options.maximumChanges, "maximum changes");
+      requirePageBound(client, options.maximumConflicts, "maximum conflicts");
       const response = await call(client.rpc.rebase({
         workspace: reference,
         maximumGenerations: options.maximumGenerations,
@@ -248,6 +347,7 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
     },
     async diff(from, to, maximumChanges) {
       positiveU32(maximumChanges, "maximum changes");
+      requirePageBound(client, maximumChanges, "maximum changes");
       return diff(
         client,
         reference.workspaceId,
@@ -258,6 +358,9 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
     },
     async joinInto(target, options) {
       validateJoin(options);
+      requirePageBound(client, options.maximumGenerations, "maximum generations");
+      requirePageBound(client, options.maximumChanges, "maximum changes");
+      requirePageBound(client, options.maximumConflicts, "maximum conflicts");
       const destination = requireWorkspace(target, client);
       const plan = await call(client.rpc.planJoin({
         source: await currentGeneration(client, reference),
@@ -274,6 +377,56 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
   return result;
 }
 
+function requireSourceReconciliation(client: HostedClient): void {
+  assertOpen(client);
+  if (!client.sourceReconciliation) {
+    throw new HostedFsError("unsupported", "hosted filesystem does not provide source reconciliation");
+  }
+}
+
+function sourceResult(
+  workspace: WireWorkspaceRef,
+  response: WireSourceResponse,
+): SourceResult {
+  const statuses: Partial<Record<WireSourceState, SourceResult["status"]>> = {
+    [WireSourceState.CLEAN]: "clean",
+    [WireSourceState.PENDING_CAPTURE]: "pending-capture",
+    [WireSourceState.NEEDS_RESCAN]: "needs-rescan",
+    [WireSourceState.CONFLICT]: "conflict",
+    [WireSourceState.SEALED]: "sealed",
+  };
+  const reasons: Partial<Record<WireSourceInvalidationReason, NonNullable<SourceResult["reason"]>>> = {
+    [WireSourceInvalidationReason.INITIAL_SNAPSHOT_REQUIRED]: "initial-snapshot-required",
+    [WireSourceInvalidationReason.QUEUE_OVERFLOW]: "queue-overflow",
+    [WireSourceInvalidationReason.NATIVE_RESCAN_REQUIRED]: "native-rescan-required",
+    [WireSourceInvalidationReason.BACKEND_ERROR]: "backend-error",
+    [WireSourceInvalidationReason.UNREPRESENTABLE_PATH]: "unrepresentable-path",
+    [WireSourceInvalidationReason.AMBIGUOUS_RENAME]: "ambiguous-rename",
+    [WireSourceInvalidationReason.ROOT_CHANGED]: "root-changed",
+  };
+  const status = statuses[response.state];
+  if (status === undefined) throw new HostedFsError("invalid_response", "source state is invalid");
+  const reason = response.reason === WireSourceInvalidationReason.UNSPECIFIED ? undefined : reasons[response.reason];
+  if (response.reason !== WireSourceInvalidationReason.UNSPECIFIED && reason === undefined) {
+    throw new HostedFsError("invalid_response", "source invalidation reason is invalid");
+  }
+  if ((status === "needs-rescan") !== (reason !== undefined)) {
+    throw new HostedFsError("invalid_response", "source state and invalidation reason do not match");
+  }
+  const selected = response.generation;
+  if ((status === "clean" || status === "sealed") !== (selected !== undefined)) {
+    throw new HostedFsError("invalid_response", "source generation does not match its state");
+  }
+  if (selected !== undefined) {
+    const owner = required(selected.workspace, "source generation workspace");
+    requireBytes(selected.generationId, 32, "source generation identity");
+    if (!equalBytes(owner.workspaceId, workspace.workspaceId) || owner.name !== workspace.name) {
+      throw new HostedFsError("invalid_response", "source generation belongs to another workspace");
+    }
+  }
+  return { status, reason, generationId: selected?.generationId.slice() };
+}
+
 async function s3Access(
   client: HostedClient,
   reference: WireWorkspaceRef,
@@ -282,6 +435,9 @@ async function s3Access(
   idempotencyKey?: Uint8Array,
 ): Promise<S3Access> {
   assertOpen(client);
+  if (!client.s3Credentials) {
+    throw new HostedFsError("unsupported", "hosted filesystem does not issue S3 credentials");
+  }
   positiveU64(expiresAfterSeconds, "S3 credential lifetime");
   const response = await call(client.rpc.issueS3Credential({
     workspace: reference,
@@ -299,7 +455,6 @@ async function s3Access(
   requireName(credential.region);
   requireName(credential.accessKeyId);
   requireName(credential.secretAccessKey);
-  requireName(credential.sessionToken);
   if (response.expiresAtUnixSeconds <= BigInt(Math.floor(Date.now() / 1_000))) {
     throw new HostedFsError("invalid_response", "S3 credential expiry must be in the future");
   }
@@ -371,6 +526,7 @@ async function read(
   assertOpen(client);
   if (range === undefined) positiveU64(maximumBytes, "maximum read bytes");
   else nonnegativeU64(maximumBytes, "maximum read bytes");
+  requireResponseBound(client, maximumBytes, "maximum read bytes");
   if (range !== undefined) {
     nonnegativeU64(range.offset, "read offset");
     nonnegativeU64(range.length, "read length");
@@ -405,6 +561,7 @@ async function list(
 ): Promise<WorkspaceDirectoryPage> {
   assertOpen(client);
   positiveU32(maximumEntries, "maximum entries");
+  requirePageBound(client, maximumEntries, "maximum entries");
   const page = required((await call(client.rpc.listDirectory({
     generation: selected,
     path,
@@ -445,6 +602,7 @@ async function extents(
   nonnegativeU64(offset, "extent offset");
   nonnegativeU64(length, "extent length");
   positiveU32(maximumSpans, "maximum spans");
+  requirePageBound(client, maximumSpans, "maximum spans");
   const response = await call(client.rpc.planExtents({
     generation: selected,
     path,
@@ -515,6 +673,7 @@ function transaction(
     },
     async rebase(maximumConflicts): Promise<TransactionRebaseResult> {
       positiveU32(maximumConflicts, "maximum conflicts");
+      requirePageBound(client, maximumConflicts, "maximum conflicts");
       const response = await call(client.rpc.rebaseTransaction({
         base,
         mutations,
@@ -538,7 +697,7 @@ function transaction(
         base,
         mutations,
         operation: operationOptions,
-        maximumConflicts: DEFAULT_MAXIMUM_CONFLICTS,
+        maximumConflicts: Math.min(DEFAULT_MAXIMUM_CONFLICTS, client.maximumPageItems),
       }));
       return commit(response.status, response.generation);
     },
@@ -562,6 +721,7 @@ async function diff(
   to: WireGenerationRef,
   maximumChanges: number,
 ): Promise<FsChangeSet> {
+  requirePageBound(client, maximumChanges, "maximum changes");
   const response = await call(client.rpc.diff({ from, to, maximumChanges }));
   const semantic = generationDiff(response);
   const result: FsChangeSet = {
@@ -892,6 +1052,15 @@ function deleteStatus(value: MutationStatus): WorkspaceDeleteStatus {
     default: throw new HostedFsError("invalid_response", "invalid delete status");
   }
 }
+function profileFromWire(value: FilesystemProfile): FsProfile {
+  switch (value) {
+    case FilesystemProfile.PORTABLE: return "portable";
+    case FilesystemProfile.POSIX: return "posix";
+    case FilesystemProfile.WINDOWS: return "windows";
+    case FilesystemProfile.BROWSER: return "browser";
+    default: throw new HostedFsError("invalid_response", "filesystem profile is unsupported");
+  }
+}
 function joinHistory(value: JoinOptions["history"]): JoinHistory {
   switch (value) {
     case "merge": return JoinHistory.MERGE;
@@ -921,6 +1090,16 @@ function validateRebase(value: WorkspaceRebaseOptions): void {
 
 function assertOpen(client: HostedClient): void {
   if (client.closed) throw new HostedFsError("closed", "hosted filesystem is closed");
+}
+function requirePageBound(client: HostedClient, value: number, name: string): void {
+  if (value > client.maximumPageItems) {
+    throw new HostedFsError("limit", `${name} exceeds the negotiated page limit`);
+  }
+}
+function requireResponseBound(client: HostedClient, value: bigint, name: string): void {
+  if (value <= 0n || value > BigInt(client.maximumResponseBytes)) {
+    throw new HostedFsError("limit", `${name} exceeds the negotiated response limit`);
+  }
 }
 function requireName(value: string): void { if (value.length === 0) throw new RangeError("name must be non-empty"); }
 function positiveSafeInteger(value: number, name: string): void {

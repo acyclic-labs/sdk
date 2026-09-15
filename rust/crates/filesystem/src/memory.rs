@@ -195,19 +195,19 @@ impl AuthorityStore for MemoryAuthorityStore {
         let actual = state
             .head()
             .map_err(|error| AuthorityFailure::new(error, read_work))?;
+        let existing = state.resolve_operation(&commit, read_work, budget)?;
+        if let Some(outcome) = existing.value {
+            return Ok(AuthorityReceipt {
+                value: outcome,
+                work: existing.work,
+            });
+        }
         if epoch != actual.epoch {
             return Ok(AuthorityReceipt {
                 value: AppendOutcome::Fenced {
                     actual_epoch: actual.epoch,
                 },
                 work: read_work,
-            });
-        }
-        let existing = state.resolve_operation(&commit, read_work, budget)?;
-        if let Some(outcome) = existing.value {
-            return Ok(AuthorityReceipt {
-                value: outcome,
-                work: existing.work,
             });
         }
         if expected != actual {

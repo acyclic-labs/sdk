@@ -86,6 +86,148 @@ pub struct WarmView {
     pub sequence: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EvaluationArtifact {
+    #[prost(bytes = "vec", tag = "1")]
+    pub digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub media_type: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub logical_size: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EvaluationCase {
+    #[prost(bytes = "vec", tag = "1")]
+    pub case_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub input: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", optional, tag = "3")]
+    pub input_artifact_digest: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EvaluationSuite {
+    #[prost(string, tag = "1")]
+    pub identity: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "3")]
+    pub cases: ::prost::alloc::vec::Vec<EvaluationCase>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EvaluationGrader {
+    #[prost(bytes = "vec", tag = "1")]
+    pub handle: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub artifact_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EvaluationMetric {
+    #[prost(string, tag = "1")]
+    pub identity: ::prost::alloc::string::String,
+    #[prost(enumeration = "EvaluationAggregation", tag = "2")]
+    pub aggregation: i32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EvaluationSpec {
+    #[prost(message, repeated, tag = "1")]
+    pub candidates: ::prost::alloc::vec::Vec<EvaluationArtifact>,
+    #[prost(message, optional, tag = "2")]
+    pub suite: ::core::option::Option<EvaluationSuite>,
+    #[prost(message, optional, tag = "3")]
+    pub grader: ::core::option::Option<EvaluationGrader>,
+    #[prost(message, repeated, tag = "4")]
+    pub metrics: ::prost::alloc::vec::Vec<EvaluationMetric>,
+    #[prost(uint64, tag = "5")]
+    pub maximum_case_results: u64,
+    #[prost(bytes = "vec", tag = "6")]
+    pub spec_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CreateEvaluationRequest {
+    #[prost(message, optional, tag = "1")]
+    pub identity: ::core::option::Option<RequestIdentity>,
+    #[prost(message, optional, tag = "2")]
+    pub spec: ::core::option::Option<EvaluationSpec>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct InspectEvaluationRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub evaluation_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExactRational {
+    #[prost(sint64, tag = "1")]
+    pub numerator: i64,
+    #[prost(uint64, tag = "2")]
+    pub denominator: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EvaluationMetricValue {
+    #[prost(string, tag = "1")]
+    pub metric_identity: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub value: ::core::option::Option<ExactRational>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EvaluationCaseResult {
+    #[prost(bytes = "vec", tag = "1")]
+    pub candidate_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub case_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub observation: ::core::option::Option<EvaluationGraderObservation>,
+    #[prost(message, repeated, tag = "4")]
+    pub metrics: ::prost::alloc::vec::Vec<EvaluationMetricValue>,
+    #[prost(enumeration = "EvaluationCaseOutcome", tag = "5")]
+    pub outcome: i32,
+}
+/// The binding is SHA-256("acyclic.inference.grader-observation.v1\0" ||
+/// native_output_digest || observation_digest). It proves which exact native
+/// device output the grader observed without exposing either payload.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EvaluationGraderObservation {
+    #[prost(bytes = "vec", tag = "1")]
+    pub native_output_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub observation_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub binding_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EvaluationAggregate {
+    #[prost(bytes = "vec", tag = "1")]
+    pub candidate_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub metric_identity: ::prost::alloc::string::String,
+    #[prost(enumeration = "EvaluationAggregation", tag = "3")]
+    pub aggregation: i32,
+    #[prost(message, optional, tag = "4")]
+    pub value: ::core::option::Option<ExactRational>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EvaluationResult {
+    #[prost(bytes = "vec", tag = "1")]
+    pub spec_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "2")]
+    pub case_results: ::prost::alloc::vec::Vec<EvaluationCaseResult>,
+    #[prost(message, repeated, tag = "3")]
+    pub aggregates: ::prost::alloc::vec::Vec<EvaluationAggregate>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub result_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EvaluationView {
+    #[prost(bytes = "vec", tag = "1")]
+    pub evaluation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub spec: ::core::option::Option<EvaluationSpec>,
+    #[prost(enumeration = "EvaluationState", tag = "3")]
+    pub state: i32,
+    #[prost(message, optional, tag = "4")]
+    pub result: ::core::option::Option<EvaluationResult>,
+    #[prost(uint64, tag = "5")]
+    pub sequence: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RequestIdentity {
     #[prost(bytes = "vec", tag = "1")]
     pub client_instance: ::prost::alloc::vec::Vec<u8>,
@@ -430,6 +572,111 @@ impl WarmState {
             "WARM_STATE_EXPIRED" => Some(Self::Expired),
             "WARM_STATE_BREACHED" => Some(Self::Breached),
             "WARM_STATE_RELEASED" => Some(Self::Released),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum EvaluationAggregation {
+    Unspecified = 0,
+    Mean = 1,
+    Sum = 2,
+    Minimum = 3,
+    Maximum = 4,
+}
+impl EvaluationAggregation {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "EVALUATION_AGGREGATION_UNSPECIFIED",
+            Self::Mean => "EVALUATION_AGGREGATION_MEAN",
+            Self::Sum => "EVALUATION_AGGREGATION_SUM",
+            Self::Minimum => "EVALUATION_AGGREGATION_MINIMUM",
+            Self::Maximum => "EVALUATION_AGGREGATION_MAXIMUM",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "EVALUATION_AGGREGATION_UNSPECIFIED" => Some(Self::Unspecified),
+            "EVALUATION_AGGREGATION_MEAN" => Some(Self::Mean),
+            "EVALUATION_AGGREGATION_SUM" => Some(Self::Sum),
+            "EVALUATION_AGGREGATION_MINIMUM" => Some(Self::Minimum),
+            "EVALUATION_AGGREGATION_MAXIMUM" => Some(Self::Maximum),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum EvaluationCaseOutcome {
+    Unspecified = 0,
+    Scored = 1,
+    CandidateFailed = 2,
+    GraderFailed = 3,
+}
+impl EvaluationCaseOutcome {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "EVALUATION_CASE_OUTCOME_UNSPECIFIED",
+            Self::Scored => "EVALUATION_CASE_OUTCOME_SCORED",
+            Self::CandidateFailed => "EVALUATION_CASE_OUTCOME_CANDIDATE_FAILED",
+            Self::GraderFailed => "EVALUATION_CASE_OUTCOME_GRADER_FAILED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "EVALUATION_CASE_OUTCOME_UNSPECIFIED" => Some(Self::Unspecified),
+            "EVALUATION_CASE_OUTCOME_SCORED" => Some(Self::Scored),
+            "EVALUATION_CASE_OUTCOME_CANDIDATE_FAILED" => Some(Self::CandidateFailed),
+            "EVALUATION_CASE_OUTCOME_GRADER_FAILED" => Some(Self::GraderFailed),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum EvaluationState {
+    Unspecified = 0,
+    Admitted = 1,
+    Running = 2,
+    Completed = 3,
+    Failed = 4,
+    Cancelled = 5,
+}
+impl EvaluationState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "EVALUATION_STATE_UNSPECIFIED",
+            Self::Admitted => "EVALUATION_STATE_ADMITTED",
+            Self::Running => "EVALUATION_STATE_RUNNING",
+            Self::Completed => "EVALUATION_STATE_COMPLETED",
+            Self::Failed => "EVALUATION_STATE_FAILED",
+            Self::Cancelled => "EVALUATION_STATE_CANCELLED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "EVALUATION_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "EVALUATION_STATE_ADMITTED" => Some(Self::Admitted),
+            "EVALUATION_STATE_RUNNING" => Some(Self::Running),
+            "EVALUATION_STATE_COMPLETED" => Some(Self::Completed),
+            "EVALUATION_STATE_FAILED" => Some(Self::Failed),
+            "EVALUATION_STATE_CANCELLED" => Some(Self::Cancelled),
             _ => None,
         }
     }

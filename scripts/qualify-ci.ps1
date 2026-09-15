@@ -9,7 +9,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 Set-StrictMode -Version Latest
 
 New-Item -ItemType Directory -Force -Path `
-    $env:BUILD_ARTIFACTSTAGINGDIRECTORY, $env:TOOLS_DIR | Out-Null
+    $env:SDK_ARTIFACT_DIR, $env:TOOLS_DIR | Out-Null
 . .\scripts\ensure-bun.ps1
 bun install --frozen-lockfile
 

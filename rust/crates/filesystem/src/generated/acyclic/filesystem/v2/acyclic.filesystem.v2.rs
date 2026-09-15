@@ -164,6 +164,27 @@ pub struct Capabilities {
     pub source_reconciliation: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SourceStateRequest {
+    #[prost(message, optional, tag = "1")]
+    pub workspace: ::core::option::Option<WorkspaceRef>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SourceOperationRequest {
+    #[prost(message, optional, tag = "1")]
+    pub workspace: ::core::option::Option<WorkspaceRef>,
+    #[prost(message, optional, tag = "2")]
+    pub operation: ::core::option::Option<OperationOptions>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SourceResponse {
+    #[prost(enumeration = "SourceState", tag = "1")]
+    pub state: i32,
+    #[prost(enumeration = "SourceInvalidationReason", tag = "2")]
+    pub reason: i32,
+    #[prost(message, optional, tag = "3")]
+    pub generation: ::core::option::Option<GenerationRef>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Workspace {
     #[prost(message, optional, tag = "1")]
     pub workspace: ::core::option::Option<WorkspaceRef>,
@@ -1192,6 +1213,88 @@ impl ExtentKind {
             "EXTENT_KIND_HOLE" => Some(Self::Hole),
             "EXTENT_KIND_ALLOCATED_ZERO" => Some(Self::AllocatedZero),
             "EXTENT_KIND_CONTENT" => Some(Self::Content),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SourceState {
+    Unspecified = 0,
+    Clean = 1,
+    PendingCapture = 2,
+    NeedsRescan = 3,
+    Conflict = 4,
+    Sealed = 5,
+}
+impl SourceState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SOURCE_STATE_UNSPECIFIED",
+            Self::Clean => "SOURCE_STATE_CLEAN",
+            Self::PendingCapture => "SOURCE_STATE_PENDING_CAPTURE",
+            Self::NeedsRescan => "SOURCE_STATE_NEEDS_RESCAN",
+            Self::Conflict => "SOURCE_STATE_CONFLICT",
+            Self::Sealed => "SOURCE_STATE_SEALED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SOURCE_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "SOURCE_STATE_CLEAN" => Some(Self::Clean),
+            "SOURCE_STATE_PENDING_CAPTURE" => Some(Self::PendingCapture),
+            "SOURCE_STATE_NEEDS_RESCAN" => Some(Self::NeedsRescan),
+            "SOURCE_STATE_CONFLICT" => Some(Self::Conflict),
+            "SOURCE_STATE_SEALED" => Some(Self::Sealed),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SourceInvalidationReason {
+    Unspecified = 0,
+    InitialSnapshotRequired = 1,
+    QueueOverflow = 2,
+    NativeRescanRequired = 3,
+    BackendError = 4,
+    UnrepresentablePath = 5,
+    AmbiguousRename = 6,
+    RootChanged = 7,
+}
+impl SourceInvalidationReason {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SOURCE_INVALIDATION_REASON_UNSPECIFIED",
+            Self::InitialSnapshotRequired => "SOURCE_INVALIDATION_REASON_INITIAL_SNAPSHOT_REQUIRED",
+            Self::QueueOverflow => "SOURCE_INVALIDATION_REASON_QUEUE_OVERFLOW",
+            Self::NativeRescanRequired => "SOURCE_INVALIDATION_REASON_NATIVE_RESCAN_REQUIRED",
+            Self::BackendError => "SOURCE_INVALIDATION_REASON_BACKEND_ERROR",
+            Self::UnrepresentablePath => "SOURCE_INVALIDATION_REASON_UNREPRESENTABLE_PATH",
+            Self::AmbiguousRename => "SOURCE_INVALIDATION_REASON_AMBIGUOUS_RENAME",
+            Self::RootChanged => "SOURCE_INVALIDATION_REASON_ROOT_CHANGED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SOURCE_INVALIDATION_REASON_UNSPECIFIED" => Some(Self::Unspecified),
+            "SOURCE_INVALIDATION_REASON_INITIAL_SNAPSHOT_REQUIRED" => Some(Self::InitialSnapshotRequired),
+            "SOURCE_INVALIDATION_REASON_QUEUE_OVERFLOW" => Some(Self::QueueOverflow),
+            "SOURCE_INVALIDATION_REASON_NATIVE_RESCAN_REQUIRED" => Some(Self::NativeRescanRequired),
+            "SOURCE_INVALIDATION_REASON_BACKEND_ERROR" => Some(Self::BackendError),
+            "SOURCE_INVALIDATION_REASON_UNREPRESENTABLE_PATH" => Some(Self::UnrepresentablePath),
+            "SOURCE_INVALIDATION_REASON_AMBIGUOUS_RENAME" => Some(Self::AmbiguousRename),
+            "SOURCE_INVALIDATION_REASON_ROOT_CHANGED" => Some(Self::RootChanged),
             _ => None,
         }
     }

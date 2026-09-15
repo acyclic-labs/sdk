@@ -69,13 +69,21 @@ impl WindowsUsnCheckpoint {
     /// Rejects a wrong length, version, or USN outside the Windows signed-USN
     /// domain.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, WindowsUsnError> {
-        if bytes.len() != CHECKPOINT_BYTES || &bytes[..8] != CHECKPOINT_MAGIC {
+        if bytes.len() != CHECKPOINT_BYTES || !bytes.starts_with(CHECKPOINT_MAGIC) {
             return Err(WindowsUsnError::InvalidCheckpoint);
         }
         let mut root = [0_u8; 16];
-        root.copy_from_slice(&bytes[8..24]);
-        let journal_id = decode_u64(&bytes[24..32]);
-        let next_usn = decode_u64(&bytes[32..40]);
+        root.copy_from_slice(bytes.get(8..24).ok_or(WindowsUsnError::InvalidCheckpoint)?);
+        let journal_id = decode_u64(
+            bytes
+                .get(24..32)
+                .ok_or(WindowsUsnError::InvalidCheckpoint)?,
+        );
+        let next_usn = decode_u64(
+            bytes
+                .get(32..40)
+                .ok_or(WindowsUsnError::InvalidCheckpoint)?,
+        );
         if next_usn > i64::MAX as u64 {
             return Err(WindowsUsnError::InvalidCheckpoint);
         }

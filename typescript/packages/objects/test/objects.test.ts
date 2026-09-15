@@ -112,6 +112,41 @@ describe("objects", () => {
     expect(await bucket.deleteBucket()).toBeTrue();
   });
 
+  test("binds snapshot destruction to the complete snapshot identity", async () => {
+    const provider = new MemoryObjectsProvider();
+    const objects = new Objects(provider);
+    const source = await objects.createBucket("source");
+    const foreign = await objects.createBucket("foreign");
+    await source.put("retained", new Uint8Array([1]), bytesCodec);
+    const snapshot = await source.snapshot();
+    const operation = key("destroy-snapshot");
+    await expect(provider.destroySnapshot({
+      snapshotId: snapshot.reference.snapshotId,
+      sourceBucketId: foreign.reference.bucketId,
+    }, operation)).rejects.toMatchObject({ code: "not_found" });
+    expect(await snapshot.head("retained")).toMatchObject({ size: 1n });
+    expect(await snapshot.destroy({ idempotencyKey: operation })).toBeTrue();
+  });
+
+  test("binds snapshot listing continuations to the complete snapshot identity", async () => {
+    const provider = new MemoryObjectsProvider();
+    const objects = new Objects(provider);
+    const source = await objects.createBucket("listing-source");
+    const foreign = await objects.createBucket("listing-foreign");
+    await source.put("a", new Uint8Array([1]), bytesCodec);
+    await source.put("b", new Uint8Array([2]), bytesCodec);
+    const snapshot = await source.snapshot();
+    const first = await snapshot.listPage({ pageSize: 1 });
+    const forged = {
+      kind: "snapshot" as const,
+      snapshot: {
+        snapshotId: snapshot.reference.snapshotId,
+        sourceBucketId: foreign.reference.bucketId,
+      },
+    };
+    await expect(provider.list(forged, "", undefined, false, 1, first.continuation)).rejects.toMatchObject({ code: "not_found" });
+  });
+
   test("requires multipart uploads to finish or abort before bucket deletion", async () => {
     const bucket = await new Objects(new MemoryObjectsProvider()).createBucket("uploading");
     const upload = await bucket.createMultipart("artifact");

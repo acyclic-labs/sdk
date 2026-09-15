@@ -49,6 +49,22 @@ export interface HostedFsOptions {
   readonly fetch?: typeof globalThis.fetch;
 }
 
+export interface HostedFsEnvironment {
+  readonly endpoint?: string;
+  readonly token?: string;
+}
+
+export interface HostedFsCapabilities extends EngineCapabilities {
+  readonly profiles: readonly FsProfile[];
+  readonly maximumRequestBytes: bigint;
+  readonly maximumResponseBytes: bigint;
+  readonly maximumTransactionMutations: number;
+  readonly maximumPageItems: number;
+  readonly nativeMountCredentials: boolean;
+  readonly s3Credentials: boolean;
+  readonly sourceReconciliation: boolean;
+}
+
 declare const filesystemIdentity: unique symbol;
 export type S3Bucket = string & { readonly [filesystemIdentity]: "S3Bucket" };
 export type S3Region = string & { readonly [filesystemIdentity]: "S3Region" };
@@ -76,9 +92,14 @@ export interface HostedFsWorkspace extends FsWorkspace {
   ): Promise<S3Access>;
   fork(destination: string): Promise<HostedFsWorkspace>;
   forkAt(destination: string, generation: FsGeneration): Promise<HostedFsWorkspace>;
+  sourceState(): Promise<SourceResult>;
+  reconcileSource(idempotencyKey?: Uint8Array): Promise<SourceResult>;
+  rescanSource(idempotencyKey?: Uint8Array): Promise<SourceResult>;
+  seal(idempotencyKey?: Uint8Array): Promise<FsGeneration>;
 }
 
 export interface HostedFsEngine extends FsEngine {
+  readonly capabilities: HostedFsCapabilities;
   createWorkspace(name: string): Promise<HostedFsWorkspace>;
   openWorkspace(name: string): Promise<HostedFsWorkspace>;
 }
@@ -1112,7 +1133,7 @@ export interface NativeSourceOptions {
   readonly maximumQueuedChanges: number;
 }
 
-export type NativeSourceStatus =
+export type SourceStatus =
   | "none"
   | "clean"
   | "pending-capture"
@@ -1120,11 +1141,25 @@ export type NativeSourceStatus =
   | "conflict"
   | "sealed";
 
-export interface NativeSourceResult {
-  readonly status: NativeSourceStatus;
-  readonly reason: string | undefined;
+export type SourceInvalidationReason =
+  | "initial-snapshot-required"
+  | "queue-overflow"
+  | "native-rescan-required"
+  | "backend-error"
+  | "unrepresentable-path"
+  | "ambiguous-rename"
+  | "root-changed";
+
+export interface SourceResult {
+  readonly status: SourceStatus;
+  readonly reason: SourceInvalidationReason | undefined;
   readonly generationId: Uint8Array | undefined;
 }
+
+/** @deprecated Use SourceStatus; source state is shared by native and hosted workspaces. */
+export type NativeSourceStatus = SourceStatus;
+/** @deprecated Use SourceResult; source state is shared by native and hosted workspaces. */
+export type NativeSourceResult = SourceResult;
 
 export interface WasmBindings {
   default(

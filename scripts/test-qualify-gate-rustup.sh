@@ -46,8 +46,8 @@ invoke() {
   cp "$work/bin/cargo" "$case_dir/tools/cargo/bin/cargo-llvm-cov"
   : >"$case_dir/rustup.log"
   FAKE_RUSTUP_MODE="$mode" FAKE_RUSTUP_LOG="$case_dir/rustup.log" \
-    AGENT_TEMPDIRECTORY="$case_dir/temp" \
-    BUILD_ARTIFACTSTAGINGDIRECTORY="$case_dir/artifacts" \
+    SDK_TEMP_DIR="$case_dir/temp" \
+    SDK_ARTIFACT_DIR="$case_dir/artifacts" \
     TOOLS_DIR="$case_dir/tools" PATH="$work/bin:$PATH" \
     bash "$root/scripts/qualify-ci.sh" gate
 }

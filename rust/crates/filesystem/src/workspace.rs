@@ -190,6 +190,20 @@ impl<A, O> Workspace<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
+    /// Opens an authenticated checkout using the requested generation and mode.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported mode combinations, unavailable generations, and
+    /// authority or immutable-storage failures.
+    pub async fn checkout(
+        &self,
+        selector: GenerationSelector,
+        mode: CheckoutMode,
+    ) -> Result<Checkout<A, O>, WorkspaceError> {
+        self.engine_checkout(selector, mode).await
+    }
+
     /// Returns the attached native source, when this handle was created by
     /// [`crate::Fs::attach_directory`].
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
@@ -1975,6 +1989,15 @@ pub struct JoinBuilder<A, O> {
 }
 
 impl<A, O> JoinBuilder<A, O> {
+    fn validate_bounds(&self) -> Result<(), WorkspaceError> {
+        if self.maximum_generations == 0 || self.maximum_changes == 0 || self.maximum_conflicts == 0
+        {
+            Err(WorkspaceError::JoinLimit)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Selects the immutable ancestry shape of a successful join.
     #[must_use]
     pub const fn history(mut self, history: JoinHistory) -> Self {
@@ -2006,10 +2029,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
     /// Rejects unrelated deployments, incompatible semantics, missing or
     /// over-bound lineage, and malformed authenticated state.
     pub async fn plan(self) -> Result<JoinPlan<A, O>, WorkspaceError> {
-        if self.maximum_generations == 0 || self.maximum_changes == 0 || self.maximum_conflicts == 0
-        {
-            return Err(WorkspaceError::JoinLimit);
-        }
+        self.validate_bounds()?;
         let source_head = self.source.head().await?;
         let (target_head_id, target_authority_head) = self
             .target
@@ -2021,6 +2041,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
             workspace: self.target.clone(),
             id: target_head_id,
         };
+        self.plan_generations(source_head, target_head, target_authority_head)
+            .await
+    }
+
+    pub(crate) async fn plan_generations(
+        self,
+        source_head: Generation<A, O>,
+        target_head: Generation<A, O>,
+        target_authority_head: crate::Head,
+    ) -> Result<JoinPlan<A, O>, WorkspaceError> {
+        self.validate_bounds()?;
+        if source_head.workspace.id != self.source.id || target_head.workspace.id != self.target.id
+        {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
         let base = self
             .source
             .volume
@@ -2035,6 +2070,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
             target_authority_head,
             base,
             history: self.history,
+            maximum_generations: self.maximum_generations,
             maximum_changes: self.maximum_changes,
             maximum_conflicts: self.maximum_conflicts,
         })
@@ -2050,6 +2086,7 @@ pub struct JoinPlan<A, O> {
     target_authority_head: crate::Head,
     base: crate::facade::WorkspaceCommonAncestor,
     history: JoinHistory,
+    maximum_generations: u32,
     maximum_changes: u32,
     maximum_conflicts: u32,
 }
@@ -2145,12 +2182,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             .fs
             .apply_workspace_join(crate::facade::WorkspaceJoinRequest {
                 target: &self.target.volume,
-                base: self.base.id,
+                base: self.base,
                 source: &self.source_head,
                 expected_target: options.if_target,
                 expected_head: self.target_authority_head,
                 history: self.history,
                 operation_id: options.idempotency_key.operation_id(),
+                maximum_generations: self.maximum_generations,
                 maximum_changes: self.maximum_changes,
                 maximum_conflicts: self.maximum_conflicts,
             })

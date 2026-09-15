@@ -94,6 +94,133 @@ service RunsService {
   rpc Cancel(InspectRunRequest) returns (RunView);
 }
 
+// Immutable, recoverable evaluation admissions. Candidate execution and grader
+// placement remain private; the customer contract contains only exact artifacts,
+// bounded suite inputs, metric semantics, and content-addressed observations.
+service EvaluationsService {
+  rpc Create(CreateEvaluationRequest) returns (EvaluationView);
+  rpc Inspect(InspectEvaluationRequest) returns (EvaluationView);
+}
+
+message EvaluationArtifact {
+  bytes digest = 1;
+  string media_type = 2;
+  uint64 logical_size = 3;
+}
+
+message EvaluationCase {
+  bytes case_id = 1;
+  bytes input = 2;
+  optional bytes input_artifact_digest = 3;
+}
+
+message EvaluationSuite {
+  string identity = 1;
+  bytes digest = 2;
+  repeated EvaluationCase cases = 3;
+}
+
+message EvaluationGrader {
+  bytes handle = 1;
+  bytes artifact_digest = 2;
+}
+
+enum EvaluationAggregation {
+  EVALUATION_AGGREGATION_UNSPECIFIED = 0;
+  EVALUATION_AGGREGATION_MEAN = 1;
+  EVALUATION_AGGREGATION_SUM = 2;
+  EVALUATION_AGGREGATION_MINIMUM = 3;
+  EVALUATION_AGGREGATION_MAXIMUM = 4;
+}
+
+message EvaluationMetric {
+  string identity = 1;
+  EvaluationAggregation aggregation = 2;
+}
+
+message EvaluationSpec {
+  repeated EvaluationArtifact candidates = 1;
+  EvaluationSuite suite = 2;
+  EvaluationGrader grader = 3;
+  repeated EvaluationMetric metrics = 4;
+  uint64 maximum_case_results = 5;
+  bytes spec_digest = 6;
+}
+
+message CreateEvaluationRequest {
+  RequestIdentity identity = 1;
+  EvaluationSpec spec = 2;
+}
+
+message InspectEvaluationRequest {
+  bytes evaluation_id = 1;
+}
+
+message ExactRational {
+  sint64 numerator = 1;
+  uint64 denominator = 2;
+}
+
+message EvaluationMetricValue {
+  string metric_identity = 1;
+  ExactRational value = 2;
+}
+
+enum EvaluationCaseOutcome {
+  EVALUATION_CASE_OUTCOME_UNSPECIFIED = 0;
+  EVALUATION_CASE_OUTCOME_SCORED = 1;
+  EVALUATION_CASE_OUTCOME_CANDIDATE_FAILED = 2;
+  EVALUATION_CASE_OUTCOME_GRADER_FAILED = 3;
+}
+
+message EvaluationCaseResult {
+  bytes candidate_digest = 1;
+  bytes case_id = 2;
+  EvaluationGraderObservation observation = 3;
+  repeated EvaluationMetricValue metrics = 4;
+  EvaluationCaseOutcome outcome = 5;
+}
+
+// The binding is SHA-256("acyclic.inference.grader-observation.v1\0" ||
+// native_output_digest || observation_digest). It proves which exact native
+// device output the grader observed without exposing either payload.
+message EvaluationGraderObservation {
+  bytes native_output_digest = 1;
+  bytes observation_digest = 2;
+  bytes binding_digest = 3;
+}
+
+message EvaluationAggregate {
+  bytes candidate_digest = 1;
+  string metric_identity = 2;
+  EvaluationAggregation aggregation = 3;
+  ExactRational value = 4;
+}
+
+message EvaluationResult {
+  bytes spec_digest = 1;
+  repeated EvaluationCaseResult case_results = 2;
+  repeated EvaluationAggregate aggregates = 3;
+  bytes result_digest = 4;
+}
+
+enum EvaluationState {
+  EVALUATION_STATE_UNSPECIFIED = 0;
+  EVALUATION_STATE_ADMITTED = 1;
+  EVALUATION_STATE_RUNNING = 2;
+  EVALUATION_STATE_COMPLETED = 3;
+  EVALUATION_STATE_FAILED = 4;
+  EVALUATION_STATE_CANCELLED = 5;
+}
+
+message EvaluationView {
+  bytes evaluation_id = 1;
+  EvaluationSpec spec = 2;
+  EvaluationState state = 3;
+  optional EvaluationResult result = 4;
+  uint64 sequence = 5;
+}
+
 message RequestIdentity {
   bytes client_instance = 1;
   bytes request_id = 2;

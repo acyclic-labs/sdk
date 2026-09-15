@@ -6,7 +6,9 @@ use crate::kernel::{
     encode_tree_page,
 };
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
-use crate::storage::{AuthorityStore, ObjectKind, ObjectStore, ObjectStoreError, object_digest};
+use crate::storage::{
+    AuthorityStore, FenceOutcome, ObjectKind, ObjectStore, ObjectStoreError, object_digest,
+};
 
 fn metadata() -> FileMetadata {
     FileMetadata {
@@ -121,7 +123,7 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         limits(),
         WorkBudget::UNBOUNDED,
     )?;
-    assert!(matches!(first.outcome, AppendOutcome::Committed(_)));
+    assert!(matches!(&first.outcome, AppendOutcome::Committed(_)));
     let retry = publish_generation(
         &objects,
         &authority,
@@ -147,6 +149,62 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
     assert!(matches!(
         conflicting_expected_epoch.outcome,
         AppendOutcome::IdempotencyConflict { .. }
+    ));
+    let committed_head = match first.outcome {
+        AppendOutcome::Committed(commit) => Head {
+            epoch: commit.epoch,
+            sequence: commit.sequence,
+            digest: commit.digest,
+        },
+        _ => return Err("first publication was not committed".into()),
+    };
+    assert!(matches!(
+        authority
+            .fence(authority_id, committed_head, WorkBudget::UNBOUNDED)?
+            .value,
+        FenceOutcome::Advanced(_)
+    ));
+    let post_fence_retry = publish_generation(
+        &objects,
+        &authority,
+        request,
+        limits(),
+        WorkBudget::UNBOUNDED,
+    )?;
+    assert!(matches!(
+        post_fence_retry.outcome,
+        AppendOutcome::AlreadyCommitted(_)
+    ));
+    let post_fence_altered = publish_generation(
+        &objects,
+        &authority,
+        PublishGenerationRequest {
+            expected: Head {
+                epoch: Epoch::new(2)?,
+                ..head
+            },
+            ..request
+        },
+        limits(),
+        WorkBudget::UNBOUNDED,
+    )?;
+    assert!(matches!(
+        post_fence_altered.outcome,
+        AppendOutcome::IdempotencyConflict { .. }
+    ));
+    let post_fence_fresh = publish_generation(
+        &objects,
+        &authority,
+        PublishGenerationRequest {
+            operation_id: OperationId::from_bytes([5; 16]),
+            ..request
+        },
+        limits(),
+        WorkBudget::UNBOUNDED,
+    )?;
+    assert!(matches!(
+        post_fence_fresh.outcome,
+        AppendOutcome::Fenced { .. }
     ));
     Ok(())
 }
@@ -353,7 +411,7 @@ fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutation()
     };
     assert_eq!(publication_payload_length(), PAYLOAD_DOMAIN.len() + 51);
     assert_eq!(
-        fingerprint_input_length(),
+        fingerprint_input_length(None),
         publication_payload_length() + 72
     );
     for counter in [

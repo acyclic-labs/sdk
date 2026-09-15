@@ -841,9 +841,22 @@ function parseSourceResult(value: NativeRawSourceResult): NativeSourceResult {
     throw new TypeError("native source has an invalid status");
   }
   const typedStatus: NativeSourceStatus = status;
+  const reason = value.reason;
+  if (
+    reason !== undefined &&
+    reason !== "initial-snapshot-required" &&
+    reason !== "queue-overflow" &&
+    reason !== "native-rescan-required" &&
+    reason !== "backend-error" &&
+    reason !== "unrepresentable-path" &&
+    reason !== "ambiguous-rename" &&
+    reason !== "root-changed"
+  ) {
+    throw new TypeError("native source has an invalid reason");
+  }
   return {
     status: typedStatus,
-    reason: value.reason,
+    reason,
     generationId: value.generationId === undefined ? undefined : value.generationId.slice(),
   };
 }

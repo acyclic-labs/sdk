@@ -37,8 +37,8 @@ use crate::kernel::{
     list_attributes_async, list_tree_entries_async, lookup_attribute_async,
     lookup_file_record_async, lookup_file_records_async, merge_generation_async,
     plan_extent_range_async, prove_generation_closure_async, publish_generation_async,
-    read_blob_range_async, read_file_range_async, retention_authority_id, seek_extent_async,
-    volume_authority_id,
+    publish_generation_async_with_context, read_blob_range_async, read_file_range_async,
+    retention_authority_id, seek_extent_async, volume_authority_id,
 };
 #[cfg(test)]
 use crate::kernel::{
@@ -84,6 +84,7 @@ const CASE_FOLD_COLLISION_SCAN_PAGE: u32 = 256;
 const ROOT_FILE_DOMAIN: &[u8] = b"acyclic-fs-root-file-v1\0";
 const CREATION_OPERATION_DOMAIN: &[u8] = b"acyclic-fs-create-operation-v1\0";
 const CREATION_FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-create-fingerprint-v1\0";
+const WORKSPACE_JOIN_OPERATION_DOMAIN: &[u8] = b"acyclic-fs-workspace-join-operation-v1\0";
 
 pub(crate) enum WorkspaceJoinOutcome {
     Applied(GenerationId),
@@ -97,14 +98,38 @@ pub(crate) enum WorkspaceJoinOutcome {
 
 pub(crate) struct WorkspaceJoinRequest<'a, A, O> {
     pub target: &'a Volume<A, O>,
-    pub base: GenerationId,
+    pub base: WorkspaceCommonAncestor,
     pub source: &'a crate::Generation<A, O>,
     pub expected_target: GenerationId,
     pub expected_head: Head,
     pub history: crate::workspace::JoinHistory,
     pub operation_id: OperationId,
+    pub maximum_generations: u32,
     pub maximum_changes: u32,
     pub maximum_conflicts: u32,
+}
+
+impl<A, O> WorkspaceJoinRequest<'_, A, O> {
+    fn operation_context(&self) -> Digest {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(WORKSPACE_JOIN_OPERATION_DOMAIN);
+        hasher.update(&self.source.workspace.volume.id.into_bytes());
+        hasher.update(self.source.id.digest().as_bytes());
+        hasher.update(&self.target.id.into_bytes());
+        hasher.update(self.expected_target.digest().as_bytes());
+        hasher.update(&self.base.volume_id.into_bytes());
+        hasher.update(self.base.id.digest().as_bytes());
+        hasher.update(&[match self.history {
+            crate::workspace::JoinHistory::Merge => 1,
+            crate::workspace::JoinHistory::Rebase => 2,
+            crate::workspace::JoinHistory::Squash => 3,
+            crate::workspace::JoinHistory::CherryPick => 4,
+        }]);
+        hasher.update(&self.maximum_generations.to_le_bytes());
+        hasher.update(&self.maximum_changes.to_le_bytes());
+        hasher.update(&self.maximum_conflicts.to_le_bytes());
+        Digest::from_bytes(*hasher.finalize().as_bytes())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -2404,6 +2429,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         request: WorkspaceJoinRequest<'_, A, O>,
     ) -> Result<WorkspaceJoinOutcome, crate::workspace::WorkspaceError> {
+        let operation_context = request.operation_context();
         let WorkspaceJoinRequest {
             target,
             base,
@@ -2412,10 +2438,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             expected_head,
             history,
             operation_id,
+            maximum_generations,
             maximum_changes,
             maximum_conflicts,
         } = request;
-        if maximum_changes == 0 || maximum_conflicts == 0 {
+        if maximum_generations == 0 || maximum_changes == 0 || maximum_conflicts == 0 {
             return Err(crate::workspace::WorkspaceError::JoinLimit);
         }
         if !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
@@ -2435,7 +2462,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         };
         let base_object = ObjectId {
             kind: ObjectKind::GenerationRoot,
-            digest: base.digest(),
+            digest: base.id.digest(),
         };
         let source_object = ObjectId {
             kind: ObjectKind::GenerationRoot,
@@ -2544,7 +2571,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if merged_root.file_table == target_root.file_table {
             return Ok(WorkspaceJoinOutcome::NoChanges(current_target));
         }
-        let publication = publish_generation_async(
+        let publication = publish_generation_async_with_context(
             &self.inner.objects,
             &self.inner.authority,
             PublishGenerationRequest {
@@ -2555,6 +2582,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 operation_id,
                 generation_root: candidate,
             },
+            operation_context,
             closure_limits(target.config),
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -9918,7 +9946,10 @@ fn validate_checkout(
         )
         | (
             AccessMode::ReadWrite,
-            ConsistencyMode::Pinned | ConsistencyMode::Manual | ConsistencyMode::TrackingSafe,
+            ConsistencyMode::Pinned
+            | ConsistencyMode::Manual
+            | ConsistencyMode::TrackingSafe
+            | ConsistencyMode::Live,
             MutationMode::PrivateOverlay,
         ) => Ok(()),
         (AccessMode::ReadWrite, ConsistencyMode::Live, MutationMode::DirectLive)

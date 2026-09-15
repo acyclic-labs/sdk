@@ -74,7 +74,7 @@ windows = { version = "0.62.2", features = [
 ] }
 
 [features]
-default = ["local", "memory", "native-watch"]
+default = ["local", "memory", "native-watch", "native-mount"]
 local = ["distributed", "acyclic-objects/local", "acyclic-stream/local"]
 memory = ["distributed"]
 native-watch = ["dep:notify", "dep:tokio"]
