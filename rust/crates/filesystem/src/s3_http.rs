@@ -26,16 +26,21 @@ use s3s::{
         DeleteObjectsOutput, DeletedObject, GetBucketLocationInput, GetBucketLocationOutput,
         GetObjectInput, GetObjectOutput, HeadBucketInput, HeadBucketOutput, HeadObjectInput,
         HeadObjectOutput, ListObjectsV2Input, ListObjectsV2Output, ListPartsInput, ListPartsOutput,
-        Object, Part, PutObjectInput, PutObjectOutput, Range, StreamingBlob, UploadPartInput,
-        UploadPartOutput,
+        Object, Part, PostObjectInput, PostObjectOutput, PutObjectInput, PutObjectOutput, Range,
+        StreamingBlob, UploadPartInput, UploadPartOutput,
     },
 };
 use std::{collections::BTreeMap, marker::PhantomData, sync::Arc};
 use subtle::ConstantTimeEq;
+use time::{Date, Month, PrimitiveDateTime, Time};
 
 const IDEMPOTENCY_HEADER: &str = "x-acyclic-idempotency-key";
 const SDK_INVOCATION_HEADER: &str = "amz-sdk-invocation-id";
 const SESSION_TOKEN_HEADER: &str = "x-amz-security-token";
+const AUTHORIZATION_HEADER: &str = "authorization";
+const SIGNATURE_ALGORITHM: &str = "AWS4-HMAC-SHA256";
+const SIGNATURE_DATE_HEADER: &str = "x-amz-date";
+const MAXIMUM_SIGNATURE_SKEW_SECONDS: u64 = 15 * 60;
 const MULTIPART_DOMAIN: &[u8] = b"acyclic-fs-s3-multipart-v1\0";
 const MULTIPART_RECORD_VERSION: u8 = 1;
 
@@ -220,6 +225,7 @@ where
 pub struct FilesystemS3Adapter<R, A, O> {
     resolver: Arc<R>,
     limits: FilesystemS3Limits,
+    clock: fn() -> i64,
     marker: PhantomData<fn() -> (A, O)>,
 }
 
@@ -233,8 +239,15 @@ impl<R, A, O> FilesystemS3Adapter<R, A, O> {
         Ok(Self {
             resolver,
             limits: limits.validate()?,
+            clock: current_unix_timestamp,
             marker: PhantomData,
         })
+    }
+
+    #[cfg(test)]
+    fn with_clock(mut self, clock: fn() -> i64) -> Self {
+        self.clock = clock;
+        self
     }
 }
 
@@ -249,6 +262,7 @@ where
         request: &S3Request<T>,
         bucket: &str,
     ) -> S3Result<FilesystemS3Principal<A, O>> {
+        validate_signature_time_at(request, (self.clock)())?;
         let credentials = request
             .credentials
             .as_ref()
@@ -284,6 +298,86 @@ where
         }
         Ok(principal)
     }
+}
+
+fn current_unix_timestamp() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+fn validate_signature_time_at<T>(request: &S3Request<T>, now: i64) -> S3Result<()> {
+    if request.uri.query().is_some_and(|query| {
+        serde_urlencoded::from_str::<Vec<(String, String)>>(query)
+            .is_ok_and(|fields| fields.iter().any(|(name, _)| name == "X-Amz-Signature"))
+    }) {
+        return Ok(());
+    }
+    let Some(authorization) = request.headers.get(AUTHORIZATION_HEADER) else {
+        // Presigned URLs carry authentication and time in their query string;
+        // s3s independently enforces their expiry and future-skew bounds.
+        return Ok(());
+    };
+    let authorization = authorization
+        .to_str()
+        .map_err(|_| s3s::s3_error!(AuthorizationHeaderMalformed))?;
+    let scope_date = signature_scope_date(authorization)
+        .ok_or_else(|| s3s::s3_error!(AuthorizationHeaderMalformed))?;
+    let value = request
+        .headers
+        .get(SIGNATURE_DATE_HEADER)
+        .ok_or_else(|| s3s::s3_error!(AuthorizationHeaderMalformed))?;
+    let request_time = parse_signature_time(value.as_bytes())
+        .ok_or_else(|| s3s::s3_error!(AuthorizationHeaderMalformed))?;
+    if value.as_bytes().get(..8) != Some(scope_date.as_bytes()) {
+        return Err(s3s::s3_error!(AuthorizationHeaderMalformed));
+    }
+    if request_time.abs_diff(now) > MAXIMUM_SIGNATURE_SKEW_SECONDS {
+        return Err(s3s::s3_error!(RequestTimeTooSkewed));
+    }
+    Ok(())
+}
+
+fn signature_scope_date(authorization: &str) -> Option<&str> {
+    let fields = authorization
+        .strip_prefix(SIGNATURE_ALGORITHM)?
+        .trim_start();
+    let credential = fields
+        .split(',')
+        .find_map(|field| field.trim().strip_prefix("Credential="))?;
+    let mut scope = credential.split('/');
+    let _access_key = scope.next()?;
+    let date = scope.next()?;
+    let _region = scope.next()?;
+    let _service = scope.next()?;
+    (scope.next()? == "aws4_request" && scope.next().is_none()).then_some(date)
+}
+
+fn parse_signature_time(value: &[u8]) -> Option<i64> {
+    if value.len() != 16 || value.get(8) != Some(&b'T') || value.get(15) != Some(&b'Z') {
+        return None;
+    }
+    let year = decimal(value, 0, 4)?;
+    let month = Month::try_from(u8::try_from(decimal(value, 4, 2)?).ok()?).ok()?;
+    let day = u8::try_from(decimal(value, 6, 2)?).ok()?;
+    let hour = u8::try_from(decimal(value, 9, 2)?).ok()?;
+    let minute = u8::try_from(decimal(value, 11, 2)?).ok()?;
+    let second = u8::try_from(decimal(value, 13, 2)?).ok()?;
+    let date = Date::from_calendar_date(year, month, day).ok()?;
+    let clock = Time::from_hms(hour, minute, second).ok()?;
+    Some(
+        PrimitiveDateTime::new(date, clock)
+            .assume_utc()
+            .unix_timestamp(),
+    )
+}
+
+fn decimal(value: &[u8], start: usize, length: usize) -> Option<i32> {
+    value
+        .get(start..start.checked_add(length)?)?
+        .iter()
+        .try_fold(0_i32, |result, byte| {
+            byte.is_ascii_digit()
+                .then(|| result * 10 + i32::from(byte - b'0'))
+        })
 }
 
 #[derive(Clone, Debug)]
@@ -1394,6 +1488,18 @@ where
         }))
     }
 
+    async fn post_object(
+        &self,
+        _request: S3Request<PostObjectInput>,
+    ) -> S3Result<S3Response<PostObjectOutput>> {
+        // s3s does not expose multipart form signature fields after authentication,
+        // so this mode cannot share the adapter's mandatory freshness validation.
+        Err(s3s::s3_error!(
+            NotImplemented,
+            "browser form uploads are not supported"
+        ))
+    }
+
     async fn delete_object(
         &self,
         request: S3Request<DeleteObjectInput>,
@@ -2195,6 +2301,7 @@ mod tests {
     use super::*;
     use crate::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
     use futures::TryStreamExt;
+    use hmac::{Hmac, Mac};
     use http::{Extensions, HeaderMap, HeaderValue, Method, Uri};
     use s3s::auth::Credentials;
     use s3s::dto::{
@@ -2202,6 +2309,10 @@ mod tests {
         CompletedPart, CreateMultipartUploadInput, GetObjectInput, ListObjectsV2Input,
         ListPartsInput, PutObjectInput, UploadPartInput,
     };
+    use s3s::service::S3ServiceBuilder;
+    use sha2::{Digest as ShaDigest, Sha256};
+    use std::fmt::Write as _;
+    use tower::ServiceExt;
 
     struct Resolver {
         principal: FilesystemS3Principal<MemoryAuthorityBackend, MemoryObjectBackend>,
@@ -2289,6 +2400,185 @@ mod tests {
 
     fn body(bytes: Bytes) -> StreamingBlob {
         StreamingBlob::wrap(stream::iter([Ok::<Bytes, std::io::Error>(bytes)]))
+    }
+
+    fn fixed_signature_clock() -> i64 {
+        1_789_473_600
+    }
+
+    fn hmac(key: &[u8], value: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(key)?;
+        mac.update(value);
+        Ok(mac.finalize().into_bytes().to_vec())
+    }
+
+    fn signed_head_bucket(
+        timestamp: &str,
+        scope_date: &str,
+    ) -> Result<http::Request<axum::body::Body>, Box<dyn std::error::Error>> {
+        let path = "/bucket";
+        let payload_hash = hex::encode(Sha256::digest([]));
+        let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+        let mut canonical_headers = String::new();
+        writeln!(canonical_headers, "host:localhost")?;
+        writeln!(canonical_headers, "x-amz-content-sha256:{payload_hash}")?;
+        writeln!(canonical_headers, "x-amz-date:{timestamp}")?;
+        let canonical_request =
+            format!("HEAD\n{path}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
+        let signing_date = timestamp
+            .get(..8)
+            .ok_or_else(|| std::io::Error::other("timestamp has no signing date"))?;
+        let scope = format!("{scope_date}/auto/s3/aws4_request");
+        let string_to_sign = format!(
+            "{SIGNATURE_ALGORITHM}\n{timestamp}\n{signing_date}/auto/s3/aws4_request\n{}",
+            hex::encode(Sha256::digest(canonical_request.as_bytes()))
+        );
+        let date_key = hmac(b"AWS4secret", signing_date.as_bytes())?;
+        let region_key = hmac(&date_key, b"auto")?;
+        let service_key = hmac(&region_key, b"s3")?;
+        let signing_key = hmac(&service_key, b"aws4_request")?;
+        let signature = hex::encode(hmac(&signing_key, string_to_sign.as_bytes())?);
+        let authorization = format!(
+            "{SIGNATURE_ALGORITHM} Credential=access/{scope}, SignedHeaders={signed_headers}, Signature={signature}"
+        );
+        Ok(http::Request::builder()
+            .method(Method::HEAD)
+            .uri(path)
+            .header("host", "localhost")
+            .header("x-amz-content-sha256", payload_hash)
+            .header(SIGNATURE_DATE_HEADER, timestamp)
+            .header(AUTHORIZATION_HEADER, authorization)
+            .body(axum::body::Body::empty())?)
+    }
+
+    fn presigned_head_bucket_with_encoded_signature_name()
+    -> Result<http::Request<axum::body::Body>, Box<dyn std::error::Error>> {
+        let now = time::OffsetDateTime::now_utc();
+        let scope_date = format!(
+            "{:04}{:02}{:02}",
+            now.year(),
+            u8::from(now.month()),
+            now.day()
+        );
+        let timestamp = format!(
+            "{scope_date}T{:02}{:02}{:02}Z",
+            now.hour(),
+            now.minute(),
+            now.second()
+        );
+        let credential = format!("access/{scope_date}/auto/s3/aws4_request");
+        let canonical_query = format!(
+            "X-Amz-Algorithm={SIGNATURE_ALGORITHM}&X-Amz-Credential=access%2F{scope_date}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date={timestamp}&X-Amz-Expires=900&X-Amz-SignedHeaders=host"
+        );
+        let canonical_request =
+            format!("HEAD\n/bucket\n{canonical_query}\nhost:localhost\n\nhost\nUNSIGNED-PAYLOAD");
+        let string_to_sign = format!(
+            "{SIGNATURE_ALGORITHM}\n{timestamp}\n{scope_date}/auto/s3/aws4_request\n{}",
+            hex::encode(Sha256::digest(canonical_request.as_bytes()))
+        );
+        let date_key = hmac(b"AWS4secret", scope_date.as_bytes())?;
+        let region_key = hmac(&date_key, b"auto")?;
+        let service_key = hmac(&region_key, b"s3")?;
+        let signing_key = hmac(&service_key, b"aws4_request")?;
+        let signature = hex::encode(hmac(&signing_key, string_to_sign.as_bytes())?);
+        let uri = format!("/bucket?{canonical_query}&%58-Amz-Signature={signature}");
+        Ok(http::Request::builder()
+            .method(Method::HEAD)
+            .uri(uri)
+            .header("host", "localhost")
+            .header(
+                AUTHORIZATION_HEADER,
+                format!(
+                    "{SIGNATURE_ALGORITHM} Credential={credential}, SignedHeaders=host;x-amz-date, Signature=invalid"
+                ),
+            )
+            .header(SIGNATURE_DATE_HEADER, "20000101T000000Z")
+            .body(axum::body::Body::empty())?)
+    }
+
+    #[tokio::test]
+    async fn authenticated_service_enforces_signature_time()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = adapter(true).await?.with_clock(fixed_signature_clock);
+        let authentication = FilesystemS3Authentication::new(Arc::clone(&adapter.resolver));
+        let mut builder = S3ServiceBuilder::new(adapter);
+        builder.set_auth(authentication);
+        let service = builder.build();
+
+        for timestamp in ["20260915T114500Z", "20260915T121500Z"] {
+            let response = service
+                .clone()
+                .oneshot(signed_head_bucket(timestamp, "20260915")?)
+                .await
+                .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
+            assert_eq!(response.status(), http::StatusCode::OK);
+        }
+        for timestamp in ["20260915T114459Z", "20260915T121501Z"] {
+            let response = service
+                .clone()
+                .oneshot(signed_head_bucket(timestamp, "20260915")?)
+                .await
+                .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
+            assert_eq!(response.status(), http::StatusCode::FORBIDDEN);
+        }
+        let mismatched_scope = service
+            .oneshot(signed_head_bucket("20260915T120000Z", "20260914")?)
+            .await
+            .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
+        assert_eq!(mismatched_scope.status(), http::StatusCode::BAD_REQUEST);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn authenticated_service_honors_percent_encoded_presigned_auth_precedence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = adapter(true).await?;
+        let authentication = FilesystemS3Authentication::new(Arc::clone(&adapter.resolver));
+        let mut builder = S3ServiceBuilder::new(adapter);
+        builder.set_auth(authentication);
+        let response = builder
+            .build()
+            .oneshot(presigned_head_bucket_with_encoded_signature_name()?)
+            .await
+            .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
+        assert_eq!(response.status(), http::StatusCode::OK);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn browser_form_uploads_are_explicitly_unsupported() -> S3Result {
+        let Err(error) = adapter(true)
+            .await?
+            .post_object(request(PostObjectInput::default()))
+            .await
+        else {
+            return Err(s3s::s3_error!(InternalError));
+        };
+        assert_eq!(error.code(), &s3s::S3ErrorCode::NotImplemented);
+        Ok(())
+    }
+
+    #[test]
+    fn signature_time_rejects_malformed_dates() -> S3Result {
+        let mut malformed = request(());
+        malformed.headers.insert(
+            AUTHORIZATION_HEADER,
+            HeaderValue::from_static(
+                "AWS4-HMAC-SHA256 Credential=access/20260230/eu-west-2/s3/aws4_request",
+            ),
+        );
+        malformed.headers.insert(
+            SIGNATURE_DATE_HEADER,
+            HeaderValue::from_static("20260230T120000Z"),
+        );
+        let Err(error) = validate_signature_time_at(&malformed, 0) else {
+            return Err(s3s::s3_error!(InternalError));
+        };
+        assert_eq!(
+            error.code(),
+            &s3s::S3ErrorCode::AuthorizationHeaderMalformed
+        );
+        Ok(())
     }
 
     #[tokio::test]

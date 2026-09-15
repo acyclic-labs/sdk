@@ -24,11 +24,15 @@ acyclic-objects = { version = "=1.0.0-rc.3", path = "../objects", optional = tru
 acyclic-stream = { version = "=1.0.0-rc.5", path = "../stream", optional = true, default-features = false }
 
 [dev-dependencies]
+axum.workspace = true
+hmac = "0.12.1"
 http.workspace = true
 rcgen = "0.14.10"
+sha2.workspace = true
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "rt"] }
 tokio-stream.workspace = true
+tower = { workspace = true, features = ["util"] }
 
 [build-dependencies]
 prost.workspace = true
@@ -53,9 +57,11 @@ tokio = { workspace = true, optional = true, features = ["sync"] }
 tonic.workspace = true
 tonic-prost.workspace = true
 async-trait.workspace = true
+serde_urlencoded = { workspace = true, optional = true }
 s3s = { workspace = true, optional = true }
 subtle = { workspace = true, optional = true }
 sync_wrapper = { workspace = true, optional = true }
+time = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [
@@ -73,7 +79,7 @@ local = ["distributed", "acyclic-objects/local", "acyclic-stream/local"]
 memory = ["distributed"]
 native-watch = ["dep:notify", "dep:tokio"]
 native-mount = ["native-watch", "dep:fs2", "dep:fuser"]
-s3-http = ["dep:s3s", "dep:subtle", "dep:sync_wrapper"]
+s3-http = ["dep:s3s", "dep:serde_urlencoded", "dep:subtle", "dep:sync_wrapper", "dep:time"]
 distributed = ["dep:acyclic-objects", "dep:acyclic-stream"]
 
 [lints]
