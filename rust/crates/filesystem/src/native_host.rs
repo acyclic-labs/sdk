@@ -208,11 +208,12 @@ fn bind_unix_socket_in(parent: &Dir, name: &OsStr) -> io::Result<()> {
         .iter()
         .position(|byte| *byte == 0)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unterminated F_GETPATH"))?;
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "terminator is the position() of a byte within resolved, so terminator < resolved.len() always"
+    )]
     let mut held_path = std::path::PathBuf::from(std::ffi::OsString::from_vec(
-        resolved
-            .get(..terminator)
-            .unwrap_or(resolved.as_slice())
-            .to_vec(),
+        resolved[..terminator].to_vec(),
     ));
     held_path.push(name);
     let sun_path_capacity =

@@ -1809,11 +1809,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await
     }
 
-    /// Creates a new workspace at one exact immutable source generation while
-    /// sharing the complete file table and every unchanged content object.
-    ///
-    /// Only one small generation root and one creation fact are new. The source
-    /// and destination then publish independently.
     /// Builds and stores the forked generation root for a new workspace, then
     /// proves and returns its complete reachable closure and accrued work.
     async fn materialize_forked_generation_root(
@@ -1871,6 +1866,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok((generation_root, work))
     }
 
+    /// Creates a new workspace at one exact immutable source generation while
+    /// sharing the complete file table and every unchanged content object.
+    ///
+    /// Only one small generation root and one creation fact are new. The source
+    /// and destination then publish independently.
     pub(crate) async fn fork_workspace(
         &self,
         destination: crate::WorkspaceName,

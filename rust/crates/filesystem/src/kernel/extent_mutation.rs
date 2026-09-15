@@ -566,20 +566,15 @@ fn normalize_raw_patches(
         };
         #[allow(
             clippy::indexing_slicing,
-            reason = "patch_index came from `raw.iter().enumerate()` above, so it is always a \
-                      valid index into `raw`; `interval` is a valid index into `assignments` \
-                      (len interval_count == coordinates.len() - 1) via `.enumerate()` on \
-                      `assignments`, so `interval` and `interval + 1` both stay within \
-                      `coordinates` bounds"
+            reason = "patch_index came from raw.iter().enumerate() above, so it is always a \
+                      valid index into raw"
         )]
         let source = &raw[patch_index];
         #[allow(
             clippy::indexing_slicing,
-            reason = "patch_index came from `raw.iter().enumerate()` above, so it is always a \
-                      valid index into `raw`; `interval` is a valid index into `assignments` \
-                      (len interval_count == coordinates.len() - 1) via `.enumerate()` on \
-                      `assignments`, so `interval` and `interval + 1` both stay within \
-                      `coordinates` bounds"
+            reason = "interval is a valid index into assignments (len interval_count == \
+                      coordinates.len() - 1) via .enumerate() on assignments, so interval and \
+                      interval + 1 both stay within coordinates bounds"
         )]
         let candidate = Patch {
             offset: coordinates[interval],

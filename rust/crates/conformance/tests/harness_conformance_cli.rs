@@ -1,4 +1,3 @@
-#![allow(clippy::indexing_slicing)]
 //! End-to-end checks for the machine-readable Harness qualification command.
 
 use acyclic_conformance::{
@@ -77,12 +76,21 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
         return Err("valid stdin report did not qualify".into());
     }
     let receipt: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    if receipt["qualified"] != true || receipt["total"] != 23 {
+    if receipt
+        .get("qualified")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+        || receipt.get("total").and_then(serde_json::Value::as_u64) != Some(23)
+    {
         return Err("successful CLI receipt is incomplete".into());
     }
 
     let mut failed = report()?;
-    failed.cases[0].status = CaseStatus::Failed;
+    failed
+        .cases
+        .first_mut()
+        .ok_or("conformance suite has no harness cases")?
+        .status = CaseStatus::Failed;
     let path = std::env::temp_dir().join(format!(
         "acyclic-harness-conformance-{}.json",
         std::process::id()
@@ -98,7 +106,12 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
         return Err("failed case returned a successful process status".into());
     }
     let receipt: serde_json::Value = serde_json::from_slice(&failed_output.stdout)?;
-    if receipt["qualified"] != false || receipt["passed"] != 22 {
+    if receipt
+        .get("qualified")
+        .and_then(serde_json::Value::as_bool)
+        != Some(false)
+        || receipt.get("passed").and_then(serde_json::Value::as_u64) != Some(22)
+    {
         return Err("failed CLI receipt did not preserve the result".into());
     }
     Ok(())

@@ -448,7 +448,12 @@ fn write_zeros(
     while remaining != 0 {
         let count = usize::try_from(remaining.min(transfer_bytes))
             .map_err(|_| OperationFailure::new(MaterializeError::InvalidOptions, receipt.work))?;
-        file.write_all(zeros.get(..count).unwrap_or(&zeros))
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "count = min(remaining, transfer_bytes) and remaining <= length by the loop invariant, so count <= min(length, transfer_bytes) = capacity = zeros.len()"
+        )]
+        let zero_slice = &zeros[..count];
+        file.write_all(zero_slice)
             .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
         account_written(receipt, count as u64, budget)?;
         remaining -= count as u64;

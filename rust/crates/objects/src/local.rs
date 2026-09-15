@@ -895,7 +895,9 @@ fn persist_body(
     manifest.extend_from_slice(&(body.len() as u64).to_le_bytes());
     manifest.extend_from_slice(&digest);
     let chunk_count = body.len().div_ceil(CHUNK_BYTES);
-    manifest.extend_from_slice(&u32::try_from(chunk_count).unwrap_or(u32::MAX).to_le_bytes());
+    let chunk_count = u32::try_from(chunk_count)
+        .map_err(|_| LocalObjectsError::Invalid("body exceeds the maximum chunk count"))?;
+    manifest.extend_from_slice(&chunk_count.to_le_bytes());
     for chunk in body.chunks(CHUNK_BYTES) {
         let chunk_digest = *blake3::hash(chunk).as_bytes();
         manifest.extend_from_slice(&chunk_digest);
@@ -1142,7 +1144,9 @@ fn decode_lower_hex(encoded: &str, output: &mut [u8]) -> Result<(), LocalObjects
     }
     for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
         let &[high, low] = pair else {
-            return Err(LocalObjectsError::Corrupt);
+            unreachable!(
+                "the length check above guarantees encoded.len() is even, so chunks_exact(2) never yields a partial chunk"
+            )
         };
         let value = (hex_nibble(high)? << 4) | hex_nibble(low)?;
         *output.get_mut(index).ok_or(LocalObjectsError::Corrupt)? = value;
