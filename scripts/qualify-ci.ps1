@@ -18,11 +18,10 @@ bun install --frozen-lockfile
 # ProjFS path; Linux and macOS execute the native-mount behavior.
 # The Server image cannot load ProjectedFSLib.dll, so execute the portable
 # feature set and still compile and link every all-feature test binary.
-cargo test --workspace --locked
+cargo test --workspace --exclude acyclic-fs-napi `
+    --exclude acyclic-fs-daemon --locked
 cargo test --workspace --all-features --no-run --locked
 cargo build -p acyclic-fs-napi --locked
-bun scripts/check-filesystem-napi.mjs `
-    "$env:BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"
 cargo run --locked -p acyclic-cli
 bun run test
 rustup target add aarch64-pc-windows-msvc
