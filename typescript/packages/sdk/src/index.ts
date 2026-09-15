@@ -5,7 +5,7 @@ export * as objects from "@acyclic-labs/objects";
 export * as machines from "@acyclic-labs/machines";
 export * as inference from "@acyclic-labs/inference";
 
-/** Recursively reduces a balanced workload. */
+/** Recursively reduces a balanced workload. Retained for package compatibility. */
 export async function recursiveSum(values: readonly number[], leafSize = 4): Promise<number> {
   if (values.length <= Math.max(1, leafSize)) return values.reduce((sum, value) => sum + value, 0);
   const midpoint = Math.floor(values.length / 2);

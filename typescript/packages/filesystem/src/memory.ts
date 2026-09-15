@@ -1,8 +1,10 @@
-import type { FsEngine, MemoryFsOptions, WasmBindings } from "./contracts.js";
+import type { FsVolumeEngine, MemoryFsOptions, WasmBindings } from "./contracts.js";
 import { adaptWasmFs } from "./wasm-adapter.js";
 
 export type * from "./public-types.js";
-export { DEFAULT_OBJECT_CACHE_OPTIONS } from "./contracts.js";
+export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOptions } from "./contracts.js";
+export { CrossVolumeError, MountedView } from "./mounted.js";
+export type { MountedCheckout, MountedSnapshot } from "./mounted.js";
 
 let bindingsPromise: Promise<WasmBindings> | undefined;
 
@@ -16,7 +18,7 @@ async function bindings(): Promise<WasmBindings> {
   return bindingsPromise;
 }
 
-export async function openMemoryFs(options: MemoryFsOptions): Promise<FsEngine> {
+export async function openMemoryFs(options: MemoryFsOptions): Promise<FsVolumeEngine> {
   if (!Number.isSafeInteger(options.maximumObjectBytes) || options.maximumObjectBytes <= 0) {
     throw new RangeError("memory filesystem object bound must be a positive safe integer");
   }

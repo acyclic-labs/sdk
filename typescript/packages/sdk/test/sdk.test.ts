@@ -1,12 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { filesystem, recursiveSum } from "../src/index.ts";
+import { filesystem, harness, inference, machines, objects, recursiveSum, stream } from "../src/index.ts";
 
 describe("in-memory SDK", () => {
-  test("recursive workload joins", async () => {
-    expect(await recursiveSum(Array.from({ length: 16 }, (_, index) => index + 1), 2)).toBe(136);
+  test("each product is exposed from its semantic owner", () => {
+    expect(filesystem.DEFAULT_OBJECT_CACHE_OPTIONS.maximumEntries).toBeGreaterThan(0);
+    expect(harness.Harness).toBeDefined();
+    expect(inference.Inference).toBeDefined();
+    expect(machines.Machines).toBeDefined();
+    expect(objects.Objects).toBeDefined();
+    expect(stream.Stream).toBeDefined();
   });
 
-  test("filesystem is exposed as one family namespace", () => {
-    expect(filesystem.DEFAULT_OBJECT_CACHE_OPTIONS.maximumEntries).toBeGreaterThan(0);
+  test("retains the recursive workload compatibility export", async () => {
+    expect(await recursiveSum([1, 2, 3, 4, 5])).toBe(15);
   });
 });
