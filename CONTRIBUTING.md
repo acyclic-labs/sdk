@@ -61,22 +61,25 @@ that set, so it lands together with the fixes in a follow-up PR instead of break
 Open a GitHub issue for regular bugs. For security vulnerabilities, follow
 [SECURITY.md](SECURITY.md) instead of filing a public issue.
 
-`.github/workflows/qualification.yml` is the only authored qualification graph.
-Its independent Linux, Linux ARM64, Windows, macOS, browser, coverage, and policy
-lanes run concurrently on Blacksmith. Per-lane caches restore the exact toolchain,
-dependency, tool, and incremental-build state first by source commit and then by
-locked dependency identity, so retries are exact and new commits can safely reuse
-prior compilation. Heavy compilation uses 16-vCPU runners with 12 build jobs;
-browser work uses 8 vCPUs, macOS uses 12, and the aggregate gate uses 2.
+`ci.json` is the only authored qualification graph. Fleet's released CI renderer
+generates `azure-pipelines.yml`; the generated file must never be edited by hand.
+The seven Linux, Linux ARM64, Windows, macOS, browser, coverage, and policy lanes
+form a bounded graph, and every lane has a 15-minute deadline. Fleet caps Cargo,
+LLVM, linker, and test parallelism at two processes even when an agent exposes
+more CPUs. Its 1 GiB content-addressed sccache and dependency/tool caches make
+cold runs bounded and warm runs fast without archiving Cargo target directories.
+Successful jobs and their declared outputs may be reused only for the identical
+source tree, manifest semantics, toolchain, lockfile, operating system, and
+architecture.
 
 The policy lane verifies and runs pinned cargo-deny and gitleaks archives from the
-tool cache. The secret scanner keeps all default rules. Blacksmith's Windows Server
-2025 image does not ship the `Client-ProjFS` optional component: the Windows lane
+tool cache. The secret scanner keeps all default rules. Fleet's Windows image does
+not enable the `Client-ProjFS` optional component: the Windows lane
 executes the portable workspace and TypeScript suites and compiles all ProjFS paths,
 while Linux and macOS execute native-mount behavior.
 
-The Linux lane never reuses a prior job result because its Cargo archives bind the
-exact source commit in `.cargo_vcs_info.json`. It retains the isolated, tested Rust
+The Linux lane reuses a prior result only for an identical source tree and returns
+the exact retained output inventory with that result. It retains the isolated, tested Rust
 crates and the six core Objects, Stream, Inference, Machines, Filesystem, and SDK
 TypeScript archives with a source-bound qualification receipt and SHA-256 inventory
 in `packages-linux`. The filesystem archive runs
@@ -87,7 +90,8 @@ must publish the exact Objects and Streams archives before Filesystem.
 Publication consumes these exact successful-run bytes, never a rebuild. An operator
 creates an immutable family or TypeScript GitHub release from the retained artifact
 and points its tag at the matching qualified main commit. The crates.io publisher
-stays on Blacksmith. npm trusted publishing is the sole CI exception: npm requires
+remains a separate, tag-triggered publication boundary. npm trusted publishing is
+the sole CI exception: npm requires
 a GitHub-hosted runner for OIDC, and its publisher is stage-only. CI submits exact
 qualified archives with `npm stage publish`; a maintainer must review and approve
 each staged package with 2FA before it becomes public. Each executable native lane
