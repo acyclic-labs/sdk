@@ -1283,31 +1283,136 @@ mod tests {
             )
             .await?;
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([2; 16]));
-        transaction.create_directories("/tree");
-        transaction.put_file("/tree/value", vec![b'x'; 1_024]);
-        let outcome = transaction.commit(2).await?;
+        transaction.put_file("/value", vec![b'x'; 1_024]);
+        let outcome = transaction.commit(1).await?;
         assert!(matches!(
             wire::MutationStatus::try_from(outcome.status),
             Ok(wire::MutationStatus::Committed)
         ));
+        let workspace = hosted.open_workspace("hosted").await?;
         let head = workspace.head().await?;
-        assert_eq!(head.read("/tree/value", 1_024).await?.len(), 1_024);
+        assert_eq!(head.read("/value", 1_024).await?.len(), 1_024);
         let child = head
             .fork("child", IdempotencyKey::from_bytes([3; 16]))
             .await?;
+        let sibling = head
+            .fork("sibling", IdempotencyKey::from_bytes([6; 16]))
+            .await?;
+        let stale_target = head
+            .fork("stale-target", IdempotencyKey::from_bytes([14; 16]))
+            .await?;
         assert_eq!(
-            child.head().await?.read("/tree/value", 1_024).await?.len(),
+            child.head().await?.read("/value", 1_024).await?.len(),
             1_024
         );
+        let child_before = child.head().await?;
+        let mut child_change = child.begin_transaction(IdempotencyKey::from_bytes([4; 16]));
+        child_change.write("/value", 0, b"joined".to_vec());
+        let child_change = child_change.commit(1).await?;
+        assert_eq!(child_change.status, wire::MutationStatus::Committed as i32);
+        let child = hosted.open_workspace("child").await?;
+        let child_after = child.head().await?;
+        let child_diff = child_before.diff(&child_after, 2).await?;
+        assert_eq!(child_diff.from.as_ref(), Some(&child_before.reference));
+        assert_eq!(child_diff.to.as_ref(), Some(&child_after.reference));
+        assert_eq!(child_diff.files.len(), 1);
+        assert!(child_diff.bindings.is_empty());
+        assert!(!child_diff.truncated);
+        let plan = child_after
+            .plan_join(&workspace.head().await?, wire::JoinHistory::Merge, 2, 2, 2)
+            .await?;
+        let mut tampered = plan.clone();
+        let Some(common_ancestor) = tampered.common_ancestor.as_mut() else {
+            return Err("join plan has no common ancestor".into());
+        };
+        let Some(identity_byte) = common_ancestor.generation_id.first_mut() else {
+            return Err("generation identity is empty".into());
+        };
+        *identity_byte ^= 0x01;
         assert!(matches!(
-            child.head().await?.read("/tree/value", 1_025).await,
+            hosted
+                .apply_join(tampered, IdempotencyKey::from_bytes([7; 16]))
+                .await,
+            Err(HostedFsError::Status(status)) if status.code() == tonic::Code::InvalidArgument
+        ));
+        let stale_plan = child_after
+            .plan_join(
+                &stale_target.head().await?,
+                wire::JoinHistory::Merge,
+                2,
+                2,
+                2,
+            )
+            .await?;
+        let mut target_change =
+            stale_target.begin_transaction(IdempotencyKey::from_bytes([12; 16]));
+        target_change.create_directories("/target-only");
+        let target_change = target_change.commit(1).await?;
+        assert_eq!(target_change.status, wire::MutationStatus::Committed as i32);
+        let target_before_stale_apply = stale_target.head().await?;
+        let stale = hosted
+            .apply_join(stale_plan, IdempotencyKey::from_bytes([8; 16]))
+            .await?;
+        assert_eq!(stale.status, wire::JoinStatus::StaleTarget as i32);
+        assert_eq!(
+            stale.generation.as_ref(),
+            Some(&target_before_stale_apply.reference)
+        );
+        let target_after_stale_apply = stale_target.head().await?;
+        assert_eq!(
+            target_after_stale_apply.reference,
+            target_before_stale_apply.reference
+        );
+        assert_eq!(
+            target_after_stale_apply.read("/value", 1_024).await?,
+            vec![b'x'; 1_024]
+        );
+        target_after_stale_apply.stat("/target-only").await?;
+        let joined = hosted
+            .apply_join(plan, IdempotencyKey::from_bytes([13; 16]))
+            .await?;
+        assert_eq!(joined.status, wire::MutationStatus::Committed as i32);
+        let workspace = hosted.open_workspace("hosted").await?;
+        assert!(
+            workspace
+                .head()
+                .await?
+                .read("/value", 1_024)
+                .await?
+                .starts_with(b"joined")
+        );
+        let sibling_plan = child_after
+            .plan_join(&sibling.head().await?, wire::JoinHistory::Merge, 2, 2, 2)
+            .await?;
+        let Some(sibling_ancestor) = sibling_plan.common_ancestor.as_ref() else {
+            return Err("sibling join plan has no common ancestor".into());
+        };
+        assert!(sibling_ancestor.workspace.is_none());
+        let sibling_joined = hosted
+            .apply_join(sibling_plan, IdempotencyKey::from_bytes([9; 16]))
+            .await?;
+        assert_eq!(
+            sibling_joined.status,
+            wire::MutationStatus::Committed as i32
+        );
+        let sibling = hosted.open_workspace("sibling").await?;
+        assert!(
+            sibling
+                .head()
+                .await?
+                .read("/value", 1_024)
+                .await?
+                .starts_with(b"joined")
+        );
+        assert!(matches!(
+            child.head().await?.read("/value", 1_025).await,
             Err(HostedFsError::LimitExceeded("read bytes"))
         ));
         assert!(matches!(
-            child.head().await?.list_directory("/tree", None, 3).await,
+            child.head().await?.list_directory("/", None, 3).await,
             Err(HostedFsError::LimitExceeded("directory items"))
         ));
-        let mut oversized = child.begin_transaction(IdempotencyKey::from_bytes([4; 16]));
+        let mut oversized = child.begin_transaction(IdempotencyKey::from_bytes([10; 16]));
         oversized.create_directories("/one");
         oversized.create_directories("/two");
         oversized.create_directories("/three");
@@ -1315,7 +1420,7 @@ mod tests {
             oversized.commit(1).await,
             Err(HostedFsError::LimitExceeded("transaction mutations"))
         ));
-        let empty = child.begin_transaction(IdempotencyKey::from_bytes([5; 16]));
+        let empty = child.begin_transaction(IdempotencyKey::from_bytes([11; 16]));
         assert!(matches!(
             empty.commit(1).await,
             Err(HostedFsError::LimitExceeded("transaction mutations"))

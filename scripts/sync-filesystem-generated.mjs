@@ -39,6 +39,26 @@ for (const [file, tonic] of files) {
   }
 }
 
+for (const generatedFile of [
+  "acyclic/objects/v1/acyclic.objects.v1.rs",
+  "acyclic/objects/v1/acyclic.objects.v1.tonic.rs",
+]) {
+  const source = join(root, "generated/rust", generatedFile);
+  const destination = join(root, "rust/crates/objects/src/generated", generatedFile.split("/").at(-1));
+  if (!existsSync(source)) {
+    throw new Error(`objects code-generation path is missing: ${generatedFile}`);
+  }
+  let normalized = `${readFileSync(source, "utf8").trimEnd()}\n`;
+  if (generatedFile.endsWith("acyclic.objects.v1.rs")) {
+    normalized = normalized.replace(
+      /(?:#\[cfg\(feature = "grpc"\)\]\r?\n)?include!\("acyclic\.objects\.v1\.tonic\.rs"\);/,
+      '#[cfg(feature = "grpc")]\ninclude!("acyclic.objects.v1.tonic.rs");',
+    );
+  }
+  writeFileSync(source, normalized);
+  writeFileSync(destination, normalized);
+}
+
 for (const file of [
   "filesystem/v2/filesystem_pb.js",
   "filesystem/v2/filesystem_pb.d.ts",
@@ -93,5 +113,9 @@ compatibility.families.harness.conformanceDigest = digest("conformance/vectors/c
 compatibility.families.filesystem.schemaDigest = digest("proto/filesystem/v2/filesystem.proto");
 compatibility.families.filesystem.descriptorDigest = digest(
   "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin",
+);
+compatibility.families.objects.schemaDigest = digest("proto/objects/v1/objects.proto");
+compatibility.families.objects.descriptorDigest = digest(
+  "rust/crates/objects/src/generated/acyclic-objects-v1.bin",
 );
 writeFileSync(compatibilityPath, `${JSON.stringify(compatibility, null, 2)}\n`);

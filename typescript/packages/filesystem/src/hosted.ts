@@ -38,13 +38,14 @@ import type {
   FileRecordChange,
   FileRecordSnapshot,
   FsChangeSet,
-  FsEngine,
   FsGeneration,
   FsJoinPlan,
   FsTransaction,
   FsWorkspace,
   GenerationDiff,
+  HostedFsEngine,
   HostedFsOptions,
+  HostedFsWorkspace,
   JoinOptions,
   JoinResult,
   JoinStatus,
@@ -86,7 +87,7 @@ interface HostedClient {
   closed: boolean;
 }
 
-export async function openHostedFs(options: HostedFsOptions): Promise<FsEngine> {
+export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" && endpoint.protocol !== "http:") {
     throw new RangeError("hosted filesystem endpoint must use HTTP or HTTPS");
@@ -162,11 +163,11 @@ const changeSetOwners = new WeakMap<FsChangeSet, {
   readonly to: WireGenerationRef;
 }>();
 
-function workspace(client: HostedClient, value: WireWorkspace): FsWorkspace {
+function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspace {
   const reference = required(value.workspace, "workspace reference");
   requireBytes(reference.workspaceId, 16, "workspace identity");
   requireName(reference.name);
-  const result: FsWorkspace = {
+  const result: HostedFsWorkspace = {
     name: reference.name,
     id: reference.workspaceId.slice(),
     async head() { return (await currentGeneration(client, reference)).generationId.slice(); },
@@ -265,6 +266,28 @@ function workspace(client: HostedClient, value: WireWorkspace): FsWorkspace {
       }));
       return joinPlan(client, plan);
     },
+    async s3Access(writable, expiresAfterSeconds, idempotencyKey) {
+      positiveU64(expiresAfterSeconds, "S3 credential lifetime");
+      const response = await call(client.rpc.issueS3Credential({
+        workspace: reference,
+        generation: await currentGeneration(client, reference),
+        writable,
+        expiresAfterSeconds,
+        operation: operation(idempotencyKey),
+      }));
+      if (response.credential.case !== "s3") {
+        throw new HostedFsError("protocol", "missing S3 credential");
+      }
+      return {
+        endpoint: response.endpoint,
+        expiresAtUnixSeconds: response.expiresAtUnixSeconds,
+        bucket: response.credential.value.bucket,
+        region: response.credential.value.region,
+        accessKeyId: response.credential.value.accessKeyId,
+        secretAccessKey: response.credential.value.secretAccessKey,
+        sessionToken: response.credential.value.sessionToken,
+      };
+    },
   };
   workspaceOwners.set(result, { client, reference });
   return result;
@@ -303,7 +326,11 @@ async function currentGeneration(client: HostedClient, workspaceRef: WireWorkspa
   return required(response.generation, "workspace head");
 }
 
-async function fork(client: HostedClient, source: WireGenerationRef, destinationName: string): Promise<FsWorkspace> {
+async function fork(
+  client: HostedClient,
+  source: WireGenerationRef,
+  destinationName: string,
+): Promise<HostedFsWorkspace> {
   requireName(destinationName);
   const response = await call(client.rpc.forkWorkspace({
     source,

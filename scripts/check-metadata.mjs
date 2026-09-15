@@ -28,6 +28,9 @@ const machinesVersion = compatibility.families.machines.version;
 const streamVersion = compatibility.families.stream.version;
 const harnessPackage = await load("typescript/packages/harness/package.json");
 const sdkPackage = await load("typescript/packages/sdk/package.json");
+if (sdkPackage.version !== compatibility.umbrellaVersion) {
+  throw new Error("TypeScript SDK version must match umbrella compatibility metadata");
+}
 if (harnessPackage.version !== harnessVersion || sdkPackage.dependencies["@acyclic-labs/harness"] !== harnessVersion) {
   throw new Error("Harness npm and umbrella dependency versions must match compatibility metadata");
 }
@@ -96,7 +99,33 @@ if (rustSdkManifest.match(/acyclic-inference = \{ version = "([^"]+)"/)?.[1] !==
 if ((await load("typescript/packages/sdk/package.json")).dependencies["@acyclic-labs/inference"] !== inferenceVersion) {
   throw new Error("TypeScript SDK inference dependency version mismatch");
 }
+const objectsVersion = compatibility.families.objects.version;
+const objectsCrateVersion = compatibility.families.objects.crateVersion ?? objectsVersion;
+const objectsManifest = await readFile(new URL("rust/crates/objects/Cargo.toml", root), "utf8");
+if (
+  (await load("typescript/packages/objects/package.json")).version !== objectsVersion ||
+  sdkPackage.dependencies["@acyclic-labs/objects"] !== objectsVersion
+) {
+  throw new Error("Objects npm and umbrella dependency versions must match compatibility metadata");
+}
+if (objectsManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1] !== objectsCrateVersion) {
+  throw new Error("Objects crate version mismatch");
+}
+for (const path of [
+  "rust/crates/conformance/Cargo.toml",
+  "rust/crates/filesystem/Cargo.toml",
+  "rust/crates/filesystem-wasm/Cargo.toml",
+  "rust/crates/memory/Cargo.toml",
+  "rust/crates/sdk/Cargo.toml",
+]) {
+  const manifest = await readFile(new URL(path, root), "utf8");
+  const requirement = manifest.match(/acyclic-objects = \{ version = "([^"]+)"/)?.[1];
+  if (requirement !== `=${objectsCrateVersion}`) {
+    throw new Error(`Objects dependency version mismatch: ${path}`);
+  }
+}
 const filesystemVersion = compatibility.families.filesystem.version;
+const filesystemCrateVersion = compatibility.families.filesystem.crateVersion ?? filesystemVersion;
 for (const path of [
   "typescript/packages/filesystem/package.json",
   "typescript/packages/filesystem/generated/wasm/package.json",
@@ -106,7 +135,6 @@ for (const path of [
   }
 }
 for (const path of [
-  "rust/crates/filesystem/Cargo.toml",
   "rust/crates/filesystem-daemon/Cargo.toml",
   "rust/crates/filesystem-napi/Cargo.toml",
   "rust/crates/filesystem-wasm/Cargo.toml",
@@ -115,6 +143,10 @@ for (const path of [
   if (!manifest.includes(`\nversion = "${filesystemVersion}"\n`)) {
     throw new Error(`filesystem package version mismatch: ${path}`);
   }
+}
+const filesystemManifest = await readFile(new URL("rust/crates/filesystem/Cargo.toml", root), "utf8");
+if (!filesystemManifest.includes(`\nversion = "${filesystemCrateVersion}"\n`)) {
+  throw new Error("filesystem crate version mismatch");
 }
 const nativeSource = await readFile(new URL("typescript/packages/filesystem/src/native.ts", root), "utf8");
 const nativePackageVersion = nativeSource.match(/const PACKAGE_VERSION = "([^"]+)";/)?.[1];

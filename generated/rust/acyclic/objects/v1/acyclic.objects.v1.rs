@@ -158,6 +158,12 @@ pub struct GetObjectRequest {
     pub if_match: ::prost::alloc::string::String,
     #[prost(string, tag = "7")]
     pub if_none_match: ::prost::alloc::string::String,
+    /// Set for every ranged read, distinguishing an open-ended range beginning
+    /// at byte zero from no range. For compatibility with clients predating this
+    /// field, servers must also treat a nonzero range_start or a present
+    /// range_end_inclusive as a ranged read.
+    #[prost(bool, tag = "8")]
+    pub range_requested: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetObjectResponse {
@@ -471,4 +477,6 @@ impl ErrorCode {
         }
     }
 }
+#[cfg(feature = "grpc")]
+include!("acyclic.objects.v1.tonic.rs");
 // @@protoc_insertion_point(module)

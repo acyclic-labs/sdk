@@ -648,13 +648,7 @@ where
         let request = request.into_inner();
         let idempotency_key = operation(request.operation)?;
         let source = self.generation(request.source).await?;
-        let source_workspace = self
-            .workspace(Some(
-                generation_ref(&source)
-                    .workspace
-                    .ok_or_else(|| Status::internal("missing workspace"))?,
-            ))
-            .await?;
+        let source_workspace = source.workspace.clone();
         let destination = source_workspace
             .fork(
                 request.destination_name,
@@ -680,7 +674,7 @@ where
         }
         let from = self.generation(request.from).await?;
         let to = self.generation(request.to).await?;
-        let workspace = self.workspace(generation_ref(&from).workspace).await?;
+        let workspace = from.workspace.clone();
         let changes = workspace
             .diff(&from, &to, request.maximum_changes)
             .await
@@ -751,8 +745,8 @@ where
         let history = join_history(request.history)?;
         let source = self.generation(request.source).await?;
         let target = self.generation(request.target).await?;
-        let source_workspace = self.workspace(generation_ref(&source).workspace).await?;
-        let target_workspace = self.workspace(generation_ref(&target).workspace).await?;
+        let source_workspace = source.workspace.clone();
+        let target_workspace = target.workspace.clone();
         if source_workspace
             .head()
             .await
@@ -781,13 +775,16 @@ where
             .plan()
             .await
             .map_err(|error| status(&error))?;
-        let source_ref = generation_ref(&source);
-        let target_ref = generation_ref(&target);
-        let base = source_workspace
-            .generation(plan.common_ancestor())
-            .await
-            .map_err(|error| status(&error))?;
-        let base_ref = generation_ref(&base);
+        if plan.source_head() != source.id() || plan.target_head() != target.id() {
+            return Err(Status::failed_precondition(
+                "join endpoints changed while the plan was computed",
+            ));
+        }
+        // The builder re-reads both live heads. Bind the wire plan to that exact
+        // snapshot rather than the endpoint generations observed before planning.
+        let source_ref = generation_ref_for(&source_workspace, plan.source_head());
+        let target_ref = generation_ref_for(&target_workspace, plan.target_head());
+        let base_ref = join_common_ancestor_ref(&plan, &source_workspace, &target_workspace);
         let plan_id = join_plan_id(
             &source_ref,
             &target_ref,
@@ -797,18 +794,13 @@ where
             request.maximum_changes,
             request.maximum_conflicts,
         );
-        let changes = source_workspace
-            .diff(&base, &source, request.maximum_changes)
+        let changes = plan
+            .source_changes()
             .await
             .map_err(|error| status(&error))?;
-        let file_changes = changes
-            .changes()
-            .files
-            .iter()
-            .map(file_record_change)
-            .collect();
+        let file_changes = changes.value.files.iter().map(file_record_change).collect();
         let binding_changes = changes
-            .changes()
+            .value
             .bindings
             .iter()
             .map(directory_binding_change)
@@ -819,7 +811,7 @@ where
             expected_target: Some(target_ref),
             file_changes,
             conflicts: Vec::new(),
-            truncated: changes.changes().truncated,
+            truncated: changes.value.truncated,
             common_ancestor: Some(base_ref),
             maximum_generations: request.maximum_generations,
             maximum_changes: request.maximum_changes,
@@ -864,9 +856,20 @@ where
         }
         let source = self.generation(Some(source_ref)).await?;
         let target = self.generation(Some(target_ref)).await?;
-        let base = self.generation(Some(base_ref)).await?;
-        let source_workspace = self.workspace(generation_ref(&source).workspace).await?;
-        let target_workspace = self.workspace(generation_ref(&target).workspace).await?;
+        let source_workspace = source.workspace.clone();
+        let target_workspace = target.workspace.clone();
+        let current_target = target_workspace
+            .head()
+            .await
+            .map_err(|error| status(&error))?;
+        if current_target.id() != target.id() {
+            return Ok(Response::new(wire::JoinResponse {
+                status: wire::JoinStatus::StaleTarget as i32,
+                generation: Some(generation_ref(&current_target)),
+                conflicts: Vec::new(),
+                truncated: false,
+            }));
+        }
         let plan = source_workspace
             .join_into(&target_workspace)
             .history(history)
@@ -878,9 +881,11 @@ where
             .plan()
             .await
             .map_err(|error| status(&error))?;
+        let expected_base_ref =
+            join_common_ancestor_ref(&plan, &source_workspace, &target_workspace);
         if plan.source_head() != source.id()
             || plan.target_head() != target.id()
-            || plan.common_ancestor() != base.id()
+            || base_ref != expected_base_ref
         {
             let actual = target_workspace
                 .head()
@@ -1541,9 +1546,35 @@ fn workspace_ref<A, O>(workspace: &Workspace<A, O>) -> wire::WorkspaceRef {
 }
 
 fn generation_ref<A, O>(generation: &Generation<A, O>) -> wire::GenerationRef {
+    generation_ref_for(&generation.workspace, generation.id())
+}
+
+fn generation_ref_for<A, O>(
+    workspace: &Workspace<A, O>,
+    generation: GenerationId,
+) -> wire::GenerationRef {
     wire::GenerationRef {
-        workspace: Some(workspace_ref(&generation.workspace)),
-        generation_id: generation.id().digest().into_bytes().to_vec(),
+        workspace: Some(workspace_ref(workspace)),
+        generation_id: generation.digest().into_bytes().to_vec(),
+    }
+}
+
+fn join_common_ancestor_ref<A, O>(
+    plan: &crate::JoinPlan<A, O>,
+    source: &Workspace<A, O>,
+    target: &Workspace<A, O>,
+) -> wire::GenerationRef {
+    let volume = plan.common_ancestor_volume();
+    let workspace = if volume == source.id().volume_id() {
+        Some(workspace_ref(source))
+    } else if volume == target.id().volume_id() {
+        Some(workspace_ref(target))
+    } else {
+        None
+    };
+    wire::GenerationRef {
+        workspace,
+        generation_id: plan.common_ancestor().digest().into_bytes().to_vec(),
     }
 }
 

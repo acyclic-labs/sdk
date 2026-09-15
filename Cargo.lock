@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-fs"
-version = "0.2.0-rc.3"
+version = "0.2.0-rc.4"
 dependencies = [
  "acyclic-objects",
  "acyclic-stream",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-fs-daemon"
-version = "0.2.0-rc.3"
+version = "0.2.0-rc.4"
 dependencies = [
  "acyclic-fs",
  "hex",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-fs-napi"
-version = "0.2.0-rc.3"
+version = "0.2.0-rc.4"
 dependencies = [
  "acyclic-fs",
  "bytes",
@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-fs-wasm"
-version = "0.2.0-rc.3"
+version = "0.2.0-rc.4"
 dependencies = [
  "acyclic-fs",
  "acyclic-objects",
@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-objects"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "async-trait",
  "blake3",
