@@ -1,0 +1,66 @@
+name: Publish npm
+
+on:
+  push:
+    tags:
+      - publish/npm/*/*
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish qualified npm package
+    environment: npmjs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out exact tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.14.0
+          registry-url: https://registry.npmjs.org
+
+      - name: Install trusted-publishing npm CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/npm-12.0.2.tgz"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            https://registry.npmjs.org/npm/-/npm-12.0.2.tgz --output "$archive"
+          echo 'b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943  '"$archive" | sha512sum --check --strict
+          npm install --global --ignore-scripts "$archive"
+
+      - name: Download and verify exact release package
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: bash scripts/prepare-npm-publication.sh
+
+      - name: Publish exact verified package
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm publish "$NPM_ARCHIVE" --access public --provenance
+          for attempt in $(seq 1 12); do
+            if python3 scripts/verify-npm-publication.py "$NPM_PACKAGE" "$NPM_VERSION" "$NPM_SHA256" "$NPM_SIZE"; then
+              exit 0
+            fi
+            echo "Exact public npm tarball is not available yet ($attempt/12)"
+            sleep 5
+          done
+          exit 1

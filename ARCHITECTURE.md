@@ -7,8 +7,9 @@ more code, schemas, wrappers, and tests across both repositories than it adds.
 
 The dependency graph is one way:
 
-1. `proto/<family>` owns stable wire schemas; the Rust crate for that family owns
-   its public lifecycle semantics and generated bindings.
+1. The versioned Protobuf modules registered in `buf.yaml` own stable wire
+   schemas; the Rust crate for each family owns its public lifecycle semantics
+   and generated bindings.
 2. Each `rust/crates/<family>` owns that family's public types, provider trait,
    customer client adapter, and deterministic in-memory implementation.
 3. Each `typescript/packages/<family>` owns its idiomatic facade and generated

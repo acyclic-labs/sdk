@@ -36,6 +36,8 @@ def load_script(name: str):
 
 publisher = load_script("publish-crate.py")
 fetcher = load_script("fetch-release-crate.py")
+npm_tests = load_script("test-npm-publication.py")
+NpmPublicationTests = npm_tests.NpmPublicationTests
 
 
 def crate_bytes(
@@ -136,6 +138,7 @@ class PublicationTests(unittest.TestCase):
         release = {
             "tag_name": tag,
             "draft": False,
+            "immutable": True,
             "assets": [
                 {
                     "name": asset,

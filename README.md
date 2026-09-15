@@ -32,7 +32,8 @@ until their family version is published and tagged.
   Machines references remain opaque and provider-bound.
 - Native dependency-free OpenAI-compatible streaming in `@acyclic-labs/harness`,
   plus separately versioned AI SDK, Pi, and OpenCode bridge packages.
-- In-memory Filesystem, Stream, Objects, Machines, and Inference providers.
+- In-memory Filesystem, Stream, and Objects providers, plus a deterministic
+  process-local Machines simulator.
 - A single canonical Filesystem engine over the public Stream and Objects
   provider traits, with memory and durable-local compositions, sparse
   content-addressed generations, source capture, safe rebase and join,
@@ -107,9 +108,8 @@ let exact = workspace.generation(base.id().to_vec()).await?;
 # }
 ```
 
-Use the same high-level Inference API with either a local provider or an
-authenticated service; placement, batching, KV movement, and rebalancing remain
-provider internals:
+Use the high-level Inference API against an authenticated service. Placement,
+batching, KV movement, and rebalancing remain service internals:
 
 ```rust,no_run
 use acyclic_inference::Inference;

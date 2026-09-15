@@ -15,7 +15,7 @@ import urllib.request
 
 
 MAX_METADATA_BYTES = 1_048_576
-MAX_CRATE_BYTES = 104_857_600
+MAX_ASSET_BYTES = 104_857_600
 
 
 class GitHubRedirects(urllib.request.HTTPRedirectHandler):
@@ -52,8 +52,11 @@ def main() -> None:
         raise RuntimeError("invalid GitHub repository")
     if not re.fullmatch(r"[A-Za-z0-9_.+-]+", release_tag):
         raise RuntimeError("invalid release tag")
-    if not re.fullmatch(r"[a-z0-9_-]+-[0-9A-Za-z.+-]+\.crate", asset_name):
-        raise RuntimeError("invalid crate asset name")
+    if not (
+        asset_name == "QUALIFICATION.json"
+        or re.fullmatch(r"[A-Za-z0-9_.+-]+\.(?:crate|tgz)", asset_name)
+    ):
+        raise RuntimeError("invalid release asset name")
     if not token or len(token) > 8192:
         raise RuntimeError("GitHub token is required")
 
@@ -64,18 +67,22 @@ def main() -> None:
         headers={
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
-            "User-Agent": "acyclic-sdk-exact-crate-publisher",
+            "User-Agent": "acyclic-sdk-exact-asset-publisher",
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
     with urllib.request.urlopen(metadata_request, timeout=30) as response:
         release = json.loads(read_bounded(response, MAX_METADATA_BYTES))
-    if release.get("tag_name") != release_tag or release.get("draft") is not False:
+    if (
+        release.get("tag_name") != release_tag
+        or release.get("draft") is not False
+        or release.get("immutable") is not True
+    ):
         raise RuntimeError("release metadata does not match the selected tag")
 
     assets = [asset for asset in release.get("assets", []) if asset.get("name") == asset_name]
     if len(assets) != 1:
-        raise RuntimeError("release must contain exactly one selected crate asset")
+        raise RuntimeError("release must contain exactly one selected asset")
     asset = assets[0]
     expected_size = asset.get("size")
     expected_digest = asset.get("digest")
@@ -86,7 +93,7 @@ def main() -> None:
     if (
         asset.get("state") != "uploaded"
         or type(expected_size) is not int
-        or not 0 < expected_size <= MAX_CRATE_BYTES
+        or not 0 < expected_size <= MAX_ASSET_BYTES
         or not isinstance(expected_digest, str)
         or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest)
         or asset.get("browser_download_url") != expected_url
@@ -99,7 +106,7 @@ def main() -> None:
         raise RuntimeError("release asset output already exists")
     opener = urllib.request.build_opener(GitHubRedirects)
     request = urllib.request.Request(
-        expected_url, headers={"User-Agent": "acyclic-sdk-exact-crate-publisher"}
+        expected_url, headers={"User-Agent": "acyclic-sdk-exact-asset-publisher"}
     )
     temporary = tempfile.NamedTemporaryFile(
         mode="w+b",

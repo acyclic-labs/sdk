@@ -3,6 +3,11 @@
   "version": "0.2.0-rc.3",
   "license": "Apache-2.0",
   "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git",
+    "directory": "typescript/packages/filesystem"
+  },
   "type": "module",
   "sideEffects": false,
   "files": ["dist", "generated", "examples"],
