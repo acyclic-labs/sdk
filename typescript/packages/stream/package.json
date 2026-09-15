@@ -11,10 +11,11 @@
   "type": "module",
   "exports": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": ["dist", "examples"],
   "scripts": {
     "build": "tsc -b",
-    "test": "tsc -b --pretty false && bun test test"
+    "test": "tsc -b --pretty false && bun test test",
+    "example": "tsc -b --pretty false && tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --pretty false examples/quickstart.ts && bun examples/quickstart.ts"
   },
   "devDependencies": { "typescript": "7.0.2" }
 }

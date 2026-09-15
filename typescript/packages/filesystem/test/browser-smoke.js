@@ -192,6 +192,12 @@ async function run() {
   ]);
   await mounted.createFile("/.scratch/temp.txt", encoder.encode("scratch"));
   assert((await scratchCheckout.lookupNoFollow("/temp.txt")).fileId !== undefined, "nested mount did not route to its volume");
+  assert(new TextDecoder().decode((await mounted.readFileRange("/.scratch/temp.txt", 0n, 7n)).bytes) === "scratch", "mounted read did not use longest-prefix routing");
+  await mounted.applyTransaction([
+    { kind: "create-file", path: "/.scratch/batch.txt", bytes: encoder.encode("batch") },
+    { kind: "write", path: "/.scratch/batch.txt", offset: 5n, bytes: encoder.encode("-routed") },
+  ]);
+  assert(new TextDecoder().decode((await scratchCheckout.readFileRange("/batch.txt", 0n, 12n)).bytes) === "batch-routed", "mounted transaction was not routed atomically");
   let crossVolumeRejected = false;
   try {
     await mounted.rename("/workspace/data.bin", "/.scratch/data.bin", false);
@@ -199,6 +205,12 @@ async function run() {
     crossVolumeRejected = error instanceof CrossVolumeError && error.code === "EXDEV";
   }
   assert(crossVolumeRejected, "cross-volume rename did not fail as EXDEV");
+  try {
+    await mounted.applyTransaction([{ kind: "hard-link", source: "/workspace/data.bin", destination: "/.scratch/data.bin" }]);
+    throw new Error("cross-volume transaction unexpectedly succeeded");
+  } catch (error) {
+    assert(error instanceof CrossVolumeError && error.code === "EXDEV", "cross-volume transaction did not fail as EXDEV");
+  }
   const snapshot = await mounted.checkpointSnapshot();
   assert(snapshot.mounts.length === 2, "mounted snapshot did not capture every volume");
   assert(snapshot.mounts.every((mount) => mount.generationId.byteLength === 32), "mounted snapshot identity was malformed");

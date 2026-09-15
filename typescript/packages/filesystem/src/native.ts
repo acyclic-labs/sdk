@@ -6,6 +6,8 @@ import type {
   FsGeneration,
   FsJoinPlan,
   FsTransaction,
+  FsVolume,
+  FsCheckout,
   FsWorkspace,
   MergeConflict,
   NativeBindings,
@@ -13,6 +15,11 @@ import type {
   NativeFsWorkspace,
   NativeFsOptions,
   NativeRawFs,
+  NativeRawVolume,
+  NativeRawCheckout,
+  NativeRawSpeculation,
+  NativeRawMutation,
+  NativeRawTransactionOperation,
   NativeRawGeneration,
   NativeRawGenerationDiff,
   NativeRawChangeSet,
@@ -23,6 +30,12 @@ import type {
   NativeRawWorkspaceCommit,
   NativeRawWorkspaceMount,
   NativeRawWorkspaceTransaction,
+  NativeRawWatcher,
+  NativeRawWatchBatch,
+  NativeWatcher,
+  NativeWatchBatch,
+  NativeNamespacePath,
+  CaptureResult,
   NativeWorkspaceMount,
   NativeSourceResult,
   NativeSourceStatus,
@@ -41,6 +54,18 @@ import type {
   JoinOptions,
   JoinResult,
   JoinStatus,
+  TransactionOperation,
+  Speculation,
+  SpeculationMetrics,
+  FileExtentPlan,
+  FileRecordSnapshot,
+  CommitResult,
+  LiveMutationResult,
+  LiveTransactionResult,
+  GenerationExportManifest,
+  GenerationTransferBatch,
+  GenerationTransferCursor,
+  ObjectCacheStats,
 } from "./contracts.js";
 
 const generationHandles = new WeakMap<FsGeneration, NativeRawGeneration>();
@@ -48,7 +73,9 @@ const workspaceHandles = new WeakMap<FsWorkspace, NativeRawWorkspace>();
 const changeSetHandles = new WeakMap<FsChangeSet, NativeRawChangeSet>();
 
 export type * from "./public-types.js";
-export { DEFAULT_OBJECT_CACHE_OPTIONS } from "./contracts.js";
+export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOptions } from "./contracts.js";
+export { CrossVolumeError, MountedView } from "./mounted.js";
+export type { MountedCheckout, MountedSnapshot } from "./mounted.js";
 
 const PACKAGE_VERSION = "0.2.0-rc.4";
 const TARGETS = new Set([
@@ -131,8 +158,49 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
     nativeWatchRootIdentityFencing: raw.capabilities.nativeWatchRootIdentityFencing,
     providerProcessIoObservable: raw.capabilities.providerProcessIoObservable,
   };
-  const engine = {
+  const engine: NativeFsEngine = {
     capabilities,
+    objectCacheStats(): ObjectCacheStats {
+      return copyObjectCacheStats(raw.objectCacheStats());
+    },
+    clearObjectCache(): void {
+      raw.clearObjectCache();
+    },
+    createSpeculation(volumeId, generationId, options): Speculation {
+      return adaptSpeculation(raw.createSpeculation(volumeId, generationId, options));
+    },
+    async createVolume(options): Promise<FsVolume> {
+      return adaptVolume(await raw.createVolume(options));
+    },
+    async createVolumeWithId(volumeId, options): Promise<FsVolume> {
+      return adaptVolume(await raw.createVolumeWithId(volumeId, options));
+    },
+    async openVolume(volumeId): Promise<FsVolume> {
+      return adaptVolume(await raw.openVolume(volumeId));
+    },
+    async exportObject(objectId, maximumBytes) {
+      const value = await raw.exportObject(objectId, maximumBytes);
+      return { bytes: value.bytes.slice(), work: parseWork(value.workJson) };
+    },
+    async importObject(objectId, bytes) {
+      return mutationResult(await raw.importObject(objectId, bytes));
+    },
+    async exportGenerationBatch(manifest, cursor, maximumObjects, maximumObjectBytes): Promise<GenerationTransferBatch> {
+      const value = await raw.exportGenerationBatch(nativeManifest(manifest), cursor, maximumObjects, maximumObjectBytes);
+      return {
+        firstObject: value.firstObject,
+        nextObject: value.nextObject,
+        objects: value.objects.map((object) => object.slice()),
+        work: parseWork(value.workJson),
+      };
+    },
+    async importGenerationBatch(manifest, cursor, objects, maximumObjects): Promise<GenerationTransferCursor> {
+      const value = await raw.importGenerationBatch(nativeManifest(manifest), cursor, objects, maximumObjects);
+      return { nextObject: value.nextObject, work: parseWork(value.workJson) };
+    },
+    async restoreVolume(manifest, operationId): Promise<FsVolume> {
+      return adaptVolume(await raw.restoreVolume(nativeManifest(manifest), operationId));
+    },
     async createWorkspace(name: string): Promise<NativeFsWorkspace> {
       requireWorkspaceName(name);
       return adaptWorkspace(await raw.createWorkspace(name));
@@ -164,6 +232,346 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
     },
   };
   return engine;
+}
+
+function adaptVolume(raw: NativeRawVolume): FsVolume {
+  return {
+    get id() { return raw.id.slice(); },
+    get acquisitionWork() { return parseWork(raw.acquisitionWorkJson); },
+    async diffGenerations(before, after, maximumChanges) {
+      return nativeGenerationDiff(await raw.diffGenerations(before, after, maximumChanges));
+    },
+    async checkout(options) { return adaptCheckout(await raw.checkout(options)); },
+  };
+}
+
+function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
+  return {
+    get acquisitionWork() { return parseWork(raw.acquisitionWorkJson); },
+    async applyTransaction(operations) {
+      const value = await raw.applyTransaction(operations.map(nativeTransactionOperation));
+      return { createdFileIds: value.createdFileIds.map(copyOptionalBytes), work: parseWork(value.workJson) };
+    },
+    async checkpoint() { return checkpointResult(await raw.checkpoint()); },
+    async refreshHead() { return checkpointResult(await raw.refreshHead()); },
+    async refreshLive() { return checkpointResult(await raw.refreshLive()); },
+    async exportManifest(): Promise<GenerationExportManifest> {
+      const value = await raw.exportManifest();
+      return { manifestBytes: value.manifestBytes.slice(), objects: value.objects.map((object) => object.slice()), work: parseWork(value.workJson) };
+    },
+    async prepareMerge(theirs, maximumChanges, maximumConflicts) {
+      const value = await raw.prepareMerge(theirs, maximumChanges, maximumConflicts);
+      const work = parseWork(value.workJson);
+      if (value.status === "prepared" && value.generationId !== undefined && value.conflicts.length === 0 && !value.truncated) {
+        return { status: "prepared", generationId: value.generationId.slice(), conflicts: [], truncated: false, work };
+      }
+      if (value.status === "conflicted" && value.generationId === undefined) {
+        return { status: "conflicted", generationId: undefined, conflicts: value.conflicts.map(decodeMergeConflict), truncated: value.truncated, work };
+      }
+      throw new TypeError("native binding returned a malformed merge preparation");
+    },
+    mount(destination, writable) {
+      const value = raw.mount(destination, writable);
+      return { get id() { return value.id.slice(); }, destination: value.destination, stop() { return value.stop(); } };
+    },
+    async materialize(options) {
+      const value = await raw.materialize(options);
+      return { files: value.files, directories: value.directories, symbolicLinks: value.symbolicLinks, specialFiles: value.specialFiles, logicalFileBytes: value.logicalFileBytes, writtenBytes: value.writtenBytes, work: parseWork(value.workJson) };
+    },
+    async capture(sourceRoot, paths, maximumPaths, maximumExtentSpans) {
+      return captureResult(await raw.capture(sourceRoot, paths, maximumPaths, maximumExtentSpans));
+    },
+    async captureBaseline(sourceRoot, maximumPaths, maximumExtentSpans) {
+      return captureResult(await raw.captureBaseline(sourceRoot, maximumPaths, maximumExtentSpans));
+    },
+    watch(sourceRoot, maximumQueuedChanges, recursive) {
+      return adaptWatcher(raw.watch(sourceRoot, maximumQueuedChanges, recursive));
+    },
+    async lookupNoFollow(path) {
+      const value = await raw.lookupNoFollow(path);
+      return { exists: value.exists, fileId: copyOptionalBytes(value.fileId), fileKind: value.fileKind, resolvedComponents: value.resolvedComponents, work: parseWork(value.workJson) };
+    },
+    async lookupBatchNoFollow(paths) {
+      const value = await raw.lookupBatchNoFollow(paths);
+      return { entries: value.entries, retainedAllocationBytes: value.retainedAllocationBytes, work: parseWork(value.workJson) };
+    },
+    async statNoFollow(path) {
+      const value = await raw.statNoFollow(path);
+      return { exists: value.exists, record: value.record === undefined ? undefined : copyFileRecord(value.record), metadataCanonicalBytes: copyOptionalBytes(value.metadataCanonicalBytes), work: parseWork(value.workJson) };
+    },
+    async readFileRecordById(fileId) {
+      const value = await raw.readFileRecordById(fileId);
+      return { record: copyFileRecord(value.record), work: parseWork(value.workJson) };
+    },
+    async readMetadata(path) { return metadataResult(await raw.readMetadata(path)); },
+    async readMetadataById(fileId) { return metadataResult(await raw.readMetadataById(fileId)); },
+    async setMetadata(path, canonicalBytes) { return mutationResult(await raw.setMetadata(path, canonicalBytes)); },
+    async setMetadataById(fileId, canonicalBytes) { return mutationResult(await raw.setMetadataById(fileId, canonicalBytes)); },
+    async setAttributes(path, canonicalBytes, logicalBytes) { return mutationResult(await raw.setAttributes(path, canonicalBytes, logicalBytes)); },
+    async setAttributesById(fileId, canonicalBytes, logicalBytes) { return mutationResult(await raw.setAttributesById(fileId, canonicalBytes, logicalBytes)); },
+    async readNamedAttribute(path, attributeClass, name) {
+      const value = await raw.readNamedAttribute(path, attributeClass, name);
+      return { exists: value.exists, bytes: copyOptionalBytes(value.bytes), work: parseWork(value.workJson) };
+    },
+    async listNamedAttributes(path, after, maximumEntries) {
+      const value = await raw.listNamedAttributes(path, after?.attributeClass, after?.name, maximumEntries);
+      return { entries: value.entries.map((entry) => ({ attributeClass: entry.attributeClass, name: entry.name.slice() })), hasMore: value.hasMore, work: parseWork(value.workJson) };
+    },
+    async writeNamedAttribute(path, attributeClass, name, bytes, mode) { return mutationResult(await raw.writeNamedAttribute(path, attributeClass, name, bytes, mode)); },
+    async removeNamedAttribute(path, attributeClass, name) { return mutationResult(await raw.removeNamedAttribute(path, attributeClass, name)); },
+    async readFileRange(path, offset, length) { return fileReadResult(await raw.readFileRange(path, offset, length)); },
+    async readFileRangeById(fileId, offset, length) { return fileReadResult(await raw.readFileRangeById(fileId, offset, length)); },
+    async planFileExtents(path, offset, length, maximumSpans) { return nativeFileExtentPlan(await raw.planFileExtents(path, offset, length, maximumSpans)); },
+    async planFileExtentsById(fileId, offset, length, maximumSpans) { return nativeFileExtentPlan(await raw.planFileExtentsById(fileId, offset, length, maximumSpans)); },
+    async seekFileExtent(path, offset, target) { return seekResult(await raw.seekFileExtent(path, offset, target)); },
+    async seekFileExtentById(fileId, offset, target) { return seekResult(await raw.seekFileExtentById(fileId, offset, target)); },
+    async readSymbolicLink(path) { return fileReadResult(await raw.readSymbolicLink(path)); },
+    async readReparsePoint(path) { return fileReadResult(await raw.readReparsePoint(path)); },
+    async listDirectory(path, after, maximumEntries) {
+      const value = await raw.listDirectory(path, after, maximumEntries);
+      return { entries: value.entries.map((entry) => ({ ...entry, name: entry.name.slice(), fileId: entry.fileId.slice() })), hasMore: value.hasMore, work: parseWork(value.workJson) };
+    },
+    async listDirectoryRecords(path, after, maximumEntries) {
+      const value = await raw.listDirectoryRecords(path, after, maximumEntries);
+      return { entries: value.entries.map((entry) => ({ name: entry.name.slice(), record: copyFileRecord(entry.record), metadataCanonicalBytes: entry.metadataCanonicalBytes.slice() })), hasMore: value.hasMore, work: parseWork(value.workJson) };
+    },
+    async createFile(path, bytes) { return mutationResult(await raw.createFile(path, bytes)); },
+    async createDirectory(path) { return mutationResult(await raw.createDirectory(path)); },
+    async createSymbolicLink(path, target) { return mutationResult(await raw.createSymbolicLink(path, target)); },
+    async createSpecial(path, kind) { return mutationResult(await raw.createSpecial(path, kind)); },
+    async createDevice(path, kind, major, minor) { return mutationResult(await raw.createDevice(path, kind, major, minor)); },
+    async createReparsePoint(path, payload) { return mutationResult(await raw.createReparsePoint(path, payload)); },
+    async writeFile(path, offset, bytes) { return mutationResult(await raw.writeFile(path, offset, bytes)); },
+    async writeFileById(fileId, offset, bytes) { return mutationResult(await raw.writeFileById(fileId, offset, bytes)); },
+    async remove(path, expectedFileId) { return mutationResult(await raw.remove(path, expectedFileId)); },
+    async rename(source, destination, replace) { return mutationResult(await raw.rename(source, destination, replace)); },
+    async hardLink(source, destination) { return mutationResult(await raw.hardLink(source, destination)); },
+    async resizeFile(path, logicalBytes) { return mutationResult(await raw.resizeFile(path, logicalBytes)); },
+    async resizeFileById(fileId, logicalBytes) { return mutationResult(await raw.resizeFileById(fileId, logicalBytes)); },
+    async zeroFileRange(path, offset, length, allocated, extend) { return mutationResult(await raw.zeroFileRange(path, offset, length, allocated, extend)); },
+    async zeroFileRangeById(fileId, offset, length, allocated, extend) { return mutationResult(await raw.zeroFileRangeById(fileId, offset, length, allocated, extend)); },
+    async preallocateFile(path, offset, length, keepSize) { return mutationResult(await raw.preallocateFile(path, offset, length, keepSize)); },
+    async preallocateFileById(fileId, offset, length, keepSize) { return mutationResult(await raw.preallocateFileById(fileId, offset, length, keepSize)); },
+    async cloneFileRange(source, sourceOffset, destination, destinationOffset, length) { return mutationResult(await raw.cloneFileRange(source, sourceOffset, destination, destinationOffset, length)); },
+    async cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length) { return mutationResult(await raw.cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length)); },
+    async commit(operationId) { return commitResult(await raw.commit(operationId)); },
+    async mutateLive(operations, operationId, maximumAttempts, maximumConflicts) { return liveTransactionResult(await raw.mutateLive(operations.map(nativeTransactionOperation), operationId, maximumAttempts, maximumConflicts)); },
+    async resumeLive(operationId, maximumAttempts, maximumConflicts) { return liveMutationResult(await raw.resumeLive(operationId, maximumAttempts, maximumConflicts)); },
+    async rebaseHead(maximumConflicts) {
+      const value = await raw.rebaseHead(maximumConflicts);
+      return { status: value.status, generationId: copyOptionalBytes(value.generationId), conflictCount: value.conflictCount, truncated: value.truncated, work: parseWork(value.workJson) };
+    },
+    async discard() { return mutationResult(await raw.discard()); },
+    cancel() { raw.cancel(); },
+  };
+}
+
+function captureResult(value: { readonly examinedPaths: bigint; readonly changedPaths: bigint; readonly stagedFileBytes: bigint; readonly workJson: string }): CaptureResult {
+  return { examinedPaths: value.examinedPaths, changedPaths: value.changedPaths, stagedFileBytes: value.stagedFileBytes, work: parseWork(value.workJson) };
+}
+
+function adaptWatcher(raw: NativeRawWatcher): NativeWatcher {
+  return {
+    async reconcile(maximumPaths, maximumExtentSpans) {
+      const value = await raw.reconcile(maximumPaths, maximumExtentSpans);
+      return { epoch: value.epoch, baseline: captureResult(value.baseline), postBaseline: nativeWatchBatch(value.postBaseline) };
+    },
+    async pollCapture(maximumChanges, maximumPaths, maximumExtentSpans) {
+      const value = await raw.pollCapture(maximumChanges, maximumPaths, maximumExtentSpans);
+      return { epoch: value.epoch, firstSequence: value.firstSequence, nextSequence: value.nextSequence, examinedPaths: value.examinedPaths, changedPaths: value.changedPaths, stagedFileBytes: value.stagedFileBytes, work: parseWork(value.workJson) };
+    },
+  };
+}
+
+function nativeWatchBatch(value: NativeRawWatchBatch): NativeWatchBatch {
+  const work = parseWork(value.workJson);
+  if (value.status === "changes" && value.firstSequence !== undefined && value.nextSequence !== undefined && value.reason === undefined) {
+    return { status: "changes", epoch: value.epoch, firstSequence: value.firstSequence, nextSequence: value.nextSequence, changes: value.changes.map(change => {
+      if ((change.kind === "created" || change.kind === "modified" || change.kind === "metadata" || change.kind === "removed") && change.path !== undefined && change.from === undefined && change.to === undefined) return { kind: change.kind, path: copyNamespacePath(change.path) };
+      if (change.kind === "renamed" && change.path === undefined && change.from !== undefined && change.to !== undefined) return { kind: "renamed", from: copyNamespacePath(change.from), to: copyNamespacePath(change.to) };
+      throw new TypeError("native binding returned a malformed watch change");
+    }), work };
+  }
+  if (value.status === "rescan-required" && value.firstSequence === undefined && value.nextSequence === undefined && value.changes.length === 0 && isRescanReason(value.reason)) {
+    return { status: "rescan-required", epoch: value.epoch, reason: value.reason, work };
+  }
+  throw new TypeError("native binding returned a malformed watch batch");
+}
+
+function copyNamespacePath(path: NativeNamespacePath): NativeNamespacePath {
+  return { components: path.components.map(component => ({ encoding: component.encoding, bytes: component.bytes.slice() })) };
+}
+
+function isRescanReason(value: string | undefined): value is Extract<NativeWatchBatch, { readonly status: "rescan-required" }>["reason"] {
+  return value === "initial-snapshot-required" || value === "queue-overflow" || value === "native-rescan-required" || value === "backend-error" || value === "unrepresentable-path" || value === "ambiguous-rename" || value === "root-changed";
+}
+
+function adaptSpeculation(raw: NativeRawSpeculation): Speculation {
+  return {
+    observe(value) { return raw.observe(value); },
+    async executeResidency(operationId) { const value = await raw.executeResidency(operationId); return { objectBytes: value.objectBytes, work: parseWork(value.workJson) }; },
+    finishResidency(operationId, useful) { return raw.finishResidency(operationId, useful); },
+    async planPromotion(request) {
+      const value = await raw.planPromotion(request.operationId, request.acceptedTiers, request.residency, request.destinations);
+      return {
+        status: value.status,
+        ...(value.rejection === undefined ? {} : { rejection: value.rejection }),
+        ...(value.operationId === undefined ? {} : { operationId: value.operationId.slice() }),
+        ...(value.objectId === undefined ? {} : { objectId: value.objectId.slice() }),
+        ...(value.sourceLocationId === undefined ? {} : { sourceLocationId: value.sourceLocationId.slice() }),
+        ...(value.destinationLocationId === undefined ? {} : { destinationLocationId: value.destinationLocationId.slice() }),
+        ...(value.estimatedCostUnits === undefined ? {} : { estimatedCostUnits: value.estimatedCostUnits }),
+      };
+    },
+    finishPromotion(operationId, useful) { return raw.finishPromotion(operationId, useful); },
+    preemptForForeground(bytes) { return raw.preemptForForeground(bytes); },
+    replaceGeneration(generationId) { return raw.replaceGeneration(generationId); },
+    async metrics(): Promise<SpeculationMetrics> {
+      const parsed: unknown = JSON.parse(await raw.metricsJson());
+      if (typeof parsed !== "object" || parsed === null) throw new TypeError("native speculation metrics are malformed");
+      const value = parsed as { residency?: Record<string, string | number>; promotion?: Record<string, string | number> };
+      return { residency: bigintRecord(value.residency ?? {}), promotion: bigintRecord(value.promotion ?? {}) };
+    },
+    cancel() { raw.cancel(); },
+  };
+}
+
+function nativeManifest(value: GenerationExportManifest) {
+  return { manifestBytes: value.manifestBytes, objects: value.objects, workJson: JSON.stringify(value.work) };
+}
+
+function copyOptionalBytes(value: Uint8Array | undefined): Uint8Array | undefined {
+  return value?.slice();
+}
+
+function copyObjectCacheStats(value: ObjectCacheStats): ObjectCacheStats {
+  return { ...value };
+}
+
+function checkpointResult(value: Awaited<ReturnType<NativeRawCheckout["checkpoint"]>>) {
+  return { generationId: value.generationId.slice(), work: parseWork(value.workJson) };
+}
+
+function fileReadResult(value: { readonly bytes: Uint8Array; readonly workJson: string }) {
+  return { bytes: value.bytes.slice(), work: parseWork(value.workJson) };
+}
+
+function metadataResult(value: { readonly canonicalBytes: Uint8Array; readonly workJson: string }) {
+  return { canonicalBytes: value.canonicalBytes.slice(), work: parseWork(value.workJson) };
+}
+
+function mutationResult(value: NativeRawMutation) {
+  return { fileId: copyOptionalBytes(value.fileId), work: parseWork(value.workJson) };
+}
+
+function seekResult(value: { readonly offset: bigint | undefined; readonly workJson: string }) {
+  return { offset: value.offset, work: parseWork(value.workJson) };
+}
+
+function copyFileRecord(value: FileRecordSnapshot): FileRecordSnapshot {
+  return {
+    ...value,
+    fileId: value.fileId.slice(),
+    metadataObject: value.metadataObject.slice(),
+    payloadObject: copyOptionalBytes(value.payloadObject),
+    inlineBytes: copyOptionalBytes(value.inlineBytes),
+  };
+}
+
+function nativeFileExtentPlan(value: Awaited<ReturnType<NativeRawCheckout["planFileExtents"]>>): FileExtentPlan {
+  if (value.kind === "inline") return { kind: "inline", work: parseWork(value.workJson) };
+  return {
+    kind: "sparse",
+    spans: value.spans.map((span) => {
+      const common = { offset: span.offset, length: span.length, sourceEnd: span.sourceEnd };
+      if (span.kind === "content") {
+        if (span.objectId === undefined || span.objectOffset === undefined) {
+          throw new TypeError("native binding returned a malformed content extent");
+        }
+        return { kind: "content" as const, ...common, objectId: span.objectId.slice(), objectOffset: span.objectOffset };
+      }
+      return { kind: span.kind, ...common };
+    }),
+    retainedAllocationBytes: value.retainedAllocationBytes ?? 0n,
+    work: parseWork(value.workJson),
+  };
+}
+
+function commitResult(value: Awaited<ReturnType<NativeRawCheckout["commit"]>>): CommitResult {
+  return {
+    status: value.status,
+    generationId: copyOptionalBytes(value.generationId),
+    epoch: value.epoch,
+    sequence: value.sequence,
+    committedFingerprint: copyOptionalBytes(value.committedFingerprint),
+    work: parseWork(value.workJson),
+  };
+}
+
+function liveMutationResult(value: Awaited<ReturnType<NativeRawCheckout["resumeLive"]>>): LiveMutationResult {
+  return {
+    status: value.status,
+    generationId: copyOptionalBytes(value.generationId),
+    epoch: value.epoch,
+    sequence: value.sequence,
+    conflictCount: value.conflictCount,
+    truncated: value.truncated,
+    committedFingerprint: copyOptionalBytes(value.committedFingerprint),
+    work: parseWork(value.workJson),
+  };
+}
+
+function liveTransactionResult(value: Awaited<ReturnType<NativeRawCheckout["mutateLive"]>>): LiveTransactionResult {
+  return { ...liveMutationResult(value), createdFileIds: value.createdFileIds.map(copyOptionalBytes) };
+}
+
+function nativeGenerationDiff(value: NativeRawGenerationDiff): GenerationDiff {
+  return {
+    files: value.files.map((change) => ({
+      ...change,
+      fileId: change.fileId.slice(),
+      before: change.before === undefined ? undefined : copyFileRecord(change.before),
+      after: change.after === undefined ? undefined : copyFileRecord(change.after),
+    })),
+    bindings: value.bindings.map((change) => ({
+      ...change,
+      directoryId: change.directoryId.slice(),
+      name: { ...change.name, bytes: change.name.bytes.slice() },
+    })),
+    truncated: value.truncated,
+    work: parseWork(value.workJson),
+  };
+}
+
+function bigintRecord(value: Readonly<Record<string, string | number>>): Readonly<Record<string, bigint>> {
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, BigInt(item)]));
+}
+
+function nativeTransactionOperation(value: TransactionOperation): NativeRawTransactionOperation {
+  const operation: NativeRawTransactionOperation = {
+    kind: value.kind,
+    path: "path" in value ? value.path : undefined,
+    source: "source" in value ? value.source : undefined,
+    destination: "destination" in value ? value.destination : undefined,
+    bytes: "bytes" in value ? value.bytes : undefined,
+    target: "target" in value ? value.target : undefined,
+    payload: "payload" in value ? value.payload : undefined,
+    expectedFileId: "expectedFileId" in value ? value.expectedFileId : undefined,
+    fileKind: "fileKind" in value ? value.fileKind : undefined,
+    offset: "offset" in value ? value.offset : undefined,
+    sourceOffset: "sourceOffset" in value ? value.sourceOffset : undefined,
+    destinationOffset: "destinationOffset" in value ? value.destinationOffset : undefined,
+    length: "length" in value ? value.length : undefined,
+    logicalBytes: "logicalBytes" in value ? value.logicalBytes : undefined,
+    major: "major" in value ? value.major : undefined,
+    minor: "minor" in value ? value.minor : undefined,
+    replace: "replace" in value ? value.replace : undefined,
+    allocated: "allocated" in value ? value.allocated : undefined,
+    extend: "extend" in value ? value.extend : undefined,
+    keepSize: "keepSize" in value ? value.keepSize : undefined,
+    canonicalBytes: "canonicalBytes" in value ? value.canonicalBytes : undefined,
+  };
+  return operation;
 }
 
 function adaptWorkspace(raw: NativeRawWorkspace): NativeFsWorkspace {
@@ -333,15 +741,6 @@ function adaptChangeSet(raw: NativeRawChangeSet): FsChangeSet {
   };
   changeSetHandles.set(changeSet, raw);
   return changeSet;
-}
-
-function nativeGenerationDiff(result: NativeRawGenerationDiff): GenerationDiff {
-  return {
-    files: result.files,
-    bindings: result.bindings,
-    truncated: result.truncated,
-    work: parseWork(result.workJson),
-  };
 }
 
 function rawChangeSet(changeSet: FsChangeSet): NativeRawChangeSet {

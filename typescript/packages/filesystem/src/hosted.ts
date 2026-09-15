@@ -49,6 +49,7 @@ import type {
   JoinOptions,
   JoinResult,
   JoinStatus,
+  S3Access,
   MergeConflict,
   TransactionConflict,
   TransactionRebaseResult,
@@ -67,8 +68,10 @@ import type {
   WorkspaceRebaseStatus,
   WorkspaceStat,
 } from "./contracts.js";
+import { secureServiceEndpoint } from "./endpoint.js";
 
 export type * from "./public-types.js";
+export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts.js";
 
 const DEFAULT_MAXIMUM_RESPONSE_BYTES = 24 * 1024 * 1024;
 const DEFAULT_MAXIMUM_CONFLICTS = 1_024;
@@ -88,10 +91,7 @@ interface HostedClient {
 }
 
 export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
-  const endpoint = new URL(options.endpoint);
-  if (endpoint.protocol !== "https:" && endpoint.protocol !== "http:") {
-    throw new RangeError("hosted filesystem endpoint must use HTTP or HTTPS");
-  }
+  const endpoint = secureServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
   if (options.bearerToken.length === 0) throw new RangeError("bearer token must be non-empty");
   const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_MAXIMUM_RESPONSE_BYTES;
   positiveSafeInteger(maximumResponseBytes, "maximum response bytes");
@@ -197,6 +197,9 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
       }));
       return deleteStatus(response.status);
     },
+    async s3Access(writable, expiresAfterSeconds, idempotencyKey) {
+      return s3Access(client, reference, writable, expiresAfterSeconds, idempotencyKey);
+    },
     async read(path, maximumBytes) {
       return read(client, await currentGeneration(client, reference), path, undefined, maximumBytes);
     },
@@ -266,31 +269,49 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
       }));
       return joinPlan(client, plan);
     },
-    async s3Access(writable, expiresAfterSeconds, idempotencyKey) {
-      positiveU64(expiresAfterSeconds, "S3 credential lifetime");
-      const response = await call(client.rpc.issueS3Credential({
-        workspace: reference,
-        generation: await currentGeneration(client, reference),
-        writable,
-        expiresAfterSeconds,
-        operation: operation(idempotencyKey),
-      }));
-      if (response.credential.case !== "s3") {
-        throw new HostedFsError("protocol", "missing S3 credential");
-      }
-      return {
-        endpoint: response.endpoint,
-        expiresAtUnixSeconds: response.expiresAtUnixSeconds,
-        bucket: response.credential.value.bucket,
-        region: response.credential.value.region,
-        accessKeyId: response.credential.value.accessKeyId,
-        secretAccessKey: response.credential.value.secretAccessKey,
-        sessionToken: response.credential.value.sessionToken,
-      };
-    },
   };
   workspaceOwners.set(result, { client, reference });
   return result;
+}
+
+async function s3Access(
+  client: HostedClient,
+  reference: WireWorkspaceRef,
+  writable: boolean,
+  expiresAfterSeconds: bigint,
+  idempotencyKey?: Uint8Array,
+): Promise<S3Access> {
+  assertOpen(client);
+  positiveU64(expiresAfterSeconds, "S3 credential lifetime");
+  const response = await call(client.rpc.issueS3Credential({
+    workspace: reference,
+    generation: await currentGeneration(client, reference),
+    writable,
+    expiresAfterSeconds,
+    operation: operation(idempotencyKey),
+  }));
+  if (response.credential.case !== "s3") {
+    throw new HostedFsError("protocol", "missing S3 credential");
+  }
+  secureServiceEndpoint(response.endpoint, message => new HostedFsError("invalid_response", `S3 credential ${message}`));
+  const credential = response.credential.value;
+  requireName(credential.bucket);
+  requireName(credential.region);
+  requireName(credential.accessKeyId);
+  requireName(credential.secretAccessKey);
+  requireName(credential.sessionToken);
+  if (response.expiresAtUnixSeconds <= BigInt(Math.floor(Date.now() / 1_000))) {
+    throw new HostedFsError("invalid_response", "S3 credential expiry must be in the future");
+  }
+  return {
+    endpoint: response.endpoint,
+    bucket: credential.bucket as S3Access["bucket"],
+    region: credential.region as S3Access["region"],
+    accessKeyId: credential.accessKeyId as S3Access["accessKeyId"],
+    secretAccessKey: credential.secretAccessKey as S3Access["secretAccessKey"],
+    sessionToken: credential.sessionToken as S3Access["sessionToken"],
+    expiresAtUnixSeconds: response.expiresAtUnixSeconds,
+  };
 }
 
 function generation(client: HostedClient, reference: WireGenerationRef): FsGeneration {

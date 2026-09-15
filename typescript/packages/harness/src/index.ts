@@ -6,6 +6,7 @@ import {
   ApplyState,
   CommandEnvelopeSchema,
 } from "../generated/proto/harness/v1/harness_pb.js";
+import { AgentHarness, HarnessBuilder, type AgentHarnessHost } from "./runtime.js";
 
 export * from "./cache.js";
 export * from "./client.js";
@@ -114,6 +115,12 @@ export class Harness {
     this.#core = core;
     this.#protocol = core.protocolIdentity() as ProtocolIdentityValue;
   }
+
+  /** Starts a fully typed agent-runtime composition without initializing WASM. */
+  static builder(): HarnessBuilder { return new HarnessBuilder(); }
+
+  /** Connects to a durable runtime host through its explicit typed capability. */
+  static connect(host: AgentHarnessHost): Promise<AgentHarness> { return host.connect(); }
 
   /** Initializes the shared Rust core and creates an empty aggregate. */
   static async create(options: HarnessOptions): Promise<Harness> {

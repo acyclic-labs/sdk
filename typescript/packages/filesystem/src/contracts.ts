@@ -27,6 +27,21 @@ export interface FsEngine {
   close(): void | Promise<void>;
 }
 
+/** Customer-side engine with the complete immutable-object, Volume, Checkout, and speculation surface. */
+export interface FsVolumeEngine extends FsEngine {
+  objectCacheStats(): ObjectCacheStats;
+  clearObjectCache(): void;
+  createSpeculation(volumeId: Uint8Array, generationId: Uint8Array, options: SpeculationOptions): Speculation;
+  createVolume(options: VolumeOptions): Promise<FsVolume>;
+  createVolumeWithId(volumeId: Uint8Array, options: VolumeOptions): Promise<FsVolume>;
+  openVolume(volumeId: Uint8Array): Promise<FsVolume>;
+  exportObject(objectId: Uint8Array, maximumBytes: bigint): Promise<FileReadResult>;
+  importObject(objectId: Uint8Array, bytes: Uint8Array): Promise<MutationResult>;
+  exportGenerationBatch(manifest: GenerationExportManifest, cursor: bigint, maximumObjects: number, maximumObjectBytes: bigint): Promise<GenerationTransferBatch>;
+  importGenerationBatch(manifest: GenerationExportManifest, cursor: bigint, objects: readonly Uint8Array[], maximumObjects: number): Promise<GenerationTransferCursor>;
+  restoreVolume(manifest: GenerationExportManifest, operationId: Uint8Array): Promise<FsVolume>;
+}
+
 export interface HostedFsOptions {
   readonly endpoint: string;
   readonly bearerToken: string;
@@ -34,22 +49,33 @@ export interface HostedFsOptions {
   readonly fetch?: typeof globalThis.fetch;
 }
 
+declare const filesystemIdentity: unique symbol;
+export type S3Bucket = string & { readonly [filesystemIdentity]: "S3Bucket" };
+export type S3Region = string & { readonly [filesystemIdentity]: "S3Region" };
+export type S3AccessKeyId = string & { readonly [filesystemIdentity]: "S3AccessKeyId" };
+export type S3SecretAccessKey = string & { readonly [filesystemIdentity]: "S3SecretAccessKey" };
+export type S3SessionToken = string & { readonly [filesystemIdentity]: "S3SessionToken" };
+
+/** Scoped, expiring coordinates for the workspace's S3-compatible view. */
 export interface S3Access {
   readonly endpoint: string;
   readonly expiresAtUnixSeconds: bigint;
-  readonly bucket: string;
-  readonly region: string;
-  readonly accessKeyId: string;
-  readonly secretAccessKey: string;
-  readonly sessionToken: string;
+  readonly bucket: S3Bucket;
+  readonly region: S3Region;
+  readonly accessKeyId: S3AccessKeyId;
+  readonly secretAccessKey: S3SecretAccessKey;
+  readonly sessionToken: S3SessionToken;
 }
 
+/** Hosted capability whose additional operation is backed by the canonical filesystem protocol. */
 export interface HostedFsWorkspace extends FsWorkspace {
   s3Access(
     writable: boolean,
     expiresAfterSeconds: bigint,
     idempotencyKey?: Uint8Array,
   ): Promise<S3Access>;
+  fork(destination: string): Promise<HostedFsWorkspace>;
+  forkAt(destination: string, generation: FsGeneration): Promise<HostedFsWorkspace>;
 }
 
 export interface HostedFsEngine extends FsEngine {
@@ -819,6 +845,10 @@ export interface FsCheckout {
   /** Exact bounded work used to acquire this checkout handle. */
   readonly acquisitionWork: WorkCounters;
   applyTransaction(operations: readonly TransactionOperation[]): Promise<TransactionResult>;
+  /**
+   * Builds an immutable content-addressed candidate only. Implementations MUST NOT publish it or
+   * change the checkout's pending mutation state, so callers may safely checkpoint independently.
+   */
   checkpoint(): Promise<CheckpointResult>;
   refreshHead(): Promise<CheckpointResult>;
   refreshLive(): Promise<CheckpointResult>;
@@ -1041,7 +1071,7 @@ export interface ObjectCacheStats {
   readonly inFlight: bigint;
 }
 
-export interface NativeFsEngine extends FsEngine {
+export interface NativeFsEngine extends FsVolumeEngine {
   createWorkspace(name: string): Promise<NativeFsWorkspace>;
   openWorkspace(name: string): Promise<NativeFsWorkspace>;
   attachDirectory(
