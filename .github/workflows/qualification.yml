@@ -129,6 +129,7 @@ jobs:
           BUILD_ARTIFACTSTAGINGDIRECTORY: ${{ runner.temp }}/artifacts
           CARGO_TARGET_DIR: ${{ runner.temp }}/target
           TOOLS_DIR: ${{ runner.temp }}/tools/${{ matrix.lane }}-${{ runner.arch }}
+          LLVM_PATH: ${{ runner.temp }}/llvm
         run: .\scripts\qualify-ci.ps1 -Lane windows
 
       - name: Retain qualified outputs
