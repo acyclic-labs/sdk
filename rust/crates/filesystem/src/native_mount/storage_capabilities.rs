@@ -128,8 +128,12 @@ fn probe_platform(root: &Path) -> Result<NativeStorageCapabilities, NativeStorag
         .iter()
         .position(|value| *value == 0)
         .unwrap_or(filesystem_name.len());
-    let filesystem = String::from_utf16(&filesystem_name[..filesystem_length])
-        .map_err(|error| NativeStorageCapabilityError::Platform(error.to_string()))?;
+    let filesystem = String::from_utf16(
+        filesystem_name
+            .get(..filesystem_length)
+            .ok_or(NativeStorageCapabilityError::InvalidGeometry)?,
+    )
+    .map_err(|error| NativeStorageCapabilityError::Platform(error.to_string()))?;
     let allocation_unit_bytes = u64::from(logical_bytes_per_sector)
         .checked_mul(u64::from(sectors_per_allocation_unit))
         .ok_or(NativeStorageCapabilityError::InvalidGeometry)?;

@@ -153,6 +153,7 @@ pub use probe::{
 };
 #[cfg(test)]
 pub(crate) use publication::encode_publication_payload;
+pub(crate) use publication::publish_generation_async_with_context;
 pub use publication::{
     PublicationError, PublicationFailure, PublicationReceipt, PublishGenerationRequest,
     PublishedGeneration, decode_published_generation, publish_generation, publish_generation_async,

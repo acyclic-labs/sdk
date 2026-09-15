@@ -26,6 +26,7 @@ const compatibility = await load("compatibility/manifest.json");
 const harnessVersion = compatibility.families.harness.version;
 const machinesVersion = compatibility.families.machines.version;
 const streamVersion = compatibility.families.stream.version;
+const streamCrateVersion = compatibility.families.stream.crateVersion ?? streamVersion;
 const harnessPackage = await load("typescript/packages/harness/package.json");
 const sdkPackage = await load("typescript/packages/sdk/package.json");
 if (sdkPackage.version !== compatibility.umbrellaVersion) {
@@ -42,7 +43,7 @@ const rustStreamVersion = streamManifest.match(/\[package\][\s\S]*?\nversion = "
 const typescriptStreamPackage = await load("typescript/packages/stream/package.json");
 if (
   workspaceVersion !== harnessVersion || !harnessManifest.includes("version.workspace = true") ||
-  rustStreamVersion !== streamVersion ||
+  rustStreamVersion !== streamCrateVersion ||
   typescriptStreamPackage.version !== streamVersion ||
   sdkPackage.dependencies["@acyclic-labs/stream"] !== streamVersion
 ) {
@@ -58,7 +59,7 @@ for (const path of [
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-stream = \{ version = "([^"]+)"/)?.[1];
-  if (requirement !== `=${streamVersion}`) {
+  if (requirement !== `=${streamCrateVersion}`) {
     throw new Error(`Stream dependency version mismatch: ${path}`);
   }
 }
@@ -240,12 +241,12 @@ const inferenceIndex = (await readFile(new URL("registry/ac/yc/acyclic-inference
 if (new Set(inferenceIndex.map(entry => entry.vers)).size !== inferenceIndex.length) {
   throw new Error("acyclic-inference sparse registry contains duplicate versions");
 }
-const canonicalInference = inferenceIndex.find(
-  entry => entry.name === "acyclic-inference" && entry.vers === inferenceVersion,
+const releasedInference = inferenceIndex.find(
+  entry => entry.name === "acyclic-inference" && entry.vers === "1.0.0-rc.6",
 );
 if (
-  !canonicalInference || canonicalInference.yanked !== false ||
-  canonicalInference.cksum !== "4fecfc3bf4d60d076d766f5128a36f0a6afd8c2dccdd3fec50eeebc592b2618c"
+  !releasedInference || releasedInference.yanked !== false ||
+  releasedInference.cksum !== "4fecfc3bf4d60d076d766f5128a36f0a6afd8c2dccdd3fec50eeebc592b2618c"
 ) {
   throw new Error("released acyclic-inference sparse registry entry changed");
 }

@@ -82,7 +82,9 @@ if ((Get-Item -LiteralPath $bun).Length -ne $expectedBinaryBytes -or `
 }
 
 $env:PATH = "$directory;$env:PATH"
-$env:BUN_INSTALL_CACHE_DIR = Join-Path $env:TOOLS_DIR "bun\install-cache"
+if ([string]::IsNullOrWhiteSpace($env:BUN_INSTALL_CACHE_DIR)) {
+    $env:BUN_INSTALL_CACHE_DIR = Join-Path $env:TOOLS_DIR "bun\install-cache"
+}
 New-Item -ItemType Directory -Force -Path $env:BUN_INSTALL_CACHE_DIR | Out-Null
 $observedVersion = (& $bun --version).Trim()
 if ($LASTEXITCODE -ne 0 -or $observedVersion -ne $version) {

@@ -7,11 +7,15 @@
 use crate::model::FilesystemProfile as EmbeddedProfile;
 use crate::wire::filesystem::v2 as wire;
 use crate::wire::harness::v1 as harness;
-use crate::{Fs, IdempotencyKey};
+use crate::{
+    Digest, Fs, GenerationId, HostedSourceInvalidation, HostedSourceResult, HostedSourceState,
+    IdempotencyKey,
+};
 use bytes::Bytes;
 use futures::Stream;
 #[cfg(test)]
 use prost::Message;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -88,6 +92,15 @@ impl HostedFsOptions {
     }
 }
 
+impl Default for HostedFsOptions {
+    fn default() -> Self {
+        Self::new(
+            std::env::var("ACYCLIC_FILESYSTEM_ENDPOINT").unwrap_or_default(),
+            std::env::var("ACYCLIC_API_KEY").unwrap_or_default(),
+        )
+    }
+}
+
 /// A local validation, transport, or malformed-server failure.
 #[derive(Debug, Error)]
 pub enum HostedFsError {
@@ -106,6 +119,61 @@ pub enum HostedFsError {
     /// A successful response omitted or substituted required identity state.
     #[error("hosted filesystem returned an invalid response: {0}")]
     InvalidResponse(&'static str),
+}
+
+/// Validated short-lived S3 access scoped to one hosted workspace generation.
+#[derive(Clone, Eq, PartialEq)]
+pub struct HostedS3Access {
+    /// S3-compatible service endpoint selected by the deployment.
+    pub endpoint: String,
+    /// Unix timestamp after which these credentials must not be used.
+    pub expires_at_unix_seconds: i64,
+    /// Deployment-selected bucket.
+    pub bucket: String,
+    /// Deployment-selected region.
+    pub region: String,
+    /// Temporary access-key identifier.
+    pub access_key_id: String,
+    /// Temporary secret access key.
+    pub secret_access_key: String,
+    /// Temporary session token.
+    pub session_token: String,
+}
+
+impl fmt::Debug for HostedS3Access {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HostedS3Access")
+            .field("endpoint", &self.endpoint)
+            .field("expires_at_unix_seconds", &self.expires_at_unix_seconds)
+            .field("bucket", &self.bucket)
+            .field("region", &self.region)
+            .field("access_key_id", &"[REDACTED]")
+            .field("secret_access_key", &"[REDACTED]")
+            .field("session_token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Explicit controls for [`HostedWorkspace::s3_access_with_options`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostedS3AccessOptions {
+    /// Whether the scoped credentials may author mutations.
+    pub writable: bool,
+    /// Requested credential lifetime. The service applies its negotiated bound.
+    pub expires_after_seconds: u64,
+    /// Stable retry identity for ambiguous credential-issuance outcomes.
+    pub idempotency_key: IdempotencyKey,
+}
+
+impl Default for HostedS3AccessOptions {
+    fn default() -> Self {
+        Self {
+            writable: false,
+            expires_after_seconds: 900,
+            idempotency_key: IdempotencyKey::new(),
+        }
+    }
 }
 
 /// Marker selecting the transport-only `Fs::hosted` constructor.
@@ -456,6 +524,161 @@ impl HostedWorkspace {
         self.generation_handle(response.generation)
     }
 
+    /// Returns the current provider-backed source lifecycle state.
+    pub async fn source_state(&self) -> Result<HostedSourceResult, HostedFsError> {
+        self.require_source_reconciliation()?;
+        let mut client = self.filesystem.client.clone();
+        let response = client
+            .get_source_state(self.filesystem.request(wire::SourceStateRequest {
+                workspace: Some(self.reference.clone()),
+            }))
+            .await?
+            .into_inner();
+        self.source_result(&response)
+    }
+
+    /// Reconciles pending provider events with exactly idempotent retry.
+    pub async fn reconcile_source(
+        &self,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<HostedSourceResult, HostedFsError> {
+        self.source_operation(idempotency_key, SourceOperation::Reconcile)
+            .await
+    }
+
+    /// Rebuilds provider state from an authoritative source scan.
+    pub async fn rescan_source(
+        &self,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<HostedSourceResult, HostedFsError> {
+        self.source_operation(idempotency_key, SourceOperation::Rescan)
+            .await
+    }
+
+    /// Seals the provider-backed source and returns its immutable generation.
+    pub async fn seal(
+        &self,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<HostedGeneration, HostedFsError> {
+        self.require_source_reconciliation()?;
+        let mut client = self.filesystem.client.clone();
+        let response = client
+            .seal_source(self.filesystem.request(wire::SourceOperationRequest {
+                workspace: Some(self.reference.clone()),
+                operation: Some(operation(idempotency_key)),
+            }))
+            .await?
+            .into_inner();
+        let result = self.source_result(&response)?;
+        if result.state != HostedSourceState::Sealed {
+            return Err(HostedFsError::InvalidResponse(
+                "seal did not return a sealed generation",
+            ));
+        }
+        self.generation_handle(response.generation)
+    }
+
+    fn require_source_reconciliation(&self) -> Result<(), HostedFsError> {
+        if self.filesystem.capabilities.source_reconciliation {
+            Ok(())
+        } else {
+            Err(HostedFsError::InvalidOptions(
+                "hosted deployment does not support source reconciliation",
+            ))
+        }
+    }
+
+    async fn source_operation(
+        &self,
+        idempotency_key: IdempotencyKey,
+        kind: SourceOperation,
+    ) -> Result<HostedSourceResult, HostedFsError> {
+        self.require_source_reconciliation()?;
+        let request = self.filesystem.request(wire::SourceOperationRequest {
+            workspace: Some(self.reference.clone()),
+            operation: Some(operation(idempotency_key)),
+        });
+        let mut client = self.filesystem.client.clone();
+        let response = match kind {
+            SourceOperation::Reconcile => client.reconcile_source(request).await?.into_inner(),
+            SourceOperation::Rescan => client.rescan_source(request).await?.into_inner(),
+        };
+        self.source_result(&response)
+    }
+
+    fn source_result(
+        &self,
+        response: &wire::SourceResponse,
+    ) -> Result<HostedSourceResult, HostedFsError> {
+        let invalidation = match wire::SourceInvalidationReason::try_from(response.reason) {
+            Ok(wire::SourceInvalidationReason::Unspecified) => None,
+            Ok(wire::SourceInvalidationReason::InitialSnapshotRequired) => {
+                Some(HostedSourceInvalidation::InitialSnapshotRequired)
+            }
+            Ok(wire::SourceInvalidationReason::QueueOverflow) => {
+                Some(HostedSourceInvalidation::QueueOverflow)
+            }
+            Ok(wire::SourceInvalidationReason::NativeRescanRequired) => {
+                Some(HostedSourceInvalidation::NativeRescanRequired)
+            }
+            Ok(wire::SourceInvalidationReason::BackendError) => {
+                Some(HostedSourceInvalidation::BackendError)
+            }
+            Ok(wire::SourceInvalidationReason::UnrepresentablePath) => {
+                Some(HostedSourceInvalidation::UnrepresentablePath)
+            }
+            Ok(wire::SourceInvalidationReason::AmbiguousRename) => {
+                Some(HostedSourceInvalidation::AmbiguousRename)
+            }
+            Ok(wire::SourceInvalidationReason::RootChanged) => {
+                Some(HostedSourceInvalidation::RootChanged)
+            }
+            Err(_) => {
+                return Err(HostedFsError::InvalidResponse(
+                    "source invalidation reason is invalid",
+                ));
+            }
+        };
+        let state = match (wire::SourceState::try_from(response.state), invalidation) {
+            (Ok(wire::SourceState::Clean), None) => HostedSourceState::Clean,
+            (Ok(wire::SourceState::PendingCapture), None) => HostedSourceState::PendingCapture,
+            (Ok(wire::SourceState::NeedsRescan), Some(reason)) => {
+                HostedSourceState::NeedsRescan(reason)
+            }
+            (Ok(wire::SourceState::Conflict), None) => HostedSourceState::Conflict,
+            (Ok(wire::SourceState::Sealed), None) => HostedSourceState::Sealed,
+            _ => return Err(HostedFsError::InvalidResponse("source state is invalid")),
+        };
+        let has_generation = response.generation.is_some();
+        if matches!(state, HostedSourceState::Clean | HostedSourceState::Sealed) != has_generation {
+            return Err(HostedFsError::InvalidResponse(
+                "source generation does not match its state",
+            ));
+        }
+        let generation_id = response
+            .generation
+            .as_ref()
+            .map(|generation| {
+                validate_generation(generation, &self.reference)?;
+                let bytes: [u8; 32] =
+                    generation
+                        .generation_id
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| {
+                            HostedFsError::InvalidResponse(
+                                "generation identity has the wrong length",
+                            )
+                        })?;
+                Ok::<GenerationId, HostedFsError>(GenerationId::new(Digest::from_bytes(bytes)))
+            })
+            .transpose()?;
+        Ok(HostedSourceResult {
+            state,
+            generation_id,
+        })
+    }
+
     /// Reopens and authenticates one exact generation.
     pub async fn generation(
         &self,
@@ -576,6 +799,35 @@ impl HostedWorkspace {
         .await
     }
 
+    /// Discovers the deployment endpoint and region and issues read-only S3 access
+    /// for the workspace's current immutable head.
+    pub async fn s3_access(&self) -> Result<HostedS3Access, HostedFsError> {
+        self.s3_access_with_options(HostedS3AccessOptions::default())
+            .await
+    }
+
+    /// Discovers and validates S3 access using explicit scope, lifetime, and retry identity.
+    pub async fn s3_access_with_options(
+        &self,
+        options: HostedS3AccessOptions,
+    ) -> Result<HostedS3Access, HostedFsError> {
+        if !self.filesystem.capabilities.s3_credentials {
+            return Err(HostedFsError::InvalidOptions(
+                "hosted deployment does not support S3 credentials",
+            ));
+        }
+        let generation = self.head().await?;
+        let response = self
+            .issue_s3_credential(
+                &generation,
+                options.writable,
+                options.expires_after_seconds,
+                options.idempotency_key,
+            )
+            .await?;
+        hosted_s3_access(response)
+    }
+
     async fn issue_credential(
         &self,
         generation: &HostedGeneration,
@@ -599,6 +851,40 @@ impl HostedWorkspace {
             Ok(client.issue_mount_credential(request).await?.into_inner())
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum SourceOperation {
+    Reconcile,
+    Rescan,
+}
+
+fn hosted_s3_access(response: wire::CredentialResponse) -> Result<HostedS3Access, HostedFsError> {
+    let Some(wire::credential_response::Credential::S3(credential)) = response.credential else {
+        return Err(HostedFsError::InvalidResponse(
+            "S3 credential response has the wrong credential kind",
+        ));
+    };
+    if response.endpoint.is_empty()
+        || response.expires_at_unix_seconds <= 0
+        || credential.bucket.is_empty()
+        || credential.region.is_empty()
+        || credential.access_key_id.is_empty()
+        || credential.secret_access_key.is_empty()
+    {
+        return Err(HostedFsError::InvalidResponse(
+            "S3 credential response is incomplete",
+        ));
+    }
+    Ok(HostedS3Access {
+        endpoint: response.endpoint,
+        expires_at_unix_seconds: response.expires_at_unix_seconds,
+        bucket: credential.bucket,
+        region: credential.region,
+        access_key_id: credential.access_key_id,
+        secret_access_key: credential.secret_access_key,
+        session_token: credential.session_token,
+    })
 }
 
 /// One exact immutable hosted generation.
@@ -1232,10 +1518,60 @@ fn exact_len(value: &[u8], expected: usize, message: &'static str) -> Result<(),
 mod tests {
     use super::*;
     use crate::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer;
-    use crate::{EmbeddedCapabilities, FilesystemWireLimits, FilesystemWireService};
+    use crate::{
+        EmbeddedCapabilities, FilesystemSourceProvider, FilesystemWireLimits,
+        FilesystemWireService, HostedSourceOperation, HostedSourceScope,
+    };
     use rcgen::generate_simple_self_signed;
     use tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::{Identity, Server, ServerTlsConfig};
+
+    struct ClientTestSourceProvider {
+        generation: std::sync::Mutex<Option<GenerationId>>,
+    }
+
+    #[tonic::async_trait]
+    impl FilesystemSourceProvider for ClientTestSourceProvider {
+        async fn state(&self, _scope: HostedSourceScope) -> Result<HostedSourceResult, Status> {
+            Ok(HostedSourceResult {
+                state: HostedSourceState::NeedsRescan(HostedSourceInvalidation::QueueOverflow),
+                generation_id: None,
+            })
+        }
+
+        async fn reconcile(
+            &self,
+            _operation: HostedSourceOperation,
+        ) -> Result<HostedSourceResult, Status> {
+            Ok(HostedSourceResult {
+                state: HostedSourceState::Clean,
+                generation_id: *self
+                    .generation
+                    .lock()
+                    .map_err(|_| Status::internal("lock"))?,
+            })
+        }
+
+        async fn rescan(
+            &self,
+            operation: HostedSourceOperation,
+        ) -> Result<HostedSourceResult, Status> {
+            self.reconcile(operation).await
+        }
+
+        async fn seal(
+            &self,
+            _operation: HostedSourceOperation,
+        ) -> Result<HostedSourceResult, Status> {
+            Ok(HostedSourceResult {
+                state: HostedSourceState::Sealed,
+                generation_id: *self
+                    .generation
+                    .lock()
+                    .map_err(|_| Status::internal("lock"))?,
+            })
+        }
+    }
 
     #[tokio::test]
     async fn hosted_constructor_uses_the_same_canonical_engine_over_real_grpc()
@@ -1247,7 +1583,13 @@ mod tests {
             maximum_page_items: 2,
             ..FilesystemWireLimits::default()
         };
-        let service = FilesystemServiceServer::new(FilesystemWireService::new(embedded, limits)?);
+        let source_provider = Arc::new(ClientTestSourceProvider {
+            generation: std::sync::Mutex::new(None),
+        });
+        let service = FilesystemServiceServer::new(
+            FilesystemWireService::new(embedded, limits)?
+                .with_source_provider(source_provider.clone()),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
@@ -1282,6 +1624,33 @@ mod tests {
                 IdempotencyKey::from_bytes([1; 16]),
             )
             .await?;
+        let head_bytes: [u8; 32] = workspace.head.generation_id.as_slice().try_into()?;
+        *source_provider
+            .generation
+            .lock()
+            .map_err(|_| "source provider lock poisoned")? =
+            Some(GenerationId::new(Digest::from_bytes(head_bytes)));
+        assert_eq!(
+            workspace.source_state().await?.state,
+            HostedSourceState::NeedsRescan(HostedSourceInvalidation::QueueOverflow)
+        );
+        let reconciled = workspace
+            .reconcile_source(IdempotencyKey::from_bytes([15; 16]))
+            .await?;
+        assert_eq!(reconciled.state, HostedSourceState::Clean);
+        assert_eq!(
+            reconciled.generation_id,
+            *source_provider
+                .generation
+                .lock()
+                .map_err(|_| "source provider lock poisoned")?
+        );
+        let rescanned = workspace
+            .rescan_source(IdempotencyKey::from_bytes([16; 16]))
+            .await?;
+        assert_eq!(rescanned.state, HostedSourceState::Clean);
+        let sealed = workspace.seal(IdempotencyKey::from_bytes([17; 16])).await?;
+        assert_eq!(sealed.id(), workspace.head.generation_id);
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([2; 16]));
         transaction.put_file("/value", vec![b'x'; 1_024]);
         let outcome = transaction.commit(1).await?;
@@ -1500,7 +1869,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hosted_constructor_rejects_unbounded_ca_and_malformed_handshake() {
+    async fn hosted_constructor_rejects_unbounded_ca_and_malformed_handshake()
+    -> Result<(), HostedFsError> {
         let debug = format!(
             "{:?}",
             HostedFsOptions::new("https://localhost", "secret-token")
@@ -1567,5 +1937,39 @@ mod tests {
                 "filesystem descriptor digest does not match"
             ))
         ));
+
+        let access = hosted_s3_access(wire::CredentialResponse {
+            endpoint: "https://s3.example.test".to_owned(),
+            expires_at_unix_seconds: 1_900_000_000,
+            credential: Some(wire::credential_response::Credential::S3(
+                wire::S3Credential {
+                    bucket: "workspace".to_owned(),
+                    region: "eu-west-2".to_owned(),
+                    access_key_id: "visible-only-to-caller".to_owned(),
+                    secret_access_key: "never-log-this-secret".to_owned(),
+                    session_token: String::new(),
+                },
+            )),
+        })?;
+        assert_eq!(access.region, "eu-west-2");
+        assert!(access.session_token.is_empty());
+        let debug = format!("{access:?}");
+        assert!(!debug.contains("visible-only-to-caller"));
+        assert!(!debug.contains("never-log-this-secret"));
+        assert!(debug.matches("[REDACTED]").count() >= 3);
+
+        assert!(matches!(
+            hosted_s3_access(wire::CredentialResponse {
+                endpoint: "https://s3.example.test".to_owned(),
+                expires_at_unix_seconds: 1_900_000_000,
+                credential: Some(wire::credential_response::Credential::BearerToken(
+                    "wrong-kind".to_owned()
+                )),
+            }),
+            Err(HostedFsError::InvalidResponse(
+                "S3 credential response has the wrong credential kind"
+            ))
+        ));
+        Ok(())
     }
 }

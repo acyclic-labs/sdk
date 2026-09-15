@@ -422,6 +422,69 @@ export declare type Capabilities = Message<"acyclic.filesystem.v2.Capabilities">
 export declare const CapabilitiesSchema: GenMessage<Capabilities>;
 
 /**
+ * @generated from message acyclic.filesystem.v2.SourceStateRequest
+ */
+export declare type SourceStateRequest = Message<"acyclic.filesystem.v2.SourceStateRequest"> & {
+  /**
+   * @generated from field: acyclic.filesystem.v2.WorkspaceRef workspace = 1;
+   */
+  workspace?: WorkspaceRef | undefined;
+};
+
+/**
+ * Describes the message acyclic.filesystem.v2.SourceStateRequest.
+ * Use `create(SourceStateRequestSchema)` to create a new message.
+ */
+export declare const SourceStateRequestSchema: GenMessage<SourceStateRequest>;
+
+/**
+ * @generated from message acyclic.filesystem.v2.SourceOperationRequest
+ */
+export declare type SourceOperationRequest = Message<"acyclic.filesystem.v2.SourceOperationRequest"> & {
+  /**
+   * @generated from field: acyclic.filesystem.v2.WorkspaceRef workspace = 1;
+   */
+  workspace?: WorkspaceRef | undefined;
+
+  /**
+   * @generated from field: acyclic.filesystem.v2.OperationOptions operation = 2;
+   */
+  operation?: OperationOptions | undefined;
+};
+
+/**
+ * Describes the message acyclic.filesystem.v2.SourceOperationRequest.
+ * Use `create(SourceOperationRequestSchema)` to create a new message.
+ */
+export declare const SourceOperationRequestSchema: GenMessage<SourceOperationRequest>;
+
+/**
+ * @generated from message acyclic.filesystem.v2.SourceResponse
+ */
+export declare type SourceResponse = Message<"acyclic.filesystem.v2.SourceResponse"> & {
+  /**
+   * @generated from field: acyclic.filesystem.v2.SourceState state = 1;
+   */
+  state: SourceState;
+
+  /**
+   * @generated from field: acyclic.filesystem.v2.SourceInvalidationReason reason = 2;
+   */
+  reason: SourceInvalidationReason;
+
+  /**
+   * @generated from field: acyclic.filesystem.v2.GenerationRef generation = 3;
+   */
+  generation?: GenerationRef | undefined;
+};
+
+/**
+ * Describes the message acyclic.filesystem.v2.SourceResponse.
+ * Use `create(SourceResponseSchema)` to create a new message.
+ */
+export declare const SourceResponseSchema: GenMessage<SourceResponse>;
+
+/**
  * @generated from message acyclic.filesystem.v2.Workspace
  */
 export declare type Workspace = Message<"acyclic.filesystem.v2.Workspace"> & {
@@ -2849,6 +2912,96 @@ export enum ExtentKind {
 export declare const ExtentKindSchema: GenEnum<ExtentKind>;
 
 /**
+ * @generated from enum acyclic.filesystem.v2.SourceState
+ */
+export enum SourceState {
+  /**
+   * @generated from enum value: SOURCE_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: SOURCE_STATE_CLEAN = 1;
+   */
+  CLEAN = 1,
+
+  /**
+   * @generated from enum value: SOURCE_STATE_PENDING_CAPTURE = 2;
+   */
+  PENDING_CAPTURE = 2,
+
+  /**
+   * @generated from enum value: SOURCE_STATE_NEEDS_RESCAN = 3;
+   */
+  NEEDS_RESCAN = 3,
+
+  /**
+   * @generated from enum value: SOURCE_STATE_CONFLICT = 4;
+   */
+  CONFLICT = 4,
+
+  /**
+   * @generated from enum value: SOURCE_STATE_SEALED = 5;
+   */
+  SEALED = 5,
+}
+
+/**
+ * Describes the enum acyclic.filesystem.v2.SourceState.
+ */
+export declare const SourceStateSchema: GenEnum<SourceState>;
+
+/**
+ * @generated from enum acyclic.filesystem.v2.SourceInvalidationReason
+ */
+export enum SourceInvalidationReason {
+  /**
+   * @generated from enum value: SOURCE_INVALIDATION_REASON_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: SOURCE_INVALIDATION_REASON_INITIAL_SNAPSHOT_REQUIRED = 1;
+   */
+  INITIAL_SNAPSHOT_REQUIRED = 1,
+
+  /**
+   * @generated from enum value: SOURCE_INVALIDATION_REASON_QUEUE_OVERFLOW = 2;
+   */
+  QUEUE_OVERFLOW = 2,
+
+  /**
+   * @generated from enum value: SOURCE_INVALIDATION_REASON_NATIVE_RESCAN_REQUIRED = 3;
+   */
+  NATIVE_RESCAN_REQUIRED = 3,
+
+  /**
+   * @generated from enum value: SOURCE_INVALIDATION_REASON_BACKEND_ERROR = 4;
+   */
+  BACKEND_ERROR = 4,
+
+  /**
+   * @generated from enum value: SOURCE_INVALIDATION_REASON_UNREPRESENTABLE_PATH = 5;
+   */
+  UNREPRESENTABLE_PATH = 5,
+
+  /**
+   * @generated from enum value: SOURCE_INVALIDATION_REASON_AMBIGUOUS_RENAME = 6;
+   */
+  AMBIGUOUS_RENAME = 6,
+
+  /**
+   * @generated from enum value: SOURCE_INVALIDATION_REASON_ROOT_CHANGED = 7;
+   */
+  ROOT_CHANGED = 7,
+}
+
+/**
+ * Describes the enum acyclic.filesystem.v2.SourceInvalidationReason.
+ */
+export declare const SourceInvalidationReasonSchema: GenEnum<SourceInvalidationReason>;
+
+/**
  * @generated from enum acyclic.filesystem.v2.NameEncoding
  */
 export enum NameEncoding {
@@ -3173,6 +3326,38 @@ export declare const FilesystemService: GenService<{
     methodKind: "unary";
     input: typeof CredentialRequestSchema;
     output: typeof CredentialResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.filesystem.v2.FilesystemService.GetSourceState
+   */
+  getSourceState: {
+    methodKind: "unary";
+    input: typeof SourceStateRequestSchema;
+    output: typeof SourceResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.filesystem.v2.FilesystemService.ReconcileSource
+   */
+  reconcileSource: {
+    methodKind: "unary";
+    input: typeof SourceOperationRequestSchema;
+    output: typeof SourceResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.filesystem.v2.FilesystemService.RescanSource
+   */
+  rescanSource: {
+    methodKind: "unary";
+    input: typeof SourceOperationRequestSchema;
+    output: typeof SourceResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.filesystem.v2.FilesystemService.SealSource
+   */
+  sealSource: {
+    methodKind: "unary";
+    input: typeof SourceOperationRequestSchema;
+    output: typeof SourceResponseSchema;
   },
   /**
    * @generated from rpc acyclic.filesystem.v2.FilesystemService.Observe

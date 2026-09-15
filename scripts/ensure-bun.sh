@@ -70,6 +70,6 @@ fi
 [[ "$(digest "$binary")" == "$expected_binary" ]]
 
 export PATH="$directory:$PATH"
-export BUN_INSTALL_CACHE_DIR="$TOOLS_DIR/bun/install-cache"
+export BUN_INSTALL_CACHE_DIR="${BUN_INSTALL_CACHE_DIR:-$TOOLS_DIR/bun/install-cache}"
 mkdir -p "$BUN_INSTALL_CACHE_DIR"
 [[ "$(bun --version)" == "$version" ]]

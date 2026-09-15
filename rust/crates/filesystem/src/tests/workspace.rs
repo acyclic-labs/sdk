@@ -65,6 +65,30 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
 }
 
 #[tokio::test]
+async fn public_workspace_checkout_opens_pinned_and_live_private_views()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("public-checkout").await?;
+    let head = workspace.head().await?;
+    let pinned = workspace
+        .checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned())
+        .await?;
+    assert_eq!(pinned.generation_id(), head.id());
+    let live_private = workspace
+        .checkout(
+            GenerationSelector::Head,
+            CheckoutMode {
+                access: crate::model::AccessMode::ReadWrite,
+                consistency: crate::model::ConsistencyMode::Live,
+                mutations: crate::model::MutationMode::PrivateOverlay,
+            },
+        )
+        .await?;
+    assert_eq!(live_private.generation_id(), head.id());
+    Ok(())
+}
+
+#[tokio::test]
 async fn workspace_forks_an_unpublished_checkpoint_without_mutating_its_source()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();

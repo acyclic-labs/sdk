@@ -1,5 +1,5 @@
 {
-  "revision": 1,
+  "revision": 2,
   "suite": "inference.customer.v1",
   "cases": [
     "create-idempotency",
@@ -22,6 +22,51 @@
     "warm-release",
     "warm-expiry",
     "warm-breach",
-    "warm-recovery"
+    "warm-recovery",
+    "immutable-evaluation-admission",
+    "native-output-grader-binding",
+    "bounded-evaluation-results",
+    "exact-rational-aggregation"
+  ],
+  "evaluationVectors": [
+    {
+      "name": "native-device-exact-match",
+      "candidate": {
+        "artifactDigest": "sha256:8ea71893b1765c13c6e6a484db9c0abfb8fb482b41d2bb553f409e040799b2cc",
+        "mediaType": "application/vnd.acyclic.model",
+        "logicalSize": 21
+      },
+      "suite": {
+        "identity": "device-e2e-v1",
+        "digest": "sha256:a04a0d87d09514f0d66167257185045122307139ac82bc9bd31764f3c48dcd4f",
+        "cases": [
+          {
+            "caseId": "00000000000000000000000000000001",
+            "inputBase64": "ZGV0ZXJtaW5pc3RpYyBkZXZpY2UgaW5wdXQ=",
+            "inputDigest": "sha256:e5c89227b76360107a45815ee4db2466f72602fc717494452a10d9199bfc8e11"
+          }
+        ]
+      },
+      "grader": {
+        "handleBase64": "Z3JhZGVyOi8vZXhhY3QtdjE=",
+        "artifactDigest": "sha256:5a0f10954273cd0af7e2fbcb09f972822ce28664df661be92fa6d88ffce631ba"
+      },
+      "metric": {
+        "identity": "exact-match",
+        "aggregation": "mean"
+      },
+      "maximumCaseResults": 1,
+      "specDigest": "sha256:4c2d89b5fe23f6798184d040349dfcf90834023ea913d49babdd86baba9a76b1",
+      "evidence": {
+        "nativeOutputBase64": "bmF0aXZlIGRldmljZSBvdXRwdXQ6IDQy",
+        "nativeOutputDigest": "sha256:bbd5e7d18c407a74794aff8865038bd9bf4c59b346f927d2b74b4c733298a1eb",
+        "graderObservationBase64": "Z3JhZGVyIG9ic2VydmF0aW9uOiBleGFjdC1tYXRjaD0xLzE=",
+        "graderObservationDigest": "sha256:aa21fa3edf3ab3a792424f98d46a3f1e325db4461ef71568ca31f1af94ae75d9",
+        "graderObservationBindingDigest": "sha256:88220f570611235590fc63f15410f7b59a86d059620586ccc6d8b3f320c040e5",
+        "score": { "numerator": 1, "denominator": 1 },
+        "aggregate": { "numerator": 1, "denominator": 1 },
+        "resultDigest": "sha256:561c0a5d2bd07f28e0098b5210c0c83667ae2960facb818db3e439659275d313"
+      }
+    }
   ]
 }
