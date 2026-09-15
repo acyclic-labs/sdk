@@ -200,3 +200,20 @@ if (
 ) {
   throw new Error("released inference-sdk 1.0.0-rc.3 registry entry changed");
 }
+
+const inferenceIndex = (await readFile(new URL("registry/ac/yc/acyclic-inference", root), "utf8"))
+  .trim()
+  .split("\n")
+  .map(line => JSON.parse(line));
+if (new Set(inferenceIndex.map(entry => entry.vers)).size !== inferenceIndex.length) {
+  throw new Error("acyclic-inference sparse registry contains duplicate versions");
+}
+const canonicalInference = inferenceIndex.find(
+  entry => entry.name === "acyclic-inference" && entry.vers === inferenceVersion,
+);
+if (
+  !canonicalInference || canonicalInference.yanked !== false ||
+  canonicalInference.cksum !== "4fecfc3bf4d60d076d766f5128a36f0a6afd8c2dccdd3fec50eeebc592b2618c"
+) {
+  throw new Error("released acyclic-inference sparse registry entry changed");
+}
