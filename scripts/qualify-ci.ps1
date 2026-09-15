@@ -16,8 +16,10 @@ bun install --frozen-lockfile
 # Blacksmith's Windows Server 2025 image intentionally omits the Client-ProjFS
 # optional component. Exercise the portable workspace here and compile every
 # ProjFS path; Linux and macOS execute the native-mount behavior.
-cargo test --workspace --all-features --locked
-cargo check --workspace --all-targets --all-features --locked
+# The Server image cannot load ProjectedFSLib.dll, so execute the portable
+# feature set and still compile and link every all-feature test binary.
+cargo test --workspace --locked
+cargo test --workspace --all-features --no-run --locked
 cargo build -p acyclic-fs-napi --locked
 bun scripts/check-filesystem-napi.mjs `
     "$env:BUILD_ARTIFACTSTAGINGDIRECTORY/packages/native"

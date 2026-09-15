@@ -94,7 +94,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ~/.rustup
-            ${{ github.workspace }}/.ci-tools
+            ${{ runner.temp }}/tools
             ${{ github.workspace }}/target
           key: sdk-v2-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'bun.lock') }}-${{ github.sha }}
           restore-keys: |
@@ -113,7 +113,7 @@ jobs:
         env:
           AGENT_TEMPDIRECTORY: ${{ runner.temp }}/sdk
           BUILD_ARTIFACTSTAGINGDIRECTORY: ${{ runner.temp }}/artifacts
-          TOOLS_DIR: ${{ github.workspace }}/.ci-tools/${{ matrix.lane }}-${{ runner.arch }}
+          TOOLS_DIR: ${{ runner.temp }}/tools/${{ matrix.lane }}-${{ runner.arch }}
         run: bash scripts/qualify-ci.sh "${{ matrix.lane }}"
 
       - name: Run Windows qualification lane
@@ -122,7 +122,7 @@ jobs:
         env:
           AGENT_TEMPDIRECTORY: ${{ runner.temp }}/sdk
           BUILD_ARTIFACTSTAGINGDIRECTORY: ${{ runner.temp }}/artifacts
-          TOOLS_DIR: ${{ github.workspace }}/.ci-tools/${{ matrix.lane }}-${{ runner.arch }}
+          TOOLS_DIR: ${{ runner.temp }}/tools/${{ matrix.lane }}-${{ runner.arch }}
         run: .\scripts\qualify-ci.ps1 -Lane windows
 
       - name: Retain qualified outputs
