@@ -64,8 +64,6 @@ jobs:
             artifact_path: packages
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
-    env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/target
     steps:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -119,6 +117,7 @@ jobs:
         env:
           AGENT_TEMPDIRECTORY: ${{ runner.temp }}/sdk
           BUILD_ARTIFACTSTAGINGDIRECTORY: ${{ runner.temp }}/artifacts
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target
           TOOLS_DIR: ${{ runner.temp }}/tools/${{ matrix.lane }}-${{ runner.arch }}
         run: bash scripts/qualify-ci.sh "${{ matrix.lane }}"
 
@@ -128,6 +127,7 @@ jobs:
         env:
           AGENT_TEMPDIRECTORY: ${{ runner.temp }}/sdk
           BUILD_ARTIFACTSTAGINGDIRECTORY: ${{ runner.temp }}/artifacts
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target
           TOOLS_DIR: ${{ runner.temp }}/tools/${{ matrix.lane }}-${{ runner.arch }}
         run: .\scripts\qualify-ci.ps1 -Lane windows
 
