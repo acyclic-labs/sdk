@@ -24,9 +24,19 @@ qualified_run() {
   '
 }
 
+qualified_tag_revisions() {
+  local tag=$1 ref tag_oid source_sha
+  ref="refs/tags/$tag"
+  git show-ref --verify --quiet "$ref"
+  tag_oid=$(git rev-parse "$ref")
+  test "$(git cat-file -t "$tag_oid")" = tag
+  source_sha=$(git rev-parse "$ref^{commit}")
+  printf '%s\t%s\n' "$tag_oid" "$source_sha"
+}
+
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then return 0; fi
 
-tag="${GITHUB_REF_NAME:?GitHub tag is required}"
+tag="${NPM_STAGE_TAG:?npm staging tag is required}"
 subject=${tag#stage/npm/}
 if [[ "$subject" == "$tag" || "$subject" != */* || "${subject#*/}" == */* ]]; then
   echo 'staging tags must use stage/npm/<package>/<version>' >&2
@@ -40,11 +50,10 @@ manifest="typescript/packages/$directory/package.json"
 manifest_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "$manifest")
 test "$version" = "$manifest_version"
 
-tag_oid=$(git rev-parse "$GITHUB_REF")
-source_sha=$(git rev-parse "$GITHUB_REF^{commit}")
-test "$(git cat-file -t "$tag_oid")" = tag
+read -r tag_oid source_sha < <(qualified_tag_revisions "$tag")
 test "$(git rev-parse HEAD)" = "$source_sha"
-test "$GITHUB_SHA" = "$source_sha"
+test "${GITHUB_EVENT_NAME:?GitHub event name is required}" = workflow_dispatch
+test "${NPM_STAGE_TAG_OID:?annotated tag object SHA is required}" = "$tag_oid"
 git fetch --no-tags origin main
 git merge-base --is-ancestor "$source_sha" origin/main
 

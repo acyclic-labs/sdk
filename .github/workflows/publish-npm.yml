@@ -1,9 +1,16 @@
 name: Stage npm
 
 on:
-  push:
-    tags:
-      - stage/npm/*/*
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing annotated stage/npm/<package>/<version> tag to retry
+        required: true
+        type: string
+      tag_oid:
+        description: Immutable annotated tag object SHA
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -23,12 +30,32 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Check out exact tagged source
+      - name: Check out trusted workflow source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
+
+      - name: Verify and select exact tagged source
+        env:
+          NPM_STAGE_TAG: ${{ inputs.tag }}
+          NPM_STAGE_TAG_OID: ${{ inputs.tag_oid }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$NPM_STAGE_TAG" =~ ^stage/npm/(objects|stream|inference|machines|fs|sdk)/[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]
+          [[ "$NPM_STAGE_TAG_OID" =~ ^[0-9a-f]{40}$ ]]
+          ref="refs/tags/$NPM_STAGE_TAG"
+          git show-ref --verify --quiet "$ref"
+          test "$(git rev-parse "$ref")" = "$NPM_STAGE_TAG_OID"
+          test "$(git cat-file -t "$NPM_STAGE_TAG_OID")" = tag
+          source_sha=$(git rev-parse "$NPM_STAGE_TAG_OID^{commit}")
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$source_sha" origin/main
+          install -m 0755 scripts/prepare-npm-publication.sh "$RUNNER_TEMP/prepare-npm-publication.sh"
+          git checkout --detach "$source_sha"
+          test "$(git rev-parse HEAD)" = "$source_sha"
 
       - name: Install Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -49,8 +76,10 @@ jobs:
       - name: Download and verify exact qualified package
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          NPM_STAGE_TAG: ${{ inputs.tag }}
+          NPM_STAGE_TAG_OID: ${{ inputs.tag_oid }}
         shell: bash
-        run: bash scripts/prepare-npm-publication.sh
+        run: bash "$RUNNER_TEMP/prepare-npm-publication.sh"
 
       - name: Stage exact verified package for maintainer review
         shell: bash
