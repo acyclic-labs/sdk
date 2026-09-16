@@ -29,6 +29,19 @@ const streamVersion = compatibility.families.stream.version;
 const streamCrateVersion = compatibility.families.stream.crateVersion ?? streamVersion;
 const harnessPackage = await load("typescript/packages/harness/package.json");
 const sdkPackage = await load("typescript/packages/sdk/package.json");
+const lock = Bun.JSONC.parse(await readFile(new URL("bun.lock", root), "utf8"));
+for (const [path, locked] of Object.entries(lock.workspaces)) {
+  const manifest = await load(path ? `${path}/package.json` : "package.json");
+  if (locked.name !== manifest.name || (path && locked.version !== manifest.version)) {
+    throw new Error(`Bun workspace identity mismatch: ${path || "root"}`);
+  }
+  for (const field of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+    const entries = value => JSON.stringify(Object.entries(value ?? {}).sort(([a], [b]) => a.localeCompare(b)));
+    if (entries(locked[field]) !== entries(manifest[field])) {
+      throw new Error(`Bun workspace ${field} mismatch: ${path || "root"}`);
+    }
+  }
+}
 if (sdkPackage.version !== compatibility.umbrellaVersion) {
   throw new Error("TypeScript SDK version must match umbrella compatibility metadata");
 }
