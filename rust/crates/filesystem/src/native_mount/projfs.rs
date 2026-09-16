@@ -277,9 +277,11 @@ fn reparse_tag(path: &std::path::Path) -> Result<Option<u32>, NativeMountError> 
             "reparse response omitted its tag".to_owned(),
         ));
     }
-    Ok(Some(u32::from_le_bytes([
-        output[0], output[1], output[2], output[3],
-    ])))
+    let tag = output
+        .get(..4)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| NativeMountError::Driver("reparse response omitted its tag".to_owned()))?;
+    Ok(Some(u32::from_le_bytes(tag)))
 }
 
 fn driver_error(error: &windows::core::Error) -> NativeMountError {
@@ -335,12 +337,10 @@ fn decode_utf16_name(bytes: &[u8]) -> Option<Vec<u16>> {
     if !bytes.len().is_multiple_of(2) {
         return None;
     }
-    Some(
-        bytes
-            .chunks_exact(2)
-            .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
-            .collect(),
-    )
+    bytes
+        .chunks_exact(2)
+        .map(|unit| unit.try_into().ok().map(u16::from_le_bytes))
+        .collect()
 }
 
 fn enum_id(pointer: *const GUID) -> Option<u128> {

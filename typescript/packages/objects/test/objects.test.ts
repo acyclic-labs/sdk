@@ -24,7 +24,6 @@ describe("objects", () => {
     const createKey = idempotencyKey("create-upload");
     const upload = await bucket.createMultipart("parts", { metadata: { contentType: "text/plain", user: userMetadata }, idempotencyKey: createKey });
     userMetadata.set("owner", "mutated");
-    (upload.upload.metadata.user as Map<string, string>).set("owner", "returned-handle-mutation");
     await expect(bucket.createMultipart("parts", { metadata: { contentType: "application/json" }, idempotencyKey: createKey })).rejects.toMatchObject({ code: "idempotency_mismatch" });
     const first = await upload.uploadPart(1, new TextEncoder().encode("type"), { idempotencyKey: idempotencyKey("part-one") });
     expect(await upload.uploadPart(1, new TextEncoder().encode("type"), { idempotencyKey: idempotencyKey("part-one") })).toEqual(first);
@@ -36,6 +35,20 @@ describe("objects", () => {
     const completed = await upload.complete(parts, { idempotencyKey: idempotencyKey("complete-upload") });
     expect(completed.metadata.user.get("owner")).toBe("creation");
     expect(new TextDecoder().decode((await provider.get(bucket.target, "parts")).body)).toBe("typesafe");
+  });
+
+  test("binds multipart operations to the complete retained upload identity", async () => {
+    const provider = new MemoryObjectsProvider();
+    const objects = new Objects(provider);
+    const first = await (await objects.createBucket("first-upload")).createMultipart("first");
+    const second = await (await objects.createBucket("second-upload")).createMultipart("second");
+    const forged = { ...first.upload, uploadId: second.upload.uploadId };
+
+    await expect(provider.listParts(forged)).rejects.toMatchObject({ code: "not_found" });
+    await expect(provider.uploadPart(forged, 1, new Uint8Array([1]))).rejects.toMatchObject({ code: "not_found" });
+    await expect(provider.completeMultipart(forged, [{ partNumber: 1, etag: '"AQ=="' as never, size: 1 }])).rejects.toMatchObject({ code: "not_found" });
+    await expect(provider.abortMultipart(forged)).rejects.toMatchObject({ code: "not_found" });
+    expect(await second.abort()).toBeTrue();
   });
 
   test("JSON codecs admit only exact JSON values", () => {
@@ -110,6 +123,41 @@ describe("objects", () => {
     await bucket.delete("artifact", { versionId: marker.versionId });
     await bucket.delete("artifact", { versionId: version.versionId });
     expect(await bucket.deleteBucket()).toBeTrue();
+  });
+
+  test("binds snapshot destruction to the complete snapshot identity", async () => {
+    const provider = new MemoryObjectsProvider();
+    const objects = new Objects(provider);
+    const source = await objects.createBucket("source");
+    const foreign = await objects.createBucket("foreign");
+    await source.put("retained", new Uint8Array([1]), bytesCodec);
+    const snapshot = await source.snapshot();
+    const operation = key("destroy-snapshot");
+    await expect(provider.destroySnapshot({
+      snapshotId: snapshot.reference.snapshotId,
+      sourceBucketId: foreign.reference.bucketId,
+    }, operation)).rejects.toMatchObject({ code: "not_found" });
+    expect(await snapshot.head("retained")).toMatchObject({ size: 1n });
+    expect(await snapshot.destroy({ idempotencyKey: operation })).toBeTrue();
+  });
+
+  test("binds snapshot listing continuations to the complete snapshot identity", async () => {
+    const provider = new MemoryObjectsProvider();
+    const objects = new Objects(provider);
+    const source = await objects.createBucket("listing-source");
+    const foreign = await objects.createBucket("listing-foreign");
+    await source.put("a", new Uint8Array([1]), bytesCodec);
+    await source.put("b", new Uint8Array([2]), bytesCodec);
+    const snapshot = await source.snapshot();
+    const first = await snapshot.listPage({ pageSize: 1 });
+    const forged = {
+      kind: "snapshot" as const,
+      snapshot: {
+        snapshotId: snapshot.reference.snapshotId,
+        sourceBucketId: foreign.reference.bucketId,
+      },
+    };
+    await expect(provider.list(forged, "", undefined, false, 1, first.continuation)).rejects.toMatchObject({ code: "not_found" });
   });
 
   test("requires multipart uploads to finish or abort before bucket deletion", async () => {

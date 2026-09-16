@@ -9,17 +9,24 @@ $PSNativeCommandUseErrorActionPreference = $true
 Set-StrictMode -Version Latest
 
 New-Item -ItemType Directory -Force -Path `
-    $env:BUILD_ARTIFACTSTAGINGDIRECTORY, $env:TOOLS_DIR | Out-Null
+    $env:SDK_ARTIFACT_DIR, $env:TOOLS_DIR | Out-Null
 . .\scripts\ensure-bun.ps1
 bun install --frozen-lockfile
 
-# Blacksmith's Windows image does not enable the Client-ProjFS optional component.
-# Exercise the portable workspace here and compile every ProjFS path; Linux and
-# macOS execute the native-mount behavior. The Server image cannot load
-# ProjectedFSLib.dll, so execute the portable feature set and still compile and
-# link every all-feature test binary.
-cargo test --workspace --exclude acyclic-fs-napi `
-    --exclude acyclic-fs-daemon --locked
+# Blacksmith's Windows Server image cannot load ProjectedFSLib.dll. Execute the
+# largest workspace set whose dependency graph is genuinely portable, then test
+# acyclic-fs without native mounting. The all-feature no-run build below still
+# compiles and links every ProjFS path; Linux and macOS execute native mounts.
+cargo test --workspace `
+    --exclude acyclic-fs `
+    --exclude acyclic-memory `
+    --exclude acyclic-conformance `
+    --exclude acyclic-sdk `
+    --exclude acyclic-fs-daemon `
+    --exclude acyclic-fs-napi `
+    --locked
+cargo test -p acyclic-fs --no-default-features `
+    --features local,memory,native-watch --locked
 cargo test --workspace --all-features --no-run --locked
 cargo build -p acyclic-fs-napi --locked
 cargo run --locked -p acyclic-cli

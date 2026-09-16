@@ -11,6 +11,7 @@ fn native_root_identity_encoding_is_exact_and_round_trips() {
     assert_eq!(&bytes[8..], &0x1112_1314_1516_1718_u64.to_le_bytes());
     assert_eq!(NativeRootIdentity::from_bytes(bytes), identity);
 }
+use crate::kernel::NameEncoding;
 use notify::event::EventAttributes;
 use notify::event::{CreateKind, DataChange, ModifyKind};
 use std::path::PathBuf;
@@ -21,6 +22,108 @@ fn event(kind: EventKind, paths: Vec<PathBuf>) -> Event {
         paths,
         attrs: EventAttributes::new(),
     }
+}
+
+#[test]
+fn watcher_names_follow_the_volume_profile() -> Result<(), Box<dyn std::error::Error>> {
+    let root = PathBuf::from(if cfg!(windows) { r"C:\root" } else { "/root" });
+    let event = event(
+        EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+        vec![root.join("name")],
+    );
+    let encoding = |profile| -> Result<NameEncoding, Box<dyn std::error::Error>> {
+        let changes = map_event(&event, &root, profile, VolumeLimits::default())?;
+        let path = match changes.as_slice() {
+            [WatchChange::Modified(path)] => path,
+            other => return Err(format!("expected one modified path, got {other:?}").into()),
+        };
+        Ok(path.components()[0].encoding())
+    };
+
+    assert_eq!(encoding(FilesystemProfile::Portable)?, NameEncoding::Utf8);
+    assert_eq!(encoding(FilesystemProfile::Browser)?, NameEncoding::Utf8);
+    assert_eq!(
+        encoding(FilesystemProfile::Posix)?,
+        NameEncoding::PosixBytes
+    );
+    assert_eq!(
+        encoding(FilesystemProfile::Windows)?,
+        NameEncoding::WindowsUtf16Le
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn replayed_creation_of_the_admitted_root_is_not_a_namespace_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().to_path_buf();
+    let root_file = open_native_root(&root)?;
+    let identity = NativeRootIdentity::from_file(&root_file)?;
+    validate_replayed_root_creation(
+        &event(EventKind::Create(CreateKind::Folder), vec![root.clone()]),
+        &root,
+        identity,
+    )?;
+    assert_eq!(
+        validate_replayed_root_creation(
+            &event(EventKind::Create(CreateKind::Folder), vec![root.clone()]),
+            &root,
+            NativeRootIdentity {
+                device: identity.device,
+                object: identity.object ^ 1,
+            },
+        ),
+        Err(WatchInvalidationReason::RootChanged)
+    );
+    let changes = map_event(
+        &event(EventKind::Create(CreateKind::Folder), vec![root.clone()]),
+        &root,
+        FilesystemProfile::Portable,
+        VolumeLimits::default(),
+    )?;
+    assert!(changes.is_empty());
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn coalesced_root_modification_requires_a_rescan() {
+    let root = PathBuf::from("/root");
+    assert_eq!(
+        map_event(
+            &event(
+                EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+                vec![root.clone()],
+            ),
+            &root,
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        ),
+        Err(WatchInvalidationReason::NativeRescanRequired)
+    );
+}
+
+#[test]
+fn root_replacement_during_a_baseline_invalidates_the_rescan()
+-> Result<(), Box<dyn std::error::Error>> {
+    let parent = tempfile::tempdir()?;
+    let root = parent.path().join("watched");
+    let displaced = parent.path().join("displaced");
+    std::fs::create_dir(&root)?;
+    let mut watch = NativeWatch::open(&root, NativeWatchOptions::new(VolumeLimits::default()))?;
+    watch.begin_rescan()?;
+    std::fs::rename(&root, &displaced)?;
+    std::fs::create_dir(&root)?;
+    assert!(matches!(
+        watch.finish_rescan()?,
+        WatchBatch::RescanRequired {
+            reason: WatchInvalidationReason::RootChanged,
+            ..
+        }
+    ));
+    Ok(())
 }
 
 #[test]
@@ -35,6 +138,7 @@ fn paired_rename_is_exact_and_ambiguous_rename_invalidates()
             vec![from, to],
         ),
         &root,
+        FilesystemProfile::Portable,
         VolumeLimits::default(),
     )?;
     assert!(matches!(paired.as_slice(), [WatchChange::Renamed { .. }]));
@@ -45,6 +149,7 @@ fn paired_rename_is_exact_and_ambiguous_rename_invalidates()
                 vec![root.join("old")],
             ),
             &root,
+            FilesystemProfile::Portable,
             VolumeLimits::default(),
         ),
         Err(WatchInvalidationReason::AmbiguousRename)
@@ -60,6 +165,7 @@ fn access_is_ignored_but_native_rescan_and_root_removal_invalidate()
         map_event(
             &event(EventKind::Access(notify::event::AccessKind::Any), vec![]),
             &root,
+            FilesystemProfile::Portable,
             VolumeLimits::default(),
         )?
         .is_empty()
@@ -67,7 +173,12 @@ fn access_is_ignored_but_native_rescan_and_root_removal_invalidate()
     let mut rescan = event(EventKind::Any, vec![root.join("a")]);
     rescan.attrs.set_flag(notify::event::Flag::Rescan);
     assert_eq!(
-        map_event(&rescan, &root, VolumeLimits::default()),
+        map_event(
+            &rescan,
+            &root,
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        ),
         Err(WatchInvalidationReason::NativeRescanRequired)
     );
     assert_eq!(
@@ -77,6 +188,7 @@ fn access_is_ignored_but_native_rescan_and_root_removal_invalidate()
                 vec![root.clone()]
             ),
             &root,
+            FilesystemProfile::Portable,
             VolumeLimits::default(),
         ),
         Err(WatchInvalidationReason::RootChanged)
@@ -91,14 +203,22 @@ fn bounded_callback_overflow_invalidates_instead_of_dropping_silently()
     let (sender, _receiver) = sync_channel(1);
     let queued = Arc::new(AtomicU32::new(0));
     let shared = Arc::new(Mutex::new(SharedState { invalidation: None }));
+    let context = NativeEventContext {
+        root: root.clone(),
+        root_identity: NativeRootIdentity {
+            device: 0,
+            object: 0,
+        },
+        profile: FilesystemProfile::Portable,
+        limits: VolumeLimits::default(),
+    };
     for name in ["a", "b"] {
         accept_native_event(
             Ok(event(
                 EventKind::Create(CreateKind::File),
                 vec![root.join(name)],
             )),
-            &root,
-            VolumeLimits::default(),
+            &context,
             &sender,
             &shared,
             &queued,
@@ -120,6 +240,7 @@ fn content_and_metadata_changes_remain_distinct() -> Result<(), Box<dyn std::err
             vec![root.join("file")],
         ),
         &root,
+        FilesystemProfile::Portable,
         VolumeLimits::default(),
     )?;
     let metadata = map_event(
@@ -128,6 +249,7 @@ fn content_and_metadata_changes_remain_distinct() -> Result<(), Box<dyn std::err
             vec![root.join("file")],
         ),
         &root,
+        FilesystemProfile::Portable,
         VolumeLimits::default(),
     )?;
     assert!(matches!(data.as_slice(), [WatchChange::Modified(_)]));
@@ -156,6 +278,7 @@ fn rename_immediately_followed_by_a_coalesced_metadata_hint_on_the_destination()
             vec![from, to.clone()],
         ),
         &root,
+        FilesystemProfile::Portable,
         VolumeLimits::default(),
     )?;
     let renamed_to = match renamed.as_slice() {
@@ -171,6 +294,7 @@ fn rename_immediately_followed_by_a_coalesced_metadata_hint_on_the_destination()
             vec![to],
         ),
         &root,
+        FilesystemProfile::Portable,
         VolumeLimits::default(),
     )?;
     #[cfg(target_os = "macos")]

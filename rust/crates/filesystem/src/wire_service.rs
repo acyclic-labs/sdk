@@ -9,7 +9,7 @@ use crate::wire::{filesystem::v2 as wire, harness::v1 as harness};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Digest,
     DurableCommit, ForkOptions, Fs, Generation, GenerationId, IdempotencyKey, JoinHistory,
-    JoinOutcome, MergeConflict, ObjectId, ObjectKind, Transaction, TransactionCommit,
+    JoinOutcome, MergeConflict, ObjectId, ObjectKind, Sequence, Transaction, TransactionCommit,
     TransactionConflict, TransactionConflictRegion, TransactionDependencyUse, TransactionRebase,
     TransactionSparseSeek, Workspace, WorkspaceDelete, WorkspaceError, WorkspaceExtentKind,
     WorkspaceMetadata, WorkspaceRebase,
@@ -22,6 +22,14 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 type WireStream<T> = Pin<Box<dyn futures::Stream<Item = Result<T, Status>> + Send + 'static>>;
+
+enum JoinTargetHead<A, O> {
+    Expected {
+        head: crate::Head,
+        existing_operation: bool,
+    },
+    Stale(Generation<A, O>),
+}
 
 /// Hard bounds and explicitly available optional hosted capabilities.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -122,6 +130,83 @@ pub trait FilesystemCredentialIssuer: Send + Sync + 'static {
     async fn issue(&self, request: CredentialGrantRequest) -> Result<CredentialGrant, Status>;
 }
 
+/// Deployment-owned source identity after the SDK authenticates its workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostedSourceScope {
+    /// Stable workspace identity.
+    pub workspace_id: crate::WorkspaceId,
+    /// Canonical workspace name.
+    pub workspace_name: crate::WorkspaceName,
+}
+
+/// Stable operation identity for a hosted source mutation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostedSourceOperation {
+    /// Authenticated source workspace.
+    pub scope: HostedSourceScope,
+    /// Caller retry identity retained across ambiguous outcomes.
+    pub idempotency_key: IdempotencyKey,
+}
+
+/// Why a hosted source can no longer prove a contiguous change interval.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostedSourceInvalidation {
+    /// No authenticated baseline has been established.
+    InitialSnapshotRequired,
+    /// The bounded change queue overflowed.
+    QueueOverflow,
+    /// The provider explicitly requires a full rescan.
+    NativeRescanRequired,
+    /// The provider reported an asynchronous backend failure.
+    BackendError,
+    /// A source path cannot be represented by filesystem semantics.
+    UnrepresentablePath,
+    /// A rename could not be paired exactly.
+    AmbiguousRename,
+    /// The source root changed identity.
+    RootChanged,
+}
+
+/// Canonical state returned by a deployment source provider.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostedSourceState {
+    /// Source and workspace agree.
+    Clean,
+    /// A bounded capture is in progress.
+    PendingCapture,
+    /// Continuity was lost.
+    NeedsRescan(HostedSourceInvalidation),
+    /// Source and workspace publications overlap.
+    Conflict,
+    /// The generation is independent of the source.
+    Sealed,
+}
+
+/// One provider result, optionally naming the exact resulting generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostedSourceResult {
+    /// Resulting semantic state.
+    pub state: HostedSourceState,
+    /// Exact workspace generation for clean or sealed outcomes.
+    pub generation_id: Option<GenerationId>,
+}
+
+/// Deployment extension for a remotely owned attached source.
+#[tonic::async_trait]
+pub trait FilesystemSourceProvider: Send + Sync + 'static {
+    /// Returns the current source state without mutation.
+    async fn state(&self, scope: HostedSourceScope) -> Result<HostedSourceResult, Status>;
+    /// Captures one bounded contiguous source interval.
+    async fn reconcile(
+        &self,
+        operation: HostedSourceOperation,
+    ) -> Result<HostedSourceResult, Status>;
+    /// Rebuilds a complete authenticated source baseline.
+    async fn rescan(&self, operation: HostedSourceOperation) -> Result<HostedSourceResult, Status>;
+    /// Produces a generation independent of the attached source.
+    async fn seal(&self, operation: HostedSourceOperation) -> Result<HostedSourceResult, Status>;
+}
+
 /// One SDK-owned protocol adapter over the canonical filesystem engine.
 ///
 /// Deployments wrap this adapter with authentication, quota, credential
@@ -131,6 +216,7 @@ pub struct FilesystemWireService<A, O> {
     filesystem: Fs<A, O>,
     limits: FilesystemWireLimits,
     credential_issuer: Option<Arc<dyn FilesystemCredentialIssuer>>,
+    source_provider: Option<Arc<dyn FilesystemSourceProvider>>,
 }
 
 impl<A, O> FilesystemWireService<A, O> {
@@ -154,6 +240,7 @@ impl<A, O> FilesystemWireService<A, O> {
             filesystem,
             limits,
             credential_issuer: None,
+            source_provider: None,
         })
     }
 
@@ -167,6 +254,13 @@ impl<A, O> FilesystemWireService<A, O> {
     #[must_use]
     pub fn with_credential_issuer(mut self, issuer: Arc<dyn FilesystemCredentialIssuer>) -> Self {
         self.credential_issuer = Some(issuer);
+        self
+    }
+
+    /// Installs the deployment's authenticated hosted-source provider.
+    #[must_use]
+    pub fn with_source_provider(mut self, provider: Arc<dyn FilesystemSourceProvider>) -> Self {
+        self.source_provider = Some(provider);
         self
     }
 }
@@ -190,6 +284,55 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         Ok(workspace)
     }
 
+    async fn source_scope(
+        &self,
+        reference: Option<wire::WorkspaceRef>,
+    ) -> Result<(Workspace<A, O>, HostedSourceScope), Status> {
+        let workspace = self.workspace(reference).await?;
+        let scope = HostedSourceScope {
+            workspace_id: workspace.id(),
+            workspace_name: workspace.name().clone(),
+        };
+        Ok((workspace, scope))
+    }
+
+    fn source_provider(&self) -> Result<&Arc<dyn FilesystemSourceProvider>, Status> {
+        self.source_provider
+            .as_ref()
+            .ok_or_else(|| Status::unimplemented("hosted source reconciliation is unavailable"))
+    }
+
+    async fn source_response(
+        &self,
+        workspace: &Workspace<A, O>,
+        result: HostedSourceResult,
+    ) -> Result<wire::SourceResponse, Status> {
+        let generation = match result.generation_id {
+            Some(id) => Some(generation_ref(
+                &workspace
+                    .generation(id)
+                    .await
+                    .map_err(|error| status(&error))?,
+            )),
+            None => None,
+        };
+        let (state, reason) = source_state_message(result.state);
+        let requires_generation = matches!(
+            result.state,
+            HostedSourceState::Clean | HostedSourceState::Sealed
+        );
+        if requires_generation != generation.is_some() {
+            return Err(Status::data_loss(
+                "hosted source result generation does not match its state",
+            ));
+        }
+        Ok(wire::SourceResponse {
+            state: state as i32,
+            reason: reason as i32,
+            generation,
+        })
+    }
+
     async fn generation(
         &self,
         reference: Option<wire::GenerationRef>,
@@ -201,6 +344,57 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
             .generation(id)
             .await
             .map_err(|error| status(&error))
+    }
+
+    async fn join_target_head(
+        &self,
+        target: &Workspace<A, O>,
+        expected: GenerationId,
+        operation: IdempotencyKey,
+    ) -> Result<JoinTargetHead<A, O>, Status> {
+        let committed = self
+            .filesystem
+            .observe_volume_operation(
+                target.id().volume_id(),
+                operation.operation_id(),
+                crate::WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|error| status(&WorkspaceError::engine(error)))?;
+        if let Some(commit) = committed.value {
+            let sequence = commit
+                .sequence
+                .get()
+                .checked_sub(1)
+                .ok_or_else(|| Status::data_loss("operation has invalid authority sequence"))?;
+            return Ok(JoinTargetHead::Expected {
+                head: crate::Head {
+                    epoch: commit.epoch,
+                    sequence: Sequence::new(sequence),
+                    digest: commit.previous_digest,
+                },
+                existing_operation: true,
+            });
+        }
+        let (current, head) = self
+            .filesystem
+            .workspace_head_state(&target.volume)
+            .await
+            .map_err(|error| status(&error))?;
+        if current == expected {
+            Ok(JoinTargetHead::Expected {
+                head,
+                existing_operation: false,
+            })
+        } else {
+            Ok(JoinTargetHead::Stale(
+                target
+                    .generation(current)
+                    .await
+                    .map_err(|error| status(&error))?,
+            ))
+        }
     }
 
     fn admit<M: Message>(&self, request: &Request<M>) -> Result<(), Status> {
@@ -280,7 +474,7 @@ where
                     .credential_issuer
                     .as_ref()
                     .is_some_and(|issuer| issuer.s3_enabled()),
-                source_reconciliation: false,
+                source_reconciliation: self.source_provider.is_some(),
             }),
         }))
     }
@@ -858,18 +1052,24 @@ where
         let target = self.generation(Some(target_ref)).await?;
         let source_workspace = source.workspace.clone();
         let target_workspace = target.workspace.clone();
-        let current_target = target_workspace
-            .head()
-            .await
-            .map_err(|error| status(&error))?;
-        if current_target.id() != target.id() {
-            return Ok(Response::new(wire::JoinResponse {
-                status: wire::JoinStatus::StaleTarget as i32,
-                generation: Some(generation_ref(&current_target)),
-                conflicts: Vec::new(),
-                truncated: false,
-            }));
-        }
+        let source_id = source.id();
+        let target_id = target.id();
+        let operation = operation(request.operation)?;
+        let (target_authority_head, existing_operation) = match self
+            .join_target_head(&target_workspace, target_id, operation)
+            .await?
+        {
+            JoinTargetHead::Expected {
+                head,
+                existing_operation,
+            } => (head, existing_operation),
+            JoinTargetHead::Stale(actual) => {
+                return Ok(Response::new(join_response(
+                    wire::JoinStatus::StaleTarget,
+                    Some(&actual),
+                )));
+            }
+        };
         let plan = source_workspace
             .join_into(&target_workspace)
             .history(history)
@@ -878,13 +1078,13 @@ where
                 supplied.maximum_changes,
                 supplied.maximum_conflicts,
             )
-            .plan()
+            .plan_generations(source, target, target_authority_head)
             .await
             .map_err(|error| status(&error))?;
         let expected_base_ref =
             join_common_ancestor_ref(&plan, &source_workspace, &target_workspace);
-        if plan.source_head() != source.id()
-            || plan.target_head() != target.id()
+        if plan.source_head() != source_id
+            || plan.target_head() != target_id
             || base_ref != expected_base_ref
         {
             let actual = target_workspace
@@ -900,11 +1100,20 @@ where
         }
         let outcome = plan
             .apply(ApplyOptions {
-                if_target: target.id(),
-                idempotency_key: operation(request.operation)?,
+                if_target: target_id,
+                idempotency_key: operation,
             })
             .await
             .map_err(|error| status(&error))?;
+        let outcome = if existing_operation
+            && !matches!(
+                &outcome,
+                JoinOutcome::AlreadyApplied(_) | JoinOutcome::IdempotencyConflict
+            ) {
+            JoinOutcome::IdempotencyConflict
+        } else {
+            outcome
+        };
         Ok(Response::new(join_message(outcome)))
     }
 
@@ -1141,6 +1350,78 @@ where
         request: Request<wire::CredentialRequest>,
     ) -> Result<Response<wire::CredentialResponse>, Status> {
         self.issue_credential(request, CredentialKind::S3).await
+    }
+
+    async fn get_source_state(
+        &self,
+        request: Request<wire::SourceStateRequest>,
+    ) -> Result<Response<wire::SourceResponse>, Status> {
+        self.admit(&request)?;
+        let (workspace, scope) = self.source_scope(request.into_inner().workspace).await?;
+        let result = self.source_provider()?.state(scope).await?;
+        Ok(Response::new(
+            self.source_response(&workspace, result).await?,
+        ))
+    }
+
+    async fn reconcile_source(
+        &self,
+        request: Request<wire::SourceOperationRequest>,
+    ) -> Result<Response<wire::SourceResponse>, Status> {
+        self.admit(&request)?;
+        let request = request.into_inner();
+        let idempotency_key = operation(request.operation)?;
+        let (workspace, scope) = self.source_scope(request.workspace).await?;
+        let result = self
+            .source_provider()?
+            .reconcile(HostedSourceOperation {
+                scope,
+                idempotency_key,
+            })
+            .await?;
+        Ok(Response::new(
+            self.source_response(&workspace, result).await?,
+        ))
+    }
+
+    async fn rescan_source(
+        &self,
+        request: Request<wire::SourceOperationRequest>,
+    ) -> Result<Response<wire::SourceResponse>, Status> {
+        self.admit(&request)?;
+        let request = request.into_inner();
+        let idempotency_key = operation(request.operation)?;
+        let (workspace, scope) = self.source_scope(request.workspace).await?;
+        let result = self
+            .source_provider()?
+            .rescan(HostedSourceOperation {
+                scope,
+                idempotency_key,
+            })
+            .await?;
+        Ok(Response::new(
+            self.source_response(&workspace, result).await?,
+        ))
+    }
+
+    async fn seal_source(
+        &self,
+        request: Request<wire::SourceOperationRequest>,
+    ) -> Result<Response<wire::SourceResponse>, Status> {
+        self.admit(&request)?;
+        let request = request.into_inner();
+        let idempotency_key = operation(request.operation)?;
+        let (workspace, scope) = self.source_scope(request.workspace).await?;
+        let result = self
+            .source_provider()?
+            .seal(HostedSourceOperation {
+                scope,
+                idempotency_key,
+            })
+            .await?;
+        Ok(Response::new(
+            self.source_response(&workspace, result).await?,
+        ))
     }
 
     async fn observe(
@@ -1511,6 +1792,44 @@ fn profile_message(value: EngineProfile) -> i32 {
         EngineProfile::Posix => wire::FilesystemProfile::Posix as i32,
         EngineProfile::Windows => wire::FilesystemProfile::Windows as i32,
         EngineProfile::Browser => wire::FilesystemProfile::Browser as i32,
+    }
+}
+
+fn source_state_message(
+    value: HostedSourceState,
+) -> (wire::SourceState, wire::SourceInvalidationReason) {
+    let none = wire::SourceInvalidationReason::Unspecified;
+    match value {
+        HostedSourceState::Clean => (wire::SourceState::Clean, none),
+        HostedSourceState::PendingCapture => (wire::SourceState::PendingCapture, none),
+        HostedSourceState::Conflict => (wire::SourceState::Conflict, none),
+        HostedSourceState::Sealed => (wire::SourceState::Sealed, none),
+        HostedSourceState::NeedsRescan(reason) => (
+            wire::SourceState::NeedsRescan,
+            match reason {
+                HostedSourceInvalidation::InitialSnapshotRequired => {
+                    wire::SourceInvalidationReason::InitialSnapshotRequired
+                }
+                HostedSourceInvalidation::QueueOverflow => {
+                    wire::SourceInvalidationReason::QueueOverflow
+                }
+                HostedSourceInvalidation::NativeRescanRequired => {
+                    wire::SourceInvalidationReason::NativeRescanRequired
+                }
+                HostedSourceInvalidation::BackendError => {
+                    wire::SourceInvalidationReason::BackendError
+                }
+                HostedSourceInvalidation::UnrepresentablePath => {
+                    wire::SourceInvalidationReason::UnrepresentablePath
+                }
+                HostedSourceInvalidation::AmbiguousRename => {
+                    wire::SourceInvalidationReason::AmbiguousRename
+                }
+                HostedSourceInvalidation::RootChanged => {
+                    wire::SourceInvalidationReason::RootChanged
+                }
+            },
+        ),
     }
 }
 
@@ -2217,6 +2536,64 @@ mod tests {
 
     struct TestIssuer;
 
+    struct TestSourceProvider {
+        generation: std::sync::Mutex<Option<GenerationId>>,
+    }
+
+    #[tonic::async_trait]
+    impl FilesystemSourceProvider for TestSourceProvider {
+        async fn state(&self, _scope: HostedSourceScope) -> Result<HostedSourceResult, Status> {
+            Ok(HostedSourceResult {
+                state: HostedSourceState::NeedsRescan(HostedSourceInvalidation::QueueOverflow),
+                generation_id: None,
+            })
+        }
+
+        async fn reconcile(
+            &self,
+            operation: HostedSourceOperation,
+        ) -> Result<HostedSourceResult, Status> {
+            if operation.idempotency_key != IdempotencyKey::from_bytes([9; 16]) {
+                return Err(Status::invalid_argument(
+                    "unexpected reconciliation identity",
+                ));
+            }
+            Ok(HostedSourceResult {
+                state: HostedSourceState::Clean,
+                generation_id: *self
+                    .generation
+                    .lock()
+                    .map_err(|_| Status::internal("lock"))?,
+            })
+        }
+
+        async fn rescan(
+            &self,
+            _operation: HostedSourceOperation,
+        ) -> Result<HostedSourceResult, Status> {
+            Ok(HostedSourceResult {
+                state: HostedSourceState::Clean,
+                generation_id: *self
+                    .generation
+                    .lock()
+                    .map_err(|_| Status::internal("lock"))?,
+            })
+        }
+
+        async fn seal(
+            &self,
+            _operation: HostedSourceOperation,
+        ) -> Result<HostedSourceResult, Status> {
+            Ok(HostedSourceResult {
+                state: HostedSourceState::Sealed,
+                generation_id: *self
+                    .generation
+                    .lock()
+                    .map_err(|_| Status::internal("lock"))?,
+            })
+        }
+    }
+
     #[tonic::async_trait]
     impl FilesystemCredentialIssuer for TestIssuer {
         fn mount_enabled(&self) -> bool {
@@ -2306,6 +2683,93 @@ mod tests {
                 observed.outcome.and_then(|outcome| outcome.generation),
                 created.head
             );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn source_provider_controls_capability_and_all_lifecycle_rpcs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let absent = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
+        let capabilities = absent
+            .handshake(Request::new(wire::HandshakeRequest { harness: None }))
+            .await?
+            .into_inner()
+            .capabilities
+            .ok_or("missing capabilities")?;
+        assert!(!capabilities.source_reconciliation);
+
+        let provider = Arc::new(TestSourceProvider {
+            generation: std::sync::Mutex::new(None),
+        });
+        let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?
+            .with_source_provider(provider.clone());
+        let capabilities = service
+            .handshake(Request::new(wire::HandshakeRequest { harness: None }))
+            .await?
+            .into_inner()
+            .capabilities
+            .ok_or("missing capabilities")?;
+        assert!(capabilities.source_reconciliation);
+        let created = service
+            .create_workspace(Request::new(wire::CreateWorkspaceRequest {
+                name: "source".to_owned(),
+                profile: wire::FilesystemProfile::Portable as i32,
+                operation: operation(1),
+            }))
+            .await?
+            .into_inner()
+            .workspace
+            .ok_or("missing workspace")?;
+        let workspace = created.workspace.ok_or("missing workspace reference")?;
+        let head = created.head.ok_or("missing head")?;
+        *provider
+            .generation
+            .lock()
+            .map_err(|_| "provider lock poisoned")? = Some(generation_id(&head.generation_id)?);
+
+        let state = service
+            .get_source_state(Request::new(wire::SourceStateRequest {
+                workspace: Some(workspace.clone()),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(state.state, wire::SourceState::NeedsRescan as i32);
+        assert_eq!(
+            state.reason,
+            wire::SourceInvalidationReason::QueueOverflow as i32
+        );
+        assert!(state.generation.is_none());
+
+        let reconciled = service
+            .reconcile_source(Request::new(wire::SourceOperationRequest {
+                workspace: Some(workspace.clone()),
+                operation: Some(wire::OperationOptions {
+                    idempotency_key: vec![9; 16],
+                }),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(reconciled.state, wire::SourceState::Clean as i32);
+        assert_eq!(reconciled.generation.as_ref(), Some(&head));
+
+        for response in [
+            service
+                .rescan_source(Request::new(wire::SourceOperationRequest {
+                    workspace: Some(workspace.clone()),
+                    operation: operation(10),
+                }))
+                .await?
+                .into_inner(),
+            service
+                .seal_source(Request::new(wire::SourceOperationRequest {
+                    workspace: Some(workspace),
+                    operation: operation(11),
+                }))
+                .await?
+                .into_inner(),
+        ] {
+            assert_eq!(response.generation.as_ref(), Some(&head));
         }
         Ok(())
     }
@@ -2463,6 +2927,18 @@ mod tests {
             .into_inner()
             .generation
             .ok_or("missing main head")?;
+        let fork_head = forked.head.clone().ok_or("missing fork head")?;
+        let no_op_plan = service
+            .plan_join(Request::new(wire::PlanJoinRequest {
+                source: Some(main_head.clone()),
+                target: Some(fork_head.clone()),
+                maximum_changes: 32,
+                maximum_conflicts: 8,
+                maximum_generations: 32,
+                history: wire::JoinHistory::Merge as i32,
+            }))
+            .await?
+            .into_inner();
         let changed = service
             .apply_transaction(Request::new(wire::ApplyTransactionRequest {
                 base: Some(main_head),
@@ -2478,7 +2954,6 @@ mod tests {
             .into_inner()
             .generation
             .ok_or("missing changed generation")?;
-        let fork_head = forked.head.clone().ok_or("missing fork head")?;
         let plan = service
             .plan_join(Request::new(wire::PlanJoinRequest {
                 source: Some(changed.clone()),
@@ -2490,14 +2965,278 @@ mod tests {
             }))
             .await?
             .into_inner();
+        let fresh_no_op = service
+            .apply_join(Request::new(wire::ApplyJoinRequest {
+                plan: Some(no_op_plan.clone()),
+                operation: operation(12),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(fresh_no_op.status, wire::JoinStatus::NoChanges as i32);
         let joined = service
             .apply_join(Request::new(wire::ApplyJoinRequest {
-                plan: Some(plan),
+                plan: Some(plan.clone()),
                 operation: operation(6),
             }))
             .await?
             .into_inner();
-        assert_eq!(joined.status, wire::MutationStatus::Committed as i32);
+        assert_eq!(joined.status, wire::JoinStatus::Applied as i32);
+        let joined_generation = joined.generation.ok_or("missing joined generation")?;
+        let no_op_before_advance = service
+            .apply_join(Request::new(wire::ApplyJoinRequest {
+                plan: Some(no_op_plan.clone()),
+                operation: operation(6),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(
+            no_op_before_advance.status,
+            wire::JoinStatus::IdempotencyConflict as i32
+        );
+        let advanced_target = service
+            .apply_transaction(Request::new(wire::ApplyTransactionRequest {
+                base: Some(joined_generation.clone()),
+                mutations: vec![mutation(wire::mutation::Mutation::CreateFile(
+                    wire::CreateFile {
+                        path: "/target-only".to_owned(),
+                        contents: b"target".to_vec(),
+                        metadata: None,
+                    },
+                ))],
+                operation: operation(11),
+                maximum_conflicts: 32,
+            }))
+            .await?
+            .into_inner()
+            .generation
+            .ok_or("missing advanced target generation")?;
+        let repeated = service
+            .apply_join(Request::new(wire::ApplyJoinRequest {
+                plan: Some(plan.clone()),
+                operation: operation(6),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(repeated.status, wire::JoinStatus::AlreadyApplied as i32);
+        assert_eq!(repeated.generation.as_ref(), Some(&joined_generation));
+        let no_op_after_advance = service
+            .apply_join(Request::new(wire::ApplyJoinRequest {
+                plan: Some(no_op_plan),
+                operation: operation(6),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(
+            no_op_after_advance.status,
+            wire::JoinStatus::IdempotencyConflict as i32
+        );
+        let mut altered_bounds = plan.clone();
+        altered_bounds.maximum_generations += 1;
+        altered_bounds.plan_id = join_plan_id(
+            altered_bounds.source.as_ref().ok_or("missing source")?,
+            altered_bounds
+                .expected_target
+                .as_ref()
+                .ok_or("missing target")?,
+            altered_bounds
+                .common_ancestor
+                .as_ref()
+                .ok_or("missing common ancestor")?,
+            join_history(altered_bounds.history)?,
+            altered_bounds.maximum_generations,
+            altered_bounds.maximum_changes,
+            altered_bounds.maximum_conflicts,
+        )
+        .to_vec();
+        let altered_retry = service
+            .apply_join(Request::new(wire::ApplyJoinRequest {
+                plan: Some(altered_bounds),
+                operation: operation(6),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(
+            altered_retry.status,
+            wire::JoinStatus::IdempotencyConflict as i32
+        );
+        let stale = service
+            .apply_join(Request::new(wire::ApplyJoinRequest {
+                plan: Some(plan),
+                operation: operation(9),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(stale.status, wire::JoinStatus::StaleTarget as i32);
+        assert_eq!(stale.generation.as_ref(), Some(&advanced_target));
+
+        let further_changed = service
+            .apply_transaction(Request::new(wire::ApplyTransactionRequest {
+                base: Some(changed.clone()),
+                mutations: vec![mutation(wire::mutation::Mutation::CreateFile(
+                    wire::CreateFile {
+                        path: "/dir/next".to_owned(),
+                        contents: b"next".to_vec(),
+                        metadata: None,
+                    },
+                ))],
+                operation: operation(10),
+                maximum_conflicts: 32,
+            }))
+            .await?
+            .into_inner()
+            .generation
+            .ok_or("missing further generation")?;
+        let different_plan = service
+            .plan_join(Request::new(wire::PlanJoinRequest {
+                source: Some(further_changed),
+                target: Some(advanced_target),
+                maximum_changes: 32,
+                maximum_conflicts: 8,
+                maximum_generations: 32,
+                history: wire::JoinHistory::Merge as i32,
+            }))
+            .await?
+            .into_inner();
+        let conflicting_retry = service
+            .apply_join(Request::new(wire::ApplyJoinRequest {
+                plan: Some(different_plan),
+                operation: operation(6),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(
+            conflicting_retry.status,
+            wire::JoinStatus::IdempotencyConflict as i32
+        );
+
+        let conflict_target = service
+            .fork_workspace(Request::new(wire::ForkWorkspaceRequest {
+                source: Some(changed.clone()),
+                destination_name: "conflict-target".to_owned(),
+                operation: operation(20),
+            }))
+            .await?
+            .into_inner()
+            .workspace
+            .ok_or("missing conflict target")?;
+        let conflict_source = service
+            .fork_workspace(Request::new(wire::ForkWorkspaceRequest {
+                source: Some(changed.clone()),
+                destination_name: "conflict-source".to_owned(),
+                operation: operation(21),
+            }))
+            .await?
+            .into_inner()
+            .workspace
+            .ok_or("missing conflict source")?;
+        let benign_source = service
+            .fork_workspace(Request::new(wire::ForkWorkspaceRequest {
+                source: Some(changed.clone()),
+                destination_name: "benign-source".to_owned(),
+                operation: operation(22),
+            }))
+            .await?
+            .into_inner()
+            .workspace
+            .ok_or("missing benign source")?;
+
+        let conflict_target_head = service
+            .apply_transaction(Request::new(wire::ApplyTransactionRequest {
+                base: conflict_target.head,
+                mutations: vec![mutation(wire::mutation::Mutation::Write(wire::Write {
+                    path: "/dir/value".to_owned(),
+                    offset: 0,
+                    contents: b"target".to_vec(),
+                }))],
+                operation: operation(23),
+                maximum_conflicts: 32,
+            }))
+            .await?
+            .into_inner()
+            .generation
+            .ok_or("missing conflict target generation")?;
+        let conflict_source_head = service
+            .apply_transaction(Request::new(wire::ApplyTransactionRequest {
+                base: conflict_source.head,
+                mutations: vec![mutation(wire::mutation::Mutation::Write(wire::Write {
+                    path: "/dir/value".to_owned(),
+                    offset: 0,
+                    contents: b"source".to_vec(),
+                }))],
+                operation: operation(24),
+                maximum_conflicts: 32,
+            }))
+            .await?
+            .into_inner()
+            .generation
+            .ok_or("missing conflict source generation")?;
+        let conflict_plan = service
+            .plan_join(Request::new(wire::PlanJoinRequest {
+                source: Some(conflict_source_head),
+                target: Some(conflict_target_head.clone()),
+                maximum_changes: 32,
+                maximum_conflicts: 8,
+                maximum_generations: 32,
+                history: wire::JoinHistory::Merge as i32,
+            }))
+            .await?
+            .into_inner();
+        let fresh_conflict = service
+            .apply_join(Request::new(wire::ApplyJoinRequest {
+                plan: Some(conflict_plan.clone()),
+                operation: operation(25),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(fresh_conflict.status, wire::JoinStatus::Conflicted as i32);
+
+        let benign_source_head = service
+            .apply_transaction(Request::new(wire::ApplyTransactionRequest {
+                base: benign_source.head,
+                mutations: vec![mutation(wire::mutation::Mutation::CreateFile(
+                    wire::CreateFile {
+                        path: "/benign".to_owned(),
+                        contents: b"benign".to_vec(),
+                        metadata: None,
+                    },
+                ))],
+                operation: operation(26),
+                maximum_conflicts: 32,
+            }))
+            .await?
+            .into_inner()
+            .generation
+            .ok_or("missing benign source generation")?;
+        let benign_plan = service
+            .plan_join(Request::new(wire::PlanJoinRequest {
+                source: Some(benign_source_head),
+                target: Some(conflict_target_head),
+                maximum_changes: 32,
+                maximum_conflicts: 8,
+                maximum_generations: 32,
+                history: wire::JoinHistory::Merge as i32,
+            }))
+            .await?
+            .into_inner();
+        let benign_join = service
+            .apply_join(Request::new(wire::ApplyJoinRequest {
+                plan: Some(benign_plan),
+                operation: operation(27),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(benign_join.status, wire::JoinStatus::Applied as i32);
+        let bound_conflict = service
+            .apply_join(Request::new(wire::ApplyJoinRequest {
+                plan: Some(conflict_plan),
+                operation: operation(27),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(
+            bound_conflict.status,
+            wire::JoinStatus::IdempotencyConflict as i32
+        );
 
         let mut exported = service
             .export(Request::new(wire::ExportRequest {

@@ -9115,7 +9115,7 @@ fn detached_inline_file_seek_and_attribute_absence_are_exact()
 #[test]
 fn remaining_facade_guards_are_fast_typed_and_non_mutating()
 -> Result<(), Box<dyn std::error::Error>> {
-    assert!(matches!(
+    assert!(
         validate_checkout(
             CheckoutMode {
                 access: AccessMode::ReadWrite,
@@ -9123,12 +9123,9 @@ fn remaining_facade_guards_are_fast_typed_and_non_mutating()
                 mutations: MutationMode::PrivateOverlay,
             },
             serialized_config(),
-        ),
-        Err(OperationFailure {
-            error: FsError::UnsupportedCheckout,
-            ..
-        })
-    ));
+        )
+        .is_ok()
+    );
 
     let prior = WorkCounters {
         bytes_copied: u64::MAX,

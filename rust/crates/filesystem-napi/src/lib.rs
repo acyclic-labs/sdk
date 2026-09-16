@@ -3572,8 +3572,9 @@ impl NativeCheckout {
         recursive: bool,
     ) -> Result<NativeWatcher> {
         let source_root = PathBuf::from(source_root);
-        let watcher = FsNativeWatch::open(
+        let watcher = FsNativeWatch::open_with_profile(
             &source_root,
+            self.config.profile,
             NativeWatchOptions {
                 limits: self.config.limits,
                 maximum_queued_changes,
@@ -7250,8 +7251,9 @@ mod tests {
         assert!(!shared.lock().await.has_pending_mutations());
 
         let watcher = NativeWatcher {
-            inner: std::sync::Mutex::new(FsNativeWatch::open(
+            inner: std::sync::Mutex::new(FsNativeWatch::open_with_profile(
                 source_root.path(),
+                test_config().profile,
                 NativeWatchOptions {
                     limits: test_config().limits,
                     maximum_queued_changes: 64,

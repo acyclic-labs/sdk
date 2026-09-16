@@ -93,10 +93,8 @@ shape when its execution boundary moves to the hosted service:
 use acyclic_fs::{Fs, HostedFsOptions, IdempotencyKey};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-let filesystem = Fs::hosted(HostedFsOptions::new(
-    "https://fs.example",
-    "account-token",
-)).await?;
+// Discovers ACYCLIC_FILESYSTEM_ENDPOINT and ACYCLIC_API_KEY.
+let filesystem = Fs::hosted(HostedFsOptions::default()).await?;
 let workspace = filesystem.open_workspace("project").await?;
 let base = workspace.head().await?;
 let mut transaction = workspace.begin_transaction(IdempotencyKey::new());
@@ -107,6 +105,13 @@ let exact = workspace.generation(base.id().to_vec()).await?;
 # Ok(())
 # }
 ```
+
+TypeScript provides the same discovery contract through
+`openHostedFsFromEnv()`. Explicit options remain available in both SDKs for
+non-standard runtimes. When the deployment advertises source reconciliation,
+hosted workspaces also expose source state, reconcile, rescan, and seal through
+the canonical filesystem protocol; deployments without a source provider report
+that capability as unavailable.
 
 Use the high-level Inference API against an authenticated service. Placement,
 batching, KV movement, and rebalancing remain service internals:

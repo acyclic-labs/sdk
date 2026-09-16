@@ -622,13 +622,18 @@ pub(crate) fn host_name(name: &LogicalName) -> Result<OsString, MaterializeError
         NameEncoding::Utf8 => std::str::from_utf8(name.as_bytes())
             .map(OsString::from)
             .map_err(|_| MaterializeError::UnrepresentableName),
-        NameEncoding::WindowsUtf16Le => Ok(OsString::from_wide(
-            &name
+        NameEncoding::WindowsUtf16Le => {
+            let units = name
                 .as_bytes()
                 .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-                .collect::<Vec<_>>(),
-        )),
+                .map(|pair| {
+                    pair.try_into()
+                        .map(u16::from_le_bytes)
+                        .map_err(|_| MaterializeError::UnrepresentableName)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(OsString::from_wide(&units))
+        }
         NameEncoding::PosixBytes => Err(MaterializeError::UnrepresentableName),
     }
 }
@@ -721,8 +726,12 @@ fn create_symlink(
     }
     let units = target
         .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect::<Vec<_>>();
+        .map(|pair| {
+            pair.try_into()
+                .map(u16::from_le_bytes)
+                .map_err(|_| MaterializeError::UnrepresentableName)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     host_root
         .symlink_file(Path::new(&OsString::from_wide(&units)), destination)
         .map_err(Into::into)

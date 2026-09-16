@@ -13,6 +13,7 @@ use thiserror::Error;
 
 const PAYLOAD_DOMAIN: &[u8] = b"acyclic-fs-publish-generation-v1\0";
 const FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-publish-fingerprint-v1\0";
+const CONTEXTUAL_FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-publish-fingerprint-v2\0";
 
 /// Complete caller preconditions for publishing one immutable generation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,7 +151,7 @@ pub fn publish_generation<O: crate::ImmediateObjectStore, A: crate::ImmediateAut
     validate_authority(request)?;
     let proof = prove_generation_closure(objects, request.generation_root, closure_limits, budget)
         .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-    let prepared = prepare_publication(proof, request, budget)?;
+    let prepared = prepare_publication(proof, request, None, budget)?;
     let mut work = prepared.work;
     let remaining = work
         .remaining(budget)
@@ -194,6 +195,54 @@ pub async fn publish_generation_async<O: crate::AsyncObjectStore, A: crate::Asyn
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<PublicationReceipt, PublicationFailure> {
+    publish_generation_async_inner(
+        objects,
+        authority,
+        request,
+        None,
+        closure_limits,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+pub(crate) async fn publish_generation_async_with_context<
+    O: crate::AsyncObjectStore,
+    A: crate::AsyncAuthorityStore,
+>(
+    objects: &O,
+    authority: &A,
+    request: PublishGenerationRequest,
+    operation_context: Digest,
+    closure_limits: ClosureLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<PublicationReceipt, PublicationFailure> {
+    publish_generation_async_inner(
+        objects,
+        authority,
+        request,
+        Some(operation_context),
+        closure_limits,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+async fn publish_generation_async_inner<
+    O: crate::AsyncObjectStore,
+    A: crate::AsyncAuthorityStore,
+>(
+    objects: &O,
+    authority: &A,
+    request: PublishGenerationRequest,
+    operation_context: Option<Digest>,
+    closure_limits: ClosureLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<PublicationReceipt, PublicationFailure> {
     validate_authority(request)?;
     let proof = prove_generation_closure_async(
         objects,
@@ -204,7 +253,7 @@ pub async fn publish_generation_async<O: crate::AsyncObjectStore, A: crate::Asyn
     )
     .await
     .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-    let prepared = prepare_publication(proof, request, budget)?;
+    let prepared = prepare_publication(proof, request, operation_context, budget)?;
     let mut work = prepared.work;
     let remaining = work
         .remaining(budget)
@@ -235,6 +284,7 @@ pub async fn publish_generation_async<O: crate::AsyncObjectStore, A: crate::Asyn
 fn prepare_publication(
     proof: GenerationProof,
     request: PublishGenerationRequest,
+    operation_context: Option<Digest>,
     budget: WorkBudget,
 ) -> Result<PreparedPublication, PublicationFailure> {
     let mut work = proof.work;
@@ -248,7 +298,9 @@ fn prepare_publication(
         ));
     }
     let payload_bytes = u64::try_from(publication_payload_length()).unwrap_or(u64::MAX);
-    let fingerprint_bytes = u64::try_from(fingerprint_input_length()).unwrap_or(u64::MAX);
+    let fingerprint_bytes =
+        u64::try_from(fingerprint_input_length(operation_context)).unwrap_or(u64::MAX);
+    let fingerprint_domain = fingerprint_domain(operation_context);
     let peak_allocation_bytes = payload_bytes
         .checked_add(fingerprint_bytes)
         .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?;
@@ -256,7 +308,7 @@ fn prepare_publication(
         bytes_encoded: payload_bytes
             .checked_add(fingerprint_bytes)
             .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?,
-        bytes_hashed: u64::try_from(FINGERPRINT_DOMAIN.len())
+        bytes_hashed: u64::try_from(fingerprint_domain.len())
             .unwrap_or(u64::MAX)
             .checked_add(fingerprint_bytes)
             .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?,
@@ -271,11 +323,7 @@ fn prepare_publication(
     work.verify(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
     let payload = encode_publication_payload(request.volume_id, request.generation_root);
-    let fingerprint_input = encode_fingerprint_input(&request, &payload);
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(FINGERPRINT_DOMAIN);
-    hasher.update(&fingerprint_input);
-    let fingerprint = Digest::from_bytes(*hasher.finalize().as_bytes());
+    let fingerprint = publication_fingerprint(request, operation_context, &payload);
     Ok(PreparedPublication {
         proof,
         commit: ProposedCommit {
@@ -285,6 +333,27 @@ fn prepare_publication(
         },
         work,
     })
+}
+
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub(crate) fn contextual_publication_fingerprint(
+    request: PublishGenerationRequest,
+    operation_context: Digest,
+) -> Digest {
+    let payload = encode_publication_payload(request.volume_id, request.generation_root);
+    publication_fingerprint(request, Some(operation_context), &payload)
+}
+
+fn publication_fingerprint(
+    request: PublishGenerationRequest,
+    operation_context: Option<Digest>,
+    payload: &[u8],
+) -> Digest {
+    let fingerprint_input = encode_fingerprint_input(&request, operation_context, payload);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(fingerprint_domain(operation_context));
+    hasher.update(&fingerprint_input);
+    Digest::from_bytes(*hasher.finalize().as_bytes())
 }
 
 fn validate_authority(request: PublishGenerationRequest) -> Result<(), PublicationFailure> {
@@ -306,8 +375,13 @@ const fn publication_payload_length() -> usize {
     PAYLOAD_DOMAIN.len() + 2 + 16 + 1 + 32
 }
 
-const fn fingerprint_input_length() -> usize {
-    16 + 8 + 8 + 8 + 32 + publication_payload_length()
+const fn fingerprint_input_length(operation_context: Option<Digest>) -> usize {
+    16 + 8
+        + 8
+        + 8
+        + 32
+        + publication_payload_length()
+        + if operation_context.is_some() { 32 } else { 0 }
 }
 
 pub(crate) fn encode_publication_payload(
@@ -323,13 +397,28 @@ pub(crate) fn encode_publication_payload(
     bytes
 }
 
-fn encode_fingerprint_input(request: &PublishGenerationRequest, payload: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(fingerprint_input_length());
+fn fingerprint_domain(operation_context: Option<Digest>) -> &'static [u8] {
+    if operation_context.is_some() {
+        CONTEXTUAL_FINGERPRINT_DOMAIN
+    } else {
+        FINGERPRINT_DOMAIN
+    }
+}
+
+fn encode_fingerprint_input(
+    request: &PublishGenerationRequest,
+    operation_context: Option<Digest>,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(fingerprint_input_length(operation_context));
     bytes.extend_from_slice(&request.authority_id.into_bytes());
     bytes.extend_from_slice(&request.epoch.get().to_le_bytes());
     bytes.extend_from_slice(&request.expected.epoch.get().to_le_bytes());
     bytes.extend_from_slice(&request.expected.sequence.get().to_le_bytes());
     bytes.extend_from_slice(request.expected.digest.as_bytes());
+    if let Some(context) = operation_context {
+        bytes.extend_from_slice(context.as_bytes());
+    }
     bytes.extend_from_slice(payload);
     bytes
 }

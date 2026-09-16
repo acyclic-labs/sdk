@@ -111,7 +111,7 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
     ));
     let conflicting = ProposedCommit {
         fingerprint: Digest::from_bytes([10; 32]),
-        ..proposal
+        ..proposal.clone()
     };
     assert!(matches!(
         store
@@ -119,7 +119,7 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
                 authority_id,
                 Epoch::GENESIS,
                 Head::genesis(Epoch::GENESIS),
-                conflicting,
+                conflicting.clone(),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )
@@ -174,6 +174,51 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
             .await?
             .value,
         FenceOutcome::Advanced(_)
+    ));
+    assert_eq!(
+        store
+            .compare_and_append(
+                authority_id,
+                Epoch::GENESIS,
+                Head::genesis(Epoch::GENESIS),
+                proposal.clone(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value,
+        AppendOutcome::AlreadyCommitted(commit)
+    );
+    assert!(matches!(
+        store
+            .compare_and_append(
+                authority_id,
+                Epoch::GENESIS,
+                Head::genesis(Epoch::GENESIS),
+                conflicting,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value,
+        AppendOutcome::IdempotencyConflict { .. }
+    ));
+    assert!(matches!(
+        store
+            .compare_and_append(
+                authority_id,
+                Epoch::GENESIS,
+                Head::genesis(Epoch::GENESIS),
+                ProposedCommit {
+                    operation_id: OperationId::from_bytes([18; 16]),
+                    ..proposal
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value,
+        AppendOutcome::Fenced { .. }
     ));
     store
         .create_authority(

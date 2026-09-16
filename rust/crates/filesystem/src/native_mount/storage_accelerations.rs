@@ -349,7 +349,7 @@ fn block_clone_probe(
     target.seek(SeekFrom::Start(0))?;
     let mut isolated = [0_u8; 4_096];
     target.read_exact(&mut isolated)?;
-    if isolated.as_slice() != &expected[..4_096] {
+    if !expected.starts_with(&isolated) {
         return Err(NativeStorageAccelerationError::Invalid(
             "block clone did not preserve copy-on-write isolation",
         ));

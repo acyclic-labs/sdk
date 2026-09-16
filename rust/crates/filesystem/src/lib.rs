@@ -48,7 +48,9 @@ mod wire_service;
 #[cfg(not(target_arch = "wasm32"))]
 pub use wire_service::{
     CredentialGrant, CredentialGrantRequest, CredentialKind, FilesystemCredentialIssuer,
-    FilesystemWireLimits, FilesystemWireService,
+    FilesystemSourceProvider, FilesystemWireLimits, FilesystemWireService,
+    HostedSourceInvalidation, HostedSourceOperation, HostedSourceResult, HostedSourceScope,
+    HostedSourceState,
 };
 
 /// Canonical public descriptor set used by compatibility and conformance gates.
@@ -94,6 +96,8 @@ pub mod native_capture;
 pub mod native_host;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub mod native_mount;
+#[cfg(feature = "native-watch")]
+mod native_name;
 pub mod notification;
 pub mod path;
 pub mod performance;
@@ -146,7 +150,8 @@ pub use foundation::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use hosted::{
-    HostedFs, HostedFsError, HostedFsOptions, HostedGeneration, HostedTransaction, HostedWorkspace,
+    HostedFs, HostedFsError, HostedFsOptions, HostedGeneration, HostedS3Access,
+    HostedS3AccessOptions, HostedTransaction, HostedWorkspace,
 };
 pub use kernel::{
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,

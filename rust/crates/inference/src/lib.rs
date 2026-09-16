@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::Request;
@@ -24,6 +25,14 @@ pub const DESCRIPTOR: &[u8] = include_bytes!("../inference_descriptor.bin");
 pub const MAXIMUM_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 /// Largest caller-supplied PEM trust bundle accepted by [`Inference::connect`].
 pub const MAXIMUM_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
+/// Maximum immutable candidates admitted by one evaluation.
+pub const MAXIMUM_EVALUATION_CANDIDATES: usize = 256;
+/// Maximum ordered cases admitted by one evaluation suite.
+pub const MAXIMUM_EVALUATION_CASES: usize = 4_096;
+/// Maximum metric identities admitted by one evaluation.
+pub const MAXIMUM_EVALUATION_METRICS: usize = 64;
+/// Maximum materialized candidate/case results in one evaluation.
+pub const MAXIMUM_EVALUATION_RESULTS: u64 = 65_536;
 const INVALID_CA_CERTIFICATE_LENGTH: &str = "CA certificate must contain 1 to 65536 bytes";
 
 impl Drop for wire::Item {
@@ -175,6 +184,33 @@ impl Inference {
             .max_encoding_message_size(MAXIMUM_MESSAGE_BYTES)
     }
 
+    fn evaluations(&self) -> wire::evaluations_service_client::EvaluationsServiceClient<Channel> {
+        wire::evaluations_service_client::EvaluationsServiceClient::new(self.0.channel.clone())
+            .max_decoding_message_size(MAXIMUM_MESSAGE_BYTES)
+            .max_encoding_message_size(MAXIMUM_MESSAGE_BYTES)
+    }
+
+    /// Prepare one immutable evaluation admission with a caller-known identity.
+    #[must_use]
+    pub fn evaluation(&self, spec: wire::EvaluationSpec) -> CreateEvaluation {
+        CreateEvaluation {
+            client: self.clone(),
+            request: wire::CreateEvaluationRequest {
+                identity: Some(self.identity()),
+                spec: Some(spec),
+            },
+        }
+    }
+
+    /// Recover one previously admitted evaluation without admitting new work.
+    #[must_use]
+    pub fn recover_evaluation(&self, evaluation_id: [u8; 16]) -> Evaluation {
+        Evaluation {
+            client: self.clone(),
+            evaluation_id,
+        }
+    }
+
     /// Discover exact model revisions and the customer features currently admitted for them.
     ///
     /// # Errors
@@ -280,6 +316,88 @@ fn bounded<M: prost::Message>(message: &M) -> Result<(), Error> {
         return Err(Error::Invalid("message exceeds transport ceiling"));
     }
     Ok(())
+}
+
+/// Replayable immutable evaluation admission. Reusing this value reconciles the
+/// same candidate/suite/grader contract and never creates another evaluation.
+#[derive(Clone)]
+pub struct CreateEvaluation {
+    client: Inference,
+    request: wire::CreateEvaluationRequest,
+}
+
+impl CreateEvaluation {
+    /// Caller-known evaluation identity allocated before network effects.
+    pub fn id(&self) -> Result<[u8; 16], Error> {
+        fixed(
+            &self
+                .request
+                .identity
+                .as_ref()
+                .ok_or(Error::Invalid("missing evaluation identity"))?
+                .request_id,
+        )
+    }
+
+    /// Admit or reconcile this exact immutable evaluation.
+    pub async fn send(&self) -> Result<Evaluation, Error> {
+        bounded(&self.request)?;
+        let expected = self.id()?;
+        validate_evaluation_spec(
+            self.request
+                .spec
+                .as_ref()
+                .ok_or(Error::Invalid("evaluation spec is absent"))?,
+        )?;
+        let view = self
+            .client
+            .evaluations()
+            .create(self.client.request(self.request.clone())?)
+            .await?
+            .into_inner();
+        validate_evaluation_admission(
+            &view,
+            expected,
+            self.request
+                .spec
+                .as_ref()
+                .ok_or(Error::Invalid("evaluation spec is absent"))?,
+        )?;
+        Ok(Evaluation {
+            client: self.client.clone(),
+            evaluation_id: expected,
+        })
+    }
+}
+
+/// Recoverable immutable evaluation handle.
+#[derive(Clone)]
+pub struct Evaluation {
+    client: Inference,
+    evaluation_id: [u8; 16],
+}
+
+impl Evaluation {
+    /// Stable caller-known evaluation identity.
+    #[must_use]
+    pub const fn id(&self) -> [u8; 16] {
+        self.evaluation_id
+    }
+
+    /// Inspect durable evaluation state and exact result evidence.
+    pub async fn inspect(&self) -> Result<wire::EvaluationView, Error> {
+        nonzero(&self.evaluation_id)?;
+        let view = self
+            .client
+            .evaluations()
+            .inspect(self.client.request(wire::InspectEvaluationRequest {
+                evaluation_id: self.evaluation_id.to_vec(),
+            })?)
+            .await?
+            .into_inner();
+        validate_evaluation_view(&view, self.evaluation_id)?;
+        Ok(view)
+    }
 }
 
 /// Replayable creation builder. Reusing it reconciles the same exact command.
@@ -855,6 +973,254 @@ impl RunEvents {
     }
 }
 
+fn validate_evaluation_spec(spec: &wire::EvaluationSpec) -> Result<(), Error> {
+    if spec.candidates.is_empty() || spec.candidates.len() > MAXIMUM_EVALUATION_CANDIDATES {
+        return Err(Error::Invalid("evaluation candidate count is invalid"));
+    }
+    let mut candidate_digests = std::collections::BTreeSet::new();
+    for candidate in &spec.candidates {
+        let digest = fixed::<32>(&candidate.digest)?;
+        if candidate.media_type.is_empty()
+            || candidate.media_type.len() > 256
+            || candidate.logical_size == 0
+            || !candidate_digests.insert(digest)
+        {
+            return Err(Error::Invalid("evaluation candidate is invalid"));
+        }
+    }
+
+    let suite = spec
+        .suite
+        .as_ref()
+        .ok_or(Error::Invalid("evaluation suite is absent"))?;
+    if suite.identity.is_empty()
+        || suite.identity.len() > 256
+        || suite.cases.is_empty()
+        || suite.cases.len() > MAXIMUM_EVALUATION_CASES
+    {
+        return Err(Error::Invalid("evaluation suite is invalid"));
+    }
+    fixed::<32>(&suite.digest)?;
+    let mut case_ids = std::collections::BTreeSet::new();
+    for case in &suite.cases {
+        let case_id = fixed::<16>(&case.case_id)?;
+        let inline = !case.input.is_empty();
+        let artifact = case.input_artifact_digest.as_ref();
+        if !case_ids.insert(case_id) || inline == artifact.is_some() {
+            return Err(Error::Invalid("evaluation case is invalid"));
+        }
+        if let Some(digest) = artifact {
+            fixed::<32>(digest)?;
+        }
+    }
+
+    let grader = spec
+        .grader
+        .as_ref()
+        .ok_or(Error::Invalid("evaluation grader is absent"))?;
+    if grader.handle.is_empty() || grader.handle.len() > 4_096 {
+        return Err(Error::Invalid("evaluation grader is invalid"));
+    }
+    fixed::<32>(&grader.artifact_digest)?;
+
+    if spec.metrics.is_empty() || spec.metrics.len() > MAXIMUM_EVALUATION_METRICS {
+        return Err(Error::Invalid("evaluation metric count is invalid"));
+    }
+    let mut metric_ids = std::collections::BTreeSet::new();
+    for metric in &spec.metrics {
+        if metric.identity.is_empty()
+            || metric.identity.len() > 256
+            || !metric_ids.insert(metric.identity.as_str())
+            || wire::EvaluationAggregation::try_from(metric.aggregation)
+                .unwrap_or(wire::EvaluationAggregation::Unspecified)
+                == wire::EvaluationAggregation::Unspecified
+        {
+            return Err(Error::Invalid("evaluation metric is invalid"));
+        }
+    }
+
+    let possible_results = u64::try_from(spec.candidates.len())
+        .ok()
+        .and_then(|candidates| {
+            u64::try_from(suite.cases.len())
+                .ok()
+                .and_then(|cases| candidates.checked_mul(cases))
+        })
+        .ok_or(Error::Invalid("evaluation result count overflow"))?;
+    if spec.maximum_case_results == 0
+        || spec.maximum_case_results > possible_results
+        || spec.maximum_case_results > MAXIMUM_EVALUATION_RESULTS
+    {
+        return Err(Error::Invalid("evaluation result bound is invalid"));
+    }
+    fixed::<32>(&spec.spec_digest)?;
+    Ok(())
+}
+
+fn validate_exact_rational(value: Option<&wire::ExactRational>) -> Result<(), Error> {
+    if value.is_none_or(|value| value.denominator == 0) {
+        return Err(Error::Invalid("evaluation rational is invalid"));
+    }
+    Ok(())
+}
+
+fn evaluation_observation_binding(native: &[u8; 32], observation: &[u8; 32]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"acyclic.inference.grader-observation.v1\0");
+    digest.update(native);
+    digest.update(observation);
+    digest.finalize().into()
+}
+
+fn validate_evaluation_admission(
+    view: &wire::EvaluationView,
+    expected: [u8; 16],
+    expected_spec: &wire::EvaluationSpec,
+) -> Result<(), Error> {
+    if view.spec.as_ref() != Some(expected_spec) {
+        return Err(Error::Invalid("evaluation admission spec differs"));
+    }
+    validate_evaluation_view(view, expected)
+}
+
+fn validate_evaluation_view(view: &wire::EvaluationView, expected: [u8; 16]) -> Result<(), Error> {
+    if fixed::<16>(&view.evaluation_id)? != expected || view.sequence == 0 {
+        return Err(Error::Invalid("evaluation identity differs"));
+    }
+    let spec = view
+        .spec
+        .as_ref()
+        .ok_or(Error::Invalid("evaluation spec is absent"))?;
+    validate_evaluation_spec(spec)?;
+    let state =
+        wire::EvaluationState::try_from(view.state).unwrap_or(wire::EvaluationState::Unspecified);
+    if state == wire::EvaluationState::Unspecified
+        || (state == wire::EvaluationState::Completed) != view.result.is_some()
+    {
+        return Err(Error::Invalid("evaluation state is invalid"));
+    }
+    let Some(result) = &view.result else {
+        return Ok(());
+    };
+    validate_evaluation_result(spec, result)
+}
+
+fn validate_evaluation_result(
+    spec: &wire::EvaluationSpec,
+    result: &wire::EvaluationResult,
+) -> Result<(), Error> {
+    if fixed::<32>(&result.spec_digest)? != fixed::<32>(&spec.spec_digest)?
+        || result.case_results.is_empty()
+        || u64::try_from(result.case_results.len()).unwrap_or(u64::MAX) != spec.maximum_case_results
+    {
+        return Err(Error::Invalid("evaluation result is invalid"));
+    }
+    fixed::<32>(&result.result_digest)?;
+
+    let suite = spec
+        .suite
+        .as_ref()
+        .ok_or(Error::Invalid("evaluation suite is absent"))?;
+    let candidates: std::collections::BTreeSet<_> = spec
+        .candidates
+        .iter()
+        .map(|candidate| candidate.digest.as_slice())
+        .collect();
+    let cases: std::collections::BTreeSet<_> = suite
+        .cases
+        .iter()
+        .map(|case| case.case_id.as_slice())
+        .collect();
+    let metrics: std::collections::BTreeSet<_> = spec
+        .metrics
+        .iter()
+        .map(|metric| metric.identity.as_str())
+        .collect();
+    let mut observations = std::collections::BTreeSet::new();
+    for case in &result.case_results {
+        validate_evaluation_case(case, &candidates, &cases, &metrics, &mut observations)?;
+    }
+    validate_evaluation_aggregates(spec, result, &candidates, &metrics)
+}
+
+fn validate_evaluation_case<'a>(
+    case: &'a wire::EvaluationCaseResult,
+    candidates: &std::collections::BTreeSet<&[u8]>,
+    cases: &std::collections::BTreeSet<&[u8]>,
+    metrics: &std::collections::BTreeSet<&str>,
+    observations: &mut std::collections::BTreeSet<(&'a [u8], &'a [u8])>,
+) -> Result<(), Error> {
+    let observation = case
+        .observation
+        .as_ref()
+        .ok_or(Error::Invalid("evaluation grader observation is absent"))?;
+    let native_output_digest = fixed::<32>(&observation.native_output_digest)?;
+    let grader_observation_digest = fixed::<32>(&observation.observation_digest)?;
+    if fixed::<32>(&observation.binding_digest)?
+        != evaluation_observation_binding(&native_output_digest, &grader_observation_digest)
+    {
+        return Err(Error::Invalid(
+            "evaluation grader observation binding differs",
+        ));
+    }
+    let outcome = wire::EvaluationCaseOutcome::try_from(case.outcome)
+        .unwrap_or(wire::EvaluationCaseOutcome::Unspecified);
+    if !candidates.contains(case.candidate_digest.as_slice())
+        || !cases.contains(case.case_id.as_slice())
+        || !observations.insert((case.candidate_digest.as_slice(), case.case_id.as_slice()))
+        || outcome == wire::EvaluationCaseOutcome::Unspecified
+    {
+        return Err(Error::Invalid("evaluation case result is invalid"));
+    }
+    let mut observed_metrics = std::collections::BTreeSet::new();
+    for metric in &case.metrics {
+        if !metrics.contains(metric.metric_identity.as_str())
+            || !observed_metrics.insert(metric.metric_identity.as_str())
+        {
+            return Err(Error::Invalid("evaluation case metric is invalid"));
+        }
+        validate_exact_rational(metric.value.as_ref())?;
+    }
+    if (outcome == wire::EvaluationCaseOutcome::Scored && observed_metrics.len() != metrics.len())
+        || (outcome != wire::EvaluationCaseOutcome::Scored && !observed_metrics.is_empty())
+    {
+        return Err(Error::Invalid("evaluation case metric coverage is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_evaluation_aggregates(
+    spec: &wire::EvaluationSpec,
+    result: &wire::EvaluationResult,
+    candidates: &std::collections::BTreeSet<&[u8]>,
+    metrics: &std::collections::BTreeSet<&str>,
+) -> Result<(), Error> {
+    let mut aggregates = std::collections::BTreeSet::new();
+    for aggregate in &result.aggregates {
+        let Some(metric) = spec
+            .metrics
+            .iter()
+            .find(|metric| metric.identity == aggregate.metric_identity)
+        else {
+            return Err(Error::Invalid("evaluation aggregate metric is invalid"));
+        };
+        if !candidates.contains(aggregate.candidate_digest.as_slice())
+            || metric.aggregation != aggregate.aggregation
+            || !aggregates.insert((
+                aggregate.candidate_digest.as_slice(),
+                aggregate.metric_identity.as_str(),
+            ))
+        {
+            return Err(Error::Invalid("evaluation aggregate is invalid"));
+        }
+        validate_exact_rational(aggregate.value.as_ref())?;
+    }
+    if aggregates.len() != candidates.len().saturating_mul(metrics.len()) {
+        return Err(Error::Invalid("evaluation aggregate coverage is invalid"));
+    }
+    Ok(())
+}
+
 fn validate_run_view(view: &wire::RunView, expected: [u8; 16]) -> Result<(), Error> {
     if fixed::<16>(&view.run_id)? != expected || fixed::<32>(&view.input).is_err() {
         return Err(Error::Invalid("Run identity differs"));
@@ -984,6 +1350,80 @@ mod tests {
     use super::*;
     use prost::Message;
 
+    fn evaluation_spec() -> wire::EvaluationSpec {
+        wire::EvaluationSpec {
+            candidates: vec![wire::EvaluationArtifact {
+                digest: vec![1; 32],
+                media_type: "application/vnd.acyclic.model".to_owned(),
+                logical_size: 1024,
+            }],
+            suite: Some(wire::EvaluationSuite {
+                identity: "native-output-binding-v1".to_owned(),
+                digest: vec![2; 32],
+                cases: vec![wire::EvaluationCase {
+                    case_id: vec![3; 16],
+                    input: b"deterministic device input".to_vec(),
+                    input_artifact_digest: None,
+                }],
+            }),
+            grader: Some(wire::EvaluationGrader {
+                handle: b"grader://exact-v1".to_vec(),
+                artifact_digest: vec![4; 32],
+            }),
+            metrics: vec![wire::EvaluationMetric {
+                identity: "exact-match".to_owned(),
+                aggregation: wire::EvaluationAggregation::Mean.into(),
+            }],
+            maximum_case_results: 1,
+            spec_digest: vec![5; 32],
+        }
+    }
+
+    fn completed_evaluation() -> wire::EvaluationView {
+        let native_output_digest = [7; 32];
+        let grader_observation_digest = [8; 32];
+        wire::EvaluationView {
+            evaluation_id: vec![6; 16],
+            spec: Some(evaluation_spec()),
+            state: wire::EvaluationState::Completed.into(),
+            result: Some(wire::EvaluationResult {
+                spec_digest: vec![5; 32],
+                case_results: vec![wire::EvaluationCaseResult {
+                    candidate_digest: vec![1; 32],
+                    case_id: vec![3; 16],
+                    observation: Some(wire::EvaluationGraderObservation {
+                        native_output_digest: native_output_digest.to_vec(),
+                        observation_digest: grader_observation_digest.to_vec(),
+                        binding_digest: evaluation_observation_binding(
+                            &native_output_digest,
+                            &grader_observation_digest,
+                        )
+                        .to_vec(),
+                    }),
+                    metrics: vec![wire::EvaluationMetricValue {
+                        metric_identity: "exact-match".to_owned(),
+                        value: Some(wire::ExactRational {
+                            numerator: 1,
+                            denominator: 1,
+                        }),
+                    }],
+                    outcome: wire::EvaluationCaseOutcome::Scored.into(),
+                }],
+                aggregates: vec![wire::EvaluationAggregate {
+                    candidate_digest: vec![1; 32],
+                    metric_identity: "exact-match".to_owned(),
+                    aggregation: wire::EvaluationAggregation::Mean.into(),
+                    value: Some(wire::ExactRational {
+                        numerator: 1,
+                        denominator: 1,
+                    }),
+                }],
+                result_digest: vec![9; 32],
+            }),
+            sequence: 2,
+        }
+    }
+
     #[test]
     #[allow(
         clippy::indexing_slicing,
@@ -995,7 +1435,7 @@ mod tests {
         let file = &descriptor.file[0];
         assert_eq!(file.package.as_deref(), Some("inference.customer.v1"));
         assert!(file.dependency.is_empty());
-        assert_eq!(file.service.len(), 4);
+        assert_eq!(file.service.len(), 5);
         assert_eq!(file.service[0].name.as_deref(), Some("ModelsService"));
         assert_eq!(file.service[0].method.len(), 1);
         assert_eq!(file.service[1].name.as_deref(), Some("ContextsService"));
@@ -1004,6 +1444,8 @@ mod tests {
         assert_eq!(file.service[2].method.len(), 4);
         assert_eq!(file.service[3].name.as_deref(), Some("RunsService"));
         assert_eq!(file.service[3].method.len(), 4);
+        assert_eq!(file.service[4].name.as_deref(), Some("EvaluationsService"));
+        assert_eq!(file.service[4].method.len(), 2);
         let names: Vec<_> = file
             .message_type
             .iter()
@@ -1021,6 +1463,21 @@ mod tests {
                 "RenewWarmRequest",
                 "ReleaseWarmRequest",
                 "WarmView",
+                "EvaluationArtifact",
+                "EvaluationCase",
+                "EvaluationSuite",
+                "EvaluationGrader",
+                "EvaluationMetric",
+                "EvaluationSpec",
+                "CreateEvaluationRequest",
+                "InspectEvaluationRequest",
+                "ExactRational",
+                "EvaluationMetricValue",
+                "EvaluationCaseResult",
+                "EvaluationGraderObservation",
+                "EvaluationAggregate",
+                "EvaluationResult",
+                "EvaluationView",
                 "RequestIdentity",
                 "Item",
                 "CreateContextRequest",
@@ -1084,6 +1541,60 @@ mod tests {
         assert!(authorization("line\nbreak").is_err());
         let secret = authorization("secret")?;
         assert_eq!(secret.as_str(), "Bearer secret");
+        Ok(())
+    }
+
+    #[test]
+    fn evaluation_contract_binds_native_output_to_exact_grader_observation() -> Result<(), Error> {
+        let view = completed_evaluation();
+        validate_evaluation_view(&view, [6; 16])?;
+
+        let mut wrong_output = view.clone();
+        wrong_output
+            .result
+            .as_mut()
+            .and_then(|result| result.case_results.first_mut())
+            .and_then(|result| result.observation.as_mut())
+            .ok_or(Error::Invalid("missing case result"))?
+            .native_output_digest = vec![0; 32];
+        assert!(validate_evaluation_view(&wrong_output, [6; 16]).is_err());
+
+        let mut wrong_grader = view.clone();
+        wrong_grader
+            .result
+            .as_mut()
+            .and_then(|result| result.case_results.first_mut())
+            .and_then(|result| result.observation.as_mut())
+            .ok_or(Error::Invalid("missing case result"))?
+            .observation_digest = vec![9; 32];
+        assert!(validate_evaluation_view(&wrong_grader, [6; 16]).is_err());
+
+        let mut missing_score = view.clone();
+        missing_score
+            .result
+            .as_mut()
+            .and_then(|result| result.case_results.first_mut())
+            .ok_or(Error::Invalid("missing case result"))?
+            .metrics
+            .clear();
+        assert!(validate_evaluation_view(&missing_score, [6; 16]).is_err());
+
+        let mut missing_aggregate = view.clone();
+        missing_aggregate
+            .result
+            .as_mut()
+            .ok_or(Error::Invalid("missing evaluation result"))?
+            .aggregates
+            .clear();
+        assert!(validate_evaluation_view(&missing_aggregate, [6; 16]).is_err());
+
+        let mut changed_spec = evaluation_spec();
+        changed_spec.spec_digest = vec![10; 32];
+        assert!(validate_evaluation_admission(&view, [6; 16], &changed_spec).is_err());
+
+        let mut unbounded = evaluation_spec();
+        unbounded.maximum_case_results = 2;
+        assert!(validate_evaluation_spec(&unbounded).is_err());
         Ok(())
     }
 

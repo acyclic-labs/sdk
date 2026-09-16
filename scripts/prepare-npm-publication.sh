@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-validate_release_object_type() {
-  case "$1" in tag|commit) ;; *) echo 'release tag must resolve to a tag or commit' >&2; return 1 ;; esac
-}
-
 qualified_npm_package() {
   case "$1" in
     objects) printf '%s\t%s\t%s\n' @acyclic-labs/objects objects objects ;;
@@ -15,6 +11,17 @@ qualified_npm_package() {
     sdk) printf '%s\t%s\t%s\n' @acyclic-labs/sdk sdk sdk ;;
     *) echo 'package has no qualified npm release' >&2; return 1 ;;
   esac
+}
+
+qualified_run() {
+  local source_sha=$1
+  jq -er --arg sha "$source_sha" '
+    [.workflow_runs[] | select(
+      .head_sha == $sha and .status == "completed" and .conclusion == "success"
+    )]
+    | sort_by([.run_number, .run_attempt]) | last
+    | [.id, .run_attempt] | @tsv
+  '
 }
 
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then return 0; fi
@@ -31,33 +38,33 @@ version=${subject#*/}
 IFS=$'\t' read -r package directory asset_slug < <(qualified_npm_package "$slug")
 manifest="typescript/packages/$directory/package.json"
 manifest_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "$manifest")
-sdk_version=$(python3 -c 'import json; print(json.load(open("typescript/packages/sdk/package.json", encoding="utf-8"))["version"])')
 test "$version" = "$manifest_version"
-release_tag="typescript-v${sdk_version}"
 
 tag_oid=$(git rev-parse "$GITHUB_REF")
-publish_sha=$(git rev-parse "$GITHUB_REF^{commit}")
-release_oid=$(git rev-parse "refs/tags/${release_tag}")
-source_sha=$(git rev-parse "refs/tags/${release_tag}^{commit}")
+source_sha=$(git rev-parse "$GITHUB_REF^{commit}")
 test "$(git cat-file -t "$tag_oid")" = tag
-validate_release_object_type "$(git cat-file -t "$release_oid")"
-test "$(git rev-parse HEAD)" = "$publish_sha"
-test "$GITHUB_SHA" = "$publish_sha"
-test "$source_sha" = "$publish_sha"
+test "$(git rev-parse HEAD)" = "$source_sha"
+test "$GITHUB_SHA" = "$source_sha"
 git fetch --no-tags origin main
 git merge-base --is-ancestor "$source_sha" origin/main
 
 asset="acyclic-labs-${asset_slug}-${version}.tgz"
-archive="${RUNNER_TEMP:?}/release-npm/${asset}"
-mkdir -p "$(dirname "$archive")"
-sha256=$(python3 scripts/fetch-release-crate.py "$release_tag" "$asset" "$archive")
-observed=$(python3 scripts/validate-npm-package.py "$archive" "$package" "$version" "typescript/packages/$directory")
-test "$sha256" = "$observed"
+artifact_root="${RUNNER_TEMP:?}/qualified-npm"
+mkdir -p "$artifact_root"
+run_json=$(gh api --method GET \
+  "repos/${GITHUB_REPOSITORY:?}/actions/workflows/qualification.yml/runs" \
+  -f head_sha="$source_sha" -f status=success -f event=push -F per_page=20)
+read -r run_id run_attempt < <(qualified_run "$source_sha" <<<"$run_json")
+artifact_name="packages-linux-${run_id}-${run_attempt}"
+gh run download "$run_id" --name "$artifact_name" --dir "$artifact_root"
+archive="$artifact_root/typescript/$asset"
+qualification="$artifact_root/typescript/QUALIFICATION.json"
+test -f "$archive"
+test -f "$qualification"
+sha256=$(python3 scripts/validate-npm-package.py "$archive" "$package" "$version" "typescript/packages/$directory")
 archive_size=$(stat -c %s "$archive")
-qualification="${RUNNER_TEMP}/release-npm/QUALIFICATION.json"
-python3 scripts/fetch-release-crate.py "$release_tag" QUALIFICATION.json "$qualification" >/dev/null
 python3 scripts/typescript-qualification.py verify "$qualification" "$source_sha" "$asset" "$archive"
 
-printf 'NPM_PACKAGE=%s\nNPM_VERSION=%s\nNPM_ARCHIVE=%s\nSOURCE_SHA=%s\nRELEASE_TAG=%s\n' \
-  "$package" "$version" "$archive" "$source_sha" "$release_tag" >> "$GITHUB_ENV"
-printf '%s  %s  %s bytes\n' "$sha256" "$asset" "$archive_size"
+printf 'NPM_PACKAGE=%s\nNPM_VERSION=%s\nNPM_ARCHIVE=%s\nSOURCE_SHA=%s\nQUALIFICATION_RUN=%s\n' \
+  "$package" "$version" "$archive" "$source_sha" "$run_id" >> "$GITHUB_ENV"
+printf '%s  %s  %s bytes  qualification run %s\n' "$sha256" "$asset" "$archive_size" "$run_id"

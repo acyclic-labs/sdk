@@ -7,8 +7,8 @@
 //! and requires a new bounded baseline scan.
 
 use crate::cancellation::{CancellationError, CancellationToken};
-use crate::kernel::{LogicalName, NameEncoding, NamespacePath, NamespacePathError};
-use crate::model::VolumeLimits;
+use crate::kernel::{LogicalName, NamespacePath, NamespacePathError};
+use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
@@ -321,6 +321,21 @@ fn open_native_root(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::File::open(path)
 }
 
+const fn native_filesystem_profile() -> FilesystemProfile {
+    #[cfg(unix)]
+    {
+        FilesystemProfile::Posix
+    }
+    #[cfg(windows)]
+    {
+        FilesystemProfile::Windows
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        FilesystemProfile::Portable
+    }
+}
+
 impl NativeWatchOptions {
     /// Conservative recursive defaults.
     #[must_use]
@@ -343,6 +358,13 @@ impl NativeWatchOptions {
 #[derive(Debug)]
 struct SharedState {
     invalidation: Option<WatchInvalidationReason>,
+}
+
+struct NativeEventContext {
+    root: PathBuf,
+    root_identity: NativeRootIdentity,
+    profile: FilesystemProfile,
+    limits: VolumeLimits,
 }
 
 /// One live native watcher over a materialized checkout root.
@@ -384,6 +406,23 @@ impl NativeWatch {
         root: impl AsRef<Path>,
         options: NativeWatchOptions,
     ) -> Result<Self, NativeWatchError> {
+        Self::open_with_profile(root, native_filesystem_profile(), options)
+    }
+
+    /// Opens a watcher whose emitted names use the supplied volume profile.
+    ///
+    /// Use this when watcher paths feed a volume whose profile can differ from
+    /// the host-native profile selected by [`Self::open`].
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid bounds, an unavailable/non-directory root, allocation
+    /// conversion, poisoned synchronization, or native watcher startup failure.
+    pub fn open_with_profile(
+        root: impl AsRef<Path>,
+        profile: FilesystemProfile,
+        options: NativeWatchOptions,
+    ) -> Result<Self, NativeWatchError> {
         let options = options.validate()?;
         let requested_root = root.as_ref();
         let admission = requested_root
@@ -412,14 +451,18 @@ impl NativeWatch {
         let shared = Arc::new(Mutex::new(SharedState {
             invalidation: Some(WatchInvalidationReason::InitialSnapshotRequired),
         }));
-        let callback_root = root.clone();
         let callback_shared = Arc::clone(&shared);
         let callback_queued = Arc::clone(&queued);
+        let callback_context = NativeEventContext {
+            root: root.clone(),
+            root_identity,
+            profile,
+            limits: options.limits,
+        };
         let mut watcher = notify::recommended_watcher(move |event| {
             accept_native_event(
                 event,
-                &callback_root,
-                options.limits,
+                &callback_context,
                 &sender,
                 &callback_shared,
                 &callback_queued,
@@ -518,6 +561,15 @@ impl NativeWatch {
     pub fn finish_rescan(&mut self) -> Result<WatchBatch, NativeWatchError> {
         if !self.rescan_in_progress {
             return Err(NativeWatchError::NoRescanInProgress);
+        }
+        let observed = open_native_root(&self.root)
+            .and_then(|root| NativeRootIdentity::from_file(&root))
+            .ok();
+        if observed != Some(self.root_identity) {
+            self.shared
+                .lock()
+                .map_err(|_| NativeWatchError::StatePoisoned)?
+                .invalidation = Some(WatchInvalidationReason::RootChanged);
         }
         self.rescan_in_progress = false;
         let shared = self
@@ -745,15 +797,17 @@ impl NativeWatch {
 
 fn accept_native_event(
     event: notify::Result<Event>,
-    root: &Path,
-    limits: VolumeLimits,
+    context: &NativeEventContext,
     sender: &SyncSender<WatchChange>,
     shared: &Arc<Mutex<SharedState>>,
     queued: &Arc<AtomicU32>,
 ) {
     let mapped = event
         .map_err(|_| WatchInvalidationReason::BackendError)
-        .and_then(|event| map_event(&event, root, limits));
+        .and_then(|event| {
+            validate_replayed_root_creation(&event, &context.root, context.root_identity)?;
+            map_event(&event, &context.root, context.profile, context.limits)
+        });
     let Ok(mut state) = shared.lock() else {
         return;
     };
@@ -778,9 +832,29 @@ fn accept_native_event(
     }
 }
 
+fn validate_replayed_root_creation(
+    event: &Event,
+    root: &Path,
+    admitted_root_identity: NativeRootIdentity,
+) -> Result<(), WatchInvalidationReason> {
+    #[cfg(target_os = "macos")]
+    if event.paths.iter().any(|path| path == root) && matches!(event.kind, EventKind::Create(_)) {
+        let observed = open_native_root(root)
+            .and_then(|file| NativeRootIdentity::from_file(&file))
+            .ok();
+        if observed != Some(admitted_root_identity) {
+            return Err(WatchInvalidationReason::RootChanged);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (event, root, admitted_root_identity);
+    Ok(())
+}
+
 fn map_event(
     event: &Event,
     root: &Path,
+    profile: FilesystemProfile,
     limits: VolumeLimits,
 ) -> Result<Vec<WatchChange>, WatchInvalidationReason> {
     if event.need_rescan() {
@@ -797,7 +871,15 @@ fn map_event(
         .try_reserve_exact(event.paths.len())
         .map_err(|_| WatchInvalidationReason::UnrepresentablePath)?;
     for path in &event.paths {
-        paths.push(relative_namespace_path(root, path, limits)?);
+        // The watched root necessarily predates watcher admission. FSEvents
+        // may replay a creation hint for it after the baseline handshake;
+        // that hint cannot describe a new namespace entry and has no capture
+        // target. Root removal and rename remain fail-closed below.
+        #[cfg(target_os = "macos")]
+        if path == root && matches!(event.kind, EventKind::Create(_)) {
+            continue;
+        }
+        paths.push(relative_namespace_path(root, path, profile, limits)?);
     }
     if paths.iter().any(NamespacePath::is_root)
         && matches!(
@@ -806,6 +888,14 @@ fn map_event(
         )
     {
         return Err(WatchInvalidationReason::RootChanged);
+    }
+    // FSEvents may report a coalesced change against the watched directory
+    // itself without identifying the affected descendant. The volume root is
+    // not a mutable namespace entry, so require a bounded baseline instead of
+    // inventing an invalid root mutation or silently losing the change.
+    #[cfg(target_os = "macos")]
+    if paths.iter().any(NamespacePath::is_root) {
+        return Err(WatchInvalidationReason::NativeRescanRequired);
     }
     if let EventKind::Modify(ModifyKind::Name(mode)) = event.kind {
         return match (mode, paths.as_slice()) {
@@ -850,6 +940,7 @@ fn map_event(
 fn relative_namespace_path(
     root: &Path,
     path: &Path,
+    profile: FilesystemProfile,
     limits: VolumeLimits,
 ) -> Result<NamespacePath, WatchInvalidationReason> {
     let relative = path
@@ -860,58 +951,15 @@ fn relative_namespace_path(
         let Component::Normal(name) = component else {
             return Err(WatchInvalidationReason::UnrepresentablePath);
         };
-        let (encoding, bytes) = host_name(name)?;
+        let (encoding, bytes) =
+            crate::native_name::host_name_bytes(name, profile, limits.maximum_component_bytes)
+                .map_err(|_| WatchInvalidationReason::UnrepresentablePath)?;
         let logical = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
             .map_err(|_| WatchInvalidationReason::UnrepresentablePath)?;
         components.push(logical);
     }
     NamespacePath::new(components, limits)
         .map_err(|_error: NamespacePathError| WatchInvalidationReason::UnrepresentablePath)
-}
-
-#[cfg(unix)]
-fn host_name(name: &std::ffi::OsStr) -> Result<(NameEncoding, Vec<u8>), WatchInvalidationReason> {
-    use std::os::unix::ffi::OsStrExt;
-    let source = name.as_bytes();
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(source.len())
-        .map_err(|_| WatchInvalidationReason::UnrepresentablePath)?;
-    bytes.extend_from_slice(source);
-    Ok((NameEncoding::PosixBytes, bytes))
-}
-
-#[cfg(windows)]
-fn host_name(name: &std::ffi::OsStr) -> Result<(NameEncoding, Vec<u8>), WatchInvalidationReason> {
-    use std::os::windows::ffi::OsStrExt;
-    let units = name.encode_wide();
-    let length = units
-        .clone()
-        .count()
-        .checked_mul(2)
-        .ok_or(WatchInvalidationReason::UnrepresentablePath)?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(length)
-        .map_err(|_| WatchInvalidationReason::UnrepresentablePath)?;
-    for unit in units {
-        bytes.extend_from_slice(&unit.to_le_bytes());
-    }
-    Ok((NameEncoding::WindowsUtf16Le, bytes))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn host_name(name: &std::ffi::OsStr) -> Result<(NameEncoding, Vec<u8>), WatchInvalidationReason> {
-    let value = name
-        .to_str()
-        .ok_or(WatchInvalidationReason::UnrepresentablePath)?;
-    let source = value.as_bytes();
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(source.len())
-        .map_err(|_| WatchInvalidationReason::UnrepresentablePath)?;
-    bytes.extend_from_slice(source);
-    Ok((NameEncoding::Utf8, bytes))
 }
 
 /// Native watcher failures that are not recoverable through a baseline rescan.
