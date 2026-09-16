@@ -1,31 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version=1.3.14
+version=1.4.2
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64)
     target=bun-linux-x64
-    expected=951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f
-    expected_binary=9fd36f87e4b90b07632b987a2e4ec81ca15a62c81bf983190cea6d715be2ad74
-    expected_binary_bytes=92752752
+    expected=36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913
+    expected_binary=a83d263767d839e4d2649ca8e35d07159c7afc99afdc96d731ced29e056dda0c
+    expected_binary_bytes=79500640
     ;;
   Linux:aarch64|Linux:arm64)
     target=bun-linux-aarch64
-    expected=a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b
-    expected_binary=37141662ebed915a2ab89313156e455e2a1374395f5f6760d06407f49406f086
-    expected_binary_bytes=91801560
+    expected=54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7
+    expected_binary=616f267a34278ff5ac282df37ffdfba1d7141f4f6926bca99af2cd6ef3ad32b1
+    expected_binary_bytes=79420872
     ;;
   Darwin:x86_64)
     target=bun-darwin-x64
-    expected=4183df3374623e5bab315c547cfa0974533cd457d86b73b639f7a87974cd6633
-    expected_binary=ea2f223e94bb2f4bf3050895113c3cf346438f6fa0501c8532284e063f72f7a0
-    expected_binary_bytes=69173328
+    expected=80520d7e17526308c9185d261679ac6d27798d3803a0e9f7ff9121ab8affb012
+    expected_binary=2fa513af22ac59e03aae640cad302e73cb1ddb0f6398501e2ddccf7dcd613596
+    expected_binary_bytes=69333264
     ;;
   Darwin:arm64)
     target=bun-darwin-aarch64
-    expected=d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620
-    expected_binary=e0c90ec15d33363e6b70713d56bc3b2c7585c17f40a0fe0f8fd9305901d4e233
-    expected_binary_bytes=63096576
+    expected=90987a3a16d7db556d886ac3d551e7b6d3edf0a1cf43acaed622e8676be1d12f
+    expected_binary=35d20dd0263e5c950194434b925454fdfa9ba6e4467da960410fa05b08a7a5b5
+    expected_binary_bytes=61884464
     ;;
   *)
     echo "unsupported Bun host: $(uname -s):$(uname -m)" >&2

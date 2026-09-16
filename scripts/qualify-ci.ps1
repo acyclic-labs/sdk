@@ -31,7 +31,7 @@ cargo test --workspace --all-features --no-run --locked
 cargo build -p acyclic-fs-napi --locked
 cargo run --locked -p acyclic-cli
 bun run check
-bun test typescript/packages
+bun test --parallel=4 typescript/packages
 bun run --filter '@acyclic-labs/fs' test:composition
 
 $clangDirectories = @()

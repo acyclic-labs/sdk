@@ -1,13 +1,13 @@
 $ErrorActionPreference = "Stop"
 
-$version = "1.3.14"
+$version = "1.4.2"
 if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
     throw "unsupported Bun host architecture: $env:PROCESSOR_ARCHITECTURE"
 }
 $target = "bun-windows-x64"
-$expected = "0a0620930b6675d7ba440e81f4e0e00d3cfbe096c4b140d3fff02205e9e18922"
-$expectedBinary = "0187f68d843f825a72ada4a7eca60db896ed753759a7f8252edcd31ac1bf1b9c"
-$expectedBinaryBytes = 98480216
+$expected = "ce4c17497b2f29712a99d3d53f028de28cd42e3bacb8589599e7f000e49b6405"
+$expectedBinary = "15277c59ccd6c6c20f8dc9716c2b59c1776320d606b6a8658f70be8799519ca4"
+$expectedBinaryBytes = 86096984
 if ([string]::IsNullOrWhiteSpace($env:TOOLS_DIR)) {
     throw "TOOLS_DIR must identify the architecture-scoped CI tool cache"
 }
