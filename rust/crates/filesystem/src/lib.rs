@@ -8,11 +8,7 @@
         clippy::too_many_lines
     )
 )]
-//! Canonical Rust SDK for immutable, independently configured filesystem volumes.
-//!
-//! This crate owns its public contracts and first-party embedded backends so a
-//! packaged consumer never depends on unpublished workspace crates. Optional
-//! processes and language bindings depend on this crate, not the reverse.
+#![doc = include_str!("../README.md")]
 
 /// Generated public gRPC schema and client/server bindings.
 #[cfg(not(target_arch = "wasm32"))]

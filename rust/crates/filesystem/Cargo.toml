@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Rust SDK for versioned workspaces and daemon-hosted native mounts"
-readme = "../../../README.md"
+readme = "README.md"
 keywords = ["filesystem", "copy-on-write", "versioned", "storage"]
 categories = ["filesystem", "data-structures"]
 

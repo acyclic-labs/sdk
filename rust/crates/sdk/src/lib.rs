@@ -1,4 +1,4 @@
-//! Umbrella package for one tested SDK combination.
+#![doc = include_str!("../README.md")]
 
 pub use acyclic_fs as filesystem;
 pub use acyclic_harness as harness;

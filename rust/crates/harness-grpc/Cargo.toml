@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 description = "gRPC server adapter for Acyclic Harness"
-readme = "../../../README.md"
+readme = "README.md"
 build = "build.rs"
 
 [dependencies]

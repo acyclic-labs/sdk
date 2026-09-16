@@ -1,9 +1,5 @@
 #![deny(unsafe_code)]
-//! Generic durable substrate and fully composable agent runtime.
-//!
-//! [`core`] contains synchronous deterministic semantics suitable for native
-//! and pure WASM execution. [`live`] contains explicitly live-only helpers for
-//! arbitrary futures; durable behavior is never inferred from a Rust future.
+#![doc = include_str!("../README.md")]
 
 #[cfg(feature = "host")]
 pub mod bundle;

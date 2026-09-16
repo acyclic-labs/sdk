@@ -1,5 +1,5 @@
 #![deny(unsafe_code)]
-//! Tonic server adapter over the transport-neutral Harness wire API.
+#![doc = include_str!("../README.md")]
 
 use acyclic_harness::{
     Error, wire,

@@ -1,4 +1,4 @@
-//! Immutable, permanently versioned Objects contract and reference providers.
+#![doc = include_str!("../README.md")]
 
 pub mod conformance;
 

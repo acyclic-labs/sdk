@@ -1,5 +1,5 @@
 #![deny(unsafe_code)]
-//! Explicit integration between provider-neutral harness references and Machines.
+#![doc = include_str!("../README.md")]
 
 use acyclic_harness::{
     Error, IdempotencyKey, OperationId, Result,
