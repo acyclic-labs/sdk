@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Rust SDK for immutable Inference Contexts, recoverable Runs, and warm commitments"
+readme = "README.md"
+documentation = "https://docs.rs/acyclic-inference"
+keywords = ["inference", "context", "grpc"]
+categories = ["api-bindings"]
 publish = true
 build = "build.rs"
 

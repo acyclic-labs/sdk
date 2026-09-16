@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 description = "Machines contract, authenticated client, and deterministic simulator"
+readme = "README.md"
+documentation = "https://docs.rs/acyclic-machines"
+keywords = ["machines", "compute", "grpc"]
+categories = ["api-bindings"]
 
 [dependencies]
 async-trait.workspace = true

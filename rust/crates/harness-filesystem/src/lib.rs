@@ -1,5 +1,5 @@
 #![deny(unsafe_code)]
-//! Explicit integration between harness references and versioned Filesystem workspaces.
+#![doc = include_str!("../README.md")]
 
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, Digest, Fs, Generation, GenerationId,

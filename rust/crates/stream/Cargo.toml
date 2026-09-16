@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 description = "Hierarchical append-only Streams contract, clients, and local provider"
+readme = "README.md"
+documentation = "https://docs.rs/acyclic-stream"
+keywords = ["streams", "events", "grpc"]
+categories = ["api-bindings", "data-structures"]
 build = "build.rs"
 
 [features]

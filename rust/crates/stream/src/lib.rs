@@ -1,4 +1,4 @@
-//! Canonical public Stream contract and deterministic in-memory implementation.
+#![doc = include_str!("../README.md")]
 
 use std::{fmt, sync::Arc};
 

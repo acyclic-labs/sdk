@@ -1,7 +1,4 @@
-//! Public Machines contract, customer handles, and deterministic in-memory provider.
-//!
-//! The in-memory provider is a bounded process-local state machine. It provides no
-//! operating-system, hypervisor, tenant-isolation, durability, or availability boundary.
+#![doc = include_str!("../README.md")]
 #![allow(
     missing_docs,
     reason = "field-level wire semantics are canonical in proto/machines/v1/machines.proto"

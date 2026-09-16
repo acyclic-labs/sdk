@@ -1,5 +1,5 @@
 #![deny(unsafe_code)]
-//! Thin HTTP, SSE, and WebSocket framing over [`acyclic_harness::wire_api`].
+#![doc = include_str!("../README.md")]
 
 use acyclic_harness::{
     Error,

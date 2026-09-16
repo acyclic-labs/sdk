@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 description = "Generic durable substrate and fully composable agent runtime"
-readme = "../../../README.md"
+readme = "README.md"
 build = "build.rs"
 
 [lib]

@@ -1,4 +1,4 @@
-//! A complete in-memory provider profile.
+#![doc = include_str!("../README.md")]
 
 use acyclic_machines::SimulatedMachines;
 use acyclic_objects::MemoryObjects;

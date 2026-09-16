@@ -1,4 +1,4 @@
-//! Reusable black-box conformance entrypoints for public providers.
+#![doc = include_str!("../README.md")]
 
 /// Complete filesystem workload taxonomy, selectors, and portable vectors.
 pub mod filesystem;

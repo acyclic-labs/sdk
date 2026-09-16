@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 description = "HTTP, SSE, and WebSocket server adapter for Acyclic Harness"
-readme = "../../../README.md"
+readme = "README.md"
 
 [dependencies]
 acyclic-harness = { version = "0.1.0-rc.1", path = "../harness" }

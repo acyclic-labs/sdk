@@ -47,6 +47,7 @@ def archive_bytes(
     repository_directory: str = DIRECTORY,
     trailing: bytes = b"",
     link: bool = False,
+    readme: bytes | None = b"# @acyclic-labs/objects\n",
     dist_js: bytes = b"export {};",
 ) -> bytes:
     manifest = json.dumps({
@@ -55,7 +56,10 @@ def archive_bytes(
     }).encode()
     payload = io.BytesIO()
     with tarfile.open(fileobj=payload, mode="w") as archive:
-        for name, contents in (("package/package.json", manifest), ("package/dist/index.js", dist_js), ("package/dist/index.d.ts", b"export {};")):
+        members = [("package/package.json", manifest), ("package/dist/index.js", dist_js), ("package/dist/index.d.ts", b"export {};")]
+        if readme is not None:
+            members.append(("package/README.md", readme))
+        for name, contents in members:
             member = tarfile.TarInfo(name)
             member.size = len(contents)
             archive.addfile(member, io.BytesIO(contents))
@@ -76,6 +80,14 @@ class NpmPublicationTests(unittest.TestCase):
 
     def test_accepts_compiled_public_package(self) -> None:
         self.validate(archive_bytes())
+
+    def test_rejects_missing_package_readme(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "README"):
+            self.validate(archive_bytes(readme=None))
+
+    def test_rejects_unrelated_package_readme(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "README"):
+            self.validate(archive_bytes(readme=b"# @acyclic-labs/sdk\n"))
 
     def test_rejects_wrong_repository_directory(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "manifest"):

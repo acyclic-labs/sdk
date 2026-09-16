@@ -1,9 +1,5 @@
-//! Customer-only immutable Context client. No physical or private protocol dependency.
-//!
-//! Context content operations are implemented independently of Run execution and
-//! warm retention. Their existence is not a claim of deployed service availability.
-
 #![forbid(unsafe_code)]
+#![doc = include_str!("../README.md")]
 
 use sha2::{Digest, Sha256};
 use std::sync::Arc;

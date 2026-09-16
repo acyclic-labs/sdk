@@ -37,6 +37,7 @@ def validate_archive(archive: Path, name: str, version: str, directory: str) -> 
 
     seen: set[str] = set()
     manifest: bytes | None = None
+    readme: bytes | None = None
     has_js = False
     has_types = False
     with tarfile.open(fileobj=io.BytesIO(expanded), mode="r:") as package:
@@ -60,11 +61,15 @@ def validate_archive(archive: Path, name: str, version: str, directory: str) -> 
                     manifest = extracted.read(1_048_577)
                     if len(manifest) > 1_048_576:
                         raise RuntimeError("npm manifest exceeds its size bound")
+                elif member.name == "package/README.md":
+                    readme = extracted.read(262_145)
+                    if len(readme) > 262_144:
+                        raise RuntimeError("npm README exceeds its size bound")
                 elif member.name.startswith("package/dist/"):
                     has_js |= member.name.endswith((".js", ".mjs", ".cjs"))
                     has_types |= member.name.endswith(".d.ts")
-    if manifest is None or not has_js or not has_types:
-        raise RuntimeError("npm archive lacks its manifest or compiled public output")
+    if manifest is None or not has_js or not has_types or readme is None or len(readme.strip()) == 0:
+        raise RuntimeError("npm archive lacks its README, manifest, or compiled public output")
     metadata = json.loads(manifest)
     expected_repository = {
         "type": "git",
@@ -79,6 +84,8 @@ def validate_archive(archive: Path, name: str, version: str, directory: str) -> 
         or metadata.get("repository") != expected_repository
     ):
         raise RuntimeError("npm manifest does not match the qualified package")
+    if readme.decode("utf-8").splitlines()[0].strip() != f"# {name}":
+        raise RuntimeError("npm README does not match the qualified package")
     return hashlib.sha256(compressed).hexdigest()
 
 

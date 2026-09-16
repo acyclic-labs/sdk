@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish = true
 description = "Immutable Objects contract with gRPC, memory, and durable local providers"
+readme = "README.md"
+documentation = "https://docs.rs/acyclic-objects"
+keywords = ["objects", "storage", "grpc"]
+categories = ["api-bindings", "filesystem"]
 
 [features]
 default = ["grpc"]
