@@ -26,7 +26,7 @@
     },
     "typescript/packages/filesystem": {
       "name": "@acyclic-labs/fs",
-      "version": "0.2.0-rc.4",
+      "version": "0.2.0-rc.5",
       "dependencies": {
         "@bufbuild/protobuf": "2.14.1",
         "@connectrpc/connect": "2.1.1",
@@ -51,7 +51,7 @@
     },
     "typescript/packages/inference": {
       "name": "@acyclic-labs/inference",
-      "version": "1.0.0-rc.7",
+      "version": "1.0.0-rc.8",
       "dependencies": {
         "@bufbuild/protobuf": "2.14.1",
       },
@@ -62,14 +62,14 @@
     },
     "typescript/packages/machines": {
       "name": "@acyclic-labs/machines",
-      "version": "1.0.0-rc.6",
+      "version": "1.0.0-rc.7",
       "devDependencies": {
         "typescript": "7.0.2",
       },
     },
     "typescript/packages/objects": {
       "name": "@acyclic-labs/objects",
-      "version": "1.0.0-rc.3",
+      "version": "1.0.0-rc.4",
       "devDependencies": {
         "@types/bun": "1.4.0",
         "typescript": "7.0.2",
@@ -114,14 +114,14 @@
     },
     "typescript/packages/sdk": {
       "name": "@acyclic-labs/sdk",
-      "version": "0.1.0-rc.5",
+      "version": "0.1.0-rc.6",
       "dependencies": {
-        "@acyclic-labs/fs": "0.2.0-rc.4",
+        "@acyclic-labs/fs": "0.2.0-rc.5",
         "@acyclic-labs/harness": "0.1.0-rc.1",
-        "@acyclic-labs/inference": "1.0.0-rc.7",
-        "@acyclic-labs/machines": "1.0.0-rc.6",
-        "@acyclic-labs/objects": "1.0.0-rc.3",
-        "@acyclic-labs/stream": "1.0.0-rc.6",
+        "@acyclic-labs/inference": "1.0.0-rc.8",
+        "@acyclic-labs/machines": "1.0.0-rc.7",
+        "@acyclic-labs/objects": "1.0.0-rc.4",
+        "@acyclic-labs/stream": "1.0.0-rc.7",
       },
       "devDependencies": {
         "typescript": "7.0.2",
@@ -129,7 +129,7 @@
     },
     "typescript/packages/stream": {
       "name": "@acyclic-labs/stream",
-      "version": "1.0.0-rc.6",
+      "version": "1.0.0-rc.7",
       "devDependencies": {
         "typescript": "7.0.2",
       },
