@@ -154,6 +154,5 @@ class NpmPublicationTests(unittest.TestCase):
         )
         self.assertEqual(result.stdout.rstrip("\n"), "14\t2")
 
-
 if __name__ == "__main__":
     unittest.main()
