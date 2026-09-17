@@ -5,7 +5,7 @@
     "": {
       "name": "@acyclic-labs/sdk-workspace",
       "devDependencies": {
-        "@bufbuild/buf": "1.72.0",
+        "@bufbuild/buf": "1.73.0",
         "@bufbuild/protoc-gen-es": "2.14.1",
         "@types/bun": "1.4.0",
         "ajv": "8.20.0",
@@ -178,21 +178,21 @@
 
     "@ai-sdk/provider-utils": ["@ai-sdk/provider-utils@5.0.36", "", { "dependencies": { "@ai-sdk/provider": "4.0.10", "@standard-schema/spec": "^1.1.0", "@workflow/serde": "4.1.0", "eventsource-parser": "^3.0.8", "undici": "^7.29.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-MFXBn6XDyf37PNQAge/HTatPJE8Vmg/g/w4WPtjSV53jq8FKAzoaN5+43hsdQa9bqgN+/13jxug9ChvsG+godQ=="],
 
-    "@bufbuild/buf": ["@bufbuild/buf@1.72.0", "", { "optionalDependencies": { "@bufbuild/buf-darwin-arm64": "1.72.0", "@bufbuild/buf-darwin-x64": "1.72.0", "@bufbuild/buf-linux-aarch64": "1.72.0", "@bufbuild/buf-linux-armv7": "1.72.0", "@bufbuild/buf-linux-x64": "1.72.0", "@bufbuild/buf-win32-arm64": "1.72.0", "@bufbuild/buf-win32-x64": "1.72.0" }, "bin": { "buf": "bin/buf", "protoc-gen-buf-lint": "bin/protoc-gen-buf-lint", "protoc-gen-buf-breaking": "bin/protoc-gen-buf-breaking" } }, "sha512-BwBKTX/WXkhAhqWJGrEKnqU03/4tK1O0OozSlwUMBCOEo8pLL3xu3M24RT3+umExEeM0wjlANO6axqGWMqtt4Q=="],
+    "@bufbuild/buf": ["@bufbuild/buf@1.73.0", "", { "optionalDependencies": { "@bufbuild/buf-darwin-arm64": "1.73.0", "@bufbuild/buf-darwin-x64": "1.73.0", "@bufbuild/buf-linux-aarch64": "1.73.0", "@bufbuild/buf-linux-armv7": "1.73.0", "@bufbuild/buf-linux-x64": "1.73.0", "@bufbuild/buf-win32-arm64": "1.73.0", "@bufbuild/buf-win32-x64": "1.73.0" }, "bin": { "buf": "bin/buf", "protoc-gen-buf-lint": "bin/protoc-gen-buf-lint", "protoc-gen-buf-breaking": "bin/protoc-gen-buf-breaking" } }, "sha512-W3whb4P1y3Hs9bqwCu9++W1v1ofHZ3dBUCe6JSZq0Ff5OK5UKKZuMN4iunPbgdyXY4+4ujEYf2ESrN/6MbcFSQ=="],
 
-    "@bufbuild/buf-darwin-arm64": ["@bufbuild/buf-darwin-arm64@1.72.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-rKHRvjwAThapxIoOn92vIoTjYSz5FmRemDRLU4BYT4T6QWMEC13PM3/pPnqVgsNKZ5aW7iYDm9ztnisEqSi5yA=="],
+    "@bufbuild/buf-darwin-arm64": ["@bufbuild/buf-darwin-arm64@1.73.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-cDd3y376ecClhyytNLlY3AtsZqsqXvEkQjMvrahrv/xUWWhEIX3efD8y0uufXDe8Yuk3sEmj7J1Xlx73Y46SkA=="],
 
-    "@bufbuild/buf-darwin-x64": ["@bufbuild/buf-darwin-x64@1.72.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-4TQ1AGft8sGspNg9NMsEjsKKis7nGaVV8tZLnNa3cKUBmx22gwOnB6VRhgKWwjf+BDqr85lUEzQ6wHCboNUutg=="],
+    "@bufbuild/buf-darwin-x64": ["@bufbuild/buf-darwin-x64@1.73.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-VTBTCwaqT7otsMGXlk3MRu6x5hp+YH9PaLKcyWAa8wEt0NnMzbXdkE8GiLgI8Qkl7S3+pC9YSTCE/I+O87Fvrw=="],
 
-    "@bufbuild/buf-linux-aarch64": ["@bufbuild/buf-linux-aarch64@1.72.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-cbIsUcgM5bHhbZWcDaAXqaYOAi8N0c0u+NiDydwVmZ04Et3s1EZ3TDqfQDRzwvoBPDP+lsO6YuTRXX6nI28x4w=="],
+    "@bufbuild/buf-linux-aarch64": ["@bufbuild/buf-linux-aarch64@1.73.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-HjoQ3wbLiUv5N5XLM3EAR2FY51Yn6t5MEXLPnS/Hx0KDkK/5eyIBZZ6toHBLjczAr1RTA1LagF38+lglZI+kvA=="],
 
-    "@bufbuild/buf-linux-armv7": ["@bufbuild/buf-linux-armv7@1.72.0", "", { "os": "linux", "cpu": "arm" }, "sha512-v/bXVsFL8YNm2HgosGb9r3+nAt4jQiUc3r3JipYuiVY3DAJZAjoEvcak6/BkxQMTEQz9Zb8gRRlule9IFkbc5g=="],
+    "@bufbuild/buf-linux-armv7": ["@bufbuild/buf-linux-armv7@1.73.0", "", { "os": "linux", "cpu": "arm" }, "sha512-NsZuVg8hXfGcR96Is14ArKxZg6pdJb6kb63bx2g7q8Cjo+gRqZMBFKGvF/fnQMxTrRQAm6hzeF4a2vV4W3lszg=="],
 
-    "@bufbuild/buf-linux-x64": ["@bufbuild/buf-linux-x64@1.72.0", "", { "os": "linux", "cpu": "x64" }, "sha512-4xHGXEjqFxo1wX1zMGq4CzhYt5++nrj4C7k30j+YmGtvqCnipfdSe+V6kknBYRfYswVZEUwUbQOh6pnMTcGcrA=="],
+    "@bufbuild/buf-linux-x64": ["@bufbuild/buf-linux-x64@1.73.0", "", { "os": "linux", "cpu": "x64" }, "sha512-dMe6lBQrlHTU7DzqzaR7Udky7R78EDzzxtYZQdjkZun9jKdjGR4fLbPWEPyY4rLGVyk6UUnrtkf5qoIK2SC6qw=="],
 
-    "@bufbuild/buf-win32-arm64": ["@bufbuild/buf-win32-arm64@1.72.0", "", { "os": "win32", "cpu": "arm64" }, "sha512-WH7ClsoB9A0e/5fFhx0DLqLzillYPRdHBhlwzihgvjGci0bBdyJVHSQGf0B9uspCMU6sn6W/N1S9/2vvQBNMug=="],
+    "@bufbuild/buf-win32-arm64": ["@bufbuild/buf-win32-arm64@1.73.0", "", { "os": "win32", "cpu": "arm64" }, "sha512-UmubCflc8zJ48bVW0WeGeVTkNuumJP//wCWKUmeTXT1iNlEqkpaXy6y7o8YJKHGWLfX0/1UV3oay9ti0EyojMw=="],
 
-    "@bufbuild/buf-win32-x64": ["@bufbuild/buf-win32-x64@1.72.0", "", { "os": "win32", "cpu": "x64" }, "sha512-X3eWqFzhDmu8CYQZz+Fu7i+PgH+yUl8UwJ5+x+bhZRYAIdcijikthodk60c5u/qq42m1Z2XAnAGyp/mTf7IffA=="],
+    "@bufbuild/buf-win32-x64": ["@bufbuild/buf-win32-x64@1.73.0", "", { "os": "win32", "cpu": "x64" }, "sha512-/Buo10rXzqNLnFDh3BpzGdcrx6OalcU8o8gUyObCFZA5wKcUvBVNDhhpMmoB6YeiOPpPn47jHgW4bSSlypaaOQ=="],
 
     "@bufbuild/protobuf": ["@bufbuild/protobuf@2.14.1", "", {}, "sha512-agRJn3+EJDUe8AvxTx/LnHA/GErvLE62pSaSk7+MwFOtOv8eWBu/qCq2qoZjBjVZ3C2aiFJCveuSs17KMkYGOw=="],
 
