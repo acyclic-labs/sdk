@@ -6630,6 +6630,8 @@ fn boundary_budget() -> WorkBudget {
         bytes_copied: BYTES,
         bytes_encoded: BYTES,
         source_bytes_read: BYTES,
+        source_path_components: OPERATIONS,
+        source_entries_visited: OPERATIONS,
         output_bytes: BYTES,
         items_examined: OPERATIONS,
         items_returned: OPERATIONS,

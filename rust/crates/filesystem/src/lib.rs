@@ -74,6 +74,7 @@ mod public_contract_tests {
 pub mod async_storage;
 pub mod cache;
 pub mod cancellation;
+pub mod demand;
 #[cfg(feature = "distributed")]
 pub mod distributed;
 pub mod facade;

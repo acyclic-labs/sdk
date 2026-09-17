@@ -1193,7 +1193,7 @@ fn open_source_root(options: &CaptureOptions) -> Result<HostRoot, CaptureError> 
     Ok(root)
 }
 
-fn relative_host_path(path: &NamespacePath) -> Result<PathBuf, CaptureError> {
+pub(crate) fn relative_host_path(path: &NamespacePath) -> Result<PathBuf, CaptureError> {
     let mut result = PathBuf::new();
     for component in path.components() {
         result.push(capture_host_name(component)?);
