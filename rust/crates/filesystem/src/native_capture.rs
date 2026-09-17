@@ -957,6 +957,23 @@ async fn capture_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             if let Some(record) = current {
+                // A directory that vanished takes its descendants with it.
+                // A watcher may say so with one hint on the directory alone
+                // (inotify on a directory moved out of the root, a rename
+                // half on any platform), and a namespace remove of a
+                // non-empty directory is refused, so remove the subtree
+                // the checkout still holds, deepest first.
+                if record.kind == FileKind::Directory {
+                    push_subtree_removals(
+                        checkout,
+                        &path,
+                        mutations,
+                        receipt,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 mutations.push(AuthoredMutation::Remove {
                     path,
                     expected_file_id: Some(record.file_id),
@@ -967,6 +984,75 @@ async fn capture_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         Err(error) => return Err(OperationFailure::new(error.into(), receipt.work)),
     }
     receipt.examined_paths = checked_increment(receipt.examined_paths, receipt.work)?;
+    Ok(())
+}
+
+/// Queues a remove for every descendant of `root` that the checkout holds,
+/// deepest first, so that a following remove of `root` itself finds it
+/// empty. The host has already lost the subtree; only the checkout's view
+/// is walked.
+async fn push_subtree_removals<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    root: &NamespacePath,
+    mutations: &mut Vec<AuthoredMutation>,
+    receipt: &mut CaptureReceipt,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<(), OperationFailure<CaptureError>> {
+    const PAGE: u32 = 256;
+    let limits = checkout.volume_config().limits;
+    // Descendants that carried their own hint are already queued (absent
+    // paths are captured deepest first); a second remove of the same path
+    // would find its source missing.
+    let queued: BTreeSet<NamespacePath> = mutations
+        .iter()
+        .filter_map(|mutation| match mutation {
+            AuthoredMutation::Remove { path, .. } => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut pending = vec![root.clone()];
+    let mut found: Vec<(NamespacePath, FileRecord)> = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let mut after: Option<LogicalName> = None;
+        loop {
+            let remaining = receipt
+                .work
+                .remaining(budget)
+                .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
+            let page = checkout
+                .list_directory_records(&directory, after.as_ref(), PAGE, remaining, cancellation)
+                .await
+                .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+            receipt.work = add_work(receipt.work, page.work)?;
+            let page = page.value;
+            for entry in &page.entries {
+                let mut components = directory.components().to_vec();
+                components.push(entry.name.clone());
+                let child = NamespacePath::new(components, limits).map_err(|_| {
+                    OperationFailure::new(CaptureError::InvalidOptions, receipt.work)
+                })?;
+                if entry.record.kind == FileKind::Directory {
+                    pending.push(child.clone());
+                }
+                if !queued.contains(&child) {
+                    found.push((child, entry.record));
+                }
+            }
+            match page.entries.last() {
+                Some(last) if page.has_more => after = Some(last.name.clone()),
+                _ => break,
+            }
+        }
+    }
+    found.sort_by(|left, right| right.0.depth().cmp(&left.0.depth()));
+    for (path, record) in found {
+        mutations.push(AuthoredMutation::Remove {
+            path,
+            expected_file_id: Some(record.file_id),
+        });
+        receipt.changed_paths = checked_increment(receipt.changed_paths, receipt.work)?;
+    }
     Ok(())
 }
 
