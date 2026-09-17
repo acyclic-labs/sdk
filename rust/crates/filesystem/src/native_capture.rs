@@ -1001,6 +1001,16 @@ async fn push_subtree_removals<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<(), OperationFailure<CaptureError>> {
     const PAGE: u32 = 256;
     let limits = checkout.volume_config().limits;
+    // Descendants that carried their own hint are already queued (absent
+    // paths are captured deepest first); a second remove of the same path
+    // would find its source missing.
+    let queued: BTreeSet<NamespacePath> = mutations
+        .iter()
+        .filter_map(|mutation| match mutation {
+            AuthoredMutation::Remove { path, .. } => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
     let mut pending = vec![root.clone()];
     let mut found: Vec<(NamespacePath, FileRecord)> = Vec::new();
     while let Some(directory) = pending.pop() {
@@ -1025,7 +1035,9 @@ async fn push_subtree_removals<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 if entry.record.kind == FileKind::Directory {
                     pending.push(child.clone());
                 }
-                found.push((child, entry.record));
+                if !queued.contains(&child) {
+                    found.push((child, entry.record));
+                }
             }
             match page.entries.last() {
                 Some(last) if page.has_more => after = Some(last.name.clone()),
