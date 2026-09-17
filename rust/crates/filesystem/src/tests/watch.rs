@@ -24,7 +24,7 @@ fn event(kind: EventKind, paths: Vec<PathBuf>) -> Event {
 }
 
 #[test]
-fn paired_rename_is_exact_and_ambiguous_rename_invalidates()
+fn paired_rename_is_exact_and_an_unpaired_half_is_platform_defined()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(if cfg!(windows) { r"C:\root" } else { "/root" });
     let from = root.join("from");
@@ -38,16 +38,42 @@ fn paired_rename_is_exact_and_ambiguous_rename_invalidates()
         VolumeLimits::default(),
     )?;
     assert!(matches!(paired.as_slice(), [WatchChange::Renamed { .. }]));
-    assert_eq!(
-        map_event(
-            &event(
-                EventKind::Modify(ModifyKind::Name(RenameMode::From)),
-                vec![root.join("old")],
-            ),
-            &root,
-            VolumeLimits::default(),
+    let unpaired = map_event(
+        &event(
+            EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+            vec![root.join("old")],
         ),
-        Err(WatchInvalidationReason::AmbiguousRename)
+        &root,
+        VolumeLimits::default(),
+    );
+    // Darwin never pairs renames, so a lone half is an ordinary "this path
+    // changed" hint there; the pairing backends treat it as a lost half.
+    if cfg!(target_os = "macos") {
+        let old = relative_namespace_path(&root, &root.join("old"), VolumeLimits::default())?;
+        assert_eq!(unpaired, Ok(vec![WatchChange::Modified(old)]));
+    } else {
+        assert_eq!(unpaired, Err(WatchInvalidationReason::AmbiguousRename));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn darwin_rename_any_yields_one_modified_hint_per_path() -> Result<(), Box<dyn std::error::Error>> {
+    let root = PathBuf::from("/root");
+    let changes = map_event(
+        &event(
+            EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+            vec![root.join("staged"), root.join("final")],
+        ),
+        &root,
+        VolumeLimits::default(),
+    )?;
+    let staged = relative_namespace_path(&root, &root.join("staged"), VolumeLimits::default())?;
+    let final_ = relative_namespace_path(&root, &root.join("final"), VolumeLimits::default())?;
+    assert_eq!(
+        changes,
+        vec![WatchChange::Modified(staged), WatchChange::Modified(final_)]
     );
     Ok(())
 }
