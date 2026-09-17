@@ -813,21 +813,16 @@ fn map_event(
                 from: from.clone(),
                 to: to.clone(),
             }]),
-            // FSEvents never pairs renames: it delivers one "renamed" flag
-            // per path with no cookie, so on Darwin every rename arrived
-            // here as ambiguous and invalidated the epoch. That made each
-            // atomic save (stage + rename), `mv`, and `git checkout` cost a
-            // full-tree rescan. A Darwin rename hint proves the same thing
-            // its creation hint does: this path changed, look at it. The
-            // capture already resolves a modified hint by stat, treating a
-            // vanished path as removed, so both ends of the rename land
-            // exactly without guessing which was which.
-            #[cfg(target_os = "macos")]
+            // An unpaired half proves the same thing a creation hint does:
+            // this path changed, look at it. The capture resolves a
+            // modified hint by stat, treating a vanished path as removed
+            // (subtree and all), so both ends of a rename land exactly
+            // without guessing which was which. FSEvents never pairs
+            // renames at all; inotify and ReadDirectoryChangesW deliver
+            // each half as its own event BEFORE the paired event, so
+            // invalidating on a half meant every rename cost a rescan on
+            // every platform.
             (_, paths) => Ok(paths.iter().cloned().map(WatchChange::Modified).collect()),
-            // inotify and ReadDirectoryChangesW do pair renames; a lone
-            // half there means the other half was lost.
-            #[cfg(not(target_os = "macos"))]
-            _ => Err(WatchInvalidationReason::AmbiguousRename),
         };
     }
     let mut changes = Vec::new();

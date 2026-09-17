@@ -24,7 +24,7 @@ fn event(kind: EventKind, paths: Vec<PathBuf>) -> Event {
 }
 
 #[test]
-fn paired_rename_is_exact_and_an_unpaired_half_is_platform_defined()
+fn paired_rename_is_exact_and_an_unpaired_half_is_a_modified_hint()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(if cfg!(windows) { r"C:\root" } else { "/root" });
     let from = root.join("from");
@@ -46,20 +46,16 @@ fn paired_rename_is_exact_and_an_unpaired_half_is_platform_defined()
         &root,
         VolumeLimits::default(),
     );
-    // Darwin never pairs renames, so a lone half is an ordinary "this path
-    // changed" hint there; the pairing backends treat it as a lost half.
-    if cfg!(target_os = "macos") {
-        let old = relative_namespace_path(&root, &root.join("old"), VolumeLimits::default())?;
-        assert_eq!(unpaired, Ok(vec![WatchChange::Modified(old)]));
-    } else {
-        assert_eq!(unpaired, Err(WatchInvalidationReason::AmbiguousRename));
-    }
+    // A lone half is an ordinary "this path changed" hint on every
+    // platform: FSEvents never pairs, and inotify delivers the half before
+    // the pair.
+    let old = relative_namespace_path(&root, &root.join("old"), VolumeLimits::default())?;
+    assert_eq!(unpaired, Ok(vec![WatchChange::Modified(old)]));
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 #[test]
-fn darwin_rename_any_yields_one_modified_hint_per_path() -> Result<(), Box<dyn std::error::Error>> {
+fn rename_any_yields_one_modified_hint_per_path() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from("/root");
     let changes = map_event(
         &event(
