@@ -37,6 +37,19 @@ pub struct MaterializeOptions {
     pub transfer_bytes: u64,
 }
 
+impl MaterializeOptions {
+    /// Creates the canonical bounded native materialization policy.
+    #[must_use]
+    pub fn native(destination: impl Into<PathBuf>) -> Self {
+        Self {
+            destination: destination.into(),
+            maximum_directory_entries: 1_024,
+            maximum_extent_spans: 65_536,
+            transfer_bytes: 8 * 1024 * 1024,
+        }
+    }
+}
+
 /// Exact result and host-side movement facts.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MaterializationReceipt {
