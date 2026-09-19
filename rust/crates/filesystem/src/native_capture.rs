@@ -183,6 +183,21 @@ mod capture_policy_tests {
         assert!(combined_path_count_exceeds(2, 2, 3));
         assert!(combined_path_count_exceeds(usize::MAX, 1, usize::MAX));
     }
+
+    #[test]
+    fn checkout_union_deduplicates_before_enforcing_the_path_limit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let duplicate = path("/same")?;
+        let ordered = order_host_checkout_union(
+            BTreeMap::new(),
+            vec![duplicate.clone(), duplicate.clone(), duplicate.clone()],
+            1,
+        )?;
+        assert_eq!(ordered.len(), 1);
+        assert!(ordered[0].0.is_none());
+        assert_eq!(ordered[0].1, duplicate);
+        Ok(())
+    }
 }
 
 /// Successful authored host-state capture.
@@ -375,7 +390,7 @@ pub async fn capture_subtrees_with_policy<A: AsyncAuthorityStore, O: AsyncObject
         .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
     let profile = checkout.volume_config().profile;
     let mut observed = BTreeMap::new();
-    let mut paths = canonical.iter().cloned().collect::<BTreeSet<_>>();
+    let mut paths = canonical.clone();
     let mut work = WorkCounters::default();
     collect_host_subtree_roots(
         &source_root,
@@ -405,7 +420,6 @@ pub async fn capture_subtrees_with_policy<A: AsyncAuthorityStore, O: AsyncObject
             collect_checkout_subtree_paths(
                 checkout,
                 limits,
-                maximum,
                 root,
                 policy,
                 &mut paths,
@@ -681,7 +695,7 @@ pub async fn capture_baseline_with_policy<A: AsyncAuthorityStore, O: AsyncObject
     let profile = checkout.volume_config().profile;
     let maximum = usize::try_from(options.maximum_paths)
         .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
-    let mut paths = BTreeSet::new();
+    let mut paths = Vec::new();
     let mut work = WorkCounters::default();
     let observed = collect_host_observations(
         &source_root,
@@ -696,7 +710,6 @@ pub async fn capture_baseline_with_policy<A: AsyncAuthorityStore, O: AsyncObject
     Box::pin(collect_checkout_paths(
         checkout,
         limits,
-        maximum,
         policy,
         &mut paths,
         &mut work,
@@ -784,12 +797,12 @@ fn collect_host_observations(
 
 fn order_host_checkout_union(
     observed: BTreeMap<NamespacePath, HostObservation>,
-    mut checkout_paths: BTreeSet<NamespacePath>,
+    mut checkout_paths: Vec<NamespacePath>,
     maximum: usize,
 ) -> Result<Vec<(Option<HostObservation>, NamespacePath)>, CaptureError> {
-    for path in observed.keys() {
-        checkout_paths.remove(path);
-    }
+    checkout_paths.sort();
+    checkout_paths.dedup();
+    checkout_paths.retain(|path| !observed.contains_key(path));
     if combined_path_count_exceeds(observed.len(), checkout_paths.len(), maximum) {
         return Err(CaptureError::InvalidOptions);
     }
@@ -802,7 +815,7 @@ fn order_host_checkout_union(
             .cmp(&right.depth())
             .then_with(|| left.cmp(right))
     });
-    let mut absent = checkout_paths.into_iter().collect::<Vec<_>>();
+    let mut absent = checkout_paths;
     absent.sort_by(|left, right| {
         right
             .depth()
@@ -941,11 +954,10 @@ fn collect_host_subtree_paths(
     root: &HostRoot,
     profile: FilesystemProfile,
     limits: crate::model::VolumeLimits,
-    maximum: usize,
     host_root: PathBuf,
     volume_root: NamespacePath,
     policy: &CapturePolicy,
-    paths: &mut BTreeSet<NamespacePath>,
+    paths: &mut Vec<NamespacePath>,
     work: &mut WorkCounters,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -967,7 +979,7 @@ fn collect_host_subtree_paths(
             if policy.excludes(&child) {
                 continue;
             }
-            insert_scanned_path(paths, child.clone(), maximum, work, budget)?;
+            append_scanned_path(paths, child.clone(), work, budget)?;
             let host_child = host_parent.join(entry.file_name());
             // Directory enumeration already supplies a no-follow file kind.
             // Capture later reopens and validates every selected path; this
@@ -987,9 +999,8 @@ fn collect_host_subtree_paths(
 async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     limits: crate::model::VolumeLimits,
-    maximum: usize,
     policy: &CapturePolicy,
-    paths: &mut BTreeSet<NamespacePath>,
+    paths: &mut Vec<NamespacePath>,
     work: &mut WorkCounters,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -999,7 +1010,6 @@ async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     collect_checkout_subtree_paths(
         checkout,
         limits,
-        maximum,
         root,
         policy,
         paths,
@@ -1014,10 +1024,9 @@ async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     limits: crate::model::VolumeLimits,
-    maximum: usize,
     root: NamespacePath,
     policy: &CapturePolicy,
-    paths: &mut BTreeSet<NamespacePath>,
+    paths: &mut Vec<NamespacePath>,
     work: &mut WorkCounters,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -1053,7 +1062,7 @@ async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
                 if policy.excludes(&child) {
                     continue;
                 }
-                insert_scanned_path(paths, child.clone(), maximum, work, budget)?;
+                append_scanned_path(paths, child.clone(), work, budget)?;
                 if entry.record.kind == FileKind::Directory {
                     pending.push(child);
                 }
@@ -1067,31 +1076,26 @@ async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
     Ok(())
 }
 
-fn insert_scanned_path(
-    paths: &mut BTreeSet<NamespacePath>,
+fn append_scanned_path(
+    paths: &mut Vec<NamespacePath>,
     path: NamespacePath,
-    maximum: usize,
     work: &mut WorkCounters,
     budget: WorkBudget,
 ) -> Result<(), OperationFailure<CaptureError>> {
     let encoded_bytes = u64::from(path.encoded_bytes());
-    if paths.insert(path) {
-        if paths.len() > maximum {
-            return Err(OperationFailure::new(CaptureError::InvalidOptions, *work));
-        }
-        *work = add_work(
-            *work,
-            WorkCounters {
-                bytes_copied: encoded_bytes,
-                items_examined: 1,
-                allocation_operations: 1,
-                peak_allocation_bytes: encoded_bytes,
-                ..WorkCounters::default()
-            },
-        )?;
-        work.verify(budget)
-            .map_err(|error| OperationFailure::new(CaptureError::Work(error), *work))?;
-    }
+    paths.push(path);
+    *work = add_work(
+        *work,
+        WorkCounters {
+            bytes_copied: encoded_bytes,
+            items_examined: 1,
+            allocation_operations: 1,
+            peak_allocation_bytes: encoded_bytes,
+            ..WorkCounters::default()
+        },
+    )?;
+    work.verify(budget)
+        .map_err(|error| OperationFailure::new(CaptureError::Work(error), *work))?;
     Ok(())
 }
 
@@ -1532,13 +1536,12 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .map(|_| (host_path, path.clone()))
         })
         .collect::<Vec<_>>();
-    let mut paths = ordinary.keys().cloned().collect::<BTreeSet<_>>();
+    let mut paths = ordinary.keys().cloned().collect::<Vec<_>>();
     for (host_path, volume_path) in roots {
         collect_host_subtree_paths(
             source_root,
             profile,
             limits,
-            maximum,
             host_path,
             volume_path.clone(),
             policy,
@@ -1564,7 +1567,6 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             collect_checkout_subtree_paths(
                 checkout,
                 limits,
-                maximum,
                 volume_path,
                 policy,
                 &mut paths,
@@ -1575,6 +1577,8 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             .await?;
         }
     }
+    paths.sort();
+    paths.dedup();
     for path in paths {
         ordinary
             .entry(path)
