@@ -12,7 +12,7 @@ use super::{
     apply_tree_mutations_async, list_tree_entries_async, lookup_file_records_async,
     lookup_path_refs_async,
 };
-use crate::async_storage::AsyncObjectStore;
+use crate::async_storage::{AsyncObjectStore, BoxStorageFuture};
 use crate::cancellation::CancellationToken;
 use crate::foundation::{FileId, GenerationId};
 use crate::model::{VolumeConfig, VolumeConfigError};
@@ -1039,7 +1039,7 @@ impl TransactionState {
         mutation: RegularMutation,
         config: VolumeConfig,
         cancellation: &'a CancellationToken,
-    ) -> futures::future::BoxFuture<'a, Result<(), GenerationMutationFailure>> {
+    ) -> BoxStorageFuture<'a, Result<(), GenerationMutationFailure>> {
         Box::pin(async move {
             let binding = self.identity_binding(file_id)?;
             if binding.kind != FileKind::Regular {
