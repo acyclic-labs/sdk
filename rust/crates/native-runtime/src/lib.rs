@@ -1079,4 +1079,51 @@ mod tests {
         assert_eq!(actual, [expected]);
         Ok(())
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_read_batch_windows_requests_beyond_the_ring() -> io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(temporary.path().join("windowed-read-batch"))?;
+        let expected: Vec<u8> = (0..17).collect();
+        write_all_at(&file, 0, &expected)?;
+        let requests = (0_u64..17)
+            .map(|offset| OwnedRead { offset, length: 1 })
+            .collect();
+        let actual = complete_read(read_batch_async(file, requests))?;
+        assert_eq!(
+            actual,
+            expected
+                .into_iter()
+                .map(|value| Bytes::copy_from_slice(&[value]))
+                .collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_read_batch_windows_one_range_beyond_the_ring() -> io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(temporary.path().join("windowed-large-read"))?;
+        let expected = Bytes::from(vec![0x69; 16 * 1024 * 1024 + 1]);
+        write_all_at(&file, 3, &expected)?;
+        let actual = complete_read(read_batch_async(
+            file,
+            vec![OwnedRead {
+                offset: 3,
+                length: expected.len(),
+            }],
+        ))?;
+        assert_eq!(actual, [expected]);
+        Ok(())
+    }
 }

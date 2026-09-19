@@ -171,17 +171,6 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
     if reads.is_empty() {
         return Ok(Vec::new());
     }
-    let operation_count = reads.iter().try_fold(0_usize, |count, read| {
-        count
-            .checked_add(read.length.div_ceil(MAX_IO_BYTES).max(1))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "read batch is too large"))
-    })?;
-    if operation_count > RING_ENTRIES as usize {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "read batch exceeds native queue",
-        ));
-    }
     let mut buffers = Vec::new();
     buffers.try_reserve_exact(reads.len())?;
     for read in reads {
@@ -189,46 +178,161 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
     }
     let fd = file.as_raw_fd();
     STATE.with_borrow_mut(|state| {
-        let Some(active) = state.ring.as_mut() else {
-            return Err(io::Error::other("io_uring is unavailable"));
-        };
-        push_reads(active, fd, reads, &mut buffers)?;
-        let completions = match drain_reads(active, operation_count) {
-            Ok(completions) => completions,
-            Err(DrainReadError::Completed(error)) => return Err(error),
-            Err(DrainReadError::Uncertain(error)) => {
-                let failed = state
-                    .ring
-                    .take()
-                    .ok_or_else(|| io::Error::other("io_uring disappeared during quarantine"))?;
-                quarantine()
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(QuarantinedIo {
-                        _ring: failed,
-                        _buffers: QuarantinedBuffers::Reads(buffers),
-                    });
-                state.ring = IoUring::new(RING_ENTRIES).ok();
-                return Err(error);
+        let mut completions = Vec::new();
+        let mut request = 0_usize;
+        while request < reads.len() {
+            let mut window_end = request;
+            let mut operation_count = 0_usize;
+            while window_end < reads.len() {
+                let operations = reads
+                    .get(window_end)
+                    .ok_or_else(|| io::Error::other("invalid read request"))?
+                    .length
+                    .div_ceil(MAX_IO_BYTES)
+                    .max(1);
+                if operation_count != 0
+                    && operation_count.saturating_add(operations) > RING_ENTRIES as usize
+                {
+                    break;
+                }
+                if operations > RING_ENTRIES as usize {
+                    break;
+                }
+                operation_count = operation_count.saturating_add(operations);
+                window_end += 1;
             }
-        };
+            if window_end == request {
+                let read = *reads
+                    .get(request)
+                    .ok_or_else(|| io::Error::other("invalid read request"))?;
+                let buffer = buffers
+                    .get_mut(request)
+                    .ok_or_else(|| io::Error::other("invalid read buffer"))?;
+                let completed = match read_large(&mut state.ring, fd, read, buffer) {
+                    Ok(completed) => completed,
+                    Err(LargeReadError::Completed(error)) => return Err(error),
+                    Err(LargeReadError::Uncertain(error)) => {
+                        let failed = state.ring.take().ok_or_else(|| {
+                            io::Error::other("io_uring disappeared during quarantine")
+                        })?;
+                        quarantine()
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(QuarantinedIo {
+                                _ring: failed,
+                                _buffers: QuarantinedBuffers::Reads(buffers),
+                            });
+                        return Err(error);
+                    }
+                };
+                completions.extend(completed);
+                request += 1;
+                continue;
+            }
+            let window_reads = reads
+                .get(request..window_end)
+                .ok_or_else(|| io::Error::other("invalid read window"))?;
+            let window_buffers = buffers
+                .get_mut(request..window_end)
+                .ok_or_else(|| io::Error::other("invalid read buffer window"))?;
+            let operation_count =
+                push_read_window(&mut state.ring, fd, window_reads, window_buffers)?;
+            let Some(active) = state.ring.as_mut() else {
+                return Err(io::Error::other("io_uring is unavailable"));
+            };
+            match drain_reads(active, operation_count) {
+                Ok(window) => completions.extend(window),
+                Err(DrainReadError::Completed(error)) => return Err(error),
+                Err(DrainReadError::Uncertain(error)) => {
+                    let failed = state.ring.take().ok_or_else(|| {
+                        io::Error::other("io_uring disappeared during quarantine")
+                    })?;
+                    quarantine()
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(QuarantinedIo {
+                            _ring: failed,
+                            _buffers: QuarantinedBuffers::Reads(buffers),
+                        });
+                    return Err(error);
+                }
+            }
+            request = window_end;
+        }
         assemble_reads(buffers, completions)
     })
 }
 
-fn push_reads(
-    ring: &mut IoUring,
+fn read_large(
+    ring: &mut Option<IoUring>,
+    fd: i32,
+    read: OwnedRead,
+    buffer: &mut [u8],
+) -> Result<Vec<Option<usize>>, LargeReadError> {
+    let mut completions = Vec::new();
+    let mut offset = read.offset;
+    for window in buffer.chunks_mut(MAX_IO_BYTES * RING_ENTRIES as usize) {
+        let Some(active) = ring.as_mut() else {
+            return Err(LargeReadError::Completed(io::Error::other(
+                "io_uring is unavailable",
+            )));
+        };
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(window.len().div_ceil(MAX_IO_BYTES))
+            .map_err(|error| LargeReadError::Completed(error.into()))?;
+        for (identity, chunk) in window.chunks_mut(MAX_IO_BYTES).enumerate() {
+            let length = u32::try_from(chunk.len()).map_err(|_| {
+                LargeReadError::Completed(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "read is too large",
+                ))
+            })?;
+            entries.push(
+                opcode::Read::new(types::Fd(fd), chunk.as_mut_ptr(), length)
+                    .offset(offset)
+                    .build()
+                    .user_data(identity as u64),
+            );
+            offset = offset.checked_add(chunk.len() as u64).ok_or_else(|| {
+                LargeReadError::Completed(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "read offset overflow",
+                ))
+            })?;
+        }
+        {
+            let mut submission = active.submission();
+            // SAFETY: every descriptor and buffer remains live until all matching CQEs are drained.
+            unsafe { submission.push_multiple(&entries) }.map_err(|_| {
+                LargeReadError::Completed(io::Error::other("io_uring submission queue is full"))
+            })?;
+        }
+        match drain_reads(active, entries.len()) {
+            Ok(window) => completions.extend(window),
+            Err(DrainReadError::Completed(error)) => return Err(LargeReadError::Completed(error)),
+            Err(DrainReadError::Uncertain(error)) => return Err(LargeReadError::Uncertain(error)),
+        }
+    }
+    Ok(completions)
+}
+
+enum LargeReadError {
+    Completed(io::Error),
+    Uncertain(io::Error),
+}
+
+fn push_read_window(
+    ring: &mut Option<IoUring>,
     fd: i32,
     reads: &[OwnedRead],
     buffers: &mut [Vec<u8>],
-) -> io::Result<()> {
+) -> io::Result<usize> {
+    let Some(active) = ring.as_mut() else {
+        return Err(io::Error::other("io_uring is unavailable"));
+    };
     let mut entries = Vec::new();
-    entries.try_reserve_exact(
-        reads
-            .iter()
-            .map(|read| read.length.div_ceil(MAX_IO_BYTES).max(1))
-            .sum(),
-    )?;
+    entries.try_reserve_exact(reads.len())?;
     let mut operation = 0_u64;
     for (read, buffer) in reads.iter().zip(buffers) {
         for (chunk_index, chunk) in buffer.chunks_mut(MAX_IO_BYTES).enumerate() {
@@ -258,11 +362,11 @@ fn push_reads(
             operation += 1;
         }
     }
-    let mut submission = ring.submission();
+    let mut submission = active.submission();
     // SAFETY: every descriptor and buffer remains live until all matching CQEs are drained.
     unsafe { submission.push_multiple(&entries) }
         .map_err(|_| io::Error::other("io_uring submission queue is full"))?;
-    Ok(())
+    Ok(entries.len())
 }
 
 enum DrainReadError {
