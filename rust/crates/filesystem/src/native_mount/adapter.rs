@@ -1943,6 +1943,20 @@ mod tests {
     #[cfg(target_os = "linux")]
     use std::os::unix::ffi::OsStringExt;
 
+    #[cfg(target_os = "macos")]
+    #[allow(unsafe_code)]
+    unsafe extern "C" {
+        fn nfs4_test_exclusive_replay_identity() -> std::ffi::c_int;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[allow(unsafe_code)]
+    fn exclusive_replay_is_bound_to_the_opened_file_handle() {
+        // SAFETY: the test hook has no arguments and owns all callback state.
+        assert_eq!(unsafe { nfs4_test_exclusive_replay_identity() }, 0);
+    }
+
     type MemorySource = CheckoutMountSource<
         crate::facade::MemoryAuthorityBackend,
         crate::facade::MemoryObjectBackend,
@@ -2597,7 +2611,8 @@ mod tests {
     // whose verifier the server parks in the new file's timestamps until the
     // client's follow-up SETATTR replaces them (RFC 7530 s16.16.5). The
     // second create must see the existing file, and the timestamps a caller
-    // observes must be real ones, not the verifier.
+    // observes must be real ones, not the verifier. Removing and replacing
+    // the path must not let a remembered verifier reopen the replacement.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     #[ignore = "mounts a live Unix session; requires the host's native mount capability"]
@@ -2637,6 +2652,18 @@ mod tests {
             "timestamps still carry the create verifier: {metadata:?}"
         );
         assert_eq!(std::fs::read(&path)?, b"locked");
+
+        std::fs::remove_file(&path)?;
+        std::fs::write(&path, b"replacement")?;
+        let after_replacement = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path);
+        assert_eq!(
+            after_replacement.err().map(|error| error.kind()),
+            Some(std::io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(std::fs::read(&path)?, b"replacement");
 
         assert!(mount.stop()?);
         Ok(())
