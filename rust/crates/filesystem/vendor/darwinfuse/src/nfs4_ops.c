@@ -1284,6 +1284,144 @@ static uint32_t handle_readdir(const darwinfuse_config_t *config,
 
 /* ---- OPEN ---- */
 
+/* EXCLUSIVE4 create verifiers (RFC 7530 s16.16.5). The spec parks the
+ * verifier in the new file's atime/mtime and relies on the client's
+ * follow-up SETATTR to put real times back; the macOS client never sends
+ * that SETATTR, so a file created with O_EXCL would keep a 1970 atime and
+ * a far-future mtime. Keep the verifiers server-side instead: a bounded
+ * ring shared by every connection, because the retransmit that needs it
+ * arrives on a fresh connection after the old one dropped. The ring is
+ * keyed by mount, path, and object identity so concurrent mounts in one
+ * process stay apart and an unlinked/replaced path cannot inherit a stale
+ * verifier.
+ * A daemon restart loses it, but a restart loses the open-owner state the
+ * replay would need anyway. */
+#define EXCLUSIVE_VERIFIERS 64
+typedef struct {
+    const darwinfuse_config_t *config;
+    uint64_t verifier;
+    dev_t device;
+    ino_t inode;
+    char path[1024];
+} exclusive_verifier_t;
+static exclusive_verifier_t exclusive_verifiers[EXCLUSIVE_VERIFIERS];
+static unsigned exclusive_verifier_next;
+static pthread_mutex_t exclusive_verifier_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int exclusive_remember(const darwinfuse_config_t *config,
+                              const char *path, uint64_t verf,
+                              struct fuse_file_info *fi) {
+    struct stat st;
+    memset(&st, 0, sizeof(st));
+    if (!config->ops->fgetattr ||
+        config->ops->fgetattr(path, &st, fi) != 0)
+        return 0;
+
+    pthread_mutex_lock(&exclusive_verifier_lock);
+    exclusive_verifier_t *slot =
+        &exclusive_verifiers[exclusive_verifier_next++ % EXCLUSIVE_VERIFIERS];
+    slot->config = config;
+    slot->verifier = verf;
+    slot->device = st.st_dev;
+    slot->inode = st.st_ino;
+    strlcpy(slot->path, path, sizeof(slot->path));
+    pthread_mutex_unlock(&exclusive_verifier_lock);
+    return 1;
+}
+
+/* True when this mount created `path` under `verf` recently: the OPEN is a
+ * retransmit of one that succeeded, not a collision. The entry stays until
+ * the ring overwrites it, because every lost reply is followed by another
+ * retransmit with the same verifier and each must succeed. An unrelated
+ * later create of the same path carries a fresh 64-bit verifier, so a
+ * lingering entry cannot make it succeed by mistake. */
+static int exclusive_recall(const darwinfuse_config_t *config,
+                            const char *path, uint64_t verf,
+                            struct fuse_file_info *fi) {
+    struct stat st;
+    memset(&st, 0, sizeof(st));
+    if (!config->ops->fgetattr ||
+        config->ops->fgetattr(path, &st, fi) != 0)
+        return 0;
+
+    int found = 0;
+    pthread_mutex_lock(&exclusive_verifier_lock);
+    for (unsigned i = 0; i < EXCLUSIVE_VERIFIERS; i++) {
+        const exclusive_verifier_t *slot = &exclusive_verifiers[i];
+        if (slot->config == config && slot->verifier == verf &&
+            slot->device == st.st_dev && slot->inode == st.st_ino &&
+            strcmp(slot->path, path) == 0) {
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&exclusive_verifier_lock);
+    return found;
+}
+
+static int exclusive_validate_replay(const darwinfuse_config_t *config,
+                                     const char *path, uint64_t verf,
+                                     struct fuse_file_info *fi) {
+    if (exclusive_recall(config, path, verf, fi))
+        return 1;
+    if (config->ops->release)
+        config->ops->release(path, fi);
+    return 0;
+}
+
+/* Deterministic callback-level regression for the exact-handle replay rule.
+ * This is called by the macOS Rust test suite. */
+static uint64_t exclusive_test_released_fh;
+static unsigned exclusive_test_release_count;
+
+static int exclusive_test_fgetattr(const char *path, struct stat *st,
+                                   struct fuse_file_info *fi) {
+    (void)path;
+    memset(st, 0, sizeof(*st));
+    st->st_dev = 7;
+    st->st_ino = (ino_t)fi->fh;
+    return 0;
+}
+
+static int exclusive_test_release(const char *path,
+                                  struct fuse_file_info *fi) {
+    (void)path;
+    exclusive_test_released_fh = fi->fh;
+    exclusive_test_release_count++;
+    return 0;
+}
+
+int nfs4_test_exclusive_replay_identity(void) {
+    static struct fuse_operations ops;
+    static darwinfuse_config_t config;
+    const char *path = "/exclusive-replay-self-test";
+    const uint64_t verifier = UINT64_C(0x8f3a2d1c7b6e5049);
+    struct fuse_file_info created;
+    struct fuse_file_info replacement;
+    memset(&ops, 0, sizeof(ops));
+    memset(&config, 0, sizeof(config));
+    memset(&created, 0, sizeof(created));
+    memset(&replacement, 0, sizeof(replacement));
+    ops.fgetattr = exclusive_test_fgetattr;
+    ops.release = exclusive_test_release;
+    config.ops = &ops;
+    created.fh = 101;
+    replacement.fh = 202;
+    exclusive_test_released_fh = 0;
+    exclusive_test_release_count = 0;
+
+    if (!exclusive_remember(&config, path, verifier, &created))
+        return 1;
+    if (!exclusive_recall(&config, path, verifier, &created))
+        return 2;
+    if (exclusive_validate_replay(&config, path, verifier, &replacement))
+        return 3;
+    if (exclusive_test_release_count != 1 ||
+        exclusive_test_released_fh != replacement.fh)
+        return 4;
+    return 0;
+}
+
 static uint32_t handle_open(const darwinfuse_config_t *config,
                              nfs4_conn_state_t *conn,
                              nfs4_request_ctx_t *ctx,
@@ -1305,6 +1443,8 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
     int create_nwords = 0;
 
     uint32_t createmode = UNCHECKED4;
+    uint64_t createverf = 0;
+    int exclusive_replay = 0;
     if (opentype == OPEN4_CREATE) {
         createmode = xdr_decode_uint32(req);
         if (createmode == EXCLUSIVE4) {
@@ -1313,8 +1453,10 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
              * attrs here misread the verifier as a bitmap and every
              * O_CREAT|O_EXCL open (mkstemp, git index.lock, editor
              * atomic saves) failed with EIO. The client sends the mode
-             * in a follow-up SETATTR, so 0644 is only a placeholder. */
-            xdr_decode_uint64(req);
+             * in a follow-up SETATTR, so 0644 is only a placeholder.
+             * The verifier is kept: it is stored on the created file so
+             * a retransmitted OPEN can be told from a real collision. */
+            createverf = xdr_decode_uint64(req);
         } else {
             /* Decode createattrs (bitmap + attr data) */
             decode_bitmap(req, create_bitmap, &create_nwords);
@@ -1424,7 +1566,24 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
                 fi.flags = O_CREAT | O_RDWR;
 
             if (config->ops->create) {
+                if (createmode == EXCLUSIVE4 && !config->ops->fgetattr)
+                    return NFS4ERR_NOTSUPP;
                 int rc = config->ops->create(path_buf, create_mode, &fi);
+                if (rc == 0 && createmode == EXCLUSIVE4) {
+                    /* If this reply is lost and the client retransmits
+                     * with the same verifier, the EEXIST path below
+                     * recognises the replay instead of failing O_EXCL
+                     * on a file this very request created. */
+                    if (!exclusive_remember(config, path_buf, createverf, &fi)) {
+                        /* The pathname may already name a concurrent
+                         * replacement. Close only the handle returned by
+                         * this create; unlinking by pathname here could
+                         * delete that replacement. */
+                        if (config->ops->release)
+                            config->ops->release(path_buf, &fi);
+                        return NFS4ERR_IO;
+                    }
+                }
                 if (rc == 0) {
                     /* Store the fuse_fh */
                     target_ino = dfuse_itable_get_or_create(config->inode_table, path_buf);
@@ -1467,11 +1626,16 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
                 /* create failed — fall through to try open if EEXIST,
                  * but only for UNCHECKED4: GUARDED4 and EXCLUSIVE4 must
                  * report the existing file, or O_EXCL would silently
-                 * succeed on a file someone else created. */
+                 * succeed on a file someone else created. The one
+                 * exception is an EXCLUSIVE4 replay: the file exists
+                 * because this very request created it and the reply
+                 * was lost, which its remembered verifier proves. */
                 if (rc != -EEXIST)
                     return errno_to_nfs4(rc);
-                if (createmode != UNCHECKED4)
+                if (createmode == GUARDED4)
                     return NFS4ERR_EXIST;
+                if (createmode == EXCLUSIVE4)
+                    exclusive_replay = 1;
             } else {
                 return NFS4ERR_NOTSUPP;
             }
@@ -1524,6 +1688,15 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
     if (config->ops->open) {
         int rc = config->ops->open(target_path, &fi);
         if (rc != 0) { free(target_path); return errno_to_nfs4(rc); }
+    }
+
+    /* Validate a retransmit against the object that was actually opened, not
+     * a path-based stat that can race an unlink/rename/replacement. The FUSE
+     * handle remains bound to that object even if the path changes again. */
+    if (exclusive_replay &&
+        !exclusive_validate_replay(config, target_path, createverf, &fi)) {
+        free(target_path);
+        return NFS4ERR_EXIST;
     }
 
     /* Generate a stateid */

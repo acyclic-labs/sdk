@@ -281,4 +281,7 @@ int nfs4_dispatch_compound(const darwinfuse_config_t *config,
                            xdr_buf_t *request,
                            xdr_buf_t *reply);
 
+/* Callback-level regression hook used by the macOS Rust test suite. */
+int nfs4_test_exclusive_replay_identity(void);
+
 #endif /* DARWINFUSE_NFS4_OPS_H */
