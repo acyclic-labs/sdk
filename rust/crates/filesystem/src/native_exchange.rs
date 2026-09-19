@@ -237,19 +237,10 @@ fn durable_rename(from: &Path, to: &Path, replace: bool) -> std::io::Result<()> 
 }
 
 fn sync_parent(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        std::fs::File::open(
-            path.parent()
-                .ok_or_else(|| std::io::Error::other("path has no parent"))?,
-        )?
-        .sync_all()
-    }
-    #[cfg(windows)]
-    {
-        let _ = path;
-        Ok(())
-    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("path has no parent"))?;
+    acyclic_native_runtime::sync_parent(parent, acyclic_native_runtime::Durability::Full)
 }
 
 #[cfg(windows)]
