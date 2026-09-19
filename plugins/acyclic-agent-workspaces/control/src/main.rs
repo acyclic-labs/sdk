@@ -1022,14 +1022,15 @@ impl ControlPlane {
         };
         let repository = GitCompatRepository::new(repository_id, self.store.clone());
         let resumed = repository.resume(&executor).await;
-        let command = if let Ok(Some(output)) = resumed {
-            Ok(output)
+        let command = if let Ok(Some(_)) = resumed {
+            Ok(None)
         } else if let Err(error) = resumed {
             Err(error)
         } else if let Some(patch) = patch {
             repository
                 .run(GitCommand::Apply { patch }, head.id(), &executor)
                 .await
+                .map(Some)
         } else {
             repository
                 .run_argv(
@@ -1040,6 +1041,7 @@ impl ControlPlane {
                     &executor,
                 )
                 .await
+                .map(Some)
         };
         let parent_head = parent.head().await.map(|generation| generation.id());
         let observed: Result<(), String> = match parent_head {
@@ -1095,7 +1097,6 @@ impl ControlPlane {
             .advance_to_head()
             .await
             .map_err(display)?;
-        let output = command.map_err(display)?;
         if let Some(switched) = switched {
             let previous = self
                 .mounts
@@ -1115,6 +1116,11 @@ impl ControlPlane {
             current.workspace_id = switched.id().into_bytes();
             self.mounts.insert(agent_id.to_owned(), mount);
         }
+        let Some(output) = command.map_err(display)? else {
+            return Err(
+                "recovered a pending Git transition; retry the current command".to_owned(),
+            );
+        };
         set_shell_command(&mut updated, render_git_output(&output)?)?;
         self.persist()?;
         Ok(pre_tool_update(updated))
@@ -2596,15 +2602,23 @@ mod tests {
                 .expect("pending transition")
                 .is_some()
         );
-        control
+        assert!(control
             .pre_tool(json!({
                 "turn_id":"child-turn","tool_use_id":"recover-git-switch",
                 "tool_name":"exec_command",
                 "tool_input":{"cmd":"git status","workdir":root.display().to_string()}
             }))
             .await
-            .expect("recover interrupted Git transition through a leased command");
+            .is_err());
         assert_eq!(control.state.routes["child"].workspace_id, repository_id.into_bytes());
+        control
+            .pre_tool(json!({
+                "turn_id":"child-turn","tool_use_id":"retry-git-status",
+                "tool_name":"exec_command",
+                "tool_input":{"cmd":"git status","workdir":root.display().to_string()}
+            }))
+            .await
+            .expect("retry Git status after leased recovery");
         control
             .user_prompt(json!({"session_id":"session","turn_id":"root-turn-recovered"}))
             .expect("recovered root turn");
