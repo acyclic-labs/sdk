@@ -1,0 +1,1 @@
+Run one child agent and have it create `repeat.txt` with exact content `merge once\n`. Publish the child, then deliberately call the agent-workspaces merge tool on the same child a second time to exercise idempotency. Verify the root file is unchanged. Do not create the file yourself.

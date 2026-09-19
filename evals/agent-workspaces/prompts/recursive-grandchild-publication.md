@@ -1,0 +1,1 @@
+Run one child agent. It must run its own grandchild agent, which creates `grandchild.txt` with exact content `published through child\n`. The child must inspect and publish its direct grandchild, verify the file, and then finish. Back at the root, inspect the direct child's `grandchild.txt` and publish the child. Respect direct-parent publication; do not create the file yourself.

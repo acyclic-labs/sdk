@@ -39,6 +39,9 @@ case "$lane" in
     bash scripts/test-ensure-rust-target.sh
     source scripts/ensure-bun.sh
     bun install --frozen-lockfile
+    # Package validation runs with --offline; populate every locked crate even
+    # when the Blacksmith dependency cache is cold.
+    cargo fetch --locked
     cargo test -p acyclic-fs --features native-mount --locked --lib -- \
       --ignored --test-threads=1
     cargo build -p acyclic-fs-napi --locked
@@ -74,6 +77,11 @@ case "$lane" in
     python3 scripts/test-npm-publication.py
     bash -n scripts/prepare-crate-publication.sh scripts/prepare-npm-publication.sh \
       scripts/check-typescript-packages.sh
+    ;;
+  eval)
+    python3 evals/agent-workspaces/protocol_check.py \
+      --out "$SDK_ARTIFACT_DIR/agent-workspaces-protocol"
+    python3 -m unittest evals/agent-workspaces/test_harness.py
     ;;
   policy)
     bash scripts/test-ensure-rust-target.sh
