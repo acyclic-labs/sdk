@@ -1833,50 +1833,102 @@ async fn append_regular_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure<CaptureError>> {
-    let mut file = if let Some(file) = opened_file {
-        file
-    } else {
-        source_root
-            .open_file(host_path)
-            .map_err(|error| OperationFailure::new(error.into(), receipt.work))?
-    };
-    let metadata = file
-        .metadata()
-        .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
-    if !metadata.is_file() {
-        return Err(OperationFailure::new(
-            CaptureError::Io(std::io::Error::other(
-                "host file kind changed during capture",
-            )),
-            receipt.work,
-        ));
-    }
-    ensure_same_host_node(snapshot, &metadata)
-        .map_err(|error| OperationFailure::new(error, receipt.work))?;
-    let logical_bytes = metadata.len();
-    let ranges = allocated_data_ranges(&file, logical_bytes, maximum_extent_spans)
-        .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
-    let staged = stage_host_ranges(
+    let staged = stage_regular_body(
         &checkout.content_stager(),
-        &mut file,
-        &ranges,
+        source_root,
+        host_path,
+        snapshot,
+        opened_file,
+        maximum_extent_spans,
         receipt.work,
         budget,
         cancellation,
     )
     .await?;
-    receipt.work = add_work(receipt.work, staged.work)?;
+    receipt.work = add_work(receipt.work, staged.content.work)?;
     receipt.staged_file_bytes = receipt
         .staged_file_bytes
-        .checked_add(staged.bytes)
+        .checked_add(staged.content.bytes)
         .ok_or_else(|| {
             OperationFailure::new(CaptureError::Work(WorkError::Overflow), receipt.work)
         })?;
+    append_staged_regular_state(
+        path,
+        staged.logical_bytes,
+        exists_with_kind,
+        canonical_metadata,
+        staged.content.ranges,
+        mutations,
+    );
+    Ok(())
+}
+
+struct StagedRegularBody {
+    logical_bytes: u64,
+    content: StagedHostRanges,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    stager: &ContentStager<A, O>,
+    source_root: &HostRoot,
+    host_path: &Path,
+    snapshot: &HostSnapshot,
+    opened_file: Option<cap_std::fs::File>,
+    maximum_extent_spans: u32,
+    prior_work: WorkCounters,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<StagedRegularBody, OperationFailure<CaptureError>> {
+    let mut file = if let Some(file) = opened_file {
+        file
+    } else {
+        source_root
+            .open_file(host_path)
+            .map_err(|error| OperationFailure::new(error.into(), prior_work))?
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
+    if !metadata.is_file() {
+        return Err(OperationFailure::new(
+            CaptureError::Io(std::io::Error::other(
+                "host file kind changed during capture",
+            )),
+            prior_work,
+        ));
+    }
+    ensure_same_host_node(snapshot, &metadata)
+        .map_err(|error| OperationFailure::new(error, prior_work))?;
+    let logical_bytes = metadata.len();
+    let ranges = allocated_data_ranges(&file, logical_bytes, maximum_extent_spans)
+        .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
+    let content =
+        stage_host_ranges(stager, &mut file, &ranges, prior_work, budget, cancellation).await?;
+    let accumulated = prior_work
+        .checked_add(content.work)
+        .map_err(|error| OperationFailure::new(CaptureError::Work(error), prior_work))?;
     let after = file
         .metadata()
-        .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+        .map_err(|error| OperationFailure::new(error.into(), accumulated))?;
     ensure_same_host_node(snapshot, &after)
-        .map_err(|error| OperationFailure::new(error, receipt.work))?;
+        .map_err(|error| OperationFailure::new(error, accumulated))?;
+    ensure_current_host_node(source_root, host_path, snapshot)
+        .map_err(|error| OperationFailure::new(error, accumulated))?;
+    Ok(StagedRegularBody {
+        logical_bytes,
+        content,
+    })
+}
+
+fn append_staged_regular_state(
+    path: NamespacePath,
+    logical_bytes: u64,
+    exists_with_kind: bool,
+    canonical_metadata: FileMetadata,
+    ranges: Vec<(HostDataRange, StagedContent)>,
+    mutations: &mut Vec<AuthoredMutation>,
+) {
     if exists_with_kind {
         mutations.push(AuthoredMutation::Resize {
             path: path.clone(),
@@ -1895,7 +1947,7 @@ async fn append_regular_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             logical_bytes,
         });
     }
-    mutations.extend(staged.ranges.into_iter().map(|(range, content)| {
+    mutations.extend(ranges.into_iter().map(|(range, content)| {
         AuthoredMutation::WriteFromContent {
             path: path.clone(),
             offset: range.offset,
@@ -1906,7 +1958,6 @@ async fn append_regular_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         path,
         metadata: canonical_metadata,
     });
-    Ok(())
 }
 
 #[derive(Clone, Copy)]
