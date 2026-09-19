@@ -48,6 +48,40 @@ pub struct NativeExchangeOutcome {
     pub displaced: Option<PathBuf>,
 }
 
+/// Persists an exchange request before a caller changes any related durable
+/// state. Retrying with the same request is idempotent; a different request at
+/// the same journal path fails closed.
+///
+/// This is the coordination boundary for consumers that must first update a
+/// logical workspace head and then publish its already materialized native
+/// tree. [`publish_native_exchange`] consumes the prepared journal.
+pub fn prepare_native_exchange(
+    journal_path: &Path,
+    live: &Path,
+    prepared: &Path,
+    operation: crate::IdempotencyKey,
+    carried: Vec<PathBuf>,
+) -> Result<(), NativeExchangeError> {
+    validate_layout(live, prepared)?;
+    let journal = NativeExchangeJournal {
+        version: NATIVE_EXCHANGE_JOURNAL_VERSION,
+        operation,
+        live: live.to_path_buf(),
+        prepared: prepared.to_path_buf(),
+        carried,
+        roots: [root_identity(live)?, root_identity(prepared)?],
+        phase: NativeExchangePhase::Carrying,
+    };
+    match read_journal(journal_path) {
+        Ok(existing) if existing == journal => Ok(()),
+        Ok(_) => Err(NativeExchangeError::IncompatibleJournal),
+        Err(NativeExchangeError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            write_journal(journal_path, &journal)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Whole-tree exchange failure.
 #[derive(Debug, Error)]
 pub enum NativeExchangeError {
@@ -110,16 +144,8 @@ pub fn publish_native_exchange(
             return Ok(recovered);
         }
     }
-    let mut journal = NativeExchangeJournal {
-        version: NATIVE_EXCHANGE_JOURNAL_VERSION,
-        operation,
-        live: live.to_path_buf(),
-        prepared: prepared.to_path_buf(),
-        carried,
-        roots: [root_identity(live)?, root_identity(prepared)?],
-        phase: NativeExchangePhase::Carrying,
-    };
-    write_journal(journal_path, &journal)?;
+    prepare_native_exchange(journal_path, live, prepared, operation, carried)?;
+    let mut journal = read_journal(journal_path)?;
     if let Err(error) = carry(live, prepared, &journal.carried) {
         move_back(prepared, live, &journal.carried)?;
         remove_journal(journal_path)?;
@@ -503,6 +529,38 @@ mod tests {
         assert_eq!(std::fs::read(live.join("new")).expect("new"), b"new");
         assert_eq!(std::fs::read(prepared.join("old")).expect("old"), b"old");
         assert!(!journal_path.exists());
+    }
+
+    #[test]
+    fn prepared_exchange_is_idempotent_and_rejects_other_requests() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let prepared = temporary.path().join("prepared");
+        std::fs::create_dir(&live).expect("live tree");
+        std::fs::create_dir(&prepared).expect("prepared tree");
+        let journal_path = temporary.path().join("exchange.json");
+        let operation = crate::IdempotencyKey::from_bytes([12; 16]);
+        let carried = vec![PathBuf::from("private")];
+
+        prepare_native_exchange(&journal_path, &live, &prepared, operation, carried.clone())
+            .expect("prepare exchange");
+        prepare_native_exchange(&journal_path, &live, &prepared, operation, carried.clone())
+            .expect("retry preparation");
+
+        let journal = read_journal(&journal_path).expect("read journal");
+        assert_eq!(journal.operation, operation);
+        assert_eq!(journal.carried, carried);
+        assert_eq!(journal.phase, NativeExchangePhase::Carrying);
+        assert!(matches!(
+            prepare_native_exchange(
+                &journal_path,
+                &live,
+                &prepared,
+                crate::IdempotencyKey::from_bytes([13; 16]),
+                Vec::new(),
+            ),
+            Err(NativeExchangeError::IncompatibleJournal)
+        ));
     }
 
     #[test]
