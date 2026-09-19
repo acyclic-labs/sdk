@@ -10,11 +10,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use acyclic_fs::model::VolumeConfig;
 use acyclic_fs::SharedCheckout;
+use acyclic_fs::model::VolumeConfig;
 use acyclic_fs::{
-    probe_native_mount, GenerationId, LocalAuthorityBackend, LocalObjectBackend, NativeMountKind,
-    VolumeId,
+    GenerationId, LocalAuthorityBackend, LocalObjectBackend, NativeMountKind, VolumeId,
+    probe_native_mount,
 };
 
 /// What the host can do for fork mounts, probed once at daemon start and

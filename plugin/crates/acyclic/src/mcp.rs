@@ -22,11 +22,11 @@ use std::path::{Path, PathBuf};
 use crate::proto;
 use acyclic::product::{self, NAME};
 use rmcp::{
+    ErrorData as McpError, ServerHandler, ServiceExt,
     handler::server::wrapper::Parameters,
     model::{ErrorCode, Implementation, ServerCapabilities, ServerConfig},
     tool, tool_handler, tool_router,
     transport::stdio,
-    ErrorData as McpError, ServerHandler, ServiceExt,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;

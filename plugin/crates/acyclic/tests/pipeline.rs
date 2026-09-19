@@ -90,10 +90,12 @@ fn idle_metadata_traffic_never_establishes_the_baseline() {
         handle.shutdown().await.expect("shutdown");
     });
     thread.join().expect("pipeline thread");
-    assert!(read_only_index(&paths.index_db())
-        .latest()
-        .expect("query")
-        .is_none());
+    assert!(
+        read_only_index(&paths.index_db())
+            .latest()
+            .expect("query")
+            .is_none()
+    );
 }
 
 #[test]
@@ -659,14 +661,18 @@ fn single_path_restore_leaves_the_rest_alone() {
         }
 
         // Escapes and the root are refused.
-        assert!(handle
-            .restore_path(target(v1.row_id), "../etc".into())
-            .await
-            .is_err());
-        assert!(handle
-            .restore_path(target(v1.row_id), ".".into())
-            .await
-            .is_err());
+        assert!(
+            handle
+                .restore_path(target(v1.row_id), "../etc".into())
+                .await
+                .is_err()
+        );
+        assert!(
+            handle
+                .restore_path(target(v1.row_id), ".".into())
+                .await
+                .is_err()
+        );
 
         // Each restore is recorded as a `manual` checkpoint, never as a
         // rewind (nothing is abandoned), and the pre-restore state (v2) is

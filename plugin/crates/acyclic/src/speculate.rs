@@ -374,10 +374,10 @@ async fn run(config: SpeculateConfig, deps: SpecDeps, mut receiver: mpsc::Receiv
     };
     // A `running` row whose daemon died would hold its key forever, since
     // `running` is the one state that is never retryable.
-    if let Ok(swept) = store.sweep_orphans() {
-        if swept > 0 {
-            acyclic::trace!("spec", "swept {swept} orphaned run(s) from a dead daemon");
-        }
+    if let Ok(swept) = store.sweep_orphans()
+        && swept > 0
+    {
+        acyclic::trace!("spec", "swept {swept} orphaned run(s) from a dead daemon");
     }
     let mut scheduler = Scheduler {
         config,

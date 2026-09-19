@@ -549,14 +549,16 @@ mod tests {
         let paths = StorePaths::for_repo(repo.path(), Some(Path::new("../stores")))
             .expect("resolve relative store");
         assert!(paths.root.is_absolute());
-        assert!(paths.root.starts_with(
-            repo.path()
-                .canonicalize()
-                .expect("canonical repo")
-                .parent()
-                .expect("repo parent")
-                .join("stores")
-        ));
+        assert!(
+            paths.root.starts_with(
+                repo.path()
+                    .canonicalize()
+                    .expect("canonical repo")
+                    .parent()
+                    .expect("repo parent")
+                    .join("stores")
+            )
+        );
     }
 
     #[tokio::test]

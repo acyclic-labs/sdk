@@ -16,10 +16,10 @@ use std::path::{Path, PathBuf};
 
 use acyclic_fs::kernel::{FileKind, FileMetadata, FileRecord, MetadataField, NamespacePath};
 pub use acyclic_fs::text_merge::{
-    conflict_hunks, has_conflict_markers, ByteConflictKind as ConflictKind,
+    ByteConflictKind as ConflictKind, conflict_hunks, has_conflict_markers,
 };
 use acyclic_fs::text_merge::{
-    merge_bytes, ByteMerge as ContentMerge, ByteMergeError, ByteMergeLimits,
+    ByteMerge as ContentMerge, ByteMergeError, ByteMergeLimits, merge_bytes,
 };
 use acyclic_fs::{
     AuthoredMutation, ByteRange, CancellationToken, GenerationId, ResolvedFileRangeReadRequest,
@@ -808,7 +808,7 @@ async fn ensure_entry_parents(
                     acyclic_fs::namespace_to_host_path(&parent)
                         .map_err(EngineError::fs("resolve parent path"))?
                         .display()
-                )))
+                )));
             }
             None => {
                 dst.create_directory(parent, WorkCounters::UNBOUNDED, cancel)
@@ -1039,7 +1039,7 @@ async fn copy_node(
                 other => {
                     return Err(EngineError::Fs(format!(
                         "cannot copy a {other:?} node (only files, symlinks, and directories)"
-                    )))
+                    )));
                 }
             }
         }

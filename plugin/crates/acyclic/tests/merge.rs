@@ -15,13 +15,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use acyclic::GenerationId;
 use acyclic::config::Config;
 use acyclic::fork::ForkSeed;
 use acyclic::index::{Attribution, CheckpointKind, Index};
 use acyclic::merge::{self, ConflictKind, Entry, Reason};
 use acyclic::pipeline::{self, PipelineHandle};
 use acyclic::store::{Store, StorePaths};
-use acyclic::GenerationId;
 use acyclic_fs::kernel::NamespacePath;
 use acyclic_fs::{CancellationToken, WorkCounters};
 

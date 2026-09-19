@@ -6,12 +6,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use acyclic_fs::{
-    durable_rename, prepare_native_exchange_with_recovery, publish_native_exchange,
-    recover_native_exchange, HostPathReplacement, HostPathRestore, IdempotencyKey,
-    MaterializeOptions, NativeExchangeJournal, RenameMode,
-};
 use acyclic_fs::{CancellationToken, GenerationId, WorkCounters};
+use acyclic_fs::{
+    HostPathReplacement, HostPathRestore, IdempotencyKey, MaterializeOptions,
+    NativeExchangeJournal, RenameMode, durable_rename, prepare_native_exchange_with_recovery,
+    publish_native_exchange, recover_native_exchange,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::exclude::Exclusions;
@@ -525,7 +525,7 @@ fn recover_legacy(journal_path: &Path, text: &str) -> Result<Option<RecoveredSwa
                 old_tree,
                 target,
                 reconcile_head: true,
-            }))
+            }));
         }
         LegacyPhase::Carrying => {
             // Some excluded paths may already sit in tmp: bring them home,
@@ -597,10 +597,10 @@ fn recover_legacy(journal_path: &Path, text: &str) -> Result<Option<RecoveredSwa
                 old_tree = Some(park_replaced_tree(&journal.tmp, parent, &name)?);
             }
             #[cfg(windows)]
-            if let Some(scratch) = scratch {
-                if path_exists(&scratch)? {
-                    old_tree = Some(park_replaced_tree(&scratch, parent, &name)?);
-                }
+            if let Some(scratch) = scratch
+                && path_exists(&scratch)?
+            {
+                old_tree = Some(park_replaced_tree(&scratch, parent, &name)?);
             }
         }
     }
@@ -851,9 +851,11 @@ mod tests {
     #[test]
     fn recover_with_no_journal_is_a_noop() {
         let work = tempfile::tempdir().expect("tempdir");
-        assert!(recover(&work.path().join("missing.json"))
-            .expect("recover")
-            .is_none());
+        assert!(
+            recover(&work.path().join("missing.json"))
+                .expect("recover")
+                .is_none()
+        );
     }
 
     #[test]

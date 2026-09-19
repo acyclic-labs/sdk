@@ -10,13 +10,13 @@ use std::time::{Duration, Instant};
 
 use acyclic_fs::model::VolumeLimits;
 use acyclic_fs::{
-    capture_baseline_with_policy, capture_root_identity, capture_subtrees_with_policy,
-    capture_watch_batch_with_policy, CaptureOptions,
-};
-use acyclic_fs::{
     CancellationToken, CheckoutCommitOutcome, GenerationId, MountPublication, NativeWatch,
     NativeWatchOptions, OperationId, WatchBatch, WatchChange, WatchEpoch, WatchSequence,
     WorkCounters, WorkspaceRestore,
+};
+use acyclic_fs::{
+    CaptureOptions, capture_baseline_with_policy, capture_root_identity,
+    capture_subtrees_with_policy, capture_watch_batch_with_policy,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -438,7 +438,7 @@ impl PipelineHandle {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => return Ok(None),
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                return Err(EngineError::Store("pipeline is gone".into()))
+                return Err(EngineError::Store("pipeline is gone".into()));
             }
         }
         let changes = receiver
@@ -995,34 +995,34 @@ impl Pipeline {
                     "rescan tail: root hint ({root:?}) dropped, covered by the rescan"
                 );
             }
-            if let WatchBatch::Changes { ref changes, .. } = batch {
-                if !changes.is_empty() {
-                    let captured = capture_watch_batch_with_policy(
-                        &mut self.store.checkout,
-                        batch,
-                        &self.options,
-                        &self.capture_policy,
-                        WorkCounters::UNBOUNDED,
-                        &self.cancel,
-                    )
-                    .await;
-                    if let Err(failure) = captured {
-                        if matches!(
-                            failure.error,
-                            acyclic_fs::CaptureError::RescanRequired { .. }
-                        ) {
-                            self.watcher_health.invalidations += 1;
-                            self.watcher_health.last_reason = Some(failure.error.to_string());
-                            self.reset_watch().await?;
-                            crate::trace!(
-                                "pipeline",
-                                "baseline rescan tail needs full capture; retry {}",
-                                attempt + 1
-                            );
-                            continue;
-                        }
-                        return Err(EngineError::fs("capture rescan tail")(failure));
+            if let WatchBatch::Changes { ref changes, .. } = batch
+                && !changes.is_empty()
+            {
+                let captured = capture_watch_batch_with_policy(
+                    &mut self.store.checkout,
+                    batch,
+                    &self.options,
+                    &self.capture_policy,
+                    WorkCounters::UNBOUNDED,
+                    &self.cancel,
+                )
+                .await;
+                if let Err(failure) = captured {
+                    if matches!(
+                        failure.error,
+                        acyclic_fs::CaptureError::RescanRequired { .. }
+                    ) {
+                        self.watcher_health.invalidations += 1;
+                        self.watcher_health.last_reason = Some(failure.error.to_string());
+                        self.reset_watch().await?;
+                        crate::trace!(
+                            "pipeline",
+                            "baseline rescan tail needs full capture; retry {}",
+                            attempt + 1
+                        );
+                        continue;
                     }
+                    return Err(EngineError::fs("capture rescan tail")(failure));
                 }
             }
             let phase = Instant::now();
@@ -1079,11 +1079,11 @@ impl Pipeline {
     )]
     async fn handle(&mut self, request: Request) -> bool {
         self.last_activity = Instant::now();
-        if request.requires_ready() {
-            if let Err(error) = self.ensure_ready().await {
-                fail_request(request, error);
-                return false;
-            }
+        if request.requires_ready()
+            && let Err(error) = self.ensure_ready().await
+        {
+            fail_request(request, error);
+            return false;
         }
         match request {
             Request::Checkpoint {
@@ -2096,7 +2096,7 @@ impl Pipeline {
             other => {
                 return Err(EngineError::Fs(format!(
                     "unexpected fork commit outcome: {other:?}"
-                )))
+                )));
             }
         };
 
@@ -2370,40 +2370,50 @@ mod readiness_tests {
     #[test]
     fn metadata_requests_do_not_force_a_repository_scan() {
         let (status_reply, _) = oneshot::channel();
-        assert!(!Request::Status {
-            reply: status_reply
-        }
-        .requires_ready());
+        assert!(
+            !Request::Status {
+                reply: status_reply
+            }
+            .requires_ready()
+        );
 
         let (turn_reply, _) = oneshot::channel();
-        assert!(!Request::TurnStarted {
-            session_id: "session".to_owned(),
-            prompt: "prompt".to_owned(),
-            reply: turn_reply,
-        }
-        .requires_ready());
+        assert!(
+            !Request::TurnStarted {
+                session_id: "session".to_owned(),
+                prompt: "prompt".to_owned(),
+                reply: turn_reply,
+            }
+            .requires_ready()
+        );
 
         let (started_reply, _) = oneshot::channel();
-        assert!(!Request::SessionStarted {
-            session_id: "session".to_owned(),
-            host: "host".to_owned(),
-            reply: started_reply,
-        }
-        .requires_ready());
+        assert!(
+            !Request::SessionStarted {
+                session_id: "session".to_owned(),
+                host: "host".to_owned(),
+                reply: started_reply,
+            }
+            .requires_ready()
+        );
 
         let (ended_reply, _) = oneshot::channel();
-        assert!(!Request::SessionEnded {
-            session_id: "session".to_owned(),
-            reply: ended_reply,
-        }
-        .requires_ready());
+        assert!(
+            !Request::SessionEnded {
+                session_id: "session".to_owned(),
+                reply: ended_reply,
+            }
+            .requires_ready()
+        );
 
         let (checkpoint_reply, _) = oneshot::channel();
-        assert!(Request::Checkpoint {
-            kind: CheckpointKind::Manual,
-            attribution: Attribution::default(),
-            reply: checkpoint_reply,
-        }
-        .requires_ready());
+        assert!(
+            Request::Checkpoint {
+                kind: CheckpointKind::Manual,
+                attribution: Attribution::default(),
+                reply: checkpoint_reply,
+            }
+            .requires_ready()
+        );
     }
 }

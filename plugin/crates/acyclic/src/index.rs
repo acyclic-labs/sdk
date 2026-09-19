@@ -9,7 +9,7 @@ use std::path::Path;
 
 pub use crate::checkpoint_kind::CheckpointKind;
 use acyclic_fs::{Digest, GenerationId};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::Result;
 
@@ -1060,10 +1060,12 @@ mod tests {
             .expect("q")
             .expect("some");
         assert_eq!(last.session_id, "old");
-        assert!(index
-            .last_session_with_checkpoints(Some("old"))
-            .expect("q")
-            .is_none());
+        assert!(
+            index
+                .last_session_with_checkpoints(Some("old"))
+                .expect("q")
+                .is_none()
+        );
     }
 
     #[test]
@@ -1189,9 +1191,11 @@ mod tests {
             .expect("index list")
             .collect::<rusqlite::Result<_>>()
             .expect("index names");
-        assert!(indexes
-            .iter()
-            .any(|name| name == "checkpoints_by_generation"));
+        assert!(
+            indexes
+                .iter()
+                .any(|name| name == "checkpoints_by_generation")
+        );
         assert!(indexes.iter().any(|name| name == "checkpoints_by_session"));
         assert!(indexes.iter().any(|name| name == "custom_post_idx"));
         let audit_id: i64 = index

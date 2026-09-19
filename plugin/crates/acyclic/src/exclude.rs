@@ -20,8 +20,8 @@
 
 use std::path::{Path, PathBuf};
 
-use acyclic_fs::kernel::NamespacePath;
 use acyclic_fs::CapturePolicy;
+use acyclic_fs::kernel::NamespacePath;
 
 use crate::{EngineError, Result};
 

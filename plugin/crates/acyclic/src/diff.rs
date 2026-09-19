@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-use acyclic_fs::kernel::FileKind;
 use acyclic_fs::GenerationId;
+use acyclic_fs::kernel::FileKind;
 use serde::{Deserialize, Serialize};
 
 use crate::store::Store;

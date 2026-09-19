@@ -497,24 +497,24 @@ fn wait_for_socket(
     let mut reported = false;
     let mut retry_delay = Duration::from_millis(1);
     loop {
-        if let Ok(stream) = ClientStream::connect(socket) {
-            if let Ok(mut client) = Client::from_stream(stream) {
-                // The socket can accept connections before the pipeline has
-                // completed its baseline. Ping waits for that pipeline and
-                // carries a startup error back to this caller.
-                client.set_deadline(deadline.saturating_sub(started.elapsed()));
-                match client.call(proto::Op::Ping) {
-                    Ok(_) => {
-                        client.set_deadline(Duration::from_secs(24 * 60 * 60));
-                        return Ok(client);
-                    }
-                    Err(message) if client.usable => {
-                        // A protocol error is the pipeline's completed startup
-                        // result; reconnecting cannot repair that baseline.
-                        return Err(ConnectError::Other(message));
-                    }
-                    Err(_) => {}
+        if let Ok(stream) = ClientStream::connect(socket)
+            && let Ok(mut client) = Client::from_stream(stream)
+        {
+            // The socket can accept connections before the pipeline has
+            // completed its baseline. Ping waits for that pipeline and
+            // carries a startup error back to this caller.
+            client.set_deadline(deadline.saturating_sub(started.elapsed()));
+            match client.call(proto::Op::Ping) {
+                Ok(_) => {
+                    client.set_deadline(Duration::from_secs(24 * 60 * 60));
+                    return Ok(client);
                 }
+                Err(message) if client.usable => {
+                    // A protocol error is the pipeline's completed startup
+                    // result; reconnecting cannot repair that baseline.
+                    return Err(ConnectError::Other(message));
+                }
+                Err(_) => {}
             }
         }
         if bound.is_some_and(|bound| started.elapsed() > bound) {

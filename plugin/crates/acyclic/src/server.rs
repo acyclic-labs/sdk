@@ -16,11 +16,11 @@ use acyclic::pipeline::{self, PipelineHandle};
 use acyclic::product::NAME;
 use acyclic::spec::SpeculateConfig;
 use acyclic::store::{Store, StorePaths};
-use acyclic::{rewind, EngineError};
+use acyclic::{EngineError, rewind};
 use acyclic_fs::model::VolumeConfig;
 use acyclic_fs::{
-    mount_native, CheckoutMountSource, MountFilesystem, NativeMountRequest, NativeMountSession,
-    RoutedMountSource,
+    CheckoutMountSource, MountFilesystem, NativeMountRequest, NativeMountSession,
+    RoutedMountSource, mount_native,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, Notify};
@@ -304,7 +304,7 @@ impl Server {
         let name = op_name(&op);
         let started = std::time::Instant::now();
         acyclic::trace!("daemon", "op {name} received");
-        let payload = match self.dispatch_inner(op).await {
+        match self.dispatch_inner(op).await {
             Ok(reply) => {
                 acyclic::trace!(
                     "daemon",
@@ -323,8 +323,7 @@ impl Server {
                 );
                 err(message)
             }
-        };
-        payload
+        }
     }
 
     /// True when nothing has needed this daemon for `idle`: no request, no
@@ -1411,11 +1410,9 @@ impl Server {
         let mut mount = self.fork_mount.lock().await;
         let route = route_name(id)?;
         let last_route = mount.router.route_count() == 1;
-        if !last_route {
-            if let Some(session) = mount.session.as_ref() {
-                tokio::task::block_in_place(|| session.invalidate(&route))
-                    .map_err(|error| format!("invalidate {id}: {error:?}"))?;
-            }
+        if !last_route && let Some(session) = mount.session.as_ref() {
+            tokio::task::block_in_place(|| session.invalidate(&route))
+                .map_err(|error| format!("invalidate {id}: {error:?}"))?;
         }
         if last_route {
             if let Some(session) = mount.session.as_mut() {
@@ -1431,10 +1428,8 @@ impl Server {
         if !tokio::task::block_in_place(|| mount.router.remove_route(&route)) {
             return Err(format!("fork {id} has no mount route"));
         }
-        if last_route {
-            if let Some(root) = fork::forks_mount_root(&self.repo_root) {
-                let _ = std::fs::remove_dir(root);
-            }
+        if last_route && let Some(root) = fork::forks_mount_root(&self.repo_root) {
+            let _ = std::fs::remove_dir(root);
         }
         Ok(())
     }
@@ -1606,11 +1601,11 @@ impl Server {
             return compute_brief(index, &self.handle, current).await;
         };
         let key = crate::speculate::brief_key(&index, spec.config(), current).ok();
-        if let Some(key) = key.as_ref().and_then(Option::as_ref) {
-            if let Some(mut info) = spec.claim_brief(key) {
-                self.attach_summary(&mut info).await;
-                return Ok(info);
-            }
+        if let Some(key) = key.as_ref().and_then(Option::as_ref)
+            && let Some(mut info) = spec.claim_brief(key)
+        {
+            self.attach_summary(&mut info).await;
+            return Ok(info);
         }
         drop(index);
         let index = self.open_index()?;

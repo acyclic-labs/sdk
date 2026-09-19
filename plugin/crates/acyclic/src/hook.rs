@@ -168,7 +168,11 @@ pub fn run(repo: &Path, event: &str) -> i32 {
         "hook",
         "event {}: daemon spawn {}; pre-tool waits (bounded), post-tool enqueues (ack before capture)",
         event.as_arg(),
-        if matches!(spawn, Spawn::Allowed) { "allowed" } else { "never" }
+        if matches!(spawn, Spawn::Allowed) {
+            "allowed"
+        } else {
+            "never"
+        }
     );
     let mut client = match connect(repo, spawn) {
         Ok(client) => client,
@@ -252,10 +256,14 @@ pub fn run(repo: &Path, event: &str) -> i32 {
     // beforeSubmitPrompt) require a JSON response on stdout. Claude Code
     // injects UserPromptSubmit stdout into the conversation as context, so
     // this must stay Cursor-only rather than firing for every host.
+    allow_cursor_hook(&host, event);
+    0
+}
+
+fn allow_cursor_hook(host: &str, event: HookEvent) {
     if host == "cursor" && matches!(event, HookEvent::PreTool | HookEvent::UserPrompt) {
         println!("{{\"permission\":\"allow\"}}");
     }
-    0
 }
 
 /// Malformed or empty payloads degrade to attribution-less checkpoints —

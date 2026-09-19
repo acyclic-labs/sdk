@@ -863,7 +863,9 @@ fn execute(client: &mut Client, command: Command, repo: &Path) -> Result<(), Str
                 _ => return Err("pass exactly one of <id>, --last, --session-start".into()),
             };
             if !yes {
-                eprint!("rewind will replace the working tree (a safety checkpoint is taken first). Continue? [y/N] ");
+                eprint!(
+                    "rewind will replace the working tree (a safety checkpoint is taken first). Continue? [y/N] "
+                );
                 let mut answer = String::new();
                 std::io::stdin()
                     .read_line(&mut answer)

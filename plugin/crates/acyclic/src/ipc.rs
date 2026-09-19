@@ -369,7 +369,7 @@ impl Drop for OwnerOnlyDescriptor {
 fn current_user_sid() -> io::Result<String> {
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
     use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     let mut token = std::ptr::null_mut();

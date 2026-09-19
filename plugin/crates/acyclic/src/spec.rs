@@ -656,16 +656,16 @@ impl SpeculateConfig {
     }
 
     fn load_from(path: &Path) -> (Self, Option<String>) {
-        let text = match std::fs::read_to_string(&path) {
+        let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return (Self::default(), None)
+                return (Self::default(), None);
             }
             Err(error) => {
                 return (
                     Self::default(),
                     Some(format!("{}: {error}; speculation off", path.display())),
-                )
+                );
             }
         };
         match toml::from_str(&text) {

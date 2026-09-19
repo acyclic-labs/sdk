@@ -18,7 +18,7 @@
 use acyclic::product::{self, NAME, NPM_PACKAGE, PYPI_PACKAGE};
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::hook::HookEvent;
 
@@ -1184,7 +1184,9 @@ fn pydantic_ai(repo: &Path, options: &Options, prompt: &mut dyn Confirm) -> Resu
             }
         }
         PythonProject::None => {
-            println!("  no pyproject.toml or requirements file here; install the package where your agent runs:");
+            println!(
+                "  no pyproject.toml or requirements file here; install the package where your agent runs:"
+            );
             println!("    pip install {PYPI_PACKAGE}");
             false
         }
@@ -1725,9 +1727,11 @@ mod tests {
         // phrase "acyclic hook" in an argument.
         assert_eq!(value["permissions"]["allow"][0], "Bash(ls:*)");
         let pre = value["hooks"]["PreToolUse"].as_array().expect("array");
-        assert!(pre
-            .iter()
-            .any(|entry| { entry["hooks"][0]["command"] == format!("echo {NAME} hook mention") }));
+        assert!(
+            pre.iter().any(|entry| {
+                entry["hooks"][0]["command"] == format!("echo {NAME} hook mention")
+            })
+        );
         // Exactly one of ours per event, no duplicates after re-install.
         let ours = |event: &str| {
             value["hooks"][event]
@@ -2284,9 +2288,11 @@ mod tests {
                 .is_symlink(),
             "the symlink itself must have been replaced by a real file"
         );
-        assert!(std::fs::read_to_string(&path)
-            .expect("read")
-            .contains("copilot-setup-steps:"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("read")
+                .contains("copilot-setup-steps:")
+        );
     }
 
     /// The cloud agent is a remote sandbox with no access to this machine,
