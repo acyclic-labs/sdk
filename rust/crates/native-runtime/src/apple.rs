@@ -161,7 +161,6 @@ pub(super) fn read_batch(
         .collect();
     for channel in &channels {
         cancellation.clear_apple(channel);
-        channel.close(dispatch2::DispatchIOCloseFlags::empty());
     }
     results
 }
