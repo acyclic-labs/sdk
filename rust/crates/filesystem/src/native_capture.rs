@@ -11,7 +11,6 @@ use crate::{
     WatchBatch, WatchChange, WatchEpoch, WatchInvalidationReason, WatchSequence, WorkBudget,
     WorkCounters, WorkError,
 };
-use futures::{StreamExt as _, stream};
 
 /// Returns the stable identity of a no-follow, capability-held capture root.
 ///
@@ -584,16 +583,13 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
             .collect()
     };
 
-    let mut prepared = Vec::new();
-    prepared
-        .try_reserve(paths.len())
-        .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, receipt.work))?;
     for ((observation, path), current) in observations.into_iter().zip(paths).zip(current) {
-        let plan = prepare_final_path(
+        capture_final_path(
             checkout,
             path,
             CurrentRecord::Known(current),
             CaptureIntent::Complete,
+            maximum_extent_spans,
             source_root,
             observation,
             &mut host_links,
@@ -604,35 +600,6 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
             cancellation,
         )
         .await?;
-        if let Some(plan) = plan {
-            prepared.push(plan);
-        }
-    }
-    if budget == WorkBudget::UNBOUNDED {
-        finish_prepared_regular_batch(
-            &checkout.content_stager(),
-            source_root,
-            prepared,
-            maximum_extent_spans,
-            &mut mutations,
-            &mut receipt,
-            cancellation,
-        )
-        .await?;
-    } else {
-        for plan in prepared {
-            finish_prepared_regular(
-                &checkout.content_stager(),
-                source_root,
-                plan,
-                maximum_extent_spans,
-                &mut mutations,
-                &mut receipt,
-                budget,
-                cancellation,
-            )
-            .await?;
-        }
     }
 
     apply_capture_transaction(checkout, mutations, &mut receipt, budget, cancellation).await?;
@@ -1472,15 +1439,6 @@ enum CaptureIntent {
     Replace,
 }
 
-struct PreparedRegular {
-    path: NamespacePath,
-    host_path: PathBuf,
-    snapshot: HostSnapshot,
-    file: cap_std::fs::File,
-    exists_with_kind: bool,
-    canonical_metadata: FileMetadata,
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
@@ -1581,53 +1539,6 @@ async fn capture_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure<CaptureError>> {
-    if let Some(prepared) = prepare_final_path(
-        checkout,
-        path,
-        current,
-        intent,
-        source_root,
-        observation,
-        host_links,
-        watch_epoch,
-        mutations,
-        receipt,
-        budget,
-        cancellation,
-    )
-    .await?
-    {
-        finish_prepared_regular(
-            &checkout.content_stager(),
-            source_root,
-            prepared,
-            maximum_extent_spans,
-            mutations,
-            receipt,
-            budget,
-            cancellation,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_lines)]
-async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    path: NamespacePath,
-    current: CurrentRecord,
-    intent: CaptureIntent,
-    source_root: &HostRoot,
-    observation: Option<HostObservation>,
-    host_links: &mut BTreeMap<[u8; 16], NamespacePath>,
-    watch_epoch: Option<u64>,
-    mutations: &mut Vec<AuthoredMutation>,
-    receipt: &mut CaptureReceipt,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<Option<PreparedRegular>, OperationFailure<CaptureError>> {
     cancellation.check().map_err(|error| {
         OperationFailure::new(CaptureError::Engine(error.to_string()), receipt.work)
     })?;
@@ -1688,7 +1599,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     receipt.changed_paths = checked_increment(receipt.changed_paths, receipt.work)?;
                     receipt.examined_paths =
                         checked_increment(receipt.examined_paths, receipt.work)?;
-                    return Ok(None);
+                    return Ok(());
                 }
                 if let Some(epoch) = watch_epoch {
                     // An existing alias may lie outside this hint batch.
@@ -1740,56 +1651,37 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 canonical_metadata = preserve_unobserved_metadata(canonical_metadata, prior.value);
             }
             let linked_path = path.clone();
-            let prepared = if intent == CaptureIntent::MetadataOnly && exists_with_kind {
+            if intent == CaptureIntent::MetadataOnly && exists_with_kind {
                 ensure_current_host_node(source_root, &host_path, &snapshot)
                     .map_err(|error| OperationFailure::new(error, receipt.work))?;
                 mutations.push(AuthoredMutation::SetMetadata {
                     path,
                     metadata: canonical_metadata,
                 });
-                None
-            } else if host_kind == FileKind::Regular {
-                let file = if let Some(file) = link_probe.file {
-                    file
-                } else {
-                    source_root
-                        .open_file(&host_path)
-                        .map_err(|error| OperationFailure::new(error.into(), receipt.work))?
-                };
-                let opened = file
-                    .metadata()
-                    .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
-                ensure_same_host_node(&snapshot, &opened)
-                    .map_err(|error| OperationFailure::new(error, receipt.work))?;
-                Some(PreparedRegular {
-                    path,
-                    host_path,
-                    snapshot,
-                    file,
-                    exists_with_kind,
-                    canonical_metadata,
-                })
             } else {
                 append_final_state(
+                    checkout,
                     path,
+                    maximum_extent_spans,
                     source_root,
-                    &host_path,
-                    &metadata,
+                    host_path,
+                    metadata,
                     snapshot,
+                    link_probe.file,
                     host_kind,
                     exists_with_kind,
                     canonical_metadata,
                     mutations,
-                    receipt.work,
-                )?;
-                None
-            };
+                    receipt,
+                    budget,
+                    cancellation,
+                )
+                .await?;
+            }
             receipt.changed_paths = checked_increment(receipt.changed_paths, receipt.work)?;
             if linked_regular {
                 host_links.insert(snapshot.identity.to_bytes(), linked_path);
             }
-            receipt.examined_paths = checked_increment(receipt.examined_paths, receipt.work)?;
-            return Ok(prepared);
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             if let Some(record) = current {
@@ -1803,7 +1695,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         Err(error) => return Err(OperationFailure::new(error.into(), receipt.work)),
     }
     receipt.examined_paths = checked_increment(receipt.examined_paths, receipt.work)?;
-    Ok(None)
+    Ok(())
 }
 
 async fn apply_capture_transaction<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1838,20 +1730,42 @@ fn checked_increment(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn append_final_state(
+async fn append_final_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &Checkout<A, O>,
     path: NamespacePath,
+    maximum_extent_spans: u32,
     source_root: &HostRoot,
-    host_path: &Path,
-    metadata: &cap_std::fs::Metadata,
+    host_path: PathBuf,
+    metadata: cap_std::fs::Metadata,
     snapshot: HostSnapshot,
+    opened_file: Option<cap_std::fs::File>,
     kind: FileKind,
     exists_with_kind: bool,
     canonical_metadata: FileMetadata,
     mutations: &mut Vec<AuthoredMutation>,
-    work: WorkCounters,
+    receipt: &mut CaptureReceipt,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure<CaptureError>> {
     match kind {
-        FileKind::Regular => unreachable!("regular files are staged after preparation"),
+        FileKind::Regular => {
+            append_regular_state(
+                checkout,
+                path,
+                maximum_extent_spans,
+                source_root,
+                &host_path,
+                &snapshot,
+                opened_file,
+                exists_with_kind,
+                canonical_metadata,
+                mutations,
+                receipt,
+                budget,
+                cancellation,
+            )
+            .await?;
+        }
         FileKind::Directory => {
             if exists_with_kind {
                 mutations.push(AuthoredMutation::SetMetadata {
@@ -1866,8 +1780,8 @@ fn append_final_state(
             }
         }
         FileKind::SymbolicLink => {
-            let target = read_link_bytes(source_root, host_path)
-                .map_err(|error| OperationFailure::new(error, work))?;
+            let target = read_link_bytes(source_root, &host_path)
+                .map_err(|error| OperationFailure::new(error, receipt.work))?;
             if exists_with_kind {
                 mutations.push(AuthoredMutation::Remove {
                     path: path.clone(),
@@ -1883,40 +1797,48 @@ fn append_final_state(
         FileKind::Fifo | FileKind::Socket | FileKind::CharacterDevice | FileKind::BlockDevice => {
             append_special_state(
                 path,
-                metadata,
+                &metadata,
                 kind,
                 exists_with_kind,
                 canonical_metadata,
                 mutations,
-                work,
+                receipt.work,
             )?;
         }
         FileKind::ReparsePoint | FileKind::MountBoundary => {
-            return Err(OperationFailure::new(CaptureError::UnsupportedKind, work));
+            return Err(OperationFailure::new(
+                CaptureError::UnsupportedKind,
+                receipt.work,
+            ));
         }
     }
-    ensure_current_host_node(source_root, host_path, &snapshot)
-        .map_err(|error| OperationFailure::new(error, work))?;
+    ensure_current_host_node(source_root, &host_path, &snapshot)
+        .map_err(|error| OperationFailure::new(error, receipt.work))?;
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn finish_prepared_regular<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    stager: &ContentStager<A, O>,
-    source_root: &HostRoot,
-    prepared: PreparedRegular,
+async fn append_regular_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &Checkout<A, O>,
+    path: NamespacePath,
     maximum_extent_spans: u32,
+    source_root: &HostRoot,
+    host_path: &Path,
+    snapshot: &HostSnapshot,
+    opened_file: Option<cap_std::fs::File>,
+    exists_with_kind: bool,
+    canonical_metadata: FileMetadata,
     mutations: &mut Vec<AuthoredMutation>,
     receipt: &mut CaptureReceipt,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure<CaptureError>> {
     let staged = stage_regular_body(
-        stager,
+        &checkout.content_stager(),
         source_root,
-        &prepared.host_path,
-        &prepared.snapshot,
-        Some(prepared.file),
+        host_path,
+        snapshot,
+        opened_file,
         maximum_extent_spans,
         receipt.work,
         budget,
@@ -1931,89 +1853,13 @@ async fn finish_prepared_regular<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             OperationFailure::new(CaptureError::Work(WorkError::Overflow), receipt.work)
         })?;
     append_staged_regular_state(
-        prepared.path,
+        path,
         staged.logical_bytes,
-        prepared.exists_with_kind,
-        prepared.canonical_metadata,
+        exists_with_kind,
+        canonical_metadata,
         staged.content.ranges,
         mutations,
     );
-    Ok(())
-}
-
-async fn finish_prepared_regular_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    stager: &ContentStager<A, O>,
-    source_root: &HostRoot,
-    prepared: Vec<PreparedRegular>,
-    maximum_extent_spans: u32,
-    mutations: &mut Vec<AuthoredMutation>,
-    receipt: &mut CaptureReceipt,
-    cancellation: &CancellationToken,
-) -> Result<(), OperationFailure<CaptureError>> {
-    let concurrency = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .min(8)
-        .min(prepared.len().max(1));
-    let results = stream::iter(prepared.into_iter().enumerate().map(|(index, prepared)| {
-        let stager = stager.clone();
-        async move {
-            let PreparedRegular {
-                path,
-                host_path,
-                snapshot,
-                file,
-                exists_with_kind,
-                canonical_metadata,
-            } = prepared;
-            let result = stage_regular_body(
-                &stager,
-                source_root,
-                &host_path,
-                &snapshot,
-                Some(file),
-                maximum_extent_spans,
-                WorkCounters::default(),
-                WorkBudget::UNBOUNDED,
-                cancellation,
-            )
-            .await;
-            (index, (path, exists_with_kind, canonical_metadata), result)
-        }
-    }))
-    .buffer_unordered(concurrency)
-    .collect::<Vec<_>>()
-    .await;
-    let mut results = results;
-    results.sort_by_key(|(index, _, _)| *index);
-    let mut staged_work = WorkCounters::default();
-    for (_, _, result) in &results {
-        let work = match result {
-            Ok(staged) => staged.content.work,
-            Err(failure) => *failure.work,
-        };
-        staged_work = staged_work
-            .checked_add(work)
-            .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
-    }
-    receipt.work = add_work(receipt.work, staged_work)?;
-    for (_, (path, exists_with_kind, canonical_metadata), result) in results {
-        let staged =
-            result.map_err(|failure| OperationFailure::new(failure.error, receipt.work))?;
-        receipt.staged_file_bytes = receipt
-            .staged_file_bytes
-            .checked_add(staged.content.bytes)
-            .ok_or_else(|| {
-                OperationFailure::new(CaptureError::Work(WorkError::Overflow), receipt.work)
-            })?;
-        append_staged_regular_state(
-            path,
-            staged.logical_bytes,
-            exists_with_kind,
-            canonical_metadata,
-            staged.content.ranges,
-            mutations,
-        );
-    }
     Ok(())
 }
 
