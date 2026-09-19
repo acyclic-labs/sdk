@@ -385,6 +385,18 @@ pub mod native {
         }
 
         #[cfg(test)]
+        pub(super) async fn validate_after_work_for_test(
+            &self,
+            work: WorkCounters,
+            cancellation: &CancellationToken,
+        ) -> DemandResult<()> {
+            self.run_blocking_after_work(work, cancellation, |_, _| {
+                unreachable!("validation must not start")
+            })
+            .await
+        }
+
+        #[cfg(test)]
         pub(super) fn cancel_during_page(
             &self,
             source: SourceReference,
@@ -489,22 +501,70 @@ pub mod native {
         async fn run_blocking_after_work<T: Send + 'static>(
             &self,
             work: WorkCounters,
-            job: impl FnOnce(Self) -> DemandResult<T> + Send + 'static,
+            cancellation: &CancellationToken,
+            job: impl FnOnce(Self, CancellationToken) -> DemandResult<T> + Send + 'static,
         ) -> DemandResult<T> {
-            let permit = self
-                .inner
-                .requests
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|_| OperationFailure::new(DemandError::WorkerUnavailable, work))?;
+            if cancellation.is_cancelled() {
+                return Err(OperationFailure::new(DemandError::Cancelled, work));
+            }
+            let permit = tokio::select! {
+                acquired = self.inner.requests.clone().acquire_owned() =>
+                    acquired.map_err(|_| OperationFailure::new(DemandError::WorkerUnavailable, work))?,
+                () = cancellation.cancelled() =>
+                    return Err(OperationFailure::new(DemandError::Cancelled, work)),
+            };
             let source = self.clone();
-            tokio::task::spawn_blocking(move || {
+            let cancel_on_drop = CancelWorkerOnDrop(CancellationToken::new());
+            let worker_cancellation = cancel_on_drop.0.clone();
+            let mut worker = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                job(source)
-            })
+                job(source, worker_cancellation)
+            });
+            let result = tokio::select! {
+                result = &mut worker => result,
+                () = cancellation.cancelled() => {
+                    cancel_on_drop.0.cancel();
+                    worker.await
+                },
+            };
+            result.map_err(|_| OperationFailure::new(DemandError::WorkerUnavailable, work))?
+        }
+
+        async fn validate_read_after_work(
+            &self,
+            relative: PathBuf,
+            validation_file: std::fs::File,
+            source: SourceReference,
+            expected: SourceVersion,
+            work: WorkCounters,
+            cancellation: &CancellationToken,
+        ) -> DemandResult<()> {
+            self.run_blocking_after_work(
+                work,
+                cancellation,
+                move |provider, worker_cancellation| {
+                    let after = cap_std::fs::File::from_std(validation_file)
+                        .metadata()
+                        .map_err(|error| OperationFailure::new(error.into(), work))?;
+                    if version(&after) != expected
+                        || provider
+                            .inner
+                            .root
+                            .symlink_metadata(&relative)
+                            .as_ref()
+                            .map(version)
+                            .ok()
+                            != Some(expected)
+                    {
+                        return Err(OperationFailure::new(DemandError::StaleVersion, work));
+                    }
+                    provider
+                        .check(source, &worker_cancellation)
+                        .map_err(|error| OperationFailure::new(error, work))?;
+                    Ok(OperationReceipt { value: (), work })
+                },
+            )
             .await
-            .map_err(|_| OperationFailure::new(DemandError::WorkerUnavailable, work))?
         }
 
         /// Invalidates prior source references and directory cursors without
@@ -905,27 +965,14 @@ pub mod native {
             if cancelled {
                 return Err(OperationFailure::new(DemandError::Cancelled, work));
             }
-            self.run_blocking_after_work(work, move |provider| {
-                let after = cap_std::fs::File::from_std(validation_file)
-                    .metadata()
-                    .map_err(|error| OperationFailure::new(error.into(), work))?;
-                if version(&after) != expected
-                    || provider
-                        .inner
-                        .root
-                        .symlink_metadata(&relative)
-                        .as_ref()
-                        .map(version)
-                        .ok()
-                        != Some(expected)
-                {
-                    return Err(OperationFailure::new(DemandError::StaleVersion, work));
-                }
-                provider
-                    .check(source, &CancellationToken::new())
-                    .map_err(|error| OperationFailure::new(error, work))?;
-                Ok(OperationReceipt { value: (), work })
-            })
+            self.validate_read_after_work(
+                relative,
+                validation_file,
+                source,
+                expected,
+                work,
+                cancellation,
+            )
             .await?;
             work.output_bytes = bytes.len() as u64;
             Ok(OperationReceipt { value: bytes, work })
@@ -1082,6 +1129,40 @@ mod tests {
         };
         assert!(matches!(failure.error, DemandError::Cancelled));
         assert_eq!(*failure.work, WorkCounters::default());
+        drop(permits);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn post_read_validation_cancels_with_exact_prior_work() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let source = NativeDemandSource::open(
+            root.path(),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        )
+        .await?;
+        let permits = source.occupy_all_requests().await?;
+        let cancellation = CancellationToken::new();
+        let work = WorkCounters {
+            source_path_components: 2,
+            source_bytes_read: 17,
+            ..WorkCounters::default()
+        };
+        let validation = source.validate_after_work_for_test(work, &cancellation);
+        tokio::pin!(validation);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut validation)
+                .await
+                .is_err()
+        );
+        cancellation.cancel();
+        let failure = tokio::time::timeout(std::time::Duration::from_secs(1), &mut validation)
+            .await?
+            .err()
+            .ok_or("cancelled validation unexpectedly succeeded")?;
+        assert!(matches!(failure.error, DemandError::Cancelled));
+        assert_eq!(*failure.work, work);
         drop(permits);
         Ok(())
     }

@@ -1162,6 +1162,7 @@ mod tests {
             }],
         ))?;
         assert_eq!(selected, [Bytes::from_static(&[0x33; 5])]);
+        assert_eq!(cursor.stream_position()?, 55);
         Ok(())
     }
 

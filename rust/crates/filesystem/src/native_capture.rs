@@ -197,6 +197,37 @@ mod capture_policy_tests {
         assert_eq!(ordered[0].1, duplicate);
         Ok(())
     }
+
+    #[test]
+    fn scanned_set_charges_only_unique_paths_at_the_limit() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let duplicate = path("/same")?;
+        let mut paths = BTreeSet::new();
+        let mut work = WorkCounters::default();
+        append_scanned_path(
+            &mut paths,
+            duplicate.clone(),
+            1,
+            &mut work,
+            WorkBudget::UNBOUNDED,
+        )?;
+        let charged = work;
+        append_scanned_path(&mut paths, duplicate, 1, &mut work, WorkBudget::UNBOUNDED)?;
+        assert_eq!(work, charged);
+        let failure = append_scanned_path(
+            &mut paths,
+            path("/other")?,
+            1,
+            &mut work,
+            WorkBudget::UNBOUNDED,
+        )
+        .err()
+        .ok_or("distinct path exceeded the limit")?;
+        assert!(matches!(failure.error, CaptureError::InvalidOptions));
+        assert_eq!(*failure.work, charged);
+        assert_eq!(paths.len(), 1);
+        Ok(())
+    }
 }
 
 /// Successful authored host-state capture.
@@ -951,7 +982,7 @@ fn collect_host_subtree_observations(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn collect_host_subtree_paths(
+fn collect_host_subtree_paths<P: ScannedPaths>(
     root: &HostRoot,
     profile: FilesystemProfile,
     limits: crate::model::VolumeLimits,
@@ -959,7 +990,7 @@ fn collect_host_subtree_paths(
     volume_root: NamespacePath,
     policy: &CapturePolicy,
     maximum: usize,
-    paths: &mut Vec<NamespacePath>,
+    paths: &mut P,
     work: &mut WorkCounters,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -998,12 +1029,12 @@ fn collect_host_subtree_paths(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore, P: ScannedPaths>(
     checkout: &mut Checkout<A, O>,
     limits: crate::model::VolumeLimits,
     policy: &CapturePolicy,
     maximum: usize,
-    paths: &mut Vec<NamespacePath>,
+    paths: &mut P,
     work: &mut WorkCounters,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -1025,13 +1056,17 @@ async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn collect_checkout_subtree_paths<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    P: ScannedPaths,
+>(
     checkout: &mut Checkout<A, O>,
     limits: crate::model::VolumeLimits,
     root: NamespacePath,
     policy: &CapturePolicy,
     maximum: usize,
-    paths: &mut Vec<NamespacePath>,
+    paths: &mut P,
     work: &mut WorkCounters,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -1081,18 +1116,55 @@ async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
     Ok(())
 }
 
-fn append_scanned_path(
-    paths: &mut Vec<NamespacePath>,
+trait ScannedPaths {
+    fn len(&self) -> usize;
+    fn contains(&self, path: &NamespacePath) -> bool;
+    fn insert(&mut self, path: NamespacePath);
+}
+
+impl ScannedPaths for Vec<NamespacePath> {
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+
+    fn contains(&self, _path: &NamespacePath) -> bool {
+        false
+    }
+
+    fn insert(&mut self, path: NamespacePath) {
+        self.push(path);
+    }
+}
+
+impl ScannedPaths for BTreeSet<NamespacePath> {
+    fn len(&self) -> usize {
+        BTreeSet::len(self)
+    }
+
+    fn contains(&self, path: &NamespacePath) -> bool {
+        BTreeSet::contains(self, path)
+    }
+
+    fn insert(&mut self, path: NamespacePath) {
+        BTreeSet::insert(self, path);
+    }
+}
+
+fn append_scanned_path<P: ScannedPaths>(
+    paths: &mut P,
     path: NamespacePath,
     maximum: usize,
     work: &mut WorkCounters,
     budget: WorkBudget,
 ) -> Result<(), OperationFailure<CaptureError>> {
+    if paths.contains(&path) {
+        return Ok(());
+    }
     if paths.len() >= maximum {
         return Err(OperationFailure::new(CaptureError::InvalidOptions, *work));
     }
     let encoded_bytes = u64::from(path.encoded_bytes());
-    paths.push(path);
+    paths.insert(path);
     *work = add_work(
         *work,
         WorkCounters {
@@ -1544,7 +1616,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .map(|_| (host_path, path.clone()))
         })
         .collect::<Vec<_>>();
-    let mut paths = ordinary.keys().cloned().collect::<Vec<_>>();
+    let mut paths = ordinary.keys().cloned().collect::<BTreeSet<_>>();
     for (host_path, volume_path) in roots {
         collect_host_subtree_paths(
             source_root,
@@ -1587,8 +1659,6 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             .await?;
         }
     }
-    paths.sort();
-    paths.dedup();
     for path in paths {
         ordinary
             .entry(path)

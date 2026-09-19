@@ -278,7 +278,12 @@ def main() -> int:
 
     if sdk_case["passed"] and sys.platform == "win32":
         debug_qualifier = target / "debug/qualify.exe"
-        if debug_qualifier.is_file():
+        _, debug_build = run(
+            ["cargo", "build", "--quiet", "--locked", "-p", "acyclic-conformance",
+             "--features", "local-runner", "--bin", "qualify"],
+            sdk / "rust", environment, deadline,
+        )
+        if debug_build["passed"]:
             with tempfile.TemporaryDirectory(prefix="acyclic-debug-capture-") as work:
                 source = Path(work) / "source"
                 source.mkdir()
@@ -286,9 +291,9 @@ def main() -> int:
                 _, debug_case = run([str(debug_qualifier), "roundtrip", str(source),
                                      str(Path(work) / "restored")],
                                     sdk, environment, deadline)
+                debug_case["elapsed_ms"] += debug_build["elapsed_ms"]
         else:
-            debug_case = {"elapsed_ms": 0, "passed": True,
-                          "skipped": "debug qualifier was not prebuilt"}
+            debug_case = debug_build
         report["cases"].append({"name": "filesystem/windows-debug-capture", **debug_case})
 
     if not args.sdk_only and sdk_case["passed"]:

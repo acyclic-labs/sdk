@@ -12,7 +12,7 @@ use dispatch2::{
 use std::ffi::c_int;
 use std::fs::File;
 use std::io;
-use std::os::fd::AsRawFd as _;
+use std::os::fd::{AsRawFd as _, IntoRawFd as _};
 use std::sync::{Arc, Condvar, Mutex};
 
 struct Completion<T> {
@@ -85,57 +85,44 @@ pub(super) fn read_batch(
     reads: &[OwnedRead],
     cancellation: &Cancellation,
 ) -> io::Result<Vec<Bytes>> {
-    let offsets = reads
-        .iter()
-        .map(|read| {
-            i64::try_from(read.offset).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidInput, "read offset is too large")
-            })
-        })
-        .collect::<io::Result<Vec<_>>>()?;
     let queue = queue();
     let mut completions = Vec::new();
     completions.try_reserve_exact(reads.len())?;
-    let mut channels = Vec::new();
-    channels.try_reserve_exact(reads.len())?;
-    for (read, offset) in reads.iter().zip(offsets) {
-        // SAFETY: `file` holds a live descriptor for the duration of this call.
-        let descriptor = unsafe { libc::dup(file.as_raw_fd()) };
-        if descriptor < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // A channel created from a descriptor treats its current cursor as
-        // offset zero. `dup` shares that cursor, so reset the duplicate before
-        // handing it to Dispatch; positional reads must ignore caller cursor.
-        // SAFETY: `descriptor` is live and seekable because the public API
-        // accepts regular files.
-        if unsafe { libc::lseek(descriptor, 0, libc::SEEK_SET) } < 0 {
-            let failure = io::Error::last_os_error();
-            // SAFETY: Dispatch does not own the descriptor until construction.
-            unsafe {
-                libc::close(descriptor);
-            }
-            return Err(failure);
-        }
-        let cleanup = RcBlock::new(move |_: c_int| {
-            // SAFETY: Dispatch invokes this cleanup handler exactly once for
-            // the descriptor owned by this channel.
-            unsafe {
-                libc::close(descriptor);
-            }
-        });
-        // SAFETY: the duplicated descriptor remains live until Dispatch runs
-        // the cleanup handler after the channel and its operations close.
-        let channel = unsafe {
-            DispatchIO::new(
-                DispatchIOStreamType::DISPATCH_IO_RANDOM,
-                descriptor,
-                &queue,
-                &cleanup,
-            )
-        };
+    // Reopening creates an independently owned descriptor while preserving its
+    // current base. Dispatch offsets are relative to that captured base.
+    let descriptor = std::fs::OpenOptions::new()
+        .read(true)
+        .open(format!("/dev/fd/{}", file.as_raw_fd()))?
+        .into_raw_fd();
+    // SAFETY: querying the live descriptor does not mutate its cursor.
+    let base = unsafe { libc::lseek(descriptor, 0, libc::SEEK_CUR) };
+    if base < 0 {
+        let failure = io::Error::last_os_error();
+        // SAFETY: Dispatch does not own the descriptor yet.
+        unsafe { libc::close(descriptor) };
+        return Err(failure);
+    }
+    let cleanup = RcBlock::new(move |_: c_int| {
+        // SAFETY: Dispatch invokes this exactly once for its descriptor.
+        unsafe { libc::close(descriptor) };
+    });
+    // SAFETY: the descriptor remains live through channel cleanup.
+    let channel = unsafe {
+        DispatchIO::new(
+            DispatchIOStreamType::DISPATCH_IO_RANDOM,
+            descriptor,
+            &queue,
+            &cleanup,
+        )
+    };
+    let _registered = RegisteredChannel::new(cancellation, &channel);
+    for read in reads {
+        let absolute = i64::try_from(read.offset)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "read offset is too large"))?;
+        let offset = absolute.checked_sub(base).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "read offset is out of range")
+        })?;
         channel.set_low_water(read.length);
-        cancellation.register_apple(&channel);
         let completion = Completion::new();
         let callback = Arc::clone(&completion);
         let collected = Arc::new(Mutex::new(Vec::with_capacity(read.length)));
@@ -177,17 +164,13 @@ pub(super) fn read_batch(
         unsafe {
             channel.read(offset, read.length, &queue, handler);
         }
-        channels.push(channel);
         completions.push(completion);
     }
     let results = completions
         .into_iter()
         .map(|completion| completion.wait())
         .collect();
-    for channel in &channels {
-        cancellation.clear_apple(channel);
-        channel.close(DispatchIOCloseFlags(0));
-    }
+    channel.close(DispatchIOCloseFlags(0));
     results
 }
 

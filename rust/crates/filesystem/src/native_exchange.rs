@@ -50,6 +50,8 @@ pub struct NativeExchangeOutcome {
     pub published: bool,
     /// Complete displaced tree when publication completed.
     pub displaced: Option<PathBuf>,
+    /// Opaque consumer state stored with the recovered publication request.
+    pub recovery: Vec<u8>,
 }
 
 /// Persists an exchange request before a caller changes any related durable
@@ -187,6 +189,7 @@ pub fn publish_native_exchange(
     Ok(NativeExchangeOutcome {
         published: true,
         displaced: Some(prepared.to_path_buf()),
+        recovery: journal.recovery,
     })
 }
 
@@ -233,6 +236,7 @@ pub fn recover_native_exchange(
             Ok(NativeExchangeOutcome {
                 published: false,
                 displaced: None,
+                recovery: journal.recovery,
             })
         }
         NativeExchangePhase::Exchanging => recover_exchange(journal_path, &journal),
@@ -451,6 +455,7 @@ fn recover_exchange(
     Ok(NativeExchangeOutcome {
         published: live == Some(replacement),
         displaced,
+        recovery: journal.recovery.clone(),
     })
 }
 
@@ -482,6 +487,7 @@ fn recover_exchange(
     Ok(NativeExchangeOutcome {
         published,
         displaced,
+        recovery: journal.recovery.clone(),
     })
 }
 
@@ -543,7 +549,7 @@ mod tests {
         let journal = NativeExchangeJournal {
             version: NATIVE_EXCHANGE_JOURNAL_VERSION,
             operation: crate::IdempotencyKey::from_bytes([1; 16]),
-            recovery: Vec::new(),
+            recovery: vec![7; 16],
             live: live.clone(),
             prepared: prepared.clone(),
             carried: Vec::new(),
@@ -566,6 +572,7 @@ mod tests {
         .expect("recover publication retry");
         assert!(outcome.published);
         assert_eq!(outcome.displaced.as_deref(), Some(prepared.as_path()));
+        assert_eq!(outcome.recovery, vec![7; 16]);
         assert_eq!(std::fs::read(live.join("new")).expect("new"), b"new");
         assert_eq!(std::fs::read(prepared.join("old")).expect("old"), b"old");
         assert!(!journal_path.exists());
