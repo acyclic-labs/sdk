@@ -16,10 +16,11 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use windows::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+    FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,
 };
 use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_CALLBACK_DATA, PRJ_CALLBACKS, PRJ_DIR_ENTRY_BUFFER_HANDLE, PRJ_EXT_INFO_TYPE_SYMLINK,
@@ -27,18 +28,19 @@ use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, PRJ_NOTIFICATION,
     PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED,
     PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
-    PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION, PRJ_NOTIFICATION_FILE_OVERWRITTEN,
-    PRJ_NOTIFICATION_FILE_RENAMED, PRJ_NOTIFICATION_HARDLINK_CREATED, PRJ_NOTIFICATION_MAPPING,
-    PRJ_NOTIFICATION_NEW_FILE_CREATED, PRJ_NOTIFICATION_PARAMETERS, PRJ_NOTIFICATION_PRE_DELETE,
-    PRJ_NOTIFICATION_PRE_RENAME, PRJ_NOTIFICATION_PRE_SET_HARDLINK,
-    PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED, PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED,
-    PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION, PRJ_NOTIFY_FILE_OVERWRITTEN,
-    PRJ_NOTIFY_FILE_RENAMED, PRJ_NOTIFY_HARDLINK_CREATED, PRJ_NOTIFY_NEW_FILE_CREATED,
-    PRJ_NOTIFY_PRE_DELETE, PRJ_NOTIFY_PRE_RENAME, PRJ_NOTIFY_PRE_SET_HARDLINK,
-    PRJ_PLACEHOLDER_INFO, PRJ_STARTVIRTUALIZING_OPTIONS, PrjAllocateAlignedBuffer,
-    PrjFillDirEntryBuffer, PrjFillDirEntryBuffer2, PrjFreeAlignedBuffer,
-    PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing, PrjWriteFileData,
-    PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
+    PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION, PRJ_NOTIFICATION_FILE_OPENED,
+    PRJ_NOTIFICATION_FILE_OVERWRITTEN, PRJ_NOTIFICATION_FILE_RENAMED,
+    PRJ_NOTIFICATION_HARDLINK_CREATED, PRJ_NOTIFICATION_MAPPING, PRJ_NOTIFICATION_NEW_FILE_CREATED,
+    PRJ_NOTIFICATION_PARAMETERS, PRJ_NOTIFICATION_PRE_DELETE, PRJ_NOTIFICATION_PRE_RENAME,
+    PRJ_NOTIFICATION_PRE_SET_HARDLINK, PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED,
+    PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED, PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION,
+    PRJ_NOTIFY_FILE_OPENED, PRJ_NOTIFY_FILE_OVERWRITTEN, PRJ_NOTIFY_FILE_RENAMED,
+    PRJ_NOTIFY_HARDLINK_CREATED, PRJ_NOTIFY_NEW_FILE_CREATED, PRJ_NOTIFY_PRE_DELETE,
+    PRJ_NOTIFY_PRE_RENAME, PRJ_NOTIFY_PRE_SET_HARDLINK, PRJ_PLACEHOLDER_INFO,
+    PRJ_STARTVIRTUALIZING_OPTIONS, PrjAllocateAlignedBuffer, PrjFillDirEntryBuffer,
+    PrjFillDirEntryBuffer2, PrjFreeAlignedBuffer, PrjMarkDirectoryAsPlaceholder,
+    PrjStartVirtualizing, PrjStopVirtualizing, PrjWriteFileData, PrjWritePlaceholderInfo,
+    PrjWritePlaceholderInfo2,
 };
 use windows::core::{GUID, HRESULT, HSTRING, PCWSTR};
 
@@ -66,6 +68,7 @@ struct Runtime {
     root: PathBuf,
     writable: bool,
     enumerations: Mutex<HashMap<u128, Arc<Mutex<EnumState>>>>,
+    metadata_baselines: Arc<Mutex<HashMap<u128, HostWindowsMetadata>>>,
     executor: CallbackExecutor,
 }
 
@@ -142,6 +145,7 @@ impl ProjFsSession {
             root: request.destination.clone(),
             writable: request.writable,
             enumerations: Mutex::new(HashMap::new()),
+            metadata_baselines: Arc::new(Mutex::new(HashMap::new())),
             executor: CallbackExecutor::start()?,
         });
         let context_ptr = (&raw mut *runtime).cast::<c_void>();
@@ -152,6 +156,7 @@ impl ProjFsSession {
                 | PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION
                 | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED
                 | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED
+                | PRJ_NOTIFY_FILE_OPENED
                 | PRJ_NOTIFY_PRE_DELETE
                 | PRJ_NOTIFY_PRE_RENAME
                 | PRJ_NOTIFY_FILE_RENAMED
@@ -184,16 +189,29 @@ impl ProjFsSession {
         })
     }
 
-    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn stop(&mut self) -> Result<(), NativeMountError> {
-        let Some(context) = self.context.take() else {
-            return Ok(());
-        };
-        // SAFETY: this is the sole owner and sole stop call for the context.
-        unsafe { PrjStopVirtualizing(context) };
-        drop(self.runtime.take());
-        Ok(())
+        if let Some(context) = self.context.take() {
+            // SAFETY: this is the sole owner and sole stop call for the context.
+            unsafe { PrjStopVirtualizing(context) };
+        }
+        finish_cleanup(&mut self.runtime, |runtime| {
+            let root = runtime.root.clone();
+            recover_cache_only_destination(&root)?;
+            std::fs::create_dir(&root).map_err(|error| NativeMountError::Driver(error.to_string()))
+        })
     }
+}
+
+fn finish_cleanup<T, E>(
+    state: &mut Option<T>,
+    cleanup: impl FnOnce(&T) -> Result<(), E>,
+) -> Result<(), E> {
+    let Some(value) = state.as_ref() else {
+        return Ok(());
+    };
+    cleanup(value)?;
+    let _ = state.take();
+    Ok(())
 }
 
 /// Deletes only authenticated, cache-only residue from a stopped `ProjFS` root.
@@ -377,6 +395,80 @@ fn decode_utf16_name(bytes: &[u8]) -> Option<Vec<u16>> {
         .collect()
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct HostWindowsMetadata {
+    attributes: u32,
+    created: i64,
+    modified: i64,
+}
+
+fn host_windows_metadata(
+    root: &Path,
+    path: &MountPath,
+) -> Result<HostWindowsMetadata, super::MountSourceError> {
+    use std::os::windows::fs::MetadataExt as _;
+
+    let mut host_path = root.to_path_buf();
+    for component in path.components() {
+        let name = decode_utf16_name(component).ok_or_else(|| {
+            super::MountSourceError::Invalid("ProjFS path component is malformed".to_owned())
+        })?;
+        host_path.push(std::ffi::OsString::from_wide(&name));
+    }
+    let metadata = std::fs::symlink_metadata(host_path)
+        .map_err(|error| super::MountSourceError::Engine(error.to_string()))?;
+    Ok(HostWindowsMetadata {
+        attributes: metadata.file_attributes(),
+        created: i64::try_from(metadata.creation_time()).map_err(|_| {
+            super::MountSourceError::Invalid("Windows creation time exceeds i64".to_owned())
+        })?,
+        modified: i64::try_from(metadata.last_write_time()).map_err(|_| {
+            super::MountSourceError::Invalid("Windows write time exceeds i64".to_owned())
+        })?,
+    })
+}
+
+fn represented_windows_metadata_differs(
+    metadata: FileMetadata,
+    host: &HostWindowsMetadata,
+) -> bool {
+    matches!(metadata.windows_attributes, MetadataField::Value(value) if value != host.attributes)
+        || windows_time(metadata.created_ns).is_some_and(|value| value != host.created)
+        || windows_time(metadata.modified_ns).is_some_and(|value| value != host.modified)
+}
+
+fn take_metadata_baseline(
+    baselines: &Mutex<HashMap<u128, HostWindowsMetadata>>,
+    file_id: u128,
+) -> Option<HostWindowsMetadata> {
+    lock_recover(baselines).remove(&file_id)
+}
+
+fn replace_metadata_baseline(
+    baselines: &Mutex<HashMap<u128, HostWindowsMetadata>>,
+    file_id: u128,
+    baseline: HostWindowsMetadata,
+) {
+    lock_recover(baselines).insert(file_id, baseline);
+}
+
+fn metadata_changed_since_open(
+    baseline: HostWindowsMetadata,
+    current: HostWindowsMetadata,
+) -> bool {
+    // Hydration replaces RECALL_ON_DATA_ACCESS with ARCHIVE, while a read may
+    // also advance last-access time. Neither transition is an authored edit.
+    let hydration_mask = FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 | FILE_ATTRIBUTE_ARCHIVE.0;
+    let attributes_changed = if baseline.attributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 != 0 {
+        baseline.attributes & !hydration_mask != current.attributes & !FILE_ATTRIBUTE_ARCHIVE.0
+    } else {
+        baseline.attributes != current.attributes
+    };
+    attributes_changed
+        || baseline.created != current.created
+        || baseline.modified != current.modified
+}
+
 fn enum_id(pointer: *const GUID) -> Option<u128> {
     // SAFETY: callback ABI supplies a GUID pointer for the callback duration.
     let guid = unsafe { pointer.as_ref()? };
@@ -386,6 +478,16 @@ fn enum_id(pointer: *const GUID) -> Option<u128> {
     bytes[6..8].copy_from_slice(&guid.data3.to_le_bytes());
     bytes[8..16].copy_from_slice(&guid.data4);
     Some(u128::from_le_bytes(bytes))
+}
+
+fn file_id(data: &PRJ_CALLBACK_DATA) -> u128 {
+    let guid = &data.FileId;
+    let mut bytes = [0_u8; 16];
+    bytes[0..4].copy_from_slice(&guid.data1.to_le_bytes());
+    bytes[4..6].copy_from_slice(&guid.data2.to_le_bytes());
+    bytes[6..8].copy_from_slice(&guid.data3.to_le_bytes());
+    bytes[8..16].copy_from_slice(&guid.data4);
+    u128::from_le_bytes(bytes)
 }
 
 fn basic(node: MountNode, metadata: Option<FileMetadata>) -> Option<PRJ_FILE_BASIC_INFO> {
@@ -648,10 +750,11 @@ unsafe extern "system" fn file_data(
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
+    let source_path = path.clone();
     let source = Arc::clone(&runtime.source);
     let bytes = match runtime
         .executor
-        .call(move || source.read_range(&path, byte_offset, length))
+        .call(move || source.read_range(&source_path, byte_offset, length))
     {
         Some(Ok(bytes)) if bytes.len() == length as usize => bytes,
         Some(Ok(_)) => return HR_INVALID_DATA,
@@ -674,7 +777,17 @@ unsafe extern "system" fn file_data(
     );
     PrjFreeAlignedBuffer(buffer);
     match result {
-        Ok(()) => HR_OK,
+        Ok(()) => match host_windows_metadata(&runtime.root, &path) {
+            Ok(metadata) => {
+                replace_metadata_baseline(
+                    runtime.metadata_baselines.as_ref(),
+                    file_id(data),
+                    metadata,
+                );
+                HR_OK
+            }
+            Err(_) => HR_UNEXPECTED,
+        },
         Err(error) => error.code(),
     }
 }
@@ -739,8 +852,14 @@ unsafe extern "system" fn notification(
         .flatten();
     let source = Arc::clone(&runtime.source);
     let root = runtime.root.clone();
+    let metadata_baselines = Arc::clone(&runtime.metadata_baselines);
+    let file_id = file_id(data);
     let result = runtime.executor.call(move || {
-        if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED
+        if notification == PRJ_NOTIFICATION_FILE_OPENED {
+            let baseline = host_windows_metadata(&root, &path)?;
+            replace_metadata_baseline(metadata_baselines.as_ref(), file_id, baseline);
+            Ok(())
+        } else if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED
             || notification == PRJ_NOTIFICATION_FILE_OVERWRITTEN
         {
             if is_directory {
@@ -751,10 +870,27 @@ unsafe extern "system" fn notification(
         } else if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
             || notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
         {
+            let _ = take_metadata_baseline(metadata_baselines.as_ref(), file_id);
             source.capture_host_path(&root, &path)
         } else if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION {
+            let host = host_windows_metadata(&root, &path)?;
+            let baseline = take_metadata_baseline(metadata_baselines.as_ref(), file_id);
+            let changed_since_open =
+                baseline.is_some_and(|baseline| metadata_changed_since_open(baseline, host));
             match source.lookup(&path) {
-                Ok(Some(_)) => Ok(()),
+                Ok(Some(lookup)) => {
+                    if changed_since_open
+                        || represented_windows_metadata_differs(lookup.metadata, &host)
+                    {
+                        // ProjFS classifies FileBasicInfo-only changes as a
+                        // close without data modification. Capture only when
+                        // represented basic metadata differs, avoiding
+                        // publication on ordinary reads.
+                        source.capture_host_path(&root, &path)
+                    } else {
+                        Ok(())
+                    }
+                }
                 Ok(None) => source.capture_host_path(&root, &path),
                 Err(error) => Err(error),
             }
@@ -797,6 +933,7 @@ unsafe extern "system" fn notification(
                 PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION
                     | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED
                     | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED
+                    | PRJ_NOTIFY_FILE_OPENED
                     | PRJ_NOTIFY_PRE_DELETE
                     | PRJ_NOTIFY_PRE_RENAME
                     | PRJ_NOTIFY_FILE_RENAMED
@@ -864,5 +1001,21 @@ fn callbacks() -> PRJ_CALLBACKS {
         QueryFileNameCallback: Some(query_name),
         NotificationCallback: Some(notification),
         CancelCommandCallback: Some(cancel),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::finish_cleanup;
+
+    #[test]
+    fn stopped_runtime_is_retained_until_cleanup_succeeds() {
+        let mut state = Some("callback-runtime");
+        let first = finish_cleanup(&mut state, |_| Err::<(), _>("transient cleanup failure"));
+        assert_eq!(first, Err("transient cleanup failure"));
+        assert_eq!(state, Some("callback-runtime"));
+
+        finish_cleanup(&mut state, |_| Ok::<(), &str>(())).expect("retry cleanup succeeds");
+        assert_eq!(state, None);
     }
 }

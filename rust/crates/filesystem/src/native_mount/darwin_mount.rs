@@ -410,7 +410,9 @@ impl DarwinMountSession {
             teardown_complete: false,
         };
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !is_mounted(&session.destination, &parent_metadata) {
+        while !is_mounted(&session.destination, &parent_metadata)
+            .map_err(NativeMountError::Driver)?
+        {
             if session.thread.as_ref().is_some_and(JoinHandle::is_finished) {
                 let status = session.finish_thread();
                 session.loop_finished_before_teardown = Some(true);
@@ -547,10 +549,37 @@ fn fuse_arguments(options: &[String]) -> Result<Vec<CString>, i32> {
     Ok(arguments)
 }
 
-fn is_mounted(destination: &Path, parent: &Metadata) -> bool {
-    destination
-        .metadata()
-        .is_ok_and(|metadata| metadata.dev() != parent.dev())
+fn is_mounted(destination: &Path, _parent: &Metadata) -> Result<bool, String> {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let mut mounts = std::ptr::null_mut::<libc::statfs>();
+    // SAFETY: `getmntinfo` initializes `mounts` to an OS-owned array retained
+    // until the next call; this function consumes it before returning.
+    let count = unsafe { libc::getmntinfo(&raw mut mounts, libc::MNT_NOWAIT) };
+    if count <= 0 || mounts.is_null() {
+        return Err(format!(
+            "getmntinfo failed while querying {}: {}",
+            destination.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    let count = usize::try_from(count)
+        .map_err(|_| "getmntinfo returned an invalid mount count".to_owned())?;
+    // SAFETY: a positive return value is the exact initialized array length.
+    let mounts = unsafe { std::slice::from_raw_parts(mounts, count) };
+    let normalized = destination
+        .parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .and_then(|parent| destination.file_name().map(|name| parent.join(name)));
+    Ok(mounts.iter().any(|mount| {
+        // SAFETY: Darwin guarantees that `f_mntonname` is NUL terminated.
+        let mounted_at = unsafe { CStr::from_ptr(mount.f_mntonname.as_ptr()) };
+        mounted_at.to_bytes() == destination.as_os_str().as_bytes()
+            || normalized
+                .as_deref()
+                .is_some_and(|path| mounted_at.to_bytes() == path.as_os_str().as_bytes())
+    }))
 }
 
 fn bounded_diskutil_unmount(destination: &Path) -> Result<UnmountEvidence, String> {
@@ -558,7 +587,7 @@ fn bounded_diskutil_unmount(destination: &Path) -> Result<UnmountEvidence, Strin
         .parent()
         .and_then(|path| path.metadata().ok())
         .ok_or_else(|| "mount parent disappeared during teardown".to_owned())?;
-    if !is_mounted(destination, &parent) {
+    if !is_mounted(destination, &parent)? {
         return Ok(UnmountEvidence::AlreadyUnmounted);
     }
     if bounded_direct_unmount(destination, &parent)? {
@@ -581,21 +610,21 @@ fn bounded_diskutil_unmount(destination: &Path) -> Result<UnmountEvidence, Strin
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            if !is_mounted(destination, &parent) {
+            if !is_mounted(destination, &parent)? {
                 return Ok(UnmountEvidence::DiskutilUnmounted);
             }
             return Err("diskutil unmount exceeded its 30-second bound".to_owned());
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    if !is_mounted(destination, &parent) {
+    if !is_mounted(destination, &parent)? {
         return Ok(UnmountEvidence::DiskutilUnmounted);
     }
     if !status.success() {
         return Err(format!("diskutil unmount failed with status {status}"));
     }
     let verify_deadline = Instant::now() + DISKUTIL_VISIBILITY_TIMEOUT;
-    while is_mounted(destination, &parent) {
+    while is_mounted(destination, &parent)? {
         if Instant::now() >= verify_deadline {
             return Err("Darwin mount remained visible after diskutil unmount".to_owned());
         }
@@ -626,12 +655,12 @@ fn bounded_direct_unmount(destination: &Path, parent: &Metadata) -> Result<bool,
             .map_err(|error| error.to_string())?
             .is_some()
         {
-            return Ok(!is_mounted(destination, parent));
+            return is_mounted(destination, parent).map(|mounted| !mounted);
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Ok(!is_mounted(destination, parent));
+            return is_mounted(destination, parent).map(|mounted| !mounted);
         }
         std::thread::sleep(Duration::from_millis(10));
     }
