@@ -1395,3 +1395,33 @@ async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
     assert!(budget_failure.work.verify(WorkBudget::default()).is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn generation_reader_resolves_many_paths_from_one_pinned_root() -> Result<(), Box<dyn Error>>
+{
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("generation-reader").await?;
+    workspace.write_text("/present", "body").await?;
+    let generation = workspace.head().await?;
+    let limits = crate::model::VolumeLimits::default();
+    let present = customer_path("/present", limits)?;
+    let absent = customer_path("/absent", limits)?;
+
+    let reader = generation.reader().await?;
+    let descriptions = reader
+        .describe_files(
+            &[present, absent],
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value;
+
+    assert_eq!(descriptions.len(), 2);
+    assert_eq!(
+        descriptions[0].as_ref().map(|file| file.logical_bytes),
+        Some(4)
+    );
+    assert!(descriptions[1].is_none());
+    Ok(())
+}

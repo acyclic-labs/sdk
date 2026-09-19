@@ -3441,6 +3441,28 @@ impl<A, O> Generation<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
+    /// Opens one cheap immutable reader pinned to this exact generation.
+    ///
+    /// The generation root is authenticated once while the reader is opened;
+    /// descendant objects remain lazy and are fetched only by the operation
+    /// that needs them. Clone the returned reader to overlap independent
+    /// requests without reopening the generation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unavailable, foreign, or corrupt generation state and bounded
+    /// backend failures.
+    pub async fn reader(&self) -> Result<crate::PinnedReader<A, O>, WorkspaceError> {
+        self.workspace
+            .engine_checkout(
+                GenerationSelector::Exact(self.id),
+                CheckoutMode::read_only_pinned(),
+            )
+            .await?
+            .pinned_reader()
+            .map_err(WorkspaceError::engine)
+    }
+
     /// Computes one semantic delta to a compatible generation in any workspace
     /// from the same filesystem deployment.
     pub async fn diff_to(
