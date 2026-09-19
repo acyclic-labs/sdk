@@ -70,10 +70,7 @@ pub fn publish_native_exchange(
 ) -> Result<NativeExchangeOutcome, NativeExchangeError> {
     validate_layout(live, prepared)?;
     if journal_path.exists() {
-        let recovered = recover_native_exchange(journal_path)?;
-        if recovered.published {
-            return Ok(recovered);
-        }
+        recover_native_exchange(journal_path)?;
     }
     let mut journal = NativeExchangeJournal {
         live: live.to_path_buf(),
@@ -425,6 +422,45 @@ mod tests {
         );
         assert_eq!(std::fs::read(prepared.join("old")).expect("old"), b"old");
         assert!(!journal.exists());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn stale_completed_journal_does_not_suppress_the_next_publication() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let prepared = temporary.path().join("prepared");
+        std::fs::create_dir(&live).expect("live tree");
+        std::fs::create_dir(&prepared).expect("prepared tree");
+        std::fs::write(live.join("first"), b"first").expect("first live file");
+        std::fs::write(prepared.join("second"), b"second").expect("first prepared file");
+        let journal_path = temporary.path().join("exchange.json");
+        let stale = NativeExchangeJournal {
+            live: live.clone(),
+            prepared: prepared.clone(),
+            carried: Vec::new(),
+            roots: [
+                root_identity(&live).expect("live identity"),
+                root_identity(&prepared).expect("prepared identity"),
+            ],
+            phase: NativeExchangePhase::Exchanging,
+        };
+        write_journal(&journal_path, &stale).expect("stale journal");
+        exchange(&live, &prepared).expect("completed first exchange");
+
+        remove_entry(&prepared).expect("remove displaced tree");
+        std::fs::create_dir(&prepared).expect("next prepared tree");
+        std::fs::write(prepared.join("third"), b"third").expect("next prepared file");
+
+        let outcome = publish_native_exchange(&journal_path, &live, &prepared, Vec::new())
+            .expect("publish after stale completed journal");
+        assert!(outcome.published);
+        assert_eq!(std::fs::read(live.join("third")).expect("third"), b"third");
+        assert_eq!(
+            std::fs::read(prepared.join("second")).expect("second"),
+            b"second"
+        );
+        assert!(!journal_path.exists());
     }
 
     #[test]
