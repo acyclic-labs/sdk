@@ -375,7 +375,31 @@ fn probe_platform(
     })
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+#[path = "storage_accelerations_macos.rs"]
+mod macos;
+
+#[cfg(target_os = "macos")]
+fn probe_platform(
+    root: &Path,
+    allocation_unit_bytes: u64,
+) -> Result<NativeStorageAccelerationEvidence, NativeStorageAccelerationError> {
+    macos::probe(root, allocation_unit_bytes)
+}
+
+#[cfg(target_os = "linux")]
+#[path = "storage_accelerations_linux.rs"]
+mod linux;
+
+#[cfg(target_os = "linux")]
+fn probe_platform(
+    root: &Path,
+    allocation_unit_bytes: u64,
+) -> Result<NativeStorageAccelerationEvidence, NativeStorageAccelerationError> {
+    linux::probe(root, allocation_unit_bytes)
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn probe_platform(
     _root: &Path,
     _allocation_unit_bytes: u64,

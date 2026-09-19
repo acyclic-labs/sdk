@@ -863,7 +863,7 @@ fn bounded_summary_cache_eviction_reauthenticates_without_changing_state()
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn non_regular_dependency_regions_fall_back_to_authenticated_record_state()
+fn non_regular_dependency_regions_use_authenticated_record_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, file_ids) = non_regular_fixture(&store)?;

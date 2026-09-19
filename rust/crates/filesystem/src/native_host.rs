@@ -89,6 +89,70 @@ impl HostRoot {
             .hard_link(source, &self.directory, destination)
     }
 
+    /// Creates an APFS copy-on-write clone when the hosting volume supports it.
+    /// The source and destination remain rooted in held directory capabilities.
+    #[cfg(target_os = "macos")]
+    #[allow(unsafe_code)]
+    pub fn clone_file(&self, source: &Path, destination: &Path) -> io::Result<bool> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::ffi::OsStrExt;
+
+        let source = match self.open_file(source) {
+            Ok(source) => source,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        let parent_path = destination.parent().unwrap_or_else(|| Path::new(""));
+        let parent = if parent_path.as_os_str().is_empty() {
+            self.directory.try_clone()?
+        } else {
+            self.directory.open_dir(parent_path)?
+        };
+        let name = destination.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "clone destination has no name")
+        })?;
+        let name = std::ffi::CString::new(name.as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "clone name contains NUL"))?;
+        // SAFETY: the source and destination-parent descriptors remain live,
+        // and the target is one NUL-terminated leaf below the held directory.
+        if unsafe { libc::fclonefileat(source.as_raw_fd(), parent.as_raw_fd(), name.as_ptr(), 0) }
+            == 0
+        {
+            return Ok(true);
+        }
+        let error = io::Error::last_os_error();
+        if matches!(error.raw_os_error(), Some(libc::ENOTSUP | libc::ENOSYS)) {
+            Ok(false)
+        } else {
+            Err(error)
+        }
+    }
+
+    /// Creates a same-volume Windows copy-on-write clone when the filesystem
+    /// accepts the complete file as one block-clone range. An unsupported or
+    /// unaligned request leaves no destination so callers can write normally.
+    #[cfg(windows)]
+    pub fn clone_file(&self, source: &Path, destination: &Path) -> io::Result<bool> {
+        let mut source = self.open_file(source)?;
+        let length = source.metadata()?.len();
+        if length < 4 * 1024 || i64::try_from(length).is_err() {
+            return Ok(false);
+        }
+        // ReFS volumes use either 4-KiB or 64-KiB clusters. Try the common
+        // smaller unit first for maximum sharing, then retry at 64 KiB when
+        // the volume requires it. A failed attempt is always removed.
+        for alignment in [4 * 1024, 64 * 1024] {
+            let mut target = self.create_file(destination)?;
+            let cloned = clone_windows_file(&mut source, &mut target, length, alignment).is_ok();
+            drop(target);
+            if cloned {
+                return Ok(true);
+            }
+            self.directory.remove_file(destination)?;
+        }
+        Ok(false)
+    }
+
     pub fn read_link(&self, path: &Path) -> io::Result<std::path::PathBuf> {
         self.directory.read_link_contents(path)
     }
@@ -238,41 +302,53 @@ fn bind_unix_socket_in(parent: &Dir, name: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
-/// Best-effort deallocation of an already-zero range of a host file.
+/// Deallocates an already-zero range of a host file.
 ///
 /// APFS materializes the zero tail created by `ftruncate` as soon as any byte
 /// of the file is written, so holes must be punched explicitly after the data
 /// spans are in place. The range is shrunk inward to filesystem-block
-/// alignment, and a punch the host filesystem refuses is not an error: the
-/// zeros are already durable, only allocation efficiency is lost.
+/// alignment. Unsupported or failed deallocation is reported rather than
+/// silently materializing a dense file.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
-pub fn punch_hole(file: &impl std::os::fd::AsRawFd, offset: u64, length: u64) {
+pub fn punch_hole(file: &impl std::os::fd::AsRawFd, offset: u64, length: u64) -> io::Result<()> {
     let fd = file.as_raw_fd();
     let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
     // SAFETY: `fstatfs` fills the provided out-struct for a live descriptor.
     if unsafe { libc::fstatfs(fd, stats.as_mut_ptr()) } != 0 {
-        return;
+        return Err(io::Error::last_os_error());
     }
     // SAFETY: `fstatfs` succeeded and initialized the struct.
     let block = u64::from(unsafe { stats.assume_init() }.f_bsize);
     if block == 0 {
-        return;
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "host filesystem reports a zero allocation unit",
+        ));
     }
     let Some(start) = offset
         .checked_add(block - 1)
         .map(|edge| edge / block * block)
     else {
-        return;
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "hole start overflow",
+        ));
     };
     let Some(end) = offset.checked_add(length).map(|edge| edge / block * block) else {
-        return;
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "hole end overflow",
+        ));
     };
     if end <= start {
-        return;
+        return Ok(());
     }
     let (Ok(fp_offset), Ok(fp_length)) = (i64::try_from(start), i64::try_from(end - start)) else {
-        return;
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "hole range exceeds host limits",
+        ));
     };
     let arg = libc::fpunchhole_t {
         fp_flags: 0,
@@ -281,7 +357,100 @@ pub fn punch_hole(file: &impl std::os::fd::AsRawFd, offset: u64, length: u64) {
         fp_length,
     };
     // SAFETY: the argument struct outlives this value-only fcntl call.
-    let _ = unsafe { libc::fcntl(fd, libc::F_PUNCHHOLE, &arg) };
+    if unsafe { libc::fcntl(fd, libc::F_PUNCHHOLE, &arg) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn clone_windows_file(
+    source: &mut cap_std::fs::File,
+    target: &mut File,
+    length: u64,
+    alignment: u64,
+) -> io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::IO::DeviceIoControl;
+    use windows::Win32::System::Ioctl::{
+        DUPLICATE_EXTENTS_DATA, FSCTL_DUPLICATE_EXTENTS_TO_FILE, FSCTL_SET_SPARSE,
+    };
+
+    const CLONE_CHUNK: u64 = 1024 * 1024 * 1024;
+    let clone_length = length / alignment * alignment;
+    if clone_length == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "file is smaller than the clone alignment",
+        ));
+    }
+    // The materializer creates sparse source files on Windows. The target
+    // must also be sparse for the clone FSCTL to preserve holes.
+    unsafe {
+        DeviceIoControl(
+            HANDLE(target.as_raw_handle()),
+            FSCTL_SET_SPARSE,
+            None,
+            0,
+            None,
+            0,
+            None,
+            None,
+        )?;
+    }
+    target.set_len(length)?;
+    let chunk_step = usize::try_from(CLONE_CHUNK)
+        .map_err(|_| io::Error::other("clone chunk exceeds addressable size"))?;
+    for offset in (0..clone_length).step_by(chunk_step) {
+        let duplicate = DUPLICATE_EXTENTS_DATA {
+            FileHandle: HANDLE(source.as_raw_handle()),
+            SourceFileOffset: i64::try_from(offset)
+                .map_err(|_| io::Error::other("clone offset overflow"))?,
+            TargetFileOffset: i64::try_from(offset)
+                .map_err(|_| io::Error::other("clone offset overflow"))?,
+            ByteCount: i64::try_from((clone_length - offset).min(CLONE_CHUNK))
+                .map_err(|_| io::Error::other("clone length overflow"))?,
+        };
+        // SAFETY: both handles remain live for the synchronous request; the
+        // input pointer names one complete value.
+        unsafe {
+            DeviceIoControl(
+                HANDLE(target.as_raw_handle()),
+                FSCTL_DUPLICATE_EXTENTS_TO_FILE,
+                Some((&raw const duplicate).cast()),
+                u32::try_from(size_of::<DUPLICATE_EXTENTS_DATA>())
+                    .map_err(|_| io::Error::other("clone control size overflow"))?,
+                None,
+                0,
+                None,
+                None,
+            )?;
+        }
+    }
+    if clone_length < length {
+        // A sparse tail must stay sparse: writing a zero-filled hole would
+        // allocate it. Query only the bounded tail, not the whole source.
+        let ranges = query_allocated_data_ranges(source, clone_length, length - clone_length, 64)?;
+        let mut buffer = [0_u8; 64 * 1024];
+        for range in ranges {
+            let size = usize::try_from(range.length)
+                .map_err(|_| io::Error::other("clone tail range overflow"))?;
+            source.seek(SeekFrom::Start(range.offset))?;
+            target.seek(SeekFrom::Start(range.offset))?;
+            source.read_exact(buffer.get_mut(..size).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "clone tail exceeds buffer")
+            })?)?;
+            target.write_all(buffer.get(..size).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "clone tail exceeds buffer")
+            })?)?;
+        }
+    }
+    target.sync_all()
 }
 
 pub fn allocated_data_ranges(
@@ -354,51 +523,87 @@ fn allocated_data_ranges_platform(
     logical_bytes: u64,
     maximum_ranges: u32,
 ) -> io::Result<Vec<HostDataRange>> {
+    query_allocated_data_ranges(file, 0, logical_bytes, maximum_ranges)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one bounded native range query and validation"
+)]
+fn query_allocated_data_ranges(
+    file: &cap_std::fs::File,
+    offset: u64,
+    length: u64,
+    maximum_ranges: u32,
+) -> io::Result<Vec<HostDataRange>> {
     use std::mem::size_of;
     use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, HANDLE};
     use windows::Win32::System::IO::DeviceIoControl;
     use windows::Win32::System::Ioctl::{
         FILE_ALLOCATED_RANGE_BUFFER, FSCTL_QUERY_ALLOCATED_RANGES,
     };
 
-    if logical_bytes == 0 {
+    if length == 0 {
         return Ok(Vec::new());
     }
-    let capacity = maximum_ranges
-        .checked_add(1)
-        .and_then(|count| usize::try_from(count).ok())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "range bound overflow"))?;
-    let mut output = vec![FILE_ALLOCATED_RANGE_BUFFER::default(); capacity];
+    let end = offset
+        .checked_add(length)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "range end overflow"))?;
+    let max_capacity = usize::try_from(u64::from(maximum_ranges) + 1)
+        .unwrap_or(usize::MAX)
+        .min(u32::MAX as usize / size_of::<FILE_ALLOCATED_RANGE_BUFFER>());
+    let mut output = vec![FILE_ALLOCATED_RANGE_BUFFER::default(); max_capacity.min(8)];
     let query = FILE_ALLOCATED_RANGE_BUFFER {
-        FileOffset: 0,
-        Length: i64::try_from(logical_bytes)
+        FileOffset: i64::try_from(offset)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "range offset exceeds i64"))?,
+        Length: i64::try_from(length)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file length exceeds i64"))?,
     };
     let input_bytes = u32::try_from(size_of::<FILE_ALLOCATED_RANGE_BUFFER>())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "input size overflow"))?;
-    let output_bytes = u32::try_from(
-        output
-            .len()
-            .checked_mul(size_of::<FILE_ALLOCATED_RANGE_BUFFER>())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "output size overflow"))?,
-    )
-    .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "output size overflow"))?;
-    let mut returned = 0_u32;
-    // SAFETY: every pointer addresses a live, correctly sized value/buffer for
-    // the synchronous call; the borrowed file remains open throughout.
-    unsafe {
-        DeviceIoControl(
-            HANDLE(file.as_raw_handle()),
-            FSCTL_QUERY_ALLOCATED_RANGES,
-            Some(std::ptr::from_ref(&query).cast()),
-            input_bytes,
-            Some(output.as_mut_ptr().cast()),
-            output_bytes,
-            Some(&raw mut returned),
-            None,
-        )
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    let mut returned: u32;
+    loop {
+        let output_bytes =
+            u32::try_from(output.len() * size_of::<FILE_ALLOCATED_RANGE_BUFFER>())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "output size overflow"))?;
+        returned = 0;
+        // SAFETY: every pointer addresses a live, correctly sized value/buffer
+        // for the synchronous call; the borrowed file remains open throughout.
+        let result = unsafe {
+            DeviceIoControl(
+                HANDLE(file.as_raw_handle()),
+                FSCTL_QUERY_ALLOCATED_RANGES,
+                Some(std::ptr::from_ref(&query).cast()),
+                input_bytes,
+                Some(output.as_mut_ptr().cast()),
+                output_bytes,
+                Some(&raw mut returned),
+                None,
+            )
+        };
+        match result {
+            Ok(()) => break,
+            Err(error)
+                if error.code() == windows::core::HRESULT::from_win32(ERROR_MORE_DATA.0)
+                    || error.code()
+                        == windows::core::HRESULT::from_win32(ERROR_INSUFFICIENT_BUFFER.0) =>
+            {
+                if output.len() == max_capacity {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "host file exceeds admitted sparse range count",
+                    ));
+                }
+                output.resize(
+                    output.len().saturating_mul(2).min(max_capacity),
+                    FILE_ALLOCATED_RANGE_BUFFER::default(),
+                );
+            }
+            Err(error) => return Err(io::Error::other(error.to_string())),
+        }
     }
     let count = usize::try_from(returned)
         .ok()
@@ -414,12 +619,38 @@ fn allocated_data_ranges_platform(
     output
         .into_iter()
         .take(count)
-        .map(|range| {
-            let offset = u64::try_from(range.FileOffset)
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "negative range offset"))?;
-            let length = u64::try_from(range.Length)
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "negative range length"))?;
-            Ok(HostDataRange { offset, length })
+        .filter_map(|range| {
+            let start = match u64::try_from(range.FileOffset) {
+                Ok(start) => start.max(offset),
+                Err(_) => {
+                    return Some(Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "negative range offset",
+                    )));
+                }
+            };
+            let Ok(size) = u64::try_from(range.Length) else {
+                return Some(Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "negative range length",
+                )));
+            };
+            let range_end = match u64::try_from(range.FileOffset)
+                .ok()
+                .and_then(|base| base.checked_add(size))
+            {
+                Some(range_end) => range_end.min(end),
+                None => {
+                    return Some(Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "range end overflow",
+                    )));
+                }
+            };
+            (start < range_end).then_some(Ok(HostDataRange {
+                offset: start,
+                length: range_end - start,
+            }))
         })
         .collect()
 }
@@ -450,12 +681,13 @@ fn open_root_directory(path: &Path) -> io::Result<File> {
 fn open_root_directory(path: &Path) -> io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
     let mut options = std::fs::OpenOptions::new();
     options
         .read(true)
-        .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0)
+        .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0);
     options.open(path)
 }
@@ -545,6 +777,218 @@ mod tests {
             Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput),
             Ok(()) => return Err(std::io::Error::other("over-long socket path was admitted")),
         }
+        Ok(())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_clone_tests {
+    use super::{HostRoot, allocated_data_ranges};
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::os::windows::io::AsRawHandle;
+    use std::path::Path;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::IO::DeviceIoControl;
+    use windows::Win32::System::Ioctl::FSCTL_SET_SPARSE;
+
+    #[cfg(feature = "native-mount")]
+    #[test]
+    fn block_clone_preserves_cow_or_leaves_no_destination() -> std::io::Result<()> {
+        let parent = std::env::var_os("ACYCLIC_TEST_BLOCK_CLONE_ROOT");
+        let require_clone = parent.is_some();
+        let directory = if let Some(parent) = parent {
+            tempfile::Builder::new()
+                .prefix("acyclic-clone-")
+                .tempdir_in(parent)?
+        } else {
+            tempfile::tempdir()?
+        };
+        let root = HostRoot::open(directory.path())?;
+        let source_path = Path::new("source.bin");
+        let target_path = Path::new("target.bin");
+        let mut source = root.create_file(source_path)?;
+        // SAFETY: this synchronous control takes no buffers and the source
+        // handle remains live for the entire call.
+        unsafe {
+            DeviceIoControl(
+                HANDLE(source.as_raw_handle()),
+                FSCTL_SET_SPARSE,
+                None,
+                0,
+                None,
+                0,
+                None,
+                None,
+            )
+            .map_err(std::io::Error::other)?;
+        }
+        source.set_len(1024 * 1024)?;
+        source.write_all(&[0xA5; 4096])?;
+        source.seek(SeekFrom::Start(1024 * 1024 - 4096))?;
+        source.write_all(&[0xA5; 4096])?;
+        source.sync_all()?;
+        let cloned = root.clone_file(source_path, target_path)?;
+        let capabilities = crate::probe_native_storage_capabilities(directory.path())
+            .map_err(std::io::Error::other)?;
+        if capabilities.block_cloning || require_clone {
+            assert!(cloned, "advertised block cloning rejected an aligned file");
+        }
+        if cloned {
+            let mut target = root.open_file(target_path)?;
+            let mut byte = [0];
+            target.read_exact(&mut byte)?;
+            assert_eq!(byte, [0xA5]);
+            target.seek(SeekFrom::Start(512 * 1024))?;
+            target.read_exact(&mut byte)?;
+            assert_eq!(byte, [0]);
+            target.seek(SeekFrom::Start(1024 * 1024 - 1))?;
+            target.read_exact(&mut byte)?;
+            assert_eq!(byte, [0xA5]);
+            source.seek(SeekFrom::Start(0))?;
+            source.write_all(&[0x5A])?;
+            source.sync_all()?;
+            target.seek(SeekFrom::Start(0))?;
+            target.read_exact(&mut byte)?;
+            assert_eq!(byte, [0xA5]);
+        } else {
+            assert!(root.symlink_metadata(target_path).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn block_clone_accepts_unaligned_file_lengths() -> std::io::Result<()> {
+        let Some(parent) = std::env::var_os("ACYCLIC_TEST_BLOCK_CLONE_ROOT") else {
+            return Ok(());
+        };
+        let directory = tempfile::Builder::new()
+            .prefix("acyclic-unaligned-clone-")
+            .tempdir_in(parent)?;
+        let root = HostRoot::open(directory.path())?;
+        let source_path = Path::new("source.bin");
+        let target_path = Path::new("target.bin");
+        let mut source = root.create_file(source_path)?;
+        // SAFETY: no buffers are passed and the source handle stays live.
+        unsafe {
+            DeviceIoControl(
+                HANDLE(source.as_raw_handle()),
+                FSCTL_SET_SPARSE,
+                None,
+                0,
+                None,
+                0,
+                None,
+                None,
+            )
+            .map_err(std::io::Error::other)?;
+        }
+        source.set_len(1024 * 1024 + 17)?;
+        source.write_all(&[0xA5; 4096])?;
+        source.seek(SeekFrom::Start(1024 * 1024))?;
+        source.write_all(&[0x5A; 17])?;
+        source.sync_all()?;
+        let cloned = root.clone_file(source_path, target_path)?;
+        assert!(
+            cloned,
+            "advertised block cloning rejected an unaligned file"
+        );
+        let mut target = root.open_file(target_path)?;
+        let ranges = allocated_data_ranges(&target, 1024 * 1024 + 17, 3)?;
+        assert_eq!(ranges.len(), 2, "clone must preserve the sparse middle");
+        target.seek(SeekFrom::Start(1024 * 1024))?;
+        let mut tail = [0; 17];
+        target.read_exact(&mut tail)?;
+        assert_eq!(tail, [0x5A; 17]);
+        source.seek(SeekFrom::Start(1024 * 1024))?;
+        source.write_all(&[0x11; 17])?;
+        source.sync_all()?;
+        target.seek(SeekFrom::Start(1024 * 1024))?;
+        target.read_exact(&mut tail)?;
+        assert_eq!(tail, [0x5A; 17]);
+        Ok(())
+    }
+
+    #[test]
+    fn block_clone_spans_multiple_native_requests() -> std::io::Result<()> {
+        let Some(parent) = std::env::var_os("ACYCLIC_TEST_BLOCK_CLONE_ROOT") else {
+            return Ok(());
+        };
+        let directory = tempfile::Builder::new()
+            .prefix("acyclic-large-clone-")
+            .tempdir_in(parent)?;
+        let root = HostRoot::open(directory.path())?;
+        let source_path = Path::new("source.bin");
+        let target_path = Path::new("target.bin");
+        let mut source = root.create_file(source_path)?;
+        // SAFETY: no buffers are passed and the source handle stays live.
+        unsafe {
+            DeviceIoControl(
+                HANDLE(source.as_raw_handle()),
+                FSCTL_SET_SPARSE,
+                None,
+                0,
+                None,
+                0,
+                None,
+                None,
+            )
+            .map_err(std::io::Error::other)?;
+        }
+        let second_chunk = 1024_u64 * 1024 * 1024;
+        let length = second_chunk + 64 * 1024 + 17;
+        source.set_len(length)?;
+        source.write_all(&[0xA5; 4096])?;
+        source.seek(SeekFrom::Start(second_chunk))?;
+        source.write_all(&[0x5A; 4096])?;
+        source.seek(SeekFrom::Start(length - 17))?;
+        source.write_all(&[0x11; 17])?;
+        source.sync_all()?;
+        assert!(root.clone_file(source_path, target_path)?);
+        let mut target = root.open_file(target_path)?;
+        target.seek(SeekFrom::Start(second_chunk))?;
+        let mut byte = [0];
+        target.read_exact(&mut byte)?;
+        assert_eq!(byte, [0x5A]);
+        target.seek(SeekFrom::Start(length - 1))?;
+        target.read_exact(&mut byte)?;
+        assert_eq!(byte, [0x11]);
+        let ranges = allocated_data_ranges(&target, length, 4)?;
+        assert_eq!(ranges.len(), 3, "multi-request clone must preserve holes");
+        Ok(())
+    }
+
+    #[test]
+    fn sparse_range_query_grows_only_when_ranges_require_it() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = HostRoot::open(directory.path())?;
+        let path = Path::new("ranges.bin");
+        let mut file = root.create_file(path)?;
+        // SAFETY: the control has no buffers and the file handle remains live.
+        unsafe {
+            DeviceIoControl(
+                HANDLE(file.as_raw_handle()),
+                FSCTL_SET_SPARSE,
+                None,
+                0,
+                None,
+                0,
+                None,
+                None,
+            )
+            .map_err(std::io::Error::other)?;
+        }
+        file.set_len(20 * 1024 * 1024)?;
+        for index in 0..10_u64 {
+            file.seek(SeekFrom::Start(index * 2 * 1024 * 1024))?;
+            file.write_all(&[0xA5; 4096])?;
+        }
+        file.sync_all()?;
+        let source = root.open_file(path)?;
+        assert!(allocated_data_ranges(&source, 20 * 1024 * 1024, 9).is_err());
+        let ranges = allocated_data_ranges(&source, 20 * 1024 * 1024, 10)?;
+        assert_eq!(ranges.len(), 10);
+        assert_eq!(ranges[0].offset, 0);
+        assert_eq!(ranges[9].offset, 18 * 1024 * 1024);
         Ok(())
     }
 }

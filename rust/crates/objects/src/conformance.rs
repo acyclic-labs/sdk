@@ -6,9 +6,10 @@ use crate::{Condition, GetRequest, ObjectsError, ObjectsProvider, PutRequest, Re
 
 /// Exercises the complete provider contract under one caller-owned unique namespace.
 ///
+/// The provider must be fresh: the suite retains global idempotency keys as well as resources.
 /// The namespace must satisfy the public bucket-name grammar and must never have been used by
-/// this provider. The suite intentionally retains created resources so it can verify permanent
-/// identity, snapshots, forks, versions, delete markers, and idempotent recovery.
+/// this provider. The suite verifies permanent identity, snapshots, forks, versions, delete
+/// markers, and idempotent recovery.
 ///
 /// # Errors
 ///
@@ -20,7 +21,10 @@ use crate::{Condition, GetRequest, ObjectsError, ObjectsProvider, PutRequest, Re
               assertion, and splitting it would only move the same sequential checks behind \
               indirection"
 )]
-pub async fn verify(provider: &impl ObjectsProvider, namespace: &str) -> Result<(), ObjectsError> {
+pub async fn verify<P: ObjectsProvider + ?Sized>(
+    provider: &P,
+    namespace: &str,
+) -> Result<(), ObjectsError> {
     let version_bucket = create(provider, &format!("{namespace}-versions"), "create-v").await?;
     ensure(
         provider
@@ -354,8 +358,8 @@ pub async fn verify(provider: &impl ObjectsProvider, namespace: &str) -> Result<
     Ok(())
 }
 
-async fn create(
-    provider: &impl ObjectsProvider,
+async fn create<P: ObjectsProvider + ?Sized>(
+    provider: &P,
     name: &str,
     idempotency_key: &str,
 ) -> Result<wire::BucketRef, ObjectsError> {
@@ -374,8 +378,8 @@ async fn create(
     Ok(reference)
 }
 
-async fn put(
-    provider: &impl ObjectsProvider,
+async fn put<P: ObjectsProvider + ?Sized>(
+    provider: &P,
     bucket: &wire::BucketRef,
     object_key: &str,
     body: &'static [u8],
@@ -394,8 +398,8 @@ async fn put(
         .await
 }
 
-async fn get(
-    provider: &impl ObjectsProvider,
+async fn get<P: ObjectsProvider + ?Sized>(
+    provider: &P,
     target: ReadTarget,
     object_key: &str,
 ) -> Result<crate::BufferedObject, ObjectsError> {

@@ -6,6 +6,7 @@
 //! replacement, restart, or an unrepresentable path invalidates the hint stream
 //! and requires a new bounded baseline scan.
 
+use crate::NativeRootIdentity;
 use crate::cancellation::{CancellationError, CancellationToken};
 use crate::kernel::{LogicalName, NamespacePath, NamespacePathError};
 use crate::model::{FilesystemProfile, VolumeLimits};
@@ -199,90 +200,6 @@ pub struct NativeWatchOptions {
     pub recursive: bool,
 }
 
-/// Stable native identity of one held watcher/capture root.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeRootIdentity {
-    device: u64,
-    object: u64,
-}
-
-impl NativeRootIdentity {
-    /// Derives identity from an already-open root handle.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when this platform cannot report a stable root
-    /// identity.
-    pub fn from_file(file: &std::fs::File) -> std::io::Result<Self> {
-        native_root_identity(file)
-    }
-
-    /// Returns the canonical platform-neutral 16-byte identity encoding.
-    ///
-    /// The first eight bytes are the native storage-device identity and the
-    /// final eight are the directory-object identity, both little-endian.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 16] {
-        let mut bytes = [0_u8; 16];
-        bytes[..8].copy_from_slice(&self.device.to_le_bytes());
-        bytes[8..].copy_from_slice(&self.object.to_le_bytes());
-        bytes
-    }
-
-    /// Decodes the exact canonical identity representation.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 16]) -> Self {
-        let mut device = [0_u8; 8];
-        device.copy_from_slice(&bytes[..8]);
-        let mut object = [0_u8; 8];
-        object.copy_from_slice(&bytes[8..]);
-        Self {
-            device: u64::from_le_bytes(device),
-            object: u64::from_le_bytes(object),
-        }
-    }
-}
-
-#[cfg(unix)]
-fn native_root_identity(file: &std::fs::File) -> std::io::Result<NativeRootIdentity> {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = file.metadata()?;
-    Ok(NativeRootIdentity {
-        device: metadata.dev(),
-        object: metadata.ino(),
-    })
-}
-
-#[cfg(windows)]
-fn native_root_identity(file: &std::fs::File) -> std::io::Result<NativeRootIdentity> {
-    use cap_primitives::fs::_WindowsByHandle;
-    let metadata = cap_std::fs::File::from_std(file.try_clone()?).metadata()?;
-    let device = metadata.volume_serial_number().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "root volume identity is unavailable",
-        )
-    })?;
-    let object = metadata.file_index().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "root file identity is unavailable",
-        )
-    })?;
-    Ok(NativeRootIdentity {
-        device: u64::from(device),
-        object,
-    })
-}
-
-#[cfg(not(any(unix, windows)))]
-fn native_root_identity(_: &std::fs::File) -> std::io::Result<NativeRootIdentity> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "stable root identity is unavailable on this platform",
-    ))
-}
-
 #[cfg(unix)]
 fn open_native_root(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -358,6 +275,26 @@ impl NativeWatchOptions {
 #[derive(Debug)]
 struct SharedState {
     invalidation: Option<WatchInvalidationReason>,
+    #[cfg(target_os = "linux")]
+    pending_rename: Option<PendingRename>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct PendingRename {
+    tracker: usize,
+    from: PathBuf,
+    to: Option<PathBuf>,
+}
+
+impl SharedState {
+    fn seal_invalidation(&mut self) -> Option<WatchInvalidationReason> {
+        #[cfg(target_os = "linux")]
+        if self.invalidation.is_none() && self.pending_rename.is_some() {
+            self.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
+        }
+        self.invalidation
+    }
 }
 
 struct NativeEventContext {
@@ -365,6 +302,8 @@ struct NativeEventContext {
     root_identity: NativeRootIdentity,
     profile: FilesystemProfile,
     limits: VolumeLimits,
+    #[cfg(target_os = "linux")]
+    maximum_queued_changes: u32,
 }
 
 /// One live native watcher over a materialized checkout root.
@@ -450,6 +389,8 @@ impl NativeWatch {
         let queued = Arc::new(AtomicU32::new(0));
         let shared = Arc::new(Mutex::new(SharedState {
             invalidation: Some(WatchInvalidationReason::InitialSnapshotRequired),
+            #[cfg(target_os = "linux")]
+            pending_rename: None,
         }));
         let callback_shared = Arc::clone(&shared);
         let callback_queued = Arc::clone(&queued);
@@ -458,6 +399,8 @@ impl NativeWatch {
             root_identity,
             profile,
             limits: options.limits,
+            #[cfg(target_os = "linux")]
+            maximum_queued_changes: options.maximum_queued_changes,
         };
         let mut watcher = notify::recommended_watcher(move |event| {
             accept_native_event(
@@ -538,6 +481,10 @@ impl NativeWatch {
             self.queued.fetch_sub(1, Ordering::AcqRel);
         }
         shared.invalidation = None;
+        #[cfg(target_os = "linux")]
+        {
+            shared.pending_rename = None;
+        }
         self.epoch = WatchEpoch(
             self.epoch
                 .0
@@ -547,6 +494,69 @@ impl NativeWatch {
         self.next_sequence = WatchSequence(0);
         self.rescan_in_progress = true;
         Ok(self.epoch)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn accept_verified_baseline<T, E>(
+        &mut self,
+        verify: impl FnOnce() -> Result<Option<T>, E>,
+    ) -> Result<Result<Option<T>, E>, NativeWatchError> {
+        if self.rescan_in_progress {
+            return Err(NativeWatchError::RescanAlreadyInProgress);
+        }
+        let mut shared = self
+            .shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?;
+        if shared.invalidation != Some(WatchInvalidationReason::InitialSnapshotRequired)
+            || self.epoch.0 != 0
+        {
+            return Err(NativeWatchError::RescanAlreadyInProgress);
+        }
+        let verified = match verify() {
+            Ok(Some(verified)) => verified,
+            Ok(None) => return Ok(Ok(None)),
+            Err(error) => return Ok(Err(error)),
+        };
+        // A callback that ran before admission could only observe the initial
+        // invalidation and would have dropped its hint. The durable verifier
+        // must cover that interval. Holding the lock now fences later callbacks.
+        self.epoch = WatchEpoch(
+            self.epoch
+                .0
+                .checked_add(1)
+                .ok_or(NativeWatchError::SequenceExhausted)?,
+        );
+        self.next_sequence = WatchSequence(0);
+        shared.invalidation = None;
+        Ok(Ok(Some(verified)))
+    }
+
+    /// Admits an existing Windows baseline only when the volume USN journal
+    /// proves that neither the watched root nor any entry on its volume
+    /// changed since the checkpoint.
+    ///
+    /// Validation runs while callback delivery is fenced by the watcher state
+    /// lock. Any discontinuity leaves the watcher invalidated and returns the
+    /// exact baseline requirement.
+    #[cfg(target_os = "windows")]
+    pub fn accept_windows_usn_baseline(
+        &mut self,
+        checkpoint: crate::WindowsUsnCheckpoint,
+    ) -> Result<Result<crate::WindowsUsnContinuity, crate::WindowsUsnError>, NativeWatchError> {
+        let root = self.root.clone();
+        self.accept_verified_baseline(|| {
+            crate::validate_windows_usn_checkpoint(&root, checkpoint).map(|continuity| {
+                (continuity == crate::WindowsUsnContinuity::Unchanged).then_some(continuity)
+            })
+        })
+        .map(|result| {
+            result.map(|admitted| {
+                admitted.unwrap_or(crate::WindowsUsnContinuity::BaselineRequired(
+                    crate::WindowsUsnDiscontinuity::VolumeAdvanced,
+                ))
+            })
+        })
     }
 
     /// Seals the caller's baseline scan.
@@ -572,11 +582,11 @@ impl NativeWatch {
                 .invalidation = Some(WatchInvalidationReason::RootChanged);
         }
         self.rescan_in_progress = false;
-        let shared = self
+        let mut shared = self
             .shared
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
-        Ok(shared.invalidation.map_or(
+        Ok(shared.seal_invalidation().map_or(
             WatchBatch::Changes {
                 epoch: self.epoch,
                 first_sequence: self.next_sequence,
@@ -778,7 +788,7 @@ impl NativeWatch {
     ) -> Result<Option<WatchInvalidationReason>, OperationFailure<NativeWatchError>> {
         self.shared
             .lock()
-            .map(|state| state.invalidation)
+            .map(|mut state| state.seal_invalidation())
             .map_err(|_| OperationFailure::before_work(NativeWatchError::StatePoisoned))
     }
 
@@ -804,32 +814,154 @@ fn accept_native_event(
 ) {
     let mapped = event
         .map_err(|_| WatchInvalidationReason::BackendError)
-        .and_then(|event| {
-            validate_replayed_root_creation(&event, &context.root, context.root_identity)?;
-            map_event(&event, &context.root, context.profile, context.limits)
-        });
+        .and_then(|event| map_native_event(&event, context));
     let Ok(mut state) = shared.lock() else {
         return;
     };
     if state.invalidation.is_some() {
         return;
     }
-    match mapped {
-        Ok(changes) => {
-            for change in changes {
-                match sender.try_send(change) {
-                    Ok(()) => {
-                        queued.fetch_add(1, Ordering::Release);
-                    }
-                    Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+    let changes = match mapped {
+        Ok(MappedNativeEvent::Changes(changes)) => changes,
+        #[cfg(target_os = "linux")]
+        Ok(MappedNativeEvent::RenameHalf {
+            tracker,
+            mode,
+            path,
+        }) => {
+            match mode {
+                RenameMode::From if state.pending_rename.is_none() => {
+                    if queued.load(Ordering::Acquire) >= context.maximum_queued_changes {
                         state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-                        break;
+                        return;
+                    }
+                    state.pending_rename = Some(PendingRename {
+                        tracker,
+                        from: path,
+                        to: None,
+                    });
+                }
+                RenameMode::To => {
+                    let Some(pending) = state.pending_rename.as_mut() else {
+                        state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
+                        return;
+                    };
+                    if pending.tracker != tracker || pending.to.is_some() {
+                        state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
+                    } else {
+                        pending.to = Some(path);
                     }
                 }
+                _ => state.invalidation = Some(WatchInvalidationReason::AmbiguousRename),
+            }
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        Ok(MappedNativeEvent::RenameBoth {
+            tracker,
+            from,
+            to,
+            changes,
+        }) => {
+            let matched = state.pending_rename.as_ref().is_some_and(|pending| {
+                pending.tracker == tracker
+                    && pending.from == from
+                    && pending.to.as_ref() == Some(&to)
+            });
+            if !matched {
+                state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
+                return;
+            }
+            state.pending_rename = None;
+            changes
+        }
+        Err(reason) => {
+            state.invalidation = Some(reason);
+            return;
+        }
+    };
+    for change in changes {
+        #[cfg(target_os = "linux")]
+        if queued
+            .load(Ordering::Acquire)
+            .saturating_add(u32::from(state.pending_rename.is_some()))
+            >= context.maximum_queued_changes
+        {
+            state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
+            break;
+        }
+        match sender.try_send(change) {
+            Ok(()) => {
+                queued.fetch_add(1, Ordering::Release);
+            }
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+                state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
+                break;
             }
         }
-        Err(reason) => state.invalidation = Some(reason),
     }
+}
+
+enum MappedNativeEvent {
+    Changes(Vec<WatchChange>),
+    #[cfg(target_os = "linux")]
+    RenameHalf {
+        tracker: usize,
+        mode: RenameMode,
+        path: PathBuf,
+    },
+    #[cfg(target_os = "linux")]
+    RenameBoth {
+        tracker: usize,
+        from: PathBuf,
+        to: PathBuf,
+        changes: Vec<WatchChange>,
+    },
+}
+
+fn map_native_event(
+    event: &Event,
+    context: &NativeEventContext,
+) -> Result<MappedNativeEvent, WatchInvalidationReason> {
+    validate_replayed_root_creation(event, &context.root, context.root_identity)?;
+    #[cfg(target_os = "linux")]
+    if let EventKind::Modify(ModifyKind::Name(mode)) = event.kind {
+        if event.need_rescan() {
+            return Err(WatchInvalidationReason::NativeRescanRequired);
+        }
+        let tracker = event
+            .attrs
+            .tracker()
+            .ok_or(WatchInvalidationReason::AmbiguousRename)?;
+        if matches!(mode, RenameMode::From | RenameMode::To) {
+            let [path] = event.paths.as_slice() else {
+                return Err(WatchInvalidationReason::AmbiguousRename);
+            };
+            let relative =
+                relative_namespace_path(&context.root, path, context.profile, context.limits)?;
+            if relative.is_root() {
+                return Err(WatchInvalidationReason::RootChanged);
+            }
+            return Ok(MappedNativeEvent::RenameHalf {
+                tracker,
+                mode,
+                path: path.clone(),
+            });
+        }
+        if mode == RenameMode::Both {
+            let changes = map_event(event, &context.root, context.profile, context.limits)?;
+            let [from, to] = event.paths.as_slice() else {
+                return Err(WatchInvalidationReason::AmbiguousRename);
+            };
+            return Ok(MappedNativeEvent::RenameBoth {
+                tracker,
+                from: from.clone(),
+                to: to.clone(),
+                changes,
+            });
+        }
+    }
+    map_event(event, &context.root, context.profile, context.limits).map(MappedNativeEvent::Changes)
 }
 
 fn validate_replayed_root_creation(

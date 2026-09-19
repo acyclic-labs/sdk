@@ -4,7 +4,6 @@ import type {
   GenerationDiff,
   FsChangeSet,
   FsGeneration,
-  FsJoinPlan,
   FsTransaction,
   FsVolume,
   FsCheckout,
@@ -66,7 +65,33 @@ import type {
   GenerationTransferBatch,
   GenerationTransferCursor,
   ObjectCacheStats,
+  ResolvableFsJoinPlan,
+  NativeRawGitCompatRepository,
+  NativeRawOperationWindowClose,
+  NativeRawOperationWindowCoordinator,
+  NativeRawOperationWindowLease,
+  NativeRawOperationWindowPhase,
+  NativeRawWorkspaceGraph,
+  NativeRawWorkspaceLineageRecord,
 } from "./contracts.js";
+import type {
+  GenerationIdentity,
+  GitCommitIdentity,
+  GitCompatCommand,
+  GitCompatOutput,
+  GitCompatRepository,
+  GitFilesystemExecutor,
+  GitFilesystemResult,
+  GitPendingTransition,
+  OperationIdentity,
+  OperationWindowClose,
+  OperationWindowCoordinator,
+  OperationWindowLease,
+  OperationWindowPhase,
+  WorkspaceGraph,
+  WorkspaceIdentity,
+  WorkspaceLineageRecord,
+} from "./compat.js";
 
 const generationHandles = new WeakMap<FsGeneration, NativeRawGeneration>();
 const workspaceHandles = new WeakMap<FsWorkspace, NativeRawWorkspace>();
@@ -140,6 +165,352 @@ export async function openNativeFs(options: NativeFsOptions): Promise<NativeFsEn
       maximumWaitersPerObject: options.objectCache.maximumWaitersPerObject,
     }),
   );
+}
+
+/** Opens the durable Git-shaped compatibility state machine without invoking system Git. */
+export async function openNativeGitCompatRepository(
+  stateRoot: string,
+  workspaceId: WorkspaceIdentity,
+): Promise<GitCompatRepository> {
+  requireStateRoot(stateRoot, "Git compatibility");
+  const binding = await bindings();
+  return adaptGitCompat(binding.NativeGitCompatRepository.open(stateRoot, workspaceId));
+}
+
+function requireStateRoot(stateRoot: string, feature: string): void {
+  if (stateRoot.length === 0) {
+    throw new RangeError(`${feature} state root must be non-empty`);
+  }
+}
+
+function copyWorkspaceLineageRecord(
+  record: NativeRawWorkspaceLineageRecord,
+): WorkspaceLineageRecord {
+  return {
+    version: record.version,
+    revision: record.revision,
+    workspaceId: record.workspaceId.slice(),
+    workspaceName: record.workspaceName,
+    parentWorkspaceId: record.parentWorkspaceId?.slice(),
+    parentWorkspaceName: record.parentWorkspaceName,
+    forkGeneration: record.forkGeneration.slice(),
+    initialGeneration: record.initialGeneration.slice(),
+  };
+}
+
+function copyOperationWindowLease(
+  lease: NativeRawOperationWindowLease,
+): OperationWindowLease {
+  return {
+    workspaceId: lease.workspaceId.slice(),
+    leaseId: lease.leaseId.slice(),
+    pinnedParent: lease.pinnedParent.slice(),
+    expiresAtMillis: lease.expiresAtMillis,
+  };
+}
+
+function nativeOperationWindowLease(
+  lease: OperationWindowLease,
+): NativeRawOperationWindowLease {
+  requireIdentity(lease.workspaceId, "workspace identity");
+  requireIdentity(lease.leaseId, "lease identity");
+  requireGenerationIdentity(lease.pinnedParent, "pinned parent");
+  return lease;
+}
+
+function parseOperationWindowPhase(
+  phase: NativeRawOperationWindowPhase,
+): OperationWindowPhase {
+  if (phase.kind === "idle") return { kind: "idle" };
+  if (phase.kind === "active" && phase.pinnedParent !== undefined) {
+    return {
+      kind: "active",
+      pinnedParent: phase.pinnedParent.slice(),
+      pendingParent: phase.pendingParent?.slice(),
+      activeLeaseCount: phase.activeLeaseCount ?? 0,
+    };
+  }
+  if (
+    phase.kind === "reconciling" && phase.ticket !== undefined &&
+    phase.pinnedParent !== undefined
+  ) {
+    return {
+      kind: "reconciling",
+      ticket: phase.ticket.slice(),
+      pinnedParent: phase.pinnedParent.slice(),
+      pendingParent: phase.pendingParent?.slice(),
+    };
+  }
+  throw new TypeError("native operation window returned a malformed phase");
+}
+
+function parseOperationWindowClose(
+  close: NativeRawOperationWindowClose,
+): OperationWindowClose {
+  if (close.kind === "still-active" && close.remaining !== undefined) {
+    return { kind: "still-active", remaining: close.remaining };
+  }
+  if (close.kind === "already-closed") return { kind: "already-closed" };
+  if (
+    close.kind === "reconcile" && close.ticket !== undefined &&
+    close.pinnedParent !== undefined
+  ) {
+    return {
+      kind: "reconcile",
+      ticket: close.ticket.slice(),
+      pinnedParent: close.pinnedParent.slice(),
+      pendingParent: close.pendingParent?.slice(),
+    };
+  }
+  throw new TypeError("native operation window returned a malformed close result");
+}
+
+/** Opens durable recursive-workspace lineage over live native workspace handles. */
+export async function openNativeWorkspaceGraph(stateRoot: string): Promise<WorkspaceGraph> {
+  requireStateRoot(stateRoot, "workspace graph");
+  const binding = await bindings();
+  return adaptWorkspaceGraph(binding.NativeWorkspaceGraph.open(stateRoot));
+}
+
+/** Opens the durable overlapping-tool lease coordinator. */
+export async function openNativeOperationWindowCoordinator(
+  stateRoot: string,
+): Promise<OperationWindowCoordinator> {
+  requireStateRoot(stateRoot, "operation window");
+  const binding = await bindings();
+  return adaptOperationWindowCoordinator(
+    binding.NativeOperationWindowCoordinator.open(stateRoot),
+  );
+}
+
+function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
+  return {
+    async registerRoot(workspace) {
+      return copyWorkspaceLineageRecord(await raw.registerRoot(rawWorkspace(workspace)));
+    },
+    async fork(parent, destination, idempotencyKey) {
+      requireWorkspaceName(destination);
+      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
+      return adaptWorkspace(
+        await raw.fork(rawWorkspace(parent), destination, idempotencyKey),
+      );
+    },
+    async authorizeJoin(childWorkspaceId, parentWorkspaceId) {
+      requireIdentity(childWorkspaceId, "child workspace identity");
+      requireIdentity(parentWorkspaceId, "parent workspace identity");
+      return copyWorkspaceLineageRecord(
+        await raw.authorizeJoin(childWorkspaceId, parentWorkspaceId),
+      );
+    },
+    async ancestors(workspaceId, maximum) {
+      requireIdentity(workspaceId, "workspace identity");
+      requirePositiveInteger(maximum, "maximum ancestors");
+      return (await raw.ancestors(workspaceId, maximum)).map(copyWorkspaceLineageRecord);
+    },
+  };
+}
+
+function adaptOperationWindowCoordinator(
+  raw: NativeRawOperationWindowCoordinator,
+): OperationWindowCoordinator {
+  return {
+    async begin(workspaceId, parent, owner, nowMillis, expiresAtMillis) {
+      requireIdentity(workspaceId, "workspace identity");
+      requireGenerationIdentity(parent, "parent");
+      if (owner.length === 0) throw new RangeError("operation owner must be non-empty");
+      return copyOperationWindowLease(
+        await raw.begin(workspaceId, parent, owner, nowMillis, expiresAtMillis),
+      );
+    },
+    async observeParent(workspaceId, parent) {
+      requireIdentity(workspaceId, "workspace identity");
+      requireGenerationIdentity(parent, "parent");
+      return raw.observeParent(workspaceId, parent);
+    },
+    async finish(lease, nowMillis) {
+      return parseOperationWindowClose(
+        await raw.finish(nativeOperationWindowLease(lease), nowMillis),
+      );
+    },
+    async inspect(workspaceId) {
+      requireIdentity(workspaceId, "workspace identity");
+      return parseOperationWindowPhase(await raw.inspect(workspaceId));
+    },
+    async finishWorkspace(workspace, lease, nowMillis, options) {
+      validateWorkspaceRebaseOptions(options);
+      const result = await raw.finishWorkspace(
+        rawWorkspace(workspace),
+        nativeOperationWindowLease(lease),
+        nowMillis,
+        options,
+      );
+      if (result.kind === "still-active" && result.remaining !== undefined) {
+        return { kind: "still-active", remaining: result.remaining };
+      }
+      if (result.kind === "already-closed") return { kind: "already-closed" };
+      if (result.kind === "reconciled" && result.rebase !== undefined) {
+        return { kind: "reconciled", rebase: parseWorkspaceRebaseResult(result.rebase) };
+      }
+      throw new TypeError("native operation window returned a malformed workspace close result");
+    },
+    async recoverWorkspace(workspace, nowMillis, options) {
+      validateWorkspaceRebaseOptions(options);
+      const result = await raw.recoverWorkspace(rawWorkspace(workspace), nowMillis, options);
+      return result === undefined ? undefined : parseWorkspaceRebaseResult(result);
+    },
+  };
+}
+
+function adaptGitCompat(raw: NativeRawGitCompatRepository): GitCompatRepository {
+  const parse = <T>(json: string): T => JSON.parse(json) as T;
+  const repository: GitCompatRepository = {
+    async execute(command: GitCompatCommand, workspaceGeneration: GenerationIdentity) {
+      return parse<GitCompatOutput>(
+        await raw.executeJson(JSON.stringify(nativeGitCommand(command)), workspaceGeneration),
+      );
+    },
+    async executeArgv(argv, workspaceGeneration, defaultAuthor, nowSeconds) {
+      return parse<GitCompatOutput>(
+        await raw.executeArgvJson(argv, workspaceGeneration, defaultAuthor, nowSeconds.toString()),
+      );
+    },
+    async pendingTransition() {
+      const value = await raw.pendingTransitionJson();
+      return value === undefined ? undefined : parse<GitPendingTransition>(value);
+    },
+    async completeTransition(transition, resultingGeneration) {
+      return parse<GitCompatOutput>(
+        await raw.completeTransitionJson(transition, resultingGeneration),
+      );
+    },
+    async completeTransitionResult(transition, result) {
+      return parse<GitCompatOutput>(
+        await raw.completeTransitionResultJson(transition, JSON.stringify(result)),
+      );
+    },
+    async run(command, workspaceGeneration, executor) {
+      return finishGitCompatOutput(
+        repository,
+        await repository.execute(command, workspaceGeneration),
+        executor,
+      );
+    },
+    async runArgv(argv, workspaceGeneration, defaultAuthor, nowSeconds, executor) {
+      return finishGitCompatOutput(
+        repository,
+        await repository.executeArgv(argv, workspaceGeneration, defaultAuthor, nowSeconds),
+        executor,
+      );
+    },
+    async resume(executor) {
+      const pending = await repository.pendingTransition();
+      if (pending === undefined) return undefined;
+      const result = await executor.execute(pending.id, pending.action);
+      return repository.completeTransitionResult(pending.id, result);
+    },
+    abortTransition(transition: OperationIdentity) {
+      return raw.abortTransition(transition);
+    },
+    async registerBranchWorkspace(
+      branch: string,
+      workspaceId: WorkspaceIdentity,
+      head: GitCommitIdentity | undefined,
+      switchToBranch: boolean,
+    ) {
+      return parse<GitCompatOutput>(
+        await raw.registerBranchWorkspaceJson(
+          branch,
+          workspaceId,
+          head === undefined ? undefined : gitCommitBytes(head),
+          switchToBranch,
+        ),
+      );
+    },
+    async recordCommit(
+      expectedHead: GitCommitIdentity | undefined,
+      generation: GenerationIdentity,
+      trackedPaths: readonly string[],
+      message: string,
+      author: string,
+      authoredAtSeconds: bigint,
+    ) {
+      return parse<GitCompatOutput>(
+        await raw.recordCommitJson(
+          expectedHead === undefined ? undefined : gitCommitBytes(expectedHead),
+          generation,
+          trackedPaths,
+          message,
+          author,
+          authoredAtSeconds.toString(),
+        ),
+      );
+    },
+  };
+  return repository;
+}
+
+async function finishGitCompatOutput(
+  repository: GitCompatRepository,
+  output: GitCompatOutput,
+  executor: GitFilesystemExecutor,
+): Promise<GitCompatOutput> {
+  if (typeof output === "object" && "Prepared" in output) {
+    const { transition, action } = output.Prepared;
+    const result: GitFilesystemResult = await executor.execute(transition, action);
+    return repository.completeTransitionResult(transition, result);
+  }
+  if (typeof output === "object" && "Action" in output) {
+    throw new Error("Git compatibility returned an action without a durable transition");
+  }
+  return output;
+}
+
+function gitCommitBytes(identity: GitCommitIdentity): Uint8Array {
+  if (!/^[0-9a-f]{64}$/.test(identity)) {
+    throw new TypeError("Git compatibility commit ID must be 64 lowercase hexadecimal characters");
+  }
+  return Uint8Array.from(
+    identity.match(/../g) ?? [],
+    (byte) => Number.parseInt(byte, 16),
+  );
+}
+
+function nativeGitCommand(command: GitCompatCommand): Readonly<Record<string, unknown>> | string {
+  switch (command.kind) {
+    case "status": return "Status";
+    case "diff": return { Diff: { cached: command.cached ?? false } };
+    case "log": return { Log: { maximum: command.maximum } };
+    case "show": return { Show: { object: command.object ?? null } };
+    case "add": return { Add: { paths: command.paths } };
+    case "commit": {
+      const authoredAtSeconds = Number(command.authoredAtSeconds);
+      if (!Number.isSafeInteger(authoredAtSeconds)) {
+        throw new RangeError("Git compatibility commit time must fit a safe JSON integer");
+      }
+      return { Commit: { message: command.message, author: command.author, authored_at_seconds: authoredAtSeconds } };
+    }
+    case "branch": return { Branch: { create: command.create ?? null } };
+    case "switch": return { Switch: { branch: command.branch, create: command.create ?? false } };
+    case "restore": return { Restore: { source: command.source ?? null, paths: command.paths } };
+    case "reset": return { Reset: { target: command.target, mode: nativeResetMode(command.mode) } };
+    case "merge": return { Merge: { branch: command.branch } };
+    case "rebase": return { Rebase: { branch: command.branch } };
+    case "stash-push": return "StashPush";
+    case "stash-pop": return "StashPop";
+    case "cherry-pick": return { CherryPick: { object: command.object } };
+    case "revert": return { Revert: { object: command.object } };
+    case "tag": return { Tag: { name: command.name ?? null, target: command.target ?? null, delete: command.delete ?? false } };
+    case "blame": return { Blame: { path: command.path } };
+    case "grep": return { Grep: { pattern: command.pattern, path: command.path ?? null } };
+    case "clean": return { Clean: { dry_run: command.dryRun } };
+    case "archive": return { Archive: { object: command.object ?? null } };
+    case "apply": return { Apply: { patch: Array.from(command.patch) } };
+    case "bisect": return { Bisect: { arguments: command.arguments } };
+  }
+}
+
+function nativeResetMode(mode: "soft" | "mixed" | "hard"): string {
+  return mode[0]!.toUpperCase() + mode.slice(1);
 }
 
 function adaptFs(raw: NativeRawFs): NativeFsEngine {
@@ -663,7 +1034,7 @@ function adaptWorkspace(raw: NativeRawWorkspace): NativeFsWorkspace {
         await raw.diff(rawGeneration(from), rawGeneration(to), maximumChanges),
       );
     },
-    async joinInto(target, options): Promise<FsJoinPlan> {
+    async joinInto(target, options): Promise<ResolvableFsJoinPlan> {
       validateJoinOptions(options);
       return adaptJoinPlan(await raw.joinInto(rawWorkspace(target), options));
     },
@@ -749,7 +1120,7 @@ function rawChangeSet(changeSet: FsChangeSet): NativeRawChangeSet {
   return raw;
 }
 
-function adaptJoinPlan(raw: NativeRawJoinPlan): FsJoinPlan {
+function adaptJoinPlan(raw: NativeRawJoinPlan): ResolvableFsJoinPlan {
   return {
     get targetHead(): Uint8Array {
       return raw.targetHead.slice();
@@ -761,6 +1132,22 @@ function adaptJoinPlan(raw: NativeRawJoinPlan): FsJoinPlan {
       requireGenerationIdentity(ifTarget, "target generation");
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       return parseJoinResult(await raw.apply(ifTarget, idempotencyKey));
+    },
+    async applySides(ifTarget, selections, idempotencyKey): Promise<JoinResult> {
+      requireGenerationIdentity(ifTarget, "target generation");
+      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
+      return parseJoinResult(
+        await raw.applySides(ifTarget, idempotencyKey, selections.map((selection) =>
+          selection.kind === "file"
+            ? { kind: "file", fileId: selection.fileId.slice(), side: selection.side }
+            : {
+                kind: "binding",
+                directoryId: selection.directoryId.slice(),
+                name: { encoding: selection.name.encoding, bytes: selection.name.bytes.slice() },
+                side: selection.side,
+              }
+        )),
+      );
     },
     async close(): Promise<void> {},
   };

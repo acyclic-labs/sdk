@@ -116,11 +116,11 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
 
   async load(): Promise<readonly ClientCommand[]> {
     const database = await this.#database;
-    const records = await request<Array<{ command: ClientCommand; sequence?: number }>>(
+    const records = await request<Array<{ command: ClientCommand; sequence: number }>>(
       database.transaction("outbox").objectStore("outbox").getAll(),
     );
     return records
-      .sort((left, right) => (left.sequence ?? Number.MAX_SAFE_INTEGER) - (right.sequence ?? Number.MAX_SAFE_INTEGER))
+      .sort((left, right) => left.sequence - right.sequence)
       .map(record => record.command);
   }
 
@@ -128,7 +128,7 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
     const database = await this.#database;
     const transaction = database.transaction("outbox", "readwrite");
     const store = transaction.objectStore("outbox");
-    const records = await request<Array<{ operationId: string; bytes: number; sequence?: number }>>(store.getAll());
+    const records = await request<Array<{ operationId: string; bytes: number; sequence: number }>>(store.getAll());
     const storedCommand = cloneStructuredValue(command, new Set()) as ClientCommand;
     const bytes = structuredSize(storedCommand);
     const existing = records.find(record => record.operationId === command.operationId);
@@ -139,7 +139,7 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
       throw new RangeError("IndexedDB outbox capacity exceeded");
     }
     const sequence = existing?.sequence ?? records.reduce(
-      (maximum, record) => Math.max(maximum, record.sequence ?? 0),
+      (maximum, record) => Math.max(maximum, record.sequence),
       0,
     ) + 1;
     store.put({ operationId: command.operationId, bytes, sequence, command: storedCommand });

@@ -59,6 +59,20 @@ for (const generatedFile of [
   writeFileSync(destination, normalized);
 }
 
+{
+  const messages = join(root, "generated/rust/acyclic/machines/v1/acyclic.machines.v1.rs");
+  const service = join(root, "generated/rust/acyclic/machines/v1/acyclic.machines.v1.tonic.rs");
+  const destination = join(root, "rust/crates/machines/src/generated");
+  if (!existsSync(messages) || !existsSync(service)) {
+    throw new Error("machines code-generation output is missing");
+  }
+  for (const source of [messages, service]) {
+    const normalized = `${readFileSync(source, "utf8").trimEnd()}\n`;
+    writeFileSync(source, normalized);
+    writeFileSync(join(destination, source.split(/[\\/]/).at(-1)), normalized);
+  }
+}
+
 for (const file of [
   "filesystem/v2/filesystem_pb.js",
   "filesystem/v2/filesystem_pb.d.ts",
@@ -117,6 +131,10 @@ compatibility.families.filesystem.descriptorDigest = digest(
 compatibility.families.objects.schemaDigest = digest("proto/objects/v1/objects.proto");
 compatibility.families.objects.descriptorDigest = digest(
   "rust/crates/objects/src/generated/acyclic-objects-v1.bin",
+);
+compatibility.families.machines.schemaDigest = digest("proto/machines/v1/machines.proto");
+compatibility.families.machines.descriptorDigest = digest(
+  "rust/crates/machines/src/generated/acyclic-machines-v1.bin",
 );
 compatibility.families.inference.schemaDigest = digest("proto/inference/v1/inference.proto");
 compatibility.families.inference.descriptorDigest = digest(

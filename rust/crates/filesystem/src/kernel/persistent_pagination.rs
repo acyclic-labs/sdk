@@ -96,10 +96,65 @@ where
     S: AsyncObjectStore,
     F: Format,
 {
+    paginate_async_with_bound::<S, F>(
+        store,
+        root,
+        after,
+        false,
+        maximum_values,
+        limits,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+pub(crate) async fn paginate_async_at_or_after<S, F>(
+    store: &S,
+    root: ObjectId,
+    at: &F::Key,
+    maximum_values: u32,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<Receipt<F::Value>, Failure>
+where
+    S: AsyncObjectStore,
+    F: Format,
+{
+    paginate_async_with_bound::<S, F>(
+        store,
+        root,
+        Some(at),
+        true,
+        maximum_values,
+        limits,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn paginate_async_with_bound<S, F>(
+    store: &S,
+    root: ObjectId,
+    after: Option<&F::Key>,
+    inclusive: bool,
+    maximum_values: u32,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<Receipt<F::Value>, Failure>
+where
+    S: AsyncObjectStore,
+    F: Format,
+{
     if cancellation.is_cancelled() {
         return Err(OperationFailure::before_work(Error::Cancelled));
     }
-    let mut machine = Machine::<F>::new(root, after, maximum_values, limits, budget)?;
+    let mut machine =
+        Machine::<F>::new_with_bound(root, after, inclusive, maximum_values, limits, budget)?;
     while machine.values.len() < machine.target && !machine.pending.is_empty() {
         if cancellation.is_cancelled() {
             return Err(failed(Error::Cancelled, machine.work));
@@ -114,6 +169,7 @@ where
 
 struct Machine<'a, F: Format> {
     after: Option<&'a F::Key>,
+    inclusive: bool,
     maximum_values: usize,
     target: usize,
     maximum_traversal_pages: usize,
@@ -132,9 +188,21 @@ struct Machine<'a, F: Format> {
 }
 
 impl<'a, F: Format> Machine<'a, F> {
+    #[cfg(test)]
     fn new(
         root: ObjectId,
         after: Option<&'a F::Key>,
+        maximum_values: u32,
+        limits: DecodeLimits,
+        budget: WorkBudget,
+    ) -> Result<Self, Failure> {
+        Self::new_with_bound(root, after, false, maximum_values, limits, budget)
+    }
+
+    fn new_with_bound(
+        root: ObjectId,
+        after: Option<&'a F::Key>,
+        inclusive: bool,
         maximum_values: u32,
         limits: DecodeLimits,
         budget: WorkBudget,
@@ -197,6 +265,7 @@ impl<'a, F: Format> Machine<'a, F> {
                 .map_err(|error| failed(map_allocation(error), work))?;
         let mut machine = Self {
             after,
+            inclusive,
             maximum_values,
             target,
             maximum_traversal_pages,
@@ -312,9 +381,9 @@ impl<'a, F: Format> Machine<'a, F> {
     ) -> Result<(), Failure> {
         validate_values::<F>(values, pending.lower.as_ref(), pending.upper.as_ref())
             .map_err(|error| failed(error, self.work))?;
-        let (start, comparisons) = self
-            .after
-            .map_or((0, 0), |cursor| upper_bound_values::<F>(values, cursor));
+        let (start, comparisons) = self.after.map_or((0, 0), |cursor| {
+            bound_values::<F>(values, cursor, self.inclusive)
+        });
         charge_items(&mut self.work, comparisons, self.budget)?;
         for value in values.iter().skip(start) {
             if self.values.len() == self.target {
@@ -429,9 +498,9 @@ impl<'a, F: Format> Machine<'a, F> {
     ) -> Result<(), Failure> {
         validate_values::<F>(&values, pending.lower.as_ref(), pending.upper.as_ref())
             .map_err(|error| failed(error, self.work))?;
-        let (start, comparisons) = self
-            .after
-            .map_or((0, 0), |cursor| upper_bound_values::<F>(&values, cursor));
+        let (start, comparisons) = self.after.map_or((0, 0), |cursor| {
+            bound_values::<F>(&values, cursor, self.inclusive)
+        });
         charge_items(&mut self.work, comparisons, self.budget)?;
         let mut retained_nested = 0_u64;
         for value in values.into_iter().skip(start) {
@@ -647,7 +716,12 @@ fn validate_children<F: Format>(
     Ok(())
 }
 
+#[cfg(test)]
 fn upper_bound_values<F: Format>(values: &[F::Value], cursor: &F::Key) -> (usize, u64) {
+    bound_values::<F>(values, cursor, false)
+}
+
+fn bound_values<F: Format>(values: &[F::Value], cursor: &F::Key, inclusive: bool) -> (usize, u64) {
     let mut left = 0;
     let mut right = values.len();
     let mut comparisons = 0_u64;
@@ -662,7 +736,7 @@ fn upper_bound_values<F: Format>(values: &[F::Value], cursor: &F::Key) -> (usize
             clippy::indexing_slicing,
             reason = "binary search invariant: left < middle_bound <= right <= values.len()"
         )]
-        if F::key(&values[middle]) <= cursor {
+        if F::key(&values[middle]) < cursor || (!inclusive && F::key(&values[middle]) == cursor) {
             left = middle + 1;
         } else {
             right = middle;

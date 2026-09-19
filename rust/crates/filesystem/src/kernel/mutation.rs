@@ -19,6 +19,16 @@ pub enum Mutation {
         /// Complete immutable initial record.
         record: FileRecord,
     },
+    /// Restores one exact immutable record at a path while preserving any
+    /// additional live hard-link bindings to the same identity. Unlike
+    /// `Create`, the identity may already exist in the candidate generation.
+    Restore {
+        /// Namespace path to restore.
+        path: NamespacePath,
+        /// Exact source record. Its link count is adapted to the live binding
+        /// topology; all other representable facts are restored verbatim.
+        record: FileRecord,
+    },
     /// Removes one namespace binding.
     Remove {
         /// Existing namespace path.
@@ -185,6 +195,7 @@ impl Mutation {
     pub(crate) fn paths(&self) -> Option<[&NamespacePath; 2]> {
         let paths = match self {
             Self::Create { path, .. }
+            | Self::Restore { path, .. }
             | Self::Remove { path, .. }
             | Self::SetMetadata { path, .. }
             | Self::Write { path, .. }
@@ -218,7 +229,9 @@ impl Mutation {
             return Err(MutationPlanError::RootMutation);
         }
         match self {
-            Self::Create { record, .. } if record.validate().is_err() => {
+            Self::Create { record, .. } | Self::Restore { record, .. }
+                if record.validate().is_err() =>
+            {
                 Err(MutationPlanError::InvalidInitialRecord)
             }
             Self::Rename {
@@ -286,6 +299,7 @@ impl Mutation {
                 ..
             } => validate_range(*offset, *length),
             Self::Create { .. }
+            | Self::Restore { .. }
             | Self::Remove { .. }
             | Self::Rename { .. }
             | Self::Link { .. }

@@ -401,31 +401,24 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<BlobBuild, BlobBuildFailure> {
-    if cancellation.is_cancelled() {
-        return Err(OperationFailure::before_work(BlobBuildError::Cancelled));
-    }
-    if options.chunk_bytes == 0
-        || effective_page_width(options).is_none()
-        || options.maximum_blob_bytes == 0
-    {
-        return Err(build_failed(
-            BlobBuildError::InvalidOptions,
-            WorkCounters::default(),
-        ));
-    }
-    let chunk_capacity = usize::try_from(options.chunk_bytes)
-        .map_err(|_| build_failed(BlobBuildError::InvalidOptions, WorkCounters::default()))?;
+    let chunk_capacity = validate_blob_build(options, cancellation)?;
+    let (mut batching, mut work) = BlobBatchStore::new(store, budget)?;
     let mut index = BlobIndexBuilder::new(options);
     let mut logical_bytes = 0_u64;
-    let mut work = WorkCounters::default();
     loop {
         let detection_bytes = options
             .maximum_blob_bytes
             .saturating_sub(logical_bytes)
             .saturating_add(1);
         let allocation = chunk_capacity.min(usize::try_from(detection_bytes).unwrap_or(usize::MAX));
-        let (mut bytes, prospective, simultaneous) =
-            allocate_chunk_buffer(allocation, index.live_allocation_bytes, work, budget)?;
+        let retained = batching.retained_bytes();
+        let (mut bytes, prospective, simultaneous, retained_capacity) = allocate_chunk_buffer(
+            allocation,
+            index.live_allocation_bytes,
+            retained,
+            work,
+            budget,
+        )?;
         work = prospective;
         let mut filled = 0_usize;
         while filled < bytes.len() {
@@ -467,10 +460,13 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
             digest: object_digest(ObjectKind::BlobChunk, &chunk_bytes),
         };
         work = build_put(
-            store,
+            &mut batching,
             chunk,
             chunk_bytes,
-            simultaneous,
+            PutAllocation {
+                retained: retained_capacity,
+                live: simultaneous,
+            },
             budget,
             work,
             cancellation,
@@ -478,7 +474,7 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
         .await?;
         index
             .push_chunk(
-                store,
+                &mut batching,
                 BlobChunkRef {
                     first_offset,
                     end_offset: logical_bytes,
@@ -493,7 +489,10 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
             break;
         }
     }
-    let root = index.finish(store, budget, &mut work, cancellation).await?;
+    let root = index
+        .finish(&mut batching, budget, &mut work, cancellation)
+        .await?;
+    work = finish_blob_batch(&mut batching, work, budget, cancellation).await?;
     Ok(BlobBuild {
         root,
         logical_bytes,
@@ -501,15 +500,194 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
     })
 }
 
+fn validate_blob_build(
+    options: BlobBuildOptions,
+    cancellation: &CancellationToken,
+) -> Result<usize, BlobBuildFailure> {
+    if cancellation.is_cancelled() {
+        return Err(OperationFailure::before_work(BlobBuildError::Cancelled));
+    }
+    if options.chunk_bytes == 0
+        || effective_page_width(options).is_none()
+        || options.maximum_blob_bytes == 0
+    {
+        return Err(build_failed(
+            BlobBuildError::InvalidOptions,
+            WorkCounters::default(),
+        ));
+    }
+    usize::try_from(options.chunk_bytes)
+        .map_err(|_| build_failed(BlobBuildError::InvalidOptions, WorkCounters::default()))
+}
+
+async fn finish_blob_batch<S: AsyncObjectStore>(
+    batching: &mut BlobBatchStore<'_, S>,
+    work: WorkCounters,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<WorkCounters, BlobBuildFailure> {
+    let retained = batching.retained_bytes();
+    let mut remaining = work
+        .remaining(budget)
+        .map_err(|error| build_failed(BlobBuildError::Work(error), work))?;
+    remaining.peak_allocation_bytes = remaining
+        .peak_allocation_bytes
+        .checked_sub(retained)
+        .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
+    let receipt = batching
+        .finish(remaining, cancellation)
+        .await
+        .map_err(|failure| failure.map_with_prior_work(work, BlobBuildError::Storage))?;
+    let backend_peak = receipt.work.peak_allocation_bytes;
+    let mut backend_work = receipt.work;
+    backend_work.peak_allocation_bytes = 0;
+    let mut combined = build_add(work, backend_work)?;
+    let simultaneous = retained
+        .checked_add(backend_peak)
+        .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
+    combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(simultaneous);
+    build_verify(combined, budget)?;
+    Ok(combined)
+}
+
+const BLOB_BATCH_OBJECTS: usize = 4;
+const BLOB_BATCH_BYTES: u64 = 4 * 1024 * 1024;
+
+struct BlobBatchState {
+    writes: Vec<crate::storage::ObjectWrite>,
+    bytes: u64,
+}
+
+struct BlobBatchStore<'a, S> {
+    inner: &'a S,
+    state: BlobBatchState,
+    vector_bytes: u64,
+}
+
+impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
+    fn new(inner: &'a S, budget: WorkBudget) -> Result<(Self, WorkCounters), BlobBuildFailure> {
+        let minimum = WorkCounters {
+            allocation_operations: 1,
+            peak_allocation_bytes: u64::try_from(BLOB_BATCH_OBJECTS)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(
+                    u64::try_from(size_of::<crate::storage::ObjectWrite>()).unwrap_or(u64::MAX),
+                ),
+            ..WorkCounters::default()
+        };
+        minimum
+            .verify(budget)
+            .map_err(|error| build_failed(BlobBuildError::Work(error), WorkCounters::default()))?;
+        let mut writes = Vec::new();
+        writes
+            .try_reserve_exact(BLOB_BATCH_OBJECTS)
+            .map_err(|_| build_failed(BlobBuildError::AllocationFailed, WorkCounters::default()))?;
+        let vector_bytes = u64::try_from(writes.capacity())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(
+                u64::try_from(size_of::<crate::storage::ObjectWrite>()).unwrap_or(u64::MAX),
+            );
+        let admitted = WorkCounters {
+            allocation_operations: 1,
+            peak_allocation_bytes: vector_bytes,
+            ..WorkCounters::default()
+        };
+        admitted
+            .verify(budget)
+            .map_err(|error| build_failed(BlobBuildError::Work(error), admitted))?;
+        Ok((
+            Self {
+                inner,
+                state: BlobBatchState { writes, bytes: 0 },
+                vector_bytes,
+            },
+            admitted,
+        ))
+    }
+
+    fn retained_bytes(&self) -> u64 {
+        self.vector_bytes.saturating_add(self.state.bytes)
+    }
+
+    async fn flush_locked(
+        &mut self,
+        // The caller has already removed every buffer retained by the blob builder and this
+        // batch. Passing the original budget here would admit hidden simultaneous allocation.
+        backend_budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> crate::storage::ObjectResult<()> {
+        if self.state.writes.is_empty() {
+            return Ok(crate::storage::ObjectReceipt {
+                value: (),
+                work: WorkCounters::default(),
+            });
+        }
+        let receipt = self
+            .inner
+            .put_many(&self.state.writes, backend_budget, cancellation)
+            .await?;
+        self.state.writes.clear();
+        self.state.bytes = 0;
+        Ok(crate::storage::ObjectReceipt {
+            value: (),
+            work: receipt.work,
+        })
+    }
+
+    async fn finish(
+        &mut self,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> crate::storage::ObjectResult<()> {
+        self.flush_locked(budget, cancellation).await
+    }
+
+    async fn put_with_retained(
+        &mut self,
+        object_id: ObjectId,
+        bytes: Bytes,
+        retained_bytes: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> crate::storage::ObjectResult<()> {
+        cancellation.check().map_err(|_| {
+            crate::storage::ObjectFailure::before_work(crate::storage::ObjectStoreError::Cancelled)
+        })?;
+        self.state.bytes = self
+            .state
+            .bytes
+            .checked_add(retained_bytes)
+            .ok_or_else(|| {
+                crate::storage::ObjectFailure::before_work(
+                    crate::storage::ObjectStoreError::Rejected(
+                        "object write batch length overflowed".to_owned(),
+                    ),
+                )
+            })?;
+        self.state
+            .writes
+            .push(crate::storage::ObjectWrite { object_id, bytes });
+        if self.state.writes.len() >= BLOB_BATCH_OBJECTS || self.state.bytes >= BLOB_BATCH_BYTES {
+            return self.flush_locked(budget, cancellation).await;
+        }
+        Ok(crate::storage::ObjectReceipt {
+            value: (),
+            work: WorkCounters::default(),
+        })
+    }
+}
+
 fn allocate_chunk_buffer(
     allocation: usize,
     index_live_bytes: u64,
+    retained_batch_bytes: u64,
     work: WorkCounters,
     budget: WorkBudget,
-) -> Result<(Vec<u8>, WorkCounters, u64), BlobBuildFailure> {
+) -> Result<(Vec<u8>, WorkCounters, u64, u64), BlobBuildFailure> {
     let allocation_bytes = u64::try_from(allocation).unwrap_or(u64::MAX);
     let simultaneous = index_live_bytes
         .checked_add(allocation_bytes)
+        .and_then(|bytes| bytes.checked_add(retained_batch_bytes))
         .ok_or_else(|| build_failed(BlobBuildError::TooLarge, work))?;
     let mut prospective = build_add(
         work,
@@ -525,7 +703,14 @@ fn allocate_chunk_buffer(
         return Err(build_failed(BlobBuildError::AllocationFailed, work));
     }
     bytes.resize(allocation, 0);
-    Ok((bytes, prospective, simultaneous))
+    let retained_capacity = u64::try_from(bytes.capacity()).unwrap_or(u64::MAX);
+    let actual_simultaneous = index_live_bytes
+        .checked_add(retained_capacity)
+        .and_then(|value| value.checked_add(retained_batch_bytes))
+        .ok_or_else(|| build_failed(BlobBuildError::TooLarge, prospective))?;
+    prospective.peak_allocation_bytes = prospective.peak_allocation_bytes.max(actual_simultaneous);
+    build_verify(prospective, budget)?;
+    Ok((bytes, prospective, actual_simultaneous, retained_capacity))
 }
 
 struct BlobIndexBuilder {
@@ -549,7 +734,7 @@ impl BlobIndexBuilder {
 
     async fn push_chunk<S: AsyncObjectStore>(
         &mut self,
-        store: &S,
+        store: &mut BlobBatchStore<'_, S>,
         chunk: BlobChunkRef,
         budget: WorkBudget,
         work: &mut WorkCounters,
@@ -571,7 +756,7 @@ impl BlobIndexBuilder {
 
     async fn flush_leaf<S: AsyncObjectStore>(
         &mut self,
-        store: &S,
+        store: &mut BlobBatchStore<'_, S>,
         budget: WorkBudget,
         work: &mut WorkCounters,
         cancellation: &CancellationToken,
@@ -624,7 +809,7 @@ impl BlobIndexBuilder {
     )]
     async fn push_child<S: AsyncObjectStore>(
         &mut self,
-        store: &S,
+        store: &mut BlobBatchStore<'_, S>,
         mut level: usize,
         mut child: BlobChild,
         budget: WorkBudget,
@@ -662,7 +847,7 @@ impl BlobIndexBuilder {
     )]
     async fn flush_internal<S: AsyncObjectStore>(
         &mut self,
-        store: &S,
+        store: &mut BlobBatchStore<'_, S>,
         level: usize,
         budget: WorkBudget,
         work: &mut WorkCounters,
@@ -738,7 +923,7 @@ impl BlobIndexBuilder {
 
     async fn finish<S: AsyncObjectStore>(
         mut self,
-        store: &S,
+        store: &mut BlobBatchStore<'_, S>,
         budget: WorkBudget,
         work: &mut WorkCounters,
         cancellation: &CancellationToken,
@@ -833,7 +1018,7 @@ fn reserve_page_items<T>(
 }
 
 async fn put_blob_page<S: AsyncObjectStore>(
-    store: &S,
+    store: &mut BlobBatchStore<'_, S>,
     page: &BlobPage,
     options: BlobBuildOptions,
     live_allocation_bytes: u64,
@@ -841,6 +1026,7 @@ async fn put_blob_page<S: AsyncObjectStore>(
     work: &mut WorkCounters,
     cancellation: &CancellationToken,
 ) -> Result<ObjectId, BlobBuildFailure> {
+    let retained = store.retained_bytes();
     let encoded = encode_blob_page(page, options.page_items)
         .map_err(|error| build_failed(BlobBuildError::Encode(error), *work))?;
     if encoded.len() > usize::try_from(options.page_bytes).unwrap_or(usize::MAX) {
@@ -859,6 +1045,7 @@ async fn put_blob_page<S: AsyncObjectStore>(
     let encoded_bytes = u64::try_from(encoded.capacity()).unwrap_or(u64::MAX);
     let simultaneous = live_allocation_bytes
         .checked_add(encoded_bytes)
+        .and_then(|bytes| bytes.checked_add(retained))
         .ok_or_else(|| build_failed(BlobBuildError::TooLarge, *work))?;
     let mut encoded_work = build_add(
         *work,
@@ -875,7 +1062,10 @@ async fn put_blob_page<S: AsyncObjectStore>(
         store,
         page_id,
         Bytes::from(encoded),
-        simultaneous,
+        PutAllocation {
+            retained: encoded_bytes,
+            live: simultaneous,
+        },
         budget,
         encoded_work,
         cancellation,
@@ -884,11 +1074,17 @@ async fn put_blob_page<S: AsyncObjectStore>(
     Ok(page_id)
 }
 
+#[derive(Clone, Copy)]
+struct PutAllocation {
+    retained: u64,
+    live: u64,
+}
+
 async fn build_put<S: AsyncObjectStore>(
-    store: &S,
+    store: &mut BlobBatchStore<'_, S>,
     object: ObjectId,
     bytes: Bytes,
-    live_allocation_bytes: u64,
+    allocation: PutAllocation,
     budget: WorkBudget,
     work: WorkCounters,
     cancellation: &CancellationToken,
@@ -898,17 +1094,22 @@ async fn build_put<S: AsyncObjectStore>(
         .map_err(|error| build_failed(BlobBuildError::Work(error), work))?;
     remaining.peak_allocation_bytes = budget
         .peak_allocation_bytes
-        .checked_sub(live_allocation_bytes)
+        .checked_sub(allocation.live)
         .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
-    match AsyncObjectStore::put(store, object, bytes, remaining, cancellation).await {
+    match store
+        .put_with_retained(object, bytes, allocation.retained, remaining, cancellation)
+        .await
+    {
         Ok(receipt) => {
-            let backend_peak = live_allocation_bytes
+            let backend_peak = allocation
+                .live
                 .checked_add(receipt.work.peak_allocation_bytes)
                 .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
             let mut backend_work = receipt.work;
             backend_work.peak_allocation_bytes = 0;
             let mut combined = build_add(work, backend_work)?;
             combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(backend_peak);
+            build_verify(combined, budget)?;
             Ok(combined)
         }
         Err(failure) => Err(failure.map_with_prior_work(work, BlobBuildError::Storage)),
@@ -1034,6 +1235,14 @@ async fn drive_blob_async<S: AsyncObjectStore>(
         if let Some(output) = machine.complete()? {
             return Ok(output);
         }
+        if let Some(batch) = machine.prepare_chunk_batch()? {
+            let receipt =
+                AsyncObjectStore::read_many(store, &batch.requests, batch.remaining, cancellation)
+                    .await
+                    .map_err(|failure| machine.batch_storage_failure(batch.prospective, failure))?;
+            machine.accept_chunk_batch(batch, receipt)?;
+            continue;
+        }
         let request = machine.prepare_read()?;
         let key = (request.page.kind == ObjectKind::Blob)
             .then(|| DecodedCacheKey::new::<BlobPage>(request.page, machine.limits));
@@ -1057,6 +1266,14 @@ async fn drive_blob_async<S: AsyncObjectStore>(
         .map_err(|failure| machine.storage_failure(request.prospective, failure))?;
         machine.accept_read_with_cache(store, key, request.prospective, &receipt)?;
     }
+}
+
+struct PendingChunkBatch {
+    chunks: Vec<BlobChunkRef>,
+    requests: Vec<ObjectReadRequest>,
+    scratch_bytes: u64,
+    remaining: WorkBudget,
+    prospective: WorkCounters,
 }
 
 #[derive(Clone, Copy)]
@@ -1213,6 +1430,138 @@ impl BlobRangeMachine {
             remaining,
             prospective: self.work,
         })
+    }
+
+    fn prepare_chunk_batch(&mut self) -> Result<Option<PendingChunkBatch>, BlobReadFailure> {
+        let chunk_count = self
+            .pending
+            .iter()
+            .rev()
+            .take_while(|pending| matches!(pending, PendingBlobRead::Chunk(_)))
+            .count();
+        if chunk_count < 2 {
+            return Ok(None);
+        }
+        let scratch_bytes = u64::try_from(chunk_count)
+            .unwrap_or(u64::MAX)
+            .checked_mul(
+                u64::try_from(size_of::<BlobChunkRef>() + size_of::<ObjectReadRequest>())
+                    .unwrap_or(u64::MAX),
+            )
+            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), self.work))?;
+        let live_bytes = self
+            .allocations
+            .live_bytes()
+            .checked_add(scratch_bytes)
+            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), self.work))?;
+        let mut prospective = self.work;
+        prospective.allocation_operations = prospective
+            .allocation_operations
+            .checked_add(2)
+            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), self.work))?;
+        prospective.peak_allocation_bytes = prospective.peak_allocation_bytes.max(live_bytes);
+        verify_work(prospective, self.budget)?;
+        let mut chunks = Vec::new();
+        let mut requests = Vec::new();
+        chunks
+            .try_reserve_exact(chunk_count)
+            .map_err(|_| failed(BlobReadError::AllocationFailed, self.work))?;
+        requests
+            .try_reserve_exact(chunk_count)
+            .map_err(|_| failed(BlobReadError::AllocationFailed, self.work))?;
+        for pending in self.pending.iter().rev().take(chunk_count) {
+            let PendingBlobRead::Chunk(chunk) = pending else {
+                return Err(failed(BlobReadError::TraversalState, self.work));
+            };
+            requests.push(ObjectReadRequest {
+                object_id: chunk.chunk,
+                maximum_bytes: chunk.end_offset - chunk.first_offset,
+            });
+            chunks.push(*chunk);
+        }
+        let mut remaining = prospective
+            .remaining(self.budget)
+            .map_err(|error| failed(error.into(), prospective))?;
+        remaining.peak_allocation_bytes = self
+            .budget
+            .peak_allocation_bytes
+            .checked_sub(live_bytes)
+            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), prospective))?;
+        Ok(Some(PendingChunkBatch {
+            chunks,
+            requests,
+            scratch_bytes,
+            remaining,
+            prospective,
+        }))
+    }
+
+    fn accept_chunk_batch(
+        &mut self,
+        batch: PendingChunkBatch,
+        receipt: ObjectReceipt<Vec<ObjectRead>>,
+    ) -> Result<(), BlobReadFailure> {
+        if receipt.value.len() != batch.chunks.len() {
+            return Err(failed(BlobReadError::TraversalState, batch.prospective));
+        }
+        let retained = self
+            .pending
+            .len()
+            .checked_sub(batch.chunks.len())
+            .ok_or_else(|| failed(BlobReadError::TraversalState, batch.prospective))?;
+        if self.pending.get(retained..).is_none_or(|pending| {
+            !pending
+                .iter()
+                .rev()
+                .zip(&batch.chunks)
+                .all(|(pending, chunk)| matches!(pending, PendingBlobRead::Chunk(found) if found == chunk))
+        }) {
+            return Err(failed(BlobReadError::TraversalState, batch.prospective));
+        }
+        self.pending.truncate(retained);
+        self.work = merge_blob_backend_work(
+            batch.prospective,
+            receipt.work,
+            self.allocations.live_bytes(),
+        )
+        .map_err(|error| failed(error.into(), batch.prospective))?;
+        let retained_bytes = receipt.value.iter().try_fold(0_u64, |total, value| {
+            total.checked_add(match value.retention {
+                ObjectReadRetention::Shared => 0,
+                ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
+            })
+        });
+        let retained_bytes = retained_bytes
+            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), self.work))?;
+        let simultaneous = self
+            .allocations
+            .live_bytes()
+            .checked_add(batch.scratch_bytes)
+            .and_then(|bytes| bytes.checked_add(retained_bytes))
+            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), self.work))?;
+        self.work.peak_allocation_bytes = self.work.peak_allocation_bytes.max(simultaneous);
+        verify_work(self.work, self.budget)?;
+        for (chunk, value) in batch.chunks.into_iter().zip(receipt.value) {
+            self.accept_chunk(
+                &ObjectReceipt {
+                    value,
+                    work: WorkCounters::default(),
+                },
+                chunk,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn batch_storage_failure(
+        &self,
+        prospective: WorkCounters,
+        failure: crate::storage::ObjectFailure,
+    ) -> BlobReadFailure {
+        match merge_blob_backend_work(prospective, *failure.work, self.allocations.live_bytes()) {
+            Ok(combined) => failed(failure.error.into(), combined),
+            Err(error) => failed(error.into(), prospective),
+        }
     }
 
     fn accept_read(

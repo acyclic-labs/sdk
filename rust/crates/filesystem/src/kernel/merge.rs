@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 /// One exact unresolved three-way merge region.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum MergeConflict {
     /// Competing changes to one path-independent record or directory metadata.
     File(FileId),
@@ -31,6 +31,32 @@ pub enum MergeConflict {
         /// Exact conflicting component.
         name: LogicalName,
     },
+}
+
+/// Exact immutable side selected for one otherwise conflicting region.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MergeConflictSide {
+    /// Common-ancestor value.
+    Base,
+    /// Target-side value.
+    Ours,
+    /// Source-side value.
+    Theirs,
+}
+
+/// Declarative resolution for one exact merge conflict.
+///
+/// Synthesized records and bindings are already-authenticated immutable
+/// inputs. The merge kernel validates their identity and shape before they can
+/// participate in the unpublished candidate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MergeConflictResolution {
+    /// Select one of the three immutable input sides.
+    Select(MergeConflictSide),
+    /// Install or remove a complete path-independent file record.
+    File(Option<FileRecord>),
+    /// Install or remove one exact directory binding.
+    Binding(Option<FileId>),
 }
 
 /// Immutable inputs for one bounded generation merge.
@@ -55,6 +81,8 @@ pub struct MergeGenerationRequest {
     pub maximum_changes: u32,
     /// Maximum exact conflict regions retained in the terminal result.
     pub maximum_conflicts: u32,
+    /// Caller-validated side selections for exact conflicting regions.
+    pub resolutions: BTreeMap<MergeConflict, MergeConflictResolution>,
 }
 
 /// Terminal result of canonical merge preparation.
@@ -230,7 +258,7 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
                     work,
                 ));
             }
-            let directory = merge_directory_record_async(
+            let directory = merge_directory_record_with_resolutions_async(
                 store,
                 file_id,
                 base.ok_or_else(|| invalid(work))?,
@@ -240,6 +268,7 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
                 request
                     .maximum_conflicts
                     .saturating_sub(u32::try_from(conflicts.len()).unwrap_or(u32::MAX)),
+                &request.resolutions,
                 limits,
                 remaining(work, budget)?,
                 cancellation,
@@ -300,6 +329,22 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
             });
         }
         let OptionalResolution::Resolved(resolved) = resolved else {
+            if let Some(resolution) = request.resolutions.get(&MergeConflict::File(file_id)) {
+                let resolved = match resolution {
+                    MergeConflictResolution::Select(side) => {
+                        select_optional(*side, base, ours_value, theirs_value)
+                    }
+                    MergeConflictResolution::File(record) => {
+                        if record.is_some_and(|record| record.file_id != file_id) {
+                            return Err(invalid(work));
+                        }
+                        *record
+                    }
+                    MergeConflictResolution::Binding(_) => return Err(invalid(work)),
+                };
+                resolutions.insert(file_id, (ours_value, resolved));
+                continue;
+            }
             if conflicts.len() < usize::try_from(request.maximum_conflicts).unwrap_or(usize::MAX) {
                 conflicts.push(MergeConflict::File(file_id));
             } else {
@@ -719,7 +764,8 @@ pub(crate) struct DirectoryMergeResult {
     pub(crate) examined_changes: u32,
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
     store: &S,
     directory_id: FileId,
@@ -728,6 +774,36 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
     theirs: FileRecord,
     maximum_changes: u32,
     maximum_conflicts: u32,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<DirectoryMergeResult>, OperationFailure<MergeGenerationError>> {
+    merge_directory_record_with_resolutions_async(
+        store,
+        directory_id,
+        base,
+        ours,
+        theirs,
+        maximum_changes,
+        maximum_conflicts,
+        &BTreeMap::new(),
+        limits,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
+    store: &S,
+    directory_id: FileId,
+    base: FileRecord,
+    ours: FileRecord,
+    theirs: FileRecord,
+    maximum_changes: u32,
+    maximum_conflicts: u32,
+    resolutions: &BTreeMap<MergeConflict, MergeConflictResolution>,
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -831,7 +907,25 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
         let theirs_value = theirs_changes
             .get(&name)
             .map_or_else(|| base_value.clone(), |change| change.1.clone());
-        let Some(resolved) = resolve_three(&base_value, &ours_value, &theirs_value) else {
+        let resolved = resolve_three(&base_value, &ours_value, &theirs_value).or_else(|| {
+            resolutions
+                .get(&MergeConflict::Binding {
+                    directory_id,
+                    name: name.clone(),
+                })
+                .and_then(|resolution| match resolution {
+                    MergeConflictResolution::Select(side) => {
+                        Some(select_value(*side, &base_value, &ours_value, &theirs_value))
+                    }
+                    MergeConflictResolution::Binding(value) => {
+                        [base_value.clone(), ours_value.clone(), theirs_value.clone()]
+                            .into_iter()
+                            .find(|entry| entry.as_ref().map(|entry| entry.file_id) == *value)
+                    }
+                    MergeConflictResolution::File(_) => None,
+                })
+        });
+        let Some(resolved) = resolved else {
             if conflicts.len() < usize::try_from(maximum_conflicts).unwrap_or(usize::MAX) {
                 conflicts.push(MergeConflict::Binding { directory_id, name });
             } else {
@@ -906,6 +1000,27 @@ fn resolve_optional(
         OptionalResolution::Resolved(theirs)
     } else {
         OptionalResolution::Conflict
+    }
+}
+
+fn select_optional(
+    side: MergeConflictSide,
+    base: Option<FileRecord>,
+    ours: Option<FileRecord>,
+    theirs: Option<FileRecord>,
+) -> Option<FileRecord> {
+    match side {
+        MergeConflictSide::Base => base,
+        MergeConflictSide::Ours => ours,
+        MergeConflictSide::Theirs => theirs,
+    }
+}
+
+fn select_value<T: Clone>(side: MergeConflictSide, base: &T, ours: &T, theirs: &T) -> T {
+    match side {
+        MergeConflictSide::Base => base.clone(),
+        MergeConflictSide::Ours => ours.clone(),
+        MergeConflictSide::Theirs => theirs.clone(),
     }
 }
 

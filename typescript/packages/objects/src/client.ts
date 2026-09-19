@@ -1,4 +1,5 @@
 import { HttpObjectsProvider } from "./http.js";
+import { MemoryObjectsProvider } from "./memory.js";
 import type {
   BucketRef, ByteRange, Condition, IdempotencyKey, ListPage, ObjectMetadata, ObjectsProvider,
   ObjectVersion, ReadTarget, SnapshotRef, StoredObject, UploadedPart, VersionId, MultipartProvider, MultipartUpload,
@@ -37,6 +38,8 @@ const metadata = (value: Partial<ObjectMetadata> | undefined, mediaType: string)
 });
 
 export class Objects {
+  /** Creates a deterministic process-local client for tests and examples. */
+  static memory(): Objects { return new Objects(new MemoryObjectsProvider()); }
   constructor(readonly provider: ObjectsProvider) {}
   static fromEnv(environment?: Partial<ObjectsEnvironment>): Objects { return new Objects(new HttpObjectsProvider({ endpoint: environment?.endpoint ?? environmentValue("ACYCLIC_OBJECTS_ENDPOINT"), token: environment?.token ?? environmentValue("ACYCLIC_OBJECTS_TOKEN") })); }
   async createBucket(name: string, options: { readonly idempotencyKey?: IdempotencyKey } = {}): Promise<Bucket> { return new Bucket(this.provider, await this.provider.createBucket(name, options.idempotencyKey)); }

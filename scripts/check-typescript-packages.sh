@@ -82,9 +82,9 @@ cat >"$work/consumer/package.json" <<EOF
 {"private":true,"type":"module","dependencies":{"@acyclic-labs/sdk":"file:$sdk_url"},"overrides":{"@acyclic-labs/objects":"file:$objects_url","@acyclic-labs/stream":"file:$stream_url","@acyclic-labs/inference":"file:$inference_url","@acyclic-labs/machines":"file:$machines_url","@acyclic-labs/fs":"file:$filesystem_url"}}
 EOF
 cat >"$work/consumer/smoke.mjs" <<'EOF'
-import { filesystem, harness, inference, machines, objects, recursiveSum, stream } from "@acyclic-labs/sdk";
+import { filesystem, harness, inference, machines, objects, stream } from "@acyclic-labs/sdk";
 if (typeof filesystem.openBrowserFs !== "function" || typeof inference.InferenceClient !== "function" ||
     typeof harness.Harness !== "function" || typeof machines.SimulatedMachines !== "function" || typeof stream.StreamClient !== "function" ||
-    typeof objects !== "object" || await recursiveSum([1, 2, 3]) !== 6) throw new Error("SDK exports are incomplete");
+    typeof objects !== "object") throw new Error("SDK exports are incomplete");
 EOF
 (cd "$work/consumer" && bun install --ignore-scripts && bun smoke.mjs)

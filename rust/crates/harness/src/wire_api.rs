@@ -311,29 +311,6 @@ fn as_invalid_control_input(error: Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prost::Message as _;
-
-    #[derive(Clone, PartialEq, prost::Message)]
-    struct LegacyOperationStatus {
-        #[prost(message, optional, tag = "1")]
-        operation: Option<wire::OperationIdentity>,
-        #[prost(enumeration = "wire::CompletionState", tag = "2")]
-        state: i32,
-        #[prost(message, optional, tag = "3")]
-        error: Option<wire::Error>,
-    }
-
-    #[derive(Clone, PartialEq, prost::Message)]
-    struct LegacyObserveRequest {
-        #[prost(string, tag = "1")]
-        operation_id: String,
-    }
-
-    #[derive(Clone, PartialEq, prost::Message)]
-    struct LegacyCancelRequest {
-        #[prost(string, tag = "1")]
-        operation_id: String,
-    }
 
     #[test]
     fn negotiation_is_exact_and_capability_checked() -> Result<()> {
@@ -448,41 +425,6 @@ mod tests {
             validate_cancel_response(&cancel, &mismatched),
             Err(Error::Conflict(_))
         ));
-        Ok(())
-    }
-
-    #[test]
-    fn operation_control_preserves_existing_v1_field_numbers() -> Result<()> {
-        let operation_id = OperationId::from_bytes([8; 16]).to_string();
-        let identity = wire::OperationIdentity {
-            operation_id: operation_id.clone(),
-            idempotency_key: "legacy".into(),
-        };
-        let legacy_status = LegacyOperationStatus {
-            operation: Some(identity.clone()),
-            state: wire::CompletionState::Running as i32,
-            error: None,
-        };
-        let current = wire::OperationStatus::decode(legacy_status.encode_to_vec().as_slice())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(current.operation, Some(identity.clone()));
-        let legacy_round_trip = LegacyOperationStatus::decode(current.encode_to_vec().as_slice())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(legacy_round_trip.operation, Some(identity));
-
-        let legacy_observe = LegacyObserveRequest {
-            operation_id: operation_id.clone(),
-        };
-        let current_observe =
-            wire::ObserveRequest::decode(legacy_observe.encode_to_vec().as_slice())
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(current_observe.operation_id, operation_id);
-        let legacy_cancel = LegacyCancelRequest {
-            operation_id: operation_id.clone(),
-        };
-        let current_cancel = wire::CancelRequest::decode(legacy_cancel.encode_to_vec().as_slice())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(current_cancel.operation_id, operation_id);
         Ok(())
     }
 }

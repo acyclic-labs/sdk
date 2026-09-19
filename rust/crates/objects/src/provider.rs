@@ -1,20 +1,61 @@
 //! Transport-neutral provider contract and deterministic process-local reference implementation.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    collections::BTreeMap,
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
+#[cfg(feature = "local")]
+use std::collections::BTreeSet;
 #[cfg(feature = "local")]
 use std::path::PathBuf;
 
 use async_trait::async_trait;
+use futures::StreamExt as _;
+use futures::future::BoxFuture;
+use imbl::OrdMap;
 use tokio::sync::Mutex;
 
 use crate::{limits, wire};
 
 const MEMORY_BYTES: usize = 64 * 1_024 * 1_024;
 const SYSTEM_METADATA_BYTES: usize = 2 * 1_024;
+const MAX_LISTING_VIEWS: usize = 1_024;
+const MAX_CONCURRENT_BATCH_READS: usize = 16;
+static PROVIDER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+async fn indexed<F: Future>(index: usize, future: F) -> (usize, F::Output) {
+    (index, future.await)
+}
+
+async fn collect_ordered_bounded<I, F, T>(items: I, concurrency: usize) -> Vec<T>
+where
+    I: IntoIterator<Item = F>,
+    F: Future<Output = T>,
+{
+    let mut pending = items.into_iter().enumerate();
+    let mut active = futures::stream::FuturesUnordered::new();
+    for _ in 0..concurrency {
+        let Some((index, future)) = pending.next() else {
+            break;
+        };
+        active.push(indexed(index, future));
+    }
+    let mut results = Vec::new();
+    while let Some(result) = active.next().await {
+        results.push(result);
+        if let Some((index, future)) = pending.next() {
+            active.push(indexed(index, future));
+        }
+    }
+    results.sort_unstable_by_key(|(index, _)| *index);
+    results.into_iter().map(|(_, result)| result).collect()
+}
 
 /// Exactly one current-version mutation condition shared by every provider transport.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,8 +207,38 @@ pub trait ObjectsProvider: Send + Sync {
     ) -> Result<bool, ObjectsError>;
     /// Create one immutable version.
     async fn put(&self, request: PutRequest) -> Result<wire::ObjectVersion, ObjectsError>;
+    /// Creates an ordered bounded group of immutable versions.
+    ///
+    /// Providers without a native durable batch use the exact sequential
+    /// semantics of [`Self::put`]. Each result corresponds to the request at
+    /// the same position.
+    async fn put_batch(
+        &self,
+        requests: Vec<PutRequest>,
+    ) -> Vec<Result<wire::ObjectVersion, ObjectsError>> {
+        let mut results = Vec::with_capacity(requests.len());
+        for request in requests {
+            results.push(self.put(request).await);
+        }
+        results
+    }
     /// Read one immutable version or its visible current selection.
     async fn get(&self, request: GetRequest) -> Result<BufferedObject, ObjectsError>;
+    /// Reads an ordered bounded group of immutable versions.
+    ///
+    /// Providers without a native multi-get use the exact sequential semantics
+    /// of [`Self::get`]. Each result corresponds to the request at the same
+    /// position.
+    async fn get_batch(
+        &self,
+        requests: Vec<GetRequest>,
+    ) -> Vec<Result<BufferedObject, ObjectsError>> {
+        let mut results = Vec::with_capacity(requests.len());
+        for request in requests {
+            results.push(self.get(request).await);
+        }
+        results
+    }
     /// Create a delete marker or delete one exact version.
     async fn delete(
         &self,
@@ -263,6 +334,7 @@ enum StoredBody {
         root: Arc<PathBuf>,
         digest: [u8; 32],
         length: usize,
+        location: LocalBodyLocation,
     },
 }
 
@@ -290,42 +362,6 @@ impl StoredBody {
         }
     }
 
-    fn read(&self, start: usize, end: usize) -> Result<bytes::Bytes, ObjectsError> {
-        match self {
-            Self::Memory(body) => Ok(body.slice(start..end)),
-            Self::Composite { parts, .. } => {
-                let mut output = Vec::with_capacity(end.saturating_sub(start));
-                let mut offset = 0usize;
-                for part in parts.iter() {
-                    let part_end = offset
-                        .checked_add(part.len())
-                        .ok_or(ObjectsError::Unavailable)?;
-                    if part_end > start && offset < end {
-                        let selected_start = start.saturating_sub(offset).min(part.len());
-                        let selected_end = end.saturating_sub(offset).min(part.len());
-                        output.extend_from_slice(&part.read(selected_start, selected_end)?);
-                    }
-                    offset = part_end;
-                }
-                if output.len() != end.saturating_sub(start) {
-                    return Err(ObjectsError::Unavailable);
-                }
-                Ok(output.into())
-            }
-            #[cfg(feature = "local")]
-            Self::Local {
-                root,
-                digest,
-                length,
-            } => {
-                if end > *length || start > end {
-                    return Err(ObjectsError::Invalid("invalid range"));
-                }
-                crate::local::read_body(root, digest, *length, start, end)
-            }
-        }
-    }
-
     fn update_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), ObjectsError> {
         match self {
             Self::Memory(body) => {
@@ -343,7 +379,8 @@ impl StoredBody {
                 root,
                 digest,
                 length,
-            } => crate::local::hash_body(root, digest, *length, hasher),
+                location,
+            } => crate::local::hash_body_at(root, digest, *length, location, hasher),
         }
     }
 
@@ -368,24 +405,71 @@ impl StoredBody {
         }
     }
 
-    async fn read_async(&self, start: usize, end: usize) -> Result<bytes::Bytes, ObjectsError> {
-        #[cfg(feature = "local")]
-        if self.has_local_storage() {
-            let body = self.clone();
-            return tokio::task::spawn_blocking(move || body.read(start, end))
-                .await
-                .map_err(|_| ObjectsError::Unavailable)?;
+    #[cfg(feature = "local")]
+    fn local_references(&self, output: &mut BTreeSet<LocalBodyReference>) {
+        match self {
+            Self::Memory(_) => {}
+            Self::Composite { parts, .. } => {
+                for part in parts.iter() {
+                    part.local_references(output);
+                }
+            }
+            Self::Local {
+                digest,
+                length,
+                location,
+                ..
+            } => {
+                output.insert(LocalBodyReference {
+                    digest: *digest,
+                    length: *length,
+                    location: location.clone(),
+                });
+            }
         }
-        self.read(start, end)
     }
 
-    #[cfg(feature = "local")]
-    fn has_local_storage(&self) -> bool {
-        match self {
-            Self::Memory(_) => false,
-            Self::Local { .. } => true,
-            Self::Composite { parts, .. } => parts.iter().any(Self::has_local_storage),
-        }
+    fn read_async(
+        &self,
+        start: usize,
+        end: usize,
+    ) -> BoxFuture<'_, Result<bytes::Bytes, ObjectsError>> {
+        Box::pin(async move {
+            match self {
+                Self::Memory(body) => Ok(body.slice(start..end)),
+                Self::Composite { parts, .. } => {
+                    let mut output = Vec::with_capacity(end.saturating_sub(start));
+                    let mut offset = 0usize;
+                    for part in parts.iter() {
+                        let part_end = offset
+                            .checked_add(part.len())
+                            .ok_or(ObjectsError::Unavailable)?;
+                        if part_end > start && offset < end {
+                            let selected_start = start.saturating_sub(offset).min(part.len());
+                            let selected_end = end.saturating_sub(offset).min(part.len());
+                            output.extend_from_slice(
+                                &part.read_async(selected_start, selected_end).await?,
+                            );
+                        }
+                        offset = part_end;
+                    }
+                    if output.len() != end.saturating_sub(start) {
+                        return Err(ObjectsError::Unavailable);
+                    }
+                    Ok(output.into())
+                }
+                #[cfg(feature = "local")]
+                Self::Local {
+                    root,
+                    digest,
+                    length,
+                    location,
+                } => {
+                    crate::local::read_body_at_async(root, digest, *length, location, start, end)
+                        .await
+                }
+            }
+        })
     }
 }
 
@@ -395,11 +479,52 @@ struct Version {
     body: Option<StoredBody>,
 }
 
+struct ResolvedGet {
+    descriptor: wire::ObjectVersion,
+    body: StoredBody,
+    start: usize,
+    end: usize,
+}
+
 #[derive(Clone)]
 struct BucketState {
     reference: wire::BucketRef,
     created_at: prost_types::Timestamp,
-    objects: BTreeMap<String, Vec<Version>>,
+    objects: OrdMap<String, Vec<Version>>,
+    listing: OrdMap<String, Vec<wire::ObjectVersion>>,
+}
+
+impl BucketState {
+    fn append(&mut self, key: String, version: Version) {
+        self.listing
+            .entry(key.clone())
+            .or_default()
+            .push(version.descriptor.clone());
+        self.objects.entry(key).or_default().push(version);
+    }
+
+    fn remove_exact(&mut self, key: &str, identity: &str) -> Result<Option<Version>, ObjectsError> {
+        let Some(history) = self.objects.get_mut(key) else {
+            return Ok(None);
+        };
+        let Some(position) = history
+            .iter()
+            .position(|version| version.descriptor.version_id == identity)
+        else {
+            return Ok(None);
+        };
+        let removed = history.remove(position);
+        let descriptors = self.listing.get_mut(key).ok_or(ObjectsError::Unavailable)?;
+        if descriptors.get(position) != Some(&removed.descriptor) {
+            return Err(ObjectsError::Unavailable);
+        }
+        descriptors.remove(position);
+        if history.is_empty() {
+            self.objects.remove(key);
+            self.listing.remove(key);
+        }
+        Ok(Some(removed))
+    }
 }
 
 #[derive(Clone)]
@@ -431,17 +556,54 @@ pub(crate) struct ExternalBody {
     pub(crate) root: PathBuf,
     pub(crate) digest: [u8; 32],
     pub(crate) length: usize,
+    pub(crate) location: LocalBodyLocation,
 }
 
-#[derive(Clone)]
+#[cfg(feature = "local")]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum LocalBodyLocation {
+    Segment { id: [u8; 32], offset: u64 },
+}
+
+#[cfg(feature = "local")]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct LocalBodyReference {
+    pub(crate) digest: [u8; 32],
+    pub(crate) length: usize,
+    pub(crate) location: LocalBodyLocation,
+}
+
 enum ListingItem {
     Entry(Box<wire::ListEntry>),
     Prefix(String),
 }
 
 struct ListingView {
-    binding: String,
-    items: Vec<ListingItem>,
+    binding: ListingBinding,
+    objects: OrdMap<String, Vec<wire::ObjectVersion>>,
+    expires_at: Instant,
+    prefetched: Option<PrefetchedListingItem>,
+}
+
+struct PrefetchedListingItem {
+    offset: usize,
+    cursor: ListingCursor,
+    item: ListingItem,
+    after: ListingCursor,
+}
+
+#[derive(Clone, PartialEq)]
+struct ListingBinding {
+    target: ReadTarget,
+    prefix: String,
+    delimiter: Option<String>,
+    versions: bool,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+struct ListingCursor {
+    key: Option<String>,
+    version_index: usize,
 }
 
 #[derive(Clone)]
@@ -465,6 +627,7 @@ struct State {
     maximum_object_bytes: usize,
     sequence: u64,
     listing_sequence: u64,
+    listing_epoch: u64,
     bytes: usize,
     body_references: BTreeMap<BodyIdentity, (usize, usize)>,
     names: BTreeMap<String, String>,
@@ -482,6 +645,7 @@ impl Default for State {
             maximum_object_bytes: MEMORY_BYTES,
             sequence: 0,
             listing_sequence: 0,
+            listing_epoch: PROVIDER_SEQUENCE.fetch_add(1, Ordering::Relaxed),
             bytes: 0,
             body_references: BTreeMap::new(),
             names: BTreeMap::new(),
@@ -592,16 +756,31 @@ pub struct MemoryObjects {
 
 impl MemoryObjects {
     #[cfg(feature = "local")]
-    pub(crate) async fn local_body_digests(&self) -> BTreeSet<[u8; 32]> {
+    pub(crate) async fn local_body_references(&self) -> BTreeSet<LocalBodyReference> {
         let state = self.state.lock().await;
-        state
-            .body_references
-            .keys()
-            .filter_map(|identity| match identity {
-                BodyIdentity::Local(digest) => Some(*digest),
-                BodyIdentity::Memory { .. } => None,
-            })
-            .collect()
+        let mut references = BTreeSet::new();
+        for bucket in state
+            .buckets
+            .values()
+            .chain(state.snapshots.values().map(|snapshot| &snapshot.bucket))
+        {
+            for body in bucket
+                .objects
+                .values()
+                .flatten()
+                .filter_map(|version| version.body.as_ref())
+            {
+                body.local_references(&mut references);
+            }
+        }
+        for body in state
+            .multiparts
+            .values()
+            .flat_map(|upload| upload.parts.values().map(|(_, body)| body))
+        {
+            body.local_references(&mut references);
+        }
+        references
     }
 
     /// Resolves a bucket by its canonical name without mutating provider state.
@@ -731,7 +910,8 @@ impl MemoryObjects {
             BucketState {
                 reference: reference.clone(),
                 created_at: Self::timestamp(&state),
-                objects: BTreeMap::new(),
+                objects: OrdMap::new(),
+                listing: OrdMap::new(),
             },
         );
         (
@@ -1011,6 +1191,58 @@ impl MemoryObjects {
         }
     }
 
+    fn resolve_get(state: &State, request: &GetRequest) -> Result<ResolvedGet, ObjectsError> {
+        Self::validate_key(&request.object_key)?;
+        let bucket = Self::target_ref(state, &request.target)?;
+        let version = Self::visible(bucket, &request.object_key, request.version_id.as_deref())?;
+        if request
+            .if_match
+            .as_ref()
+            .is_some_and(|etag| *etag != version.descriptor.etag)
+            || request
+                .if_none_match
+                .as_ref()
+                .is_some_and(|etag| *etag == version.descriptor.etag)
+        {
+            return Err(ObjectsError::PreconditionFailed);
+        }
+        let descriptor = version.descriptor.clone();
+        let body = version.body.clone().ok_or(ObjectsError::NotFound)?;
+        let (start, end) = match request.range {
+            None => (0, body.len()),
+            Some((start, end)) => {
+                let start =
+                    usize::try_from(start).map_err(|_| ObjectsError::Invalid("invalid range"))?;
+                let end = usize::try_from(end.unwrap_or(body.len().saturating_sub(1) as u64))
+                    .map_err(|_| ObjectsError::Invalid("invalid range"))?;
+                if start > end || end >= body.len() {
+                    return Err(ObjectsError::Invalid("invalid range"));
+                }
+                (start, end.saturating_add(1))
+            }
+        };
+        if end.saturating_sub(start) as u64 > request.maximum_bytes {
+            return Err(ObjectsError::Capacity);
+        }
+        Ok(ResolvedGet {
+            descriptor,
+            body,
+            start,
+            end,
+        })
+    }
+
+    async fn read_resolved_get(resolved: ResolvedGet) -> Result<BufferedObject, ObjectsError> {
+        let body = resolved
+            .body
+            .read_async(resolved.start, resolved.end)
+            .await?;
+        Ok(BufferedObject {
+            version: resolved.descriptor,
+            body,
+        })
+    }
+
     fn condition(current: Option<&Version>, condition: &Option<Condition>) -> bool {
         match condition {
             None => true,
@@ -1047,73 +1279,228 @@ impl MemoryObjects {
         })
     }
 
-    fn binding(
-        target: &ReadTarget,
-        prefix: &str,
-        delimiter: Option<&str>,
-        versions: bool,
-    ) -> String {
-        let target = match target {
-            ReadTarget::Bucket(value) => format!("b:{}:{}", value.bucket_id, value.name),
-            ReadTarget::Snapshot(value) => {
-                format!("s:{}:{}", value.snapshot_id, value.source_bucket_id)
+    fn prefix_successor(prefix: &str) -> Option<String> {
+        let mut chars: Vec<char> = prefix.chars().collect();
+        while let Some(last) = chars.pop() {
+            let next = u32::from(last) + 1;
+            let next = char::from_u32(if next == 0xd800 { 0xe000 } else { next });
+            if let Some(next) = next {
+                chars.push(next);
+                return Some(chars.into_iter().collect());
             }
-        };
-        format!(
-            "{target}|{prefix}|{}|{versions}",
-            delimiter.unwrap_or_default()
-        )
+        }
+        None
     }
 
-    fn listing_items(
-        bucket: &BucketState,
+    fn listing_next(
+        objects: &OrdMap<String, Vec<wire::ObjectVersion>>,
         prefix: &str,
         delimiter: Option<&str>,
         versions: bool,
-    ) -> Vec<ListingItem> {
-        let mut items = Vec::new();
-        let mut prefixes = BTreeSet::new();
-        for (object_key, history) in bucket.objects.range(prefix.to_owned()..) {
+        cursor: &mut ListingCursor,
+    ) -> Option<ListingItem> {
+        while let Some(key) = cursor.key.as_ref() {
+            let Some((object_key, history)) = objects.range(key.clone()..).next() else {
+                cursor.key = None;
+                return None;
+            };
             if !object_key.starts_with(prefix) {
-                break;
+                cursor.key = None;
+                return None;
             }
             if let Some(delimiter) = delimiter
                 && let Some(remainder) = object_key.get(prefix.len()..)
                 && let Some(position) = remainder.find(delimiter)
                 && let Some(group) = object_key.get(..prefix.len() + position + delimiter.len())
             {
-                prefixes.insert(group.to_owned());
-                continue;
+                cursor.key = Self::prefix_successor(group);
+                cursor.version_index = 0;
+                return Some(ListingItem::Prefix(group.to_owned()));
             }
             if versions {
-                items.extend(history.iter().rev().map(|version| {
-                    ListingItem::Entry(Box::new(wire::ListEntry {
+                if let Some(version) = history
+                    .len()
+                    .checked_sub(cursor.version_index.saturating_add(1))
+                    .and_then(|index| history.get(index))
+                {
+                    cursor.version_index += 1;
+                    if cursor.version_index == history.len() {
+                        cursor.key = Some(format!("{object_key}\0"));
+                        cursor.version_index = 0;
+                    }
+                    return Some(ListingItem::Entry(Box::new(wire::ListEntry {
                         object_key: object_key.clone(),
-                        version: Some(version.descriptor.clone()),
-                    }))
-                }));
+                        version: Some(version.clone()),
+                    })));
+                }
             } else if let Some(version) = history.last()
-                && !version.descriptor.delete_marker
+                && !version.delete_marker
             {
-                items.push(ListingItem::Entry(Box::new(wire::ListEntry {
+                cursor.key = Some(format!("{object_key}\0"));
+                cursor.version_index = 0;
+                return Some(ListingItem::Entry(Box::new(wire::ListEntry {
                     object_key: object_key.clone(),
-                    version: Some(version.descriptor.clone()),
+                    version: Some(version.clone()),
                 })));
             }
+            cursor.key = Some(format!("{object_key}\0"));
+            cursor.version_index = 0;
         }
-        items.extend(prefixes.into_iter().map(ListingItem::Prefix));
-        items.sort_by(|left, right| {
-            let left = match left {
-                ListingItem::Entry(value) => &value.object_key,
-                ListingItem::Prefix(value) => value,
+        None
+    }
+
+    fn listing_token(
+        view_id: &str,
+        offset: usize,
+        cursor: &ListingCursor,
+    ) -> Result<String, ObjectsError> {
+        let key = cursor.key.as_deref().ok_or(ObjectsError::Unavailable)?;
+        let payload = format!(
+            "{view_id}:{offset}:{}:{}",
+            cursor.version_index,
+            hex::encode(key.as_bytes())
+        );
+        Ok(payload)
+    }
+
+    fn parse_listing_token(token: &str) -> Result<(String, usize, ListingCursor), ObjectsError> {
+        let mut fields = token.split(':');
+        let view_id = fields
+            .next()
+            .ok_or(ObjectsError::Invalid("invalid continuation"))?;
+        let offset = fields
+            .next()
+            .ok_or(ObjectsError::Invalid("invalid continuation"))?
+            .parse()
+            .map_err(|_| ObjectsError::Invalid("invalid continuation"))?;
+        let version_index = fields
+            .next()
+            .ok_or(ObjectsError::Invalid("invalid continuation"))?
+            .parse()
+            .map_err(|_| ObjectsError::Invalid("invalid continuation"))?;
+        let key = fields
+            .next()
+            .ok_or(ObjectsError::Invalid("invalid continuation"))?;
+        if fields.next().is_some() {
+            return Err(ObjectsError::Invalid("invalid continuation"));
+        }
+        let key = String::from_utf8(
+            hex::decode(key).map_err(|_| ObjectsError::Invalid("invalid continuation"))?,
+        )
+        .map_err(|_| ObjectsError::Invalid("invalid continuation"))?;
+        Ok((
+            view_id.to_owned(),
+            offset,
+            ListingCursor {
+                key: Some(key),
+                version_index,
+            },
+        ))
+    }
+
+    fn listing_page(
+        view: &mut ListingView,
+        view_id: &str,
+        offset: usize,
+        page_size: u32,
+        mut cursor: ListingCursor,
+    ) -> Result<ProviderListPage, ObjectsError> {
+        let mut prefetched = view
+            .prefetched
+            .take()
+            .filter(|item| item.offset == offset && item.cursor == cursor);
+        let mut entries = Vec::new();
+        let mut common_prefixes = Vec::new();
+        for _ in 0..page_size {
+            let item = if let Some(item) = prefetched.take() {
+                cursor = item.after;
+                Some(item.item)
+            } else {
+                Self::listing_next(
+                    &view.objects,
+                    &view.binding.prefix,
+                    view.binding.delimiter.as_deref(),
+                    view.binding.versions,
+                    &mut cursor,
+                )
             };
-            let right = match right {
-                ListingItem::Entry(value) => &value.object_key,
-                ListingItem::Prefix(value) => value,
+            let Some(item) = item else {
+                break;
             };
-            left.cmp(right)
-        });
-        items
+            match item {
+                ListingItem::Entry(value) => entries.push(*value),
+                ListingItem::Prefix(value) => common_prefixes.push(value),
+            }
+        }
+        let end = offset + entries.len() + common_prefixes.len();
+        let mut lookahead = cursor.clone();
+        let continuation = Self::listing_next(
+            &view.objects,
+            &view.binding.prefix,
+            view.binding.delimiter.as_deref(),
+            view.binding.versions,
+            &mut lookahead,
+        )
+        .map(|item| {
+            view.prefetched = Some(PrefetchedListingItem {
+                offset: end,
+                cursor: cursor.clone(),
+                item,
+                after: lookahead,
+            });
+            Self::listing_token(view_id, end, &cursor)
+        })
+        .transpose()?;
+        Ok(ProviderListPage {
+            entries,
+            common_prefixes,
+            continuation,
+        })
+    }
+
+    fn put_fingerprint(request: &PutRequest, body_digest: &[u8; 32]) -> blake3::Hash {
+        let bucket_fields = Self::reference_fields(&request.bucket);
+        let condition_bytes = Self::condition_bytes(&request.condition);
+        let metadata_bytes = Self::metadata_bytes(&request.metadata);
+        Self::fingerprint(
+            "put",
+            &[
+                bucket_fields[0],
+                bucket_fields[1],
+                request.object_key.as_bytes(),
+                &condition_bytes,
+                &metadata_bytes,
+                body_digest,
+            ],
+        )
+    }
+
+    #[cfg(feature = "local")]
+    pub(crate) async fn recorded_put(
+        &self,
+        request: &PutRequest,
+        body_digest: &[u8; 32],
+    ) -> Option<Result<wire::ObjectVersion, ObjectsError>> {
+        let key = request.idempotency_key.as_deref()?;
+        // Only an exact recorded retry is free of a new journal intent.
+        // Invalid and mismatched requests retain the original append path.
+        if key.is_empty()
+            || key.len() > 256
+            || Self::validate_key(&request.object_key).is_err()
+            || Self::validate_metadata(&request.metadata).is_err()
+        {
+            return None;
+        }
+        let fingerprint = Self::put_fingerprint(request, body_digest);
+        let state = self.state.lock().await;
+        let prior = state.idempotency.get(key)?;
+        if prior.fingerprint != fingerprint {
+            return None;
+        }
+        match &prior.outcome {
+            MutationOutcome::Version(result) => Some(result.clone()),
+            _ => None,
+        }
     }
 
     async fn put_stored(
@@ -1122,6 +1509,9 @@ impl MemoryObjects {
         body: StoredBody,
         body_digest: [u8; 32],
     ) -> Result<wire::ObjectVersion, ObjectsError> {
+        Self::validate_key(&request.object_key)?;
+        Self::validate_metadata(&request.metadata)?;
+        let fingerprint = Self::put_fingerprint(&request, &body_digest);
         let PutRequest {
             bucket,
             object_key,
@@ -1130,22 +1520,6 @@ impl MemoryObjects {
             condition,
             idempotency_key,
         } = request;
-        Self::validate_key(&object_key)?;
-        Self::validate_metadata(&metadata)?;
-        let bucket_fields = Self::reference_fields(&bucket);
-        let condition_bytes = Self::condition_bytes(&condition);
-        let metadata_bytes = Self::metadata_bytes(&metadata);
-        let fingerprint = Self::fingerprint(
-            "put",
-            &[
-                bucket_fields[0],
-                bucket_fields[1],
-                object_key.as_bytes(),
-                &condition_bytes,
-                &metadata_bytes,
-                &body_digest,
-            ],
-        );
         let mut state = self.state.lock().await;
         Self::execute(
             &mut state,
@@ -1177,14 +1551,13 @@ impl MemoryObjects {
                 }
                 let descriptor = Self::descriptor(state, &body_digest, size, metadata, false)?;
                 state.retain_body(&body)?;
-                Self::bucket_mut(state, &bucket)?
-                    .objects
-                    .entry(object_key)
-                    .or_default()
-                    .push(Version {
+                Self::bucket_mut(state, &bucket)?.append(
+                    object_key,
+                    Version {
                         descriptor: descriptor.clone(),
                         body: Some(body),
-                    });
+                    },
+                );
                 Ok(descriptor)
             },
         )
@@ -1200,6 +1573,7 @@ impl MemoryObjects {
             root,
             digest,
             length,
+            location,
         } = external;
         self.put_stored(
             request,
@@ -1207,6 +1581,7 @@ impl MemoryObjects {
                 root: Arc::new(root),
                 digest,
                 length,
+                location,
             },
             digest,
         )
@@ -1314,6 +1689,7 @@ impl MemoryObjects {
             root,
             digest,
             length,
+            location,
         } = external;
         self.upload_part_stored(StoredPartRequest {
             bucket,
@@ -1324,6 +1700,7 @@ impl MemoryObjects {
                 root: Arc::new(root),
                 digest,
                 length,
+                location,
             },
             body_digest: digest,
             idempotency_key,
@@ -1363,7 +1740,8 @@ impl ObjectsProvider for MemoryObjects {
                 let bucket = BucketState {
                     reference: reference.clone(),
                     created_at: Self::timestamp(state),
-                    objects: BTreeMap::new(),
+                    objects: OrdMap::new(),
+                    listing: OrdMap::new(),
                 };
                 state.names.insert(name, bucket_id.clone());
                 state.buckets.insert(bucket_id, bucket.clone());
@@ -1425,45 +1803,32 @@ impl ObjectsProvider for MemoryObjects {
     }
 
     async fn get(&self, request: GetRequest) -> Result<BufferedObject, ObjectsError> {
-        Self::validate_key(&request.object_key)?;
         let state = self.state.lock().await;
-        let bucket = Self::target_ref(&state, &request.target)?;
-        let version = Self::visible(bucket, &request.object_key, request.version_id.as_deref())?;
-        if request
-            .if_match
-            .as_ref()
-            .is_some_and(|etag| *etag != version.descriptor.etag)
-            || request
-                .if_none_match
-                .as_ref()
-                .is_some_and(|etag| *etag == version.descriptor.etag)
-        {
-            return Err(ObjectsError::PreconditionFailed);
-        }
-        let descriptor = version.descriptor.clone();
-        let body = version.body.clone().ok_or(ObjectsError::NotFound)?;
+        let resolved = Self::resolve_get(&state, &request)?;
         drop(state);
-        let (start, end) = match request.range {
-            None => (0, body.len()),
-            Some((start, end)) => {
-                let start =
-                    usize::try_from(start).map_err(|_| ObjectsError::Invalid("invalid range"))?;
-                let end = usize::try_from(end.unwrap_or(body.len().saturating_sub(1) as u64))
-                    .map_err(|_| ObjectsError::Invalid("invalid range"))?;
-                if start > end || end >= body.len() {
-                    return Err(ObjectsError::Invalid("invalid range"));
+        Self::read_resolved_get(resolved).await
+    }
+
+    async fn get_batch(
+        &self,
+        requests: Vec<GetRequest>,
+    ) -> Vec<Result<BufferedObject, ObjectsError>> {
+        let state = self.state.lock().await;
+        let resolved = requests
+            .iter()
+            .map(|request| Self::resolve_get(&state, request))
+            .collect::<Vec<_>>();
+        drop(state);
+        collect_ordered_bounded(
+            resolved.into_iter().map(|result| async move {
+                match result {
+                    Ok(value) => Self::read_resolved_get(value).await,
+                    Err(error) => Err(error),
                 }
-                (start, end.saturating_add(1))
-            }
-        };
-        if end.saturating_sub(start) as u64 > request.maximum_bytes {
-            return Err(ObjectsError::Capacity);
-        }
-        let selected = body.read_async(start, end).await?;
-        Ok(BufferedObject {
-            version: descriptor,
-            body: selected,
-        })
+            }),
+            MAX_CONCURRENT_BATCH_READS,
+        )
+        .await
     }
 
     async fn delete(
@@ -1507,35 +1872,16 @@ impl ObjectsProvider for MemoryObjects {
                     return Err(ObjectsError::PreconditionFailed);
                 }
                 if let Some(identity) = version_id {
-                    let (removed_body, empty) = {
-                        let Some(history) = Self::bucket_mut(state, &bucket)?
-                            .objects
-                            .get_mut(&object_key)
-                        else {
-                            return Ok(DeleteResult {
-                                existed: false,
-                                marker: None,
-                            });
-                        };
-                        let Some(position) = history
-                            .iter()
-                            .position(|version| version.descriptor.version_id == identity)
-                        else {
-                            return Ok(DeleteResult {
-                                existed: false,
-                                marker: None,
-                            });
-                        };
-                        let removed = history.remove(position);
-                        (removed.body, history.is_empty())
+                    let Some(removed) =
+                        Self::bucket_mut(state, &bucket)?.remove_exact(&object_key, &identity)?
+                    else {
+                        return Ok(DeleteResult {
+                            existed: false,
+                            marker: None,
+                        });
                     };
-                    if let Some(body) = removed_body {
+                    if let Some(body) = removed.body {
                         state.release_body(&body)?;
-                    }
-                    if empty {
-                        Self::bucket_mut(state, &bucket)?
-                            .objects
-                            .remove(&object_key);
                     }
                     Ok(DeleteResult {
                         existed: true,
@@ -1549,14 +1895,13 @@ impl ObjectsProvider for MemoryObjects {
                         wire::ObjectMetadata::default(),
                         true,
                     )?;
-                    Self::bucket_mut(state, &bucket)?
-                        .objects
-                        .entry(object_key)
-                        .or_default()
-                        .push(Version {
+                    Self::bucket_mut(state, &bucket)?.append(
+                        object_key,
+                        Version {
                             descriptor: marker.clone(),
                             body: None,
-                        });
+                        },
+                    );
                     Ok(DeleteResult {
                         existed: true,
                         marker: Some(marker),
@@ -1582,55 +1927,64 @@ impl ObjectsProvider for MemoryObjects {
             return Err(ObjectsError::Invalid("invalid listing"));
         }
         let mut state = self.state.lock().await;
-        let binding = Self::binding(&target, &prefix, delimiter.as_deref(), versions);
-        let (view_id, offset) = if let Some(token) = continuation {
-            let (view, offset) = token
-                .rsplit_once(':')
-                .ok_or(ObjectsError::Invalid("invalid continuation"))?;
-            let offset = offset
-                .parse::<usize>()
-                .map_err(|_| ObjectsError::Invalid("invalid continuation"))?;
-            (view.to_owned(), offset)
+        if continuation.is_none() {
+            let now = Instant::now();
+            state.listings.retain(|_, view| now < view.expires_at);
+        }
+        let binding = ListingBinding {
+            target: target.clone(),
+            prefix: prefix.clone(),
+            delimiter: delimiter.clone(),
+            versions,
+        };
+        let fresh = continuation.is_none();
+        let (view_id, offset, cursor) = if let Some(token) = continuation {
+            Self::parse_listing_token(&token)?
         } else {
-            let bucket = Self::target(&state, &target)?;
-            let view_id = Self::next(&mut state, "listing")?;
+            let objects = Self::target_ref(&state, &target)?.listing.clone();
+            let sequence = Self::next(&mut state, "listing")?;
+            let view_id = format!("{}-{sequence}", state.listing_epoch);
             state.listings.insert(
                 view_id.clone(),
                 ListingView {
                     binding: binding.clone(),
-                    items: Self::listing_items(&bucket, &prefix, delimiter.as_deref(), versions),
+                    objects,
+                    expires_at: Instant::now() + Duration::from_secs(limits::LISTING_VIEW_SECONDS),
+                    prefetched: None,
                 },
             );
-            (view_id, 0)
+            (
+                view_id,
+                0,
+                ListingCursor {
+                    key: Some(prefix.clone()),
+                    version_index: 0,
+                },
+            )
         };
-        let view = state
+        if state
             .listings
             .get(&view_id)
-            .filter(|view| view.binding == binding)
-            .ok_or(ObjectsError::Invalid("invalid continuation"))?;
-        if offset > view.items.len() {
+            .is_some_and(|view| Instant::now() >= view.expires_at)
+        {
+            state.listings.remove(&view_id);
             return Err(ObjectsError::Invalid("invalid continuation"));
         }
-        let end = offset
-            .saturating_add(page_size as usize)
-            .min(view.items.len());
-        let mut entries = Vec::new();
-        let mut common_prefixes = Vec::new();
-        let page = view
-            .items
-            .get(offset..end)
+        let view = state
+            .listings
+            .get_mut(&view_id)
+            .filter(|view| view.binding == binding)
             .ok_or(ObjectsError::Invalid("invalid continuation"))?;
-        for item in page {
-            match item {
-                ListingItem::Entry(value) => entries.push(value.as_ref().clone()),
-                ListingItem::Prefix(value) => common_prefixes.push(value.clone()),
+        let page = Self::listing_page(view, &view_id, offset, page_size, cursor)?;
+        if fresh {
+            if page.continuation.is_none() {
+                state.listings.remove(&view_id);
+            } else if state.listings.len() > MAX_LISTING_VIEWS {
+                state.listings.remove(&view_id);
+                return Err(ObjectsError::Capacity);
             }
         }
-        Ok(ProviderListPage {
-            entries,
-            common_prefixes,
-            continuation: (end < view.items.len()).then(|| format!("{view_id}:{end}")),
-        })
+        Ok(page)
     }
 
     async fn snapshot(
@@ -1759,6 +2113,7 @@ impl ObjectsProvider for MemoryObjects {
                         reference: reference.clone(),
                         created_at,
                         objects: source.objects,
+                        listing: source.listing,
                     },
                 );
                 Ok(wire::Bucket {
@@ -1949,17 +2304,16 @@ impl ObjectsProvider for MemoryObjects {
                 let body_digest = *hasher.finalize().as_bytes();
                 let descriptor =
                     Self::descriptor(state, &body_digest, body_length, upload.metadata, false)?;
-                Self::bucket_mut(state, &bucket)?
-                    .objects
-                    .entry(object_key)
-                    .or_default()
-                    .push(Version {
+                Self::bucket_mut(state, &bucket)?.append(
+                    object_key,
+                    Version {
                         descriptor: descriptor.clone(),
                         body: Some(StoredBody::Composite {
                             parts: bodies.into(),
                             length: body_length,
                         }),
-                    });
+                    },
+                );
                 Ok(descriptor)
             },
         )
@@ -2013,6 +2367,452 @@ impl ObjectsProvider for MemoryObjects {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn bounded_collection_limits_concurrency_and_restores_order() {
+        const LIMIT: usize = 3;
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(tokio::sync::Barrier::new(LIMIT));
+        let futures = (0..11).map(|index| {
+            let active = Arc::clone(&active);
+            let peak = Arc::clone(&peak);
+            let barrier = Arc::clone(&barrier);
+            async move {
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                if index < LIMIT {
+                    barrier.wait().await;
+                }
+                tokio::task::yield_now().await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                10 - index
+            }
+        });
+
+        let results = collect_ordered_bounded(futures, LIMIT).await;
+
+        assert_eq!(peak.load(Ordering::SeqCst), LIMIT);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(results, (0..11).map(|index| 10 - index).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn get_batch_preserves_order_and_independent_failures() {
+        let (store, bucket) = MemoryObjects::with_default_bucket();
+        put(&store, &bucket, "first", b"abc", None).await;
+        put(&store, &bucket, "second", b"defg", None).await;
+        let requests = ["second", "missing", "first"]
+            .into_iter()
+            .map(|object_key| GetRequest {
+                target: ReadTarget::Bucket(bucket.clone()),
+                object_key: object_key.to_owned(),
+                version_id: None,
+                range: None,
+                if_match: None,
+                if_none_match: None,
+                maximum_bytes: 4,
+            })
+            .collect();
+        let results = store.get_batch(requests).await;
+        assert_eq!(results.len(), 3);
+        assert_eq!(
+            results
+                .first()
+                .and_then(|value| value.as_ref().ok())
+                .map(|value| &value.body[..]),
+            Some(b"defg".as_slice())
+        );
+        assert!(matches!(results.get(1), Some(Err(ObjectsError::NotFound))));
+        assert_eq!(
+            results
+                .get(2)
+                .and_then(|value| value.as_ref().ok())
+                .map(|value| &value.body[..]),
+            Some(b"abc".as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_continuation_is_bound_to_exact_query() {
+        let (store, bucket) = MemoryObjects::with_default_bucket();
+        put(&store, &bucket, "a|b1", b"first", None).await;
+        put(&store, &bucket, "a|b2", b"second", None).await;
+        let first = store
+            .list(
+                ReadTarget::Bucket(bucket.clone()),
+                "a|b".into(),
+                Some("c".into()),
+                false,
+                1,
+                None,
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            store
+                .list(
+                    ReadTarget::Bucket(bucket),
+                    "a".into(),
+                    Some("b|c".into()),
+                    false,
+                    1,
+                    first.continuation,
+                )
+                .await,
+            Err(ObjectsError::Invalid("invalid continuation"))
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_views_are_bounded_and_do_not_hold_bodies() {
+        let (store, bucket) = MemoryObjects::with_default_bucket();
+        let first = put(&store, &bucket, "a", b"payload", None).await;
+        put(&store, &bucket, "b", b"other", None).await;
+        let mut oldest = None;
+        for index in 0..MAX_LISTING_VIEWS {
+            let page = store
+                .list(
+                    ReadTarget::Bucket(bucket.clone()),
+                    String::new(),
+                    None,
+                    false,
+                    1,
+                    None,
+                )
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            if index == 0 {
+                oldest = page.continuation;
+            }
+        }
+        assert_eq!(store.state.lock().await.listings.len(), MAX_LISTING_VIEWS);
+        assert_eq!(
+            store
+                .list(
+                    ReadTarget::Bucket(bucket.clone()),
+                    String::new(),
+                    None,
+                    false,
+                    1,
+                    None,
+                )
+                .await,
+            Err(ObjectsError::Capacity)
+        );
+        assert_eq!(store.state.lock().await.listings.len(), MAX_LISTING_VIEWS);
+        let continuation = store
+            .list(
+                ReadTarget::Bucket(bucket.clone()),
+                String::new(),
+                None,
+                false,
+                1,
+                oldest,
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            continuation
+                .entries
+                .first()
+                .map(|entry| entry.object_key.as_str()),
+            Some("b")
+        );
+        store
+            .delete(
+                bucket.clone(),
+                "a".into(),
+                Some(first.version_id),
+                None,
+                None,
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(store.state.lock().await.bytes, b"other".len());
+        let one_page = store
+            .list(
+                ReadTarget::Bucket(bucket),
+                String::new(),
+                None,
+                false,
+                2,
+                None,
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert!(one_page.continuation.is_none());
+        assert_eq!(store.state.lock().await.listings.len(), MAX_LISTING_VIEWS);
+    }
+
+    #[tokio::test]
+    async fn expired_listing_continuation_is_rejected_and_reaped() {
+        let (store, bucket) = MemoryObjects::with_default_bucket();
+        put(&store, &bucket, "a", b"a", None).await;
+        put(&store, &bucket, "b", b"b", None).await;
+        let token = store
+            .list(
+                ReadTarget::Bucket(bucket.clone()),
+                String::new(),
+                None,
+                false,
+                1,
+                None,
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .continuation;
+        {
+            let mut state = store.state.lock().await;
+            let view = state
+                .listings
+                .values_mut()
+                .next()
+                .unwrap_or_else(|| unreachable!());
+            view.expires_at = Instant::now();
+        }
+        assert_eq!(
+            store
+                .list(
+                    ReadTarget::Bucket(bucket),
+                    String::new(),
+                    None,
+                    false,
+                    1,
+                    token
+                )
+                .await,
+            Err(ObjectsError::Invalid("invalid continuation"))
+        );
+        assert!(store.state.lock().await.listings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn long_single_entry_pagination_keeps_one_view_and_bounded_tokens() {
+        let (store, bucket) = MemoryObjects::with_default_bucket();
+        for index in 0..2_000 {
+            put(&store, &bucket, &format!("key-{index:04}"), b"x", None).await;
+        }
+        let mut continuation = None;
+        for expected in 0..2_000 {
+            let page = store
+                .list(
+                    ReadTarget::Bucket(bucket.clone()),
+                    String::new(),
+                    None,
+                    false,
+                    1,
+                    continuation,
+                )
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            assert_eq!(
+                page.entries.first().map(|entry| entry.object_key.as_str()),
+                Some(format!("key-{expected:04}").as_str())
+            );
+            continuation = page.continuation;
+            let state = store.state.lock().await;
+            assert_eq!(state.listings.len(), 1);
+            let view = state
+                .listings
+                .values()
+                .next()
+                .unwrap_or_else(|| unreachable!());
+            assert_eq!(view.objects.len(), 2_000);
+            assert_eq!(view.prefetched.is_some(), expected < 1_999);
+            assert!(continuation.as_ref().is_none_or(|token| token.len() < 256));
+        }
+        assert!(continuation.is_none());
+    }
+
+    #[tokio::test]
+    async fn listing_prefetch_preserves_replay_and_page_size_changes() {
+        let (store, bucket) = MemoryObjects::with_default_bucket();
+        for key in ["a", "b", "c", "d"] {
+            put(&store, &bucket, key, b"x", None).await;
+        }
+        let first = store
+            .list(
+                ReadTarget::Bucket(bucket.clone()),
+                String::new(),
+                None,
+                false,
+                1,
+                None,
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let token = first.continuation.unwrap_or_else(|| unreachable!());
+        let two = store
+            .list(
+                ReadTarget::Bucket(bucket.clone()),
+                String::new(),
+                None,
+                false,
+                2,
+                Some(token.clone()),
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let replay = store
+            .list(
+                ReadTarget::Bucket(bucket),
+                String::new(),
+                None,
+                false,
+                1,
+                Some(token),
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            two.entries
+                .iter()
+                .map(|entry| entry.object_key.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "c"]
+        );
+        assert_eq!(
+            replay
+                .entries
+                .first()
+                .map(|entry| entry.object_key.as_str()),
+            Some("b")
+        );
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one deterministic matrix compares every paginated mode with an independent model"
+    )]
+    #[tokio::test]
+    async fn paged_listing_matches_independent_sorted_model() {
+        let (store, bucket) = MemoryObjects::with_default_bucket();
+        let keys = [
+            "a",
+            "a/",
+            "a/child",
+            "a//child",
+            "a/child/next",
+            "a:one",
+            "a::two",
+            "b",
+            "é/child",
+            "\u{d7ff}/child",
+            "\u{e000}/child",
+            "\u{10ffff}/child",
+        ];
+        let mut history = BTreeMap::<String, Vec<wire::ObjectVersion>>::new();
+        for key in keys {
+            let first = put(&store, &bucket, key, b"first", None).await;
+            let second = put(&store, &bucket, key, b"second", None).await;
+            history.insert(key.to_owned(), vec![first, second]);
+        }
+        let deleted = store
+            .delete(bucket.clone(), "b".into(), None, None, None)
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .marker
+            .unwrap_or_else(|| unreachable!());
+        history
+            .get_mut("b")
+            .unwrap_or_else(|| unreachable!())
+            .push(deleted);
+        for prefix in ["", "a", "a/", "é", "\u{d7ff}", "\u{10ffff}"] {
+            for delimiter in [None, Some("/"), Some("::")] {
+                for versions in [false, true] {
+                    let mut model = Vec::<(String, Option<String>)>::new();
+                    let mut groups = BTreeSet::new();
+                    for (key, versions_for_key) in &history {
+                        let Some(remainder) = key.strip_prefix(prefix) else {
+                            continue;
+                        };
+                        if let Some(delimiter) = delimiter
+                            && let Some(position) = remainder.find(delimiter)
+                        {
+                            groups.insert(
+                                key.get(..prefix.len() + position + delimiter.len())
+                                    .unwrap_or_else(|| unreachable!())
+                                    .to_owned(),
+                            );
+                            continue;
+                        }
+                        if versions {
+                            model.extend(
+                                versions_for_key
+                                    .iter()
+                                    .rev()
+                                    .map(|version| (key.clone(), Some(version.version_id.clone()))),
+                            );
+                        } else if let Some(version) = versions_for_key.last()
+                            && !version.delete_marker
+                        {
+                            model.push((key.clone(), Some(version.version_id.clone())));
+                        }
+                    }
+                    model.extend(groups.into_iter().map(|group| (group, None)));
+                    model.sort_by(|left, right| left.0.cmp(&right.0));
+                    for page_size in [1, 2, 5, 100] {
+                        let mut continuation = None;
+                        let mut offset = 0;
+                        loop {
+                            let page = store
+                                .list(
+                                    ReadTarget::Bucket(bucket.clone()),
+                                    prefix.to_owned(),
+                                    delimiter.map(str::to_owned),
+                                    versions,
+                                    page_size,
+                                    continuation,
+                                )
+                                .await
+                                .unwrap_or_else(|_| unreachable!());
+                            let expected = model
+                                .get(offset..model.len().min(offset + page_size as usize))
+                                .unwrap_or_else(|| unreachable!());
+                            let entries: Vec<_> = expected
+                                .iter()
+                                .filter_map(|(key, version)| {
+                                    version.as_ref().map(|id| (key.clone(), id.clone()))
+                                })
+                                .collect();
+                            let prefixes: Vec<_> = expected
+                                .iter()
+                                .filter(|(_, version)| version.is_none())
+                                .map(|(key, _)| key.clone())
+                                .collect();
+                            assert_eq!(
+                                page.entries
+                                    .iter()
+                                    .map(|entry| (
+                                        entry.object_key.clone(),
+                                        entry
+                                            .version
+                                            .as_ref()
+                                            .unwrap_or_else(|| unreachable!())
+                                            .version_id
+                                            .clone(),
+                                    ))
+                                    .collect::<Vec<_>>(),
+                                entries,
+                                "entries: prefix={prefix:?} delimiter={delimiter:?} versions={versions} page_size={page_size} offset={offset}"
+                            );
+                            assert_eq!(page.common_prefixes, prefixes);
+                            offset += expected.len();
+                            assert_eq!(page.continuation.is_some(), offset < model.len());
+                            let Some(token) = page.continuation else {
+                                break;
+                            };
+                            continuation = Some(token);
+                        }
+                        assert_eq!(offset, model.len());
+                    }
+                }
+            }
+        }
+    }
 
     fn metadata() -> wire::ObjectMetadata {
         wire::ObjectMetadata {

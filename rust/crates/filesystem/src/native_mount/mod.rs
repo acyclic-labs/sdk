@@ -5,11 +5,15 @@
 //! in `acyclic-fs`.
 
 use crate::kernel::FileMetadata;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::kernel::MetadataField;
 use crate::{FileId, MountId, VolumeId};
 use bytes::Bytes;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::time::SystemTime;
 #[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -28,12 +32,13 @@ mod device;
 
 pub use crate::{
     CaptureError, CaptureOptions, CaptureReceipt, WatchCaptureReceipt, capture_baseline,
-    capture_paths, capture_root_identity, capture_watch_batch,
+    capture_paths, capture_root_identity, capture_subtree, capture_watch_batch,
 };
 
 mod materialize;
 pub use materialize::{
     MaterializationReceipt, MaterializeError, MaterializeOptions, materialize_checkout,
+    materialize_checkout_host_path, materialize_checkout_path,
 };
 
 mod publication;
@@ -55,13 +60,24 @@ pub use storage_accelerations::{
 mod darwin_mount;
 #[cfg(target_os = "linux")]
 mod fuse;
-#[cfg(target_os = "windows")]
-mod usn;
-#[cfg(target_os = "windows")]
-pub use usn::{
-    WindowsUsnCheckpoint, WindowsUsnContinuity, WindowsUsnDiscontinuity, WindowsUsnError,
-    capture_windows_usn_checkpoint, validate_windows_usn_checkpoint,
-};
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn metadata_or<T>(field: MetadataField<T>, unavailable: T) -> T {
+    match field {
+        MetadataField::Unavailable => unavailable,
+        MetadataField::Value(value) => value,
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn system_time_ns(value: SystemTime) -> Result<i64, i32> {
+    match value.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(duration) => i64::try_from(duration.as_nanos()).map_err(|_| libc::EOVERFLOW),
+        Err(error) => i64::try_from(error.duration().as_nanos())
+            .map(|nanos| -nanos)
+            .map_err(|_| libc::EOVERFLOW),
+    }
+}
 
 #[cfg(target_os = "windows")]
 mod projfs;
@@ -94,13 +110,13 @@ pub struct NativeMountCapabilities {
     /// Whether a live host probe admitted the required device/framework.
     pub available: bool,
     /// Whether exact authored effects are observable on this mechanism.
+    /// A provider may still reject cross-root operations it cannot observe.
     pub writable: bool,
     /// Whether I/O issued by the provider process itself is observable.
     ///
-    /// `ProjFS` deliberately suppresses provider-process notifications. Embedded
-    /// callers must use the SDK mutation surface for their own writes or place
-    /// the provider in `fsd`; ordinary child and external processes remain
-    /// fully observable through the mount.
+    /// `ProjFS` suppresses provider-process notifications. Embedded callers
+    /// must use the SDK mutation surface for their own writes or place the
+    /// provider in `fsd`.
     pub provider_process_io_observable: bool,
     /// Required process isolation for simultaneous sessions.
     pub session_isolation: NativeMountSessionIsolation,
@@ -749,6 +765,16 @@ pub trait MountFilesystem: Send + Sync + 'static {
         source_root: &Path,
         path: &MountPath,
     ) -> Result<(), MountSourceError>;
+    /// Reconciles one imported directory and every descendant atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed bounded-capture or publication failure.
+    fn capture_host_subtree(
+        &self,
+        source_root: &Path,
+        path: &MountPath,
+    ) -> Result<(), MountSourceError>;
 }
 
 /// Native mount admission and lifecycle failures.
@@ -822,6 +848,7 @@ impl NativeMountSession {
     /// Drops the kernel's cached entry/attributes for one mount-relative
     /// path (leading `/` optional), making a projection change — such as a
     /// removed route — visible immediately instead of after a cache timeout.
+    /// Linux FUSE currently supports root-level entries only.
     ///
     /// # Errors
     ///
@@ -829,9 +856,11 @@ impl NativeMountSession {
     /// change then becomes visible at the cache's own expiry).
     pub fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
         match &self.driver {
+            #[cfg(target_os = "linux")]
+            Some(DriverSession::Fuse(session)) => session.invalidate(path),
             #[cfg(target_os = "macos")]
             Some(DriverSession::DarwinMount(session)) => session.invalidate(path),
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             Some(_) => {
                 let _ = path;
                 Err(NativeMountError::Driver(
@@ -925,7 +954,8 @@ pub fn mount_native(
 
 /// Starts a native projection mounted directly over an existing,
 /// non-empty directory — its contents are shadowed for the mount's
-/// duration and reappear once the returned session stops.
+/// duration and reappear once the returned session stops. Windows `ProjFS`
+/// cannot shadow local entries and this operation is unavailable there.
 ///
 /// For callers that must project a checkout at a specific real path that
 /// already has content (for example, redirecting an entire tool session
@@ -937,32 +967,45 @@ pub fn mount_native(
 ///
 /// Same as [`mount_native`], except the destination may be non-empty; it
 /// must still be an existing, non-symlink directory not already admitted
-/// by another live mount.
+/// by another live mount. Windows returns `WritableUnavailable` because
+/// `ProjFS` cannot shadow local entries.
 pub fn mount_native_over_existing(
     request: NativeMountRequest,
     source: Arc<dyn MountFilesystem>,
 ) -> Result<NativeMountSession, NativeMountError> {
-    let capabilities = probe_native_mount();
-    if !capabilities.available {
-        return Err(NativeMountError::CapabilityUnavailable(
-            capabilities
-                .unavailable_reason
-                .unwrap_or_else(|| "unavailable".to_owned()),
-        ));
+    #[cfg(windows)]
+    {
+        let _ = (request, source);
+        Err(NativeMountError::WritableUnavailable(
+            "Windows ProjFS cannot shadow an existing directory".to_owned(),
+        ))
     }
-    if request.writable && !capabilities.writable {
-        return Err(NativeMountError::WritableUnavailable(
-            "the selected kernel API cannot prove exact authored effects".to_owned(),
-        ));
+    #[cfg(not(windows))]
+    {
+        let capabilities = probe_native_mount();
+        if !capabilities.available {
+            return Err(NativeMountError::CapabilityUnavailable(
+                capabilities
+                    .unavailable_reason
+                    .unwrap_or_else(|| "unavailable".to_owned()),
+            ));
+        }
+        if request.writable && !capabilities.writable {
+            return Err(NativeMountError::WritableUnavailable(
+                "the selected kernel API cannot prove exact authored effects".to_owned(),
+            ));
+        }
+        let (driver, destination_guard) =
+            start_owned_session_over_existing(&request.destination, || {
+                start_driver(&request, source)
+            })?;
+        Ok(NativeMountSession {
+            mount_id: request.mount_id,
+            destination: request.destination,
+            driver: Some(driver),
+            destination_guard: Some(destination_guard),
+        })
     }
-    let (driver, destination_guard) =
-        start_owned_session_over_existing(&request.destination, || start_driver(&request, source))?;
-    Ok(NativeMountSession {
-        mount_id: request.mount_id,
-        destination: request.destination,
-        driver: Some(driver),
-        destination_guard: Some(destination_guard),
-    })
 }
 
 /// Reclaims the process fence for one externally detached destination.
@@ -1145,6 +1188,7 @@ fn start_owned_session<D>(
 
 /// Same as [`start_owned_session`], but admits an existing non-empty
 /// destination (see [`admit_destination_over_existing`]).
+#[cfg(not(windows))]
 fn start_owned_session_over_existing<D>(
     destination: &Path,
     start: impl FnOnce() -> Result<D, NativeMountError>,
@@ -1162,6 +1206,7 @@ fn admit_destination(destination: &Path) -> Result<MountDestinationGuard, Native
 
 /// Same process-fence as [`admit_destination`], but admits an existing
 /// non-empty directory instead of requiring emptiness.
+#[cfg(not(windows))]
 fn admit_destination_over_existing(
     destination: &Path,
 ) -> Result<MountDestinationGuard, NativeMountError> {
@@ -1595,6 +1640,26 @@ mod tests {
     };
     use bytes::Bytes;
     use std::time::{Duration, Instant};
+
+    #[cfg(windows)]
+    #[test]
+    fn projfs_cannot_shadow_an_existing_directory() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("existing.txt"), b"real")?;
+        let request = NativeMountRequest {
+            mount_id: MountId::new(),
+            volume_id: VolumeId::new(),
+            destination: root.path().to_path_buf(),
+            writable: true,
+        };
+        let source = Arc::new(RoutedMountSource::new());
+        assert!(matches!(
+            mount_native_over_existing(request, source),
+            Err(NativeMountError::WritableUnavailable(_))
+        ));
+        assert_eq!(std::fs::read(root.path().join("existing.txt"))?, b"real");
+        Ok(())
+    }
 
     fn portable_path(
         limits: VolumeLimits,
@@ -2095,7 +2160,190 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
+    async fn capture_host_hard_links_preserves_shared_file_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let limits = VolumeLimits::default();
+        let config = VolumeConfig {
+            profile: FilesystemProfile::Portable,
+            concurrency: ConcurrencyMode::Optimistic,
+            lifecycle: Lifecycle::Ephemeral,
+            case_sensitivity: CaseSensitivity::Sensitive,
+            unicode: UnicodePolicy::Preserve,
+            symbolic_links: true,
+            hard_links: true,
+            sparse_files: true,
+            limits,
+        };
+        let cancellation = CancellationToken::new();
+        let fs = Fs::memory();
+        let volume = fs
+            .create_volume_with_id(
+                VolumeId::from_bytes([92; 16]),
+                config,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        let mut checkout = volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode {
+                    access: AccessMode::ReadWrite,
+                    consistency: ConsistencyMode::Pinned,
+                    mutations: MutationMode::PrivateOverlay,
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        let host = tempfile::tempdir()?;
+        std::fs::write(host.path().join("a"), b"shared")?;
+        std::fs::hard_link(host.path().join("a"), host.path().join("b"))?;
+        let path = |name: &str| -> Result<NamespacePath, Box<dyn std::error::Error>> {
+            Ok(NamespacePath::new(
+                vec![LogicalName::new(
+                    NameEncoding::Utf8,
+                    name.as_bytes().to_vec(),
+                    limits.maximum_component_bytes,
+                )?],
+                limits,
+            )?)
+        };
+        let paths = [path("a")?, path("b")?];
+        capture_paths(
+            &mut checkout,
+            &paths,
+            &CaptureOptions {
+                expected_root_identity: capture_root_identity(host.path())?,
+                source_root: host.path().to_path_buf(),
+                maximum_paths: 2,
+                maximum_extent_spans: 16,
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        let first = checkout
+            .lookup_no_follow(&paths[0], WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .record
+            .ok_or("first captured link missing")?;
+        let second = checkout
+            .lookup_no_follow(&paths[1], WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .record
+            .ok_or("second captured link missing")?;
+        assert_eq!(first.file_id, second.file_id);
+        std::fs::hard_link(host.path().join("a"), host.path().join("c"))?;
+        let third = path("c")?;
+        let watch = capture_watch_batch(
+            &mut checkout,
+            WatchBatch::Changes {
+                epoch: WatchEpoch::from_u64(1),
+                first_sequence: WatchSequence::from_u64(1),
+                next_sequence: WatchSequence::from_u64(2),
+                changes: vec![WatchChange::Created(third.clone())],
+            },
+            &CaptureOptions {
+                expected_root_identity: capture_root_identity(host.path())?,
+                source_root: host.path().to_path_buf(),
+                maximum_paths: 1,
+                maximum_extent_spans: 16,
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await;
+        assert!(matches!(
+            watch,
+            Err(crate::OperationFailure {
+                error: CaptureError::RescanRequired { .. },
+                ..
+            })
+        ));
+        assert!(
+            checkout
+                .lookup_no_follow(&third, WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value
+                .record
+                .is_none()
+        );
+        std::fs::write(host.path().join("existing"), b"old")?;
+        let existing = path("existing")?;
+        capture_paths(
+            &mut checkout,
+            std::slice::from_ref(&existing),
+            &CaptureOptions {
+                expected_root_identity: capture_root_identity(host.path())?,
+                source_root: host.path().to_path_buf(),
+                maximum_paths: 1,
+                maximum_extent_spans: 16,
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        let old_id = checkout
+            .lookup_no_follow(&existing, WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .record
+            .ok_or("existing path missing")?
+            .file_id;
+        std::fs::remove_file(host.path().join("existing"))?;
+        std::fs::hard_link(host.path().join("a"), host.path().join("existing"))?;
+        let watch = capture_watch_batch(
+            &mut checkout,
+            WatchBatch::Changes {
+                epoch: WatchEpoch::from_u64(1),
+                first_sequence: WatchSequence::from_u64(2),
+                next_sequence: WatchSequence::from_u64(3),
+                changes: vec![WatchChange::Created(existing.clone())],
+            },
+            &CaptureOptions {
+                expected_root_identity: capture_root_identity(host.path())?,
+                source_root: host.path().to_path_buf(),
+                maximum_paths: 1,
+                maximum_extent_spans: 16,
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await;
+        assert!(matches!(
+            watch,
+            Err(crate::OperationFailure {
+                error: CaptureError::RescanRequired { .. },
+                ..
+            })
+        ));
+        assert_eq!(
+            checkout
+                .lookup_no_follow(&existing, WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value
+                .record
+                .ok_or("replacement changed checkout")?
+                .file_id,
+            old_id
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
+    -> Result<(), Box<dyn std::error::Error>> {
+        Box::pin(explicit_materialization_and_capture_round_trip_sparse_checkout_inner()).await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn explicit_materialization_and_capture_round_trip_sparse_checkout_inner()
     -> Result<(), Box<dyn std::error::Error>> {
         let limits = VolumeLimits::default();
         let config = VolumeConfig {

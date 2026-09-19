@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "workload": "64 individual public Fs workspace writes to unique small files, fresh local store per run, full-flush durability, read verification after timing",
+  "baseline_revision": "b4d2dea50848c565af020742054e91e9c3f7d6a2",
+  "current_revision": "48ba346ea3824cf71b558e8c69760b3b8dcabd17",
+  "method": "Identical bench-fs source and local-runner feature applied to detached baseline worktree; three warm runs per revision, alternating revisions on each host; elapsed time excludes build and read verification",
+  "hosts": [
+    {
+      "host": "Windows",
+      "os": "windows",
+      "arch": "x86_64",
+      "baseline_ms": [771, 881, 890],
+      "current_ms": [811, 870, 839],
+      "baseline_median_ms": 881,
+      "current_median_ms": 839
+    },
+    {
+      "host": "WSL",
+      "os": "linux",
+      "arch": "x86_64",
+      "baseline_ms": [1315, 1628, 1150],
+      "current_ms": [1285, 1562, 1404],
+      "baseline_median_ms": 1315,
+      "current_median_ms": 1404
+    },
+    {
+      "host": "ivar",
+      "os": "macos",
+      "arch": "aarch64",
+      "baseline_ms": [5188, 5143, 5131],
+      "current_ms": [5352, 5234, 5119],
+      "baseline_median_ms": 5143,
+      "current_median_ms": 5234
+    }
+  ],
+  "limits": "A single small-file workload on shared machines; Windows and WSL ran concurrently for two pairs. The gate now records all four durability/batching modes, but this revision comparison covers only full-flush individual writes. CPU, memory, and allocations were not recorded."
+}

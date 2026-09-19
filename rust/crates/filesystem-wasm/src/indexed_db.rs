@@ -9,10 +9,10 @@ use acyclic_fs::storage::FenceOutcome;
 use acyclic_fs::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityFailure, AuthorityId,
     AuthorityReceipt, AuthorityResult, AuthorityStoreError, CancellationToken,
-    CreateAuthorityOutcome, DurableCommit, Epoch, Head, OBJECT_DIGEST_ENVELOPE_BYTES,
-    ObjectFailure, ObjectId, ObjectRead, ObjectReadRetention, ObjectReceipt, ObjectResult,
-    ObjectStoreError, OperationId, ProposedCommit, ReplayLimit, Sequence, WorkBudget, WorkCounters,
-    authority_commit_digest, object_digest,
+    CreateAuthorityOutcome, DurableCommit, Epoch, GenerationFork, GenerationForkSource, Head,
+    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectRead, ObjectReadRetention,
+    ObjectReceipt, ObjectResult, ObjectStoreError, OperationId, ProposedCommit, ReplayLimit,
+    Sequence, WorkBudget, WorkCounters, authority_commit_digest, object_digest,
 };
 use bytes::Bytes;
 use indexed_db_futures::database::Database;
@@ -104,8 +104,12 @@ impl IndexedDbObjectStore {
         key.push(char::from(b'0' + object_id.kind.canonical_tag()));
         key.push(':');
         for byte in object_id.digest.as_bytes() {
-            key.push(char::from(HEX[usize::from(byte >> 4)]));
-            key.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            key.push(char::from(
+                *HEX.get(usize::from(byte >> 4)).unwrap_or(&b'0'),
+            ));
+            key.push(char::from(
+                *HEX.get(usize::from(byte & 0x0f)).unwrap_or(&b'0'),
+            ));
         }
         key
     }
@@ -1125,6 +1129,28 @@ async fn open_database(database_name: &str) -> Result<Database, IndexedDbOpenErr
 }
 
 impl AsyncAuthorityStore for IndexedDbAuthorityStore {
+    async fn fork_generation_authority(
+        &self,
+        source: GenerationForkSource,
+        destination_authority: AuthorityId,
+        _operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<CreateAuthorityOutcome> {
+        cancellation
+            .check()
+            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+        if source.lineage == GenerationFork::PublishedPrefix {
+            return Err(AuthorityFailure::before_work(
+                AuthorityStoreError::Rejected(
+                    "IndexedDB authorities do not retain generation lineage prefixes".to_owned(),
+                ),
+            ));
+        }
+        self.create_authority(destination_authority, Epoch::GENESIS, budget, cancellation)
+            .await
+    }
+
     async fn create_authority(
         &self,
         authority_id: AuthorityId,

@@ -40,6 +40,14 @@ npm_tests = load_script("test-npm-publication.py")
 NpmPublicationTests = npm_tests.NpmPublicationTests
 
 
+def shell_path(path: Path) -> str:
+    """Returns a path understood by the selected Bash on every host."""
+    resolved = path.resolve().as_posix()
+    if os.name == "nt" and len(resolved) >= 3 and resolved[1:3] == ":/":
+        return f"/mnt/{resolved[0].lower()}{resolved[2:]}"
+    return resolved
+
+
 def crate_bytes(
     *,
     package: str = PACKAGE,
@@ -69,6 +77,12 @@ def crate_bytes(
 
 
 class PublicationTests(unittest.TestCase):
+    def test_native_runtime_has_qualified_release_path(self) -> None:
+        self.assertEqual(
+            publisher.qualified_package_path("acyclic-native-runtime"),
+            "rust/crates/native-runtime",
+        )
+
     def test_inference_uses_public_acyclic_name(self) -> None:
         package = "acyclic-inference"
         path_in_vcs = publisher.qualified_package_path(package)
@@ -177,7 +191,7 @@ class PublicationTests(unittest.TestCase):
 
     def test_release_tag_object_types(self) -> None:
         script_path = Path(__file__).with_name("prepare-crate-publication.sh").resolve()
-        script = script_path.as_posix()
+        script = shell_path(script_path)
         bash = os.environ.get("BASH", "bash")
         for object_type in ("commit", "tag"):
             command = (
@@ -200,7 +214,7 @@ class PublicationTests(unittest.TestCase):
 
     def test_inference_release_family_uses_public_name(self) -> None:
         script_path = Path(__file__).with_name("prepare-crate-publication.sh").resolve()
-        script = script_path.as_posix()
+        script = shell_path(script_path)
         bash = os.environ.get("BASH", "bash")
         command = (
             f"source {shlex.quote(script)}; "

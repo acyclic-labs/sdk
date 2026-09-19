@@ -4,7 +4,7 @@
 //! primitives. It never becomes filesystem truth: healing or dropping it leaves
 //! only the wrapped memory authority log and immutable objects.
 
-use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
+use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore, GenerationForkSource};
 use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
@@ -539,6 +539,30 @@ fn reject_object(fault: Option<SimulationFault>) -> Result<(), ObjectFailure> {
 }
 
 impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> {
+    async fn fork_generation_authority(
+        &self,
+        source: GenerationForkSource,
+        destination_authority: AuthorityId,
+        operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<CreateAuthorityOutcome> {
+        cancellation
+            .check()
+            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let fault = intercept_authority(&self.state, SimulationOperation::AuthorityCreate)?;
+        reject_authority(fault)?;
+        self.inner
+            .fork_generation_authority(
+                source,
+                destination_authority,
+                operation_id,
+                budget,
+                cancellation,
+            )
+            .await
+    }
+
     async fn create_authority(
         &self,
         authority_id: AuthorityId,
@@ -826,6 +850,18 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
             return Ok(ObjectReceipt { value: (), work });
         }
         self.inner.put(object_id, bytes, budget, cancellation).await
+    }
+
+    async fn put_many(
+        &self,
+        writes: &[crate::storage::ObjectWrite],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        self.inner.put_many(writes, budget, cancellation).await
     }
 
     async fn read(

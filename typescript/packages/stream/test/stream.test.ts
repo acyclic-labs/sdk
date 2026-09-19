@@ -10,6 +10,15 @@ type RunEvent =
   | { readonly type: "strategy.changed" };
 
 describe("website Stream contract", () => {
+  test("opens the local provider without exposing provider setup", async () => {
+    const stream = StreamClient.memory().json<{ answer: number }>("runs/memory");
+    await stream.append({ answer: 42 });
+    const records = [];
+    for await (const record of stream.read({ from: 0n, limit: 1 })) records.push(record);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.value).toEqual({ answer: 42 });
+  });
+
   test("JSON streams reject values that cannot satisfy their declared recursive type", () => {
     const client = new StreamClient(new MemoryStreamProvider());
     // @ts-expect-error Date is not a JSON value and must not be promised by the codec.

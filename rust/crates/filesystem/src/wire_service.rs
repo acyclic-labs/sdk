@@ -2510,9 +2510,14 @@ fn required<T>(value: Option<T>, name: &'static str) -> Result<T, Status> {
 fn status(error: &WorkspaceError) -> Status {
     match error {
         WorkspaceError::NotFound => Status::not_found(error.to_string()),
-        WorkspaceError::Name(_) | WorkspaceError::Path(_) | WorkspaceError::ReadLimitExceeded => {
-            Status::invalid_argument(error.to_string())
-        }
+        WorkspaceError::Name(_)
+        | WorkspaceError::Path(_)
+        | WorkspaceError::ReadLimitExceeded
+        | WorkspaceError::InvalidMergeResolution
+        | WorkspaceError::NotRegularFile
+        | WorkspaceError::NotDirectory
+        | WorkspaceError::EmptyContentSet
+        | WorkspaceError::ContentLengthOverflow => Status::invalid_argument(error.to_string()),
         WorkspaceError::ForeignGeneration
         | WorkspaceError::IncompatibleWorkspace
         | WorkspaceError::ChangeSetContinuity
@@ -2522,10 +2527,6 @@ fn status(error: &WorkspaceError) -> Status {
         | WorkspaceError::JoinLimit
         | WorkspaceError::NotFork => Status::failed_precondition(error.to_string()),
         WorkspaceError::Engine(_) => Status::unavailable(error.to_string()),
-        WorkspaceError::NotRegularFile
-        | WorkspaceError::NotDirectory
-        | WorkspaceError::EmptyContentSet
-        | WorkspaceError::ContentLengthOverflow => Status::invalid_argument(error.to_string()),
     }
 }
 

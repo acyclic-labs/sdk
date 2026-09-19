@@ -15,9 +15,11 @@ async-trait = "0.1.89"
 axum = { version = "0.8.9", features = ["ws"] }
 blake3 = "1.8.2"
 bytes = "1.10.1"
+diffy = "0.4.2"
 fs2 = "0.4.3"
 futures = "0.3.31"
 hex = "0.4.3"
+io-uring = "0.7.14"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 indexed_db_futures = { version = "0.6.4", features = ["tx-done", "typed-arrays"] }
@@ -58,6 +60,7 @@ wasm-bindgen = "=0.2.117"
 wasm-bindgen-futures = "0.4.67"
 web-sys = { version = "0.3.94", features = [
   "Blob",
+  "DomException",
   "File",
   "FileSystemDirectoryHandle",
   "FileSystemFileHandle",

@@ -10,7 +10,7 @@ use crate::cancellation::CancellationToken;
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
     ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt,
-    ObjectResult, ObjectStoreError,
+    ObjectResult, ObjectStoreError, ObjectWrite,
 };
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1046,6 +1046,23 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
             .await?;
         self.insert(object_id, retained)
             .map_err(|error| ObjectFailure::new(error, receipt.work))?;
+        Ok(receipt)
+    }
+
+    async fn put_many(
+        &self,
+        writes: &[ObjectWrite],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        let receipt = self.inner.put_many(writes, budget, cancellation).await?;
+        for write in writes {
+            self.insert(write.object_id, write.bytes.clone())
+                .map_err(|error| ObjectFailure::new(error, receipt.work))?;
+        }
         Ok(receipt)
     }
 

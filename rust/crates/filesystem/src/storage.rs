@@ -408,6 +408,15 @@ pub struct ObjectReadRequest {
     pub maximum_bytes: u64,
 }
 
+/// One canonical immutable object submitted as part of an ordered write batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObjectWrite {
+    /// Exact typed immutable identity.
+    pub object_id: ObjectId,
+    /// Canonical bytes authenticated by `object_id`.
+    pub bytes: Bytes,
+}
+
 impl std::ops::Deref for ObjectRead {
     type Target = [u8];
 
@@ -434,6 +443,13 @@ pub trait ObjectStore: Send + Sync {
     ///
     /// Returns a typed error for digest mismatch or storage failure.
     fn put(&self, object_id: ObjectId, bytes: Bytes, budget: WorkBudget) -> ObjectResult<()>;
+
+    /// Admits an ordered bounded group through one backend batch operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first typed failure and all work completed before it.
+    fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget) -> ObjectResult<()>;
 
     /// Reads exactly the requested range or returns a typed error.
     ///
@@ -475,6 +491,10 @@ pub trait ObjectStore: Send + Sync {
 impl<T: ObjectStore + ?Sized> ObjectStore for Arc<T> {
     fn put(&self, object_id: ObjectId, bytes: Bytes, budget: WorkBudget) -> ObjectResult<()> {
         (**self).put(object_id, bytes, budget)
+    }
+
+    fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget) -> ObjectResult<()> {
+        (**self).put_many(writes, budget)
     }
 
     fn read(

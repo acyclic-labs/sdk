@@ -268,6 +268,7 @@ fn map_error(error: WorkspaceError) -> Error {
         | WorkspaceError::NoCommonAncestor
         | WorkspaceError::LineageLimit
         | WorkspaceError::JoinLimit
+        | WorkspaceError::InvalidMergeResolution
         | WorkspaceError::ChangeSetContinuity
         | WorkspaceError::EmptyContentSet
         | WorkspaceError::NotFork

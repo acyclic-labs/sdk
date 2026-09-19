@@ -63,7 +63,7 @@ pub type MeasuredResult<T, E> = Result<T, OperationFailure<E>>;
 
 /// Exact backend and memory work performed by one filesystem operation.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct WorkCounters {
     /// Authority records read.
     pub authority_records_read: u64,
@@ -97,6 +97,10 @@ pub struct WorkCounters {
     pub bytes_encoded: u64,
     /// Bytes consumed from an import, capture, or application source.
     pub source_bytes_read: u64,
+    /// Components in requested source paths.
+    pub source_path_components: u64,
+    /// Exact directory entries visited by demand requests.
+    pub source_entries_visited: u64,
     /// Bytes returned to an application or export sink.
     pub output_bytes: u64,
     /// Canonical items examined by searches, filters, diffs, or merges.
@@ -130,6 +134,8 @@ impl WorkCounters {
         bytes_copied: u64::MAX,
         bytes_encoded: u64::MAX,
         source_bytes_read: u64::MAX,
+        source_path_components: u64::MAX,
+        source_entries_visited: u64::MAX,
         output_bytes: u64::MAX,
         items_examined: u64::MAX,
         items_returned: u64::MAX,
@@ -173,6 +179,8 @@ impl WorkCounters {
             bytes_copied: add(self.bytes_copied, other.bytes_copied)?,
             bytes_encoded: add(self.bytes_encoded, other.bytes_encoded)?,
             source_bytes_read: add(self.source_bytes_read, other.source_bytes_read)?,
+            source_path_components: add(self.source_path_components, other.source_path_components)?,
+            source_entries_visited: add(self.source_entries_visited, other.source_entries_visited)?,
             output_bytes: add(self.output_bytes, other.output_bytes)?,
             items_examined: add(self.items_examined, other.items_examined)?,
             items_returned: add(self.items_returned, other.items_returned)?,
@@ -245,6 +253,16 @@ impl WorkCounters {
                 self.source_bytes_read,
                 budget.source_bytes_read,
             ),
+            (
+                "source_path_components",
+                self.source_path_components,
+                budget.source_path_components,
+            ),
+            (
+                "source_entries_visited",
+                self.source_entries_visited,
+                budget.source_entries_visited,
+            ),
             ("output_bytes", self.output_bytes, budget.output_bytes),
             ("items_examined", self.items_examined, budget.items_examined),
             ("items_returned", self.items_returned, budget.items_returned),
@@ -305,6 +323,8 @@ impl WorkCounters {
             bytes_copied: budget.bytes_copied - self.bytes_copied,
             bytes_encoded: budget.bytes_encoded - self.bytes_encoded,
             source_bytes_read: budget.source_bytes_read - self.source_bytes_read,
+            source_path_components: budget.source_path_components - self.source_path_components,
+            source_entries_visited: budget.source_entries_visited - self.source_entries_visited,
             output_bytes: budget.output_bytes - self.output_bytes,
             items_examined: budget.items_examined - self.items_examined,
             items_returned: budget.items_returned - self.items_returned,

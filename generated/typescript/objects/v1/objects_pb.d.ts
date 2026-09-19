@@ -417,10 +417,9 @@ export declare type GetObjectRequest = Message<"acyclic.objects.v1.GetObjectRequ
   ifNoneMatch: string;
 
   /**
-   * Set for every ranged read, distinguishing an open-ended range beginning
-   * at byte zero from no range. For compatibility with clients predating this
-   * field, servers must also treat a nonzero range_start or a present
-   * range_end_inclusive as a ranged read.
+   * Required for every ranged read, distinguishing an open-ended range
+   * beginning at byte zero from no range. Range fields are invalid when this
+   * bit is false.
    *
    * @generated from field: bool range_requested = 8;
    */

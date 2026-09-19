@@ -540,7 +540,7 @@ export class BrowserFs {
      */
     clearObjectCache(): void;
     /**
-     * Releases browser handles. Durable state remains in `IndexedDB`.
+     * Releases browser handles. Durable state remains in the selected browser stores.
      */
     close(): void;
     /**
@@ -979,7 +979,7 @@ export class BrowserWorkspace {
 }
 
 /**
- * Opens transactional `IndexedDB` correctness storage with optional OPFS acceleration.
+ * Opens transactional browser storage with explicit `IndexedDB` or OPFS immutable objects.
  *
  * # Errors
  *
@@ -1147,7 +1147,7 @@ export interface InitOutput {
     readonly openBrowserFs: (a: any) => any;
     readonly openMemoryFs: (a: any) => [number, number, number];
     readonly wasm_bindgen__convert__closures_____invoke__hbda0b83ef83cb943: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__heeb8c212da1e0976: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__hb47a76f282ca6a60: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h2a4eb6287a5d90bc: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h700ae9e05bdefaac: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__ha10a2157f63fc2da: (a: number, b: number) => void;

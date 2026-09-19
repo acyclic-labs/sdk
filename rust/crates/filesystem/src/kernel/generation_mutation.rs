@@ -131,6 +131,7 @@ struct PathState {
 struct RecordSeed {
     record: FileRecord,
     created: bool,
+    replacement: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -631,12 +632,14 @@ impl TransactionState {
                 seeds.push(RecordSeed {
                     record,
                     created: false,
+                    replacement: false,
                 });
             }
             if let Some(record) = entry.parent {
                 seeds.push(RecordSeed {
                     record,
                     created: false,
+                    replacement: false,
                 });
             }
         }
@@ -645,6 +648,14 @@ impl TransactionState {
                 seeds.push(RecordSeed {
                     record: *record,
                     created: true,
+                    replacement: false,
+                });
+            }
+            if let Mutation::Restore { record, .. } = operation {
+                seeds.push(RecordSeed {
+                    record: *record,
+                    created: false,
+                    replacement: true,
                 });
             }
         }
@@ -652,6 +663,7 @@ impl TransactionState {
             seeds.push(RecordSeed {
                 record: *record,
                 created: false,
+                replacement: false,
             });
         }
         let comparisons = Cell::new(0_u64);
@@ -665,6 +677,7 @@ impl TransactionState {
         for group in seeds.chunk_by(|left, right| left.record.file_id == right.record.file_id) {
             let mut base = None;
             let mut created = None;
+            let mut replacement = None;
             let mut group_examined = 0_u64;
             for seed in group {
                 group_examined = group_examined
@@ -678,6 +691,12 @@ impl TransactionState {
                             work,
                         ));
                     }
+                } else if seed.replacement {
+                    if replacement.is_some_and(|value| value != seed.record) {
+                        charge_items(&mut work, group_examined, budget)?;
+                        return Err(failed(GenerationMutationError::InconsistentState, work));
+                    }
+                    replacement = Some(seed.record);
                 } else if base.is_some_and(|value| value != seed.record) {
                     charge_items(&mut work, group_examined, budget)?;
                     return Err(failed(
@@ -697,6 +716,7 @@ impl TransactionState {
             }
             let working = base
                 .or(created)
+                .or(replacement)
                 .ok_or_else(|| failed(GenerationMutationError::InconsistentState, work))?;
             records.push(RecordState {
                 base,
@@ -771,6 +791,7 @@ impl TransactionState {
                 .map_err(|_| failed(GenerationMutationError::InconsistentState, self.work))?;
             match operation {
                 Mutation::Create { record, .. } => self.create(plan, ordinal, *record, order)?,
+                Mutation::Restore { record, .. } => self.restore(plan, ordinal, *record, order)?,
                 Mutation::Remove {
                     expected_file_id, ..
                 } => {
@@ -1178,6 +1199,100 @@ impl TransactionState {
                 kind: record.kind,
             }),
         );
+        Ok(())
+    }
+
+    /// Restores one path from an immutable generation without flattening the
+    /// live hard-link graph. Directory payloads are retained when the
+    /// destination is already a directory: Git-shaped history tracks the
+    /// children individually and must not erase live ignored descendants.
+    fn restore(
+        &mut self,
+        plan: &MutationPlan,
+        operation: usize,
+        source: FileRecord,
+        order: u32,
+    ) -> Result<(), GenerationMutationFailure> {
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "operation paths are preflighted and indexed by the enumerated mutation ordinal"
+        )]
+        let state = self.operation_paths[operation][0];
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "operation path state indices are constructed from the same path table"
+        )]
+        let current = self.paths[state].binding;
+        if let Some(current) = current {
+            if current.kind == FileKind::Directory && source.kind == FileKind::Directory {
+                self.record_mut(current.file_id)?.working.metadata = source.metadata;
+                return Ok(());
+            }
+            if current.file_id == source.file_id {
+                let link_count = self.record(source.file_id)?.working.link_count;
+                self.record_mut(source.file_id)?.working = FileRecord {
+                    link_count,
+                    ..source
+                };
+                return Ok(());
+            }
+        }
+
+        let directory_id = self.parent_directory(state)?;
+        let (name, retained_name_bytes) = self.clone_terminal_name(plan, operation, 0)?;
+        let entry = TreeEntry {
+            name,
+            file_id: source.file_id,
+            kind: source.kind,
+        };
+        self.push_edit(
+            directory_id,
+            order,
+            retained_name_bytes,
+            match current {
+                Some(existing) => TreeMutation::Replace {
+                    entry,
+                    expected_file_id: existing.file_id,
+                },
+                None => TreeMutation::Insert(entry),
+            },
+        );
+        if let Some(existing) = current {
+            self.drop_link(existing)?;
+        }
+        let current_work = self.work;
+        let desired = self.record_mut(source.file_id)?;
+        if desired.present {
+            if source.kind == FileKind::Directory {
+                return Err(failed(
+                    GenerationMutationError::UnsupportedHardLink,
+                    self.work,
+                ));
+            }
+            desired.working = FileRecord {
+                link_count: desired
+                    .working
+                    .link_count
+                    .checked_add(1)
+                    .ok_or_else(|| failed(WorkError::Overflow.into(), current_work))?,
+                ..source
+            };
+        } else {
+            desired.working = FileRecord {
+                link_count: 1,
+                ..source
+            };
+            desired.present = true;
+        }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "operation path state indices are constructed from the same path table"
+        )]
+        let path_state = &mut self.paths[state];
+        path_state.binding = Some(Binding {
+            file_id: source.file_id,
+            kind: source.kind,
+        });
         Ok(())
     }
 
@@ -1860,13 +1975,13 @@ fn preflight_generation_mutations(
                 })?;
         }
         match operation {
-            Mutation::Create { record, .. } => {
+            Mutation::Create { record, .. } | Mutation::Restore { record, .. } => {
                 if !record.kind.is_supported_by_profile(config.profile) {
                     return Err(OperationFailure::before_work(
                         GenerationMutationError::UnsupportedFileKind,
                     ));
                 }
-                if record.link_count != 1 {
+                if matches!(operation, Mutation::Create { .. }) && record.link_count != 1 {
                     return Err(OperationFailure::before_work(
                         GenerationMutationError::InvalidInitialLinkCount,
                     ));

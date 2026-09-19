@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 import re
 import sys
+import time
 
 
 MAX_RECEIPT_BYTES = 1_048_576
@@ -135,7 +137,49 @@ def verify(
         raise RuntimeError("archive bytes differ from the qualified artifact")
 
 
+def consumer(root: Path) -> dict[str, object]:
+    """Run one small consumer through package exports, Node, and the WASM core."""
+    started = time.monotonic()
+    commands = [
+        ["bun", "x", "tsc", "-b", "--force", "typescript/packages/sdk/tsconfig.json",
+         "--pretty", "false"],
+        ["bun", "x", "tsc", "-p", "typescript/packages/sdk/consumer-tsconfig.json",
+         "--pretty", "false"],
+        ["bun", "test", "typescript/packages/sdk/test/public-consumer.test.ts"],
+    ]
+    for command in commands:
+        try:
+            result = subprocess.run(
+                command, cwd=root, capture_output=True, text=True, check=False, timeout=90,
+            )
+        except (OSError, subprocess.TimeoutExpired) as failure:
+            return {
+                "schema": 1,
+                "passed": False,
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "error": str(failure)[-2000:],
+            }
+        if result.returncode != 0:
+            return {
+                "schema": 1,
+                "passed": False,
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "error": (result.stderr + result.stdout)[-2000:],
+            }
+    return {
+        "schema": 1,
+        "passed": True,
+        "elapsed_ms": int((time.monotonic() - started) * 1000),
+        "consumer": "typescript/packages/sdk/test/public-consumer.test.ts",
+        "surfaces": ["stream", "objects", "filesystem", "wasm"],
+    }
+
+
 def main() -> None:
+    if len(sys.argv) == 2 and sys.argv[1] == "consumer":
+        result = consumer(Path(__file__).resolve().parent.parent)
+        print(json.dumps(result, separators=(",", ":")))
+        raise SystemExit(0 if result["passed"] else 1)
     if len(sys.argv) == 4 and sys.argv[1] == "create":
         create(Path(sys.argv[2]), sys.argv[3], Path(__file__).resolve().parent.parent)
     elif len(sys.argv) == 6 and sys.argv[1] == "verify":
@@ -149,9 +193,7 @@ def main() -> None:
     else:
         raise SystemExit(
             "usage: typescript-qualification.py create OUTPUT SOURCE_SHA | "
-            "verify RECEIPT SOURCE_SHA ASSET ARCHIVE"
+            "verify RECEIPT SOURCE_SHA ASSET ARCHIVE | consumer"
         )
-
-
 if __name__ == "__main__":
     main()

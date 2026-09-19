@@ -4,7 +4,7 @@
 //! retention, and convergence. The engine's volume and authority identities
 //! remain implementation details.
 
-use crate::foundation::{GenerationId, OperationId, VolumeId};
+use crate::foundation::{FileId, GenerationId, OperationId, VolumeId};
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, MetadataField, NamespacePath,
 };
@@ -12,9 +12,13 @@ use crate::model::{CheckoutMode, GenerationSelector};
 use crate::path::PortablePath;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, Checkout, CheckoutCommitOutcome,
-    FsError, GenerationDiff, MergeConflict, Volume,
+    ConflictKey, ConflictKind, ConflictSide, ConflictValue, FsError, GenerationDiff, MergeConflict,
+    MergeDriverRegistry, MergePlan, MergePlanResolutionError, MergeResolution,
+    MergeResolutionCache, UnpublishedMergeCandidate, Volume, resolve_merge_plan,
 };
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use thiserror::Error;
@@ -80,10 +84,21 @@ impl fmt::Display for WorkspaceName {
 }
 
 /// Stable opaque identity of one named workspace.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct WorkspaceId([u8; 16]);
 
 impl WorkspaceId {
+    pub(crate) const fn from_volume_id(volume_id: VolumeId) -> Self {
+        Self(volume_id.into_bytes())
+    }
+
+    /// Restores a stable workspace identity from canonical bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
     /// Derives the stable identity for a canonical name in one deployment
     /// namespace. The namespace is deliberately internal to the selected
     /// `Fs` deployment.
@@ -115,7 +130,8 @@ impl WorkspaceId {
 }
 
 /// Stable retry identity for one customer-visible mutation, fork, or join.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct IdempotencyKey([u8; 16]);
 
 impl IdempotencyKey {
@@ -190,6 +206,26 @@ impl<A, O> Workspace<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
+    /// Resolves the exact generation published by one prior workspace operation.
+    ///
+    /// This is the recovery boundary for adapters that persisted an
+    /// idempotency key before publication but lost the successful result.
+    pub async fn operation_generation(
+        &self,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<Option<Generation<A, O>>, WorkspaceError> {
+        self.volume
+            .fs
+            .workspace_operation_generation(&self.volume, idempotency_key.operation_id())
+            .await
+            .map(|generation| {
+                generation.map(|id| Generation {
+                    workspace: self.clone(),
+                    id,
+                })
+            })
+    }
+
     /// Opens an authenticated checkout using the requested generation and mode.
     ///
     /// # Errors
@@ -274,6 +310,268 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         })
     }
 
+    /// Atomically moves this workspace head to one of its own exact immutable
+    /// generations. The caller supplies the observed head, making restoration
+    /// a composable compare-and-swap rather than an unconditional reset.
+    ///
+    /// This primitive is also the recovery boundary for compatibility layers:
+    /// retrying the same key and inputs reports the already-restored generation,
+    /// while reusing a key for another generation fails closed.
+    pub async fn restore_generation(
+        &self,
+        generation: &Generation<A, O>,
+        if_current: GenerationId,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<WorkspaceRestore<A, O>, WorkspaceError> {
+        if generation.workspace.id != self.id {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let outcome = self
+            .volume
+            .fs
+            .restore_workspace_generation(
+                &self.volume,
+                generation.id,
+                if_current,
+                idempotency_key.operation_id(),
+            )
+            .await?;
+        let restored = |id| Generation {
+            workspace: self.clone(),
+            id,
+        };
+        Ok(match outcome {
+            WorkspaceRestoreOutcome::Restored(id) => WorkspaceRestore::Restored(restored(id)),
+            WorkspaceRestoreOutcome::AlreadyRestored(id) => {
+                WorkspaceRestore::AlreadyRestored(restored(id))
+            }
+            WorkspaceRestoreOutcome::Current(id) => WorkspaceRestore::Current(restored(id)),
+            WorkspaceRestoreOutcome::Stale(id) => WorkspaceRestore::Stale(restored(id)),
+            WorkspaceRestoreOutcome::Fenced => WorkspaceRestore::Fenced,
+            WorkspaceRestoreOutcome::IdempotencyConflict => WorkspaceRestore::IdempotencyConflict,
+        })
+    }
+
+    /// Atomically restores selected paths from an immutable compatible
+    /// generation while leaving every other live path untouched.
+    ///
+    /// This is the core primitive used by compatibility layers for checkout,
+    /// restore, and hard reset. Exact records are reused by reference, richer
+    /// metadata is retained, and live hard-link topology remains authoritative
+    /// for bindings outside `paths`.
+    pub async fn restore_paths_from(
+        &self,
+        source: &Generation<A, O>,
+        paths: &[String],
+        if_current: GenerationId,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
+        if !self.volume.fs.same_deployment(&source.workspace.volume.fs) {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let current = self.head().await?;
+        if current.id != if_current {
+            return Ok(TransactionCommit::Conflict { actual: current });
+        }
+        let mut source_checkout = source
+            .workspace
+            .engine_checkout(
+                GenerationSelector::Exact(source.id),
+                CheckoutMode::read_only_pinned(),
+            )
+            .await?;
+        let mut transaction = self.begin_transaction(idempotency_key).await?;
+        let limits = self.volume.config.limits;
+        let cancellation = crate::CancellationToken::new();
+        let mut operations = Vec::with_capacity(paths.len());
+        for path in paths {
+            let relative = path.trim_start_matches('/');
+            let absolute = if path.starts_with('/') {
+                path.clone()
+            } else {
+                format!("/{path}")
+            };
+            let path = customer_path(&absolute, limits)?;
+            let source_record = source_checkout
+                .lookup_no_follow(&path, crate::WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(WorkspaceError::engine)?
+                .value
+                .record;
+            if let Some(record) = source_record {
+                if record.kind != FileKind::Directory
+                    && let Some((parent, _)) = relative.rsplit_once('/')
+                {
+                    transaction.create_dir_all(&format!("/{parent}")).await?;
+                }
+                operations.push(crate::kernel::Mutation::Restore { path, record });
+            } else {
+                let current_record = transaction
+                    .checkout
+                    .lookup_no_follow(&path, crate::WorkBudget::UNBOUNDED, &cancellation)
+                    .await
+                    .map_err(WorkspaceError::engine)?
+                    .value
+                    .record;
+                if let Some(record) = current_record {
+                    operations.push(crate::kernel::Mutation::Remove {
+                        path,
+                        expected_file_id: MetadataField::Value(record.file_id),
+                    });
+                }
+            }
+        }
+        if !operations.is_empty() {
+            transaction
+                .checkout
+                .mutate(operations, crate::WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(WorkspaceError::engine)?;
+        }
+        transaction.commit().await
+    }
+
+    /// Applies only the paths changed between `base` and `source`, rejecting
+    /// paths independently changed in the live workspace. This is a bounded,
+    /// exact three-way patch primitive for cherry-pick, revert, and similar
+    /// compatibility operations.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one atomic path application keeps conflict classification and publication together"
+    )]
+    pub async fn apply_paths_from(
+        &self,
+        base: Option<&Generation<A, O>>,
+        source: Option<&Generation<A, O>>,
+        paths: &[String],
+        if_current: GenerationId,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<WorkspacePathApply<A, O>, WorkspaceError> {
+        if base.is_some_and(|base| !self.volume.fs.same_deployment(&base.workspace.volume.fs))
+            || source
+                .is_some_and(|source| !self.volume.fs.same_deployment(&source.workspace.volume.fs))
+        {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let current = self.head().await?;
+        if current.id != if_current {
+            return Ok(WorkspacePathApply::Stale(current));
+        }
+        let mut base_checkout = match base {
+            Some(base) => Some(
+                base.workspace
+                    .engine_checkout(
+                        GenerationSelector::Exact(base.id),
+                        CheckoutMode::read_only_pinned(),
+                    )
+                    .await?,
+            ),
+            None => None,
+        };
+        let mut source_checkout = match source {
+            Some(source) => Some(
+                source
+                    .workspace
+                    .engine_checkout(
+                        GenerationSelector::Exact(source.id),
+                        CheckoutMode::read_only_pinned(),
+                    )
+                    .await?,
+            ),
+            None => None,
+        };
+        let mut transaction = self.begin_transaction(idempotency_key).await?;
+        let limits = self.volume.config.limits;
+        let cancellation = crate::CancellationToken::new();
+        let mut operations = Vec::with_capacity(paths.len());
+        let mut conflicts = Vec::new();
+        for path in paths {
+            let relative = path.trim_start_matches('/');
+            let absolute = format!("/{relative}");
+            let path = customer_path(&absolute, limits)?;
+            let base_record = match &mut base_checkout {
+                Some(checkout) => {
+                    checkout
+                        .lookup_no_follow(&path, crate::WorkBudget::UNBOUNDED, &cancellation)
+                        .await
+                        .map_err(WorkspaceError::engine)?
+                        .value
+                        .record
+                }
+                None => None,
+            };
+            let source_record = match &mut source_checkout {
+                Some(checkout) => {
+                    checkout
+                        .lookup_no_follow(&path, crate::WorkBudget::UNBOUNDED, &cancellation)
+                        .await
+                        .map_err(WorkspaceError::engine)?
+                        .value
+                        .record
+                }
+                None => None,
+            };
+            if base_record == source_record {
+                continue;
+            }
+            let current_record = transaction
+                .checkout
+                .lookup_no_follow(&path, crate::WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(WorkspaceError::engine)?
+                .value
+                .record;
+            if current_record == source_record {
+                continue;
+            }
+            if current_record != base_record {
+                conflicts.push(WorkspacePathConflict {
+                    path: relative.to_owned(),
+                    kind: path_conflict_kind(base_record, current_record, source_record),
+                });
+                continue;
+            }
+            match source_record {
+                Some(record) => {
+                    if record.kind != FileKind::Directory
+                        && let Some((parent, _)) = relative.rsplit_once('/')
+                    {
+                        transaction.create_dir_all(&format!("/{parent}")).await?;
+                    }
+                    operations.push(crate::kernel::Mutation::Restore { path, record });
+                }
+                None => {
+                    if let Some(record) = current_record {
+                        operations.push(crate::kernel::Mutation::Remove {
+                            path,
+                            expected_file_id: MetadataField::Value(record.file_id),
+                        });
+                    }
+                }
+            }
+        }
+        if !conflicts.is_empty() {
+            return Ok(WorkspacePathApply::Conflicted(conflicts));
+        }
+        if operations.is_empty() {
+            return Ok(WorkspacePathApply::NoChanges(current));
+        }
+        transaction
+            .checkout
+            .mutate(operations, crate::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(WorkspaceError::engine)?;
+        Ok(match transaction.commit().await? {
+            TransactionCommit::Committed(generation) => WorkspacePathApply::Applied(generation),
+            TransactionCommit::AlreadyCommitted(generation) => {
+                WorkspacePathApply::AlreadyApplied(generation)
+            }
+            TransactionCommit::Conflict { actual } => WorkspacePathApply::Stale(actual),
+            TransactionCommit::Fenced => WorkspacePathApply::Fenced,
+            TransactionCommit::IdempotencyConflict => WorkspacePathApply::IdempotencyConflict,
+        })
+    }
+
     /// Returns the current complete immutable workspace state after all prior
     /// SDK operations on this handle have reached their publication boundary.
     ///
@@ -303,10 +601,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             return Err(WorkspaceError::ForeignGeneration);
         }
         let destination = WorkspaceName::new(destination)?;
-        self.volume
-            .fs
-            .fork_workspace(destination, &options.generation, options.idempotency_key)
-            .await
+        Box::pin(self.volume.fs.fork_workspace(
+            destination,
+            &options.generation,
+            options.idempotency_key,
+        ))
+        .await
     }
 
     /// Opens one sparse atomic transaction against the current generation.
@@ -936,6 +1236,10 @@ pub struct Transaction<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
+    pub(crate) fn workspace_id(&self) -> WorkspaceId {
+        self.workspace.id()
+    }
+
     /// Creates one new regular file and rejects an existing destination.
     ///
     /// # Errors
@@ -1415,34 +1719,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     /// authority failures. Semantic publication rejections are typed outcomes.
     pub async fn commit(&mut self) -> Result<TransactionCommit<A, O>, WorkspaceError> {
         if self.requires_rebase {
-            let retried = self
-                .checkout
-                .retry_stale_commit(
-                    self.idempotency_key.operation_id(),
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await
-                .map_err(WorkspaceError::engine)?
-                .value;
-            let Some(outcome) = retried else {
-                return Ok(TransactionCommit::Conflict {
-                    actual: self.workspace.head().await?,
-                });
-            };
-            return self.commit_outcome(outcome).await;
-        }
-        let outcome = self
-            .checkout
-            .commit(
+            let retried = Box::pin(self.checkout.retry_stale_commit(
                 self.idempotency_key.operation_id(),
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
-            )
+            ))
             .await
             .map_err(WorkspaceError::engine)?
             .value;
-        self.commit_outcome(outcome).await
+            let Some(outcome) = retried else {
+                return Ok(TransactionCommit::Conflict {
+                    actual: Box::pin(self.workspace.head()).await?,
+                });
+            };
+            return Box::pin(self.commit_outcome(outcome)).await;
+        }
+        let outcome = Box::pin(self.checkout.commit(
+            self.idempotency_key.operation_id(),
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        ))
+        .await
+        .map_err(WorkspaceError::engine)?
+        .value;
+        Box::pin(self.commit_outcome(outcome)).await
     }
 
     async fn commit_outcome(
@@ -1463,7 +1763,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                 }))
             }
             CheckoutCommitOutcome::Conflict { .. } => Ok(TransactionCommit::Conflict {
-                actual: self.workspace.head().await?,
+                actual: Box::pin(self.workspace.head()).await?,
             }),
             CheckoutCommitOutcome::Fenced { .. } => Ok(TransactionCommit::Fenced),
             CheckoutCommitOutcome::IdempotencyConflict { .. } => {
@@ -1905,6 +2205,17 @@ pub struct ChangeSet<A, O> {
     work: crate::WorkCounters,
 }
 
+/// One changed exact path between two immutable generations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChangedPath {
+    /// Canonical exact path in either endpoint.
+    pub path: NamespacePath,
+    /// Complete path-independent record in the earlier generation, when present.
+    pub before: Option<crate::kernel::FileRecord>,
+    /// Complete path-independent record in the later generation, when present.
+    pub after: Option<crate::kernel::FileRecord>,
+}
+
 impl<A, O> ChangeSet<A, O> {
     /// Exact immutable base endpoint.
     #[must_use]
@@ -1931,7 +2242,130 @@ impl<A, O> ChangeSet<A, O> {
     }
 }
 
+fn merge_binding_endpoint(
+    paths: &mut BTreeMap<
+        NamespacePath,
+        (
+            Option<crate::kernel::FileRecord>,
+            Option<crate::kernel::FileRecord>,
+        ),
+    >,
+    directories: &BTreeMap<FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>>,
+    records: &BTreeMap<FileId, crate::kernel::FileRecord>,
+    change: &crate::DirectoryBindingChange,
+    limits: crate::model::VolumeLimits,
+    before: bool,
+) -> Result<(), WorkspaceError> {
+    let Some(directories) = directories.get(&change.directory_id) else {
+        return Ok(());
+    };
+    let binding = if before {
+        change.before.as_ref()
+    } else {
+        change.after.as_ref()
+    };
+    let record = binding.and_then(|entry| records.get(&entry.file_id).copied());
+    for (directory, _) in directories {
+        let path = child_namespace_path(directory, change.name.clone(), limits)?;
+        let endpoints = paths.entry(path).or_default();
+        if before {
+            endpoints.0 = record;
+        } else {
+            endpoints.1 = record;
+        }
+    }
+    Ok(())
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
+    /// Resolves every changed record or binding to exact paths with one bounded traversal of each
+    /// endpoint. Equal Merkle subtrees remain skipped by the semantic diff that created this set.
+    pub async fn changed_paths(
+        &self,
+        maximum_entries: u32,
+    ) -> Result<Vec<ChangedPath>, WorkspaceError> {
+        let file_ids: BTreeSet<_> = self
+            .changes
+            .files
+            .iter()
+            .map(|change| change.file_id)
+            .chain(
+                self.changes
+                    .bindings
+                    .iter()
+                    .map(|change| change.directory_id),
+            )
+            .chain(self.changes.bindings.iter().flat_map(|change| {
+                change
+                    .before
+                    .iter()
+                    .chain(change.after.iter())
+                    .map(|entry| entry.file_id)
+            }))
+            .collect();
+        let before = self
+            .from
+            .namespace_records_for_file_ids(file_ids.iter().copied(), maximum_entries);
+        let after = self
+            .to
+            .namespace_records_for_file_ids(file_ids.iter().copied(), maximum_entries);
+        let (before, after) = futures::try_join!(before, after)?;
+        let mut paths = BTreeMap::<NamespacePath, (Option<_>, Option<_>)>::new();
+        let before_records: BTreeMap<_, _> = before
+            .iter()
+            .filter_map(|(&file_id, records)| records.first().map(|(_, record)| (file_id, *record)))
+            .collect();
+        let after_records: BTreeMap<_, _> = after
+            .iter()
+            .filter_map(|(&file_id, records)| records.first().map(|(_, record)| (file_id, *record)))
+            .collect();
+        for records in before.values() {
+            for (path, record) in records {
+                paths.entry(path.clone()).or_default().0 = Some(*record);
+            }
+        }
+        for records in after.values() {
+            for (path, record) in records {
+                paths.entry(path.clone()).or_default().1 = Some(*record);
+            }
+        }
+        for change in &self.changes.bindings {
+            merge_binding_endpoint(
+                &mut paths,
+                &before,
+                &before_records,
+                change,
+                self.from.workspace.volume.config.limits,
+                true,
+            )?;
+            merge_binding_endpoint(
+                &mut paths,
+                &after,
+                &after_records,
+                change,
+                self.to.workspace.volume.config.limits,
+                false,
+            )?;
+        }
+        Ok(paths
+            .into_iter()
+            .filter(|(_, (before, after))| match (before, after) {
+                (Some(before), Some(after)) => {
+                    before.kind != after.kind
+                        || before.metadata != after.metadata
+                        || (before.kind != FileKind::Directory && before.payload != after.payload)
+                }
+                (None, None) => false,
+                _ => true,
+            })
+            .map(|(path, (before, after))| ChangedPath {
+                path,
+                before,
+                after,
+            })
+            .collect())
+    }
+
     /// Composes contiguous immutable deltas into their exact net semantic
     /// change. Intermediate changes that cancel are absent from the result.
     ///
@@ -2112,6 +2546,7 @@ impl<A, O> JoinPlan<A, O> {
 
     /// Workspace volume that authenticated the exact common ancestor.
     #[must_use]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) const fn common_ancestor_volume(&self) -> VolumeId {
         self.base.volume_id
     }
@@ -2155,7 +2590,77 @@ pub enum JoinOutcome<A, O> {
     IdempotencyConflict,
 }
 
+pub(crate) enum WorkspaceRestoreOutcome {
+    Restored(GenerationId),
+    AlreadyRestored(GenerationId),
+    Current(GenerationId),
+    Stale(GenerationId),
+    Fenced,
+    IdempotencyConflict,
+}
+
+/// Terminal semantic outcome of an exact workspace-head restoration.
+pub enum WorkspaceRestore<A, O> {
+    /// The requested historical generation became current.
+    Restored(Generation<A, O>),
+    /// The same restoration was already durable under this retry identity.
+    AlreadyRestored(Generation<A, O>),
+    /// The requested generation was already current; no publication occurred.
+    Current(Generation<A, O>),
+    /// The workspace advanced after the caller observed it.
+    Stale(Generation<A, O>),
+    /// Workspace writer ownership changed before publication.
+    Fenced,
+    /// The retry identity was previously bound to another restoration.
+    IdempotencyConflict,
+}
+
+/// One exact path rejected by a three-way path application.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspacePathConflict {
+    /// Portable path relative to the workspace root.
+    pub path: String,
+    /// Semantic category suitable for driver or UI selection.
+    pub kind: ConflictKind,
+}
+
+/// Terminal outcome of applying a generation delta to selected paths.
+pub enum WorkspacePathApply<A, O> {
+    /// A new generation became durable.
+    Applied(Generation<A, O>),
+    /// The exact idempotent application was already durable.
+    AlreadyApplied(Generation<A, O>),
+    /// The requested delta was already represented by the live workspace.
+    NoChanges(Generation<A, O>),
+    /// Independent live changes overlap the requested generation delta.
+    Conflicted(Vec<WorkspacePathConflict>),
+    /// The live workspace advanced after the caller's observation.
+    Stale(Generation<A, O>),
+    /// Workspace writer ownership changed before publication.
+    Fenced,
+    /// The retry identity was previously used for different inputs.
+    IdempotencyConflict,
+}
+
+/// Failure while resolving or validating a declarative real-workspace join.
+#[derive(Debug, Error)]
+pub enum DrivenJoinError {
+    /// Workspace planning, storage, or publication failed.
+    #[error(transparent)]
+    Workspace(#[from] WorkspaceError),
+    /// Driver selection, execution, or cache reuse failed.
+    #[error(transparent)]
+    Resolution(#[from] MergePlanResolutionError),
+    /// Candidate generations or conflict identities do not match this join plan.
+    #[error("merge candidate does not match the immutable workspace join plan")]
+    StaleCandidate,
+    /// The current kernel cannot safely materialize this synthesized resolution.
+    #[error("merge resolution for {0:?} is not representable by this join")]
+    UnsupportedResolution(ConflictKey),
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn source_changes(
         &self,
     ) -> Result<crate::FsReceipt<GenerationDiff>, WorkspaceError> {
@@ -2173,6 +2678,393 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
     /// Returns authenticated storage, compatibility, bound, or publication
     /// failures. Semantic conflicts and races are typed outcomes.
     pub async fn apply(&self, options: ApplyOptions) -> Result<JoinOutcome<A, O>, WorkspaceError> {
+        self.apply_resolutions(options, BTreeMap::new()).await
+    }
+
+    /// Expands exact kernel conflicts into immutable, driver-ready values.
+    ///
+    /// This is side-effect free and lets adapters present the same typed paths
+    /// and alternatives used by [`Self::apply_with_drivers`].
+    pub async fn describe_conflicts(
+        &self,
+        conflicts: &[MergeConflict],
+        truncated: bool,
+    ) -> Result<MergePlan, WorkspaceError> {
+        self.typed_merge_plan(conflicts.to_vec(), truncated).await
+    }
+
+    /// Runs registered immutable-input drivers for real join conflicts and
+    /// publishes the validated candidate through the ordinary target CAS.
+    pub async fn apply_with_drivers<C: MergeResolutionCache>(
+        &self,
+        options: ApplyOptions,
+        registry: &MergeDriverRegistry,
+        cache: &mut C,
+        replanning: bool,
+    ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
+        let initial = self.apply(options).await?;
+        let JoinOutcome::Conflicted {
+            conflicts,
+            truncated,
+        } = initial
+        else {
+            return Ok(initial);
+        };
+        let plan = self.typed_merge_plan(conflicts, truncated).await?;
+        let candidate = resolve_merge_plan(plan, registry, cache, replanning)?;
+        self.apply_candidate(options, &candidate).await
+    }
+
+    /// Applies caller-selected immutable sides after validating that they
+    /// exactly cover the conflicts produced by this join plan.
+    pub async fn apply_sides(
+        &self,
+        options: ApplyOptions,
+        selections: BTreeMap<MergeConflict, ConflictSide>,
+    ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
+        let initial = self.apply(options).await?;
+        let JoinOutcome::Conflicted {
+            conflicts,
+            truncated,
+        } = initial
+        else {
+            return Ok(initial);
+        };
+        if truncated
+            || conflicts.len() != selections.len()
+            || conflicts
+                .iter()
+                .any(|conflict| !selections.contains_key(conflict))
+        {
+            return Err(DrivenJoinError::StaleCandidate);
+        }
+        let resolutions = selections
+            .into_iter()
+            .map(|(conflict, side)| {
+                let side = match side {
+                    ConflictSide::Base => crate::kernel::MergeConflictSide::Base,
+                    ConflictSide::Ours => crate::kernel::MergeConflictSide::Ours,
+                    ConflictSide::Theirs => crate::kernel::MergeConflictSide::Theirs,
+                };
+                (
+                    conflict,
+                    crate::kernel::MergeConflictResolution::Select(side),
+                )
+            })
+            .collect();
+        self.apply_resolutions(options, resolutions)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Validates caller-selected declarations against this exact immutable
+    /// join and publishes them through the same fenced compare-and-swap path.
+    pub async fn apply_candidate(
+        &self,
+        options: ApplyOptions,
+        candidate: &UnpublishedMergeCandidate,
+    ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
+        if candidate.plan.base != self.base.id
+            || candidate.plan.ours != self.target_head.id
+            || candidate.plan.theirs != self.source_head.id
+            || candidate.plan.truncated
+            || candidate.plan.conflicts.len() != candidate.resolutions.len()
+        {
+            return Err(DrivenJoinError::StaleCandidate);
+        }
+        let mut resolutions = BTreeMap::new();
+        for conflict in &candidate.plan.conflicts {
+            let resolution = candidate
+                .resolutions
+                .get(&conflict.key)
+                .ok_or(DrivenJoinError::StaleCandidate)?;
+            if !resolution_matches_conflict(&conflict.key, resolution) {
+                return Err(DrivenJoinError::UnsupportedResolution(conflict.key.clone()));
+            }
+            let resolution = match resolution {
+                MergeResolution::Select(ConflictSide::Base) => {
+                    crate::kernel::MergeConflictResolution::Select(
+                        crate::kernel::MergeConflictSide::Base,
+                    )
+                }
+                MergeResolution::Select(ConflictSide::Ours) => {
+                    crate::kernel::MergeConflictResolution::Select(
+                        crate::kernel::MergeConflictSide::Ours,
+                    )
+                }
+                MergeResolution::Select(ConflictSide::Theirs) => {
+                    crate::kernel::MergeConflictResolution::Select(
+                        crate::kernel::MergeConflictSide::Theirs,
+                    )
+                }
+                MergeResolution::Text(text) => crate::kernel::MergeConflictResolution::File(Some(
+                    self.stage_regular_resolution(
+                        &conflict.key,
+                        Bytes::copy_from_slice(text.as_bytes()),
+                    )
+                    .await?,
+                )),
+                MergeResolution::Binary(bytes) => {
+                    crate::kernel::MergeConflictResolution::File(Some(
+                        self.stage_regular_resolution(&conflict.key, Bytes::copy_from_slice(bytes))
+                            .await?,
+                    ))
+                }
+                MergeResolution::Metadata(bytes) => {
+                    let file_id = conflict_file_id(&conflict.key).ok_or_else(|| {
+                        DrivenJoinError::UnsupportedResolution(conflict.key.clone())
+                    })?;
+                    let mut record = self
+                        .target
+                        .volume
+                        .fs
+                        .workspace_conflict_record(
+                            &self.target.volume,
+                            self.target_head.id,
+                            file_id,
+                        )
+                        .await?
+                        .ok_or(WorkspaceError::InvalidMergeResolution)?;
+                    record.metadata = self
+                        .target
+                        .volume
+                        .fs
+                        .stage_merge_metadata(&self.target.volume, bytes)
+                        .await?;
+                    crate::kernel::MergeConflictResolution::File(Some(record))
+                }
+                MergeResolution::Binding(file_id) => {
+                    crate::kernel::MergeConflictResolution::Binding(*file_id)
+                }
+                MergeResolution::Unresolved => {
+                    return Err(DrivenJoinError::UnsupportedResolution(conflict.key.clone()));
+                }
+            };
+            resolutions.insert(
+                kernel_conflict(
+                    &conflict.key,
+                    self.target.volume.config.limits.maximum_component_bytes,
+                )?,
+                resolution,
+            );
+        }
+        self.apply_resolutions(options, resolutions)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn stage_regular_resolution(
+        &self,
+        key: &ConflictKey,
+        bytes: Bytes,
+    ) -> Result<crate::kernel::FileRecord, DrivenJoinError> {
+        let file_id = conflict_file_id(key)
+            .ok_or_else(|| DrivenJoinError::UnsupportedResolution(key.clone()))?;
+        let record = self
+            .target
+            .volume
+            .fs
+            .workspace_conflict_record(&self.target.volume, self.target_head.id, file_id)
+            .await?
+            .ok_or(WorkspaceError::InvalidMergeResolution)?;
+        self.target
+            .volume
+            .fs
+            .stage_merge_regular_record(&self.target.volume, record, bytes)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn typed_merge_plan(
+        &self,
+        conflicts: Vec<MergeConflict>,
+        truncated: bool,
+    ) -> Result<MergePlan, WorkspaceError> {
+        let mut typed = Vec::with_capacity(conflicts.len());
+        for conflict in conflicts {
+            typed.push(self.conflict_view(conflict).await?);
+        }
+        Ok(MergePlan {
+            base: self.base.id,
+            ours: self.target_head.id,
+            theirs: self.source_head.id,
+            conflicts: typed,
+            truncated,
+        })
+    }
+
+    async fn conflict_view(
+        &self,
+        conflict: MergeConflict,
+    ) -> Result<crate::ConflictView, WorkspaceError> {
+        let MergeConflict::File(file_id) = conflict else {
+            let mut view = binding_conflict_view(self, conflict.clone());
+            if let MergeConflict::Binding { directory_id, name } = conflict
+                && let Some(directory) = self.conflict_path(directory_id).await?
+                && let Ok(name) = logical_name_text(&name)
+            {
+                view.path = Some(if directory == "/" {
+                    format!("/{name}")
+                } else {
+                    format!("{directory}/{name}")
+                });
+            }
+            return Ok(view);
+        };
+        let path = self.conflict_path(file_id).await?;
+        let fs = &self.target.volume.fs;
+        let base = fs
+            .workspace_conflict_record(&self.target.volume, self.base.id, file_id)
+            .await?;
+        let ours = fs
+            .workspace_conflict_record(&self.target.volume, self.target_head.id, file_id)
+            .await?;
+        let theirs = fs
+            .workspace_conflict_record(&self.target.volume, self.source_head.id, file_id)
+            .await?;
+        let fallback = |generation, record: Option<crate::kernel::FileRecord>| match record {
+            Some(_) => ConflictValue::Record {
+                generation,
+                file_id,
+            },
+            None => ConflictValue::Absent,
+        };
+        let Some((base_record, ours_record, theirs_record)) = base
+            .zip(ours)
+            .zip(theirs)
+            .map(|((base, ours), theirs)| (base, ours, theirs))
+        else {
+            return Ok(crate::ConflictView {
+                key: ConflictKey::File(file_id),
+                path,
+                kind: ConflictKind::Record,
+                base: fallback(self.base.id, base),
+                ours: fallback(self.target_head.id, ours),
+                theirs: fallback(self.source_head.id, theirs),
+            });
+        };
+        if base_record.link_count != ours_record.link_count
+            || base_record.link_count != theirs_record.link_count
+        {
+            return Ok(record_conflict_view(
+                self,
+                file_id,
+                path,
+                ConflictKind::HardLink,
+            ));
+        }
+        if base_record.metadata != ours_record.metadata
+            || base_record.metadata != theirs_record.metadata
+        {
+            let values = [base_record, ours_record, theirs_record];
+            let mut metadata = Vec::with_capacity(3);
+            for record in values {
+                metadata.push(ConflictValue::Metadata(
+                    fs.workspace_conflict_metadata(&self.target.volume, record)
+                        .await?,
+                ));
+            }
+            return Ok(crate::ConflictView {
+                key: ConflictKey::Metadata(file_id),
+                path,
+                kind: ConflictKind::Metadata,
+                base: metadata.remove(0),
+                ours: metadata.remove(0),
+                theirs: metadata.remove(0),
+            });
+        }
+        if let Some(view) = self
+            .regular_conflict_view(
+                file_id,
+                path.clone(),
+                [base_record, ours_record, theirs_record],
+            )
+            .await?
+        {
+            return Ok(view);
+        }
+        let kind = match base_record.kind {
+            FileKind::Directory => ConflictKind::Directory,
+            FileKind::SymbolicLink => ConflictKind::SymbolicLink,
+            _ => ConflictKind::Special,
+        };
+        Ok(record_conflict_view(self, file_id, path, kind))
+    }
+
+    async fn conflict_path(&self, file_id: FileId) -> Result<Option<String>, WorkspaceError> {
+        let maximum = self.maximum_changes.max(1);
+        let mut paths = self.target_head.paths_for_file_id(file_id, maximum).await?;
+        if paths.is_empty() {
+            paths = self.source_head.paths_for_file_id(file_id, maximum).await?;
+        }
+        Ok(paths.into_iter().next())
+    }
+
+    async fn regular_conflict_view(
+        &self,
+        file_id: FileId,
+        path: Option<String>,
+        records: [crate::kernel::FileRecord; 3],
+    ) -> Result<Option<crate::ConflictView>, WorkspaceError> {
+        if records
+            .iter()
+            .any(|record| record.kind != FileKind::Regular)
+        {
+            return Ok(None);
+        }
+        let mut bodies = Vec::with_capacity(3);
+        for record in records {
+            let Some(bytes) = self
+                .target
+                .volume
+                .fs
+                .workspace_conflict_bytes(&self.target.volume, record)
+                .await?
+            else {
+                return Ok(Some(record_conflict_view(
+                    self,
+                    file_id,
+                    path,
+                    ConflictKind::Binary,
+                )));
+            };
+            bodies.push(bytes);
+        }
+        let text = bodies
+            .iter()
+            .all(|bytes| std::str::from_utf8(bytes).is_ok());
+        let mut values = bodies.into_iter().map(|bytes| {
+            if text {
+                ConflictValue::Text(String::from_utf8(bytes.to_vec()).unwrap_or_default())
+            } else {
+                ConflictValue::Binary(bytes.to_vec())
+            }
+        });
+        Ok(Some(crate::ConflictView {
+            key: ConflictKey::File(file_id),
+            path,
+            kind: if text {
+                ConflictKind::Text
+            } else {
+                ConflictKind::Binary
+            },
+            base: values
+                .next()
+                .ok_or(WorkspaceError::InvalidMergeResolution)?,
+            ours: values
+                .next()
+                .ok_or(WorkspaceError::InvalidMergeResolution)?,
+            theirs: values
+                .next()
+                .ok_or(WorkspaceError::InvalidMergeResolution)?,
+        }))
+    }
+
+    async fn apply_resolutions(
+        &self,
+        options: ApplyOptions,
+        resolutions: BTreeMap<MergeConflict, crate::kernel::MergeConflictResolution>,
+    ) -> Result<JoinOutcome<A, O>, WorkspaceError> {
         if options.if_target != self.target_head.id {
             return Ok(JoinOutcome::StaleTarget(self.target.head().await?));
         }
@@ -2191,6 +3083,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 maximum_generations: self.maximum_generations,
                 maximum_changes: self.maximum_changes,
                 maximum_conflicts: self.maximum_conflicts,
+                resolutions,
             })
             .await?;
         let generation = |id| Generation {
@@ -2221,6 +3114,205 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 JoinOutcome::IdempotencyConflict
             }
         })
+    }
+}
+
+fn binding_conflict_view<A, O>(
+    plan: &JoinPlan<A, O>,
+    conflict: MergeConflict,
+) -> crate::ConflictView {
+    match conflict {
+        MergeConflict::File(file_id) => crate::ConflictView {
+            key: ConflictKey::File(file_id),
+            path: None,
+            kind: ConflictKind::Record,
+            base: ConflictValue::RecordReference {
+                generation: plan.base.id,
+                file_id,
+            },
+            ours: ConflictValue::RecordReference {
+                generation: plan.target_head.id,
+                file_id,
+            },
+            theirs: ConflictValue::RecordReference {
+                generation: plan.source_head.id,
+                file_id,
+            },
+        },
+        MergeConflict::Binding { directory_id, name } => {
+            let name = canonical_name_key(&name);
+            let value = |generation| ConflictValue::BindingReference {
+                generation,
+                directory_id,
+                name: name.clone(),
+            };
+            crate::ConflictView {
+                key: ConflictKey::Binding {
+                    directory_id,
+                    name: name.clone(),
+                },
+                path: None,
+                kind: ConflictKind::Binding,
+                base: value(plan.base.id),
+                ours: value(plan.target_head.id),
+                theirs: value(plan.source_head.id),
+            }
+        }
+    }
+}
+
+fn record_conflict_view<A, O>(
+    plan: &JoinPlan<A, O>,
+    file_id: FileId,
+    path: Option<String>,
+    kind: ConflictKind,
+) -> crate::ConflictView {
+    let value = |generation| ConflictValue::Record {
+        generation,
+        file_id,
+    };
+    crate::ConflictView {
+        key: ConflictKey::File(file_id),
+        path,
+        kind,
+        base: value(plan.base.id),
+        ours: value(plan.target_head.id),
+        theirs: value(plan.source_head.id),
+    }
+}
+
+fn canonical_name_key(name: &LogicalName) -> Vec<u8> {
+    let mut key = Vec::with_capacity(name.as_bytes().len().saturating_add(1));
+    key.push(match name.encoding() {
+        crate::kernel::NameEncoding::Utf8 => 1,
+        crate::kernel::NameEncoding::PosixBytes => 2,
+        crate::kernel::NameEncoding::WindowsUtf16Le => 3,
+    });
+    key.extend_from_slice(name.as_bytes());
+    key
+}
+
+fn logical_name_text(name: &LogicalName) -> Result<&str, WorkspaceError> {
+    match name.encoding() {
+        crate::kernel::NameEncoding::Utf8 => {
+            std::str::from_utf8(name.as_bytes()).map_err(WorkspaceError::path)
+        }
+        crate::kernel::NameEncoding::PosixBytes | crate::kernel::NameEncoding::WindowsUtf16Le => {
+            Err(WorkspaceError::path(
+                "non-UTF-8 path cannot be projected as a portable string",
+            ))
+        }
+    }
+}
+
+fn namespace_path_text(path: &NamespacePath) -> Result<String, WorkspaceError> {
+    if path.is_root() {
+        return Ok("/".to_owned());
+    }
+    let components = path
+        .components()
+        .iter()
+        .map(logical_name_text)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(format!("/{}", components.join("/")))
+}
+
+fn child_namespace_path(
+    directory: &NamespacePath,
+    name: LogicalName,
+    limits: crate::model::VolumeLimits,
+) -> Result<NamespacePath, WorkspaceError> {
+    let mut components = directory.components().to_vec();
+    components.push(name);
+    NamespacePath::new(components, limits).map_err(WorkspaceError::path)
+}
+
+fn kernel_conflict(
+    key: &ConflictKey,
+    maximum_component_bytes: u32,
+) -> Result<MergeConflict, DrivenJoinError> {
+    match key {
+        ConflictKey::File(file_id)
+        | ConflictKey::Metadata(file_id)
+        | ConflictKey::HardLinks(file_id)
+        | ConflictKey::Directory(file_id)
+        | ConflictKey::SpecialPayload(file_id)
+        | ConflictKey::ContentRange { file_id, .. }
+        | ConflictKey::Rename { file_id, .. } => Ok(MergeConflict::File(*file_id)),
+        ConflictKey::Binding { directory_id, name } => {
+            let (&tag, bytes) = name.split_first().ok_or(DrivenJoinError::StaleCandidate)?;
+            let encoding = match tag {
+                1 => crate::kernel::NameEncoding::Utf8,
+                2 => crate::kernel::NameEncoding::PosixBytes,
+                3 => crate::kernel::NameEncoding::WindowsUtf16Le,
+                _ => return Err(DrivenJoinError::StaleCandidate),
+            };
+            let name = LogicalName::new(encoding, bytes.to_vec(), maximum_component_bytes)
+                .map_err(|_| DrivenJoinError::StaleCandidate)?;
+            Ok(MergeConflict::Binding {
+                directory_id: *directory_id,
+                name,
+            })
+        }
+    }
+}
+
+fn conflict_file_id(key: &ConflictKey) -> Option<FileId> {
+    match key {
+        ConflictKey::File(file_id)
+        | ConflictKey::Metadata(file_id)
+        | ConflictKey::HardLinks(file_id)
+        | ConflictKey::Directory(file_id)
+        | ConflictKey::SpecialPayload(file_id)
+        | ConflictKey::ContentRange { file_id, .. }
+        | ConflictKey::Rename { file_id, .. } => Some(*file_id),
+        ConflictKey::Binding { .. } => None,
+    }
+}
+
+fn resolution_matches_conflict(key: &ConflictKey, resolution: &MergeResolution) -> bool {
+    match resolution {
+        MergeResolution::Select(_) | MergeResolution::Unresolved => true,
+        MergeResolution::Text(_) | MergeResolution::Binary(_) => {
+            matches!(key, ConflictKey::File(_) | ConflictKey::ContentRange { .. })
+        }
+        MergeResolution::Metadata(_) => matches!(key, ConflictKey::Metadata(_)),
+        MergeResolution::Binding(_) => matches!(key, ConflictKey::Binding { .. }),
+    }
+}
+
+#[cfg(test)]
+mod merge_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn synthesized_resolutions_match_only_their_exact_conflict_shape() {
+        let file_id = FileId::new();
+        let file = ConflictKey::File(file_id);
+        let metadata = ConflictKey::Metadata(file_id);
+        let binding = ConflictKey::Binding {
+            directory_id: file_id,
+            name: vec![1, b'x'],
+        };
+
+        for resolution in [
+            MergeResolution::Text("merged".into()),
+            MergeResolution::Binary(vec![1]),
+        ] {
+            assert!(resolution_matches_conflict(&file, &resolution));
+            assert!(!resolution_matches_conflict(&metadata, &resolution));
+            assert!(!resolution_matches_conflict(&binding, &resolution));
+        }
+        let metadata_resolution = MergeResolution::Metadata(vec![1]);
+        assert!(resolution_matches_conflict(&metadata, &metadata_resolution));
+        assert!(!resolution_matches_conflict(&file, &metadata_resolution));
+        let binding_resolution = MergeResolution::Binding(Some(file_id));
+        assert!(resolution_matches_conflict(&binding, &binding_resolution));
+        assert!(!resolution_matches_conflict(&file, &binding_resolution));
+        assert!(resolution_matches_conflict(
+            &file,
+            &MergeResolution::Select(ConflictSide::Ours)
+        ));
     }
 }
 
@@ -2276,6 +3368,72 @@ impl<A, O> Generation<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
+    /// Computes one semantic delta to a compatible generation in any workspace
+    /// from the same filesystem deployment.
+    pub async fn diff_to(
+        &self,
+        to: &Generation<A, O>,
+        maximum_changes: u32,
+    ) -> Result<ChangeSet<A, O>, WorkspaceError> {
+        let receipt = self
+            .workspace
+            .volume
+            .fs
+            .workspace_join_changes(self.id, to, maximum_changes)
+            .await?;
+        Ok(ChangeSet {
+            from: self.clone(),
+            to: to.clone(),
+            changes: receipt.value,
+            work: receipt.work,
+        })
+    }
+
+    /// Materializes this immutable generation into an existing empty host
+    /// directory using the SDK's native capability-rooted adapter.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn materialize(
+        &self,
+        options: &crate::MaterializeOptions,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
+        let mut checkout = self
+            .workspace
+            .engine_checkout(
+                GenerationSelector::Exact(self.id),
+                CheckoutMode::read_only_pinned(),
+            )
+            .await?;
+        crate::materialize_checkout(&mut checkout, options, budget, cancellation)
+            .await
+            .map_err(|failure| WorkspaceError::engine(failure.error))
+    }
+
+    /// Materializes one path from this generation below an existing empty
+    /// host directory. The same relative path is reproduced below the
+    /// destination, allowing callers to stage and atomically exchange it.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn materialize_path(
+        &self,
+        path: &str,
+        options: &crate::MaterializeOptions,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
+        let mut checkout = self
+            .workspace
+            .engine_checkout(
+                GenerationSelector::Exact(self.id),
+                CheckoutMode::read_only_pinned(),
+            )
+            .await?;
+        let path = customer_path(path, checkout.volume_config().limits)?;
+        crate::materialize_checkout_path(&mut checkout, &path, options, budget, cancellation)
+            .await
+            .map_err(|failure| WorkspaceError::engine(failure.error))
+    }
+
     /// Returns the exact immutable parent generation identities.
     ///
     /// # Errors
@@ -2336,6 +3494,53 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         stat_generation(&self.workspace, GenerationSelector::Exact(self.id), path).await
     }
 
+    /// Resolves an ordered exact path batch while sharing authenticated directory and file-table
+    /// frontiers. Absence is returned as `None`; links are not followed and file bodies are not
+    /// read.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty or excessive batch, foreign path encodings, cancellation, and
+    /// authenticated backend failures.
+    pub async fn lookup_paths(
+        &self,
+        paths: &[NamespacePath],
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> crate::FsResult<Vec<Option<crate::kernel::FileRecord>>> {
+        let checkout = self
+            .workspace
+            .volume
+            .checkout(
+                GenerationSelector::Exact(self.id),
+                CheckoutMode::read_only_pinned(),
+                budget,
+                cancellation,
+            )
+            .await?;
+        let checkout_work = checkout.work;
+        let remaining = checkout_work
+            .remaining(budget)
+            .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
+        let mut checkout = checkout.value;
+        let lookup = checkout
+            .lookup_batch_no_follow(paths, remaining, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(checkout_work, |error| error))?;
+        let work = checkout_work
+            .checked_add(lookup.work)
+            .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
+        Ok(crate::FsReceipt {
+            value: lookup
+                .value
+                .entries
+                .into_iter()
+                .map(|entry| entry.record)
+                .collect(),
+            work,
+        })
+    }
+
     /// Returns one authenticated bounded directory page from this generation.
     ///
     /// # Errors
@@ -2356,6 +3561,151 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             maximum_entries,
         )
         .await
+    }
+
+    /// Finds portable paths bound to one stable file identity in this generation.
+    ///
+    /// The traversal is bounded by `maximum_entries`; results are sorted and
+    /// include every matching hard link encountered before that bound.
+    pub async fn paths_for_file_id(
+        &self,
+        file_id: FileId,
+        maximum_entries: u32,
+    ) -> Result<Vec<String>, WorkspaceError> {
+        Ok(self
+            .paths_for_file_ids([file_id], maximum_entries)
+            .await?
+            .remove(&file_id)
+            .unwrap_or_default())
+    }
+
+    /// Finds portable paths for multiple stable file identities in one namespace traversal.
+    ///
+    /// The traversal is bounded by `maximum_entries`; each result is sorted and includes every
+    /// matching hard link encountered before that bound. Identities without a matching binding
+    /// are omitted.
+    pub async fn paths_for_file_ids(
+        &self,
+        file_ids: impl IntoIterator<Item = FileId>,
+        maximum_entries: u32,
+    ) -> Result<BTreeMap<FileId, Vec<String>>, WorkspaceError> {
+        let paths = self
+            .namespace_paths_for_file_ids(file_ids, maximum_entries)
+            .await?;
+        paths
+            .into_iter()
+            .map(|(file_id, paths)| {
+                paths
+                    .into_iter()
+                    .map(|path| namespace_path_text(&path))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|paths| (file_id, paths))
+            })
+            .collect()
+    }
+
+    async fn namespace_paths_for_file_ids(
+        &self,
+        file_ids: impl IntoIterator<Item = FileId>,
+        maximum_entries: u32,
+    ) -> Result<BTreeMap<FileId, Vec<NamespacePath>>, WorkspaceError> {
+        Ok(self
+            .namespace_records_for_file_ids(file_ids, maximum_entries)
+            .await?
+            .into_iter()
+            .map(|(file_id, records)| {
+                (file_id, records.into_iter().map(|(path, _)| path).collect())
+            })
+            .collect())
+    }
+
+    async fn namespace_records_for_file_ids(
+        &self,
+        file_ids: impl IntoIterator<Item = FileId>,
+        maximum_entries: u32,
+    ) -> Result<BTreeMap<FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>>, WorkspaceError>
+    {
+        if maximum_entries == 0 {
+            return Ok(BTreeMap::new());
+        }
+        let file_ids: BTreeSet<_> = file_ids.into_iter().collect();
+        if file_ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let maximum = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
+        let limits = self.workspace.volume.config.limits;
+        let mut matches: BTreeMap<_, Vec<(NamespacePath, crate::kernel::FileRecord)>> =
+            BTreeMap::new();
+        let mut checkout = self
+            .workspace
+            .engine_checkout(
+                GenerationSelector::Exact(self.id),
+                CheckoutMode::read_only_pinned(),
+            )
+            .await?;
+        let cancellation = crate::CancellationToken::new();
+        let root = NamespacePath::new(Vec::new(), limits).map_err(WorkspaceError::path)?;
+        if let Some(record) = checkout
+            .lookup_no_follow(&root, crate::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(WorkspaceError::engine)?
+            .value
+            .record
+            && file_ids.contains(&record.file_id)
+        {
+            matches
+                .entry(record.file_id)
+                .or_default()
+                .push((root.clone(), record));
+        }
+        let mut pending = vec![root];
+        let mut examined = 0_usize;
+        while let Some(directory) = pending.pop() {
+            let mut after = None;
+            loop {
+                let page = checkout
+                    .list_directory_records(
+                        &directory,
+                        after.as_ref(),
+                        1_024,
+                        crate::WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await
+                    .map_err(WorkspaceError::engine)?
+                    .value;
+                for entry in &page.entries {
+                    examined = examined.saturating_add(1);
+                    if examined > maximum {
+                        for records in matches.values_mut() {
+                            records.sort_by(|left, right| left.0.cmp(&right.0));
+                        }
+                        return Ok(matches);
+                    }
+                    let mut components = directory.components().to_vec();
+                    components.push(entry.name.clone());
+                    let path =
+                        NamespacePath::new(components, limits).map_err(WorkspaceError::path)?;
+                    if file_ids.contains(&entry.record.file_id) {
+                        matches
+                            .entry(entry.record.file_id)
+                            .or_default()
+                            .push((path.clone(), entry.record));
+                    }
+                    if entry.record.kind == FileKind::Directory {
+                        pending.push(path);
+                    }
+                }
+                if !page.has_more {
+                    break;
+                }
+                after = page.entries.last().map(|entry| entry.name.clone());
+            }
+        }
+        for records in matches.values_mut() {
+            records.sort_by(|left, right| left.0.cmp(&right.0));
+        }
+        Ok(matches)
     }
 
     /// Reads one opaque symbolic-link target from this generation.
@@ -2498,6 +3848,9 @@ pub enum WorkspaceError {
     /// Join input, diff, or conflict bounds are zero or exhausted.
     #[error("workspace join exceeds its configured bound")]
     JoinLimit,
+    /// A declarative merge resolution does not match its typed conflict.
+    #[error("merge resolution is incompatible with its conflict")]
+    InvalidMergeResolution,
     /// Change sets do not share one exact contiguous endpoint and deployment.
     #[error("change sets are not contiguous")]
     ChangeSetContinuity,
@@ -2534,6 +3887,40 @@ pub(crate) fn customer_path(
 ) -> Result<NamespacePath, WorkspaceError> {
     let portable = PortablePath::parse(path, limits).map_err(WorkspaceError::path)?;
     NamespacePath::from_portable(&portable, limits).map_err(WorkspaceError::path)
+}
+
+fn path_conflict_kind(
+    base: Option<crate::kernel::FileRecord>,
+    current: Option<crate::kernel::FileRecord>,
+    source: Option<crate::kernel::FileRecord>,
+) -> ConflictKind {
+    let (Some(base), Some(current), Some(source)) = (base, current, source) else {
+        return ConflictKind::Binding;
+    };
+    if base.kind != current.kind
+        || base.kind != source.kind
+        || base.file_id != current.file_id
+        || base.file_id != source.file_id
+    {
+        return ConflictKind::Binding;
+    }
+    if base.link_count != current.link_count || base.link_count != source.link_count {
+        return ConflictKind::HardLink;
+    }
+    if base.metadata != current.metadata || base.metadata != source.metadata {
+        return ConflictKind::Metadata;
+    }
+    match base.kind {
+        FileKind::Regular => ConflictKind::Binary,
+        FileKind::Directory => ConflictKind::Directory,
+        FileKind::SymbolicLink => ConflictKind::SymbolicLink,
+        FileKind::Fifo
+        | FileKind::Socket
+        | FileKind::CharacterDevice
+        | FileKind::BlockDevice
+        | FileKind::ReparsePoint
+        | FileKind::MountBoundary => ConflictKind::Special,
+    }
 }
 
 fn regular_file_bytes(record: crate::kernel::FileRecord) -> Result<u64, WorkspaceError> {

@@ -17,7 +17,7 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
 };
@@ -66,6 +66,39 @@ struct Runtime {
     root: PathBuf,
     writable: bool,
     enumerations: Mutex<HashMap<u128, Arc<Mutex<EnumState>>>>,
+    executor: CallbackExecutor,
+}
+
+struct CallbackExecutor {
+    sender: mpsc::SyncSender<Job>,
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+
+impl CallbackExecutor {
+    fn start() -> Result<Self, NativeMountError> {
+        let (sender, receiver) = mpsc::sync_channel::<Job>(256);
+        std::thread::Builder::new()
+            .name("acyclic-projfs".into())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || {
+                while let Ok(job) = receiver.recv() {
+                    job();
+                }
+            })
+            .map_err(|error| NativeMountError::Driver(error.to_string()))?;
+        Ok(Self { sender })
+    }
+
+    fn call<T: Send + 'static>(&self, operation: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(Box::new(move || {
+                let _ = sender.send(operation());
+            }))
+            .ok()?;
+        receiver.recv().ok()
+    }
 }
 
 /// One process-owned `ProjFS` virtualization context.
@@ -109,6 +142,7 @@ impl ProjFsSession {
             root: request.destination.clone(),
             writable: request.writable,
             enumerations: Mutex::new(HashMap::new()),
+            executor: CallbackExecutor::start()?,
         });
         let context_ptr = (&raw mut *runtime).cast::<c_void>();
         let callbacks = callbacks();
@@ -614,11 +648,15 @@ unsafe extern "system" fn file_data(
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
-    let bytes = match runtime.source.read_range(&path, byte_offset, length) {
-        Ok(bytes) if bytes.len() == length as usize => bytes,
-        Ok(_) => return HR_INVALID_DATA,
-        Err(super::MountSourceError::NotFound) => return HR_FILE_NOT_FOUND,
-        Err(_) => return HR_UNEXPECTED,
+    let source = Arc::clone(&runtime.source);
+    let bytes = match runtime
+        .executor
+        .call(move || source.read_range(&path, byte_offset, length))
+    {
+        Some(Ok(bytes)) if bytes.len() == length as usize => bytes,
+        Some(Ok(_)) => return HR_INVALID_DATA,
+        Some(Err(super::MountSourceError::NotFound)) => return HR_FILE_NOT_FOUND,
+        Some(Err(_)) | None => return HR_UNEXPECTED,
     };
     let buffer = PrjAllocateAlignedBuffer(data.NamespaceVirtualizationContext, bytes.len());
     if buffer.is_null() {
@@ -648,13 +686,18 @@ unsafe extern "system" fn query_name(callback_data: *const PRJ_CALLBACK_DATA) ->
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
-    match runtime.source.lookup(&path) {
-        Ok(Some(_)) => HR_OK,
-        Ok(None) | Err(super::MountSourceError::NotFound) => HR_FILE_NOT_FOUND,
-        Err(_) => HR_UNEXPECTED,
+    let source = Arc::clone(&runtime.source);
+    match runtime.executor.call(move || source.lookup(&path)) {
+        Some(Ok(Some(_))) => HR_OK,
+        Some(Ok(None) | Err(super::MountSourceError::NotFound)) => HR_FILE_NOT_FOUND,
+        Some(Err(_)) | None => HR_UNEXPECTED,
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "notification admission and its exact authored operation share one callback boundary"
+)]
 unsafe extern "system" fn notification(
     callback_data: *const PRJ_CALLBACK_DATA,
     is_directory: bool,
@@ -671,79 +714,142 @@ unsafe extern "system" fn notification(
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
-    if (notification == PRJ_NOTIFICATION_PRE_RENAME
-        || notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK)
-        && (unsafe { empty_destination(destination_filename) }
+    let source_is_external = unsafe { empty_destination(data.FilePathName) };
+    let destination_is_external = unsafe { empty_destination(destination_filename) };
+    if notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
+        && (source_is_external
+            || destination_is_external
             || path_from(destination_filename).is_none())
     {
+        // A cross-root hard link would let writes outside the projection
+        // mutate an admitted file without another ProjFS callback.
         return HR_NOT_SAME_DEVICE;
     }
-    let result = if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED
-        || notification == PRJ_NOTIFICATION_FILE_OVERWRITTEN
-    {
-        if !operation_parameters.is_null() {
-            // SAFETY: ProjFS supplies a writable notification-parameter union
-            // for post-create notifications. Preserve close-boundary capture
-            // even when the new item acquires a per-file notification mask.
-            unsafe {
-                (*operation_parameters).PostCreate.NotificationMask =
-                    PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION
-                        | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED
-                        | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED
-                        | PRJ_NOTIFY_PRE_DELETE
-                        | PRJ_NOTIFY_PRE_RENAME
-                        | PRJ_NOTIFY_FILE_RENAMED
-                        | PRJ_NOTIFY_PRE_SET_HARDLINK
-                        | PRJ_NOTIFY_HARDLINK_CREATED;
+    let invalid_rename = source_is_external && destination_is_external
+        || is_directory && (source_is_external || destination_is_external)
+        || !destination_is_external && path_from(destination_filename).is_none();
+    if notification == PRJ_NOTIFICATION_PRE_RENAME && invalid_rename {
+        // A directory crossing needs a deferred recursive boundary after the
+        // source process has finished moving descendants. Reject it until the
+        // provider can prove that boundary instead of admitting a partial tree.
+        return HR_NOT_SAME_DEVICE;
+    }
+    let destination = (!destination_is_external)
+        .then(|| path_from(destination_filename))
+        .flatten();
+    let source = Arc::clone(&runtime.source);
+    let root = runtime.root.clone();
+    let result = runtime.executor.call(move || {
+        if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED
+            || notification == PRJ_NOTIFICATION_FILE_OVERWRITTEN
+        {
+            if is_directory {
+                source.capture_host_path(&root, &path)
+            } else {
+                Ok(())
             }
-        }
-        if is_directory {
-            runtime.source.capture_host_path(&runtime.root, &path)
-        } else {
+        } else if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
+            || notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
+        {
+            source.capture_host_path(&root, &path)
+        } else if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION {
+            match source.lookup(&path) {
+                Ok(Some(_)) => Ok(()),
+                Ok(None) => source.capture_host_path(&root, &path),
+                Err(error) => Err(error),
+            }
+        } else if notification == PRJ_NOTIFICATION_FILE_RENAMED {
+            handle_rename_source(
+                source.as_ref(),
+                &root,
+                &path,
+                source_is_external,
+                destination_is_external,
+                is_directory,
+                destination,
+            )
+        } else if notification == PRJ_NOTIFICATION_HARDLINK_CREATED {
+            destination
+                .ok_or_else(|| {
+                    super::MountSourceError::Invalid("hard-link destination is invalid".to_owned())
+                })
+                .and_then(|destination| source.hard_link(&path, &destination))
+                .and_then(|()| source.flush())
+        } else if notification == PRJ_NOTIFICATION_PRE_DELETE
+            || notification == PRJ_NOTIFICATION_PRE_RENAME
+            || notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
+        {
             Ok(())
+        } else {
+            Err(super::MountSourceError::Unsupported(
+                "ProjFS emitted an unadmitted write notification".to_owned(),
+            ))
         }
-    } else if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
-        || notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
+    });
+    if (notification == PRJ_NOTIFICATION_NEW_FILE_CREATED
+        || notification == PRJ_NOTIFICATION_FILE_OVERWRITTEN)
+        && !operation_parameters.is_null()
     {
-        runtime.source.capture_host_path(&runtime.root, &path)
-    } else if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION {
-        match runtime.source.lookup(&path) {
-            Ok(Some(_)) => Ok(()),
-            Ok(None) => runtime.source.capture_host_path(&runtime.root, &path),
-            Err(error) => Err(error),
+        // SAFETY: ProjFS supplies a writable notification-parameter union for
+        // this callback duration.
+        unsafe {
+            (*operation_parameters).PostCreate.NotificationMask =
+                PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION
+                    | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED
+                    | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED
+                    | PRJ_NOTIFY_PRE_DELETE
+                    | PRJ_NOTIFY_PRE_RENAME
+                    | PRJ_NOTIFY_FILE_RENAMED
+                    | PRJ_NOTIFY_PRE_SET_HARDLINK
+                    | PRJ_NOTIFY_HARDLINK_CREATED;
         }
-    } else if notification == PRJ_NOTIFICATION_FILE_RENAMED {
-        path_from(destination_filename)
+    }
+    match result {
+        Some(Ok(())) => HR_OK,
+        Some(Err(super::MountSourceError::NotFound)) => HR_FILE_NOT_FOUND,
+        Some(Err(super::MountSourceError::AlreadyExists)) => HR_ALREADY_EXISTS,
+        Some(Err(super::MountSourceError::Invalid(_))) => HR_INVALID_DATA,
+        Some(Err(super::MountSourceError::Unsupported(_))) => HR_NOT_SUPPORTED,
+        Some(Err(super::MountSourceError::Engine(_) | super::MountSourceError::Stale)) | None => {
+            HR_UNEXPECTED
+        }
+    }
+}
+
+fn handle_rename_source(
+    source_fs: &dyn MountFilesystem,
+    root: &std::path::Path,
+    source: &MountPath,
+    source_is_external: bool,
+    destination_is_external: bool,
+    is_directory: bool,
+    destination: Option<MountPath>,
+) -> Result<(), super::MountSourceError> {
+    if source_is_external {
+        return destination
             .ok_or_else(|| {
                 super::MountSourceError::Invalid("rename destination is invalid".to_owned())
             })
-            .and_then(|destination| runtime.source.rename(&path, &destination, true))
-            .and_then(|()| runtime.source.flush())
-    } else if notification == PRJ_NOTIFICATION_HARDLINK_CREATED {
-        path_from(destination_filename)
-            .ok_or_else(|| {
-                super::MountSourceError::Invalid("hard-link destination is invalid".to_owned())
+            .and_then(|destination| {
+                if is_directory {
+                    source_fs.capture_host_subtree(root, &destination)
+                } else {
+                    source_fs.capture_host_path(root, &destination)
+                }
             })
-            .and_then(|destination| runtime.source.hard_link(&path, &destination))
-            .and_then(|()| runtime.source.flush())
-    } else if notification == PRJ_NOTIFICATION_PRE_DELETE
-        || notification == PRJ_NOTIFICATION_PRE_RENAME
-        || notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
-    {
-        Ok(())
-    } else {
-        Err(super::MountSourceError::Unsupported(
-            "ProjFS emitted an unadmitted write notification".to_owned(),
-        ))
-    };
-    match result {
-        Ok(()) => HR_OK,
-        Err(super::MountSourceError::NotFound) => HR_FILE_NOT_FOUND,
-        Err(super::MountSourceError::AlreadyExists) => HR_ALREADY_EXISTS,
-        Err(super::MountSourceError::Invalid(_)) => HR_INVALID_DATA,
-        Err(super::MountSourceError::Unsupported(_)) => HR_NOT_SUPPORTED,
-        Err(super::MountSourceError::Engine(_) | super::MountSourceError::Stale) => HR_UNEXPECTED,
+            .and_then(|()| source_fs.flush());
     }
+    if destination_is_external {
+        // The source vanished from the projection. Capturing that exact
+        // now-missing path records its deletion without reading outside.
+        return source_fs
+            .capture_host_path(root, source)
+            .and_then(|()| source_fs.flush());
+    }
+    destination
+        .ok_or_else(|| super::MountSourceError::Invalid("rename destination is invalid".to_owned()))
+        .and_then(|destination| source_fs.rename(source, &destination, true))
+        .and_then(|()| source_fs.flush())
 }
 
 unsafe extern "system" fn cancel(_callback_data: *const PRJ_CALLBACK_DATA) {}

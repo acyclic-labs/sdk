@@ -39,6 +39,7 @@ fn request(
         retain_theirs_parent: true,
         maximum_changes: 8,
         maximum_conflicts: 8,
+        resolutions: BTreeMap::new(),
     }
 }
 
@@ -129,6 +130,7 @@ fn stored_request(
         retain_theirs_parent: true,
         maximum_changes: 8,
         maximum_conflicts: 8,
+        resolutions: BTreeMap::new(),
     })
 }
 

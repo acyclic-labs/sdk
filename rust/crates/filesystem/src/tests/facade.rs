@@ -7,7 +7,9 @@ use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy, VolumeLimits,
 };
 use crate::storage::{AuthorityFailure, AuthorityResult, AuthorityStore};
-use crate::storage::{ObjectFailure, ObjectRead, ObjectReadRequest, ObjectResult, ObjectStore};
+use crate::storage::{
+    ObjectFailure, ObjectRead, ObjectReadRequest, ObjectResult, ObjectStore, ObjectWrite,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn config() -> VolumeConfig {
@@ -227,6 +229,31 @@ impl FaultAuthorityStore {
 }
 
 impl AsyncAuthorityStore for FaultAuthorityStore {
+    async fn fork_generation_authority(
+        &self,
+        source: crate::GenerationForkSource,
+        destination_authority: crate::foundation::AuthorityId,
+        operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<CreateAuthorityOutcome> {
+        cancellation
+            .check()
+            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+        if self.control.should_fail() {
+            return Err(Self::failure(false));
+        }
+        self.inner
+            .fork_generation_authority(
+                source,
+                destination_authority,
+                operation_id,
+                budget,
+                cancellation,
+            )
+            .await
+    }
+
     async fn create_authority(
         &self,
         authority_id: crate::foundation::AuthorityId,
@@ -363,6 +390,21 @@ impl AsyncObjectStore for FaultObjectStore {
         ObjectStore::put(&self.inner, object_id, bytes, budget)
     }
 
+    async fn put_many(
+        &self,
+        writes: &[ObjectWrite],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        if self.control.should_fail() {
+            return Err(Self::failure(false));
+        }
+        ObjectStore::put_many(&self.inner, writes, budget)
+    }
+
     async fn read(
         &self,
         object_id: ObjectId,
@@ -428,6 +470,22 @@ impl AsyncObjectStore for PostPutObjectStore {
         Ok(receipt)
     }
 
+    async fn put_many(
+        &self,
+        writes: &[ObjectWrite],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        let receipt = ObjectStore::put_many(&*self.inner, writes, budget)?;
+        if self.control.should_fail() {
+            return Err(ObjectFailure::new(ObjectStoreError::Corrupt, receipt.work));
+        }
+        Ok(receipt)
+    }
+
     async fn read(
         &self,
         object_id: ObjectId,
@@ -467,6 +525,25 @@ impl AsyncObjectStore for PostPutObjectStore {
 }
 
 impl AsyncAuthorityStore for PostAppendAuthorityStore {
+    async fn fork_generation_authority(
+        &self,
+        source: crate::GenerationForkSource,
+        destination_authority: crate::foundation::AuthorityId,
+        operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<CreateAuthorityOutcome> {
+        self.inner
+            .fork_generation_authority(
+                source,
+                destination_authority,
+                operation_id,
+                budget,
+                cancellation,
+            )
+            .await
+    }
+
     async fn create_authority(
         &self,
         authority_id: crate::foundation::AuthorityId,
@@ -1474,6 +1551,89 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         Some(1_024),
         WorkBudget::UNBOUNDED,
         &cancellation,
+    ));
+    Ok(())
+}
+
+#[test]
+fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("create blocked")??
+        .value;
+    let mut writer = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("checkout blocked")??
+    .value;
+    poll_ready(writer.create_file(
+        path("first")?,
+        Bytes::from_static(b"abcdefgh"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("first create blocked")??;
+    poll_ready(writer.create_file(
+        path("second")?,
+        Bytes::from_static(b"01234567"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("second create blocked")??;
+    let reader = writer.pinned_reader()?;
+    let requests = [
+        FileRangeReadRequest {
+            path: path("second")?,
+            range: ByteRange {
+                offset: 2,
+                length: 3,
+            },
+        },
+        FileRangeReadRequest {
+            path: path("first")?,
+            range: ByteRange {
+                offset: 1,
+                length: 4,
+            },
+        },
+    ];
+    let batch =
+        poll_ready(reader.read_file_ranges(&requests, 2, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("batch blocked")??;
+    assert_eq!(&batch.value[0].bytes[..], b"234");
+    assert_eq!(&batch.value[1].bytes[..], b"bcde");
+
+    let first = poll_ready(reader.read_file_range(
+        &requests[0].path,
+        requests[0].range,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("single read blocked")??;
+    let second = poll_ready(reader.read_file_range(
+        &requests[1].path,
+        requests[1].range,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("single read blocked")??;
+    assert_eq!(batch.work, first.work.checked_add(second.work)?);
+
+    let tracking = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        tracking(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("tracking checkout blocked")??
+    .value;
+    assert!(matches!(
+        tracking.pinned_reader(),
+        Err(FsError::MutationNotAllowed)
     ));
     Ok(())
 }
@@ -4147,6 +4307,173 @@ fn authored_transaction_is_atomic_and_preserves_result_positions()
     ))
     .ok_or("atomicity lookup blocked")??;
     assert!(absent.value.record.is_none());
+    Ok(())
+}
+
+#[test]
+fn authored_transaction_reuses_a_staged_file_metadata_object()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([119; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let checkout = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("checkout blocked")??
+    .value;
+    let file = path("memo.txt")?;
+    let metadata = empty_metadata();
+    let mut operations = Vec::new();
+    let mut work = WorkCounters::default();
+    let mut staged_metadata = AuthoredMetadataCache::new();
+    poll_ready(checkout.compile_authored_mutation(
+        AuthoredMutation::CreateFile {
+            path: file.clone(),
+            bytes: Bytes::new(),
+            metadata,
+        },
+        &mut operations,
+        &mut work,
+        &mut staged_metadata,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("create compilation blocked")??;
+    let writes_after_create = work.backend_write_operations;
+    assert!(writes_after_create > 0);
+    poll_ready(checkout.compile_authored_mutation(
+        AuthoredMutation::CreateFile {
+            path: path("other.txt")?,
+            bytes: Bytes::new(),
+            metadata,
+        },
+        &mut operations,
+        &mut work,
+        &mut staged_metadata,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("second create compilation blocked")??;
+    assert_eq!(work.backend_write_operations, writes_after_create);
+    poll_ready(checkout.compile_authored_mutation(
+        AuthoredMutation::SetMetadata {
+            path: file.clone(),
+            metadata,
+        },
+        &mut operations,
+        &mut work,
+        &mut staged_metadata,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("metadata compilation blocked")??;
+    assert_eq!(work.backend_write_operations, writes_after_create);
+    let created_metadata = match &operations[0] {
+        Mutation::Create { record, .. } => record.metadata,
+        _ => return Err("expected create".into()),
+    };
+    assert!(matches!(
+        &operations[2],
+        Mutation::SetMetadata { metadata, .. } if *metadata == created_metadata
+    ));
+
+    let mut changed = metadata;
+    changed.modified_ns = MetadataField::Value(42);
+    poll_ready(checkout.compile_authored_mutation(
+        AuthoredMutation::SetMetadata {
+            path: file,
+            metadata: changed,
+        },
+        &mut operations,
+        &mut work,
+        &mut staged_metadata,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("changed metadata compilation blocked")??;
+    assert_eq!(work.backend_write_operations, writes_after_create + 1);
+    Ok(())
+}
+
+#[test]
+fn public_authored_transaction_reuses_metadata_across_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let first = path("first")?;
+    let second = path("second")?;
+    let shared = empty_metadata();
+    let mut distinct = shared;
+    distinct.modified_ns = MetadataField::Value(42);
+    let mut writes = Vec::new();
+
+    for second_metadata in [shared, distinct] {
+        let fs = Fs::memory();
+        let volume = poll_ready(fs.create_volume_with_id(
+            VolumeId::from_bytes([120; 16]),
+            config(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("volume creation blocked")??
+        .value;
+        let mut checkout = poll_ready(volume.checkout(
+            GenerationSelector::Head,
+            writable_pinned(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("checkout blocked")??
+        .value;
+        let result = poll_ready(checkout.apply_authored_transaction(
+            vec![
+                AuthoredMutation::CreateFile {
+                    path: first.clone(),
+                    bytes: Bytes::new(),
+                    metadata: shared,
+                },
+                AuthoredMutation::CreateFile {
+                    path: second.clone(),
+                    bytes: Bytes::new(),
+                    metadata: second_metadata,
+                },
+                AuthoredMutation::SetMetadata {
+                    path: first.clone(),
+                    metadata: shared,
+                },
+            ],
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("authored transaction blocked")??;
+        let first_record =
+            poll_ready(checkout.lookup_no_follow(&first, WorkBudget::UNBOUNDED, &cancellation))
+                .ok_or("first lookup blocked")??
+                .value
+                .record
+                .ok_or("first record missing")?;
+        let second_record =
+            poll_ready(checkout.lookup_no_follow(&second, WorkBudget::UNBOUNDED, &cancellation))
+                .ok_or("second lookup blocked")??
+                .value
+                .record
+                .ok_or("second record missing")?;
+        assert_eq!(
+            first_record.metadata == second_record.metadata,
+            second_metadata == shared
+        );
+        writes.push(result.work.backend_write_operations);
+    }
+    assert_eq!(writes[1], writes[0] + 1);
     Ok(())
 }
 
@@ -6993,6 +7320,14 @@ fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     ))
     .ok_or("clean manual checkout blocked")??
     .value;
+    let mut clean_tracking = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        tracking(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("clean tracking checkout blocked")??
+    .value;
     let mut dirty = poll_ready(volume.checkout(
         GenerationSelector::Head,
         writable_manual(),
@@ -7167,6 +7502,10 @@ fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         .ok_or("manual refresh blocked")??;
     assert_eq!(advanced.value, writer.generation_id());
     assert!(advanced.work.object_probes > 0);
+    let tracking_advanced =
+        poll_ready(clean_tracking.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("tracking refresh blocked")??;
+    assert_eq!(tracking_advanced.value, writer.generation_id());
     assert!(
         poll_ready(clean.lookup_no_follow(
             &path("published")?,
@@ -7801,7 +8140,7 @@ async fn local_garbage_collection_authenticates_heads_and_excludes_live_engines(
     drop(volume);
     drop(fs);
 
-    let orphan_bytes = Bytes::from_static(b"orphan");
+    let orphan_bytes = Bytes::from(vec![b'o'; 64 * 1_024 + 1]);
     let orphan = ObjectId {
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &orphan_bytes),
@@ -7831,8 +8170,7 @@ async fn local_garbage_collection_authenticates_heads_and_excludes_live_engines(
     let collected =
         Fs::collect_local_garbage(options, 8, 1_024, WorkBudget::UNBOUNDED, &cancellation).await?;
     assert!(collected.value.removed >= 1);
-    assert!(collected.value.manifests_removed >= 1);
-    assert!(collected.value.chunks_removed >= 1);
+    assert!(collected.value.segments_removed >= 1);
 
     let reopened = Fs::local(LocalOptions::new(directory.path())).await?;
     let volume = reopened

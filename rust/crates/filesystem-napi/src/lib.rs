@@ -12,19 +12,23 @@ use acyclic_fs::model::{
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
     ApplyOptions, AuthoredMutation, ByteRange, CancellationToken, ChangeSet, CheckoutCommitOutcome,
-    Digest, FileCloneRequest, FileId, ForkOptions, Generation, GenerationExportManifest,
-    IdempotencyKey, JoinHistory, JoinOutcome, JoinPlan, LiveMutationOutcome, LocalAuthorityBackend,
-    LocalFs, LocalObjectBackend, LocalOptions, LocalVolume, MergeConflict, MergePreparation,
-    NamedAttributeWriteMode, NativeWatch as FsNativeWatch, NativeWatchOptions, ObjectCacheOptions,
-    ObjectId, ObjectKind, ObjectReadRequest, ObjectResidency, OperationId, PromotionAdmission,
-    PromotionDestination, PromotionRejection, PromotionSpeculatorOptions, ResidencyAdmission,
-    ResidencyHint, ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions,
-    SpeculationController, SpeculationOptions, StorageLocationId, StorageTier, Transaction,
-    TransactionCommit, TransactionConflict, TransactionConflictRegion, TransactionDependencyUse,
-    TransactionRebase, TransactionSparseSeek, VolumeId, WatchBatch, WatchChange,
-    WatchInvalidationReason, WorkBudget, Workspace, WorkspaceDelete, WorkspaceDirectoryPage,
-    WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceMetadata, WorkspaceRebase, WorkspaceStat,
-    decode_generation_export_manifest, encode_generation_export_manifest,
+    ConflictSide, Digest, FileCloneRequest, FileId, ForkOptions, Generation,
+    GenerationExportManifest, GenerationId, GitCommand, GitCommitId, GitCompatRepository,
+    GitFilesystemResult, GitTransitionId, IdempotencyKey, JoinHistory, JoinOutcome, JoinPlan,
+    LiveMutationOutcome, LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend,
+    LocalOptions, LocalVolume, MergeConflict, MergePreparation, NamedAttributeWriteMode,
+    NativeWatch as FsNativeWatch, NativeWatchOptions, ObjectCacheOptions, ObjectId, ObjectKind,
+    ObjectReadRequest, ObjectResidency, OperationId, OperationLeaseId, OperationReconcileLimits,
+    OperationWindowCoordinator, OperationWindowFinish, OperationWindowLease, OperationWindowPhase,
+    PromotionAdmission, PromotionDestination, PromotionRejection, PromotionSpeculatorOptions,
+    ResidencyAdmission, ResidencyHint, ResidencyReason, ResidencyRejection,
+    ResidencySpeculatorOptions, SpeculationController, SpeculationOptions, StorageLocationId,
+    StorageTier, Transaction, TransactionCommit, TransactionConflict, TransactionConflictRegion,
+    TransactionDependencyUse, TransactionRebase, TransactionSparseSeek, VolumeId, WatchBatch,
+    WatchChange, WatchInvalidationReason, WorkBudget, Workspace, WorkspaceDelete,
+    WorkspaceDirectoryPage, WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId,
+    WorkspaceLineageRecord, WorkspaceMetadata, WorkspaceOperationFinish, WorkspaceRebase,
+    WorkspaceStat, decode_generation_export_manifest, encode_generation_export_manifest,
     native_watch_capabilities as sdk_native_watch_capabilities,
 };
 use acyclic_fs::{
@@ -38,6 +42,7 @@ use acyclic_fs::{ReconcileOutcome, SourceMode, SourceOptions, SourceState};
 use napi::bindgen_prelude::{AsyncTask, BigInt, Buffer, Error, Result, Status};
 use napi::{Env, Task};
 use napi_derive::napi;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -741,6 +746,21 @@ pub struct NativeMergeConflict {
     pub name: Option<NativePathComponent>,
 }
 
+/// Caller-selected immutable side for one exact merge conflict.
+#[napi(object)]
+pub struct NativeMergeSelection {
+    /// `file` or `binding`.
+    pub kind: String,
+    /// Conflicting stable file identity for a file conflict.
+    pub file_id: Option<Buffer>,
+    /// Parent-directory identity for a binding conflict.
+    pub directory_id: Option<Buffer>,
+    /// Exact logical name for a binding conflict.
+    pub name: Option<NativePathComponent>,
+    /// `base`, `ours`, or `theirs`.
+    pub side: String,
+}
+
 /// Terminal merge preparation result.
 #[napi(object)]
 pub struct NativeMergePreparation {
@@ -1207,6 +1227,93 @@ pub struct NativeFs {
     cancellation: CancellationToken,
 }
 
+/// Native JSON boundary for the storage-neutral Git compatibility state machine.
+#[napi]
+pub struct NativeGitCompatRepository {
+    inner: GitCompatRepository<LocalCoreStateStore>,
+}
+
+/// Native recursive-workspace graph backed by the shared core-state namespace.
+#[napi]
+pub struct NativeWorkspaceGraph {
+    inner: WorkspaceGraph<LocalCoreStateStore>,
+}
+
+/// Native durable operation-window coordinator backed by shared core state.
+#[napi]
+pub struct NativeOperationWindowCoordinator {
+    inner: OperationWindowCoordinator<LocalCoreStateStore>,
+}
+
+/// One durable workspace-lineage record.
+#[napi(object)]
+#[allow(missing_docs)]
+pub struct NativeWorkspaceLineageRecord {
+    pub version: u32,
+    pub revision: BigInt,
+    pub workspace_id: Buffer,
+    pub workspace_name: String,
+    pub parent_workspace_id: Option<Buffer>,
+    pub parent_workspace_name: Option<String>,
+    pub fork_generation: Buffer,
+    pub initial_generation: Buffer,
+}
+
+/// One overlapping filesystem-tool lease.
+#[napi(object)]
+#[allow(missing_docs)]
+pub struct NativeOperationWindowLease {
+    pub workspace_id: Buffer,
+    pub lease_id: Buffer,
+    pub pinned_parent: Buffer,
+    pub expires_at_millis: BigInt,
+}
+
+/// Stable, compact operation-window phase projection.
+#[napi(object)]
+#[allow(missing_docs)]
+pub struct NativeOperationWindowPhase {
+    pub kind: String,
+    pub ticket: Option<Buffer>,
+    pub pinned_parent: Option<Buffer>,
+    pub pending_parent: Option<Buffer>,
+    pub active_lease_count: Option<u32>,
+}
+
+/// Result of closing one operation-window lease.
+#[napi(object)]
+#[allow(missing_docs)]
+pub struct NativeOperationWindowClose {
+    pub kind: String,
+    pub remaining: Option<u32>,
+    pub ticket: Option<Buffer>,
+    pub pinned_parent: Option<Buffer>,
+    pub pending_parent: Option<Buffer>,
+}
+
+/// Bounds for final-close or crash-recovery reconciliation.
+#[napi(object)]
+#[derive(Clone, Copy)]
+pub struct NativeOperationReconcileOptions {
+    /// Maximum immutable generations examined for ancestry.
+    pub maximum_generations: u32,
+    /// Maximum semantic changes admitted by reconciliation.
+    pub maximum_changes: u32,
+    /// Maximum exact conflicts returned.
+    pub maximum_conflicts: u32,
+}
+
+/// Workspace-aware final-close outcome.
+#[napi(object)]
+pub struct NativeWorkspaceOperationFinish {
+    /// `still-active`, `already-closed`, or `reconciled`.
+    pub kind: String,
+    /// Live lease count for `still-active`.
+    pub remaining: Option<u32>,
+    /// Core rebase result for `reconciled`.
+    pub rebase: Option<NativeWorkspaceRebaseResult>,
+}
+
 type NativeLocalWorkspace = Workspace<LocalAuthorityBackend, LocalObjectBackend>;
 type NativeLocalTransaction = Transaction<LocalAuthorityBackend, LocalObjectBackend>;
 type NativeLocalWorkspaceMount = WorkspaceMount<LocalAuthorityBackend, LocalObjectBackend>;
@@ -1307,6 +1414,8 @@ pub struct NativeSourceOptions {
     pub maximum_extent_spans: u32,
     /// Maximum pending native changes before fail-closed rescan.
     pub maximum_queued_changes: u32,
+    /// Canonical portable prefixes omitted from capture and deletion inference.
+    pub excluded_paths: Option<Vec<String>>,
 }
 
 /// Current or terminal source reconciliation state.
@@ -1969,6 +2078,50 @@ impl NativeJoinPlan {
             .map(native_join_result)
             .map_err(napi_error)
     }
+
+    /// Applies an exact complete set of declarative conflict side selections.
+    #[napi(js_name = applySides)]
+    pub async fn apply_sides(
+        &self,
+        if_target: Buffer,
+        idempotency_key: Option<Buffer>,
+        selections: Vec<NativeMergeSelection>,
+    ) -> Result<NativeJoinResult> {
+        let if_target = generation_id(&if_target)?;
+        let idempotency_key = native_idempotency_key(idempotency_key)?;
+        let mut resolved = BTreeMap::new();
+        for selection in selections {
+            let conflict = native_merge_selection_conflict(&selection)?;
+            let side = match selection.side.as_str() {
+                "base" => ConflictSide::Base,
+                "ours" => ConflictSide::Ours,
+                "theirs" => ConflictSide::Theirs,
+                _ => {
+                    return Err(Error::new(
+                        Status::InvalidArg,
+                        "merge selection side must be base, ours, or theirs",
+                    ));
+                }
+            };
+            if resolved.insert(conflict, side).is_some() {
+                return Err(Error::new(
+                    Status::InvalidArg,
+                    "merge selections contain a duplicate conflict",
+                ));
+            }
+        }
+        self.inner
+            .apply_sides(
+                ApplyOptions {
+                    if_target,
+                    idempotency_key,
+                },
+                resolved,
+            )
+            .await
+            .map(native_join_result)
+            .map_err(napi_error)
+    }
 }
 
 #[napi]
@@ -2201,6 +2354,38 @@ fn native_workspace_rebase_result(
             generation_id: None,
             conflicts: Vec::new(),
             truncated: false,
+        },
+    }
+}
+
+const fn operation_reconcile_limits(
+    options: NativeOperationReconcileOptions,
+) -> OperationReconcileLimits {
+    OperationReconcileLimits {
+        maximum_generations: options.maximum_generations,
+        maximum_changes: options.maximum_changes,
+        maximum_conflicts: options.maximum_conflicts,
+    }
+}
+
+fn native_workspace_operation_finish(
+    outcome: WorkspaceOperationFinish<LocalAuthorityBackend, LocalObjectBackend>,
+) -> NativeWorkspaceOperationFinish {
+    match outcome {
+        WorkspaceOperationFinish::StillActive { remaining } => NativeWorkspaceOperationFinish {
+            kind: "still-active".to_owned(),
+            remaining: Some(remaining),
+            rebase: None,
+        },
+        WorkspaceOperationFinish::AlreadyClosed => NativeWorkspaceOperationFinish {
+            kind: "already-closed".to_owned(),
+            remaining: None,
+            rebase: None,
+        },
+        WorkspaceOperationFinish::Reconciled(outcome) => NativeWorkspaceOperationFinish {
+            kind: "reconciled".to_owned(),
+            remaining: None,
+            rebase: Some(native_workspace_rebase_result(outcome)),
         },
     }
 }
@@ -2723,6 +2908,363 @@ fn workspace_commit(
 }
 
 #[napi]
+impl NativeGitCompatRepository {
+    /// Opens compatibility state in a private companion namespace.
+    #[allow(clippy::needless_pass_by_value)]
+    #[napi(factory)]
+    pub fn open(state_root: String, workspace_id: Buffer) -> Result<Self> {
+        Ok(Self {
+            inner: GitCompatRepository::new(
+                WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
+                LocalCoreStateStore::new(state_root),
+            ),
+        })
+    }
+
+    /// Parses and executes a Git-shaped argv command, returning stable JSON.
+    #[napi]
+    pub async fn execute_argv_json(
+        &self,
+        argv: Vec<String>,
+        workspace_generation: Buffer,
+        default_author: String,
+        now_seconds: String,
+    ) -> Result<String> {
+        let output = self
+            .inner
+            .execute_argv(
+                &argv,
+                generation_id(&workspace_generation)?,
+                &default_author,
+                now_seconds.parse::<i64>().map_err(napi_error)?,
+            )
+            .await
+            .map_err(napi_error)?;
+        serde_json::to_string(&output).map_err(napi_error)
+    }
+
+    /// Executes one typed command encoded with the public Rust serde contract.
+    #[napi]
+    pub async fn execute_json(
+        &self,
+        command_json: String,
+        workspace_generation: Buffer,
+    ) -> Result<String> {
+        let command: GitCommand = serde_json::from_str(&command_json).map_err(napi_error)?;
+        let output = self
+            .inner
+            .execute(command, generation_id(&workspace_generation)?)
+            .await
+            .map_err(napi_error)?;
+        serde_json::to_string(&output).map_err(napi_error)
+    }
+
+    /// Returns any crash-recoverable prepared transition as stable JSON.
+    #[napi]
+    pub async fn pending_transition_json(&self) -> Result<Option<String>> {
+        self.inner
+            .pending_transition()
+            .await
+            .map_err(napi_error)?
+            .map(|pending| serde_json::to_string(&pending).map_err(napi_error))
+            .transpose()
+    }
+
+    /// Finalizes a prepared transition after its filesystem action succeeds.
+    #[napi]
+    pub async fn complete_transition_json(
+        &self,
+        transition: Buffer,
+        resulting_generation: Option<Buffer>,
+    ) -> Result<String> {
+        let generation = resulting_generation
+            .as_ref()
+            .map(|value| generation_id(value))
+            .transpose()?;
+        let output = self
+            .inner
+            .complete_transition(
+                GitTransitionId::from_bytes(fixed_16(&transition)?),
+                generation,
+            )
+            .await
+            .map_err(napi_error)?;
+        serde_json::to_string(&output).map_err(napi_error)
+    }
+
+    /// Finalizes a prepared transition with the executor's complete typed result.
+    #[napi]
+    pub async fn complete_transition_result_json(
+        &self,
+        transition: Buffer,
+        result_json: String,
+    ) -> Result<String> {
+        let result: GitFilesystemResult = serde_json::from_str(&result_json).map_err(napi_error)?;
+        let output = self
+            .inner
+            .complete_transition_result(
+                GitTransitionId::from_bytes(fixed_16(&transition)?),
+                &result,
+            )
+            .await
+            .map_err(napi_error)?;
+        serde_json::to_string(&output).map_err(napi_error)
+    }
+
+    /// Aborts a prepared transition after filesystem rollback.
+    #[napi]
+    pub async fn abort_transition(&self, transition: Buffer) -> Result<()> {
+        self.inner
+            .abort_transition(GitTransitionId::from_bytes(fixed_16(&transition)?))
+            .await
+            .map_err(napi_error)
+    }
+
+    /// Registers a real SDK workspace created for a prepared branch action.
+    #[napi]
+    pub async fn register_branch_workspace_json(
+        &self,
+        branch: String,
+        workspace_id: Buffer,
+        head: Option<Buffer>,
+        switch: bool,
+    ) -> Result<String> {
+        let head = head.as_ref().map(|value| commit_id(value)).transpose()?;
+        let output = self
+            .inner
+            .register_branch_workspace(
+                branch,
+                WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
+                head,
+                switch,
+            )
+            .await
+            .map_err(napi_error)?;
+        serde_json::to_string(&output).map_err(napi_error)
+    }
+
+    /// Records a compatibility commit after ignore-aware generation capture.
+    #[allow(clippy::too_many_arguments)]
+    #[napi]
+    pub async fn record_commit_json(
+        &self,
+        expected_head: Option<Buffer>,
+        generation: Buffer,
+        tracked_paths: Vec<String>,
+        message: String,
+        author: String,
+        authored_at_seconds: String,
+    ) -> Result<String> {
+        let expected_head = expected_head
+            .as_ref()
+            .map(|value| commit_id(value))
+            .transpose()?;
+        let output = self
+            .inner
+            .record_commit(
+                expected_head,
+                generation_id(&generation)?,
+                tracked_paths.into_iter().collect(),
+                message,
+                author,
+                authored_at_seconds.parse::<i64>().map_err(napi_error)?,
+            )
+            .await
+            .map_err(napi_error)?;
+        serde_json::to_string(&output).map_err(napi_error)
+    }
+}
+
+#[napi]
+impl NativeWorkspaceGraph {
+    /// Opens the recursive-workspace graph in the shared private namespace.
+    #[napi(factory)]
+    pub fn open(state_root: String) -> Self {
+        Self {
+            inner: WorkspaceGraph::new(LocalCoreStateStore::new(state_root)),
+        }
+    }
+
+    /// Registers a live SDK workspace as a publication root.
+    #[napi]
+    pub async fn register_root(
+        &self,
+        workspace: &NativeWorkspace,
+    ) -> Result<NativeWorkspaceLineageRecord> {
+        self.inner
+            .register_root(&workspace.inner)
+            .await
+            .map(native_workspace_lineage_record)
+            .map_err(napi_error)
+    }
+
+    /// Forks a live child workspace and records its exact direct parent.
+    #[napi]
+    pub async fn fork(
+        &self,
+        parent: &NativeWorkspace,
+        destination: String,
+        idempotency_key: Option<Buffer>,
+    ) -> Result<NativeWorkspace> {
+        self.inner
+            .fork(
+                &parent.inner,
+                destination,
+                native_idempotency_key(idempotency_key)?,
+            )
+            .await
+            .map(|inner| NativeWorkspace { inner })
+            .map_err(napi_error)
+    }
+
+    /// Verifies and returns the child's exact direct-parent registration.
+    #[napi]
+    pub async fn authorize_join(
+        &self,
+        child_workspace_id: Buffer,
+        parent_workspace_id: Buffer,
+    ) -> Result<NativeWorkspaceLineageRecord> {
+        self.inner
+            .authorize_join(
+                WorkspaceId::from_bytes(fixed_16(&child_workspace_id)?),
+                WorkspaceId::from_bytes(fixed_16(&parent_workspace_id)?),
+            )
+            .await
+            .map(native_workspace_lineage_record)
+            .map_err(napi_error)
+    }
+
+    /// Returns the bounded direct-parent chain, nearest parent first.
+    #[napi]
+    pub async fn ancestors(
+        &self,
+        workspace_id: Buffer,
+        maximum: u32,
+    ) -> Result<Vec<NativeWorkspaceLineageRecord>> {
+        self.inner
+            .ancestors(WorkspaceId::from_bytes(fixed_16(&workspace_id)?), maximum)
+            .await
+            .map(|records| {
+                records
+                    .into_iter()
+                    .map(native_workspace_lineage_record)
+                    .collect()
+            })
+            .map_err(napi_error)
+    }
+}
+
+#[napi]
+impl NativeOperationWindowCoordinator {
+    /// Opens durable operation-window state in the shared private namespace.
+    #[napi(factory)]
+    pub fn open(state_root: String) -> Self {
+        Self {
+            inner: OperationWindowCoordinator::new(LocalCoreStateStore::new(state_root)),
+        }
+    }
+
+    /// Opens one overlapping tool lease, pinning the first observed parent.
+    #[napi]
+    pub async fn begin(
+        &self,
+        workspace_id: Buffer,
+        parent: Buffer,
+        owner: String,
+        now_millis: BigInt,
+        expires_at_millis: BigInt,
+    ) -> Result<NativeOperationWindowLease> {
+        self.inner
+            .begin(
+                WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
+                generation_id(&parent)?,
+                owner,
+                bigint_u64(&now_millis)?,
+                bigint_u64(&expires_at_millis)?,
+            )
+            .await
+            .map(|lease| native_operation_window_lease(&lease))
+            .map_err(napi_error)
+    }
+
+    /// Coalesces a newer parent generation without changing an active mount.
+    #[napi]
+    pub async fn observe_parent(&self, workspace_id: Buffer, parent: Buffer) -> Result<bool> {
+        self.inner
+            .observe_parent(
+                WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
+                generation_id(&parent)?,
+            )
+            .await
+            .map_err(napi_error)
+    }
+
+    /// Closes one lease and returns reconciliation ownership to the last closer.
+    #[napi]
+    pub async fn finish(
+        &self,
+        lease: NativeOperationWindowLease,
+        now_millis: BigInt,
+    ) -> Result<NativeOperationWindowClose> {
+        self.inner
+            .finish(&operation_window_lease(&lease)?, bigint_u64(&now_millis)?)
+            .await
+            .map(native_operation_window_close)
+            .map_err(napi_error)
+    }
+
+    /// Closes one lease and performs the final deferred workspace rebase.
+    #[napi]
+    pub async fn finish_workspace(
+        &self,
+        workspace: &NativeWorkspace,
+        lease: NativeOperationWindowLease,
+        now_millis: BigInt,
+        options: NativeOperationReconcileOptions,
+    ) -> Result<NativeWorkspaceOperationFinish> {
+        self.inner
+            .finish_workspace(
+                &workspace.inner,
+                &operation_window_lease(&lease)?,
+                bigint_u64(&now_millis)?,
+                operation_reconcile_limits(options),
+            )
+            .await
+            .map(native_workspace_operation_finish)
+            .map_err(napi_error)
+    }
+
+    /// Claims and completes reconciliation left by an expired lease or crash.
+    #[napi]
+    pub async fn recover_workspace(
+        &self,
+        workspace: &NativeWorkspace,
+        now_millis: BigInt,
+        options: NativeOperationReconcileOptions,
+    ) -> Result<Option<NativeWorkspaceRebaseResult>> {
+        self.inner
+            .recover_workspace(
+                &workspace.inner,
+                bigint_u64(&now_millis)?,
+                operation_reconcile_limits(options),
+            )
+            .await
+            .map(|outcome| outcome.map(native_workspace_rebase_result))
+            .map_err(napi_error)
+    }
+
+    /// Returns the current durable operation-window phase.
+    #[napi]
+    pub async fn inspect(&self, workspace_id: Buffer) -> Result<NativeOperationWindowPhase> {
+        self.inner
+            .inspect(WorkspaceId::from_bytes(fixed_16(&workspace_id)?))
+            .await
+            .map(|snapshot| native_operation_window_phase(snapshot.phase))
+            .map_err(napi_error)
+    }
+}
+
+#[napi]
 impl NativeFs {
     /// Opens one bounded embedded local engine rooted at `root`.
     ///
@@ -2872,16 +3414,26 @@ impl NativeFs {
                 ));
             }
         };
-        Box::pin(self.inner.attach_directory(
-            name,
-            PathBuf::from(path),
-            SourceOptions {
-                mode,
-                maximum_paths: options.maximum_paths,
-                maximum_extent_spans: options.maximum_extent_spans,
-                maximum_queued_changes: options.maximum_queued_changes,
-            },
-        ))
+        Box::pin(
+            self.inner.attach_directory(
+                name,
+                PathBuf::from(path),
+                SourceOptions {
+                    mode,
+                    maximum_paths: options.maximum_paths,
+                    maximum_extent_spans: options.maximum_extent_spans,
+                    maximum_queued_changes: options.maximum_queued_changes,
+                    excluded_paths: options
+                        .excluded_paths
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|path| {
+                            PortablePath::parse(&path, VolumeLimits::default()).map_err(napi_error)
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                },
+            ),
+        )
         .await
         .map(|inner| NativeWorkspace { inner })
         .map_err(napi_error)
@@ -5473,6 +6025,157 @@ fn fixed_32(bytes: &[u8], label: &str) -> Result<[u8; 32]> {
     })
 }
 
+fn generation_id(bytes: &[u8]) -> Result<acyclic_fs::GenerationId> {
+    Ok(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+        bytes,
+        "generation identity",
+    )?)))
+}
+
+fn native_workspace_lineage_record(record: WorkspaceLineageRecord) -> NativeWorkspaceLineageRecord {
+    NativeWorkspaceLineageRecord {
+        version: record.version,
+        revision: bigint(record.revision),
+        workspace_id: Buffer::from(record.workspace_id.into_bytes().to_vec()),
+        workspace_name: record.workspace_name,
+        parent_workspace_id: record
+            .parent_workspace_id
+            .map(|id| Buffer::from(id.into_bytes().to_vec())),
+        parent_workspace_name: record.parent_workspace_name,
+        fork_generation: Buffer::from(record.fork_generation.digest().into_bytes().to_vec()),
+        initial_generation: Buffer::from(record.initial_generation.digest().into_bytes().to_vec()),
+    }
+}
+
+fn native_merge_selection_conflict(selection: &NativeMergeSelection) -> Result<MergeConflict> {
+    match selection.kind.as_str() {
+        "file" => Ok(MergeConflict::File(FileId::from_bytes(fixed_16(
+            selection
+                .file_id
+                .as_deref()
+                .ok_or_else(|| Error::new(Status::InvalidArg, "file selection lacks fileId"))?,
+        )?))),
+        "binding" => {
+            let directory_id =
+                FileId::from_bytes(fixed_16(selection.directory_id.as_deref().ok_or_else(
+                    || Error::new(Status::InvalidArg, "binding selection lacks directoryId"),
+                )?)?);
+            let name = selection
+                .name
+                .as_ref()
+                .ok_or_else(|| Error::new(Status::InvalidArg, "binding selection lacks name"))?;
+            let encoding = match name.encoding.as_str() {
+                "utf8" => NameEncoding::Utf8,
+                "posix-bytes" => NameEncoding::PosixBytes,
+                "windows-utf16le" => NameEncoding::WindowsUtf16Le,
+                _ => {
+                    return Err(Error::new(
+                        Status::InvalidArg,
+                        "binding selection has an invalid name encoding",
+                    ));
+                }
+            };
+            let name =
+                LogicalName::new(encoding, name.bytes.to_vec(), u32::MAX).map_err(napi_error)?;
+            Ok(MergeConflict::Binding { directory_id, name })
+        }
+        _ => Err(Error::new(
+            Status::InvalidArg,
+            "merge selection kind must be file or binding",
+        )),
+    }
+}
+
+fn native_operation_window_lease(lease: &OperationWindowLease) -> NativeOperationWindowLease {
+    NativeOperationWindowLease {
+        workspace_id: Buffer::from(lease.workspace_id.into_bytes().to_vec()),
+        lease_id: Buffer::from(lease.lease_id.into_bytes().to_vec()),
+        pinned_parent: Buffer::from(lease.pinned_parent.digest().into_bytes().to_vec()),
+        expires_at_millis: bigint(lease.expires_at_millis),
+    }
+}
+
+fn operation_window_lease(lease: &NativeOperationWindowLease) -> Result<OperationWindowLease> {
+    Ok(OperationWindowLease {
+        workspace_id: WorkspaceId::from_bytes(fixed_16(&lease.workspace_id)?),
+        lease_id: OperationLeaseId::from_bytes(fixed_16(&lease.lease_id)?),
+        pinned_parent: generation_id(&lease.pinned_parent)?,
+        expires_at_millis: bigint_u64(&lease.expires_at_millis)?,
+    })
+}
+
+fn native_generation_buffer(generation: GenerationId) -> Buffer {
+    Buffer::from(generation.digest().into_bytes().to_vec())
+}
+
+fn native_operation_window_phase(phase: OperationWindowPhase) -> NativeOperationWindowPhase {
+    match phase {
+        OperationWindowPhase::Idle => NativeOperationWindowPhase {
+            kind: "idle".to_owned(),
+            ticket: None,
+            pinned_parent: None,
+            pending_parent: None,
+            active_lease_count: None,
+        },
+        OperationWindowPhase::Active {
+            pinned_parent,
+            leases,
+            pending_parent,
+        } => NativeOperationWindowPhase {
+            kind: "active".to_owned(),
+            ticket: None,
+            pinned_parent: Some(native_generation_buffer(pinned_parent)),
+            pending_parent: pending_parent.map(native_generation_buffer),
+            active_lease_count: Some(u32::try_from(leases.len()).unwrap_or(u32::MAX)),
+        },
+        OperationWindowPhase::Reconciling {
+            ticket,
+            pinned_parent,
+            pending_parent,
+            ..
+        } => NativeOperationWindowPhase {
+            kind: "reconciling".to_owned(),
+            ticket: Some(Buffer::from(ticket.into_bytes().to_vec())),
+            pinned_parent: Some(native_generation_buffer(pinned_parent)),
+            pending_parent: pending_parent.map(native_generation_buffer),
+            active_lease_count: None,
+        },
+    }
+}
+
+fn native_operation_window_close(close: OperationWindowFinish) -> NativeOperationWindowClose {
+    match close {
+        OperationWindowFinish::StillActive { remaining } => NativeOperationWindowClose {
+            kind: "still-active".to_owned(),
+            remaining: Some(remaining),
+            ticket: None,
+            pinned_parent: None,
+            pending_parent: None,
+        },
+        OperationWindowFinish::AlreadyClosed => NativeOperationWindowClose {
+            kind: "already-closed".to_owned(),
+            remaining: None,
+            ticket: None,
+            pinned_parent: None,
+            pending_parent: None,
+        },
+        OperationWindowFinish::Reconcile(reconcile) => NativeOperationWindowClose {
+            kind: "reconcile".to_owned(),
+            remaining: None,
+            ticket: Some(Buffer::from(reconcile.ticket.into_bytes().to_vec())),
+            pinned_parent: Some(native_generation_buffer(reconcile.pinned_parent)),
+            pending_parent: reconcile.pending_parent.map(native_generation_buffer),
+        },
+    }
+}
+
+fn commit_id(bytes: &[u8]) -> Result<GitCommitId> {
+    Ok(GitCommitId::from_bytes(fixed_32(
+        bytes,
+        "Git compatibility commit identity",
+    )?))
+}
+
 fn encode_object_id(value: ObjectId) -> Buffer {
     let mut bytes = Vec::with_capacity(33);
     bytes.push(value.kind.canonical_tag());
@@ -6630,6 +7333,8 @@ fn boundary_budget() -> WorkBudget {
         bytes_copied: BYTES,
         bytes_encoded: BYTES,
         source_bytes_read: BYTES,
+        source_path_components: OPERATIONS,
+        source_entries_visited: OPERATIONS,
         output_bytes: BYTES,
         items_examined: OPERATIONS,
         items_returned: OPERATIONS,
@@ -7123,6 +7828,7 @@ mod tests {
                     maximum_paths: 128,
                     maximum_extent_spans: 128,
                     maximum_queued_changes: 128,
+                    excluded_paths: None,
                 },
             )
             .await?;

@@ -4,10 +4,10 @@ use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, Epoch, GenerationId, Head, OperationId, ProposedCommit, Sequence,
 };
-use crate::performance::{OperationFailure, WorkBudget};
+use crate::performance::WorkBudget;
 use crate::storage::{
     AppendOutcome, AuthorityResult, AuthorityStore, CreateAuthorityOutcome, FenceOutcome, ObjectId,
-    ObjectRead, ObjectReadRequest, ObjectResult, ObjectStore, ReplayLimit,
+    ObjectRead, ObjectReadRequest, ObjectResult, ObjectStore, ObjectWrite, ReplayLimit,
 };
 use bytes::Bytes;
 use std::any::{Any, TypeId};
@@ -83,7 +83,7 @@ pub enum DecodedCacheAdmission {
 /// Polls a future exactly once for adapters whose contract guarantees that no
 /// asynchronous suspension is possible.
 ///
-/// This keeps synchronous compatibility wrappers free of executors while
+/// This keeps synchronous adapters free of executors while
 /// failing closed if an implementation unexpectedly blocks.
 pub(crate) fn poll_ready<F: Future>(future: F) -> Option<F::Output> {
     let mut future = std::pin::pin!(future);
@@ -108,42 +108,46 @@ pub(crate) fn poll_immediate<F: Future>(future: F) -> F::Output {
     poll_ready(future).expect("immediate storage adapter suspended")
 }
 
+/// Authority lineage semantics for one workspace fork.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenerationFork {
+    /// Reuse the source authority's durable lineage through the selected generation.
+    PublishedPrefix,
+    /// Start independent authority history from an authenticated unpublished generation.
+    Independent,
+}
+
+/// Exact source and lineage semantics for one authority fork.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GenerationForkSource {
+    /// Source authority containing the selected generation.
+    pub authority: AuthorityId,
+    /// Exact authenticated source generation.
+    pub generation: GenerationId,
+    /// Whether durable source lineage is reused.
+    pub lineage: GenerationFork,
+}
+
 /// Nonblocking authority-store contract. Futures are sendable on native
 /// targets and may remain JavaScript-thread-affine in browsers.
 pub trait AsyncAuthorityStore: StorageProvider {
-    /// Whether this authority can create a workspace by natively forking an
-    /// immutable generation-publication prefix.
-    fn supports_native_generation_fork(&self) -> bool {
+    /// Whether this backend can retain an immutable published-generation
+    /// lineage prefix when it creates a child authority.
+    fn supports_generation_lineage_prefix(&self) -> bool {
         false
     }
 
     /// Creates a destination authority whose canonical generation lineage is
-    /// an immutable native prefix of `source_authority`.
+    /// either an immutable native prefix of the source or an explicit
+    /// independent lineage rooted at an unpublished authenticated generation.
     fn fork_generation_authority(
         &self,
-        source_authority: AuthorityId,
-        source_generation: GenerationId,
+        source: GenerationForkSource,
         destination_authority: AuthorityId,
         operation_id: OperationId,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = AuthorityResult<CreateAuthorityOutcome>> + StorageFuture {
-        let _ = (
-            source_authority,
-            source_generation,
-            destination_authority,
-            operation_id,
-            budget,
-            cancellation,
-        );
-        async {
-            Err(OperationFailure::before_work(
-                crate::storage::AuthorityStoreError::Rejected(
-                    "native generation-prefix fork is unavailable".to_owned(),
-                ),
-            ))
-        }
-    }
+    ) -> impl Future<Output = AuthorityResult<CreateAuthorityOutcome>> + StorageFuture;
 
     /// Asynchronously creates one authority.
     fn create_authority(
@@ -248,6 +252,27 @@ pub trait AsyncObjectStore: StorageProvider {
         cancellation: &CancellationToken,
     ) -> impl Future<Output = ObjectResult<()>> + StorageFuture;
 
+    /// Asynchronously admits an ordered bounded group of verified immutable objects.
+    ///
+    /// Implementations with a real batch primitive override this method. A
+    /// backend without one rejects the operation instead of hiding repeated
+    /// single-object operations behind the batch contract.
+    fn put_many(
+        &self,
+        writes: &[ObjectWrite],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = ObjectResult<()>> + StorageFuture {
+        let _ = (writes, budget, cancellation);
+        async {
+            Err(crate::storage::ObjectFailure::before_work(
+                crate::storage::ObjectStoreError::Rejected(
+                    "object backend has no batch-write primitive".to_owned(),
+                ),
+            ))
+        }
+    }
+
     /// Asynchronously reads one complete bounded object.
     fn read(
         &self,
@@ -261,7 +286,7 @@ pub trait AsyncObjectStore: StorageProvider {
     ///
     /// Backends with transactional multi-get or batched I/O should override
     /// this method. The default is cancellation-aware and retains exact
-    /// per-object work rather than pretending a sequential fallback was one
+    /// per-object work rather than pretending sequential execution was one
     /// physical operation.
     fn read_many(
         &self,
@@ -381,6 +406,30 @@ pub async fn read_many_sequential_async<S: AsyncObjectStore + ?Sized>(
 }
 
 impl<T: ImmediateAuthorityStore + ?Sized> AsyncAuthorityStore for T {
+    async fn fork_generation_authority(
+        &self,
+        source: GenerationForkSource,
+        destination_authority: AuthorityId,
+        _operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<CreateAuthorityOutcome> {
+        cancellation.check().map_err(|_| {
+            crate::storage::AuthorityFailure::before_work(
+                crate::storage::AuthorityStoreError::Cancelled,
+            )
+        })?;
+        if source.lineage == GenerationFork::PublishedPrefix {
+            return Err(crate::storage::AuthorityFailure::before_work(
+                crate::storage::AuthorityStoreError::Rejected(
+                    "immediate authority stores do not retain generation lineage prefixes"
+                        .to_owned(),
+                ),
+            ));
+        }
+        AuthorityStore::create_authority(self, destination_authority, Epoch::GENESIS, budget)
+    }
+
     async fn create_authority(
         &self,
         authority_id: AuthorityId,
@@ -486,6 +535,18 @@ impl<T: ImmediateObjectStore + ?Sized> AsyncObjectStore for T {
             crate::storage::ObjectFailure::before_work(crate::storage::ObjectStoreError::Cancelled)
         })?;
         ObjectStore::put(self, object_id, bytes, budget)
+    }
+
+    async fn put_many(
+        &self,
+        writes: &[ObjectWrite],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        cancellation.check().map_err(|_| {
+            crate::storage::ObjectFailure::before_work(crate::storage::ObjectStoreError::Cancelled)
+        })?;
+        ObjectStore::put_many(self, writes, budget)
     }
 
     async fn read(

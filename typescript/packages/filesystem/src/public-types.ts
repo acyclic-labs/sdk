@@ -94,3 +94,5 @@ export type {
   WatchCaptureResult,
   WatchReconcileResult,
 } from "./contracts.js";
+
+export type * from "./compat.js";

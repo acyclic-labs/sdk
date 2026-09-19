@@ -52,6 +52,7 @@ pub use wire_service::{
 /// Canonical public descriptor set used by compatibility and conformance gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-filesystem-v2.bin");
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn descriptor_digest() -> String {
     blake3::hash(FILE_DESCRIPTOR_SET).to_hex().to_string()
 }
@@ -74,27 +75,40 @@ mod public_contract_tests {
 pub mod async_storage;
 pub mod cache;
 pub mod cancellation;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub mod core_state;
+pub mod demand;
 #[cfg(feature = "distributed")]
 pub mod distributed;
 pub mod facade;
 pub mod foundation;
+pub mod git_compat;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hosted;
 pub mod kernel;
+pub mod lineage;
+pub mod materializer;
 #[cfg(test)]
 pub mod memory;
+pub mod merge_driver;
 pub mod model;
 pub mod mount;
+#[cfg(feature = "native-watch")]
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native_capture;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod native_exchange;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod native_host;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_identity;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub mod native_mount;
 #[cfg(feature = "native-watch")]
 mod native_name;
 pub mod notification;
+pub mod operation_window;
 pub mod path;
 pub mod performance;
 pub mod s3;
@@ -110,8 +124,11 @@ pub mod streams_record;
 #[cfg(all(test, feature = "memory"))]
 #[path = "tests/support.rs"]
 pub(crate) mod test_support;
+pub mod text_merge;
 #[cfg(feature = "native-watch")]
 pub mod watch;
+#[cfg(all(feature = "native-watch", target_os = "windows"))]
+mod windows_usn;
 pub mod workspace;
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -119,18 +136,22 @@ pub use acyclic_objects::{LocalDurability as LocalObjectsDurability, LocalObject
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
 pub use async_storage::{
-    AsyncAuthorityStore, AsyncObjectStore, ImmediateAuthorityStore, ImmediateObjectStore,
+    AsyncAuthorityStore, AsyncObjectStore, GenerationFork, GenerationForkSource,
+    ImmediateAuthorityStore, ImmediateObjectStore,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub use core_state::{LocalCoreStateStore, LocalCoreStateStoreError};
 #[cfg(feature = "distributed")]
 pub use distributed::{ProviderObjectStore, StreamAuthorityStore};
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
     CheckoutCommitOutcome, DetachedFile, DirectoryBindingChange, DirectoryRecordEntry,
-    DirectoryRecordPage, EmbeddedCapabilities, FileCloneRequest, FileRecordChange, Fs, FsError,
-    FsReceipt, FsResult, GenerationDiff, LiveMutationOutcome, MergeConflict, MergePreparation,
-    NamedAttributeWriteMode, PathMetadataLookup, StagedContent, Volume,
+    DirectoryRecordPage, EmbeddedCapabilities, FileCloneRequest, FileRangeReadRequest,
+    FileRecordChange, Fs, FsError, FsReceipt, FsResult, GenerationDiff, LiveMutationOutcome,
+    MergeConflict, MergePreparation, NamedAttributeWriteMode, PathMetadataLookup, PinnedReader,
+    StagedContent, Volume,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use facade::{
@@ -144,6 +165,15 @@ pub use foundation::{
     FileId, GenerationId, Head, MountId, OperationId, ProposedCommit, Sequence, VolumeId, WatchId,
     authority_commit_digest,
 };
+pub use git_compat::{
+    GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureError,
+    GitCapturedGeneration, GitCommand, GitCommandOutput, GitCommit, GitCommitId, GitCompatError,
+    GitCompatRepository, GitCompatRunError, GitCompatState, GitCompatStore, GitFilesystemAction,
+    GitFilesystemExecutor, GitFilesystemResult, GitGenerationRef, GitGrepMatch, GitGrepResult,
+    GitIgnorePolicy, GitObjectName, GitPatchError, GitPendingMutation, GitPendingTransition,
+    GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, MemoryGitCompatStore, apply_git_patch,
+    blame_git_generations, capture_git_compatible_generation, grep_git_generation, walk_git_tree,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use hosted::{
     HostedFs, HostedFsError, HostedFsOptions, HostedGeneration, HostedS3Access,
@@ -153,17 +183,48 @@ pub use kernel::{
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
     encode_generation_export_manifest,
 };
+pub use lineage::{
+    MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,
+    WorkspaceLineageError, WorkspaceLineageRecord, WorkspaceLineageStore,
+};
+pub use materializer::{
+    JournaledMaterializer, MaterializationBackend, MaterializationEdit, MaterializationError,
+    MaterializationJournal, MaterializationJournalStore, MaterializationPhase, MaterializationPlan,
+    MaterializationPreimage, MaterializationRecovery, MemoryMaterializationJournalStore,
+    MemoryMaterializationJournalStoreError,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use materializer::{NativeTreeMaterializationBackend, NativeTreeMaterializationError};
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub use materializer::{NativeTreePublicationError, publish_native_tree};
 #[cfg(test)]
 pub use memory::{MemoryAuthorityStore, MemoryObjectStore};
+pub use merge_driver::{
+    AttributeRule, CachedMergeResolution, ConflictKey, ConflictKind, ConflictSide, ConflictValue,
+    ConflictView, DefaultTextMergeDriver, DriverError, DriverRegistrationError,
+    MemoryMergeResolutionCache, MergeDriver, MergeDriverMode, MergeDriverRegistry, MergePlan,
+    MergePlanResolutionError, MergeResolution, MergeResolutionCache, ResolutionKey,
+    UnpublishedMergeCandidate, resolve_merge_plan,
+};
 pub use mount::{
     MountError, MountedCheckout, MountedGeneration, MountedView, MountedViewBuilder,
     MountedViewSnapshot, RoutedCheckout,
 };
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub use native_capture::{
-    CaptureError, CaptureOptions, CaptureReceipt, WatchCaptureReceipt, capture_baseline,
-    capture_paths, capture_root_identity, capture_watch_batch,
+    CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, WatchCaptureReceipt,
+    capture_baseline, capture_baseline_with_policy, capture_paths, capture_paths_with_policy,
+    capture_root_identity, capture_subtree, capture_subtree_with_policy,
+    capture_subtrees_with_policy, capture_watch_batch, capture_watch_batch_with_policy,
+    host_path_to_namespace, namespace_to_host_path,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use native_exchange::{
+    NativeExchangeError, NativeExchangeJournal, NativeExchangeOutcome, NativeExchangePhase,
+    exchange_native_entries, publish_native_exchange, recover_native_exchange,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use native_identity::NativeRootIdentity;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub use native_mount::{
     CheckoutMountSource, MaterializationReceipt, MaterializeError, MaterializeOptions, Mount,
@@ -175,19 +236,20 @@ pub use native_mount::{
     NativeMountSession, NativeMountSessionIsolation, NativeSparseAccelerationEvidence,
     NativeStorageAccelerationError, NativeStorageAccelerationEvidence, NativeStorageCapabilities,
     NativeStorageCapabilityError, RoutedMountSource, SharedCheckout, SharedCheckoutState,
-    materialize_checkout, mount_native, mount_native_over_existing, probe_native_mount,
-    probe_native_storage_accelerations, probe_native_storage_capabilities,
-    reclaim_native_mount_destination_fence, reclaim_stale_native_mount_destination_fences,
-    recover_native_mount_destination, seal_checkout,
-};
-#[cfg(all(feature = "native-mount", target_os = "windows"))]
-pub use native_mount::{
-    WindowsUsnCheckpoint, WindowsUsnContinuity, WindowsUsnDiscontinuity, WindowsUsnError,
-    capture_windows_usn_checkpoint, validate_windows_usn_checkpoint,
+    materialize_checkout, materialize_checkout_host_path, materialize_checkout_path, mount_native,
+    mount_native_over_existing, probe_native_mount, probe_native_storage_accelerations,
+    probe_native_storage_capabilities, reclaim_native_mount_destination_fence,
+    reclaim_stale_native_mount_destination_fences, recover_native_mount_destination, seal_checkout,
 };
 pub use notification::{
     AsyncNotificationStore, ImmediateNotificationStore, MemoryNotificationStore, NotificationError,
     NotificationPoll, NotificationResult, NotificationStore,
+};
+pub use operation_window::{
+    MemoryOperationWindowStore, OperationLease, OperationLeaseId, OperationReconcileLimits,
+    OperationWindowCoordinator, OperationWindowError, OperationWindowFinish, OperationWindowLease,
+    OperationWindowPhase, OperationWindowReconcile, OperationWindowSnapshot, OperationWindowStore,
+    WorkspaceOperationFinish,
 };
 pub use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
@@ -231,16 +293,22 @@ pub use streams_record::{
 };
 #[cfg(feature = "native-watch")]
 pub use watch::{
-    NativeRootIdentity, NativeWatch, NativeWatchBackend, NativeWatchCapabilities, NativeWatchError,
-    NativeWatchOptions, WatchBatch, WatchChange, WatchEpoch, WatchInvalidationReason,
-    WatchSequence, native_watch_capabilities,
+    NativeWatch, NativeWatchBackend, NativeWatchCapabilities, NativeWatchError, NativeWatchOptions,
+    WatchBatch, WatchChange, WatchEpoch, WatchInvalidationReason, WatchSequence,
+    native_watch_capabilities,
+};
+#[cfg(all(feature = "native-watch", target_os = "windows"))]
+pub use windows_usn::{
+    WindowsUsnCheckpoint, WindowsUsnContinuity, WindowsUsnDiscontinuity, WindowsUsnError,
+    capture_windows_usn_checkpoint, validate_windows_usn_checkpoint,
 };
 pub use workspace::{
-    ApplyOptions, ChangeSet, Checkpoint, ForkOptions, Generation, GenerationPin, IdempotencyKey,
-    JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, Transaction, TransactionCommit,
-    TransactionConflict, TransactionConflictRegion, TransactionDependencyUse, TransactionRebase,
-    TransactionSparseSeek, Workspace, WorkspaceDelete, WorkspaceDirectoryEntry,
+    ApplyOptions, ChangeSet, ChangedPath, Checkpoint, DrivenJoinError, ForkOptions, Generation,
+    GenerationPin, IdempotencyKey, JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, Transaction,
+    TransactionCommit, TransactionConflict, TransactionConflictRegion, TransactionDependencyUse,
+    TransactionRebase, TransactionSparseSeek, Workspace, WorkspaceDelete, WorkspaceDirectoryEntry,
     WorkspaceDirectoryPage, WorkspaceError, WorkspaceExtentKind, WorkspaceExtentPlan,
     WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName, WorkspaceNameError,
-    WorkspaceRebase, WorkspaceStat, WorkspaceSync,
+    WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase, WorkspaceRestore, WorkspaceStat,
+    WorkspaceSync,
 };

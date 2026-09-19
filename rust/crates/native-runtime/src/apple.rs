@@ -1,0 +1,178 @@
+//! Apple positional I/O through Dispatch I/O.
+
+#![allow(unsafe_code)]
+
+use crate::{OwnedRead, OwnedWrite};
+use block2::RcBlock;
+use bytes::Bytes;
+use dispatch2::{
+    DispatchData, DispatchIO, DispatchIOStreamType, DispatchQoS, DispatchQueue,
+    GlobalQueueIdentifier,
+};
+use std::ffi::c_int;
+use std::fs::File;
+use std::io;
+use std::os::fd::AsRawFd as _;
+use std::sync::{Arc, Condvar, Mutex};
+
+struct Completion<T> {
+    result: Mutex<Option<io::Result<T>>>,
+    ready: Condvar,
+}
+
+impl<T> Completion<T> {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            result: Mutex::new(None),
+            ready: Condvar::new(),
+        })
+    }
+
+    fn finish(&self, result: io::Result<T>) {
+        *self
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+        self.ready.notify_one();
+    }
+
+    fn wait(&self) -> io::Result<T> {
+        let mut result = self
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while result.is_none() {
+            result = self
+                .ready
+                .wait(result)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        result
+            .take()
+            .ok_or_else(|| io::Error::other("missing Dispatch I/O result"))?
+    }
+}
+
+fn queue() -> dispatch2::DispatchRetained<DispatchQueue> {
+    DispatchQueue::global_queue(GlobalQueueIdentifier::QualityOfService(
+        DispatchQoS::UserInitiated,
+    ))
+}
+
+pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
+    let queue = queue();
+    let cleanup = RcBlock::new(|_: c_int| {});
+    // SAFETY: the file descriptor remains live until every operation and channel completes.
+    let channel = unsafe {
+        DispatchIO::new(
+            DispatchIOStreamType::DISPATCH_IO_RANDOM,
+            file.as_raw_fd(),
+            &queue,
+            &cleanup,
+        )
+    };
+    let mut completions = Vec::new();
+    completions.try_reserve_exact(reads.len())?;
+    for read in reads {
+        let completion = Completion::new();
+        let callback = Arc::clone(&completion);
+        let collected = Arc::new(Mutex::new(Vec::with_capacity(read.length)));
+        let callback_bytes = Arc::clone(&collected);
+        let handler = RcBlock::new(move |done: u8, data: *mut DispatchData, error: c_int| {
+            if error != 0 {
+                callback.finish(Err(io::Error::from_raw_os_error(error)));
+                return;
+            }
+            if !data.is_null() {
+                // SAFETY: Dispatch guarantees data is live for this handler invocation.
+                callback_bytes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .extend_from_slice(&unsafe { &*data }.to_vec());
+            }
+            if done != 0 {
+                let bytes = std::mem::take(
+                    &mut *callback_bytes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+                callback.finish(Ok(Bytes::from(bytes)));
+            }
+        });
+        let handler = unsafe {
+            std::mem::transmute::<
+                *mut block2::Block<dyn Fn(u8, *mut DispatchData, c_int)>,
+                dispatch2::dispatch_io_handler_t,
+            >(RcBlock::as_ptr(&handler))
+        };
+        let offset = i64::try_from(read.offset)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "read offset is too large"))?;
+        // SAFETY: channel, queue, and copied handler stay live through the operation.
+        unsafe {
+            channel.read(offset, read.length, &queue, handler);
+        }
+        completions.push(completion);
+    }
+    completions
+        .into_iter()
+        .map(|completion| completion.wait())
+        .collect()
+}
+
+fn write_all_batch(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
+    let queue = queue();
+    let cleanup = RcBlock::new(|_: c_int| {});
+    // SAFETY: the file descriptor remains live until every operation and channel completes.
+    let channel = unsafe {
+        DispatchIO::new(
+            DispatchIOStreamType::DISPATCH_IO_RANDOM,
+            file.as_raw_fd(),
+            &queue,
+            &cleanup,
+        )
+    };
+    let mut completions = Vec::new();
+    completions.try_reserve_exact(writes.len())?;
+    for write in writes {
+        let completion = Completion::new();
+        let callback = Arc::clone(&completion);
+        let handler = RcBlock::new(
+            move |done: u8, _remaining: *mut DispatchData, error: c_int| {
+                if done != 0 {
+                    callback.finish(if error == 0 {
+                        Ok(())
+                    } else {
+                        Err(io::Error::from_raw_os_error(error))
+                    });
+                }
+            },
+        );
+        let handler = unsafe {
+            std::mem::transmute::<
+                *mut block2::Block<dyn Fn(u8, *mut DispatchData, c_int)>,
+                dispatch2::dispatch_io_handler_t,
+            >(RcBlock::as_ptr(&handler))
+        };
+        let data = DispatchData::from_bytes(&write.bytes);
+        let offset = i64::try_from(write.offset).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "write offset is too large")
+        })?;
+        // SAFETY: channel, data, queue, and copied handler stay live through completion.
+        unsafe {
+            channel.write(offset, &data, &queue, handler);
+        }
+        completions.push(completion);
+    }
+    let mut first_error = None;
+    for completion in completions {
+        if let Err(error) = completion.wait() {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io::Result<()> {
+    write_all_batch(file, &writes)
+}

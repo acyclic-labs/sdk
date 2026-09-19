@@ -88,12 +88,6 @@ static dfuse_ino_t fh_get_ino(const uint8_t *fh, uint32_t fh_len)
         memcpy(&lo, fh + 4, 4);
         return ((uint64_t)ntohl(hi) << 32) | ntohl(lo);
     }
-    /* Backward compat: accept 4-byte FH from old clients */
-    if (fh_len == 4) {
-        uint32_t net;
-        memcpy(&net, fh, 4);
-        return (dfuse_ino_t)ntohl(net);
-    }
     return 0;
 }
 
@@ -777,12 +771,11 @@ static uint32_t handle_getattr(const darwinfuse_config_t *config,
         char *path = dfuse_itable_path_dup(config->inode_table, ino);
         if (!path) return NFS4ERR_STALE;
 
-        /* Try fgetattr if the file is open */
-        int rc = -1;
+        int rc;
+        int found = 0;
         if (config->ops->fgetattr) {
             uint64_t local_fh = 0;
             int local_flags = 0;
-            int found = 0;
 
             pthread_mutex_lock(&conn->lock);
             nfs4_open_file_t *of = find_open_file_by_ino(conn, ino);
@@ -801,15 +794,16 @@ static uint32_t handle_getattr(const darwinfuse_config_t *config,
                 rc = config->ops->fgetattr(path, &st, &fi);
             }
         }
-        /* Fallback to getattr */
-        if (rc != 0) {
-            if (config->ops->getattr) {
-                rc = config->ops->getattr(path, &st);
-                if (rc != 0) { free(path); return errno_to_nfs4(rc); }
-            } else {
+        if (!found) {
+            if (!config->ops->getattr) {
                 free(path);
-                return NFS4ERR_IO;
+                return NFS4ERR_NOTSUPP;
             }
+            rc = config->ops->getattr(path, &st);
+        }
+        if (rc != 0) {
+            free(path);
+            return errno_to_nfs4(rc);
         }
         free(path);
     }
@@ -979,13 +973,12 @@ static uint32_t handle_setattr(const darwinfuse_config_t *config,
     /* Standard path: apply attributes via individual FUSE callbacks */
 
     if (has_size) {
-        int rc = -1;
-        /* Try ftruncate if the file is open */
+        int rc;
+        int found = 0;
         if (config->ops->ftruncate) {
             dfuse_ino_t ino = fh_get_ino(ctx->current_fh, ctx->current_fh_len);
             uint64_t local_fh = 0;
             int local_flags = 0;
-            int found = 0;
 
             pthread_mutex_lock(&conn->lock);
             nfs4_open_file_t *of = find_open_file_by_ino(conn, ino);
@@ -1004,8 +997,8 @@ static uint32_t handle_setattr(const darwinfuse_config_t *config,
                 rc = config->ops->ftruncate(path, (off_t)set_size, &fi);
             }
         }
-        /* Fallback to truncate */
-        if (rc != 0 && config->ops->truncate) {
+        if (!found) {
+            if (!config->ops->truncate) return NFS4ERR_NOTSUPP;
             rc = config->ops->truncate(path, (off_t)set_size);
         }
         if (rc == 0) attrsset[0] |= (1u << FATTR4_SIZE);
@@ -1464,11 +1457,8 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
                 /* create failed — fall through to try open if EEXIST */
                 if (rc != -EEXIST)
                     return errno_to_nfs4(rc);
-            } else if (config->ops->mknod) {
-                /* Fallback: use mknod + open */
-                int rc = config->ops->mknod(path_buf, S_IFREG | create_mode, 0);
-                if (rc != 0 && rc != -EEXIST)
-                    return errno_to_nfs4(rc);
+            } else {
+                return NFS4ERR_NOTSUPP;
             }
             /* File exists or was just created, fall through to open it */
         }
