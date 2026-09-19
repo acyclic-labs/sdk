@@ -10873,33 +10873,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         }
         let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX).max(1);
         let mut source = std::io::Cursor::new(bytes);
-        let blob = build_blob_async(
-            &self.volume.fs.inner.objects,
+        let staged = stage_content_for_volume(
+            &self.volume,
             &mut source,
-            BlobBuildOptions {
-                chunk_bytes: u32::try_from(
-                    self.volume
-                        .config
-                        .limits
-                        .maximum_object_bytes
-                        .min(1024 * 1024),
-                )
-                .unwrap_or(u32::MAX)
-                .max(1),
-                page_items: self.volume.config.limits.maximum_directory_page_entries,
-                page_bytes: u32::try_from(self.volume.config.limits.maximum_object_bytes)
-                    .unwrap_or(u32::MAX)
-                    .max(1),
-                maximum_blob_bytes,
-            },
+            maximum_blob_bytes,
             budget,
             cancellation,
         )
-        .await
-        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+        .await?;
         Ok(FsReceipt {
-            work: blob.work,
-            value: blob,
+            work: staged.work,
+            value: crate::kernel::BlobBuild {
+                root: staged.value.root,
+                logical_bytes: staged.value.logical_bytes,
+                work: staged.work,
+            },
         })
     }
 
@@ -10967,37 +10955,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         }
         let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let mut source = std::io::Cursor::new(bytes);
-        let blob = build_blob_async(
-            &self.volume.fs.inner.objects,
+        let blob = stage_content_for_volume(
+            &self.volume,
             &mut source,
-            BlobBuildOptions {
-                chunk_bytes: u32::try_from(
-                    self.volume
-                        .config
-                        .limits
-                        .maximum_object_bytes
-                        .min(1024 * 1024),
-                )
-                .unwrap_or(u32::MAX)
-                .max(1),
-                page_items: self.volume.config.limits.maximum_directory_page_entries,
-                page_bytes: u32::try_from(self.volume.config.limits.maximum_object_bytes)
-                    .unwrap_or(u32::MAX)
-                    .max(1),
-                maximum_blob_bytes,
-            },
+            maximum_blob_bytes,
             budget,
             cancellation,
         )
-        .await
-        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+        .await?;
         let mut work = blob.work;
         let mutation = self
             .mutate_regular(
                 RegularMutation::Write {
                     offset,
-                    length: blob.logical_bytes,
-                    content: blob.root,
+                    length: blob.value.logical_bytes,
+                    content: blob.value.root,
                     content_offset: 0,
                 },
                 remaining(work, budget)?,

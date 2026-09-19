@@ -7,8 +7,9 @@ use crate::model::FilesystemProfile;
 use crate::native_host::{HostDataRange, HostRoot, allocated_data_ranges};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, Checkout,
-    NativeRootIdentity, OperationFailure, OperationReceipt, StagedContent, WatchBatch, WatchChange,
-    WatchEpoch, WatchInvalidationReason, WatchSequence, WorkBudget, WorkCounters, WorkError,
+    ContentStager, NativeRootIdentity, OperationFailure, OperationReceipt, StagedContent,
+    WatchBatch, WatchChange, WatchEpoch, WatchInvalidationReason, WatchSequence, WorkBudget,
+    WorkCounters, WorkError,
 };
 
 /// Returns the stable identity of a no-follow, capability-held capture root.
@@ -1855,8 +1856,22 @@ async fn append_regular_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let logical_bytes = metadata.len();
     let ranges = allocated_data_ranges(&file, logical_bytes, maximum_extent_spans)
         .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
-    let staged =
-        stage_host_ranges(checkout, &mut file, &ranges, receipt, budget, cancellation).await?;
+    let staged = stage_host_ranges(
+        &checkout.content_stager(),
+        &mut file,
+        &ranges,
+        receipt.work,
+        budget,
+        cancellation,
+    )
+    .await?;
+    receipt.work = add_work(receipt.work, staged.work)?;
+    receipt.staged_file_bytes = receipt
+        .staged_file_bytes
+        .checked_add(staged.bytes)
+        .ok_or_else(|| {
+            OperationFailure::new(CaptureError::Work(WorkError::Overflow), receipt.work)
+        })?;
     let after = file
         .metadata()
         .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
@@ -1880,7 +1895,7 @@ async fn append_regular_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             logical_bytes,
         });
     }
-    mutations.extend(staged.into_iter().map(|(range, content)| {
+    mutations.extend(staged.ranges.into_iter().map(|(range, content)| {
         AuthoredMutation::WriteFromContent {
             path: path.clone(),
             offset: range.offset,
@@ -2098,49 +2113,63 @@ mod host_file_race_tests {
     }
 }
 
+struct StagedHostRanges {
+    ranges: Vec<(HostDataRange, StagedContent)>,
+    work: WorkCounters,
+    bytes: u64,
+}
+
 async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &Checkout<A, O>,
+    stager: &ContentStager<A, O>,
     file: &mut cap_std::fs::File,
     ranges: &[HostDataRange],
-    receipt: &mut CaptureReceipt,
+    prior_work: WorkCounters,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<Vec<(HostDataRange, StagedContent)>, OperationFailure<CaptureError>> {
+) -> Result<StagedHostRanges, OperationFailure<CaptureError>> {
     let mut staged = Vec::new();
     staged
         .try_reserve(ranges.len())
-        .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, receipt.work))?;
+        .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, prior_work))?;
+    let mut work = WorkCounters::default();
+    let mut bytes = 0_u64;
     for range in ranges {
+        let accumulated = prior_work
+            .checked_add(work)
+            .map_err(|error| OperationFailure::new(CaptureError::Work(error), prior_work))?;
         file.seek(SeekFrom::Start(range.offset))
-            .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+            .map_err(|error| OperationFailure::new(error.into(), accumulated))?;
         let mut bounded = (&mut *file).take(range.length);
-        let remaining = receipt
-            .work
+        let remaining = accumulated
             .remaining(budget)
-            .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
-        let content = checkout
-            .stage_content(&mut bounded, range.length, remaining, cancellation)
+            .map_err(|error| OperationFailure::new(CaptureError::Work(error), accumulated))?;
+        let content = stager
+            .stage(&mut bounded, range.length, remaining, cancellation)
             .await
-            .map_err(|failure| map_engine_failure(failure, receipt.work))?;
-        receipt.work = add_work(receipt.work, content.work)?;
+            .map_err(|failure| map_engine_failure(failure, accumulated))?;
+        work = add_work(work, content.work)?;
+        let accumulated = prior_work
+            .checked_add(work)
+            .map_err(|error| OperationFailure::new(CaptureError::Work(error), prior_work))?;
         if content.value.logical_bytes() != range.length {
             return Err(OperationFailure::new(
                 CaptureError::Io(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "host file changed while capturing a sparse range",
                 )),
-                receipt.work,
+                accumulated,
             ));
         }
-        receipt.staged_file_bytes = receipt
-            .staged_file_bytes
-            .checked_add(range.length)
-            .ok_or_else(|| {
-                OperationFailure::new(CaptureError::Work(WorkError::Overflow), receipt.work)
-            })?;
+        bytes = bytes.checked_add(range.length).ok_or_else(|| {
+            OperationFailure::new(CaptureError::Work(WorkError::Overflow), accumulated)
+        })?;
         staged.push((*range, content.value));
     }
-    Ok(staged)
+    Ok(StagedHostRanges {
+        ranges: staged,
+        work,
+        bytes,
+    })
 }
 
 fn append_special_state(
