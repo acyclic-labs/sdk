@@ -419,15 +419,17 @@ impl LocalObjects {
         Ok(())
     }
 
-    fn persist_segment(
+    async fn persist_segment(
         &self,
-        bodies: &[([u8; 32], bytes::Bytes)],
+        bodies: Vec<([u8; 32], bytes::Bytes)>,
     ) -> Result<([u8; 32], Vec<u64>), ObjectsError> {
-        let result = persist_segment(
-            &self.persistence.root,
-            bodies,
-            self.persistence.limits.durability,
-        );
+        let root = self.persistence.root.clone();
+        let durability = self.persistence.limits.durability;
+        let result =
+            tokio::task::spawn_blocking(move || persist_segment(&root, &bodies, durability))
+                .await
+                .map_err(|_| LocalObjectsError::Corrupt)
+                .and_then(std::convert::identity);
         if result.is_err() {
             self.persistence.poisoned.store(true, Ordering::Release);
         }
@@ -501,8 +503,8 @@ impl ObjectsProvider for LocalObjects {
         }
         // Immutable body publication can overlap other puts. The mutation lock
         // still orders every journal intent and semantic state transition.
-        let bodies = [(digest, request.body.clone())];
-        let (segment_id, offsets) = self.persist_segment(&bodies)?;
+        let bodies = vec![(digest, request.body.clone())];
+        let (segment_id, offsets) = self.persist_segment(bodies).await?;
         let segment_offset = *offsets.first().ok_or(ObjectsError::Unavailable)?;
         let _mutation = self.mutation.lock().await;
         self.check_available()?;
@@ -601,7 +603,7 @@ impl ObjectsProvider for LocalObjects {
             };
             pending_body_indices.push(body_index);
         }
-        let (segment_id, unique_offsets) = match self.persist_segment(&unique_bodies) {
+        let (segment_id, unique_offsets) = match self.persist_segment(unique_bodies).await {
             Ok(segment) => segment,
             Err(error) => {
                 for (index, _, _) in pending {
@@ -822,8 +824,8 @@ impl ObjectsProvider for LocalObjects {
         self.check_available()?;
         let body_length = body.len();
         let digest = *blake3::hash(&body).as_bytes();
-        let bodies = [(digest, body.clone())];
-        let (segment_id, offsets) = self.persist_segment(&bodies)?;
+        let bodies = vec![(digest, body.clone())];
+        let (segment_id, offsets) = self.persist_segment(bodies).await?;
         let segment_offset = *offsets.first().ok_or(ObjectsError::Unavailable)?;
         self.append(mutation_record::Operation::UploadPart(UploadPartRecord {
             header: Some(wire::UploadPartHeader {
