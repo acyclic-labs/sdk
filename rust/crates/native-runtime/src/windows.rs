@@ -7,7 +7,7 @@ use bytes::Bytes;
 use std::cell::RefCell;
 use std::fs::File;
 use std::io;
-use std::mem::zeroed;
+use std::mem::{ManuallyDrop, zeroed};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_HANDLE_EOF, ERROR_IO_PENDING, HANDLE, INVALID_HANDLE_VALUE,
@@ -71,7 +71,10 @@ struct QuarantinedIo {
 struct PortState {
     port: Option<CompletionPort>,
     next_key: usize,
-    quarantine: Option<QuarantinedIo>,
+    // An uncertain overlapped operation may still dereference its OVERLAPPED
+    // and buffer after the owning thread exits. Keep the entire batch alive
+    // until process teardown and fail closed instead of ever replacing it.
+    quarantine: Option<ManuallyDrop<QuarantinedIo>>,
 }
 
 thread_local! {
@@ -113,6 +116,11 @@ fn write_batch_on_port(
     file: &File,
     writes: &[OwnedWrite],
 ) -> io::Result<()> {
+    if state.quarantine.is_some() {
+        return Err(io::Error::other(
+            "Windows overlapped I/O is quarantined after an uncertain completion",
+        ));
+    }
     if state.port.is_none() {
         state.port = Some(CompletionPort::new()?);
     }
@@ -155,11 +163,11 @@ fn write_batch_on_port(
                 .port
                 .take()
                 .ok_or_else(|| io::Error::other("completion port disappeared during quarantine"))?;
-            state.quarantine = Some(QuarantinedIo {
+            state.quarantine = Some(ManuallyDrop::new(QuarantinedIo {
                 _port: failed_port,
                 _file: overlapped,
                 _pending: QuarantinedPending::Writes { _requests: pending },
-            });
+            }));
             return first_error.map_or(Ok(()), Err);
         }
     }
@@ -171,6 +179,11 @@ fn read_batch_on_port(
     file: &File,
     reads: &[OwnedRead],
 ) -> io::Result<Vec<Bytes>> {
+    if state.quarantine.is_some() {
+        return Err(io::Error::other(
+            "Windows overlapped I/O is quarantined after an uncertain completion",
+        ));
+    }
     if state.port.is_none() {
         state.port = Some(CompletionPort::new()?);
     }
@@ -213,11 +226,11 @@ fn read_batch_on_port(
                 .port
                 .take()
                 .ok_or_else(|| io::Error::other("completion port disappeared during quarantine"))?;
-            state.quarantine = Some(QuarantinedIo {
+            state.quarantine = Some(ManuallyDrop::new(QuarantinedIo {
                 _port: failed_port,
                 _file: overlapped,
                 _pending: QuarantinedPending::Reads { _requests: pending },
-            });
+            }));
             return first_error.map_or(Ok(Vec::new()), Err);
         }
     }
