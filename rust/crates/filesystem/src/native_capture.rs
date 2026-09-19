@@ -652,13 +652,13 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
-    capture_baseline_with_policy(
+    Box::pin(capture_baseline_with_policy(
         checkout,
         options,
         &CapturePolicy::allow_all(),
         budget,
         cancellation,
-    )
+    ))
     .await
 }
 

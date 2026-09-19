@@ -113,12 +113,12 @@ async fn benchmark_capture(paths: u32, file_bytes: u64) -> Result<(), Box<dyn st
         maximum_extent_spans: 1024,
     };
     let started = Instant::now();
-    let receipt = Box::pin(capture_baseline(
+    let receipt = capture_baseline(
         &mut checkout,
         &options,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ))
+    )
     .await?;
     let elapsed = started.elapsed();
     let work = receipt.work;
