@@ -14,7 +14,7 @@ use std::{
 use async_trait::async_trait;
 use fs2::FileExt;
 use prost::Message;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 
 use crate::{
     BufferedObject, Condition, DeleteResult, ExternalBody, GetRequest, LocalBodyLocation,
@@ -30,6 +30,7 @@ const SEGMENT_HEADER_BYTES: usize = SEGMENT_MAGIC.len() + 4;
 const SEGMENT_RECORD_BYTES: usize = 32 + 8;
 const MAXIMUM_SEGMENT_BODIES: usize = 4;
 const MAXIMUM_SEGMENT_BYTES: usize = 4 * 1024 * 1024;
+const REPLAY_PIPELINE_RECORDS: usize = 32;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// How journal frames and immutable bodies are made durable before they become observable.
@@ -287,39 +288,43 @@ impl LocalObjects {
             .try_lock_exclusive()
             .map_err(|_| LocalObjectsError::AlreadyOwned)?;
 
-        let mut journal = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(root.join("mutations.log"))?;
-        initialize_or_validate_header(&mut journal, limits)?;
+        let journal_path = root.join("mutations.log");
+        let (records, mut receiver) = mpsc::channel(REPLAY_PIPELINE_RECORDS);
+        let recovery = tokio::task::spawn_blocking(move || {
+            let mut journal = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(journal_path)?;
+            initialize_or_validate_header(&mut journal, limits)?;
+            let operations = decode_replay(&mut journal, limits, &records)?;
+            Ok::<_, LocalObjectsError>((journal, operations))
+        });
         let semantic =
             MemoryObjects::new_with_limits(limits.maximum_object_bytes, limits.maximum_bytes)
                 .map_err(|_| LocalObjectsError::Invalid("capacity limits are not representable"))?;
-        let journal_operations = replay(&root, &semantic, &mut journal, limits).await?;
-        let mut validated_segments = BTreeMap::new();
-        for body in semantic.local_body_references().await {
-            let LocalBodyLocation::Segment { id, offset } = &body.location;
-            if !validated_segments.contains_key(id) {
-                let records = validate_segment_records(
-                    &segment_path(&root, id),
-                    id,
-                    limits.maximum_object_bytes,
-                )?;
-                validated_segments.insert(*id, records);
-            }
-            let expected_length =
-                u64::try_from(body.length).map_err(|_| LocalObjectsError::Corrupt)?;
-            if !validated_segments.get(id).is_some_and(|records| {
-                records.get(offset).is_some_and(|record| {
-                    record.digest == body.digest && record.length == expected_length
-                })
-            }) {
-                return Err(LocalObjectsError::Corrupt);
+        let mut replay_error = None;
+        while let Some(record) = receiver.recv().await {
+            if replay_error.is_none()
+                && let Err(error) = replay_operation(&root, &semantic, record).await
+            {
+                replay_error = Some(error);
             }
         }
-        journal.seek(SeekFrom::End(0))?;
+        let (journal, journal_operations) = recovery
+            .await
+            .map_err(|_| LocalObjectsError::Unavailable)??;
+        if let Some(error) = replay_error {
+            return Err(error);
+        }
+        let bodies = semantic.local_body_references().await;
+        let validation_root = root.clone();
+        tokio::task::spawn_blocking(move || {
+            validate_referenced_segments(&validation_root, &bodies, limits.maximum_object_bytes)
+        })
+        .await
+        .map_err(|_| LocalObjectsError::Unavailable)??;
         Ok(Self {
             semantic,
             persistence: Arc::new(Persistence {
@@ -987,11 +992,10 @@ fn required<T>(value: Option<T>) -> Result<T, LocalObjectsError> {
     value.ok_or(LocalObjectsError::Corrupt)
 }
 
-async fn replay(
-    root: &Path,
-    semantic: &MemoryObjects,
+fn decode_replay(
     journal: &mut File,
     limits: LocalObjectsLimits,
+    records: &mpsc::Sender<mutation_record::Operation>,
 ) -> Result<u64, LocalObjectsError> {
     journal.seek(SeekFrom::Start(JOURNAL_HEADER_BYTES))?;
     let mut operations = 0_u64;
@@ -1023,8 +1027,11 @@ async fn replay(
         {
             return Err(LocalObjectsError::Corrupt);
         }
-        replay_operation(root, semantic, required(record.operation)?).await?;
+        records
+            .blocking_send(required(record.operation)?)
+            .map_err(|_| LocalObjectsError::Unavailable)?;
     }
+    journal.seek(SeekFrom::End(0))?;
     Ok(operations)
 }
 
@@ -1552,6 +1559,31 @@ fn validate_segment_file(
 struct ValidatedSegmentRecord {
     digest: [u8; 32],
     length: u64,
+}
+
+fn validate_referenced_segments(
+    root: &Path,
+    bodies: &BTreeSet<LocalBodyReference>,
+    maximum_object_bytes: u64,
+) -> Result<(), LocalObjectsError> {
+    let mut validated_segments = BTreeMap::new();
+    for body in bodies {
+        let LocalBodyLocation::Segment { id, offset } = &body.location;
+        if !validated_segments.contains_key(id) {
+            let records =
+                validate_segment_records(&segment_path(root, id), id, maximum_object_bytes)?;
+            validated_segments.insert(*id, records);
+        }
+        let expected_length = u64::try_from(body.length).map_err(|_| LocalObjectsError::Corrupt)?;
+        if !validated_segments.get(id).is_some_and(|records| {
+            records.get(offset).is_some_and(|record| {
+                record.digest == body.digest && record.length == expected_length
+            })
+        }) {
+            return Err(LocalObjectsError::Corrupt);
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2891,6 +2923,59 @@ mod tests {
                     .is_ok_and(|bucket| bucket.is_some()),
                 "prefix {prefix}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_failure_drains_the_bounded_pipeline_and_releases_ownership() {
+        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let limits = LocalObjectsLimits::default();
+        let provider = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        drop(provider);
+
+        let invalid = MutationRecord {
+            operation: Some(mutation_record::Operation::DeleteBucket(
+                wire::DeleteBucketRequest {
+                    bucket: None,
+                    mutation: None,
+                },
+            )),
+        }
+        .encode_to_vec();
+        let valid = MutationRecord {
+            operation: Some(mutation_record::Operation::CreateBucket(
+                wire::CreateBucketRequest {
+                    name: "later".into(),
+                    mutation: None,
+                },
+            )),
+        }
+        .encode_to_vec();
+        let journal_path = root.path().join("mutations.log");
+        let mut journal = OpenOptions::new()
+            .append(true)
+            .open(journal_path)
+            .unwrap_or_else(|_| unreachable!());
+        journal
+            .write_all(&encode_frame(&invalid).unwrap_or_else(|_| unreachable!()))
+            .unwrap_or_else(|_| unreachable!());
+        let valid = encode_frame(&valid).unwrap_or_else(|_| unreachable!());
+        for _ in 0..REPLAY_PIPELINE_RECORDS * 4 {
+            journal.write_all(&valid).unwrap_or_else(|_| unreachable!());
+        }
+        journal.sync_all().unwrap_or_else(|_| unreachable!());
+        drop(journal);
+
+        for _ in 0..2 {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                LocalObjects::open(root.path(), limits),
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+            assert!(matches!(result, Err(LocalObjectsError::Corrupt)));
         }
     }
 
