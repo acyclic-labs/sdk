@@ -132,6 +132,8 @@ mod windows_usn;
 pub mod workspace;
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub use acyclic_native_runtime::durable_rename;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_objects::{LocalDurability as LocalObjectsDurability, LocalObjectsLimits};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};

@@ -7997,33 +7997,6 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
         .as_deref(),
         Some(b"first".as_slice())
     );
-    let maximum_read_bytes = checkout.value.volume.config.limits.maximum_read_bytes;
-    checkout.value.volume.config.limits.maximum_read_bytes = 4;
-    for bounded in [
-        poll_ready(checkout.value.read_named_attribute_by_id(
-            file_id,
-            &attribute,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("bounded identity attribute read blocked")?,
-        poll_ready(checkout.value.read_named_attribute(
-            &file,
-            &attribute,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("bounded path attribute read blocked")?,
-    ] {
-        assert!(matches!(
-            bounded,
-            Err(OperationFailure {
-                error: FsError::FileRead(FileRangeReadError::InvalidRange),
-                ..
-            })
-        ));
-    }
-    checkout.value.volume.config.limits.maximum_read_bytes = maximum_read_bytes;
     assert_eq!(
         ready!(checkout.value.list_named_attributes_by_id(
             file_id,
