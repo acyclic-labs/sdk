@@ -2536,7 +2536,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
     /// Rejects unrelated deployments, incompatible semantics, missing or
     /// over-bound lineage, and malformed authenticated state.
     pub async fn plan(self) -> Result<JoinPlan<A, O>, WorkspaceError> {
-        self.validate_bounds()?;
         let source_head = self.source.head().await?;
         let (target_head_id, target_authority_head) = self
             .target
@@ -2544,11 +2543,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
             .fs
             .workspace_head_state(&self.target.volume)
             .await?;
-        let target_head = Generation {
-            workspace: self.target.clone(),
-            id: target_head_id,
-        };
+        let target_head = self.target.generation(target_head_id).await?;
         self.plan_generations(source_head, target_head, target_authority_head)
+            .await
+    }
+
+    /// Plans a join from exact immutable endpoints while requiring `target`
+    /// to remain the target workspace's current published generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::ForeignGeneration`] for an endpoint from the
+    /// wrong workspace, or [`WorkspaceError::StaleTarget`] if the target has
+    /// advanced. Lineage and semantic failures match [`Self::plan`].
+    pub async fn plan_at(
+        self,
+        source: &Generation<A, O>,
+        target: &Generation<A, O>,
+    ) -> Result<JoinPlan<A, O>, WorkspaceError> {
+        self.validate_bounds()?;
+        if source.workspace.id != self.source.id || target.workspace.id != self.target.id {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let (target_head_id, target_authority_head) = self
+            .target
+            .volume
+            .fs
+            .workspace_head_state(&self.target.volume)
+            .await?;
+        if target.id != target_head_id {
+            return Err(WorkspaceError::StaleTarget);
+        }
+        self.plan_generations(source.clone(), target.clone(), target_authority_head)
             .await
     }
 
@@ -4025,6 +4051,9 @@ pub enum WorkspaceError {
     /// Join input, diff, or conflict bounds are zero or exhausted.
     #[error("workspace join exceeds its configured bound")]
     JoinLimit,
+    /// An exact target generation is no longer the workspace's current head.
+    #[error("workspace target generation is stale")]
+    StaleTarget,
     /// A declarative merge resolution does not match its typed conflict.
     #[error("merge resolution is incompatible with its conflict")]
     InvalidMergeResolution,

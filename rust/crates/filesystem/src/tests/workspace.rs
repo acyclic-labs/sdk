@@ -987,6 +987,44 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
 }
 
 #[tokio::test]
+async fn exact_generation_join_matches_head_plan_and_rejects_stale_target()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let main = fs.create_workspace("main-exact").await?;
+    main.write_text("/base", "base").await?;
+    let base = main.head().await?;
+    let agent = main
+        .fork(
+            "agent-exact",
+            ForkOptions::from_generation(base, IdempotencyKey::new()),
+        )
+        .await?;
+    agent.write_text("/agent", "agent").await?;
+    let source = agent.head().await?;
+    let target = main.head().await?;
+    let planned = agent.join_into(&main).plan_at(&source, &target).await?;
+    assert_eq!(planned.source_head(), source.id());
+    assert_eq!(planned.target_head(), target.id());
+    let current = agent.join_into(&main).plan().await?;
+    assert_eq!(planned.source_head(), current.source_head());
+    assert_eq!(planned.target_head(), current.target_head());
+
+    main.write_text("/advanced", "advanced").await?;
+    assert!(matches!(
+        agent.join_into(&main).plan_at(&source, &target).await,
+        Err(WorkspaceError::StaleTarget)
+    ));
+    assert!(matches!(
+        agent
+            .join_into(&main)
+            .plan_at(&target, &main.head().await?)
+            .await,
+        Err(WorkspaceError::ForeignGeneration)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_frontier()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
