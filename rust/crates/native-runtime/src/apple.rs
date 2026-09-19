@@ -60,6 +60,14 @@ fn queue() -> dispatch2::DispatchRetained<DispatchQueue> {
 }
 
 pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
+    let offsets = reads
+        .iter()
+        .map(|read| {
+            i64::try_from(read.offset).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "read offset is too large")
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
     let queue = queue();
     let cleanup = RcBlock::new(|_: c_int| {});
     // SAFETY: the file descriptor remains live until every operation and channel completes.
@@ -73,7 +81,7 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
     };
     let mut completions = Vec::new();
     completions.try_reserve_exact(reads.len())?;
-    for read in reads {
+    for (read, offset) in reads.iter().zip(offsets) {
         let completion = Completion::new();
         let callback = Arc::clone(&completion);
         let collected = Arc::new(Mutex::new(Vec::with_capacity(read.length)));
@@ -105,8 +113,6 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
                 dispatch2::dispatch_io_handler_t,
             >(RcBlock::as_ptr(&handler))
         };
-        let offset = i64::try_from(read.offset)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "read offset is too large"))?;
         // SAFETY: channel, queue, and copied handler stay live through the operation.
         unsafe {
             channel.read(offset, read.length, &queue, handler);
@@ -120,6 +126,14 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
 }
 
 fn write_all_batch(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
+    let offsets = writes
+        .iter()
+        .map(|write| {
+            i64::try_from(write.offset).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "write offset is too large")
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
     let queue = queue();
     let cleanup = RcBlock::new(|_: c_int| {});
     // SAFETY: the file descriptor remains live until every operation and channel completes.
@@ -133,7 +147,7 @@ fn write_all_batch(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
     };
     let mut completions = Vec::new();
     completions.try_reserve_exact(writes.len())?;
-    for write in writes {
+    for (write, offset) in writes.iter().zip(offsets) {
         let completion = Completion::new();
         let callback = Arc::clone(&completion);
         let handler = RcBlock::new(
@@ -154,9 +168,6 @@ fn write_all_batch(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
             >(RcBlock::as_ptr(&handler))
         };
         let data = DispatchData::from_bytes(&write.bytes);
-        let offset = i64::try_from(write.offset).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidInput, "write offset is too large")
-        })?;
         // SAFETY: channel, data, queue, and copied handler stay live through completion.
         unsafe {
             channel.write(offset, &data, &queue, handler);
