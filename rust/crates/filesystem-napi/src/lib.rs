@@ -22,14 +22,14 @@ use acyclic_fs::{
     OperationWindowCoordinator, OperationWindowFinish, OperationWindowLease, OperationWindowPhase,
     PromotionAdmission, PromotionDestination, PromotionRejection, PromotionSpeculatorOptions,
     ResidencyAdmission, ResidencyHint, ResidencyReason, ResidencyRejection,
-    ResidencySpeculatorOptions, SpeculationController, SpeculationOptions, StorageLocationId,
-    StorageTier, Transaction, TransactionCommit, TransactionConflict, TransactionConflictRegion,
-    TransactionDependencyUse, TransactionRebase, TransactionSparseSeek, VolumeId, WatchBatch,
-    WatchChange, WatchInvalidationReason, WorkBudget, Workspace, WorkspaceDelete,
-    WorkspaceDirectoryPage, WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId,
-    WorkspaceLineageRecord, WorkspaceMetadata, WorkspaceOperationFinish, WorkspaceRebase,
-    WorkspaceStat, decode_generation_export_manifest, encode_generation_export_manifest,
-    native_watch_capabilities as sdk_native_watch_capabilities,
+    ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
+    StorageLocationId, StorageTier, Transaction, TransactionCommit, TransactionConflict,
+    TransactionConflictRegion, TransactionDependencyUse, TransactionRebase, TransactionSparseSeek,
+    VolumeId, WatchBatch, WatchChange, WatchInvalidationReason, WorkBudget, Workspace,
+    WorkspaceDelete, WorkspaceDirectoryPage, WorkspaceExtentKind, WorkspaceExtentPlan,
+    WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord, WorkspaceMetadata,
+    WorkspaceOperationFinish, WorkspaceRebase, WorkspaceStat, decode_generation_export_manifest,
+    encode_generation_export_manifest, native_watch_capabilities as sdk_native_watch_capabilities,
 };
 use acyclic_fs::{
     CaptureOptions, CaptureReceipt, CheckoutMountSource, MaterializeOptions, NativeMountRequest,
@@ -386,6 +386,39 @@ pub struct NativeFileRead {
     pub bytes: Buffer,
     /// Exact machine-readable work receipt.
     pub work_json: String,
+}
+
+/// One ordered resolve result with its exact work receipt.
+#[napi]
+pub struct NativeResolvedFiles {
+    files: std::sync::Mutex<Vec<Option<NativeResolvedFile>>>,
+    work_json: String,
+}
+
+#[napi]
+impl NativeResolvedFiles {
+    /// Number of original-order results.
+    #[napi(getter)]
+    pub fn length(&self) -> Result<u32> {
+        u32::try_from(self.files.lock().map_err(napi_error)?.len()).map_err(napi_error)
+    }
+
+    /// Exact machine-readable work receipt for the shared namespace traversal.
+    #[napi(getter)]
+    pub fn work_json(&self) -> String {
+        self.work_json.clone()
+    }
+
+    /// Transfers one generation-bound handle to JavaScript. Each index may be taken once.
+    #[napi]
+    pub fn take(&self, index: u32) -> Result<Option<NativeResolvedFile>> {
+        self.files
+            .lock()
+            .map_err(napi_error)?
+            .get_mut(usize::try_from(index).map_err(napi_error)?)
+            .ok_or_else(|| Error::new(Status::InvalidArg, "resolved file index is out of bounds"))
+            .map(Option::take)
+    }
 }
 
 /// One sparse data/hole boundary lookup.
@@ -1320,6 +1353,74 @@ type NativeLocalWorkspaceMount = WorkspaceMount<LocalAuthorityBackend, LocalObje
 type NativeLocalGeneration = Generation<LocalAuthorityBackend, LocalObjectBackend>;
 type NativeLocalChangeSet = ChangeSet<LocalAuthorityBackend, LocalObjectBackend>;
 type NativeLocalJoinPlan = JoinPlan<LocalAuthorityBackend, LocalObjectBackend>;
+type NativeLocalResolvedFile = ResolvedFile<LocalAuthorityBackend, LocalObjectBackend>;
+
+/// One immutable file resolved against a pinned checkout generation.
+#[napi]
+pub struct NativeResolvedFile {
+    inner: NativeLocalResolvedFile,
+    cancellation: CancellationToken,
+}
+
+#[napi]
+impl NativeResolvedFile {
+    /// Terminal file kind authenticated by the pinned generation.
+    #[napi(getter)]
+    #[must_use]
+    pub fn kind(&self) -> String {
+        file_kind(self.inner.description().kind).to_owned()
+    }
+
+    /// Logical content length authenticated by the pinned generation.
+    #[napi(getter)]
+    #[must_use]
+    pub fn logical_bytes(&self) -> BigInt {
+        self.inner.description().logical_bytes.into()
+    }
+
+    /// Complete canonical metadata authenticated by the pinned generation.
+    #[napi(getter)]
+    pub fn metadata_canonical_bytes(&self) -> Result<Buffer> {
+        encode_file_metadata(self.inner.description().metadata)
+            .map(|bytes| Buffer::from(bytes.to_vec()))
+            .map_err(napi_error)
+    }
+
+    /// Reads one exact logical range without another namespace lookup.
+    #[napi]
+    pub async fn read_range(&self, offset: BigInt, length: BigInt) -> Result<NativeFileRead> {
+        let receipt = self
+            .inner
+            .read_range(
+                ByteRange {
+                    offset: bigint_u64(&offset)?,
+                    length: bigint_u64(&length)?,
+                },
+                boundary_budget(),
+                &self.cancellation,
+            )
+            .await
+            .map_err(napi_error)?;
+        Ok(NativeFileRead {
+            bytes: Buffer::from(receipt.value.bytes.to_vec()),
+            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+        })
+    }
+
+    /// Reads opaque symbolic-link target bytes without another namespace lookup.
+    #[napi]
+    pub async fn read_symbolic_link(&self) -> Result<NativeFileRead> {
+        let receipt = self
+            .inner
+            .read_symbolic_link(boundary_budget(), &self.cancellation)
+            .await
+            .map_err(napi_error)?;
+        Ok(NativeFileRead {
+            bytes: Buffer::from(receipt.value.to_vec()),
+            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+        })
+    }
+}
 
 /// One named customer workspace backed by the embedded local engine.
 #[napi]
@@ -4572,6 +4673,46 @@ impl NativeCheckout {
         .await
         .map_err(napi_error)?;
         native_mutation(None, receipt.work)
+    }
+
+    /// Resolves an ordered path batch once into immutable generation-bound handles.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JavaScript error for non-pinned checkouts, malformed paths,
+    /// corruption, cancellation, or bounded work.
+    #[napi]
+    pub async fn resolve_files(&self, paths: Vec<String>) -> Result<NativeResolvedFiles> {
+        let mut parsed = Vec::new();
+        parsed
+            .try_reserve_exact(paths.len())
+            .map_err(|error| napi_error(error.to_string()))?;
+        for path in paths {
+            parsed.push(native_path(&path, self.config.limits)?);
+        }
+        let reader = {
+            let checkout = self.inner.lock().await;
+            checkout.pinned_reader().map_err(napi_error)?
+        };
+        let receipt = reader
+            .resolve_files(&parsed, boundary_budget(), &self.cancellation)
+            .await
+            .map_err(napi_error)?;
+        Ok(NativeResolvedFiles {
+            files: std::sync::Mutex::new(
+                receipt
+                    .value
+                    .into_iter()
+                    .map(|file| {
+                        file.map(|inner| NativeResolvedFile {
+                            inner,
+                            cancellation: self.cancellation.clone(),
+                        })
+                    })
+                    .collect(),
+            ),
+            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+        })
     }
 
     /// Reads one exact logical regular-file range.

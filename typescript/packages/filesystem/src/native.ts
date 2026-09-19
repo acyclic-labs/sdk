@@ -66,6 +66,7 @@ import type {
   GenerationTransferCursor,
   ObjectCacheStats,
   ResolvableFsJoinPlan,
+  ResolvedFile,
   NativeRawGitCompatRepository,
   NativeRawOperationWindowClose,
   NativeRawOperationWindowCoordinator,
@@ -690,6 +691,14 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     },
     async writeNamedAttribute(path, attributeClass, name, bytes, mode) { return mutationResult(await raw.writeNamedAttribute(path, attributeClass, name, bytes, mode)); },
     async removeNamedAttribute(path, attributeClass, name) { return mutationResult(await raw.removeNamedAttribute(path, attributeClass, name)); },
+    async resolveFiles(paths) {
+      const value = await raw.resolveFiles(paths);
+      const files = Array.from({ length: value.length }, (_, index) => {
+        const file = value.take(index);
+        return file === undefined ? undefined : adaptResolvedFile(file);
+      });
+      return { files, work: parseWork(value.workJson) };
+    },
     async readFileRange(path, offset, length) { return fileReadResult(await raw.readFileRange(path, offset, length)); },
     async readFileRangeById(fileId, offset, length) { return fileReadResult(await raw.readFileRangeById(fileId, offset, length)); },
     async planFileExtents(path, offset, length, maximumSpans) { return nativeFileExtentPlan(await raw.planFileExtents(path, offset, length, maximumSpans)); },
@@ -734,6 +743,16 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     },
     async discard() { return mutationResult(await raw.discard()); },
     cancel() { raw.cancel(); },
+  };
+}
+
+function adaptResolvedFile(raw: import("./contracts.js").NativeRawResolvedFile): ResolvedFile {
+  return {
+    kind: raw.kind,
+    logicalBytes: raw.logicalBytes,
+    metadataCanonicalBytes: raw.metadataCanonicalBytes.slice(),
+    async readRange(offset, length) { return fileReadResult(await raw.readRange(offset, length)); },
+    async readSymbolicLink() { return fileReadResult(await raw.readSymbolicLink()); },
   };
 }
 

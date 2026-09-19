@@ -37,13 +37,14 @@ mod bindings {
         NamedAttributeWriteMode, ObjectCacheOptions, ObjectId, ObjectKind, ObjectReadRequest,
         ObjectResidency, OperationId, PromotionAdmission, PromotionDestination, PromotionRejection,
         PromotionSpeculatorOptions, ProviderObjectStore, ResidencyAdmission, ResidencyHint,
-        ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions, SpeculationController,
-        SpeculationOptions, StorageLocationId, StorageTier, StreamAuthorityStore, Transaction,
-        TransactionCommit, TransactionConflict, TransactionConflictRegion,
-        TransactionDependencyUse, TransactionRebase, TransactionSparseSeek, Volume, VolumeId,
-        WorkBudget, Workspace, WorkspaceDelete, WorkspaceDirectoryPage, WorkspaceExtentKind,
-        WorkspaceExtentPlan, WorkspaceMetadata, WorkspaceRebase, WorkspaceStat,
-        decode_generation_export_manifest, encode_generation_export_manifest,
+        ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions, ResolvedFile,
+        SpeculationController, SpeculationOptions, StorageLocationId, StorageTier,
+        StreamAuthorityStore, Transaction, TransactionCommit, TransactionConflict,
+        TransactionConflictRegion, TransactionDependencyUse, TransactionRebase,
+        TransactionSparseSeek, Volume, VolumeId, WorkBudget, Workspace, WorkspaceDelete,
+        WorkspaceDirectoryPage, WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceMetadata,
+        WorkspaceRebase, WorkspaceStat, decode_generation_export_manifest,
+        encode_generation_export_manifest,
     };
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
@@ -71,6 +72,12 @@ mod bindings {
         IndexedDb(Checkout<IndexedDbAuthorityStore, IndexedDbObjects>),
         IndexedDbOpfs(Checkout<IndexedDbAuthorityStore, OpfsObjects>),
         Memory(Checkout<MemoryAuthority, MemoryObjects>),
+    }
+
+    enum BrowserResolvedFileEngine {
+        IndexedDb(ResolvedFile<IndexedDbAuthorityStore, IndexedDbObjects>),
+        IndexedDbOpfs(ResolvedFile<IndexedDbAuthorityStore, OpfsObjects>),
+        Memory(ResolvedFile<MemoryAuthority, MemoryObjects>),
     }
 
     enum BrowserWorkspaceEngine {
@@ -142,6 +149,19 @@ mod bindings {
         engine: BrowserCheckoutEngine,
         limits: VolumeLimits,
         acquisition_work: acyclic_fs::WorkCounters,
+    }
+
+    /// One immutable file resolved against a pinned checkout generation.
+    #[wasm_bindgen]
+    pub struct BrowserResolvedFile {
+        engine: BrowserResolvedFileEngine,
+    }
+
+    /// One original-order resolved path batch and its shared work receipt.
+    #[wasm_bindgen]
+    pub struct BrowserResolvedFiles {
+        files: Vec<Option<BrowserResolvedFile>>,
+        work: acyclic_fs::WorkCounters,
     }
 
     /// One named customer workspace.
@@ -3416,6 +3436,118 @@ mod bindings {
     }
 
     #[wasm_bindgen]
+    impl BrowserResolvedFiles {
+        /// Number of original-order results.
+        #[wasm_bindgen(getter)]
+        #[must_use]
+        pub fn length(&self) -> usize {
+            self.files.len()
+        }
+
+        /// Exact work receipt for the shared namespace traversal.
+        #[wasm_bindgen(getter)]
+        pub fn work(&self) -> Result<JsValue, JsValue> {
+            serde_wasm_bindgen::to_value(&self.work).map_err(js_error)
+        }
+
+        /// Transfers one generation-bound handle to JavaScript. Each index may be taken once.
+        pub fn take(&mut self, index: usize) -> Result<Option<BrowserResolvedFile>, JsValue> {
+            self.files
+                .get_mut(index)
+                .ok_or_else(|| JsValue::from_str("resolved file index is out of bounds"))
+                .map(Option::take)
+        }
+    }
+
+    #[wasm_bindgen]
+    impl BrowserResolvedFile {
+        /// Terminal file kind authenticated by the pinned generation.
+        #[wasm_bindgen(getter)]
+        #[must_use]
+        pub fn kind(&self) -> String {
+            let kind = match &self.engine {
+                BrowserResolvedFileEngine::IndexedDb(file) => file.description().kind,
+                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file.description().kind,
+                BrowserResolvedFileEngine::Memory(file) => file.description().kind,
+            };
+            file_kind(kind).to_owned()
+        }
+
+        /// Logical content length authenticated by the pinned generation.
+        #[wasm_bindgen(getter, js_name = logicalBytes)]
+        #[must_use]
+        pub fn logical_bytes(&self) -> u64 {
+            match &self.engine {
+                BrowserResolvedFileEngine::IndexedDb(file) => file.description().logical_bytes,
+                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file.description().logical_bytes,
+                BrowserResolvedFileEngine::Memory(file) => file.description().logical_bytes,
+            }
+        }
+
+        /// Complete canonical metadata authenticated by the pinned generation.
+        #[wasm_bindgen(getter, js_name = metadataCanonicalBytes)]
+        pub fn metadata_canonical_bytes(&self) -> Result<Vec<u8>, JsValue> {
+            let metadata = match &self.engine {
+                BrowserResolvedFileEngine::IndexedDb(file) => file.description().metadata,
+                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file.description().metadata,
+                BrowserResolvedFileEngine::Memory(file) => file.description().metadata,
+            };
+            encode_file_metadata(metadata).map_err(js_error)
+        }
+
+        /// Reads one exact logical range without another namespace lookup.
+        #[wasm_bindgen(js_name = readRange)]
+        pub async fn read_range(&self, offset: u64, length: u64) -> Result<JsValue, JsValue> {
+            let cancellation = CancellationToken::default();
+            let range = ByteRange { offset, length };
+            let receipt = match &self.engine {
+                BrowserResolvedFileEngine::IndexedDb(file) => file
+                    .read_range(range, boundary_budget(), &cancellation)
+                    .await
+                    .map_err(js_error)?,
+                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file
+                    .read_range(range, boundary_budget(), &cancellation)
+                    .await
+                    .map_err(js_error)?,
+                BrowserResolvedFileEngine::Memory(file) => file
+                    .read_range(range, boundary_budget(), &cancellation)
+                    .await
+                    .map_err(js_error)?,
+            };
+            serde_wasm_bindgen::to_value(&FileReadResult {
+                bytes: receipt.value.bytes.to_vec(),
+                work: receipt.work,
+            })
+            .map_err(js_error)
+        }
+
+        /// Reads opaque symbolic-link target bytes without another namespace lookup.
+        #[wasm_bindgen(js_name = readSymbolicLink)]
+        pub async fn read_symbolic_link(&self) -> Result<JsValue, JsValue> {
+            let cancellation = CancellationToken::default();
+            let receipt = match &self.engine {
+                BrowserResolvedFileEngine::IndexedDb(file) => file
+                    .read_symbolic_link(boundary_budget(), &cancellation)
+                    .await
+                    .map_err(js_error)?,
+                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file
+                    .read_symbolic_link(boundary_budget(), &cancellation)
+                    .await
+                    .map_err(js_error)?,
+                BrowserResolvedFileEngine::Memory(file) => file
+                    .read_symbolic_link(boundary_budget(), &cancellation)
+                    .await
+                    .map_err(js_error)?,
+            };
+            serde_wasm_bindgen::to_value(&FileReadResult {
+                bytes: receipt.value.to_vec(),
+                work: receipt.work,
+            })
+            .map_err(js_error)
+        }
+    }
+
+    #[wasm_bindgen]
     impl BrowserCheckout {
         /// Returns exact bounded work used to acquire this checkout handle.
         ///
@@ -4067,6 +4199,87 @@ mod bindings {
                 work: receipt.work,
             })
             .map_err(js_error)
+        }
+
+        /// Resolves an ordered path batch once into immutable generation-bound handles.
+        ///
+        /// # Errors
+        ///
+        /// Returns a JavaScript error for non-pinned checkouts, malformed paths,
+        /// corruption, cancellation, or bounded work.
+        #[wasm_bindgen(js_name = resolveFiles)]
+        pub async fn resolve_files(
+            &mut self,
+            paths: Vec<String>,
+        ) -> Result<BrowserResolvedFiles, JsValue> {
+            let mut parsed = Vec::new();
+            parsed
+                .try_reserve_exact(paths.len())
+                .map_err(|error| js_error(error.to_string()))?;
+            for path in paths {
+                parsed.push(browser_path(&path, self.limits)?);
+            }
+            let cancellation = CancellationToken::default();
+            let (files, work) = match &mut self.engine {
+                BrowserCheckoutEngine::IndexedDb(checkout) => {
+                    let reader = checkout.pinned_reader().map_err(js_error)?;
+                    let receipt = reader
+                        .resolve_files(&parsed, boundary_budget(), &cancellation)
+                        .await
+                        .map_err(js_error)?;
+                    (
+                        receipt
+                            .value
+                            .into_iter()
+                            .map(|file| {
+                                file.map(|file| BrowserResolvedFile {
+                                    engine: BrowserResolvedFileEngine::IndexedDb(file),
+                                })
+                            })
+                            .collect(),
+                        receipt.work,
+                    )
+                }
+                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => {
+                    let reader = checkout.pinned_reader().map_err(js_error)?;
+                    let receipt = reader
+                        .resolve_files(&parsed, boundary_budget(), &cancellation)
+                        .await
+                        .map_err(js_error)?;
+                    (
+                        receipt
+                            .value
+                            .into_iter()
+                            .map(|file| {
+                                file.map(|file| BrowserResolvedFile {
+                                    engine: BrowserResolvedFileEngine::IndexedDbOpfs(file),
+                                })
+                            })
+                            .collect(),
+                        receipt.work,
+                    )
+                }
+                BrowserCheckoutEngine::Memory(checkout) => {
+                    let reader = checkout.pinned_reader().map_err(js_error)?;
+                    let receipt = reader
+                        .resolve_files(&parsed, boundary_budget(), &cancellation)
+                        .await
+                        .map_err(js_error)?;
+                    (
+                        receipt
+                            .value
+                            .into_iter()
+                            .map(|file| {
+                                file.map(|file| BrowserResolvedFile {
+                                    engine: BrowserResolvedFileEngine::Memory(file),
+                                })
+                            })
+                            .collect(),
+                        receipt.work,
+                    )
+                }
+            };
+            Ok(BrowserResolvedFiles { files, work })
         }
 
         /// Reads one exact logical regular-file range.

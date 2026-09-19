@@ -399,6 +399,15 @@ export class BrowserCheckout {
      */
     resizeFileById(file_id: Uint8Array, logical_bytes: bigint): Promise<any>;
     /**
+     * Resolves an ordered path batch once into immutable generation-bound handles.
+     *
+     * # Errors
+     *
+     * Returns a JavaScript error for non-pinned checkouts, malformed paths,
+     * corruption, cancellation, or bounded work.
+     */
+    resolveFiles(paths: string[]): Promise<BrowserResolvedFiles>;
+    /**
      * Resumes an unresolved direct-live transaction with the same operation identity.
      *
      * # Errors
@@ -712,6 +721,56 @@ export class BrowserJoinPlan {
 }
 
 /**
+ * One immutable file resolved against a pinned checkout generation.
+ */
+export class BrowserResolvedFile {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Reads one exact logical range without another namespace lookup.
+     */
+    readRange(offset: bigint, length: bigint): Promise<any>;
+    /**
+     * Reads opaque symbolic-link target bytes without another namespace lookup.
+     */
+    readSymbolicLink(): Promise<any>;
+    /**
+     * Terminal file kind authenticated by the pinned generation.
+     */
+    readonly kind: string;
+    /**
+     * Logical content length authenticated by the pinned generation.
+     */
+    readonly logicalBytes: bigint;
+    /**
+     * Complete canonical metadata authenticated by the pinned generation.
+     */
+    readonly metadataCanonicalBytes: Uint8Array;
+}
+
+/**
+ * One original-order resolved path batch and its shared work receipt.
+ */
+export class BrowserResolvedFiles {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Transfers one generation-bound handle to JavaScript. Each index may be taken once.
+     */
+    take(index: number): BrowserResolvedFile | undefined;
+    /**
+     * Number of original-order results.
+     */
+    readonly length: number;
+    /**
+     * Exact work receipt for the shared namespace traversal.
+     */
+    readonly work: any;
+}
+
+/**
  * Browser owner of one volume generation's residency and promotion engines.
  */
 export class BrowserSpeculation {
@@ -1005,6 +1064,8 @@ export interface InitOutput {
     readonly __wbg_browserfs_free: (a: number, b: number) => void;
     readonly __wbg_browsergeneration_free: (a: number, b: number) => void;
     readonly __wbg_browserjoinplan_free: (a: number, b: number) => void;
+    readonly __wbg_browserresolvedfile_free: (a: number, b: number) => void;
+    readonly __wbg_browserresolvedfiles_free: (a: number, b: number) => void;
     readonly __wbg_browserspeculation_free: (a: number, b: number) => void;
     readonly __wbg_browsertransaction_free: (a: number, b: number) => void;
     readonly __wbg_browservolume_free: (a: number, b: number) => void;
@@ -1055,6 +1116,7 @@ export interface InitOutput {
     readonly browsercheckout_rename: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly browsercheckout_resizeFile: (a: number, b: number, c: number, d: bigint) => any;
     readonly browsercheckout_resizeFileById: (a: number, b: number, c: number, d: bigint) => any;
+    readonly browsercheckout_resolveFiles: (a: number, b: number, c: number) => any;
     readonly browsercheckout_resumeLive: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browsercheckout_seekFileExtent: (a: number, b: number, c: number, d: bigint, e: number, f: number) => any;
     readonly browsercheckout_seekFileExtentById: (a: number, b: number, c: number, d: bigint, e: number, f: number) => any;
@@ -1095,6 +1157,14 @@ export interface InitOutput {
     readonly browserjoinplan_apply: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browserjoinplan_commonAncestor: (a: number) => [number, number];
     readonly browserjoinplan_targetHead: (a: number) => [number, number];
+    readonly browserresolvedfile_kind: (a: number) => [number, number];
+    readonly browserresolvedfile_logicalBytes: (a: number) => bigint;
+    readonly browserresolvedfile_metadataCanonicalBytes: (a: number) => [number, number, number, number];
+    readonly browserresolvedfile_readRange: (a: number, b: bigint, c: bigint) => any;
+    readonly browserresolvedfile_readSymbolicLink: (a: number) => any;
+    readonly browserresolvedfiles_length: (a: number) => number;
+    readonly browserresolvedfiles_take: (a: number, b: number) => [number, number, number];
+    readonly browserresolvedfiles_work: (a: number) => [number, number, number];
     readonly browserspeculation_cancel: (a: number) => void;
     readonly browserspeculation_executeResidency: (a: number, b: number, c: number) => any;
     readonly browserspeculation_finishPromotion: (a: number, b: number, c: number, d: number) => [number, number];
@@ -1147,7 +1217,7 @@ export interface InitOutput {
     readonly openBrowserFs: (a: any) => any;
     readonly openMemoryFs: (a: any) => [number, number, number];
     readonly wasm_bindgen__convert__closures_____invoke__hbda0b83ef83cb943: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__hb47a76f282ca6a60: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h185cdad2072ccc5c: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h2a4eb6287a5d90bc: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h700ae9e05bdefaac: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__ha10a2157f63fc2da: (a: number, b: number) => void;

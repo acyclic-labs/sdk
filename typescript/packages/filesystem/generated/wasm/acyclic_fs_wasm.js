@@ -820,6 +820,22 @@ export class BrowserCheckout {
         return ret;
     }
     /**
+     * Resolves an ordered path batch once into immutable generation-bound handles.
+     *
+     * # Errors
+     *
+     * Returns a JavaScript error for non-pinned checkouts, malformed paths,
+     * corruption, cancellation, or bounded work.
+     * @param {string[]} paths
+     * @returns {Promise<BrowserResolvedFiles>}
+     */
+    resolveFiles(paths) {
+        const ptr0 = passArrayJsValueToWasm0(paths, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browsercheckout_resolveFiles(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
      * Resumes an unresolved direct-live transaction with the same operation identity.
      *
      * # Errors
@@ -1523,6 +1539,140 @@ export class BrowserJoinPlan {
     }
 }
 if (Symbol.dispose) BrowserJoinPlan.prototype[Symbol.dispose] = BrowserJoinPlan.prototype.free;
+
+/**
+ * One immutable file resolved against a pinned checkout generation.
+ */
+export class BrowserResolvedFile {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(BrowserResolvedFile.prototype);
+        obj.__wbg_ptr = ptr;
+        BrowserResolvedFileFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        BrowserResolvedFileFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_browserresolvedfile_free(ptr, 0);
+    }
+    /**
+     * Terminal file kind authenticated by the pinned generation.
+     * @returns {string}
+     */
+    get kind() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.browserresolvedfile_kind(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Logical content length authenticated by the pinned generation.
+     * @returns {bigint}
+     */
+    get logicalBytes() {
+        const ret = wasm.browserresolvedfile_logicalBytes(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
+    }
+    /**
+     * Complete canonical metadata authenticated by the pinned generation.
+     * @returns {Uint8Array}
+     */
+    get metadataCanonicalBytes() {
+        const ret = wasm.browserresolvedfile_metadataCanonicalBytes(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Reads one exact logical range without another namespace lookup.
+     * @param {bigint} offset
+     * @param {bigint} length
+     * @returns {Promise<any>}
+     */
+    readRange(offset, length) {
+        const ret = wasm.browserresolvedfile_readRange(this.__wbg_ptr, offset, length);
+        return ret;
+    }
+    /**
+     * Reads opaque symbolic-link target bytes without another namespace lookup.
+     * @returns {Promise<any>}
+     */
+    readSymbolicLink() {
+        const ret = wasm.browserresolvedfile_readSymbolicLink(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) BrowserResolvedFile.prototype[Symbol.dispose] = BrowserResolvedFile.prototype.free;
+
+/**
+ * One original-order resolved path batch and its shared work receipt.
+ */
+export class BrowserResolvedFiles {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(BrowserResolvedFiles.prototype);
+        obj.__wbg_ptr = ptr;
+        BrowserResolvedFilesFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        BrowserResolvedFilesFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_browserresolvedfiles_free(ptr, 0);
+    }
+    /**
+     * Number of original-order results.
+     * @returns {number}
+     */
+    get length() {
+        const ret = wasm.browserresolvedfiles_length(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Transfers one generation-bound handle to JavaScript. Each index may be taken once.
+     * @param {number} index
+     * @returns {BrowserResolvedFile | undefined}
+     */
+    take(index) {
+        const ret = wasm.browserresolvedfiles_take(this.__wbg_ptr, index);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] === 0 ? undefined : BrowserResolvedFile.__wrap(ret[0]);
+    }
+    /**
+     * Exact work receipt for the shared namespace traversal.
+     * @returns {any}
+     */
+    get work() {
+        const ret = wasm.browserresolvedfiles_work(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+}
+if (Symbol.dispose) BrowserResolvedFiles.prototype[Symbol.dispose] = BrowserResolvedFiles.prototype.free;
 
 /**
  * Browser owner of one volume generation's residency and promotion engines.
@@ -2427,6 +2577,10 @@ function __wbg_get_imports() {
             const ret = BrowserJoinPlan.__wrap(arg0);
             return ret;
         },
+        __wbg_browserresolvedfiles_new: function(arg0) {
+            const ret = BrowserResolvedFiles.__wrap(arg0);
+            return ret;
+        },
         __wbg_browsertransaction_new: function(arg0) {
             const ret = BrowserTransaction.__wrap(arg0);
             return ret;
@@ -2501,9 +2655,6 @@ function __wbg_get_imports() {
             const ret = arg0.getFile();
             return ret;
         },
-        __wbg_getRandomValues_3f44b700395062e5: function() { return handleError(function (arg0, arg1) {
-            globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
-        }, arguments); },
         __wbg_getRandomValues_da0bc38849d33d2c: function() { return handleError(function (arg0, arg1) {
             globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
         }, arguments); },
@@ -2926,22 +3077,22 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 718, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 735, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hbda0b83ef83cb943);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 699, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 716, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h700ae9e05bdefaac);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("IDBVersionChangeEvent")], shim_idx: 2, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hb47a76f282ca6a60);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h185cdad2072ccc5c);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 698, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 715, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__ha10a2157f63fc2da);
             return ret;
         },
@@ -3008,8 +3159,8 @@ function wasm_bindgen__convert__closures_____invoke__hbda0b83ef83cb943(arg0, arg
     }
 }
 
-function wasm_bindgen__convert__closures_____invoke__hb47a76f282ca6a60(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__hb47a76f282ca6a60(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h185cdad2072ccc5c(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h185cdad2072ccc5c(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
@@ -3039,6 +3190,12 @@ const BrowserGenerationFinalization = (typeof FinalizationRegistry === 'undefine
 const BrowserJoinPlanFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browserjoinplan_free(ptr >>> 0, 1));
+const BrowserResolvedFileFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_browserresolvedfile_free(ptr >>> 0, 1));
+const BrowserResolvedFilesFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_browserresolvedfiles_free(ptr >>> 0, 1));
 const BrowserSpeculationFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browserspeculation_free(ptr >>> 0, 1));
@@ -3204,6 +3361,16 @@ function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
     WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayJsValueToWasm0(array, malloc) {
+    const ptr = malloc(array.length * 4, 4) >>> 0;
+    for (let i = 0; i < array.length; i++) {
+        const add = addToExternrefTable0(array[i]);
+        getDataViewMemory0().setUint32(ptr + 4 * i, add, true);
+    }
+    WASM_VECTOR_LEN = array.length;
     return ptr;
 }
 

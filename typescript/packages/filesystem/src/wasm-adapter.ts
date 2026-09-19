@@ -49,6 +49,7 @@ import type {
   CommitResult,
   LiveMutationResult,
   LiveTransactionResult,
+  ResolvedFile,
 } from "./contracts.js";
 
 const generationHandles = new WeakMap<FsGeneration, WasmRawGeneration>();
@@ -122,6 +123,14 @@ function adaptCheckout(raw: WasmRawCheckout): FsCheckout {
     async listNamedAttributes(path, after, maximumEntries) { const value = await raw.listNamedAttributes(path, after?.attributeClass, after?.name, maximumEntries); return { ...value, entries: value.entries.map(entry => ({ ...entry, name: copyBytes(entry.name) })) }; },
     async writeNamedAttribute(path, attributeClass, name, bytes, mode) { return copyMutation(await raw.writeNamedAttribute(path, attributeClass, name, bytes, mode)); },
     async removeNamedAttribute(path, attributeClass, name) { return copyMutation(await raw.removeNamedAttribute(path, attributeClass, name)); },
+    async resolveFiles(paths) {
+      const value = await raw.resolveFiles(paths);
+      const files = Array.from({ length: value.length }, (_, index) => {
+        const file = value.take(index);
+        return file === undefined ? undefined : adaptResolvedFile(file);
+      });
+      return { files, work: value.work };
+    },
     async readFileRange(path, offset, length) { return copyFileRead(await raw.readFileRange(path, offset, length)); },
     async readFileRangeById(fileId, offset, length) { return copyFileRead(await raw.readFileRangeById(fileId, offset, length)); },
     async planFileExtents(path, offset, length, maximumSpans) { return fileExtentPlan(await raw.planFileExtents(path, offset, length, maximumSpans)); },
@@ -156,6 +165,16 @@ function adaptCheckout(raw: WasmRawCheckout): FsCheckout {
     async resumeLive(operationId, maximumAttempts, maximumConflicts) { return liveMutationResult(await raw.resumeLive(operationId, maximumAttempts, maximumConflicts)); },
     async rebaseHead(maximumConflicts) { const value = await raw.rebaseHead(maximumConflicts); return { ...value, generationId: copyOptionalBytes(value.generationId) }; },
     async discard() { return copyMutation(await raw.discard()); },
+  };
+}
+
+function adaptResolvedFile(raw: import("./contracts.js").WasmRawResolvedFile): ResolvedFile {
+  return {
+    kind: raw.kind,
+    logicalBytes: raw.logicalBytes,
+    metadataCanonicalBytes: raw.metadataCanonicalBytes.slice(),
+    async readRange(offset, length) { return copyFileRead(await raw.readRange(offset, length)); },
+    async readSymbolicLink() { return copyFileRead(await raw.readSymbolicLink()); },
   };
 }
 

@@ -490,13 +490,13 @@ pub struct FileDescription {
 /// One file resolved and authenticated by a specific pinned reader.
 ///
 /// The private record and reader borrow make cross-generation use impossible.
-pub struct ResolvedFile<'a, A, O> {
-    reader: &'a PinnedReader<A, O>,
+pub struct ResolvedFile<A, O> {
+    reader: PinnedReader<A, O>,
     record: FileRecord,
     description: FileDescription,
 }
 
-impl<A, O> ResolvedFile<'_, A, O> {
+impl<A, O> ResolvedFile<A, O> {
     /// Public semantic facts authenticated with this handle.
     #[must_use]
     pub const fn description(&self) -> &FileDescription {
@@ -504,7 +504,7 @@ impl<A, O> ResolvedFile<'_, A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<'_, A, O> {
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<A, O> {
     /// Reads one logical regular-file range without another namespace lookup.
     pub async fn read_range(
         &self,
@@ -532,24 +532,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<'_, A, O> {
 /// One range requested from a reader-scoped resolved file.
 pub struct ResolvedFileRangeReadRequest<'a, A, O> {
     /// Exact resolved file handle.
-    pub file: &'a ResolvedFile<'a, A, O>,
+    pub file: &'a ResolvedFile<A, O>,
     /// Exact logical byte range returned.
     pub range: ByteRange,
 }
 
 /// One child returned from an authenticated directory page, resolved by the
 /// originating pinned reader without a second namespace traversal.
-pub struct ResolvedDirectoryEntry<'a, A, O> {
+pub struct ResolvedDirectoryEntry<A, O> {
     /// Exact canonical child name.
     pub name: LogicalName,
     /// Generation-scoped child handle with authenticated metadata.
-    pub file: ResolvedFile<'a, A, O>,
+    pub file: ResolvedFile<A, O>,
 }
 
 /// One bounded authenticated directory page with reader-scoped child handles.
-pub struct ResolvedDirectoryPage<'a, A, O> {
+pub struct ResolvedDirectoryPage<A, O> {
     /// Ordered children strictly after the supplied cursor.
-    pub entries: Vec<ResolvedDirectoryEntry<'a, A, O>>,
+    pub entries: Vec<ResolvedDirectoryEntry<A, O>>,
     /// Whether at least one additional child exists.
     pub has_more: bool,
 }
@@ -4216,14 +4216,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     /// Resolves one bounded directory page into generation-scoped child
     /// handles in the same authenticated traversal. Child metadata is fetched
     /// as one object batch; no child path is looked up again.
-    pub async fn resolve_directory_page<'a>(
-        &'a self,
+    pub async fn resolve_directory_page(
+        &self,
         path: &NamespacePath,
         after: Option<&LogicalName>,
         maximum_entries: u32,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> FsResult<ResolvedDirectoryPage<'a, A, O>> {
+    ) -> FsResult<ResolvedDirectoryPage<A, O>> {
         let listing = list_directory_page_pinned(
             &self.volume,
             &self.root,
@@ -4301,7 +4301,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             entries.push(ResolvedDirectoryEntry {
                 name: binding.name,
                 file: ResolvedFile {
-                    reader: self,
+                    reader: self.clone(),
                     record,
                     description: FileDescription {
                         kind: record.kind,
@@ -4575,12 +4575,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
 
     /// Resolves and describes paths once, returning reader-scoped handles for
     /// later body reads without another namespace traversal.
-    pub async fn resolve_files<'a>(
-        &'a self,
+    pub async fn resolve_files(
+        &self,
         paths: &[NamespacePath],
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> FsResult<Vec<Option<ResolvedFile<'a, A, O>>>> {
+    ) -> FsResult<Vec<Option<ResolvedFile<A, O>>>> {
         let resolved = self
             .resolve_file_records(paths, budget, cancellation)
             .await?;
@@ -4630,7 +4630,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 .map_err(|error| OperationFailure::new(error.into(), work))?;
             let logical_bytes = record_logical_bytes(record);
             handles.push(Some(ResolvedFile {
-                reader: self,
+                reader: self.clone(),
                 record,
                 description: FileDescription {
                     kind: record.kind,

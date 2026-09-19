@@ -31,6 +31,15 @@ try {
   if (new TextDecoder().decode(read.bytes) !== "head-tail") {
     throw new Error("public volume checkout did not preserve authored mutations");
   }
+  const resolved = await checkout.resolveFiles(["/typed/data", "/typed/missing"]);
+  if (resolved.files.length !== 2 || resolved.files[0]?.kind !== "regular" || resolved.files[1] !== undefined) {
+    throw new Error("public volume checkout returned malformed resolved-file handles");
+  }
+  await checkout.writeFile("/typed/data", 9n, new TextEncoder().encode("!"));
+  const pinnedRead = await resolved.files[0].readRange(0n, 9n);
+  if (new TextDecoder().decode(pinnedRead.bytes) !== "head-tail") {
+    throw new Error("resolved-file handle did not remain pinned to its generation");
+  }
   const manifest = await checkout.exportManifest();
   const batch = await engine.exportGenerationBatch(manifest, 0n, 32, 1024n * 1024n);
   if (batch.objects.length === 0 || manifest.objects.length === 0) {

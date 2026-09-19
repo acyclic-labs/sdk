@@ -517,6 +517,21 @@ export interface FileReadResult {
   readonly work: WorkCounters;
 }
 
+/** One immutable file handle resolved against a pinned checkout generation. */
+export interface ResolvedFile {
+  readonly kind: string;
+  readonly logicalBytes: bigint;
+  readonly metadataCanonicalBytes: Uint8Array;
+  readRange(offset: bigint, length: bigint): Promise<FileReadResult>;
+  readSymbolicLink(): Promise<FileReadResult>;
+}
+
+/** Original-order handles and the shared namespace-resolution work receipt. */
+export interface ResolvedFilesResult {
+  readonly files: readonly (ResolvedFile | undefined)[];
+  readonly work: WorkCounters;
+}
+
 export type ExtentSeekTarget = "data" | "hole";
 
 export interface ExtentSeekResult {
@@ -924,6 +939,7 @@ export interface FsCheckout {
     attributeClass: NamedAttributeClass,
     name: Uint8Array,
   ): Promise<MutationResult>;
+  resolveFiles(paths: readonly string[]): Promise<ResolvedFilesResult>;
   readFileRange(path: string, offset: bigint, length: bigint): Promise<FileReadResult>;
   readFileRangeById(fileId: Uint8Array, offset: bigint, length: bigint): Promise<FileReadResult>;
   planFileExtents(
@@ -1437,6 +1453,7 @@ export interface WasmRawCheckout {
   listNamedAttributes(path: string, afterClass: NamedAttributeClass | undefined, afterName: Uint8Array | undefined, maximumEntries: number): Promise<NamedAttributePage>;
   writeNamedAttribute(path: string, attributeClass: NamedAttributeClass, name: Uint8Array, bytes: Uint8Array, mode: NamedAttributeWriteMode): Promise<MutationResult>;
   removeNamedAttribute(path: string, attributeClass: NamedAttributeClass, name: Uint8Array): Promise<MutationResult>;
+  resolveFiles(paths: readonly string[]): Promise<WasmRawResolvedFiles>;
   readFileRange(path: string, offset: bigint, length: bigint): Promise<FileReadResult>;
   readFileRangeById(fileId: Uint8Array, offset: bigint, length: bigint): Promise<FileReadResult>;
   planFileExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<{
@@ -1563,6 +1580,20 @@ export interface WasmRawCheckout {
   }>;
   rebaseHead(maximumConflicts: number): Promise<RebaseResult>;
   discard(): Promise<MutationResult>;
+}
+
+export interface WasmRawResolvedFile {
+  readonly kind: string;
+  readonly logicalBytes: bigint;
+  readonly metadataCanonicalBytes: Uint8Array;
+  readRange(offset: bigint, length: bigint): Promise<FileReadResult>;
+  readSymbolicLink(): Promise<FileReadResult>;
+}
+
+export interface WasmRawResolvedFiles {
+  readonly length: number;
+  readonly work: WorkCounters;
+  take(index: number): WasmRawResolvedFile | undefined;
 }
 
 export interface NativeBindings {
@@ -1852,6 +1883,7 @@ export interface NativeRawCheckout {
   listNamedAttributes(path: string, afterClass: NamedAttributeClass | undefined, afterName: Uint8Array | undefined, maximumEntries: number): Promise<{ readonly entries: readonly NamedAttributeName[]; readonly hasMore: boolean; readonly workJson: string }>;
   writeNamedAttribute(path: string, attributeClass: NamedAttributeClass, name: Uint8Array, bytes: Uint8Array, mode: NamedAttributeWriteMode): Promise<NativeRawMutation>;
   removeNamedAttribute(path: string, attributeClass: NamedAttributeClass, name: Uint8Array): Promise<NativeRawMutation>;
+  resolveFiles(paths: readonly string[]): Promise<NativeRawResolvedFiles>;
   readFileRange(
     path: string,
     offset: bigint,
@@ -2005,6 +2037,20 @@ export interface NativeRawCheckout {
   }>;
   discard(): Promise<NativeRawMutation>;
   cancel(): void;
+}
+
+export interface NativeRawResolvedFile {
+  readonly kind: string;
+  readonly logicalBytes: bigint;
+  readonly metadataCanonicalBytes: Uint8Array;
+  readRange(offset: bigint, length: bigint): Promise<{ readonly bytes: Uint8Array; readonly workJson: string }>;
+  readSymbolicLink(): Promise<{ readonly bytes: Uint8Array; readonly workJson: string }>;
+}
+
+export interface NativeRawResolvedFiles {
+  readonly length: number;
+  readonly workJson: string;
+  take(index: number): NativeRawResolvedFile | undefined;
 }
 
 export interface NativeRawTransactionOperation {
