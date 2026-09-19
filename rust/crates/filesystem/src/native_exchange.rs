@@ -232,30 +232,8 @@ fn remove_entry(path: &Path) -> Result<(), std::io::Error> {
     }
 }
 
-#[cfg(unix)]
-fn durable_rename(from: &Path, to: &Path, _replace: bool) -> std::io::Result<()> {
-    std::fs::rename(from, to)?;
-    sync_parent(to)?;
-    if from.parent() != to.parent() {
-        sync_parent(from)?;
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-#[allow(unsafe_code, reason = "MoveFileExW receives terminated UTF-16 paths")]
 fn durable_rename(from: &Path, to: &Path, replace: bool) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows::Win32::Storage::FileSystem::{MOVE_FILE_FLAGS, MoveFileExW};
-    use windows::core::PCWSTR;
-    let from: Vec<u16> = from.as_os_str().encode_wide().chain([0]).collect();
-    let to: Vec<u16> = to.as_os_str().encode_wide().chain([0]).collect();
-    let mut flags = MOVE_FILE_FLAGS(0x8);
-    if replace {
-        flags |= MOVE_FILE_FLAGS(0x1);
-    }
-    unsafe { MoveFileExW(PCWSTR(from.as_ptr()), PCWSTR(to.as_ptr()), flags) }
-        .map_err(|error| std::io::Error::from_raw_os_error(error.code().0))
+    acyclic_native_runtime::durable_rename(from, to, replace)
 }
 
 fn sync_parent(path: &Path) -> std::io::Result<()> {

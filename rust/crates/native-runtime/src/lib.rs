@@ -87,6 +87,14 @@ pub fn sync_parent(path: &Path, durability: Durability) -> io::Result<()> {
     sync_parent_impl(path, durability)
 }
 
+/// Renames one filesystem entry and durably publishes the affected namespace.
+///
+/// `replace` controls whether an existing destination may be replaced on
+/// Windows. Unix rename semantics already replace compatible destinations.
+pub fn durable_rename(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
+    durable_rename_impl(from, to, replace)
+}
+
 /// Reads at an absolute offset without changing the file cursor.
 pub fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
     read_at_impl(file, offset, destination)
@@ -600,6 +608,45 @@ fn sync_parent_impl(path: &Path, durability: Durability) -> io::Result<()> {
     sync_file(&directory, durability)
 }
 
+#[cfg(unix)]
+fn durable_rename_impl(from: &Path, to: &Path, _replace: bool) -> io::Result<()> {
+    std::fs::rename(from, to)?;
+    let to_parent = to
+        .parent()
+        .ok_or_else(|| io::Error::other("rename destination has no parent"))?;
+    sync_parent(to_parent, Durability::Full)?;
+    if from.parent() != to.parent() {
+        let from_parent = from
+            .parent()
+            .ok_or_else(|| io::Error::other("rename source has no parent"))?;
+        sync_parent(from_parent, Durability::Full)?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code, reason = "MoveFileExW receives terminated UTF-16 paths")]
+fn durable_rename_impl(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    let from: Vec<u16> = from.as_os_str().encode_wide().chain([0]).collect();
+    let to: Vec<u16> = to.as_os_str().encode_wide().chain([0]).collect();
+    let flags = MOVEFILE_WRITE_THROUGH
+        | if replace {
+            MOVEFILE_REPLACE_EXISTING
+        } else {
+            0
+        };
+    // SAFETY: both arguments are live, NUL-terminated UTF-16 path buffers.
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), flags) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,6 +670,23 @@ mod tests {
 
     fn completion_waker() -> Waker {
         Waker::from(Arc::new(ThreadWake(std::thread::current())))
+    }
+
+    #[test]
+    fn durable_rename_moves_and_replaces_entries() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("source");
+        let destination = directory.path().join("destination");
+        std::fs::write(&source, b"first")?;
+        durable_rename(&source, &destination, false)?;
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(&destination)?, b"first");
+
+        std::fs::write(&source, b"second")?;
+        durable_rename(&source, &destination, true)?;
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(destination)?, b"second");
+        Ok(())
     }
 
     fn complete_read(mut read: ReadBatch) -> io::Result<Vec<Bytes>> {

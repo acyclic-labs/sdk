@@ -2078,39 +2078,7 @@ fn publish_new(temporary: &Path, destination: &Path) -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn publish_new(temporary: &Path, destination: &Path) -> std::io::Result<()> {
-    write_through_move(temporary, destination, false)
-}
-
-#[cfg(windows)]
-#[allow(unsafe_code)]
-fn write_through_move(
-    temporary: &Path,
-    destination: &Path,
-    replace_existing: bool,
-) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
-
-    let from: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
-    let to: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let flags = MOVEFILE_WRITE_THROUGH
-        | if replace_existing {
-            MOVEFILE_REPLACE_EXISTING
-        } else {
-            0
-        };
-    // SAFETY: both arguments are live, NUL-terminated UTF-16 path buffers.
-    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), flags) } != 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
+    acyclic_native_runtime::durable_rename(temporary, destination, false)
 }
 
 fn sync_file_data(file: &File, durability: LocalDurability) -> std::io::Result<()> {
