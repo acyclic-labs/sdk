@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 import re
@@ -137,15 +138,20 @@ def verify(
         raise RuntimeError("archive bytes differ from the qualified artifact")
 
 
-def consumer(root: Path) -> dict[str, object]:
+def consumer(root: Path, bun: str) -> dict[str, object]:
     """Run one small consumer through package exports, Node, and the WASM core."""
     started = time.monotonic()
+    launcher = (
+        ["cmd", "/d", "/c", bun]
+        if os.name == "nt" and Path(bun).suffix.lower() in {".cmd", ".bat"}
+        else [bun]
+    )
     commands = [
-        ["bun", "x", "tsc", "-b", "--force", "typescript/packages/sdk/tsconfig.json",
+        [*launcher, "x", "tsc", "-b", "--force", "typescript/packages/sdk/tsconfig.json",
          "--pretty", "false"],
-        ["bun", "x", "tsc", "-p", "typescript/packages/sdk/consumer-tsconfig.json",
+        [*launcher, "x", "tsc", "-p", "typescript/packages/sdk/consumer-tsconfig.json",
          "--pretty", "false"],
-        ["bun", "test", "typescript/packages/sdk/test/public-consumer.test.ts"],
+        [*launcher, "test", "typescript/packages/sdk/test/public-consumer.test.ts"],
     ]
     for command in commands:
         try:
@@ -176,8 +182,8 @@ def consumer(root: Path) -> dict[str, object]:
 
 
 def main() -> None:
-    if len(sys.argv) == 2 and sys.argv[1] == "consumer":
-        result = consumer(Path(__file__).resolve().parent.parent)
+    if len(sys.argv) == 3 and sys.argv[1] == "consumer":
+        result = consumer(Path(__file__).resolve().parent.parent, sys.argv[2])
         print(json.dumps(result, separators=(",", ":")))
         raise SystemExit(0 if result["passed"] else 1)
     if len(sys.argv) == 4 and sys.argv[1] == "create":
@@ -193,7 +199,7 @@ def main() -> None:
     else:
         raise SystemExit(
             "usage: typescript-qualification.py create OUTPUT SOURCE_SHA | "
-            "verify RECEIPT SOURCE_SHA ASSET ARCHIVE | consumer"
+            "verify RECEIPT SOURCE_SHA ASSET ARCHIVE | consumer BUN"
         )
 if __name__ == "__main__":
     main()

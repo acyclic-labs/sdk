@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform as host_platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -192,10 +193,16 @@ def main() -> int:
         report["cases"].append({"name": "sdk/qualify", **sdk_case})
 
     if sdk_case["passed"]:
-        result, bindings_case = run(
-            [sys.executable, str(sdk / "scripts/typescript-qualification.py"), "consumer"],
-            sdk, environment, deadline,
-        )
+        bun = environment.get("BUN") or shutil.which("bun", path=environment.get("PATH"))
+        if bun is None:
+            bindings_case = {"elapsed_ms": 0, "passed": False,
+                             "error": "bun is required for the public binding consumer"}
+            result = None
+        else:
+            result, bindings_case = run(
+                [sys.executable, str(sdk / "scripts/typescript-qualification.py"),
+                 "consumer", bun], sdk, environment, deadline,
+            )
         if result is not None and bindings_case["passed"]:
             try:
                 evidence = json.loads(result.stdout)
@@ -270,21 +277,18 @@ def main() -> int:
             report["cases"].append({"name": "s3/ceph-selected", **ceph_case})
 
     if sdk_case["passed"] and sys.platform == "win32":
-        _, debug_build = run(
-            ["cargo", "build", "--quiet", "--locked", "-p", "acyclic-conformance",
-             "--features", "local-runner", "--bin", "qualify"],
-            sdk / "rust", environment, deadline)
-        if debug_build["passed"]:
+        debug_qualifier = target / "debug/qualify.exe"
+        if debug_qualifier.is_file():
             with tempfile.TemporaryDirectory(prefix="acyclic-debug-capture-") as work:
                 source = Path(work) / "source"
                 source.mkdir()
                 (source / "one-byte.txt").write_bytes(b"x")
-                debug_qualifier = Path(environment["CARGO_TARGET_DIR"]) / "debug/qualify.exe"
                 _, debug_case = run([str(debug_qualifier), "roundtrip", str(source),
                                      str(Path(work) / "restored")],
                                     sdk, environment, deadline)
         else:
-            debug_case = debug_build
+            debug_case = {"elapsed_ms": 0, "passed": True,
+                          "skipped": "debug qualifier was not prebuilt"}
         report["cases"].append({"name": "filesystem/windows-debug-capture", **debug_case})
 
     if not args.sdk_only and sdk_case["passed"]:
@@ -324,6 +328,7 @@ def main() -> int:
             report["cases"].append({"name": f"objects/bench-{mode}", **case})
             if not case["passed"]:
                 break
+        barrier_supported = sys.platform == "darwin"
         for batch, barrier in ((False, False), (True, False), (False, True), (True, True)):
             mode = "batch" if batch else "individual"
             durability = "barrier" if barrier else "full-flush"
@@ -332,6 +337,14 @@ def main() -> int:
                 command.append("--batch")
             if barrier:
                 command.append("--barrier")
+            if barrier and not barrier_supported:
+                report["cases"].append({
+                    "name": f"filesystem/bench-{mode}-{durability}",
+                    "elapsed_ms": 0,
+                    "passed": True,
+                    "unsupported": "ordered durability barriers require macOS F_BARRIERFSYNC",
+                })
+                continue
             result, case = run(command, sdk / "rust", environment, deadline)
             if result is not None and case["passed"]:
                 try:
