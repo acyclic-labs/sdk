@@ -93,6 +93,52 @@ async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncObjectStore>
     Ok((regular, truncated))
 }
 
+async fn resolved_git_grep_files<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    reader: &crate::PinnedReader<A, O>,
+    root_display: String,
+    root: NamespacePath,
+    limits: VolumeLimits,
+    maximum_entries: usize,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<(String, ResolvedFile<A, O>)>, bool), WorkspaceError> {
+    if root_display.is_empty() {
+        return resolved_git_regular_files(
+            reader,
+            root_display,
+            root,
+            limits,
+            maximum_entries,
+            cancellation,
+        )
+        .await;
+    }
+    let mut roots = reader
+        .resolve_files(
+            std::slice::from_ref(&root),
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .await
+        .map_err(WorkspaceError::engine)?
+        .value;
+    let root_file = roots.pop().flatten().ok_or(WorkspaceError::NotFound)?;
+    match root_file.description().kind {
+        FileKind::Directory => {
+            resolved_git_regular_files(
+                reader,
+                root_display,
+                root,
+                limits,
+                maximum_entries,
+                cancellation,
+            )
+            .await
+        }
+        FileKind::Regular => Ok((vec![(root_display, root_file)], false)),
+        _ => Ok((Vec::new(), false)),
+    }
+}
+
 /// Stable BLAKE3 compatibility commit identity.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct GitCommitId([u8; 32]);
@@ -2722,6 +2768,12 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     maximum_file_bytes: u64,
     maximum_matches: u32,
 ) -> Result<GitGrepResult, WorkspaceError> {
+    if maximum_entries == 0 {
+        return Ok(GitGrepResult {
+            matches: Vec::new(),
+            truncated: true,
+        });
+    }
     let cancellation = CancellationToken::new();
     let checkout = generation
         .workspace
@@ -2736,7 +2788,7 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let root_path = customer_path(&format!("/{}", root.trim_start_matches('/')), limits)?;
     let root_display = root.trim_matches('/').to_owned();
     let maximum_entries = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
-    let (regular, mut truncated) = resolved_git_regular_files(
+    let (regular, mut truncated) = resolved_git_grep_files(
         &reader,
         root_display,
         root_path,
@@ -2747,53 +2799,55 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     .await?;
     let mut matches = Vec::new();
     let maximum_matches = usize::try_from(maximum_matches).unwrap_or(usize::MAX);
-    let mut requests = Vec::new();
-    let mut selected = Vec::new();
-    for (index, (_, file)) in regular.iter().enumerate() {
-        if file.description().logical_bytes > maximum_file_bytes {
-            truncated = true;
+    for batch in regular.chunks(GREP_READ_CONCURRENCY) {
+        let mut requests = Vec::with_capacity(batch.len());
+        let mut selected = Vec::with_capacity(batch.len());
+        for (path, file) in batch {
+            if file.description().logical_bytes > maximum_file_bytes {
+                truncated = true;
+                continue;
+            }
+            requests.push(ResolvedFileRangeReadRequest {
+                file,
+                range: ByteRange {
+                    offset: 0,
+                    length: file.description().logical_bytes,
+                },
+            });
+            selected.push(path);
+        }
+        if requests.is_empty() {
             continue;
         }
-        requests.push(ResolvedFileRangeReadRequest {
-            file,
-            range: ByteRange {
-                offset: 0,
-                length: file.description().logical_bytes,
-            },
-        });
-        selected.push(index);
-    }
-    let reads = reader
-        .read_resolved_ranges(
-            &requests,
-            GREP_READ_CONCURRENCY,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(WorkspaceError::engine)?
-        .value;
-    for (index, read) in selected.into_iter().zip(reads) {
-        let (path, _) = regular
-            .get(index)
-            .ok_or_else(|| WorkspaceError::engine("Git grep result index is invalid"))?;
-        let bytes = read.bytes;
-        let Ok(text) = std::str::from_utf8(&bytes) else {
-            continue;
-        };
-        for (index, line) in text.lines().enumerate() {
-            if line.contains(pattern) {
-                if matches.len() >= maximum_matches {
-                    return Ok(GitGrepResult {
-                        matches,
-                        truncated: true,
+        let reads = reader
+            .read_resolved_ranges(
+                &requests,
+                GREP_READ_CONCURRENCY,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(WorkspaceError::engine)?
+            .value;
+        for (path, read) in selected.into_iter().zip(reads) {
+            let bytes = read.bytes;
+            let Ok(text) = std::str::from_utf8(&bytes) else {
+                continue;
+            };
+            for (index, line) in text.lines().enumerate() {
+                if line.contains(pattern) {
+                    if matches.len() >= maximum_matches {
+                        return Ok(GitGrepResult {
+                            matches,
+                            truncated: true,
+                        });
+                    }
+                    matches.push(GitGrepMatch {
+                        path: path.clone(),
+                        line: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
+                        text: line.to_owned(),
                     });
                 }
-                matches.push(GitGrepMatch {
-                    path: path.clone(),
-                    line: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
-                    text: line.to_owned(),
-                });
             }
         }
     }
@@ -3768,6 +3822,14 @@ mod tests {
         assert_eq!(result.matches.len(), 2);
         assert_eq!(result.matches[0].line, 2);
         assert_eq!(result.matches[1].line, 1);
+
+        let single = grep_git_generation(&generation, "needle", Some("src/a.txt"), 1, 16, 10)
+            .await
+            .expect("grep one file");
+        assert!(!single.truncated);
+        assert_eq!(single.matches.len(), 1);
+        assert_eq!(single.matches[0].path, "src/a.txt");
+        assert_eq!(single.matches[0].line, 2);
     }
 
     #[tokio::test]

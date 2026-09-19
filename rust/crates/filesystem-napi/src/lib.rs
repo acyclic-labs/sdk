@@ -4687,27 +4687,31 @@ impl NativeCheckout {
         env: &'env Env,
         paths: Array<'env>,
     ) -> Result<PromiseRaw<'env, NativeResolvedFiles>> {
-        let maximum = self.config.limits.maximum_paths_per_batch;
-        if paths.len() > maximum {
-            return Err(Error::new(
-                Status::InvalidArg,
-                "resolved file batch exceeds the configured bound",
-            ));
-        }
-        let length = usize::try_from(paths.len()).map_err(napi_error)?;
-        let mut parsed = Vec::new();
-        parsed
-            .try_reserve_exact(length)
-            .map_err(|error| napi_error(error.to_string()))?;
-        for index in 0..paths.len() {
-            let path = paths.get::<String>(index)?.ok_or_else(|| {
-                Error::new(Status::InvalidArg, "resolved file paths must be strings")
-            })?;
-            parsed.push(native_path(&path, self.config.limits)?);
-        }
+        let parsed = (|| {
+            let maximum = self.config.limits.maximum_paths_per_batch;
+            if paths.len() > maximum {
+                return Err(Error::new(
+                    Status::InvalidArg,
+                    "resolved file batch exceeds the configured bound",
+                ));
+            }
+            let length = usize::try_from(paths.len()).map_err(napi_error)?;
+            let mut parsed = Vec::new();
+            parsed
+                .try_reserve_exact(length)
+                .map_err(|error| napi_error(error.to_string()))?;
+            for index in 0..paths.len() {
+                let path = paths.get::<String>(index)?.ok_or_else(|| {
+                    Error::new(Status::InvalidArg, "resolved file paths must be strings")
+                })?;
+                parsed.push(native_path(&path, self.config.limits)?);
+            }
+            Ok(parsed)
+        })();
         let checkout = Arc::clone(&self.inner);
         let cancellation = self.cancellation.clone();
         env.spawn_future(async move {
+            let parsed = parsed?;
             let reader = {
                 let checkout = checkout.lock().await;
                 checkout.pinned_reader().map_err(napi_error)?
