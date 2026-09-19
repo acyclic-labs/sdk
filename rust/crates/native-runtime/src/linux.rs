@@ -100,6 +100,7 @@ pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io:
         return Ok(());
     }
     let fd = file.as_raw_fd();
+    let mut remainders = Vec::new();
     STATE.with_borrow_mut(|state| {
         let mut writes = writes.into_iter();
         loop {
@@ -154,12 +155,16 @@ pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io:
                             "write exceeded submitted length",
                         )
                     })?;
-                    write_all_at(file, offset, remaining)?;
+                    remainders.push((offset, Bytes::copy_from_slice(remaining)));
                 }
             }
         }
         Ok(())
-    })
+    })?;
+    for (offset, remaining) in remainders {
+        write_all_at(file, offset, &remaining)?;
+    }
+    Ok(())
 }
 
 pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
@@ -217,7 +222,13 @@ fn push_reads(
     reads: &[OwnedRead],
     buffers: &mut [Vec<u8>],
 ) -> io::Result<()> {
-    let mut submission = ring.submission();
+    let mut entries = Vec::new();
+    entries.try_reserve_exact(
+        reads
+            .iter()
+            .map(|read| read.length.div_ceil(MAX_IO_BYTES).max(1))
+            .sum(),
+    )?;
     let mut operation = 0_u64;
     for (read, buffer) in reads.iter().zip(buffers) {
         for (chunk_index, chunk) in buffer.chunks_mut(MAX_IO_BYTES).enumerate() {
@@ -229,27 +240,28 @@ fn push_reads(
                 })?;
             let length = u32::try_from(chunk.len())
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "read is too large"))?;
-            let entry = opcode::Read::new(types::Fd(fd), chunk.as_mut_ptr(), length)
-                .offset(offset)
-                .build()
-                .user_data(operation);
-            // SAFETY: capacity was checked before pushing, so this cannot fail partway;
-            // all buffers remain live until every matching CQE is drained.
-            unsafe { submission.push(&entry) }
-                .map_err(|_| io::Error::other("io_uring submission queue is full"))?;
+            entries.push(
+                opcode::Read::new(types::Fd(fd), chunk.as_mut_ptr(), length)
+                    .offset(offset)
+                    .build()
+                    .user_data(operation),
+            );
             operation += 1;
         }
         if buffer.is_empty() {
-            let entry = opcode::Read::new(types::Fd(fd), buffer.as_mut_ptr(), 0)
-                .offset(read.offset)
-                .build()
-                .user_data(operation);
-            // SAFETY: capacity was checked before pushing and the empty allocation stays live.
-            unsafe { submission.push(&entry) }
-                .map_err(|_| io::Error::other("io_uring submission queue is full"))?;
+            entries.push(
+                opcode::Read::new(types::Fd(fd), buffer.as_mut_ptr(), 0)
+                    .offset(read.offset)
+                    .build()
+                    .user_data(operation),
+            );
             operation += 1;
         }
     }
+    let mut submission = ring.submission();
+    // SAFETY: every descriptor and buffer remains live until all matching CQEs are drained.
+    unsafe { submission.push_multiple(&entries) }
+        .map_err(|_| io::Error::other("io_uring submission queue is full"))?;
     Ok(())
 }
 
@@ -371,12 +383,10 @@ fn submit_batch(
     };
     {
         let mut submission = active.submission();
-        for entry in entries {
-            // SAFETY: all file descriptors and owned buffers remain live until every CQE is drained.
-            unsafe { submission.push(entry) }.map_err(|_| {
-                BatchSubmitError::Completed(io::Error::other("io_uring submission queue is full"))
-            })?;
-        }
+        // SAFETY: all file descriptors and owned buffers remain live until every CQE is drained.
+        unsafe { submission.push_multiple(entries) }.map_err(|_| {
+            BatchSubmitError::Completed(io::Error::other("io_uring submission queue is full"))
+        })?;
     }
     let mut batch = BatchCompletions::new(writes);
     while batch.remaining() != 0 {
@@ -450,7 +460,7 @@ impl<'a> BatchCompletions<'a> {
         }
         self.remaining = self.remaining.saturating_sub(1);
         match completion_result_code(result) {
-            Ok(count) if count <= write.bytes.len() => {
+            Ok(count) if count > 0 && count <= write.bytes.len() => {
                 let Some(length) = self.lengths.get_mut(index) else {
                     return Err(io::Error::other("unknown batch completion identity"));
                 };
