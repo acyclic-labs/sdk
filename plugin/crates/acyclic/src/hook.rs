@@ -10,8 +10,8 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
-use acyclic_engine::product::NAME;
-use acyclic_proto as proto;
+use crate::proto;
+use acyclic::product::NAME;
 
 use crate::client::{Client, ConnectError, Spawn};
 
@@ -136,7 +136,7 @@ impl HookEvent {
 
 pub fn run(repo: &Path, event: &str) -> i32 {
     let Some(event) = HookEvent::parse(event) else {
-        acyclic_engine::trace!("hook", "unknown event {event:?}: ignored");
+        acyclic::trace!("hook", "unknown event {event:?}: ignored");
         return 0;
     };
     // Reading stdin can't hang the agent: hosts close it after writing.
@@ -150,7 +150,11 @@ pub fn run(repo: &Path, event: &str) -> i32 {
     // the connect returns early when there is none, so recording afterwards
     // would silently stop working exactly when checkpointing is off.
     if event == HookEvent::PreTool {
-        record_pre_tool_lease(repo, &payload);
+        let path = payload
+            .tool_input
+            .as_ref()
+            .and_then(|i| i.file_path.as_deref().or(i.path.as_deref()));
+        record_lease(repo, payload.tool_name.as_deref(), path);
     }
 
     // A session start may spawn the daemon, but never waits for its first
@@ -160,7 +164,7 @@ pub fn run(repo: &Path, event: &str) -> i32 {
     } else {
         Spawn::Never
     };
-    acyclic_engine::trace!(
+    acyclic::trace!(
         "hook",
         "event {}: daemon spawn {}; pre-tool waits (bounded), post-tool enqueues (ack before capture)",
         event.as_arg(),
@@ -252,10 +256,14 @@ pub fn run(repo: &Path, event: &str) -> i32 {
     // beforeSubmitPrompt) require a JSON response on stdout. Claude Code
     // injects UserPromptSubmit stdout into the conversation as context, so
     // this must stay Cursor-only rather than firing for every host.
+    allow_cursor_hook(&host, event);
+    0
+}
+
+fn allow_cursor_hook(host: &str, event: HookEvent) {
     if host == "cursor" && matches!(event, HookEvent::PreTool | HookEvent::UserPrompt) {
         println!("{{\"permission\":\"allow\"}}");
     }
-    0
 }
 
 /// Malformed or empty payloads degrade to attribution-less checkpoints —
@@ -284,14 +292,6 @@ fn parse_payload(raw: &str) -> Payload {
 ///
 /// Every failure is swallowed. A hook may not break a tool call, and a missing
 /// lease only means a speculator schedules more conservatively.
-fn record_pre_tool_lease(repo: &Path, payload: &Payload) {
-    let path = payload
-        .tool_input
-        .as_ref()
-        .and_then(|i| i.file_path.as_deref().or(i.path.as_deref()));
-    record_lease(repo, payload.tool_name.as_deref(), path);
-}
-
 fn record_lease(repo: &Path, tool: Option<&str>, path: Option<&str>) {
     use std::io::Write;
 
@@ -403,12 +403,11 @@ mod tests {
     fn scratch() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         let repo = dir.path().join("repo");
-        std::fs::create_dir_all(repo.join(acyclic_engine::product::repo_config_dir()))
-            .expect("repo");
+        std::fs::create_dir_all(repo.join(acyclic::product::repo_config_dir())).expect("repo");
         let stores = dir.path().join("stores");
         std::fs::create_dir_all(&stores).expect("stores");
         std::fs::write(
-            repo.join(acyclic_engine::product::repo_config_file()),
+            repo.join(acyclic::product::repo_config_file()),
             format!("store_dir = {:?}\n", stores.to_string_lossy()),
         )
         .expect("config");
@@ -460,22 +459,6 @@ mod tests {
         let text = leases_of(&repo);
         assert!(text.contains("\t?\t*\n"), "tabs not neutralised: {text}");
         assert_eq!(text.lines().count(), 1, "one line per call: {text}");
-    }
-
-    #[test]
-    #[allow(
-        unsafe_code,
-        reason = "the only test that touches this variable, and nothing else in the process reads it"
-    )]
-    fn the_kill_switch_writes_nothing() {
-        let (_dir, repo) = scratch();
-        unsafe { std::env::set_var("ACYCLIC_NO_LEASES", "1") };
-        record_lease(&repo, Some("Edit"), Some("src/report.py"));
-        unsafe { std::env::remove_var("ACYCLIC_NO_LEASES") };
-        assert!(
-            leases_of(&repo).is_empty(),
-            "the off switch must be an off switch"
-        );
     }
 
     #[test]

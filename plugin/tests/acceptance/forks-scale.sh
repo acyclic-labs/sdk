@@ -117,9 +117,6 @@ for RUNG in $RUNGS; do
     fi
     NEW=($(echo "$OUT" | awk '/^fork /{print $2}'))
     [ "${#NEW[@]}" -eq "$N" ] || fail "asked for $N forks, got ${#NEW[@]}: $OUT"
-    # Copy-mode forks cost a full tree copy each; a scale ladder in copy mode
-    # measures nothing about the routed design and would take all day.
-    echo "$OUT" | grep -q '(copy)' && skip "forks fell back to copy mode; scale applies to the routed path"
     IDS+=("${NEW[@]}")
     CREATED=$((CREATED + N))
     CALLS=$((CALLS + 1))

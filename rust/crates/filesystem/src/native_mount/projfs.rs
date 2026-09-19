@@ -1015,7 +1015,7 @@ mod tests {
         assert_eq!(first, Err("transient cleanup failure"));
         assert_eq!(state, Some("callback-runtime"));
 
-        finish_cleanup(&mut state, |_| Ok::<(), &str>(())).expect("retry cleanup succeeds");
+        assert_eq!(finish_cleanup(&mut state, |_| Ok::<(), &str>(())), Ok(()));
         assert_eq!(state, None);
     }
 }

@@ -110,7 +110,7 @@ expected. Retry before assuming the publish failed.
    checkpoint → rewind. Afterwards, confirm the live path end to end:
 
    ```sh
-   curl -fsSL https://raw.githubusercontent.com/acyclic-labs/sdk/main/plugin/scripts/install.sh | sh
+   curl -fsSL https://raw.githubusercontent.com/acyclic-labs/graphcoder-plugin/main/scripts/install.sh | sh
    ```
 
 ## What the workflow enforces

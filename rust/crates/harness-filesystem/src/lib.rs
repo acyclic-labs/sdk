@@ -273,6 +273,7 @@ fn map_error(error: WorkspaceError) -> Error {
         | WorkspaceError::ChangedPathLimit
         | WorkspaceError::EmptyContentSet
         | WorkspaceError::NotFork
+        | WorkspaceError::StaleTarget
         | WorkspaceError::ContentLengthOverflow => Error::Invalid(error.to_string()),
         WorkspaceError::Engine(value) => Error::Storage(value),
     }

@@ -17,7 +17,7 @@ keywords = ["pydantic-ai", "checkpoint", "rewind", "agents"]
 
 [project.urls]
 Homepage = "https://acyclic.dev"
-Source = "https://github.com/acyclic-labs/sdk/tree/main/plugin"
+Source = "https://github.com/acyclic-labs/graphcoder-plugin"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/acyclic_pydantic_ai"]
