@@ -5,7 +5,7 @@ use crate::ObjectId;
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, NameEncoding, NamespacePath,
 };
-use crate::native_host::HostRoot;
+use crate::native_host::{HostDirectory, HostRoot};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Checkout, FileId,
     OperationFailure, OperationReceipt, PinnedReader, ResolvedFileRangeReadRequest, WorkBudget,
@@ -19,7 +19,10 @@ use std::ffi::OsString;
 #[cfg(windows)]
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
+
+static RESTORE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Exact hard bounds and destination for one materialization.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,6 +35,19 @@ pub struct MaterializeOptions {
     pub maximum_extent_spans: u32,
     /// Maximum bytes read or zero-filled in one allocation.
     pub transfer_bytes: u64,
+}
+
+impl MaterializeOptions {
+    /// Creates the canonical bounded native materialization policy.
+    #[must_use]
+    pub fn native(destination: impl Into<PathBuf>) -> Self {
+        Self {
+            destination: destination.into(),
+            maximum_directory_entries: 1_024,
+            maximum_extent_spans: 65_536,
+            transfer_bytes: 8 * 1024 * 1024,
+        }
+    }
 }
 
 /// Exact result and host-side movement facts.
@@ -51,6 +67,24 @@ pub struct MaterializationReceipt {
     pub written_bytes: u64,
     /// Complete canonical-engine and host-movement work.
     pub work: WorkCounters,
+}
+
+/// How a materialized host path replaces its current destination.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostPathReplacement {
+    /// Exchange an existing entry atomically on the same volume.
+    Atomic,
+    /// Route ordinary renames through a live kernel mount.
+    LiveMount,
+}
+
+/// Exact result of restoring one authenticated path into a host tree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostPathRestore {
+    /// The authenticated entry was materialized and published.
+    Restored,
+    /// The authenticated path was absent and the host entry was removed.
+    Removed,
 }
 
 /// Fail-closed explicit materialization errors.
@@ -393,6 +427,245 @@ pub async fn materialize_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObje
     let path = NamespacePath::new(names, limits)
         .map_err(|_| OperationFailure::before_work(MaterializeError::InvalidPath))?;
     materialize_checkout_path(checkout, &path, options, budget, cancellation).await
+}
+
+/// Restores one authenticated host-relative path without touching siblings.
+///
+/// Materialization occurs in a private same-volume stage. Existing entries are
+/// exchanged atomically or replaced through ordinary mount-visible renames.
+/// An absent authenticated path removes the current host entry.
+pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    relative: &Path,
+    replacement: HostPathReplacement,
+    options: &MaterializeOptions,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<HostPathRestore>, OperationFailure<MaterializeError>> {
+    validate_host_relative(relative).map_err(OperationFailure::before_work)?;
+    validate_bounds(options).map_err(OperationFailure::before_work)?;
+    if cancellation.is_cancelled() {
+        return Err(OperationFailure::before_work(MaterializeError::Engine(
+            "materialization cancelled".into(),
+        )));
+    }
+    let destination_root = options.destination.clone();
+    let relative = relative.to_path_buf();
+    let (destination, stage_root) = tokio::task::spawn_blocking({
+        let destination_root = destination_root.clone();
+        let relative = relative.clone();
+        move || prepare_restore(&destination_root, &relative, replacement)
+    })
+    .await
+    .map_err(|error| OperationFailure::before_work(MaterializeError::Engine(error.to_string())))?
+    .map_err(OperationFailure::before_work)?;
+    let staged = stage_root.join(&relative);
+    let materialize_options = MaterializeOptions {
+        destination: stage_root.clone(),
+        maximum_directory_entries: options.maximum_directory_entries,
+        maximum_extent_spans: options.maximum_extent_spans,
+        transfer_bytes: options.transfer_bytes,
+    };
+    let materialized = materialize_checkout_host_path(
+        checkout,
+        &relative,
+        &materialize_options,
+        budget,
+        cancellation,
+    )
+    .await;
+    let receipt = match materialized {
+        Ok(receipt) => receipt,
+        Err(failure) if matches!(failure.error, MaterializeError::MissingPath) => {
+            let work = *failure.work;
+            tokio::task::spawn_blocking(move || {
+                let parent =
+                    held_parent(&destination_root, &relative).map_err(materialize_io_error)?;
+                let name = relative
+                    .file_name()
+                    .ok_or_else(|| std::io::Error::other("restore path has no leaf"))?;
+                remove_any(&stage_root)?;
+                parent.remove(Path::new(name))
+            })
+            .await
+            .map_err(|error| {
+                OperationFailure::new(MaterializeError::Engine(error.to_string()), work)
+            })?
+            .map_err(|error| OperationFailure::new(MaterializeError::Io(error), work))?;
+            return Ok(OperationReceipt {
+                value: HostPathRestore::Removed,
+                work,
+            });
+        }
+        Err(failure) => {
+            let _ = tokio::task::spawn_blocking(move || remove_any(&stage_root)).await;
+            return Err(failure);
+        }
+    };
+    tokio::task::spawn_blocking(move || {
+        publish_restore(
+            &destination_root,
+            &relative,
+            &destination,
+            &staged,
+            &stage_root,
+            replacement,
+        )
+    })
+    .await
+    .map_err(|error| {
+        OperationFailure::new(MaterializeError::Engine(error.to_string()), receipt.work)
+    })?
+    .map_err(|error| OperationFailure::new(error, receipt.work))?;
+    Ok(OperationReceipt {
+        value: HostPathRestore::Restored,
+        work: receipt.work,
+    })
+}
+
+fn materialize_io_error(error: MaterializeError) -> std::io::Error {
+    match error {
+        MaterializeError::Io(error) => error,
+        error => std::io::Error::other(error),
+    }
+}
+
+fn prepare_restore(
+    destination_root: &Path,
+    relative: &Path,
+    replacement: HostPathReplacement,
+) -> Result<(PathBuf, PathBuf), MaterializeError> {
+    let destination = destination_root.join(relative);
+    let _ = held_parent(destination_root, relative)?;
+    let stage_parent = match replacement {
+        HostPathReplacement::Atomic => destination_root
+            .parent()
+            .ok_or(MaterializeError::InvalidPath)?
+            .to_path_buf(),
+        HostPathReplacement::LiveMount => destination
+            .parent()
+            .ok_or(MaterializeError::InvalidPath)?
+            .to_path_buf(),
+    };
+    Ok((destination, create_restore_stage(&stage_parent)?))
+}
+
+fn publish_restore(
+    destination_root: &Path,
+    relative: &Path,
+    destination: &Path,
+    staged: &Path,
+    stage_root: &Path,
+    replacement: HostPathReplacement,
+) -> Result<(), MaterializeError> {
+    let destination_parent = held_parent(destination_root, relative)?;
+    let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
+    let stage_parent = held_parent(stage_root, relative)?;
+    let staged_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
+    match destination_parent.symlink_metadata(Path::new(destination_name)) {
+        Ok(_) => match replacement {
+            HostPathReplacement::Atomic => crate::exchange_native_entries(destination, staged)
+                .map_err(|error| MaterializeError::Engine(error.to_string()))?,
+            HostPathReplacement::LiveMount => replace_live_mount(
+                &stage_parent,
+                Path::new(staged_name),
+                &destination_parent,
+                Path::new(destination_name),
+            )?,
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => stage_parent.rename_to(
+            Path::new(staged_name),
+            &destination_parent,
+            Path::new(destination_name),
+        )?,
+        Err(error) => return Err(error.into()),
+    }
+    stage_parent.close();
+    drop(destination_parent);
+    remove_any(stage_root)?;
+    Ok(())
+}
+
+fn validate_host_relative(relative: &Path) -> Result<(), MaterializeError> {
+    let mut any = false;
+    for component in relative.components() {
+        let std::path::Component::Normal(_) = component else {
+            return Err(MaterializeError::InvalidPath);
+        };
+        any = true;
+    }
+    if any {
+        Ok(())
+    } else {
+        Err(MaterializeError::InvalidPath)
+    }
+}
+
+fn held_parent(root: &Path, relative: &Path) -> Result<HostDirectory, MaterializeError> {
+    let root = HostRoot::open(root).map_err(|_| MaterializeError::InvalidDestination)?;
+    root.create_dir_all_held(relative.parent().unwrap_or_else(|| Path::new("")))
+        .map_err(|_| MaterializeError::InvalidDestination)
+}
+
+fn create_restore_stage(parent: &Path) -> Result<PathBuf, MaterializeError> {
+    for _ in 0..16 {
+        let sequence = RESTORE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let stage = parent.join(format!(
+            ".acyclic-restore-{}-{sequence}",
+            std::process::id()
+        ));
+        match std::fs::create_dir(&stage) {
+            Ok(()) => return Ok(stage),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(MaterializeError::Io(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "restore stage names are exhausted",
+    )))
+}
+
+fn remove_any(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn replace_live_mount(
+    staged_parent: &HostDirectory,
+    staged_name: &Path,
+    destination_parent: &HostDirectory,
+    destination_name: &Path,
+) -> Result<(), MaterializeError> {
+    let backup_name = PathBuf::from(format!(
+        ".acyclic-restore-backup-{}-{}",
+        std::process::id(),
+        RESTORE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let backup = destination_parent.create_dir_held(&backup_name)?;
+    let old = Path::new("old");
+    if let Err(error) = destination_parent.rename_to(destination_name, &backup, old) {
+        let _ = destination_parent.remove_dir(&backup_name);
+        return Err(error.into());
+    }
+    if let Err(error) = staged_parent.rename_to(staged_name, destination_parent, destination_name) {
+        if let Err(rollback) = backup.rename_to(old, destination_parent, destination_name) {
+            return Err(MaterializeError::Engine(format!(
+                "replacement failed: {error}; displaced entry remains in {} after rollback failed: {rollback}",
+                backup_name.display()
+            )));
+        }
+        let _ = destination_parent.remove_dir(&backup_name);
+        return Err(error.into());
+    }
+    backup.remove(old)?;
+    backup.close();
+    destination_parent.remove_dir(&backup_name)?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -844,13 +1117,7 @@ async fn apply_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 fn validate_options(options: &MaterializeOptions) -> Result<HostRoot, MaterializeError> {
-    if options.maximum_directory_entries == 0
-        || options.maximum_extent_spans == 0
-        || options.transfer_bytes == 0
-        || usize::try_from(options.transfer_bytes).is_err()
-    {
-        return Err(MaterializeError::InvalidOptions);
-    }
+    validate_bounds(options)?;
     let root =
         HostRoot::open(&options.destination).map_err(|_| MaterializeError::InvalidDestination)?;
     if !root
@@ -860,6 +1127,17 @@ fn validate_options(options: &MaterializeOptions) -> Result<HostRoot, Materializ
         return Err(MaterializeError::InvalidDestination);
     }
     Ok(root)
+}
+
+fn validate_bounds(options: &MaterializeOptions) -> Result<(), MaterializeError> {
+    if options.maximum_directory_entries == 0
+        || options.maximum_extent_spans == 0
+        || options.transfer_bytes == 0
+        || usize::try_from(options.transfer_bytes).is_err()
+    {
+        return Err(MaterializeError::InvalidOptions);
+    }
+    Ok(())
 }
 
 fn append_path(

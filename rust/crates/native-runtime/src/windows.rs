@@ -2,7 +2,7 @@
 
 #![allow(unsafe_code)]
 
-use crate::{OwnedRead, OwnedWrite};
+use crate::{Cancellation, OwnedRead, OwnedWrite};
 use bytes::Bytes;
 use std::cell::RefCell;
 use std::fs::File;
@@ -17,11 +17,19 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_READ, FILE_SHARE_WRITE, ReOpenFile, ReadFile, WriteFile,
 };
 use windows_sys::Win32::System::IO::{
-    CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
+    CancelIoEx, CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
 };
 use windows_sys::Win32::System::Threading::INFINITE;
 
 const MAXIMUM_BATCH: usize = 16;
+
+pub(super) fn cancel(handle: isize) {
+    // SAFETY: the worker owns the registered live handle and clears it only
+    // after all accepted completions have been drained.
+    unsafe {
+        CancelIoEx(handle as HANDLE, std::ptr::null());
+    }
+}
 
 struct CompletionPort(HANDLE);
 
@@ -68,6 +76,27 @@ struct QuarantinedIo {
     _pending: QuarantinedPending,
 }
 
+struct RegisteredHandle<'a> {
+    cancellation: &'a Cancellation,
+    handle: HANDLE,
+}
+
+impl<'a> RegisteredHandle<'a> {
+    fn new(cancellation: &'a Cancellation, handle: HANDLE) -> Self {
+        cancellation.register_windows(handle as isize);
+        Self {
+            cancellation,
+            handle,
+        }
+    }
+}
+
+impl Drop for RegisteredHandle<'_> {
+    fn drop(&mut self) {
+        self.cancellation.clear_windows(self.handle as isize);
+    }
+}
+
 struct PortState {
     port: Option<CompletionPort>,
     next_key: usize,
@@ -85,27 +114,35 @@ thread_local! {
     }) };
 }
 
-pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
+pub(super) fn read_batch(
+    file: &File,
+    reads: &[OwnedRead],
+    cancellation: &Cancellation,
+) -> io::Result<Vec<Bytes>> {
     if reads.is_empty() {
         return Ok(Vec::new());
     }
     PORT.with_borrow_mut(|state| {
         let mut results = Vec::with_capacity(reads.len());
         for chunk in reads.chunks(MAXIMUM_BATCH) {
-            results.extend(read_batch_on_port(state, file, chunk)?);
+            results.extend(read_batch_on_port(state, file, chunk, cancellation)?);
         }
         Ok(results)
     })
 }
 
 #[allow(clippy::needless_pass_by_value)]
-pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io::Result<()> {
+pub(super) fn write_all_batch_owned(
+    file: &File,
+    writes: Vec<OwnedWrite>,
+    cancellation: &Cancellation,
+) -> io::Result<()> {
     if writes.is_empty() {
         return Ok(());
     }
     PORT.with_borrow_mut(|state| {
         for chunk in writes.chunks(MAXIMUM_BATCH) {
-            write_batch_on_port(state, file, chunk)?;
+            write_batch_on_port(state, file, chunk, cancellation)?;
         }
         Ok(())
     })
@@ -115,6 +152,7 @@ fn write_batch_on_port(
     state: &mut PortState,
     file: &File,
     writes: &[OwnedWrite],
+    cancellation: &Cancellation,
 ) -> io::Result<()> {
     if state.quarantine.is_some() {
         return Err(io::Error::other(
@@ -136,12 +174,14 @@ fn write_batch_on_port(
     if unsafe { CreateIoCompletionPort(handle, port.0, key, 0) }.is_null() {
         return Err(io::Error::last_os_error());
     }
+    let _registered = RegisteredHandle::new(cancellation, handle);
     let mut pending = Vec::new();
     pending.try_reserve_exact(writes.len())?;
     let mut accepted = 0;
     let mut first_error = None;
     for write in writes {
-        match submit_write(handle, write) {
+        match cancellation.with_windows_submission(handle as isize, || submit_write(handle, write))
+        {
             Ok((write, queued)) => {
                 accepted += usize::from(queued);
                 pending.push(write);
@@ -178,6 +218,7 @@ fn read_batch_on_port(
     state: &mut PortState,
     file: &File,
     reads: &[OwnedRead],
+    cancellation: &Cancellation,
 ) -> io::Result<Vec<Bytes>> {
     if state.quarantine.is_some() {
         return Err(io::Error::other(
@@ -199,12 +240,13 @@ fn read_batch_on_port(
     if unsafe { CreateIoCompletionPort(handle, port.0, key, 0) }.is_null() {
         return Err(io::Error::last_os_error());
     }
+    let _registered = RegisteredHandle::new(cancellation, handle);
     let mut pending = Vec::new();
     pending.try_reserve_exact(reads.len())?;
     let mut accepted = 0;
     let mut first_error = None;
     for read in reads {
-        match submit_read(handle, *read) {
+        match cancellation.with_windows_submission(handle as isize, || submit_read(handle, *read)) {
             Ok((read, queued)) => {
                 accepted += usize::from(queued);
                 pending.push(read);

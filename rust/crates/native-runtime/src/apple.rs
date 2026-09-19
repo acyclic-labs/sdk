@@ -2,17 +2,17 @@
 
 #![allow(unsafe_code)]
 
-use crate::{OwnedRead, OwnedWrite};
+use crate::{Cancellation, OwnedRead, OwnedWrite};
 use block2::RcBlock;
 use bytes::Bytes;
 use dispatch2::{
-    DispatchData, DispatchIO, DispatchIOStreamType, DispatchQoS, DispatchQueue,
-    GlobalQueueIdentifier,
+    DispatchData, DispatchIO, DispatchIOCloseFlags, DispatchIOStreamType, DispatchQoS,
+    DispatchQueue, GlobalQueueIdentifier,
 };
 use std::ffi::c_int;
 use std::fs::File;
 use std::io;
-use std::os::fd::AsRawFd as _;
+use std::os::fd::{AsRawFd as _, IntoRawFd as _};
 use std::sync::{Arc, Condvar, Mutex};
 
 struct Completion<T> {
@@ -59,33 +59,75 @@ fn queue() -> dispatch2::DispatchRetained<DispatchQueue> {
     ))
 }
 
-pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
-    let offsets = reads
-        .iter()
-        .map(|read| {
-            i64::try_from(read.offset).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidInput, "read offset is too large")
-            })
-        })
-        .collect::<io::Result<Vec<_>>>()?;
+struct RegisteredChannel<'a> {
+    cancellation: &'a Cancellation,
+    channel: &'a DispatchIO,
+}
+
+impl<'a> RegisteredChannel<'a> {
+    fn new(cancellation: &'a Cancellation, channel: &'a DispatchIO) -> Self {
+        cancellation.register_apple(channel);
+        Self {
+            cancellation,
+            channel,
+        }
+    }
+}
+
+impl Drop for RegisteredChannel<'_> {
+    fn drop(&mut self) {
+        self.cancellation.clear_apple(self.channel);
+    }
+}
+
+pub(super) fn read_batch(
+    file: &File,
+    reads: &[OwnedRead],
+    cancellation: &Cancellation,
+) -> io::Result<Vec<Bytes>> {
     let queue = queue();
-    let cleanup = RcBlock::new(|_: c_int| {});
-    // SAFETY: the file descriptor remains live until every operation and channel completes.
+    let mut completions = Vec::new();
+    completions.try_reserve_exact(reads.len())?;
+    // Reopening creates an independently owned descriptor while preserving its
+    // current base. Dispatch offsets are relative to that captured base.
+    let descriptor = std::fs::OpenOptions::new()
+        .read(true)
+        .open(format!("/dev/fd/{}", file.as_raw_fd()))?
+        .into_raw_fd();
+    // SAFETY: querying the live descriptor does not mutate its cursor.
+    let base = unsafe { libc::lseek(descriptor, 0, libc::SEEK_CUR) };
+    if base < 0 {
+        let failure = io::Error::last_os_error();
+        // SAFETY: Dispatch does not own the descriptor yet.
+        unsafe { libc::close(descriptor) };
+        return Err(failure);
+    }
+    let cleanup = RcBlock::new(move |_: c_int| {
+        // SAFETY: Dispatch invokes this exactly once for its descriptor.
+        unsafe { libc::close(descriptor) };
+    });
+    // SAFETY: the descriptor remains live through channel cleanup.
     let channel = unsafe {
         DispatchIO::new(
             DispatchIOStreamType::DISPATCH_IO_RANDOM,
-            file.as_raw_fd(),
+            descriptor,
             &queue,
             &cleanup,
         )
     };
-    let mut completions = Vec::new();
-    completions.try_reserve_exact(reads.len())?;
-    for (read, offset) in reads.iter().zip(offsets) {
+    let _registered = RegisteredChannel::new(cancellation, &channel);
+    for read in reads {
+        let absolute = i64::try_from(read.offset)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "read offset is too large"))?;
+        let offset = absolute.checked_sub(base).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "read offset is out of range")
+        })?;
+        channel.set_low_water(read.length);
         let completion = Completion::new();
         let callback = Arc::clone(&completion);
         let collected = Arc::new(Mutex::new(Vec::with_capacity(read.length)));
         let callback_bytes = Arc::clone(&collected);
+        let requested = read.length;
         let handler = RcBlock::new(move |done: u8, data: *mut DispatchData, error: c_int| {
             if error != 0 {
                 callback.finish(Err(io::Error::from_raw_os_error(error)));
@@ -93,10 +135,15 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
             }
             if !data.is_null() {
                 // SAFETY: Dispatch guarantees data is live for this handler invocation.
-                callback_bytes
+                let mut bytes = callback_bytes
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .extend_from_slice(&unsafe { &*data }.to_vec());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let remaining = requested.saturating_sub(bytes.len());
+                let delivered = unsafe { &*data }.to_vec();
+                let take = remaining.min(delivered.len());
+                if let Some(selected) = delivered.get(..take) {
+                    bytes.extend_from_slice(selected);
+                }
             }
             if done != 0 {
                 let bytes = std::mem::take(
@@ -119,13 +166,19 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
         }
         completions.push(completion);
     }
-    completions
+    let results = completions
         .into_iter()
         .map(|completion| completion.wait())
-        .collect()
+        .collect();
+    channel.close(DispatchIOCloseFlags(0));
+    results
 }
 
-fn write_all_batch(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
+fn write_all_batch(
+    file: &File,
+    writes: &[OwnedWrite],
+    cancellation: &Cancellation,
+) -> io::Result<()> {
     let offsets = writes
         .iter()
         .map(|write| {
@@ -145,6 +198,7 @@ fn write_all_batch(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
             &cleanup,
         )
     };
+    let _registered = RegisteredChannel::new(cancellation, &channel);
     let mut completions = Vec::new();
     completions.try_reserve_exact(writes.len())?;
     for (write, offset) in writes.iter().zip(offsets) {
@@ -184,6 +238,10 @@ fn write_all_batch(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io::Result<()> {
-    write_all_batch(file, &writes)
+pub(super) fn write_all_batch_owned(
+    file: &File,
+    writes: Vec<OwnedWrite>,
+    cancellation: &Cancellation,
+) -> io::Result<()> {
+    write_all_batch(file, &writes, cancellation)
 }

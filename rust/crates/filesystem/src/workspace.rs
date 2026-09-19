@@ -3441,6 +3441,28 @@ impl<A, O> Generation<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
+    /// Opens one cheap immutable reader pinned to this exact generation.
+    ///
+    /// The generation root is authenticated once while the reader is opened;
+    /// descendant objects remain lazy and are fetched only by the operation
+    /// that needs them. Clone the returned reader to overlap independent
+    /// requests without reopening the generation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unavailable, foreign, or corrupt generation state and bounded
+    /// backend failures.
+    pub async fn reader(&self) -> Result<crate::PinnedReader<A, O>, WorkspaceError> {
+        self.workspace
+            .engine_checkout(
+                GenerationSelector::Exact(self.id),
+                CheckoutMode::read_only_pinned(),
+            )
+            .await?
+            .pinned_reader()
+            .map_err(WorkspaceError::engine)
+    }
+
     /// Computes one semantic delta to a compatible generation in any workspace
     /// from the same filesystem deployment.
     pub async fn diff_to(
@@ -3505,6 +3527,76 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         crate::materialize_checkout_path(&mut checkout, &path, options, budget, cancellation)
             .await
             .map_err(|failure| WorkspaceError::engine(failure.error))
+    }
+
+    /// Restores one path from this immutable generation into a host tree.
+    ///
+    /// Only the selected path is read and touched. Publication is same-volume
+    /// and atomic for an ordinary host tree, or mount-visible for a live mount.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn restore_host_path(
+        &self,
+        relative: &std::path::Path,
+        replacement: crate::HostPathReplacement,
+        options: &crate::MaterializeOptions,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<crate::HostPathRestore>, WorkspaceError> {
+        let mut checkout = self
+            .workspace
+            .engine_checkout(
+                GenerationSelector::Exact(self.id),
+                CheckoutMode::read_only_pinned(),
+            )
+            .await?;
+        crate::restore_checkout_host_path(
+            &mut checkout,
+            relative,
+            replacement,
+            options,
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| WorkspaceError::engine(failure.error))
+    }
+
+    /// Restores a bounded sequence of paths through one pinned checkout.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn restore_host_paths(
+        &self,
+        paths: &[std::path::PathBuf],
+        replacement: crate::HostPathReplacement,
+        options: &crate::MaterializeOptions,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Vec<crate::HostPathRestore>, WorkspaceError> {
+        let mut checkout = self
+            .workspace
+            .engine_checkout(
+                GenerationSelector::Exact(self.id),
+                CheckoutMode::read_only_pinned(),
+            )
+            .await?;
+        let mut restored = Vec::new();
+        restored
+            .try_reserve_exact(paths.len())
+            .map_err(|_| WorkspaceError::engine("restore path result allocation failed"))?;
+        for path in paths {
+            restored.push(
+                crate::restore_checkout_host_path(
+                    &mut checkout,
+                    path,
+                    replacement,
+                    options,
+                    crate::WorkBudget::UNBOUNDED,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| WorkspaceError::engine(failure.error))?
+                .value,
+            );
+        }
+        Ok(restored)
     }
 
     /// Returns the exact immutable parent generation identities.

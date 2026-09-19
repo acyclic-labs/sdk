@@ -31,6 +31,13 @@ pub trait StorageFuture {}
 #[cfg(target_arch = "wasm32")]
 impl<T> StorageFuture for T {}
 
+/// Heap allocated future with the platform's storage executor bound.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type BoxStorageFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+/// Heap allocated future with the platform's storage executor bound.
+#[cfg(target_arch = "wasm32")]
+pub(crate) type BoxStorageFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + 'a>>;
+
 /// Runtime-appropriate provider ownership bound.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait StorageProvider: Send + Sync {}

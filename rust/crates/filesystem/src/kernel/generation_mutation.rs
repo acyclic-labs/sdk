@@ -12,7 +12,7 @@ use super::{
     apply_tree_mutations_async, list_tree_entries_async, lookup_file_records_async,
     lookup_path_refs_async,
 };
-use crate::async_storage::AsyncObjectStore;
+use crate::async_storage::{AsyncObjectStore, BoxStorageFuture};
 use crate::cancellation::CancellationToken;
 use crate::foundation::{FileId, GenerationId};
 use crate::model::{VolumeConfig, VolumeConfigError};
@@ -1028,51 +1028,53 @@ impl TransactionState {
         cancellation: &CancellationToken,
     ) -> Result<(), GenerationMutationFailure> {
         let binding = self.source_binding(operation)?;
-        self.mutate_regular_id(store, binding.file_id, mutation, config, cancellation)
+        Box::pin(self.mutate_regular_id(store, binding.file_id, mutation, config, cancellation))
             .await
     }
 
-    async fn mutate_regular_id<S: AsyncObjectStore>(
-        &mut self,
-        store: &S,
+    fn mutate_regular_id<'a, S: AsyncObjectStore>(
+        &'a mut self,
+        store: &'a S,
         file_id: FileId,
         mutation: RegularMutation,
         config: VolumeConfig,
-        cancellation: &CancellationToken,
-    ) -> Result<(), GenerationMutationFailure> {
-        let binding = self.identity_binding(file_id)?;
-        if binding.kind != FileKind::Regular {
-            return Err(failed(
-                GenerationMutationError::InconsistentState,
-                self.work,
-            ));
-        }
-        let payload = self.record(file_id)?.working.payload;
-        let receipt = apply_regular_mutation_async(
-            store,
-            payload,
-            mutation,
-            config,
-            nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| {
-            nested_failure(
-                self.work,
-                *failure.work,
-                self.allocations.live_bytes(),
-                failure.error.into(),
+        cancellation: &'a CancellationToken,
+    ) -> BoxStorageFuture<'a, Result<(), GenerationMutationFailure>> {
+        Box::pin(async move {
+            let binding = self.identity_binding(file_id)?;
+            if binding.kind != FileKind::Regular {
+                return Err(failed(
+                    GenerationMutationError::InconsistentState,
+                    self.work,
+                ));
+            }
+            let payload = self.record(file_id)?.working.payload;
+            let receipt = apply_regular_mutation_async(
+                store,
+                payload,
+                mutation,
+                config,
+                nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
+                cancellation,
             )
-        })?;
-        self.work = merge_nested(
-            self.work,
-            receipt.work,
-            self.allocations.live_bytes(),
-            self.budget,
-        )?;
-        self.record_mut(file_id)?.working.payload = receipt.payload;
-        Ok(())
+            .await
+            .map_err(|failure| {
+                nested_failure(
+                    self.work,
+                    *failure.work,
+                    self.allocations.live_bytes(),
+                    failure.error.into(),
+                )
+            })?;
+            self.work = merge_nested(
+                self.work,
+                receipt.work,
+                self.allocations.live_bytes(),
+                self.budget,
+            )?;
+            self.record_mut(file_id)?.working.payload = receipt.payload;
+            Ok(())
+        })
     }
 
     #[allow(clippy::too_many_arguments)]

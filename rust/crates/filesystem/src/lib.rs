@@ -224,25 +224,28 @@ pub use native_capture::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_exchange::{
     NativeExchangeError, NativeExchangeJournal, NativeExchangeOutcome, NativeExchangePhase,
-    exchange_native_entries, publish_native_exchange, recover_native_exchange,
+    exchange_native_entries, prepare_native_exchange, prepare_native_exchange_with_recovery,
+    publish_native_exchange, recover_native_exchange,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_identity::NativeRootIdentity;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub use native_mount::{
-    CheckoutMountSource, MaterializationReceipt, MaterializeError, MaterializeOptions, Mount,
-    MountAttributePage, MountDirectoryEntry, MountDirectoryPage, MountFilesystem,
-    MountLifecycleError, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountOptions,
-    MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
-    MountSparseRange, MountSparseSpan, NativeBlockCloneAccelerationEvidence,
-    NativeMountCapabilities, NativeMountError, NativeMountKind, NativeMountRequest,
-    NativeMountSession, NativeMountSessionIsolation, NativeSparseAccelerationEvidence,
-    NativeStorageAccelerationError, NativeStorageAccelerationEvidence, NativeStorageCapabilities,
-    NativeStorageCapabilityError, RoutedMountSource, SharedCheckout, SharedCheckoutState,
-    materialize_checkout, materialize_checkout_host_path, materialize_checkout_path, mount_native,
+    CheckoutMountSource, HostPathReplacement, HostPathRestore, MaterializationReceipt,
+    MaterializeError, MaterializeOptions, Mount, MountAttributePage, MountDirectoryEntry,
+    MountDirectoryPage, MountFilesystem, MountLifecycleError, MountLookup, MountNode,
+    MountNodeKind, MountOpenFile, MountOptions, MountPath, MountPublication, MountRangeAllocation,
+    MountSeekTarget, MountSourceError, MountSparseRange, MountSparseSpan,
+    NativeBlockCloneAccelerationEvidence, NativeMountCapabilities, NativeMountError,
+    NativeMountKind, NativeMountRequest, NativeMountSession, NativeMountSessionIsolation,
+    NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
+    NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
+    RoutedMountSource, SharedCheckout, SharedCheckoutState, materialize_checkout,
+    materialize_checkout_host_path, materialize_checkout_path, mount_native,
     mount_native_over_existing, probe_native_mount, probe_native_storage_accelerations,
     probe_native_storage_capabilities, reclaim_native_mount_destination_fence,
-    reclaim_stale_native_mount_destination_fences, recover_native_mount_destination, seal_checkout,
+    reclaim_stale_native_mount_destination_fences, recover_native_mount_destination,
+    restore_checkout_host_path, seal_checkout,
 };
 pub use notification::{
     AsyncNotificationStore, ImmediateNotificationStore, MemoryNotificationStore, NotificationError,

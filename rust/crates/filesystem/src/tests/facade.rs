@@ -1901,6 +1901,67 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
 }
 
 #[test]
+fn checkout_snapshot_reader_is_private_and_stable() -> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("create blocked")??
+        .value;
+    let mut checkout = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_tracking(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("checkout blocked")??
+    .value;
+    let file_path = path("private")?;
+    let file_id = poll_ready(checkout.create_file(
+        file_path.clone(),
+        Bytes::from_static(b"first"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("create file blocked")??
+    .value;
+    let snapshot = checkout.snapshot_reader();
+    let resolved = poll_ready(snapshot.resolve_files(
+        std::slice::from_ref(&file_path),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("snapshot resolve blocked")??
+    .value
+    .into_iter()
+    .next()
+    .flatten()
+    .ok_or("private file missing from snapshot")?;
+    assert_eq!(resolved.file_id(), file_id);
+
+    poll_ready(checkout.write_file(
+        file_path,
+        0,
+        Bytes::from_static(b"later"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("write blocked")??;
+    let bytes = poll_ready(resolved.read_range(
+        ByteRange {
+            offset: 0,
+            length: 5,
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("snapshot read blocked")??
+    .value
+    .bytes;
+    assert_eq!(&bytes[..], b"first");
+    Ok(())
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retry()
 -> Result<(), Box<dyn std::error::Error>> {

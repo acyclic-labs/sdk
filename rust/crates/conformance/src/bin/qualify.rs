@@ -55,41 +55,6 @@ struct Report {
     cases: Vec<Case>,
 }
 
-fn run_layer<T, F>(runtime: &tokio::runtime::Runtime, future: F) -> Result<T, String>
-where
-    F: Future<Output = T> + Send,
-    T: Send,
-{
-    std::thread::scope(|scope| {
-        let thread = std::thread::Builder::new()
-            .name("acyclic-qualify".into())
-            .stack_size(16 * 1024 * 1024)
-            .spawn_scoped(scope, || runtime.block_on(future))
-            .map_err(|error| format!("cannot start qualification layer: {error}"))?;
-        thread
-            .join()
-            .map_err(|_| "qualification layer panicked".to_owned())
-    })
-}
-
-fn run_tool() -> Result<(), String> {
-    std::thread::scope(|scope| {
-        let thread = std::thread::Builder::new()
-            .name("acyclic-qualify-tool".into())
-            .stack_size(16 * 1024 * 1024)
-            .spawn_scoped(scope, tools::run)
-            .map_err(|error| format!("cannot start qualification tool: {error}"))?;
-        thread
-            .join()
-            .map_err(|_| "qualification tool panicked".to_owned())
-    })
-}
-
-fn fatal_qualification_error<T>(error: &str) -> T {
-    eprintln!("{error}");
-    std::process::exit(2);
-}
-
 async fn run_case<F>(name: &'static str, started: Instant, budget: Duration, future: F) -> Case
 where
     F: Future<Output = Result<(), String>>,
@@ -885,9 +850,7 @@ async fn filesystem_sqlite_wal(root: std::path::PathBuf) -> Result<(), String> {
 fn main() {
     if let Some(argument) = std::env::args().nth(1) {
         if tools::is_command(&argument) {
-            if let Err(error) = run_tool() {
-                fatal_qualification_error::<()>(&error);
-            }
+            tools::run();
             return;
         }
         if !argument.starts_with("--") {
@@ -953,24 +916,19 @@ fn qualify_main(runtime: &tokio::runtime::Runtime) {
             std::process::exit(2);
         }
     };
-    cases.extend(
-        run_layer(
-            runtime,
-            qualify_stream_objects(root.path(), started, budget, numeric_seed),
-        )
-        .unwrap_or_else(|error| fatal_qualification_error(&error)),
-    );
-    cases.extend(
-        run_layer(
-            runtime,
-            qualify_filesystem_cases(root.path(), started, budget, numeric_seed),
-        )
-        .unwrap_or_else(|error| fatal_qualification_error(&error)),
-    );
-    cases.push(
-        run_layer(runtime, qualify_native_case(root.path(), started, budget))
-            .unwrap_or_else(|error| fatal_qualification_error(&error)),
-    );
+    cases.extend(runtime.block_on(qualify_stream_objects(
+        root.path(),
+        started,
+        budget,
+        numeric_seed,
+    )));
+    cases.extend(runtime.block_on(qualify_filesystem_cases(
+        root.path(),
+        started,
+        budget,
+        numeric_seed,
+    )));
+    cases.push(runtime.block_on(Box::pin(qualify_native_case(root.path(), started, budget))));
     let report = Report {
         schema: 1,
         os: std::env::consts::OS,
