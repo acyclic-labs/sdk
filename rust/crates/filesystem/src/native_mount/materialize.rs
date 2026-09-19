@@ -580,7 +580,7 @@ fn publish_restore(
         )?,
         Err(error) => return Err(error.into()),
     }
-    drop(stage_parent);
+    stage_parent.close();
     drop(destination_parent);
     remove_any(stage_root)?;
     Ok(())
@@ -663,6 +663,7 @@ fn replace_live_mount(
         return Err(error.into());
     }
     backup.remove(old)?;
+    backup.close();
     destination_parent.remove_dir(&backup_name)?;
     Ok(())
 }

@@ -284,6 +284,11 @@ impl HostDirectory {
         self.directory.remove_dir(name)
     }
 
+    /// Releases the held directory handle before callers remove its subtree.
+    pub fn close(self) {
+        drop(self);
+    }
+
     pub fn remove(&self, name: &Path) -> io::Result<()> {
         let metadata = match self.directory.symlink_metadata(name) {
             Ok(metadata) => metadata,
