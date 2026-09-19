@@ -529,6 +529,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<'_, A, O> {
     }
 }
 
+/// One range requested from a reader-scoped resolved file.
+pub struct ResolvedFileRangeReadRequest<'a, A, O> {
+    /// Exact resolved file handle.
+    pub file: &'a ResolvedFile<'a, A, O>,
+    /// Exact logical byte range returned.
+    pub range: ByteRange,
+}
+
 #[derive(Clone, Copy)]
 struct LastCommit {
     operation_id: OperationId,
@@ -4606,6 +4614,54 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             .map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
         ordered.work = add(prior, ordered.work)?;
         Ok(ordered)
+    }
+
+    /// Reads ranges from already resolved files with bounded concurrency and
+    /// no additional namespace traversal.
+    pub async fn read_resolved_ranges(
+        &self,
+        requests: &[ResolvedFileRangeReadRequest<'_, A, O>],
+        concurrency: usize,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<FileRangeRead>> {
+        if concurrency == 0
+            || requests.len()
+                > usize::try_from(self.volume.config.limits.maximum_paths_per_batch)
+                    .unwrap_or(usize::MAX)
+        {
+            return Err(OperationFailure::before_work(FsError::FileRead(
+                FileRangeReadError::InvalidRange,
+            )));
+        }
+        if budget != WorkBudget::UNBOUNDED {
+            let mut work = WorkCounters::default();
+            let mut reads = Vec::new();
+            reads
+                .try_reserve_exact(requests.len())
+                .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
+            for request in requests {
+                let read = request
+                    .file
+                    .read_range(request.range, remaining(work, budget)?, cancellation)
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                work = add(work, read.work)?;
+                reads.push(read.value);
+            }
+            return Ok(FsReceipt { value: reads, work });
+        }
+        let cancellation = cancellation.clone();
+        let results = stream::iter(requests.iter().enumerate().map(|(index, request)| {
+            let file = request.file;
+            let range = request.range;
+            let cancellation = cancellation.clone();
+            async move { (index, file.read_range(range, budget, &cancellation).await) }
+        }))
+        .buffer_unordered(concurrency.min(requests.len().max(1)))
+        .collect::<Vec<_>>()
+        .await;
+        order_batch_results(results, budget)
     }
 }
 
