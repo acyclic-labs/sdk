@@ -53,7 +53,7 @@ struct PendingRead {
 
 struct PendingWrite {
     overlapped: Box<OVERLAPPED>,
-    length: usize,
+    bytes: Bytes,
     completed: bool,
 }
 
@@ -250,7 +250,7 @@ fn submit_write(handle: HANDLE, write: &OwnedWrite) -> io::Result<(PendingWrite,
         return Ok((
             PendingWrite {
                 overlapped,
-                length: 0,
+                bytes: Bytes::new(),
                 completed: true,
             },
             false,
@@ -275,7 +275,7 @@ fn submit_write(handle: HANDLE, write: &OwnedWrite) -> io::Result<(PendingWrite,
     Ok((
         PendingWrite {
             overlapped,
-            length: write.bytes.len(),
+            bytes: write.bytes.clone(),
             completed: false,
         },
         true,
@@ -420,7 +420,7 @@ fn complete_writes(
         remaining -= 1;
         if succeeded == 0 {
             first_error.get_or_insert_with(io::Error::last_os_error);
-        } else if transferred as usize != write.length {
+        } else if transferred as usize != write.bytes.len() {
             first_error.get_or_insert_with(|| {
                 io::Error::new(io::ErrorKind::WriteZero, "short overlapped write")
             });

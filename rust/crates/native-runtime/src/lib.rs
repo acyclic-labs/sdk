@@ -611,14 +611,15 @@ fn sync_parent_impl(path: &Path, durability: Durability) -> io::Result<()> {
 #[cfg(unix)]
 fn durable_rename_impl(from: &Path, to: &Path, _replace: bool) -> io::Result<()> {
     std::fs::rename(from, to)?;
-    let to_parent = to
-        .parent()
-        .ok_or_else(|| io::Error::other("rename destination has no parent"))?;
+    fn namespace_parent(path: &Path) -> &Path {
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+    }
+    let to_parent = namespace_parent(to);
     sync_parent(to_parent, Durability::Full)?;
-    if from.parent() != to.parent() {
-        let from_parent = from
-            .parent()
-            .ok_or_else(|| io::Error::other("rename source has no parent"))?;
+    let from_parent = namespace_parent(from);
+    if from_parent != to_parent {
         sync_parent(from_parent, Durability::Full)?;
     }
     Ok(())
@@ -631,8 +632,16 @@ fn durable_rename_impl(from: &Path, to: &Path, replace: bool) -> io::Result<()> 
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     };
-    let from: Vec<u16> = from.as_os_str().encode_wide().chain([0]).collect();
-    let to: Vec<u16> = to.as_os_str().encode_wide().chain([0]).collect();
+    let mut from: Vec<u16> = from.as_os_str().encode_wide().collect();
+    let mut to: Vec<u16> = to.as_os_str().encode_wide().collect();
+    if from.contains(&0) || to.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "rename path contains NUL",
+        ));
+    }
+    from.push(0);
+    to.push(0);
     let flags = MOVEFILE_WRITE_THROUGH
         | if replace {
             MOVEFILE_REPLACE_EXISTING
@@ -687,6 +696,22 @@ mod tests {
         assert!(!source.exists());
         assert_eq!(std::fs::read(destination)?, b"second");
         Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_rename_accepts_relative_sibling_paths() -> io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let original = std::env::current_dir()?;
+        std::env::set_current_dir(temporary.path())?;
+        let result = (|| {
+            std::fs::write("from", b"relative")?;
+            durable_rename(Path::new("from"), Path::new("to"), false)?;
+            assert_eq!(std::fs::read("to")?, b"relative");
+            Ok(())
+        })();
+        std::env::set_current_dir(original)?;
+        result
     }
 
     fn complete_read(mut read: ReadBatch) -> io::Result<Vec<Bytes>> {

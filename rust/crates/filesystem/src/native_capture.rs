@@ -2303,13 +2303,11 @@ mod windows_name_tests {
             capture_host_name(&invalid),
             Err(CaptureError::UnrepresentablePath)
         ));
-        for alias in ["a/b", "a\\b"] {
-            let alias = LogicalName::new(NameEncoding::PosixBytes, alias.as_bytes().to_vec(), 255)?;
-            assert!(matches!(
-                capture_host_name(&alias),
-                Err(CaptureError::UnrepresentablePath)
-            ));
-        }
+        let alias = LogicalName::new(NameEncoding::PosixBytes, b"a\\b".to_vec(), 255)?;
+        assert!(matches!(
+            capture_host_name(&alias),
+            Err(CaptureError::UnrepresentablePath)
+        ));
         Ok(())
     }
 

@@ -332,6 +332,7 @@ fn assemble_reads(
     output.try_reserve_exact(buffers.len())?;
     for mut buffer in buffers {
         let mut total = 0_usize;
+        let mut reached_eof = false;
         let chunks = buffer.len().div_ceil(MAX_IO_BYTES).max(1);
         for chunk in 0..chunks {
             let count = completed
@@ -345,11 +346,11 @@ fn assemble_reads(
             if count > submitted {
                 return Err(io::Error::other("read exceeded submitted length"));
             }
-            total = total
-                .checked_add(count)
-                .ok_or_else(|| io::Error::other("read result overflow"))?;
-            if count != submitted {
-                break;
+            if !reached_eof {
+                total = total
+                    .checked_add(count)
+                    .ok_or_else(|| io::Error::other("read result overflow"))?;
+                reached_eof = count != submitted;
             }
         }
         buffer.truncate(total);
@@ -575,6 +576,14 @@ mod tests {
         batch.record(1, 4)?;
         assert_eq!(batch.remaining(), 0);
         assert_eq!(batch.finish().ok().as_deref(), Some([3, 4, 5].as_slice()));
+        Ok(())
+    }
+
+    #[test]
+    fn short_chunk_does_not_shift_later_read_completions() -> io::Result<()> {
+        let buffers = vec![vec![0_u8; MAX_IO_BYTES + 1], vec![b'x']];
+        let reads = assemble_reads(buffers, vec![Some(0), Some(0), Some(1)])?;
+        assert_eq!(reads, [Bytes::new(), Bytes::from_static(b"x")]);
         Ok(())
     }
 

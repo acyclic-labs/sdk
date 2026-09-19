@@ -383,21 +383,50 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let mut transaction = self.begin_transaction(idempotency_key).await?;
         let limits = self.volume.config.limits;
         let cancellation = crate::CancellationToken::new();
-        let mut operations = Vec::with_capacity(paths.len());
-        for path in paths {
-            let relative = path.trim_start_matches('/');
-            let absolute = if path.starts_with('/') {
-                path.clone()
-            } else {
-                format!("/{path}")
-            };
-            let path = customer_path(&absolute, limits)?;
-            let source_record = source_checkout
-                .lookup_no_follow(&path, crate::WorkBudget::UNBOUNDED, &cancellation)
+        let parsed = paths
+            .iter()
+            .map(|path| {
+                let relative = path.trim_start_matches('/');
+                let absolute = format!("/{relative}");
+                customer_path(&absolute, limits).map(|path| (relative, path))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let lookup_paths = parsed
+            .iter()
+            .map(|(_, path)| path.clone())
+            .collect::<Vec<_>>();
+        let source_records = source_checkout
+            .lookup_batch_no_follow(&lookup_paths, crate::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(WorkspaceError::engine)?
+            .value
+            .entries
+            .into_iter()
+            .map(|entry| entry.record)
+            .collect::<Vec<_>>();
+        let missing_paths = parsed
+            .iter()
+            .zip(&source_records)
+            .filter(|(_, record)| record.is_none())
+            .map(|((_, path), _)| path.clone())
+            .collect::<Vec<_>>();
+        let current_records = if missing_paths.is_empty() {
+            Vec::new()
+        } else {
+            transaction
+                .checkout
+                .lookup_batch_no_follow(&missing_paths, crate::WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(WorkspaceError::engine)?
                 .value
-                .record;
+                .entries
+                .into_iter()
+                .map(|entry| entry.record)
+                .collect()
+        };
+        let mut current_records = current_records.into_iter();
+        let mut operations = Vec::with_capacity(paths.len());
+        for ((relative, path), source_record) in parsed.into_iter().zip(source_records) {
             if let Some(record) = source_record {
                 if record.kind != FileKind::Directory
                     && let Some((parent, _)) = relative.rsplit_once('/')
@@ -406,13 +435,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 }
                 operations.push(crate::kernel::Mutation::Restore { path, record });
             } else {
-                let current_record = transaction
-                    .checkout
-                    .lookup_no_follow(&path, crate::WorkBudget::UNBOUNDED, &cancellation)
-                    .await
-                    .map_err(WorkspaceError::engine)?
-                    .value
-                    .record;
+                let current_record = current_records
+                    .next()
+                    .ok_or_else(|| WorkspaceError::engine("missing batch lookup result"))?;
                 if let Some(record) = current_record {
                     operations.push(crate::kernel::Mutation::Remove {
                         path,
@@ -483,44 +508,74 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let mut transaction = self.begin_transaction(idempotency_key).await?;
         let limits = self.volume.config.limits;
         let cancellation = crate::CancellationToken::new();
-        let mut operations = Vec::with_capacity(paths.len());
-        let mut conflicts = Vec::new();
-        for path in paths {
-            let relative = path.trim_start_matches('/');
-            let absolute = format!("/{relative}");
-            let path = customer_path(&absolute, limits)?;
-            let base_record = match &mut base_checkout {
-                Some(checkout) => {
-                    checkout
-                        .lookup_no_follow(&path, crate::WorkBudget::UNBOUNDED, &cancellation)
-                        .await
-                        .map_err(WorkspaceError::engine)?
-                        .value
-                        .record
-                }
-                None => None,
-            };
-            let source_record = match &mut source_checkout {
-                Some(checkout) => {
-                    checkout
-                        .lookup_no_follow(&path, crate::WorkBudget::UNBOUNDED, &cancellation)
-                        .await
-                        .map_err(WorkspaceError::engine)?
-                        .value
-                        .record
-                }
-                None => None,
-            };
-            if base_record == source_record {
-                continue;
-            }
-            let current_record = transaction
-                .checkout
-                .lookup_no_follow(&path, crate::WorkBudget::UNBOUNDED, &cancellation)
+        let parsed = paths
+            .iter()
+            .map(|path| {
+                let relative = path.trim_start_matches('/');
+                let absolute = format!("/{relative}");
+                customer_path(&absolute, limits).map(|path| (relative, path))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let lookup_paths = parsed
+            .iter()
+            .map(|(_, path)| path.clone())
+            .collect::<Vec<_>>();
+        let base_records = match &mut base_checkout {
+            Some(checkout) => checkout
+                .lookup_batch_no_follow(&lookup_paths, crate::WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(WorkspaceError::engine)?
                 .value
-                .record;
+                .entries
+                .into_iter()
+                .map(|entry| entry.record)
+                .collect(),
+            None => vec![None; parsed.len()],
+        };
+        let source_records = match &mut source_checkout {
+            Some(checkout) => checkout
+                .lookup_batch_no_follow(&lookup_paths, crate::WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(WorkspaceError::engine)?
+                .value
+                .entries
+                .into_iter()
+                .map(|entry| entry.record)
+                .collect(),
+            None => vec![None; parsed.len()],
+        };
+        let changed_paths = parsed
+            .iter()
+            .zip(base_records.iter().zip(&source_records))
+            .filter(|(_, (base, source))| base != source)
+            .map(|((_, path), _)| path.clone())
+            .collect::<Vec<_>>();
+        let current_records = if changed_paths.is_empty() {
+            Vec::new()
+        } else {
+            transaction
+                .checkout
+                .lookup_batch_no_follow(&changed_paths, crate::WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(WorkspaceError::engine)?
+                .value
+                .entries
+                .into_iter()
+                .map(|entry| entry.record)
+                .collect()
+        };
+        let mut current_records = current_records.into_iter();
+        let mut operations = Vec::with_capacity(paths.len());
+        let mut conflicts = Vec::new();
+        for (((relative, path), base_record), source_record) in
+            parsed.into_iter().zip(base_records).zip(source_records)
+        {
+            if base_record == source_record {
+                continue;
+            }
+            let current_record = current_records
+                .next()
+                .ok_or_else(|| WorkspaceError::engine("missing batch lookup result"))?;
             if current_record == source_record {
                 continue;
             }

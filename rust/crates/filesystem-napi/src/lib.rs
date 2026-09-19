@@ -3002,9 +3002,13 @@ impl NativeGitCompatRepository {
         let result: GitFilesystemResult = serde_json::from_str(&result_json).map_err(napi_error)?;
         let output = self
             .inner
-            .complete_transition_result(
+            .complete_transition(
                 GitTransitionId::from_bytes(fixed_16(&transition)?),
-                &result,
+                match result {
+                    GitFilesystemResult::Captured { generation, .. } => Some(generation),
+                    GitFilesystemResult::Applied { generation } => generation,
+                    _ => None,
+                },
             )
             .await
             .map_err(napi_error)?;
