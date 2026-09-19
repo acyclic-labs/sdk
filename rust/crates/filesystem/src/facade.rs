@@ -4512,15 +4512,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 work: prior,
             });
         }
-        let results = stream::iter(requests.iter().zip(records).enumerate().map(
-            |(index, (request, record))| {
+        let ranges = requests
+            .iter()
+            .map(|request| request.range)
+            .collect::<Vec<_>>();
+        let results = stream::iter(ranges.into_iter().zip(records).enumerate().map(
+            |(index, (range, record))| {
                 let reader = self.clone();
-                let range = request.range;
+                let cancellation = cancellation.clone();
                 async move {
                     (
                         index,
                         reader
-                            .read_record_range(record, range, budget, cancellation)
+                            .read_record_range(record, range, budget, &cancellation)
                             .await,
                     )
                 }
