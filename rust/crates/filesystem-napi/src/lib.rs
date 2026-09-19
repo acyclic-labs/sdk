@@ -39,7 +39,7 @@ use acyclic_fs::{
 };
 use acyclic_fs::{Mount as WorkspaceMount, MountOptions, MountPublication};
 use acyclic_fs::{ReconcileOutcome, SourceMode, SourceOptions, SourceState};
-use napi::bindgen_prelude::{AsyncTask, BigInt, Buffer, Error, Result, Status};
+use napi::bindgen_prelude::{Array, AsyncTask, BigInt, Buffer, Error, PromiseRaw, Result, Status};
 use napi::{Env, Task};
 use napi_derive::napi;
 use std::collections::BTreeMap;
@@ -4682,44 +4682,55 @@ impl NativeCheckout {
     /// Returns a JavaScript error for non-pinned checkouts, malformed paths,
     /// corruption, cancellation, or bounded work.
     #[napi]
-    pub async fn resolve_files(&self, paths: Vec<String>) -> Result<NativeResolvedFiles> {
-        let maximum =
-            usize::try_from(self.config.limits.maximum_paths_per_batch).unwrap_or(usize::MAX);
-        if paths.len() > maximum || paths.capacity() > maximum {
+    pub fn resolve_files<'env>(
+        &self,
+        env: &'env Env,
+        paths: Array<'env>,
+    ) -> Result<PromiseRaw<'env, NativeResolvedFiles>> {
+        let maximum = self.config.limits.maximum_paths_per_batch;
+        if paths.len() > maximum {
             return Err(Error::new(
                 Status::InvalidArg,
                 "resolved file batch exceeds the configured bound",
             ));
         }
+        let length = usize::try_from(paths.len()).map_err(napi_error)?;
         let mut parsed = Vec::new();
         parsed
-            .try_reserve_exact(paths.len())
+            .try_reserve_exact(length)
             .map_err(|error| napi_error(error.to_string()))?;
-        for path in paths {
+        for index in 0..paths.len() {
+            let path = paths.get::<String>(index)?.ok_or_else(|| {
+                Error::new(Status::InvalidArg, "resolved file paths must be strings")
+            })?;
             parsed.push(native_path(&path, self.config.limits)?);
         }
-        let reader = {
-            let checkout = self.inner.lock().await;
-            checkout.pinned_reader().map_err(napi_error)?
-        };
-        let receipt = reader
-            .resolve_files(&parsed, boundary_budget(), &self.cancellation)
-            .await
-            .map_err(napi_error)?;
-        Ok(NativeResolvedFiles {
-            files: std::sync::Mutex::new(
-                receipt
-                    .value
-                    .into_iter()
-                    .map(|file| {
-                        file.map(|inner| NativeResolvedFile {
-                            inner,
-                            cancellation: self.cancellation.clone(),
+        let checkout = Arc::clone(&self.inner);
+        let cancellation = self.cancellation.clone();
+        env.spawn_future(async move {
+            let reader = {
+                let checkout = checkout.lock().await;
+                checkout.pinned_reader().map_err(napi_error)?
+            };
+            let receipt = reader
+                .resolve_files(&parsed, boundary_budget(), &cancellation)
+                .await
+                .map_err(napi_error)?;
+            Ok(NativeResolvedFiles {
+                files: std::sync::Mutex::new(
+                    receipt
+                        .value
+                        .into_iter()
+                        .map(|file| {
+                            file.map(|inner| NativeResolvedFile {
+                                inner,
+                                cancellation: cancellation.clone(),
+                            })
                         })
-                    })
-                    .collect(),
-            ),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+                        .collect(),
+                ),
+                work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            })
         })
     }
 

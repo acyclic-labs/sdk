@@ -48,6 +48,7 @@ mod bindings {
     };
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
+    use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
 
     type IndexedDbObjects = CachedObjectStore<IndexedDbObjectStore>;
@@ -4212,11 +4213,11 @@ mod bindings {
             &mut self,
             paths: JsValue,
         ) -> Result<BrowserResolvedFiles, JsValue> {
-            if !js_sys::Array::is_array(&paths) {
-                return Err(js_error("resolved file paths must be an array"));
-            }
+            let paths_array = paths
+                .dyn_ref::<js_sys::Array>()
+                .ok_or_else(|| js_error("resolved file paths must be an array"))?;
             let maximum = self.limits.maximum_paths_per_batch;
-            if js_sys::Array::from(&paths).length() > maximum {
+            if paths_array.length() > maximum {
                 return Err(js_error("resolved file batch exceeds the configured bound"));
             }
             let paths: Vec<String> = serde_wasm_bindgen::from_value(paths).map_err(js_error)?;
