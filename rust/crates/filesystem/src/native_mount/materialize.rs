@@ -5,7 +5,7 @@ use crate::ObjectId;
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, NameEncoding, NamespacePath,
 };
-use crate::native_host::HostRoot;
+use crate::native_host::{HostDirectory, HostRoot};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Checkout, FileId,
     OperationFailure, OperationReceipt, PinnedReader, ResolvedFileRangeReadRequest, WorkBudget,
@@ -479,9 +479,13 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
         Err(failure) if matches!(failure.error, MaterializeError::MissingPath) => {
             let work = *failure.work;
             tokio::task::spawn_blocking(move || {
-                ensure_real_parents(&destination_root, &relative).map_err(materialize_io_error)?;
+                let parent =
+                    held_parent(&destination_root, &relative).map_err(materialize_io_error)?;
+                let name = relative
+                    .file_name()
+                    .ok_or_else(|| std::io::Error::other("restore path has no leaf"))?;
                 remove_any(&stage_root)?;
-                remove_any(&destination)
+                parent.remove(Path::new(name))
             })
             .await
             .map_err(|error| {
@@ -532,7 +536,7 @@ fn prepare_restore(
     replacement: HostPathReplacement,
 ) -> Result<(PathBuf, PathBuf), MaterializeError> {
     let destination = destination_root.join(relative);
-    ensure_real_parents(destination_root, relative)?;
+    let _ = held_parent(destination_root, relative)?;
     let stage_parent = match replacement {
         HostPathReplacement::Atomic => destination_root
             .parent()
@@ -554,27 +558,30 @@ fn publish_restore(
     stage_root: &Path,
     replacement: HostPathReplacement,
 ) -> Result<(), MaterializeError> {
-    ensure_real_parents(destination_root, relative)?;
-    match std::fs::symlink_metadata(destination) {
+    let destination_parent = held_parent(destination_root, relative)?;
+    let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
+    let stage_parent = held_parent(stage_root, relative)?;
+    let staged_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
+    match destination_parent.symlink_metadata(Path::new(destination_name)) {
         Ok(_) => match replacement {
             HostPathReplacement::Atomic => crate::exchange_native_entries(destination, staged)
                 .map_err(|error| MaterializeError::Engine(error.to_string()))?,
             HostPathReplacement::LiveMount => replace_live_mount(
-                staged,
-                destination,
-                destination.parent().ok_or(MaterializeError::InvalidPath)?,
+                &stage_parent,
+                Path::new(staged_name),
+                &destination_parent,
+                Path::new(destination_name),
             )?,
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => match replacement {
-            HostPathReplacement::Atomic => acyclic_native_runtime::durable_rename(
-                staged,
-                destination,
-                acyclic_native_runtime::RenameMode::NoReplace,
-            )?,
-            HostPathReplacement::LiveMount => std::fs::rename(staged, destination)?,
-        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => stage_parent.rename_to(
+            Path::new(staged_name),
+            &destination_parent,
+            Path::new(destination_name),
+        )?,
         Err(error) => return Err(error.into()),
     }
+    drop(stage_parent);
+    drop(destination_parent);
     remove_any(stage_root)?;
     Ok(())
 }
@@ -594,41 +601,10 @@ fn validate_host_relative(relative: &Path) -> Result<(), MaterializeError> {
     }
 }
 
-fn ensure_real_parents(root: &Path, relative: &Path) -> Result<(), MaterializeError> {
-    fn check(path: &Path) -> Result<(), MaterializeError> {
-        let metadata = std::fs::symlink_metadata(path)?;
-        #[cfg(windows)]
-        let reparse = {
-            use std::os::windows::fs::MetadataExt as _;
-            metadata.file_attributes() & 0x400 != 0
-        };
-        #[cfg(not(windows))]
-        let reparse = false;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() || reparse {
-            return Err(MaterializeError::InvalidDestination);
-        }
-        Ok(())
-    }
-
-    check(root)?;
-    let mut cursor = root.to_path_buf();
-    if let Some(parent) = relative.parent() {
-        for component in parent.components() {
-            let std::path::Component::Normal(name) = component else {
-                return Err(MaterializeError::InvalidPath);
-            };
-            cursor.push(name);
-            match std::fs::symlink_metadata(&cursor) {
-                Ok(_) => check(&cursor)?,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    std::fs::create_dir(&cursor)?;
-                    check(&cursor)?;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-    }
-    Ok(())
+fn held_parent(root: &Path, relative: &Path) -> Result<HostDirectory, MaterializeError> {
+    let root = HostRoot::open(root).map_err(|_| MaterializeError::InvalidDestination)?;
+    root.create_dir_all_held(relative.parent().unwrap_or_else(|| Path::new("")))
+        .map_err(|_| MaterializeError::InvalidDestination)
 }
 
 fn create_restore_stage(parent: &Path) -> Result<PathBuf, MaterializeError> {
@@ -660,28 +636,34 @@ fn remove_any(path: &Path) -> std::io::Result<()> {
 }
 
 fn replace_live_mount(
-    staged: &Path,
-    destination: &Path,
-    parent: &Path,
+    staged_parent: &HostDirectory,
+    staged_name: &Path,
+    destination_parent: &HostDirectory,
+    destination_name: &Path,
 ) -> Result<(), MaterializeError> {
-    let backup_root = create_restore_stage(parent)?;
-    let backup = backup_root.join("old");
-    if let Err(error) = std::fs::rename(destination, &backup) {
-        let _ = std::fs::remove_dir(&backup_root);
+    let backup_name = PathBuf::from(format!(
+        ".acyclic-restore-backup-{}-{}",
+        std::process::id(),
+        RESTORE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let backup = destination_parent.create_dir_held(&backup_name)?;
+    let old = Path::new("old");
+    if let Err(error) = destination_parent.rename_to(destination_name, &backup, old) {
+        let _ = destination_parent.remove_dir(&backup_name);
         return Err(error.into());
     }
-    if let Err(error) = std::fs::rename(staged, destination) {
-        if let Err(rollback) = std::fs::rename(&backup, destination) {
+    if let Err(error) = staged_parent.rename_to(staged_name, destination_parent, destination_name) {
+        if let Err(rollback) = backup.rename_to(old, destination_parent, destination_name) {
             return Err(MaterializeError::Engine(format!(
-                "replacement failed: {error}; displaced entry remains at {} after rollback failed: {rollback}",
-                backup.display()
+                "replacement failed: {error}; displaced entry remains in {} after rollback failed: {rollback}",
+                backup_name.display()
             )));
         }
-        let _ = std::fs::remove_dir(&backup_root);
+        let _ = destination_parent.remove_dir(&backup_name);
         return Err(error.into());
     }
-    remove_any(&backup)?;
-    std::fs::remove_dir(&backup_root)?;
+    backup.remove(old)?;
+    destination_parent.remove_dir(&backup_name)?;
     Ok(())
 }
 

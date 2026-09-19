@@ -21,6 +21,11 @@ pub struct HostRoot {
     identity: crate::NativeRootIdentity,
 }
 
+/// A held directory capability for race-free leaf operations.
+pub struct HostDirectory {
+    directory: Dir,
+}
+
 impl HostRoot {
     /// Opens an existing real directory without following the final path.
     pub fn open(path: &Path) -> io::Result<Self> {
@@ -82,6 +87,28 @@ impl HostRoot {
 
     pub fn create_dir(&self, path: &Path) -> io::Result<()> {
         self.directory.create_dir(path)
+    }
+
+    /// Opens or creates each real directory component without following links.
+    pub fn create_dir_all_held(&self, path: &Path) -> io::Result<HostDirectory> {
+        let mut current = self.directory.try_clone()?;
+        for component in path.components() {
+            let std::path::Component::Normal(name) = component else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid directory path",
+                ));
+            };
+            match current.open_dir(name) {
+                Ok(next) => current = next,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    current.create_dir(name)?;
+                    current = current.open_dir(name)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(HostDirectory { directory: current })
     }
 
     pub fn hard_link(&self, source: &Path, destination: &Path) -> io::Result<()> {
@@ -225,6 +252,48 @@ impl HostRoot {
             self.directory.open_dir(parent_path)?
         };
         bind_unix_socket_in(&parent, name)
+    }
+}
+
+impl HostDirectory {
+    pub fn symlink_metadata(&self, name: &Path) -> io::Result<Metadata> {
+        self.directory.symlink_metadata(name)
+    }
+
+    pub fn rename_to(
+        &self,
+        name: &Path,
+        destination: &Self,
+        destination_name: &Path,
+    ) -> io::Result<()> {
+        self.directory
+            .rename(name, &destination.directory, destination_name)
+    }
+
+    /// Creates one child directory and retains a capability for it.
+    pub fn create_dir_held(&self, name: &Path) -> io::Result<Self> {
+        self.directory.create_dir(name)?;
+        Ok(Self {
+            directory: self.directory.open_dir(name)?,
+        })
+    }
+
+    /// Removes one empty child directory.
+    pub fn remove_dir(&self, name: &Path) -> io::Result<()> {
+        self.directory.remove_dir(name)
+    }
+
+    pub fn remove(&self, name: &Path) -> io::Result<()> {
+        let metadata = match self.directory.symlink_metadata(name) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            self.directory.remove_dir_all(name)
+        } else {
+            self.directory.remove_file(name)
+        }
     }
 }
 

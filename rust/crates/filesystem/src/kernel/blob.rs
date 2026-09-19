@@ -436,6 +436,7 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
                 chunk,
                 allocation,
                 retained,
+                true,
                 logical_bytes,
                 options.maximum_blob_bytes,
                 budget,
@@ -463,20 +464,14 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
             break;
         }
         bytes.truncate(filled);
-        let filled_u64 = u64::try_from(filled).unwrap_or(u64::MAX);
-        logical_bytes = logical_bytes
-            .checked_add(filled_u64)
-            .ok_or_else(|| build_failed(BlobBuildError::TooLarge, work))?;
-        if logical_bytes > options.maximum_blob_bytes {
-            return Err(build_failed(BlobBuildError::TooLarge, work));
-        }
         (logical_bytes, work) = accept_owned_blob_chunk(
             &mut batching,
             &mut index,
-            Bytes::from(bytes),
+            Bytes::from(bytes).slice(..filled),
             allocation,
             retained,
-            logical_bytes - filled_u64,
+            false,
+            logical_bytes,
             options.maximum_blob_bytes,
             budget,
             work,
@@ -544,6 +539,7 @@ async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
     chunk: Bytes,
     allocation: usize,
     retained: u64,
+    owned_source: bool,
     logical_bytes: u64,
     maximum_blob_bytes: u64,
     budget: WorkBudget,
@@ -557,7 +553,7 @@ async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
     let prospective = build_add(
         work,
         WorkCounters {
-            source_bytes_read: retained_capacity,
+            source_bytes_read: if owned_source { retained_capacity } else { 0 },
             peak_allocation_bytes: index
                 .live_allocation_bytes
                 .saturating_add(retained)
