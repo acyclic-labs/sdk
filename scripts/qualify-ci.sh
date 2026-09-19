@@ -75,8 +75,9 @@ case "$lane" in
     fi
     python3 scripts/test-crate-publication.py
     python3 scripts/test-npm-publication.py
+    python3 scripts/test-plugin-publication.py
     bash -n scripts/prepare-crate-publication.sh scripts/prepare-npm-publication.sh \
-      scripts/check-typescript-packages.sh
+      scripts/prepare-plugin-publication.sh scripts/check-typescript-packages.sh
 
     # acyclic CLI plugin (plugin/): the release binary the acceptance suite
     # drives is retained as this lane's qualified artifact, so it is built
