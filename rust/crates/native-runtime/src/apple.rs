@@ -6,8 +6,8 @@ use crate::{Cancellation, OwnedRead, OwnedWrite};
 use block2::RcBlock;
 use bytes::Bytes;
 use dispatch2::{
-    DispatchData, DispatchIO, DispatchIOStreamType, DispatchQoS, DispatchQueue,
-    GlobalQueueIdentifier,
+    DispatchData, DispatchIO, DispatchIOCloseFlags, DispatchIOStreamType, DispatchQoS,
+    DispatchQueue, GlobalQueueIdentifier,
 };
 use std::ffi::c_int;
 use std::fs::File;
@@ -99,12 +99,37 @@ pub(super) fn read_batch(
     let mut channels = Vec::new();
     channels.try_reserve_exact(reads.len())?;
     for (read, offset) in reads.iter().zip(offsets) {
-        let cleanup = RcBlock::new(|_: c_int| {});
-        // SAFETY: the file descriptor remains live until every operation and channel completes.
+        // SAFETY: `file` holds a live descriptor for the duration of this call.
+        let descriptor = unsafe { libc::dup(file.as_raw_fd()) };
+        if descriptor < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // A channel created from a descriptor treats its current cursor as
+        // offset zero. `dup` shares that cursor, so reset the duplicate before
+        // handing it to Dispatch; positional reads must ignore caller cursor.
+        // SAFETY: `descriptor` is live and seekable because the public API
+        // accepts regular files.
+        if unsafe { libc::lseek(descriptor, 0, libc::SEEK_SET) } < 0 {
+            let failure = io::Error::last_os_error();
+            // SAFETY: Dispatch does not own the descriptor until construction.
+            unsafe {
+                libc::close(descriptor);
+            }
+            return Err(failure);
+        }
+        let cleanup = RcBlock::new(move |_: c_int| {
+            // SAFETY: Dispatch invokes this cleanup handler exactly once for
+            // the descriptor owned by this channel.
+            unsafe {
+                libc::close(descriptor);
+            }
+        });
+        // SAFETY: the duplicated descriptor remains live until Dispatch runs
+        // the cleanup handler after the channel and its operations close.
         let channel = unsafe {
             DispatchIO::new(
                 DispatchIOStreamType::DISPATCH_IO_RANDOM,
-                file.as_raw_fd(),
+                descriptor,
                 &queue,
                 &cleanup,
             )
@@ -161,6 +186,7 @@ pub(super) fn read_batch(
         .collect();
     for channel in &channels {
         cancellation.clear_apple(channel);
+        channel.close(DispatchIOCloseFlags(0));
     }
     results
 }

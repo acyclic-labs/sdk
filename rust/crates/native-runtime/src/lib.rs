@@ -502,7 +502,10 @@ fn poll_submission(
         Err(error) => return Poll::Ready(Err(error)),
     };
     match workers.sender.try_send(job) {
-        Ok(()) => Poll::Ready(Ok(())),
+        Ok(()) => {
+            remove_capacity_waiter(workers, waiter.take());
+            Poll::Ready(Ok(()))
+        }
         Err(mpsc::TrySendError::Full(job)) => {
             let identity = *waiter
                 .get_or_insert_with(|| workers.next_waiter.fetch_add(1, Ordering::Relaxed).max(1));
@@ -519,7 +522,11 @@ fn poll_submission(
                 waiters.push((identity, context.waker().clone()));
             }
             match workers.sender.try_send(job) {
-                Ok(()) => Poll::Ready(Ok(())),
+                Ok(()) => {
+                    let submitted = waiter.take();
+                    waiters.retain(|(candidate, _)| Some(*candidate) != submitted);
+                    Poll::Ready(Ok(()))
+                }
                 Err(mpsc::TrySendError::Full(job)) => {
                     *pending = Some(job);
                     Poll::Pending
@@ -535,6 +542,17 @@ fn poll_submission(
             "native I/O workers stopped",
         ))),
     }
+}
+
+fn remove_capacity_waiter(workers: &NativeWorkers, waiter: Option<u64>) {
+    let Some(waiter) = waiter else {
+        return;
+    };
+    workers
+        .capacity_waiters
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|(identity, _)| *identity != waiter);
 }
 
 fn native_workers() -> io::Result<&'static NativeWorkers> {
@@ -577,6 +595,18 @@ fn native_workers() -> io::Result<&'static NativeWorkers> {
                             }
                             let waker = job.run();
                             if let Some(waker) = waker {
+                                let _ =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        waker.wake();
+                                    }));
+                            }
+                            let waiters = {
+                                let mut waiters = capacity_waiters
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                std::mem::take(&mut *waiters)
+                            };
+                            for (_, waker) in waiters {
                                 let _ =
                                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                         waker.wake();
@@ -965,6 +995,7 @@ fn durable_rename_impl(from: &Path, to: &Path, mode: RenameMode) -> io::Result<(
 mod tests {
     use super::*;
     use std::fs::OpenOptions;
+    use std::io::{Seek as _, SeekFrom};
     use std::sync::Arc;
     use std::task::{Poll, Wake};
     use std::thread::Thread;
@@ -1118,6 +1149,19 @@ mod tests {
         assert_eq!(&batch[..5], &[0x44; 5]);
         assert_eq!(&batch[5..16], &[0; 11]);
         assert_eq!(&batch[16..], &[0x55; 7]);
+
+        // Native batch reads are positional even after another handle sharing
+        // the open file description has moved its cursor to EOF.
+        let mut cursor = file.try_clone()?;
+        cursor.seek(SeekFrom::End(0))?;
+        let selected = complete_read(read_batch_async(
+            file.try_clone()?,
+            vec![OwnedRead {
+                offset: 16,
+                length: 5,
+            }],
+        ))?;
+        assert_eq!(selected, [Bytes::from_static(&[0x33; 5])]);
         Ok(())
     }
 
