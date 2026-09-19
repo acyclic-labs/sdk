@@ -5,6 +5,7 @@
   "author": {
     "name": "Acyclic Labs"
   },
+  "license": "Apache-2.0",
   "interface": {
     "displayName": "Acyclic Agent Workspaces",
     "shortDescription": "Isolate and merge recursive Codex subagents.",

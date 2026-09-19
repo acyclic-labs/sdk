@@ -1,13 +1,13 @@
 use acyclic_fs::model::VolumeLimits;
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
-    ApplyOptions, CancellationToken, GitCommand, GitCompatRepository, GitFilesystemAction,
+    ApplyOptions, CancellationToken, GitCompatRepository, GitFilesystemAction,
     GitFilesystemExecutor, GitFilesystemResult, GitIgnorePolicy, IdempotencyKey, JoinOutcome,
     JournaledMaterializer, LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend,
     LocalOptions, MaterializationJournalStore, MaterializationRecovery, MaterializeOptions,
     MergeConflict, Mount, MountOptions, NativeTreeMaterializationBackend, OperationId,
     OperationReconcileLimits, OperationWindowCoordinator, OperationWindowLease, ReconcileOutcome,
-    SourceOptions, TransactionCommit, WorkBudget, Workspace, WorkspaceGraph,
+    SourceOptions, TransactionCommit, WorkBudget, Workspace, WorkspaceDelete, WorkspaceGraph,
     WorkspaceOperationFinish, WorkspacePathApply, WorkspaceRestore, apply_git_patch,
     blame_git_generations, capture_git_compatible_generation, grep_git_generation, walk_git_tree,
 };
@@ -20,11 +20,17 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Component;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::sync::{Mutex as AsyncMutex, watch};
 
 type LocalWorkspace = Workspace<LocalAuthorityBackend, LocalObjectBackend>;
 type LocalMount = Mount<LocalAuthorityBackend, LocalObjectBackend>;
 
+#[allow(
+    dead_code,
+    reason = "used by the authenticated acyclic-git IPC dispatcher"
+)]
 #[derive(Debug)]
 struct PluginGitError(String);
 
@@ -42,6 +48,10 @@ impl From<String> for PluginGitError {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "used by the authenticated acyclic-git IPC dispatcher"
+)]
 struct PluginGitExecutor<'a> {
     fs: &'a LocalFs,
     store: LocalCoreStateStore,
@@ -51,6 +61,10 @@ struct PluginGitExecutor<'a> {
     switched: Mutex<Option<LocalWorkspace>>,
 }
 
+#[allow(
+    dead_code,
+    reason = "used by the authenticated acyclic-git IPC dispatcher"
+)]
 impl PluginGitExecutor<'_> {
     fn error(message: impl Into<String>) -> PluginGitError {
         PluginGitError(message.into())
@@ -613,6 +627,14 @@ struct Route {
     repository_workspace_id: [u8; 16],
     parent_agent_id: String,
     path: PathBuf,
+    #[serde(default)]
+    stopped: bool,
+    #[serde(default)]
+    published_generation: [u8; 32],
+    #[serde(default)]
+    route_epoch: u64,
+    #[serde(skip)]
+    workspace_token: [u8; 32],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -629,10 +651,44 @@ struct PendingSpawn {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct LeaseRecord {
     agent_id: String,
+    #[serde(default)]
+    turn_id: String,
+    #[serde(default)]
+    tool_name: String,
     workspace_id: [u8; 16],
     lease_id: [u8; 16],
     pinned_parent: [u8; 32],
     expires_at_millis: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct IpcToolRecord {
+    agent_id: String,
+    turn_id: String,
+    tool_name: String,
+    #[serde(default)]
+    expires_at_millis: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DiscardWorkspace {
+    name: String,
+    delete_key: [u8; 16],
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DiscardAgent {
+    agent_id: String,
+    path: PathBuf,
+    repository_workspace_id: [u8; 16],
+    #[serde(default)]
+    mount_detached: bool,
+    workspaces: Vec<DiscardWorkspace>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PendingDiscard {
+    agents: Vec<DiscardAgent>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -643,6 +699,10 @@ struct RootPublication {
     from: [u8; 32],
     to: [u8; 32],
     operation_directory: PathBuf,
+    #[serde(default)]
+    source_agent_id: String,
+    #[serde(default)]
+    source_generation: [u8; 32],
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -653,9 +713,16 @@ enum RootPublicationPhase {
 }
 
 impl LeaseRecord {
-    fn from_lease(agent_id: String, lease: &OperationWindowLease) -> Self {
+    fn from_lease(
+        agent_id: String,
+        turn_id: String,
+        tool_name: String,
+        lease: &OperationWindowLease,
+    ) -> Self {
         Self {
             agent_id,
+            turn_id,
+            tool_name,
             workspace_id: lease.workspace_id.into_bytes(),
             lease_id: lease.lease_id.into_bytes(),
             pinned_parent: *lease.pinned_parent.digest().as_bytes(),
@@ -689,6 +756,10 @@ struct AdapterState {
     pending: VecDeque<PendingSpawn>,
     leases: BTreeMap<String, LeaseRecord>,
     #[serde(default)]
+    ipc_tools: BTreeMap<String, IpcToolRecord>,
+    #[serde(default)]
+    pending_discards: BTreeMap<String, PendingDiscard>,
+    #[serde(default)]
     root_publication: Option<RootPublication>,
 }
 
@@ -699,6 +770,12 @@ struct ControlPlane {
     state: AdapterState,
     root: Option<LocalWorkspace>,
     mounts: BTreeMap<String, LocalMount>,
+    control_endpoint: Option<String>,
+    cli_bin: Option<PathBuf>,
+    #[cfg(test)]
+    fail_next_unmount: BTreeSet<String>,
+    #[cfg(test)]
+    fail_after_discard_delete: bool,
 }
 
 impl ControlPlane {
@@ -716,11 +793,51 @@ impl ControlPlane {
             state,
             root: None,
             mounts: BTreeMap::new(),
+            control_endpoint: None,
+            cli_bin: env::var_os("PLUGIN_ROOT").map(|root| PathBuf::from(root).join("bin")),
+            #[cfg(test)]
+            fail_next_unmount: BTreeSet::new(),
+            #[cfg(test)]
+            fail_after_discard_delete: false,
         };
+        control.rotate_route_capabilities()?;
         control.restore_root().await?;
         control.recover_root_publication().await?;
         control.restore_mounts().await?;
+        control.recover_expired_adapter_leases().await?;
+        control.recover_pending_discards().await?;
         Ok(control)
+    }
+
+    async fn recover_expired_adapter_leases(&mut self) -> Result<(), String> {
+        let now = now_millis();
+        let agents = self
+            .state
+            .leases
+            .values()
+            .filter(|lease| lease.expires_at_millis <= now)
+            .map(|lease| lease.agent_id.clone())
+            .collect::<BTreeSet<_>>();
+        if agents.is_empty() {
+            return Ok(());
+        }
+        for agent_id in agents {
+            let route = self
+                .state
+                .routes
+                .get(&agent_id)
+                .cloned()
+                .ok_or_else(|| "expired lease route is missing".to_owned())?;
+            let workspace = self.workspace(&route).await?;
+            OperationWindowCoordinator::new(self.store.clone())
+                .recover_workspace(&workspace, now, OperationReconcileLimits::default())
+                .await
+                .map_err(display)?;
+        }
+        self.state
+            .leases
+            .retain(|_, lease| lease.expires_at_millis > now);
+        self.persist()
     }
 
     async fn restore_root(&mut self) -> Result<(), String> {
@@ -747,8 +864,21 @@ impl ControlPlane {
     }
 
     async fn restore_mounts(&mut self) -> Result<(), String> {
+        let discarding_agents = self
+            .state
+            .pending_discards
+            .values()
+            .flat_map(|discard| {
+                discard
+                    .agents
+                    .iter()
+                    .filter(|agent| !agent.mount_detached)
+                    .map(|agent| agent.agent_id.clone())
+            })
+            .collect::<BTreeSet<_>>();
         for route in self.state.routes.values() {
-            if route.path.exists() {
+            if !route.stopped || discarding_agents.contains(&route.agent_id) {
+                fs::create_dir_all(&route.path).map_err(display)?;
                 let workspace = self
                     .fs
                     .open_workspace(&route.workspace_name)
@@ -816,12 +946,17 @@ impl ControlPlane {
         if session_id != self.state.root_session_id {
             return Err("user prompt belongs to another root session".to_owned());
         }
-        self.state.root_turns.insert(string(&input, "turn_id")?);
+        let turn_id = string(&input, "turn_id")?;
+        if self.state.turns.contains_key(&turn_id) {
+            return Err("root turn identity is already bound to a subagent".to_owned());
+        }
+        self.state.root_turns.insert(turn_id);
         self.persist()?;
         Ok(json!({"suppressOutput": true}))
     }
 
     async fn pre_tool(&mut self, input: Value) -> Result<Value, String> {
+        self.require_session(&input)?;
         let tool_name = string(&input, "tool_name")?;
         let turn_id = string(&input, "turn_id")?;
         let tool_use_id = string(&input, "tool_use_id")?;
@@ -882,22 +1017,50 @@ impl ControlPlane {
             .get(&agent_id)
             .cloned()
             .ok_or_else(|| "subagent route is missing".to_owned())?;
+        if route.stopped {
+            return Err("subagent workspace is sealed after SubagentStop".to_owned());
+        }
         let original =
             normalize_tool_input(input.get("tool_input").cloned().unwrap_or(Value::Null))?;
         let mut updated =
             rewrite_tool_input(&tool_name, original, &self.state.root_path, &route.path)?;
-        if (matches!(tool_name.as_str(), "Bash" | "exec_command")
+        let acyclic_git = (matches!(tool_name.as_str(), "Bash" | "exec_command")
             || tool_name.ends_with("__exec_command"))
-            && let Some(argv) = git_argv(&updated)?
-        {
-            return self.git_tool(&agent_id, &route, updated, argv).await;
+        .then(|| acyclic_git_argv(&updated))
+        .transpose()?
+        .flatten();
+        if let Some(git_argv) = acyclic_git {
+            inject_acyclic_workspace_context(
+                &mut updated,
+                self.control_endpoint.as_deref().ok_or_else(|| {
+                    "acyclic git is unavailable because the local control endpoint is not configured"
+                        .to_owned()
+                })?,
+                self.cli_bin.as_deref().ok_or_else(|| {
+                    "acyclic git is unavailable because the packaged CLI directory is not configured"
+                        .to_owned()
+                })?,
+                &route,
+                &git_argv,
+            )?;
+            self.state.ipc_tools.insert(
+                tool_use_id,
+                IpcToolRecord {
+                    agent_id,
+                    turn_id,
+                    tool_name,
+                    expires_at_millis: now_millis().saturating_add(15 * 60 * 1_000),
+                },
+            );
+            self.persist()?;
+            return Ok(pre_tool_update(updated));
         }
         require_process_sandbox(&tool_name)?;
         if tool_name.starts_with("mcp__acyclic_agent_workspaces__") {
             let object = updated
                 .as_object_mut()
                 .ok_or_else(|| "workspace control tool input must be an object".to_owned())?;
-            object.insert("_caller_turn_id".to_owned(), Value::String(turn_id));
+            object.insert("_caller_turn_id".to_owned(), Value::String(turn_id.clone()));
         }
         let now = now_millis();
         if let Some(existing) = self.state.leases.get(&tool_use_id) {
@@ -931,9 +1094,10 @@ impl ControlPlane {
             )
             .await
             .map_err(display)?;
-        self.state
-            .leases
-            .insert(tool_use_id, LeaseRecord::from_lease(agent_id, &lease));
+        self.state.leases.insert(
+            tool_use_id,
+            LeaseRecord::from_lease(agent_id, turn_id, tool_name, &lease),
+        );
         self.persist()?;
         Ok(pre_tool_update(updated))
     }
@@ -942,7 +1106,6 @@ impl ControlPlane {
         &mut self,
         agent_id: &str,
         route: &Route,
-        mut updated: Value,
         argv: Vec<String>,
     ) -> Result<Value, String> {
         let workspace = self.workspace(route).await?;
@@ -985,22 +1148,6 @@ impl ControlPlane {
         } else {
             acyclic_fs::WorkspaceId::from_bytes(route.repository_workspace_id)
         };
-        let patch = if argv.first().is_some_and(|command| command == "apply") {
-            let patch_path = git_apply_patch_path(&argv)?;
-            validate_path(patch_path, &route.path)?;
-            let patch_path = if Path::new(patch_path).is_absolute() {
-                PathBuf::from(patch_path)
-            } else {
-                route.path.join(patch_path)
-            };
-            let patch = fs::read(&patch_path).map_err(display)?;
-            if patch.len() > 64 * 1024 * 1024 {
-                return Err("git apply patch exceeds the 64 MiB compatibility bound".to_owned());
-            }
-            Some(patch)
-        } else {
-            None
-        };
         let now = now_millis();
         let lease = coordinator
             .begin(
@@ -1026,11 +1173,6 @@ impl ControlPlane {
             Ok(None)
         } else if let Err(error) = resumed {
             Err(error)
-        } else if let Some(patch) = patch {
-            repository
-                .run(GitCommand::Apply { patch }, head.id(), &executor)
-                .await
-                .map(Some)
         } else {
             repository
                 .run_argv(
@@ -1098,15 +1240,27 @@ impl ControlPlane {
             .await
             .map_err(display)?;
         if let Some(switched) = switched {
-            let previous = self
-                .mounts
-                .remove(agent_id)
-                .ok_or_else(|| "subagent mount is unavailable".to_owned())?;
-            previous.unmount().await.map_err(display)?;
-            let mount = switched
+            self.unmount_agent(agent_id).await?;
+            let mount = match switched
                 .mount(&route.path, MountOptions::read_write())
                 .await
-                .map_err(display)?;
+            {
+                Ok(mount) => mount,
+                Err(error) => {
+                    let restored = self
+                        .workspace(route)
+                        .await?
+                        .mount(&route.path, MountOptions::read_write())
+                        .await
+                        .map_err(|restore| {
+                            format!(
+                                "cannot mount switched workspace ({error}); cannot restore previous mount ({restore})"
+                            )
+                        })?;
+                    self.mounts.insert(agent_id.to_owned(), restored);
+                    return Err(format!("cannot mount switched workspace: {error}"));
+                }
+            };
             let current = self
                 .state
                 .routes
@@ -1114,23 +1268,42 @@ impl ControlPlane {
                 .ok_or_else(|| "subagent route is missing".to_owned())?;
             current.workspace_name = switched.name().as_str().to_owned();
             current.workspace_id = switched.id().into_bytes();
+            current.published_generation = [0; 32];
+            current.route_epoch = current.route_epoch.saturating_add(1);
+            current.workspace_token = new_workspace_token()?;
             self.mounts.insert(agent_id.to_owned(), mount);
         }
         let Some(output) = command.map_err(display)? else {
             self.persist()?;
-            return Err(
-                "recovered a pending Git transition; retry the current command".to_owned(),
-            );
+            return Err("recovered a pending Git transition; retry the current command".to_owned());
         };
-        set_shell_command(&mut updated, render_git_output(&output)?)?;
         self.persist()?;
-        Ok(pre_tool_update(updated))
+        serde_json::to_value(output).map_err(display)
     }
 
     async fn subagent_start(&mut self, input: Value) -> Result<Value, String> {
+        self.require_session(&input)?;
         let agent_id = string(&input, "agent_id")?;
         let turn_id = string(&input, "turn_id")?;
+        if self.state.root_turns.contains(&turn_id) {
+            return Err("subagent turn identity is already bound to the root".to_owned());
+        }
+        if self
+            .state
+            .turns
+            .get(&turn_id)
+            .is_some_and(|bound| bound != &agent_id)
+        {
+            return Err("subagent turn identity is already bound to another agent".to_owned());
+        }
         if self.state.routes.contains_key(&agent_id) {
+            let route = self.state.routes.get(&agent_id).ok_or("route missing")?;
+            if route.stopped {
+                return Err("stopped subagent identity cannot be started again".to_owned());
+            }
+            if route.turn_id != turn_id {
+                return Err("subagent identity is already bound to another turn".to_owned());
+            }
             self.state.turns.insert(turn_id, agent_id.clone());
             self.persist()?;
             let route = self.state.routes.get(&agent_id).ok_or("route missing")?;
@@ -1181,6 +1354,10 @@ impl ControlPlane {
             repository_workspace_id: workspace.id().into_bytes(),
             parent_agent_id: pending.parent_agent_id,
             path: path.clone(),
+            stopped: false,
+            published_generation: [0; 32],
+            route_epoch: 1,
+            workspace_token: new_workspace_token()?,
         };
         self.mounts.insert(agent_id.clone(), mount);
         self.state.turns.insert(turn_id, agent_id.clone());
@@ -1190,10 +1367,40 @@ impl ControlPlane {
     }
 
     async fn post_tool(&mut self, input: Value) -> Result<Value, String> {
+        self.require_session(&input)?;
+        let turn_id = string(&input, "turn_id")?;
+        let tool_name = string(&input, "tool_name")?;
+        let caller = self.resolve_turn(&turn_id)?;
         let tool_use_id = string(&input, "tool_use_id")?;
-        let Some(record) = self.state.leases.remove(&tool_use_id) else {
+        if let Some(record) = self.state.ipc_tools.get(&tool_use_id).cloned() {
+            if record.agent_id != caller
+                || record.turn_id != turn_id
+                || record.tool_name != tool_name
+            {
+                return Err("post-tool hook does not match its acyclic-git owner".to_owned());
+            }
+            self.state.ipc_tools.remove(&tool_use_id);
+            self.persist()?;
+            return Ok(json!({}));
+        }
+        let Some(record) = self.state.leases.get(&tool_use_id).cloned() else {
+            if caller != self.state.root_agent_id
+                && !is_pure_remote_tool(&tool_name)
+                && !is_filesystem_tool(&tool_name)
+                && !matches!(tool_name.as_str(), "spawn_agent" | "Agent")
+            {
+                return Err(format!(
+                    "unclassified post-tool '{tool_name}' is denied inside an isolated subagent workspace"
+                ));
+            }
             return Ok(json!({}));
         };
+        if record.agent_id != caller
+            || (!record.turn_id.is_empty() && record.turn_id != turn_id)
+            || (!record.tool_name.is_empty() && record.tool_name != tool_name)
+        {
+            return Err("post-tool hook does not match its pre-tool owner".to_owned());
+        }
         let route = self
             .state
             .routes
@@ -1213,6 +1420,7 @@ impl ControlPlane {
             .await
             .map_err(display)?;
         if matches!(finish, acyclic_fs::OperationWindowFinish::AlreadyClosed) {
+            self.state.leases.remove(&tool_use_id);
             self.persist()?;
             return Err("filesystem tool lease expired; late writes were fenced".to_owned());
         }
@@ -1240,6 +1448,7 @@ impl ControlPlane {
             }
             acyclic_fs::OperationWindowFinish::AlreadyClosed => unreachable!(),
         };
+        self.state.leases.remove(&tool_use_id);
         self.persist()?;
         match outcome {
             WorkspaceOperationFinish::Reconciled(acyclic_fs::WorkspaceRebase::Conflicted {
@@ -1258,10 +1467,49 @@ impl ControlPlane {
     }
 
     async fn subagent_stop(&mut self, input: Value) -> Result<Value, String> {
+        self.require_session(&input)?;
+        self.recover_expired_adapter_leases().await?;
+        self.prune_expired_ipc_tools()?;
         let agent_id = string(&input, "agent_id")?;
-        if let Some(mount) = self.mounts.get(&agent_id) {
-            mount.sync().await.map_err(display)?;
+        let turn_id = string(&input, "turn_id")?;
+        if self.resolve_turn(&turn_id)? != agent_id {
+            return Err("subagent stop does not belong to the routed agent turn".to_owned());
         }
+        let route = self
+            .state
+            .routes
+            .get(&agent_id)
+            .ok_or_else(|| "subagent stop refers to an unknown agent".to_owned())?;
+        if route.stopped {
+            return Ok(json!({"suppressOutput": true}));
+        }
+        if self
+            .state
+            .leases
+            .values()
+            .any(|lease| lease.agent_id == agent_id)
+            || self
+                .state
+                .ipc_tools
+                .values()
+                .any(|tool| tool.agent_id == agent_id)
+        {
+            return Err("subagent cannot stop while filesystem tools are still active".to_owned());
+        }
+        self.unmount_agent(&agent_id).await?;
+        self.state
+            .routes
+            .get_mut(&agent_id)
+            .ok_or_else(|| "subagent route disappeared during stop".to_owned())?
+            .stopped = true;
+        let route = self
+            .state
+            .routes
+            .get_mut(&agent_id)
+            .ok_or_else(|| "subagent route disappeared during stop".to_owned())?;
+        route.route_epoch = route.route_epoch.saturating_add(1);
+        route.workspace_token = [0; 32];
+        self.persist()?;
         Ok(json!({"suppressOutput": true}))
     }
 
@@ -1279,12 +1527,50 @@ impl ControlPlane {
             .cloned()
             .ok_or("unknown agent")?;
         let workspace = self.workspace(&route).await?;
-        let lineage = WorkspaceGraph::new(self.store.clone())
-            .authorize_join(workspace.id(), self.parent_workspace(&route).await?.id())
+        let graph = WorkspaceGraph::new(self.store.clone());
+        let repository_id = if route.repository_workspace_id == [0; 16] {
+            workspace.id()
+        } else {
+            acyclic_fs::WorkspaceId::from_bytes(route.repository_workspace_id)
+        };
+        let mut lineage_cursor = workspace.clone();
+        let mut visited = BTreeSet::new();
+        let mut branch_base = None;
+        while lineage_cursor.id() != repository_id {
+            if !visited.insert(lineage_cursor.id()) || visited.len() > 64 {
+                return Err("Git compatibility branch lineage is cyclic or too deep".to_owned());
+            }
+            let lineage = graph.resolve(lineage_cursor.id()).await.map_err(display)?;
+            branch_base.get_or_insert(lineage.initial_generation);
+            let parent_id = lineage.parent_workspace_id.ok_or_else(|| {
+                "Git compatibility branch does not reach its repository workspace".to_owned()
+            })?;
+            let parent_name = lineage
+                .parent_workspace_name
+                .ok_or_else(|| "Git compatibility branch parent name is unavailable".to_owned())?;
+            let parent = self
+                .fs
+                .open_workspace(&parent_name)
+                .await
+                .map_err(display)?;
+            if parent.id() != parent_id {
+                return Err("Git compatibility branch parent identity changed".to_owned());
+            }
+            graph
+                .authorize_join(lineage_cursor.id(), parent.id())
+                .await
+                .map_err(display)?;
+            lineage_cursor = parent;
+        }
+        let lineage = graph
+            .authorize_join(
+                lineage_cursor.id(),
+                self.parent_workspace(&route).await?.id(),
+            )
             .await
             .map_err(display)?;
         let base = workspace
-            .generation(lineage.initial_generation)
+            .generation(branch_base.unwrap_or(lineage.initial_generation))
             .await
             .map_err(display)?;
         let head = workspace.head().await.map_err(display)?;
@@ -1343,13 +1629,17 @@ impl ControlPlane {
                 return Err("Git compatibility branch lineage is cyclic or too deep".to_owned());
             }
             let lineage = graph.resolve(lineage_cursor.id()).await.map_err(display)?;
-            let parent_id = lineage
-                .parent_workspace_id
-                .ok_or_else(|| "Git compatibility branch does not reach its repository workspace".to_owned())?;
+            let parent_id = lineage.parent_workspace_id.ok_or_else(|| {
+                "Git compatibility branch does not reach its repository workspace".to_owned()
+            })?;
             let parent_name = lineage
                 .parent_workspace_name
                 .ok_or_else(|| "Git compatibility branch parent name is unavailable".to_owned())?;
-            let parent = self.fs.open_workspace(&parent_name).await.map_err(display)?;
+            let parent = self
+                .fs
+                .open_workspace(&parent_name)
+                .await
+                .map_err(display)?;
             if parent.id() != parent_id {
                 return Err("Git compatibility branch parent identity changed".to_owned());
             }
@@ -1363,10 +1653,16 @@ impl ControlPlane {
             .authorize_join(lineage_cursor.id(), target.id())
             .await
             .map_err(display)?;
+        if route.published_generation != [0; 32] {
+            return self
+                .agent_merge_incremental(&agent, &caller, &route, &source, &target)
+                .await;
+        }
         let plan = source.join_into(&target).plan().await.map_err(display)?;
         let target_head = plan.target_head();
+        let source_head = plan.source_head();
         if caller == self.state.root_agent_id {
-            self.begin_root_publication(target_head)?;
+            self.begin_root_publication(target_head, &agent, source_head)?;
         }
         let join_key = self
             .state
@@ -1411,6 +1707,18 @@ impl ControlPlane {
                 .await
                 .map_err(|error| format!("cannot advance parent mount after merge: {error}"))?;
         }
+        if matches!(
+            outcome,
+            JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_) | JoinOutcome::NoChanges(_)
+        ) && caller != self.state.root_agent_id
+        {
+            self.state
+                .routes
+                .get_mut(&agent)
+                .ok_or_else(|| "merged agent route disappeared".to_owned())?
+                .published_generation = *source_head.digest().as_bytes();
+            self.persist()?;
+        }
         Ok(match outcome {
             JoinOutcome::Applied(generation) => {
                 json!({"status":"applied","generation":hex::encode(generation.id().digest().as_bytes())})
@@ -1444,7 +1752,117 @@ impl ControlPlane {
         })
     }
 
+    async fn agent_merge_incremental(
+        &mut self,
+        agent: &str,
+        caller: &str,
+        route: &Route,
+        source: &LocalWorkspace,
+        target: &LocalWorkspace,
+    ) -> Result<Value, String> {
+        let base_id = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(
+            route.published_generation,
+        ));
+        let base = source.generation(base_id).await.map_err(display)?;
+        let head = source.head().await.map_err(display)?;
+        let changes = base.diff_to(&head, 100_000).await.map_err(display)?;
+        let paths = changes
+            .changed_paths(100_000)
+            .await
+            .map_err(display)?
+            .iter()
+            .map(|change| namespace_path_text(&change.path))
+            .collect::<Result<Vec<_>, _>>()?;
+        let target_head = target.head().await.map_err(display)?.id();
+        if paths.is_empty() {
+            self.state
+                .routes
+                .get_mut(agent)
+                .ok_or_else(|| "merged agent route disappeared".to_owned())?
+                .published_generation = *head.id().digest().as_bytes();
+            self.persist()?;
+            return Ok(json!({
+                "status":"no-changes",
+                "generation":hex::encode(target_head.digest().as_bytes())
+            }));
+        }
+        if caller == self.state.root_agent_id {
+            self.begin_root_publication(target_head, agent, head.id())?;
+        }
+        let apply_key = self
+            .state
+            .root_publication
+            .as_ref()
+            .filter(|_| caller == self.state.root_agent_id)
+            .map_or_else(IdempotencyKey::new, |publication| {
+                IdempotencyKey::from_bytes(publication.operation_id)
+            });
+        let outcome = target
+            .apply_paths_from(Some(&base), Some(&head), &paths, target_head, apply_key)
+            .await;
+        if caller == self.state.root_agent_id && outcome.is_err() {
+            self.recover_root_publication().await?;
+        }
+        let outcome = outcome.map_err(display)?;
+        let published = match &outcome {
+            WorkspacePathApply::Applied(generation)
+            | WorkspacePathApply::AlreadyApplied(generation)
+            | WorkspacePathApply::NoChanges(generation) => Some(generation.clone()),
+            _ => None,
+        };
+        if caller == self.state.root_agent_id
+            && let Some(generation) = published.as_ref()
+        {
+            self.publish_root_generation(target_head, generation)
+                .await?;
+        } else if caller == self.state.root_agent_id {
+            self.state.root_publication = None;
+            self.persist()?;
+        } else if published.is_some() {
+            self.state
+                .routes
+                .get_mut(agent)
+                .ok_or_else(|| "merged agent route disappeared".to_owned())?
+                .published_generation = *head.id().digest().as_bytes();
+            self.persist()?;
+        }
+        if published.is_some()
+            && let Some(parent_mount) = self.mounts.get(caller)
+        {
+            parent_mount.advance_to_head().await.map_err(display)?;
+        }
+        Ok(match outcome {
+            WorkspacePathApply::Applied(generation) => {
+                json!({"status":"applied","generation":hex::encode(generation.id().digest().as_bytes())})
+            }
+            WorkspacePathApply::AlreadyApplied(generation) => {
+                json!({"status":"already-applied","generation":hex::encode(generation.id().digest().as_bytes())})
+            }
+            WorkspacePathApply::NoChanges(generation) => {
+                json!({"status":"no-changes","generation":hex::encode(generation.id().digest().as_bytes())})
+            }
+            WorkspacePathApply::Stale(generation) => {
+                json!({"status":"stale-target","generation":hex::encode(generation.id().digest().as_bytes())})
+            }
+            WorkspacePathApply::Conflicted(conflicts) => json!({
+                "status":"conflicted",
+                "conflictCount":conflicts.len(),
+                "conflicts": conflicts.iter().map(|conflict| json!({
+                    "path": conflict.path,
+                    "kind": format!("{:?}", conflict.kind),
+                })).collect::<Vec<_>>(),
+                "truncated":false
+            }),
+            WorkspacePathApply::Fenced => json!({"status":"fenced"}),
+            WorkspacePathApply::IdempotencyConflict => {
+                json!({"status":"idempotency-conflict"})
+            }
+        })
+    }
+
     async fn agent_discard(&mut self, input: Value) -> Result<Value, String> {
+        self.recover_expired_adapter_leases().await?;
+        self.prune_expired_ipc_tools()?;
         let agent = string(&input, "agent")?;
         let caller = self.caller(&input)?;
         let route = self
@@ -1457,16 +1875,42 @@ impl ControlPlane {
             return Err("only the direct parent may discard this workspace".to_owned());
         }
         let descendants = self.descendants(&agent);
-        for descendant in descendants
-            .into_iter()
-            .rev()
+        let subtree = descendants
+            .iter()
+            .cloned()
             .chain(std::iter::once(agent.clone()))
+            .collect::<BTreeSet<_>>();
+        if self
+            .state
+            .leases
+            .values()
+            .any(|lease| subtree.contains(&lease.agent_id))
+            || self
+                .state
+                .ipc_tools
+                .values()
+                .any(|tool| subtree.contains(&tool.agent_id))
         {
-            if let Some(mount) = self.mounts.remove(&descendant) {
-                mount.unmount().await.map_err(display)?;
-            }
-            if let Some(removed) = self.state.routes.remove(&descendant) {
-                remove_tree_checked(&self.data.join("workspaces"), &removed.path)?;
+            return Err(
+                "cannot discard an agent subtree while filesystem tools are active".to_owned(),
+            );
+        }
+        self.state
+            .pending
+            .retain(|spawn| !subtree.contains(&spawn.parent_agent_id));
+        if !self.state.pending_discards.contains_key(&agent) {
+            let mut discard_agents = Vec::new();
+            for descendant in descendants
+                .into_iter()
+                .rev()
+                .chain(std::iter::once(agent.clone()))
+            {
+                let removed = self
+                    .state
+                    .routes
+                    .get(&descendant)
+                    .cloned()
+                    .ok_or_else(|| "discard subtree route disappeared".to_owned())?;
                 let repository_id = if removed.repository_workspace_id == [0; 16] {
                     acyclic_fs::WorkspaceId::from_bytes(removed.workspace_id)
                 } else {
@@ -1484,35 +1928,174 @@ impl ControlPlane {
                 .map_err(display)?
                 {
                     workspace_ids.extend(state.branches.values().map(|branch| branch.workspace_id));
-                    if !<LocalCoreStateStore as acyclic_fs::GitCompatStore>::compare_and_delete(
-                        &self.store,
-                        repository_id,
-                        state.revision,
+                }
+                let mut workspaces = Vec::new();
+                for workspace_id in workspace_ids.into_iter().rev() {
+                    let name = if workspace_id
+                        == acyclic_fs::WorkspaceId::from_bytes(removed.workspace_id)
+                    {
+                        removed.workspace_name.clone()
+                    } else {
+                        WorkspaceGraph::new(self.store.clone())
+                            .resolve(workspace_id)
+                            .await
+                            .map_err(|error| {
+                                format!("cannot resolve discarded workspace lineage: {error}")
+                            })?
+                            .workspace_name
+                    };
+                    workspaces.push(DiscardWorkspace {
+                        name,
+                        delete_key: IdempotencyKey::new().into_bytes(),
+                    });
+                }
+                discard_agents.push(DiscardAgent {
+                    agent_id: descendant,
+                    path: removed.path,
+                    repository_workspace_id: repository_id.into_bytes(),
+                    mount_detached: false,
+                    workspaces,
+                });
+            }
+            for member in &subtree {
+                let route = self
+                    .state
+                    .routes
+                    .get_mut(member)
+                    .ok_or_else(|| "discard subtree route disappeared".to_owned())?;
+                route.stopped = true;
+                route.route_epoch = route.route_epoch.saturating_add(1);
+                route.workspace_token = [0; 32];
+            }
+            self.state.pending_discards.insert(
+                agent.clone(),
+                PendingDiscard {
+                    agents: discard_agents,
+                },
+            );
+            self.persist()?;
+        }
+        self.continue_pending_discard(&agent).await?;
+        Ok(json!({"status":"discarded","agent":agent}))
+    }
+
+    async fn recover_pending_discards(&mut self) -> Result<(), String> {
+        let roots = self
+            .state
+            .pending_discards
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for root in roots {
+            self.continue_pending_discard(&root).await?;
+        }
+        Ok(())
+    }
+
+    async fn continue_pending_discard(&mut self, root: &str) -> Result<(), String> {
+        while let Some(agent) = self
+            .state
+            .pending_discards
+            .get(root)
+            .and_then(|discard| discard.agents.first())
+            .cloned()
+        {
+            if !agent.mount_detached {
+                self.unmount_agent(&agent.agent_id).await?;
+                self.state
+                    .pending_discards
+                    .get_mut(root)
+                    .expect("pending discard exists")
+                    .agents[0]
+                    .mount_detached = true;
+                self.persist()?;
+            }
+            remove_tree_checked(&self.data.join("workspaces"), &agent.path)
+                .map_err(|error| format!("cannot remove discarded mount path: {error}"))?;
+            let repository_id = acyclic_fs::WorkspaceId::from_bytes(agent.repository_workspace_id);
+            if let Some(state) = <LocalCoreStateStore as acyclic_fs::GitCompatStore>::load(
+                &self.store,
+                repository_id,
+            )
+            .await
+            .map_err(display)?
+                && !<LocalCoreStateStore as acyclic_fs::GitCompatStore>::compare_and_delete(
+                    &self.store,
+                    repository_id,
+                    state.revision,
+                )
+                .await
+                .map_err(display)?
+            {
+                return Err("Git compatibility state changed while discarding the agent".to_owned());
+            }
+            while let Some(workspace) = self
+                .state
+                .pending_discards
+                .get(root)
+                .and_then(|discard| discard.agents.first())
+                .and_then(|agent| agent.workspaces.first())
+                .cloned()
+            {
+                match self
+                    .fs
+                    .delete_workspace(
+                        &workspace.name,
+                        IdempotencyKey::from_bytes(workspace.delete_key),
                     )
                     .await
-                    .map_err(display)?
-                    {
+                    .map_err(|error| format!("cannot delete discarded workspace: {error}"))?
+                {
+                    WorkspaceDelete::Deleted | WorkspaceDelete::AlreadyDeleted => {}
+                    WorkspaceDelete::Conflict => {
+                        return Err("discarded workspace deletion conflicted".to_owned());
+                    }
+                    WorkspaceDelete::IdempotencyConflict => {
                         return Err(
-                            "Git compatibility state changed while discarding the agent".to_owned(),
+                            "discarded workspace deletion reused an incompatible identity"
+                                .to_owned(),
                         );
                     }
                 }
-                for workspace_id in workspace_ids.into_iter().rev() {
-                    let Ok(record) = WorkspaceGraph::new(self.store.clone())
-                        .resolve(workspace_id)
-                        .await
-                    else {
-                        continue;
-                    };
-                    if let Ok(workspace) = self.fs.open_workspace(&record.workspace_name).await {
-                        let _ = workspace.delete(IdempotencyKey::new()).await;
-                    }
+                #[cfg(test)]
+                if self.fail_after_discard_delete {
+                    self.fail_after_discard_delete = false;
+                    return Err("injected failure after durable workspace deletion".to_owned());
                 }
+                self.state
+                    .pending_discards
+                    .get_mut(root)
+                    .expect("pending discard exists")
+                    .agents[0]
+                    .workspaces
+                    .remove(0);
+                self.persist()?;
             }
-            self.state.turns.retain(|_, value| value != &descendant);
+            self.state.routes.remove(&agent.agent_id);
+            self.state.turns.retain(|_, value| value != &agent.agent_id);
+            self.state
+                .pending_discards
+                .get_mut(root)
+                .expect("pending discard exists")
+                .agents
+                .remove(0);
+            self.persist()?;
         }
-        self.persist()?;
-        Ok(json!({"status":"discarded","agent":agent}))
+        self.state.pending_discards.remove(root);
+        self.persist()
+    }
+
+    async fn unmount_agent(&mut self, agent_id: &str) -> Result<(), String> {
+        #[cfg(test)]
+        if self.fail_next_unmount.remove(agent_id) {
+            return Err("injected mount teardown failure".to_owned());
+        }
+        if let Some(mount) = self.mounts.get(agent_id) {
+            mount.sync().await.map_err(display)?;
+            mount.unmount().await.map_err(display)?;
+            self.mounts.remove(agent_id);
+        }
+        Ok(())
     }
 
     fn caller(&self, input: &Value) -> Result<String, String> {
@@ -1520,14 +2103,16 @@ impl ControlPlane {
             .get("_caller_turn_id")
             .and_then(Value::as_str)
             .ok_or_else(|| "workspace control call lacks a stable caller identity".to_owned())?;
-        if self.state.root_turns.contains(turn) {
-            return Ok(self.state.root_agent_id.clone());
+        self.resolve_turn(turn)
+            .map_err(|_| "workspace control caller is unknown".to_owned())
+    }
+
+    fn require_session(&self, input: &Value) -> Result<(), String> {
+        let session_id = string(input, "session_id")?;
+        if session_id != self.state.root_session_id {
+            return Err("lifecycle event belongs to another root session".to_owned());
         }
-        self.state
-            .turns
-            .get(turn)
-            .cloned()
-            .ok_or_else(|| "workspace control caller is unknown".to_owned())
+        Ok(())
     }
 
     fn resolve_turn(&self, turn_id: &str) -> Result<String, String> {
@@ -1633,7 +2218,68 @@ impl ControlPlane {
         save_state(&self.data, &self.state)
     }
 
-    fn begin_root_publication(&mut self, from: acyclic_fs::GenerationId) -> Result<(), String> {
+    fn prune_expired_ipc_tools(&mut self) -> Result<(), String> {
+        let before = self.state.ipc_tools.len();
+        let now = now_millis();
+        self.state
+            .ipc_tools
+            .retain(|_, tool| tool.expires_at_millis > now);
+        if self.state.ipc_tools.len() == before {
+            Ok(())
+        } else {
+            self.persist()
+        }
+    }
+
+    fn rotate_route_capabilities(&mut self) -> Result<(), String> {
+        let had_ipc_tools = !self.state.ipc_tools.is_empty();
+        self.state.ipc_tools.clear();
+        if self.state.routes.is_empty() {
+            return if had_ipc_tools {
+                self.persist()
+            } else {
+                Ok(())
+            };
+        }
+        for route in self.state.routes.values_mut() {
+            route.route_epoch = route.route_epoch.saturating_add(1).max(1);
+            route.workspace_token = if route.stopped {
+                [0; 32]
+            } else {
+                new_workspace_token()?
+            };
+        }
+        self.persist()
+    }
+
+    async fn shutdown(&mut self) -> Result<(), String> {
+        let mounts = std::mem::take(&mut self.mounts);
+        let mut first_error = None;
+        for (agent_id, mount) in mounts {
+            if let Err(error) = mount.sync().await {
+                first_error.get_or_insert_with(|| {
+                    format!("cannot synchronize agent '{agent_id}' during shutdown: {error}")
+                });
+            }
+            if let Err(error) = mount.unmount().await {
+                first_error.get_or_insert_with(|| {
+                    format!("cannot unmount agent '{agent_id}' during shutdown: {error}")
+                });
+            }
+        }
+        if let Some(error) = first_error {
+            Err(error)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn begin_root_publication(
+        &mut self,
+        from: acyclic_fs::GenerationId,
+        source_agent_id: &str,
+        source_generation: acyclic_fs::GenerationId,
+    ) -> Result<(), String> {
         if self.state.root_publication.is_some() {
             return Err("another root publication is already pending recovery".to_owned());
         }
@@ -1649,6 +2295,8 @@ impl ControlPlane {
                 .join(".acyclic-sdk")
                 .join("materializations")
                 .join(hex::encode(operation_id.into_bytes())),
+            source_agent_id: source_agent_id.to_owned(),
+            source_generation: *source_generation.digest().as_bytes(),
         });
         self.persist()
     }
@@ -1658,9 +2306,6 @@ impl ControlPlane {
         from: acyclic_fs::GenerationId,
         to: &acyclic_fs::Generation<LocalAuthorityBackend, LocalObjectBackend>,
     ) -> Result<(), String> {
-        if self.state.root_publication.is_none() {
-            self.begin_root_publication(from)?;
-        }
         let publication = self
             .state
             .root_publication
@@ -1764,20 +2409,7 @@ impl ControlPlane {
                 .await
                 .map_err(display)?;
         }
-        if let Some(source) = workspace.source() {
-            match source
-                .acknowledge_materialization(IdempotencyKey::from_bytes(operation_id.into_bytes()))
-                .await
-                .map_err(display)?
-            {
-                ReconcileOutcome::Clean(_) => {}
-                ReconcileOutcome::NeedsRescan(_) | ReconcileOutcome::Conflict => {
-                    return Err(
-                        "materialized root could not establish a clean source baseline".to_owned(),
-                    );
-                }
-            }
-        } else {
+        if workspace.source().is_none() {
             self.root = Some(
                 self.fs
                     .attach_directory(
@@ -1789,6 +2421,57 @@ impl ControlPlane {
                     .map_err(display)?,
             );
         }
+        let attached = self
+            .root
+            .clone()
+            .ok_or_else(|| "root source is unavailable after publication".to_owned())?;
+        let attached_head = attached.head().await.map_err(display)?;
+        if attached_head.id() != to_id {
+            let target = attached.generation(to_id).await.map_err(display)?;
+            let mut recovery_key = operation_id.into_bytes();
+            recovery_key[0] ^= 0x80;
+            match attached
+                .restore_generation(
+                    &target,
+                    attached_head.id(),
+                    IdempotencyKey::from_bytes(recovery_key),
+                )
+                .await
+                .map_err(display)?
+            {
+                WorkspaceRestore::Restored(_)
+                | WorkspaceRestore::AlreadyRestored(_)
+                | WorkspaceRestore::Current(_) => {}
+                WorkspaceRestore::Stale(_) => {
+                    return Err(
+                        "root changed while restoring its interrupted publication".to_owned()
+                    );
+                }
+                WorkspaceRestore::Fenced => {
+                    return Err("interrupted root publication restore was fenced".to_owned());
+                }
+                WorkspaceRestore::IdempotencyConflict => {
+                    return Err(
+                        "interrupted root publication restore identity was reused".to_owned()
+                    );
+                }
+            }
+        }
+        let source = attached
+            .source()
+            .ok_or_else(|| "root source handle is unavailable after publication".to_owned())?;
+        match source
+            .acknowledge_materialization(IdempotencyKey::from_bytes(operation_id.into_bytes()))
+            .await
+            .map_err(display)?
+        {
+            ReconcileOutcome::Clean(_) => {}
+            ReconcileOutcome::NeedsRescan(_) | ReconcileOutcome::Conflict => {
+                return Err(
+                    "materialized root could not establish a clean source baseline".to_owned(),
+                );
+            }
+        }
         self.store
             .remove_materialization(operation_id)
             .map_err(display)?;
@@ -1796,33 +2479,13 @@ impl ControlPlane {
             &self.state.root_path.join(".acyclic-sdk/materializations"),
             &publication.operation_directory,
         )?;
+        if !publication.source_agent_id.is_empty()
+            && let Some(route) = self.state.routes.get_mut(&publication.source_agent_id)
+        {
+            route.published_generation = publication.source_generation;
+        }
         self.state.root_publication = None;
         self.persist()
-    }
-}
-
-fn git_apply_patch_path(argv: &[String]) -> Result<&str, String> {
-    let arguments = argv
-        .first()
-        .is_some_and(|command| command == "apply")
-        .then_some(&argv[1..])
-        .ok_or_else(|| "Git apply argument parsing requires the apply subcommand".to_owned())?;
-    let mut positional = Vec::new();
-    let mut options_ended = false;
-    for argument in arguments {
-        if !options_ended && argument == "--" {
-            options_ended = true;
-        } else if !options_ended && argument.starts_with('-') {
-            return Err(format!(
-                "unsupported git apply option '{argument}'; use one standalone patch file"
-            ));
-        } else {
-            positional.push(argument.as_str());
-        }
-    }
-    match positional.as_slice() {
-        [path] => Ok(path),
-        _ => Err("git apply requires exactly one patch file".to_owned()),
     }
 }
 
@@ -1858,41 +2521,69 @@ fn rewrite_tool_input(
     Ok(input)
 }
 
-fn git_argv(input: &Value) -> Result<Option<Vec<String>>, String> {
+fn acyclic_git_argv(input: &Value) -> Result<Option<Vec<String>>, String> {
     let command = input
         .get("cmd")
         .or_else(|| input.get("command"))
         .and_then(Value::as_str)
         .ok_or_else(|| "shell tool input lacks a string command".to_owned())?;
     let argv = split_standalone_command(command)?;
-    let Some(program) = argv.first() else {
+    let is_acyclic = argv.first().is_some_and(|program| {
+        program.eq_ignore_ascii_case("acyclic") || program.eq_ignore_ascii_case("acyclic.exe")
+    });
+    if !is_acyclic || argv.get(1).is_none_or(|command| command != "git") {
         return Ok(None);
+    }
+    if argv.len() == 2 {
+        return Err("acyclic git is missing a Git-style subcommand".to_owned());
+    }
+    Ok(Some(argv[2..].to_vec()))
+}
+
+fn inject_acyclic_workspace_context(
+    input: &mut Value,
+    endpoint: &str,
+    cli_bin: &Path,
+    route: &Route,
+    git_argv: &[String],
+) -> Result<(), String> {
+    if route.workspace_token == [0; 32] || route.stopped {
+        return Err("acyclic workspace capability is revoked".to_owned());
+    }
+    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(route.workspace_token);
+    #[cfg(target_os = "windows")]
+    let scoped = {
+        let executable = cli_bin
+            .join("acyclic.exe")
+            .to_string_lossy()
+            .replace('\'', "''");
+        let arguments = git_argv
+            .iter()
+            .map(|argument| format!("'{}'", argument.replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "$env:ACYCLIC_CONTEXT_VERSION='1';$env:ACYCLIC_CONTROL_ENDPOINT='{}';$env:ACYCLIC_WORKSPACE_TOKEN='{}';& '{executable}' 'git' {arguments}",
+            endpoint.replace('\'', "''"),
+            token.replace('\'', "''")
+        )
     };
-    let is_git = Path::new(program)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            name.eq_ignore_ascii_case("git") || name.eq_ignore_ascii_case("git.exe")
-        });
-    if is_git {
-        if argv.len() == 1 {
-            return Err("Git compatibility command is missing a subcommand".to_owned());
-        }
-        return Ok(Some(argv[1..].to_vec()));
-    }
-    if argv.iter().skip(1).any(|argument| {
-        Path::new(argument)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| {
-                name.eq_ignore_ascii_case("git") || name.eq_ignore_ascii_case("git.exe")
-            })
-    }) {
-        return Err(
-            "Git compatibility commands must be issued as a standalone shell command".to_owned(),
-        );
-    }
-    Ok(None)
+    #[cfg(not(target_os = "windows"))]
+    let scoped = {
+        let quote = |value: &str| format!("'{}'", value.replace('\'', "'\"'\"'"));
+        let executable = quote(&cli_bin.join("acyclic").to_string_lossy());
+        let arguments = git_argv
+            .iter()
+            .map(|argument| quote(argument))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "ACYCLIC_CONTEXT_VERSION='1' ACYCLIC_CONTROL_ENDPOINT='{}' ACYCLIC_WORKSPACE_TOKEN='{}' {executable} 'git' {arguments}",
+            endpoint.replace('\'', "'\"'\"'"),
+            token.replace('\'', "'\"'\"'")
+        )
+    };
+    set_shell_command(input, scoped)
 }
 
 fn split_standalone_command(command: &str) -> Result<Vec<String>, String> {
@@ -1965,21 +2656,6 @@ fn set_shell_command(input: &mut Value, command: String) -> Result<(), String> {
         return Ok(());
     }
     Err("shell tool input lacks a command field".to_owned())
-}
-
-fn render_git_output(output: &acyclic_fs::GitCommandOutput) -> Result<String, String> {
-    let encoded = base64::engine::general_purpose::STANDARD
-        .encode(serde_json::to_vec(output).map_err(display)?);
-    #[cfg(target_os = "windows")]
-    {
-        Ok(format!(
-            "$b='{encoded}';[Console]::Write([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b)))"
-        ))
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Ok(format!("printf '%s' '{encoded}' | base64 --decode"))
-    }
 }
 
 fn pre_tool_update(updated: Value) -> Value {
@@ -2173,9 +2849,7 @@ fn is_pure_remote_tool(tool_name: &str) -> bool {
 }
 
 fn require_process_sandbox(tool_name: &str) -> Result<(), String> {
-    if !(matches!(tool_name, "Bash" | "exec_command")
-        || tool_name.ends_with("__exec_command"))
-    {
+    if !(matches!(tool_name, "Bash" | "exec_command") || tool_name.ends_with("__exec_command")) {
         return Ok(());
     }
     if env::var("ACYCLIC_AGENT_WORKSPACE_PROCESS_SANDBOX").as_deref() == Ok("1") {
@@ -2242,7 +2916,7 @@ fn subagent_context(path: &Path) -> Value {
         "hookSpecificOutput": {
             "hookEventName": "SubagentStart",
             "additionalContext": format!(
-                "Your filesystem is an isolated Acyclic workspace mounted at {}. Tool paths are redirected automatically. Do not access the parent checkout by a hard-coded path.",
+                "Your filesystem is an isolated Acyclic workspace mounted at {}. Tool paths are redirected automatically; do not access the parent checkout by a hard-coded path. For optional local Git-shaped operations use the authenticated workspace CLI, for example: `acyclic git status`, `acyclic git diff --cached`, `acyclic git commit -m \"msg\"`, or `acyclic git switch -c branch`. This is an ergonomic facade over this Acyclic workspace, not system Git; transport and object-database commands are unsupported. Ordinary `git` remains system Git. Your parent can inspect your unpublished changes with agent_changes, publish repeated incremental updates with agent_merge, or recursively discard your workspace and every unpublished descendant with agent_discard. Merge and discard are authorized only for the direct parent, so publish descendants into you before asking your parent to publish you.",
                 path.display()
             )
         }
@@ -2307,11 +2981,32 @@ fn remove_file_if_present(path: &Path) -> Result<(), String> {
 
 fn remove_tree_checked(root: &Path, target: &Path) -> Result<(), String> {
     let root = root.canonicalize().map_err(display)?;
-    let target = target.canonicalize().map_err(display)?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| "discard target has no parent".to_owned())?
+        .canonicalize()
+        .map_err(display)?;
+    if parent != root {
+        return Err("refusing to discard a path outside the plugin workspace root".to_owned());
+    }
+    if !target.exists() {
+        return Ok(());
+    }
+    let target = match target.canonicalize() {
+        Ok(target) => target,
+        #[cfg(target_os = "windows")]
+        Err(error) if error.raw_os_error() == Some(369) => return Ok(()),
+        Err(error) => return Err(display(error)),
+    };
     if target.parent() != Some(root.as_path()) {
         return Err("refusing to discard a path outside the plugin workspace root".to_owned());
     }
-    fs::remove_dir_all(target).map_err(display)
+    match fs::remove_dir_all(target) {
+        Ok(()) => Ok(()),
+        #[cfg(target_os = "windows")]
+        Err(error) if error.raw_os_error() == Some(369) => Ok(()),
+        Err(error) => Err(display(error)),
+    }
 }
 
 fn string(value: &Value, field: &str) -> Result<String, String> {
@@ -2352,6 +3047,41 @@ fn typed_conflict_json(conflict: &acyclic_fs::ConflictView) -> Value {
     })
 }
 
+fn namespace_path_text(path: &acyclic_fs::kernel::NamespacePath) -> Result<String, String> {
+    let mut text = String::new();
+    for component in path.components() {
+        text.push('/');
+        match component.encoding() {
+            acyclic_fs::kernel::NameEncoding::Utf8 => text.push_str(
+                std::str::from_utf8(component.as_bytes())
+                    .map_err(|_| "changed path is not valid UTF-8".to_owned())?,
+            ),
+            acyclic_fs::kernel::NameEncoding::WindowsUtf16Le => {
+                let bytes = component.as_bytes();
+                if !bytes.len().is_multiple_of(2) {
+                    return Err("changed Windows path has invalid UTF-16 bytes".to_owned());
+                }
+                let units = bytes
+                    .chunks_exact(2)
+                    .map(|unit| u16::from_le_bytes([unit[0], unit[1]]));
+                let component = char::decode_utf16(units)
+                    .collect::<Result<String, _>>()
+                    .map_err(|_| "changed Windows path is not valid UTF-16".to_owned())?;
+                text.push_str(&component);
+            }
+            acyclic_fs::kernel::NameEncoding::PosixBytes => {
+                return Err(
+                    "incremental publication cannot represent a non-UTF-8 POSIX path".to_owned(),
+                );
+            }
+        }
+    }
+    if text.is_empty() {
+        text.push('/');
+    }
+    Ok(text)
+}
+
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2360,16 +3090,276 @@ fn now_millis() -> u64 {
         })
 }
 
+fn new_workspace_token() -> Result<[u8; 32], String> {
+    let mut token = [0_u8; 32];
+    getrandom::fill(&mut token)
+        .map_err(|error| format!("operating-system workspace token generation failed: {error}"))?;
+    Ok(token)
+}
+
 fn display(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
 fn public_tools() -> Value {
     json!([
-        {"name":"agent_changes","description":"Inspect one descendant agent workspace without publishing it.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"},"path":{"type":"string"}},"required":["agent"],"additionalProperties":false}},
-        {"name":"agent_merge","description":"Publish one direct child's current workspace into its parent.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"}},"required":["agent"],"additionalProperties":false}},
-        {"name":"agent_discard","description":"Discard one direct child and its unpublished descendant subtree.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"}},"required":["agent"],"additionalProperties":false}}
+        {"name":"agent_changes","description":"Inspect an agent workspace without publishing it. The root may inspect any descendant; a subagent may inspect itself or its descendants. Returns bounded change counts and generation identity; path is an optional presentation hint.","inputSchema":{"type":"object","properties":{"agent":{"type":"string","description":"Agent identifier to inspect."},"path":{"type":"string","description":"Optional path hint for the inspection UI; it does not change authorization or publication."}},"required":["agent"],"additionalProperties":false}},
+        {"name":"agent_merge","description":"Publish the current workspace of one direct child into the caller's workspace. Only that child's direct parent is authorized. The child remains available, so call again to publish later incremental changes. Descendants must first be merged into their own direct parent. Reports applied, no-changes, stale, fenced, or typed-conflict outcomes without bypassing Acyclic filesystem join semantics.","inputSchema":{"type":"object","properties":{"agent":{"type":"string","description":"Direct child agent to publish."}},"required":["agent"],"additionalProperties":false}},
+        {"name":"agent_discard","description":"Permanently discard one direct child's unpublished workspace and recursively discard all of its unpublished descendants. Only the direct parent is authorized; inspect or merge desired work first.","inputSchema":{"type":"object","properties":{"agent":{"type":"string","description":"Direct child agent whose subtree should be discarded."}},"required":["agent"],"additionalProperties":false}}
     ])
+}
+
+const MAXIMUM_CONTROL_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Debug, Deserialize)]
+struct ControlRequest {
+    version: u32,
+    token: String,
+    command: String,
+    argv: Vec<String>,
+}
+
+struct ControlEndpoint {
+    endpoint: String,
+    shutdown: watch::Sender<bool>,
+    task: tokio::task::JoinHandle<Result<(), String>>,
+    #[cfg(unix)]
+    socket_path: PathBuf,
+}
+
+impl ControlEndpoint {
+    async fn shutdown(self) -> Result<(), String> {
+        let _ = self.shutdown.send(true);
+        let result = self.task.await.map_err(display)?;
+        #[cfg(unix)]
+        match fs::remove_file(&self.socket_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(display(error)),
+        }
+        result
+    }
+}
+
+async fn start_control_endpoint(
+    control: Arc<AsyncMutex<ControlPlane>>,
+) -> Result<ControlEndpoint, String> {
+    let opaque_id = hex::encode(OperationId::new().into_bytes());
+    let (shutdown, receiver) = watch::channel(false);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let socket_path = env::temp_dir().join(format!("acyclic-{opaque_id}.sock"));
+        let listener = tokio::net::UnixListener::bind(&socket_path).map_err(display)?;
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).map_err(display)?;
+        let endpoint = format!("unix://{}", socket_path.display());
+        let task = tokio::spawn(serve_unix_control(listener, control, receiver));
+        Ok(ControlEndpoint {
+            endpoint,
+            shutdown,
+            task,
+            socket_path,
+        })
+    }
+
+    #[cfg(windows)]
+    {
+        let opaque_name = format!("acyclic-agent-workspaces-{opaque_id}");
+        let endpoint = format!("npipe://./pipe/{opaque_name}");
+        let pipe_path = format!(r"\\.\pipe\{opaque_name}");
+        let task = tokio::spawn(serve_windows_control(pipe_path, control, receiver));
+        Ok(ControlEndpoint {
+            endpoint,
+            shutdown,
+            task,
+        })
+    }
+}
+
+#[cfg(unix)]
+async fn serve_unix_control(
+    listener: tokio::net::UnixListener,
+    control: Arc<AsyncMutex<ControlPlane>>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), String> {
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _) = accepted.map_err(display)?;
+                let control = Arc::clone(&control);
+                tokio::spawn(async move {
+                    let _ = handle_control_connection(stream, control).await;
+                });
+            }
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn serve_windows_control(
+    pipe_path: String,
+    control: Arc<AsyncMutex<ControlPlane>>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), String> {
+    let mut first = true;
+    loop {
+        let server = tokio::net::windows::named_pipe::ServerOptions::new()
+            .first_pipe_instance(first)
+            .reject_remote_clients(true)
+            .create(&pipe_path)
+            .map_err(display)?;
+        first = false;
+        tokio::select! {
+            connected = server.connect() => {
+                connected.map_err(display)?;
+                let control = Arc::clone(&control);
+                tokio::spawn(async move {
+                    let _ = handle_control_connection(server, control).await;
+                });
+            }
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+async fn handle_control_connection<S>(
+    mut stream: S,
+    control: Arc<AsyncMutex<ControlPlane>>,
+) -> Result<(), String>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut request = Vec::new();
+    {
+        let reader = BufReader::new(&mut stream);
+        let mut bounded = reader.take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64);
+        bounded
+            .read_until(b'\n', &mut request)
+            .await
+            .map_err(display)?;
+    }
+    let response = if request.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
+        control_response(Err(
+            "Acyclic control request exceeds the 4 MiB bound".to_owned()
+        ))
+    } else if request.last() != Some(&b'\n') {
+        control_response(Err(
+            "Acyclic control request must end with a newline".to_owned()
+        ))
+    } else {
+        request.pop();
+        match serde_json::from_slice::<ControlRequest>(&request) {
+            Ok(request) => control_response(dispatch_control_request(&control, request).await),
+            Err(error) => {
+                control_response(Err(format!("invalid Acyclic control request: {error}")))
+            }
+        }
+    };
+    let encoded = encode_control_response(&response)?;
+    stream.write_all(&encoded).await.map_err(display)?;
+    stream.write_all(b"\n").await.map_err(display)?;
+    stream.flush().await.map_err(display)
+}
+
+async fn dispatch_control_request(
+    control: &Arc<AsyncMutex<ControlPlane>>,
+    request: ControlRequest,
+) -> Result<Value, String> {
+    if request.version != 1 || request.command != "git" || request.argv.is_empty() {
+        return Err("unsupported Acyclic control request".to_owned());
+    }
+    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(request.token.as_bytes())
+        .map_err(|_| "invalid Acyclic workspace capability".to_owned())?;
+    let token: [u8; 32] = token
+        .try_into()
+        .map_err(|_| "invalid Acyclic workspace capability".to_owned())?;
+    let mut control = control.lock().await;
+    control.prune_expired_ipc_tools()?;
+    let route = control
+        .state
+        .routes
+        .values()
+        .find(|route| !route.stopped && constant_time_equal(&route.workspace_token, &token))
+        .cloned()
+        .ok_or_else(|| "invalid or revoked Acyclic workspace capability".to_owned())?;
+    if !control
+        .state
+        .ipc_tools
+        .values()
+        .any(|tool| tool.agent_id == route.agent_id)
+    {
+        return Err("Acyclic workspace capability is not active for a hooked command".to_owned());
+    }
+    control
+        .git_tool(&route.agent_id, &route, request.argv)
+        .await
+}
+
+fn constant_time_equal(left: &[u8; 32], right: &[u8; 32]) -> bool {
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
+}
+
+fn control_response(result: Result<Value, String>) -> Value {
+    match result {
+        Ok(result) => json!({"version":1,"ok":true,"result":result}),
+        Err(error) => json!({"version":1,"ok":false,"error":error}),
+    }
+}
+
+struct BoundedJsonBuffer {
+    bytes: Vec<u8>,
+}
+
+impl BoundedJsonBuffer {
+    fn new() -> Self {
+        Self {
+            bytes: Vec::with_capacity(8 * 1024),
+        }
+    }
+}
+
+impl Write for BoundedJsonBuffer {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if self.bytes.len().saturating_add(buffer.len()) >= MAXIMUM_CONTROL_MESSAGE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "Acyclic control response exceeds the 4 MiB bound",
+            ));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn encode_control_response(response: &Value) -> Result<Vec<u8>, String> {
+    let mut bounded = BoundedJsonBuffer::new();
+    if serde_json::to_writer(&mut bounded, response).is_ok() {
+        return Ok(bounded.bytes);
+    }
+    serde_json::to_vec(&control_response(Err(
+        "Acyclic control response exceeds the 4 MiB bound".to_owned(),
+    )))
+    .map_err(display)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -2396,55 +3386,87 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .or_else(|| env::var_os("CLAUDE_PLUGIN_DATA"))
         .map(PathBuf::from)
         .unwrap_or_else(|| env::temp_dir().join("acyclic-agent-workspaces"));
-    let mut control = ControlPlane::open(data).await.map_err(io::Error::other)?;
     let stdin = io::stdin();
-    let mut stdout = io::stdout().lock();
-    for line in stdin.lock().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let request: Value = serde_json::from_str(&line)?;
-        let Some(id) = request.get("id").cloned() else {
-            continue;
-        };
-        let method = request.get("method").and_then(Value::as_str).unwrap_or("");
-        let response = match method {
-            "initialize" => {
-                json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"acyclic-agent-workspaces","version":"0.1.0"}}})
+    let stdout = io::stdout();
+    run_rpc(data, stdin.lock(), stdout.lock())
+        .await
+        .map_err(io::Error::other)?;
+    Ok(())
+}
+
+async fn run_rpc(
+    data: PathBuf,
+    reader: impl BufRead,
+    mut writer: impl Write,
+) -> Result<(), String> {
+    let control = Arc::new(AsyncMutex::new(ControlPlane::open(data).await?));
+    let endpoint = start_control_endpoint(Arc::clone(&control)).await?;
+    control.lock().await.control_endpoint = Some(endpoint.endpoint.clone());
+    let service = async {
+        for line in reader.lines() {
+            let line = line.map_err(display)?;
+            if line.trim().is_empty() {
+                continue;
             }
-            "ping" => json!({"jsonrpc":"2.0","id":id,"result":{}}),
-            "tools/list" => json!({"jsonrpc":"2.0","id":id,"result":{"tools":public_tools()}}),
-            "tools/call" => {
-                let params = request.get("params").cloned().unwrap_or(Value::Null);
-                let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-                let arguments = params
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
-                match control.call(name, arguments).await {
-                    Ok(result) => {
-                        json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":serde_json::to_string(&result)?}]}})
-                    }
-                    Err(error) => {
-                        json!({"jsonrpc":"2.0","id":id,"result":{"isError":true,"content":[{"type":"text","text":error}]}})
-                    }
+            let request: Value = serde_json::from_str(&line).map_err(display)?;
+            let mut locked = control.lock().await;
+            let Some(response) = rpc_response(&mut locked, &request).await? else {
+                continue;
+            };
+            drop(locked);
+            serde_json::to_writer(&mut writer, &response).map_err(display)?;
+            writer.write_all(b"\n").map_err(display)?;
+            writer.flush().map_err(display)?;
+        }
+        Ok(())
+    }
+    .await;
+    let endpoint_shutdown = endpoint.shutdown().await;
+    let control_shutdown = control.lock().await.shutdown().await;
+    service.and(endpoint_shutdown).and(control_shutdown)
+}
+
+async fn rpc_response(
+    control: &mut ControlPlane,
+    request: &Value,
+) -> Result<Option<Value>, String> {
+    let Some(id) = request.get("id").cloned() else {
+        return Ok(None);
+    };
+    let method = request.get("method").and_then(Value::as_str).unwrap_or("");
+    let response = match method {
+        "initialize" => {
+            json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"acyclic-agent-workspaces","version":"0.1.0"}}})
+        }
+        "ping" => json!({"jsonrpc":"2.0","id":id,"result":{}}),
+        "tools/list" => json!({"jsonrpc":"2.0","id":id,"result":{"tools":public_tools()}}),
+        "tools/call" => {
+            let params = request.get("params").cloned().unwrap_or(Value::Null);
+            let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+            let arguments = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            match control.call(name, arguments).await {
+                Ok(result) => {
+                    json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":serde_json::to_string(&result).map_err(display)?}]}})
+                }
+                Err(error) => {
+                    json!({"jsonrpc":"2.0","id":id,"result":{"isError":true,"content":[{"type":"text","text":error}]}})
                 }
             }
-            _ => {
-                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"method not found"}})
-            }
-        };
-        serde_json::to_writer(&mut stdout, &response)?;
-        stdout.write_all(b"\n")?;
-        stdout.flush()?;
-    }
-    Ok(())
+        }
+        _ => {
+            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"method not found"}})
+        }
+    };
+    Ok(Some(response))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_fs::GitCommand;
 
     #[test]
     fn recursive_publication_is_direct_parent_only() {
@@ -2464,22 +3486,528 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_branch_publishes_through_repository_and_discards() {
+    fn lifecycle_edges_recover_and_fail_closed() {
         std::thread::Builder::new()
-            .name("plugin-git-branch-e2e".to_owned())
+            .name("plugin-lifecycle-e2e".to_owned())
             .stack_size(32 * 1024 * 1024)
             .spawn(|| {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .expect("test runtime")
-                    .block_on(compatibility_branch_case());
+                    .block_on(lifecycle_hardening_case());
             })
             .expect("test thread")
             .join()
-            .expect("plugin Git branch e2e thread");
+            .expect("plugin lifecycle e2e thread");
     }
 
+    #[test]
+    fn json_rpc_host_simulates_lifecycle_and_graceful_shutdown() {
+        std::thread::Builder::new()
+            .name("plugin-rpc-host".to_owned())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime")
+                    .block_on(json_rpc_host_case());
+            })
+            .expect("test thread")
+            .join()
+            .expect("plugin RPC host thread");
+    }
+
+    #[test]
+    fn authenticated_control_protocol_dispatches_git() {
+        std::thread::Builder::new()
+            .name("plugin-control-protocol".to_owned())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .expect("test runtime")
+                    .block_on(authenticated_control_protocol_case());
+            })
+            .expect("test thread")
+            .join()
+            .expect("plugin control protocol thread");
+    }
+
+    async fn json_rpc_host_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        fs::create_dir_all(&root).expect("root directory");
+        let requests = [
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"_hook_session_start","arguments":{"session_id":"session","cwd":root.display().to_string()}}}),
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"_hook_user_prompt","arguments":{"session_id":"session","turn_id":"root-turn"}}}),
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"_hook_pre_tool","arguments":{"session_id":"session","turn_id":"root-turn","tool_use_id":"spawn-child","tool_name":"spawn_agent","tool_input":{}}}}),
+            json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"_hook_subagent_start","arguments":{"session_id":"session","turn_id":"child-turn","agent_id":"child","agent_type":"explorer"}}}),
+        ];
+        let input = requests
+            .iter()
+            .map(|request| serde_json::to_string(request).expect("serialize request"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut output = Vec::new();
+        run_rpc(
+            temporary.path().join("plugin-data"),
+            io::Cursor::new(input.into_bytes()),
+            &mut output,
+        )
+        .await
+        .expect("run deterministic RPC host");
+        let responses = String::from_utf8(output)
+            .expect("UTF-8 responses")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("JSON-RPC response"))
+            .collect::<Vec<_>>();
+        assert_eq!(responses.len(), requests.len());
+        assert!(
+            responses
+                .iter()
+                .all(|response| response.get("error").is_none())
+        );
+        let descriptions = responses[1]["result"]["tools"]
+            .as_array()
+            .expect("public tools")
+            .iter()
+            .filter_map(|tool| tool["description"].as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(descriptions.contains("direct parent"));
+        assert!(descriptions.contains("incremental"));
+
+        let mut reopened = ControlPlane::open(temporary.path().join("plugin-data"))
+            .await
+            .expect("reopen after graceful RPC EOF");
+        assert!(reopened.mounts.contains_key("child"));
+        reopened.shutdown().await.expect("second graceful shutdown");
+    }
+
+    async fn lifecycle_hardening_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        let root = temporary.path().join("root");
+        fs::create_dir_all(&root).expect("root directory");
+        let mut control = ControlPlane::open(data.clone())
+            .await
+            .expect("control plane");
+        control
+            .session_start(json!({"session_id":"session","cwd":root.display().to_string()}))
+            .await
+            .expect("root session");
+        control
+            .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
+            .expect("root turn");
+        assert!(control
+            .pre_tool(json!({"session_id":"other","turn_id":"root-turn","tool_use_id":"foreign","tool_name":"Read","tool_input":{}}))
+            .await
+            .is_err());
+        assert!(control
+            .pre_tool(json!({"session_id":"session","turn_id":"unknown-turn","tool_use_id":"unknown","tool_name":"Read","tool_input":{}}))
+            .await
+            .is_err());
+
+        control
+            .pre_tool(json!({"session_id":"session","turn_id":"root-turn","tool_use_id":"spawn-expiring","tool_name":"spawn_agent","tool_input":{}}))
+            .await
+            .expect("first serialized spawn");
+        assert!(control
+            .pre_tool(json!({"session_id":"session","turn_id":"root-turn","tool_use_id":"spawn-overlap","tool_name":"spawn_agent","tool_input":{}}))
+            .await
+            .is_err());
+        control
+            .state
+            .pending
+            .front_mut()
+            .expect("pending spawn")
+            .expires_at_millis = 0;
+        assert!(control
+            .subagent_start(json!({"session_id":"session","turn_id":"expired-turn","agent_id":"expired","agent_type":"explorer"}))
+            .await
+            .is_err());
+        control
+            .pre_tool(json!({"session_id":"session","turn_id":"root-turn","tool_use_id":"spawn-child","tool_name":"spawn_agent","tool_input":{}}))
+            .await
+            .expect("spawn after expiry");
+        control
+            .subagent_start(json!({"session_id":"session","turn_id":"child-turn","agent_id":"child","agent_type":"explorer"}))
+            .await
+            .expect("child start");
+        assert!(control
+            .subagent_start(json!({"session_id":"session","turn_id":"root-turn","agent_id":"collision","agent_type":"explorer"}))
+            .await
+            .is_err());
+        assert!(
+            control
+                .user_prompt(json!({"session_id":"session","turn_id":"child-turn"}))
+                .is_err()
+        );
+        assert!(control
+            .subagent_start(json!({"session_id":"other","turn_id":"child-turn","agent_id":"child","agent_type":"explorer"}))
+            .await
+            .is_err());
+        assert!(control
+            .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"unknown-tool","tool_name":"mystery_mutator","tool_input":{}}))
+            .await
+            .is_err());
+        control.control_endpoint = Some("npipe://./pipe/test-control".to_owned());
+        control.cli_bin = Some(temporary.path().join("plugin/bin"));
+        let acyclic_git = control
+            .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"acyclic-status","tool_name":"exec_command","tool_input":{"cmd":"acyclic git status","workdir":root.display().to_string()}}))
+            .await
+            .expect("scope acyclic git command");
+        let scoped = acyclic_git["hookSpecificOutput"]["updatedInput"]["cmd"]
+            .as_str()
+            .expect("scoped command");
+        assert!(scoped.contains("ACYCLIC_CONTEXT_VERSION"));
+        assert!(scoped.contains("ACYCLIC_CONTROL_ENDPOINT"));
+        assert!(scoped.contains("ACYCLIC_WORKSPACE_TOKEN"));
+        assert!(
+            scoped.contains(
+                &control
+                    .cli_bin
+                    .as_ref()
+                    .expect("CLI bin")
+                    .display()
+                    .to_string()
+            )
+        );
+        control
+            .post_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"acyclic-status","tool_name":"exec_command"}))
+            .await
+            .expect("close acyclic git barrier");
+        assert!(control
+            .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"system-status","tool_name":"exec_command","tool_input":{"cmd":"git status","workdir":root.display().to_string()}}))
+            .await
+            .is_err());
+
+        let child_path = control.state.routes["child"].path.clone();
+        for tool_use_id in ["read-one", "read-two"] {
+            control
+                .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":tool_use_id,"tool_name":"Read","tool_input":{"path":child_path.join("missing.txt").display().to_string()}}))
+                .await
+                .expect("overlapping pre-tool hook");
+        }
+        assert!(control
+            .post_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"read-one","tool_name":"Write"}))
+            .await
+            .is_err());
+        control
+            .post_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"read-two","tool_name":"Read"}))
+            .await
+            .expect("close second overlapping tool");
+        control
+            .post_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"read-one","tool_name":"Read"}))
+            .await
+            .expect("close first overlapping tool");
+        assert!(control
+            .post_tool(json!({"session_id":"session","turn_id":"unknown-turn","tool_use_id":"unknown-post","tool_name":"Read"}))
+            .await
+            .is_err());
+
+        let child = control
+            .workspace(&control.state.routes["child"])
+            .await
+            .expect("child workspace");
+        let mut transaction = child
+            .begin_transaction(IdempotencyKey::new())
+            .await
+            .expect("first child transaction");
+        transaction
+            .write_text("/first.txt", "first")
+            .await
+            .expect("first file");
+        transaction.commit().await.expect("commit first file");
+        control.mounts["child"]
+            .advance_to_head()
+            .await
+            .expect("advance child mount");
+
+        let target = control.root.clone().expect("root workspace");
+        WorkspaceGraph::new(control.store.clone())
+            .authorize_join(child.id(), target.id())
+            .await
+            .expect("direct child lineage");
+        let plan = child.join_into(&target).plan().await.expect("join plan");
+        let target_head = plan.target_head();
+        control
+            .begin_root_publication(target_head, "child", plan.source_head())
+            .expect("publication intent");
+        let publication_key = IdempotencyKey::from_bytes(
+            control
+                .state
+                .root_publication
+                .as_ref()
+                .expect("publication")
+                .operation_id,
+        );
+        assert!(matches!(
+            plan.apply(ApplyOptions {
+                if_target: target_head,
+                idempotency_key: publication_key
+            })
+            .await
+            .expect("interrupted join apply"),
+            JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_)
+        ));
+        let pre_restart_token = control.state.routes["child"].workspace_token;
+        let persisted =
+            fs::read_to_string(data.join("adapter-state.json")).expect("persisted adapter state");
+        assert!(!persisted.contains("workspace_token"));
+        drop(control);
+
+        let mut control = ControlPlane::open(data.clone())
+            .await
+            .expect("recover interrupted root publication");
+        assert_ne!(
+            control.state.routes["child"].workspace_token,
+            pre_restart_token
+        );
+        assert_eq!(
+            fs::read(root.join("first.txt")).expect("published first file"),
+            b"first"
+        );
+        assert!(control.state.root_publication.is_none());
+        assert!(control.mounts.contains_key("child"));
+
+        let route = &control.state.routes["child"];
+        let child = control.workspace(route).await.expect("incremental child");
+        let mut transaction = child
+            .begin_transaction(IdempotencyKey::new())
+            .await
+            .expect("incremental transaction");
+        transaction
+            .write_text("/second.txt", "second")
+            .await
+            .expect("incremental file");
+        transaction.commit().await.expect("incremental commit");
+        control.mounts["child"]
+            .advance_to_head()
+            .await
+            .expect("advance incremental mount");
+        assert_ne!(
+            *child
+                .head()
+                .await
+                .expect("incremental child head")
+                .id()
+                .digest()
+                .as_bytes(),
+            route.published_generation
+        );
+        let incremental = control
+            .agent_merge(json!({"agent":"child","_caller_turn_id":"root-turn"}))
+            .await
+            .expect("incremental merge");
+        assert!(
+            matches!(
+                incremental["status"].as_str(),
+                Some("applied" | "already-applied")
+            ),
+            "unexpected incremental merge outcome: {incremental}"
+        );
+        assert_eq!(
+            fs::read(root.join("second.txt")).expect("published second file"),
+            b"second"
+        );
+
+        control.fail_next_unmount.insert("child".to_owned());
+        assert!(
+            control
+                .subagent_stop(
+                    json!({"session_id":"session","turn_id":"child-turn","agent_id":"child"})
+                )
+                .await
+                .is_err()
+        );
+        assert!(control.mounts.contains_key("child"));
+        assert!(!control.state.routes["child"].stopped);
+        drop(control);
+        let mut control = ControlPlane::open(data.clone())
+            .await
+            .expect("reopen after failed stop teardown");
+        assert!(control.mounts.contains_key("child"));
+        assert!(!control.state.routes["child"].stopped);
+
+        control
+            .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"active-read","tool_name":"Read","tool_input":{"path":child_path.join("first.txt").display().to_string()}}))
+            .await
+            .expect("active tool before stop");
+        assert!(
+            control
+                .subagent_stop(
+                    json!({"session_id":"session","turn_id":"child-turn","agent_id":"child"})
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            control
+                .agent_discard(json!({"agent":"child","_caller_turn_id":"root-turn"}))
+                .await
+                .is_err()
+        );
+        control
+            .state
+            .leases
+            .get_mut("active-read")
+            .expect("active adapter lease")
+            .expires_at_millis = 0;
+        control.persist().expect("persist expired adapter lease");
+        control
+            .recover_expired_adapter_leases()
+            .await
+            .expect("recover expired adapter lease");
+        assert!(control.state.leases.is_empty());
+        control
+            .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"pending-descendant","tool_name":"spawn_agent","tool_input":{}}))
+            .await
+            .expect("pending descendant before discard");
+        control
+            .subagent_stop(
+                json!({"session_id":"session","turn_id":"child-turn","agent_id":"child"}),
+            )
+            .await
+            .expect("seal child");
+        assert!(control.state.routes["child"].stopped);
+        assert!(!control.mounts.contains_key("child"));
+        drop(control);
+
+        let mut control = ControlPlane::open(data.clone())
+            .await
+            .expect("reopen stopped child");
+        assert!(!control.mounts.contains_key("child"));
+        assert!(control
+            .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"after-stop","tool_name":"Read","tool_input":{"path":child_path.join("first.txt").display().to_string()}}))
+            .await
+            .is_err());
+        assert_eq!(control.state.pending.len(), 1);
+        control.fail_after_discard_delete = true;
+        assert!(
+            control
+                .agent_discard(json!({"agent":"child","_caller_turn_id":"root-turn"}))
+                .await
+                .is_err()
+        );
+        assert!(control.state.pending_discards.contains_key("child"));
+        drop(control);
+        let mut control = ControlPlane::open(data)
+            .await
+            .expect("recover interrupted durable discard");
+        assert!(control.state.pending.is_empty());
+        assert!(control.state.pending_discards.is_empty());
+        assert!(!control.state.routes.contains_key("child"));
+        control.shutdown().await.expect("graceful shutdown");
+    }
+
+    async fn authenticated_control_protocol_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        fs::create_dir(&root).expect("root directory");
+        let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
+            .await
+            .expect("control plane");
+        control
+            .session_start(json!({"session_id":"session","cwd":root.display().to_string()}))
+            .await
+            .expect("root session");
+        control
+            .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
+            .expect("root turn");
+        control
+            .pre_tool(json!({"session_id":"session","turn_id":"root-turn","tool_use_id":"spawn","tool_name":"spawn_agent","tool_input":{}}))
+            .await
+            .expect("spawn handshake");
+        control
+            .subagent_start(json!({"session_id":"session","turn_id":"child-turn","agent_id":"child","agent_type":"explorer"}))
+            .await
+            .expect("child start");
+        control.control_endpoint = Some("npipe://./pipe/test-control".to_owned());
+        control.cli_bin = Some(temporary.path().join("plugin/bin"));
+        control
+            .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"git-switch","tool_name":"exec_command","tool_input":{"cmd":"acyclic git switch -c feature","workdir":root.display().to_string()}}))
+            .await
+            .expect("open authenticated command");
+        let token = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(control.state.routes["child"].workspace_token);
+        let shared = Arc::new(AsyncMutex::new(control));
+        for argv in [
+            vec!["checkout".to_owned(), "feature".to_owned()],
+            vec!["apply".to_owned(), "change.patch".to_owned()],
+            vec!["status".to_owned(), "&&".to_owned(), "push".to_owned()],
+        ] {
+            let rejected = dispatch_control_request(
+                &shared,
+                ControlRequest {
+                    version: 1,
+                    token: token.clone(),
+                    command: "git".to_owned(),
+                    argv,
+                },
+            )
+            .await;
+            assert!(rejected.is_err(), "strict Git argv must fail closed");
+        }
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        let handler = tokio::spawn(handle_control_connection(server, Arc::clone(&shared)));
+        let request = serde_json::to_vec(&json!({
+            "version":1,"token":token,"command":"git","argv":["switch","-c","feature"]
+        }))
+        .expect("control request");
+        client.write_all(&request).await.expect("write request");
+        client.write_all(b"\n").await.expect("write newline");
+        client.flush().await.expect("flush request");
+        let mut response = String::new();
+        BufReader::new(&mut client)
+            .read_line(&mut response)
+            .await
+            .expect("read response");
+        let response: Value = serde_json::from_str(&response).expect("response JSON");
+        assert_eq!(response["version"], 1);
+        assert_eq!(response["ok"], true);
+        assert!(response["result"].is_object());
+        handler
+            .await
+            .expect("handler task")
+            .expect("handler result");
+
+        let mut control = shared.lock().await;
+        control
+            .agent_changes(json!({"agent":"child","_caller_turn_id":"root-turn"}))
+            .await
+            .expect("inspect selected compatibility branch");
+        control
+            .post_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"git-switch","tool_name":"exec_command"}))
+            .await
+            .expect("close authenticated command");
+        control
+            .subagent_stop(
+                json!({"session_id":"session","turn_id":"child-turn","agent_id":"child"}),
+            )
+            .await
+            .expect("stop child");
+        let stale = ControlRequest {
+            version: 1,
+            token,
+            command: "git".to_owned(),
+            argv: vec!["status".to_owned()],
+        };
+        drop(control);
+        assert!(dispatch_control_request(&shared, stale).await.is_err());
+        shared.lock().await.shutdown().await.expect("shutdown");
+    }
+
+    #[allow(
+        dead_code,
+        reason = "retained for the authenticated acyclic-git IPC dispatcher"
+    )]
     async fn compatibility_branch_case() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let root = temporary.path().join("root");
@@ -2496,6 +4024,7 @@ mod tests {
             .expect("root turn");
         control
             .pre_tool(json!({
+                "session_id":"session",
                 "turn_id":"root-turn","tool_use_id":"spawn-child",
                 "tool_name":"spawn_agent","tool_input":{}
             }))
@@ -2511,6 +4040,7 @@ mod tests {
         assert!(
             control
                 .pre_tool(json!({
+                    "session_id":"session",
                     "turn_id":"child-turn","tool_use_id":"git-apply-missing",
                     "tool_name":"exec_command",
                     "tool_input":{"cmd":"git apply missing.patch","workdir":root.display().to_string()}
@@ -2533,6 +4063,7 @@ mod tests {
         ));
         control
             .pre_tool(json!({
+                "session_id":"session",
                 "turn_id":"child-turn","tool_use_id":"git-switch",
                 "tool_name":"exec_command",
                 "tool_input":{"cmd":"git switch -c feature","workdir":root.display().to_string()}
@@ -2540,7 +4071,7 @@ mod tests {
             .await
             .expect("Git branch switch");
         control
-            .post_tool(json!({"tool_use_id":"git-switch"}))
+            .post_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"git-switch","tool_name":"exec_command"}))
             .await
             .expect("Git switch post hook");
         let route = control.state.routes["child"].clone();
@@ -2574,8 +4105,14 @@ mod tests {
             .agent_merge(json!({"agent":"child","_caller_turn_id":"root-turn"}))
             .await
             .expect("publish compatibility branch");
-        assert!(matches!(merged["status"].as_str(), Some("applied" | "already-applied")));
-        assert_eq!(fs::read(root.join("branch.txt")).expect("root branch file"), b"branch");
+        assert!(matches!(
+            merged["status"].as_str(),
+            Some("applied" | "already-applied")
+        ));
+        assert_eq!(
+            fs::read(root.join("branch.txt")).expect("root branch file"),
+            b"branch"
+        );
         let repository_id = acyclic_fs::WorkspaceId::from_bytes(route.repository_workspace_id);
         let repository = GitCompatRepository::new(repository_id, control.store.clone());
         assert!(matches!(
@@ -2603,21 +4140,28 @@ mod tests {
                 .expect("pending transition")
                 .is_some()
         );
-        assert!(control
-            .pre_tool(json!({
-                "turn_id":"child-turn","tool_use_id":"recover-git-switch",
-                "tool_name":"exec_command",
-                "tool_input":{"cmd":"git status","workdir":root.display().to_string()}
-            }))
-            .await
-            .is_err());
+        assert!(
+            control
+                .pre_tool(json!({
+                    "session_id":"session",
+                    "turn_id":"child-turn","tool_use_id":"recover-git-switch",
+                    "tool_name":"exec_command",
+                    "tool_input":{"cmd":"git status","workdir":root.display().to_string()}
+                }))
+                .await
+                .is_err()
+        );
         drop(control);
         let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
             .await
             .expect("reopen after leased Git recovery");
-        assert_eq!(control.state.routes["child"].workspace_id, repository_id.into_bytes());
+        assert_eq!(
+            control.state.routes["child"].workspace_id,
+            repository_id.into_bytes()
+        );
         control
             .pre_tool(json!({
+                "session_id":"session",
                 "turn_id":"child-turn","tool_use_id":"retry-git-status",
                 "tool_name":"exec_command",
                 "tool_input":{"cmd":"git status","workdir":root.display().to_string()}
@@ -2652,6 +4196,7 @@ mod tests {
             .expect("reopened root turn");
         control
             .pre_tool(json!({
+                "session_id":"session",
                 "turn_id":"root-turn-reopened","tool_use_id":"spawn-reused-child",
                 "tool_name":"spawn_agent","tool_input":{}
             }))
@@ -2665,14 +4210,18 @@ mod tests {
             .await
             .expect("reuse discarded child identity");
         let reused = &control.state.routes["child"];
-        assert_ne!(reused.repository_workspace_id, route.repository_workspace_id);
+        assert_ne!(
+            reused.repository_workspace_id,
+            route.repository_workspace_id
+        );
     }
 
     async fn recursive_publication_case() {
         let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
         let root = temporary.path().join("root");
         fs::create_dir_all(&root).expect("root directory");
-        let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
+        let mut control = ControlPlane::open(data.clone())
             .await
             .expect("control plane");
         control
@@ -2693,6 +4242,7 @@ mod tests {
         );
         control
             .pre_tool(json!({
+                "session_id":"session",
                 "turn_id":"root-turn","tool_use_id":"spawn-child",
                 "tool_name":"spawn_agent","tool_input":{}
             }))
@@ -2706,46 +4256,17 @@ mod tests {
             .await
             .expect("child start");
         let child_path = control.state.routes["child"].path.clone();
-        let git_commit = control
+        assert!(control
             .pre_tool(json!({
+                "session_id":"session",
                 "turn_id":"child-turn","tool_use_id":"git-commit",
                 "tool_name":"exec_command",
                 "tool_input":{"cmd":"git commit -m initial","workdir":root.display().to_string()}
             }))
             .await
-            .expect("transparent Git commit");
-        assert!(
-            git_commit["hookSpecificOutput"]["updatedInput"]["cmd"]
-                .as_str()
-                .is_some_and(
-                    |command| command.contains("base64") || command.contains("FromBase64String")
-                )
-        );
-        control
-            .post_tool(json!({"tool_use_id":"git-commit"}))
-            .await
-            .expect("Git echo post hook");
-        let route = &control.state.routes["child"];
-        let repository_id = acyclic_fs::WorkspaceId::from_bytes(route.repository_workspace_id);
-        let status = GitCompatRepository::new(repository_id, control.store.clone())
-            .execute(
-                acyclic_fs::GitCommand::Status,
-                control
-                    .workspace(route)
-                    .await
-                    .expect("child workspace")
-                    .head()
-                    .await
-                    .expect("child head")
-                    .id(),
-            )
-            .await
-            .expect("Git status");
-        assert!(matches!(
-            status,
-            acyclic_fs::GitCommandOutput::Status(acyclic_fs::GitStatus { dirty: false, .. })
-        ));
+            .is_err());
         let read_hook = json!({
+            "session_id":"session",
             "turn_id":"child-turn","tool_use_id":"read-retry",
             "tool_name":"Read","tool_input":{"path":child_path.join("base.txt").display().to_string()}
         });
@@ -2771,11 +4292,12 @@ mod tests {
             acyclic_fs::OperationWindowPhase::Active { ref leases, .. } if leases.len() == 1
         ));
         control
-            .post_tool(json!({"tool_use_id":"read-retry"}))
+            .post_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"read-retry","tool_name":"Read"}))
             .await
             .expect("close read hook");
         control
             .pre_tool(json!({
+                "session_id":"session",
                 "turn_id":"child-turn","tool_use_id":"spawn-grandchild",
                 "tool_name":"spawn_agent","tool_input":{}
             }))
@@ -2826,6 +4348,39 @@ mod tests {
             fs::read(root.join("nested.txt")).expect("nested root file"),
             b"nested"
         );
+
+        control.fail_next_unmount.insert("grandchild".to_owned());
+        assert!(
+            control
+                .agent_discard(json!({"agent":"child","_caller_turn_id":"root-turn"}))
+                .await
+                .is_err()
+        );
+        assert!(control.mounts.contains_key("child"));
+        assert!(control.mounts.contains_key("grandchild"));
+        assert!(control.state.pending_discards.contains_key("child"));
+        control.fail_after_discard_delete = true;
+        assert!(
+            control
+                .agent_discard(json!({"agent":"child","_caller_turn_id":"root-turn"}))
+                .await
+                .is_err()
+        );
+        assert!(!control.mounts.contains_key("grandchild"));
+        assert!(control.state.pending_discards.contains_key("child"));
+        drop(control);
+
+        let mut control = ControlPlane::open(data)
+            .await
+            .expect("recover recursive discard after durable delete");
+        assert!(control.state.pending_discards.is_empty());
+        assert!(control.state.routes.is_empty());
+        assert!(control.state.turns.is_empty());
+        assert!(control.mounts.is_empty());
+        control
+            .shutdown()
+            .await
+            .expect("shutdown after discard recovery");
     }
 
     #[test]
@@ -2920,37 +4475,42 @@ mod tests {
     }
 
     #[test]
-    fn git_commands_must_be_standalone_and_are_shell_split() {
+    fn acyclic_git_commands_must_be_standalone_and_are_shell_split() {
         assert_eq!(
             split_standalone_command("git commit -m 'two words'").expect("split"),
             vec!["git", "commit", "-m", "two words"]
         );
         assert!(split_standalone_command("git status && echo escaped").is_err());
-        assert!(git_argv(&json!({"cmd":"env git status"})).is_err());
         assert_eq!(
-            git_argv(&json!({"cmd":"git status --short"})).expect("Git argv"),
+            acyclic_git_argv(&json!({"cmd":"acyclic git status --short"}))
+                .expect("Acyclic Git argv"),
             Some(vec!["status".to_owned(), "--short".to_owned()])
         );
         assert_eq!(
-            git_apply_patch_path(&["apply".to_owned(), "--".to_owned(), "fix.patch".to_owned()])
-                .expect("patch path"),
-            "fix.patch"
+            acyclic_git_argv(&json!({"cmd":"./acyclic git status"}))
+                .expect("path-qualified executable"),
+            None
         );
+    }
+
+    #[test]
+    fn capabilities_use_full_width_randomness_and_responses_are_bounded() {
+        let first = new_workspace_token().expect("first OS-random capability");
+        let second = new_workspace_token().expect("second OS-random capability");
+        assert_ne!(first, [0; 32]);
+        assert_ne!(first, second);
+
+        let oversized = control_response(Ok(json!({
+            "payload": "x".repeat(MAXIMUM_CONTROL_MESSAGE_BYTES)
+        })));
+        let encoded = encode_control_response(&oversized).expect("bounded response");
+        assert!(encoded.len() < MAXIMUM_CONTROL_MESSAGE_BYTES);
+        let response: Value = serde_json::from_slice(&encoded).expect("response JSON");
+        assert_eq!(response["ok"], false);
         assert!(
-            git_apply_patch_path(&[
-                "apply".to_owned(),
-                "--check".to_owned(),
-                "fix.patch".to_owned()
-            ])
-            .is_err()
-        );
-        assert!(
-            git_apply_patch_path(&[
-                "apply".to_owned(),
-                "one.patch".to_owned(),
-                "two.patch".to_owned()
-            ])
-            .is_err()
+            response["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("4 MiB"))
         );
     }
 

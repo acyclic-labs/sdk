@@ -1,0 +1,20 @@
+{
+  "name": "acyclic-sdk",
+  "interface": {
+    "displayName": "Acyclic SDK"
+  },
+  "plugins": [
+    {
+      "name": "acyclic-agent-workspaces",
+      "source": {
+        "source": "local",
+        "path": "./plugins/acyclic-agent-workspaces/dist/marketplace/plugins/acyclic-agent-workspaces"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

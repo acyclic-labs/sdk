@@ -45,7 +45,11 @@ case "$lane" in
     bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
-    cargo run --locked -p acyclic-cli
+    cargo run --locked -p acyclic-cli -- harness-demo
+    python3 plugins/acyclic-agent-workspaces/scripts/package.py \
+      --output "$SDK_ARTIFACT_DIR/agent-workspaces-plugin"
+    python3 plugins/acyclic-agent-workspaces/scripts/validate-package.py \
+      "$SDK_ARTIFACT_DIR/agent-workspaces-plugin/marketplace"
     bun run test
     bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
     bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
@@ -76,6 +80,9 @@ case "$lane" in
     bash scripts/test-qualify-gate-rustup.sh
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    cargo test --manifest-path plugins/acyclic-agent-workspaces/control/Cargo.toml --locked
+    cargo clippy --manifest-path plugins/acyclic-agent-workspaces/control/Cargo.toml \
+      --all-targets --all-features --locked -- -D warnings
     head="${CI_HEAD_SHA:-$(git rev-parse HEAD)}"
     if [[ -n "${CI_TARGET_BRANCH:-}" ]]; then
       branch="$CI_TARGET_BRANCH"
@@ -151,6 +158,10 @@ case "$lane" in
       --ignored --test-threads=1
     cargo build -p acyclic-fs-napi --locked
     bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
+    python3 plugins/acyclic-agent-workspaces/scripts/package.py \
+      --output "$SDK_ARTIFACT_DIR/agent-workspaces-plugin"
+    python3 plugins/acyclic-agent-workspaces/scripts/validate-package.py \
+      "$SDK_ARTIFACT_DIR/agent-workspaces-plugin/marketplace"
     bash scripts/ensure-rust-target.sh x86_64-apple-darwin
     cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
       --target x86_64-apple-darwin --locked

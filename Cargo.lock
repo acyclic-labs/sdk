@@ -37,6 +37,8 @@ name = "acyclic-cli"
 version = "0.1.0-rc.1"
 dependencies = [
  "acyclic-harness",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
