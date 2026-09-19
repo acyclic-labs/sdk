@@ -13,7 +13,7 @@ use futures::{StreamExt as _, stream};
 use prost::Message as _;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
-use tokio::sync::{RwLock, watch};
+use tokio::sync::{RwLock, mpsc, watch};
 
 use crate::wire_codec::{condition_from_wire, mutation_from_wire, optional_key, required_key};
 use crate::{
@@ -26,6 +26,7 @@ use crate::{
 const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
 const HEADER_BYTES: usize = HEADER_MAGIC.len() + 8 * 8;
 const FRAME_CHECKSUM_BYTES: usize = 32;
+const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
 /// How the journal is made durable before a mutation becomes observable.
 ///
@@ -117,20 +118,26 @@ impl LocalStream {
     ) -> Result<Self, LocalStreamError> {
         validate_limits(limits)?;
         let root = root.as_ref().to_path_buf();
-        let loaded = tokio::task::spawn_blocking(move || Journal::open(&root, limits))
-            .await
-            .map_err(|_| LocalStreamError::Executor)??;
+        let (commands, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
+        let open = tokio::task::spawn_blocking(move || Journal::open(&root, limits, &commands));
         let provider = MemoryStream::new(limits.memory);
-        for command in loaded.commands {
-            replay(&provider, command)
-                .await
-                .map_err(LocalStreamError::Replay)?;
+        let mut replay_error = None;
+        while let Some(command) = receiver.recv().await {
+            if replay_error.is_none()
+                && let Err(error) = replay(&provider, command).await
+            {
+                replay_error = Some(error);
+            }
+        }
+        let journal = open.await.map_err(|_| LocalStreamError::Executor)??;
+        if let Some(error) = replay_error {
+            return Err(LocalStreamError::Replay(error));
         }
         let (changed, _) = watch::channel(0_u64);
         Ok(Self {
             inner: Arc::new(LocalInner {
                 provider,
-                journal: Arc::new(Mutex::new(loaded.journal)),
+                journal: Arc::new(Mutex::new(journal)),
                 visibility: RwLock::new(()),
                 changed,
                 poisoned: AtomicBool::new(false),
@@ -370,11 +377,6 @@ struct FollowState {
     done: bool,
 }
 
-struct LoadedJournal {
-    journal: Journal,
-    commands: Vec<Command>,
-}
-
 struct Journal {
     file: File,
     operations: u64,
@@ -420,7 +422,11 @@ impl PreparedFrame {
 }
 
 impl Journal {
-    fn open(root: &Path, limits: LocalStreamLimits) -> Result<LoadedJournal, LocalStreamError> {
+    fn open(
+        root: &Path,
+        limits: LocalStreamLimits,
+        commands: &mpsc::Sender<Command>,
+    ) -> Result<Self, LocalStreamError> {
         std::fs::create_dir_all(root)?;
         let path = root.join("stream.journal");
         let mut file = OpenOptions::new()
@@ -445,7 +451,7 @@ impl Journal {
                 return Err(LocalStreamError::Corrupt);
             }
         }
-        let mut commands = Vec::new();
+        let mut operations = 0_u64;
         let mut valid_length =
             u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
         let total_length = file.metadata()?.len();
@@ -486,12 +492,14 @@ impl Journal {
             if frame_checksum(&length_bytes, &encoded) != checksum {
                 return Err(LocalStreamError::Corrupt);
             }
-            commands.push(decode_command(&encoded).map_err(|_| LocalStreamError::Corrupt)?);
-            if u64::try_from(commands.len()).map_err(|_| LocalStreamError::Corrupt)?
-                > limits.journal_operations
-            {
+            let command = decode_command(&encoded).map_err(|_| LocalStreamError::Corrupt)?;
+            operations = operations.checked_add(1).ok_or(LocalStreamError::Corrupt)?;
+            if operations > limits.journal_operations {
                 return Err(LocalStreamError::Corrupt);
             }
+            commands
+                .blocking_send(command)
+                .map_err(|_| LocalStreamError::Executor)?;
             valid_length = valid_length
                 .checked_add(frame_length)
                 .ok_or(LocalStreamError::Corrupt)?;
@@ -500,15 +508,12 @@ impl Journal {
             return Err(LocalStreamError::InvalidLimits);
         }
         file.seek(SeekFrom::End(0))?;
-        Ok(LoadedJournal {
-            journal: Self {
-                file,
-                operations: u64::try_from(commands.len()).map_err(|_| LocalStreamError::Corrupt)?,
-                bytes: valid_length,
-                limits,
-                _root: root.to_path_buf(),
-            },
-            commands,
+        Ok(Self {
+            file,
+            operations,
+            bytes: valid_length,
+            limits,
+            _root: root.to_path_buf(),
         })
     }
 
@@ -863,6 +868,73 @@ mod tests {
         assert_eq!(reopened.tail(StreamPath::new("durable")?).await?, 1);
         drop(reopened);
         assert_eq!(std::fs::metadata(journal)?.len(), valid_length);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reopen_streams_more_commands_than_the_pipeline_window()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let path = StreamPath::new("bounded-replay")?;
+        let count = u64::try_from(REPLAY_PIPELINE_COMMANDS * 4)?;
+        for index in 0..count {
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![Bytes::copy_from_slice(&index.to_le_bytes())],
+                    if_tail: Some(index),
+                    idempotency_key: None,
+                })
+                .await?;
+        }
+        drop(provider);
+
+        let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        assert_eq!(reopened.tail(path).await?, count);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn replay_failure_drains_the_bounded_pipeline_and_releases_the_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let limits = LocalStreamLimits::default();
+        let provider = LocalStream::open(directory.path(), limits).await?;
+        drop(provider);
+
+        let path = StreamPath::new("failed-replay")?;
+        let invalid = PreparedFrame::encode(&Command::Trim {
+            path: path.clone(),
+            before: 1,
+            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"invalid-trim"))?,
+        })?;
+        let valid = PreparedFrame::encode(&Command::Append(AppendRequest {
+            path,
+            records: vec![Bytes::from_static(b"later")],
+            if_tail: Some(0),
+            idempotency_key: None,
+        }))?;
+        let journal_path = directory.path().join("stream.journal");
+        let mut journal = OpenOptions::new().append(true).open(journal_path)?;
+        journal.write_all(&invalid.encoded)?;
+        for _ in 0..REPLAY_PIPELINE_COMMANDS * 4 {
+            journal.write_all(&valid.encoded)?;
+        }
+        journal.sync_all()?;
+        drop(journal);
+
+        for _ in 0..2 {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                LocalStream::open(directory.path(), limits),
+            )
+            .await?;
+            assert!(matches!(
+                result,
+                Err(LocalStreamError::Replay(StreamError::NotFound))
+            ));
+        }
         Ok(())
     }
 
