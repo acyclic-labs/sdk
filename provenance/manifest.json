@@ -63,37 +63,134 @@
       "license": "MIT",
       "auditResult": "approved",
       "reviewer": "Acyclic Labs self-contained macOS mount transport audit"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
+      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
+      "sourcePath": "crates",
+      "destinationPath": "plugin/crates",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs plugin consolidation audit"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
+      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
+      "sourcePath": "tests",
+      "destinationPath": "plugin/tests",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs plugin consolidation audit"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
+      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
+      "sourcePath": "scripts",
+      "destinationPath": "plugin/scripts",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs plugin consolidation audit"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
+      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
+      "sourcePath": "packaging",
+      "destinationPath": "plugin/packaging",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs plugin consolidation audit"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
+      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
+      "sourcePath": "docs",
+      "destinationPath": "plugin/docs",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs plugin consolidation audit"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
+      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
+      "sourcePath": "product.toml",
+      "destinationPath": "plugin/product.toml",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs plugin consolidation audit"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
+      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
+      "sourcePath": "README.md",
+      "destinationPath": "plugin/README.md",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs plugin consolidation audit"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
+      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
+      "sourcePath": "CHANGELOG.md",
+      "destinationPath": "plugin/CHANGELOG.md",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs plugin consolidation audit"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
+      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
+      "sourcePath": "LATEST",
+      "destinationPath": "plugin/LATEST",
+      "license": "Apache-2.0",
+      "auditResult": "approved",
+      "reviewer": "Acyclic Labs plugin consolidation audit"
     }
   ],
   "references": [
     {
       "repository": "https://github.com/acyclic-labs/acyclic-website",
       "commit": "dce3e9fb4a4a5a0457b905191a17578293056a1d",
-      "paths": ["src/lib/harness-docs.ts", "src/routes/docs/machines"],
+      "paths": [
+        "src/lib/harness-docs.ts",
+        "src/routes/docs/machines"
+      ],
       "purpose": "Normative customer-facing Machines contract; no source code imported"
     },
     {
       "repository": "https://github.com/acyclic-labs/acyclic-website",
       "commit": "dce3e9fb4a4a5a0457b905191a17578293056a1d",
-      "paths": ["src/lib/harness-docs.ts", "src/routes/docs/objects"],
+      "paths": [
+        "src/lib/harness-docs.ts",
+        "src/routes/docs/objects"
+      ],
       "purpose": "Normative customer-facing Objects contract and compatibility surface"
     },
     {
       "repository": "https://github.com/acyclic-labs/acyclic-website",
       "commit": "dce3e9fb4a4a5a0457b905191a17578293056a1d",
-      "paths": ["src/lib/harness-docs.ts", "src/routes/docs/stream"],
+      "paths": [
+        "src/lib/harness-docs.ts",
+        "src/routes/docs/stream"
+      ],
       "purpose": "Normative customer-facing hierarchical Stream contract"
     },
     {
       "repository": "https://github.com/acyclic-labs/streams",
       "commit": "f7ecbe75d08fb42c7e4cc455574c56f035106302",
-      "paths": ["crates/contract", "crates/sdk", "crates/protocol"],
+      "paths": [
+        "crates/contract",
+        "crates/sdk",
+        "crates/protocol"
+      ],
       "purpose": "Disclosure and behavior audit input; public implementation was independently rewritten without private distributed control, placement, or replication domains"
     },
     {
       "repository": "https://github.com/acyclic-labs/acyclic-website",
       "commit": "dce3e9fb4a4a5a0457b905191a17578293056a1d",
-      "paths": ["src/lib/harness-docs.ts", "src/routes/docs/filesystem"],
+      "paths": [
+        "src/lib/harness-docs.ts",
+        "src/routes/docs/filesystem"
+      ],
       "purpose": "Normative customer-facing Filesystem behavior and API contract"
     }
   ]
