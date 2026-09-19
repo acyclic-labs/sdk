@@ -527,6 +527,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<A, O> {
             .read_symbolic_link_record(self.record, budget, cancellation)
             .await
     }
+
+    /// Plans sparse physical spans without another namespace lookup.
+    pub async fn plan_extents(
+        &self,
+        range: ByteRange,
+        maximum_spans: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Option<ExtentPlan>> {
+        self.reader
+            .plan_record_extents(self.record, range, maximum_spans, budget, cancellation)
+            .await
+    }
 }
 
 /// One range requested from a reader-scoped resolved file.
@@ -4427,14 +4440,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Option<ExtentPlan>> {
+        let resolved = self.resolve_file(path, budget, cancellation).await?;
+        let mut work = resolved.work;
+        let plan = self
+            .plan_record_extents(
+                resolved.value,
+                range,
+                maximum_spans,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+        work = add(work, plan.work)?;
+        Ok(FsReceipt {
+            value: plan.value,
+            work,
+        })
+    }
+
+    async fn plan_record_extents(
+        &self,
+        record: FileRecord,
+        range: ByteRange,
+        maximum_spans: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Option<ExtentPlan>> {
         if maximum_spans == 0 || range.length > self.volume.config.limits.maximum_generation_bytes {
             return Err(OperationFailure::before_work(FsError::FileRead(
                 FileRangeReadError::InvalidRange,
             )));
         }
-        let resolved = self.resolve_file(path, budget, cancellation).await?;
-        let mut work = resolved.work;
-        let record = resolved.value;
+        let mut work = WorkCounters::default();
         let (logical_bytes, extents) = match record.payload {
             FilePayload::InlineRegular(data) => {
                 validate_planned_file_range(
@@ -4769,11 +4807,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             return Ok(FsReceipt { value: reads, work });
         }
         let cancellation = cancellation.clone();
-        let results = stream::iter(requests.iter().enumerate().map(|(index, request)| {
-            let file = request.file;
-            let range = request.range;
+        let pending = requests
+            .iter()
+            .enumerate()
+            .map(|(index, request)| (index, request.file.record, request.range))
+            .collect::<Vec<_>>();
+        let results = stream::iter(pending.into_iter().map(|(index, record, range)| {
+            let reader = self.clone();
             let cancellation = cancellation.clone();
-            async move { (index, file.read_range(range, budget, &cancellation).await) }
+            async move {
+                (
+                    index,
+                    reader
+                        .read_record_range(record, range, budget, &cancellation)
+                        .await,
+                )
+            }
         }))
         .buffer_unordered(concurrency.min(requests.len().max(1)))
         .collect::<Vec<_>>()

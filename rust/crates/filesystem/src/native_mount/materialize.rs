@@ -8,7 +8,7 @@ use crate::kernel::{
 use crate::native_host::HostRoot;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Checkout, FileId,
-    FileRangeReadRequest, OperationFailure, OperationReceipt, PinnedReader, WorkBudget,
+    OperationFailure, OperationReceipt, PinnedReader, ResolvedFileRangeReadRequest, WorkBudget,
     WorkCounters, WorkError,
 };
 use bytes::Bytes;
@@ -618,6 +618,21 @@ async fn materialize_sparse_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     cancellation: &CancellationToken,
     receipt: &mut MaterializationReceipt,
 ) -> Result<(), OperationFailure<MaterializeError>> {
+    let remaining = receipt
+        .work
+        .remaining(budget)
+        .map_err(|error| OperationFailure::new(MaterializeError::Work(error), receipt.work))?;
+    let resolved = reader
+        .resolve_files(std::slice::from_ref(path), remaining, cancellation)
+        .await
+        .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+    receipt.work = add_work(receipt.work, resolved.work)?;
+    let resolved = resolved
+        .value
+        .into_iter()
+        .next()
+        .flatten()
+        .ok_or_else(|| OperationFailure::new(MaterializeError::MissingPath, receipt.work))?;
     let mut offset = 0_u64;
     while offset < logical_bytes {
         let length = options.transfer_bytes.min(logical_bytes - offset);
@@ -625,9 +640,8 @@ async fn materialize_sparse_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             .work
             .remaining(budget)
             .map_err(|error| OperationFailure::new(MaterializeError::Work(error), receipt.work))?;
-        let plan = reader
-            .plan_file_extents(
-                path,
+        let plan = resolved
+            .plan_extents(
                 ByteRange { offset, length },
                 options.maximum_extent_spans,
                 remaining,
@@ -669,8 +683,8 @@ async fn materialize_sparse_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     )?;
                 }
                 ExtentKind::Content { .. } => {
-                    reads.push(FileRangeReadRequest {
-                        path: path.clone(),
+                    reads.push(ResolvedFileRangeReadRequest {
+                        file: &resolved,
                         range: ByteRange {
                             offset: span.offset,
                             length: span.length,
@@ -731,7 +745,7 @@ async fn materialize_sparse_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 #[allow(clippy::too_many_arguments)]
 async fn read_content_spans<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &PinnedReader<A, O>,
-    reads: Vec<FileRangeReadRequest>,
+    reads: Vec<ResolvedFileRangeReadRequest<'_, A, O>>,
     maximum_extent_spans: u32,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -743,7 +757,7 @@ async fn read_content_spans<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .remaining(budget)
         .map_err(|error| OperationFailure::new(MaterializeError::Work(error), receipt.work))?;
     let read = reader
-        .read_file_ranges(
+        .read_resolved_ranges(
             &reads,
             usize::try_from(maximum_extent_spans).unwrap_or(usize::MAX),
             remaining,

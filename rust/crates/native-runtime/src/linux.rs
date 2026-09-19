@@ -50,6 +50,9 @@ pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::R
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "read exceeds destination"))?;
     let fd = file.as_raw_fd();
     STATE.with_borrow_mut(|state| {
+        if state.quarantine.is_some() {
+            return Err(quarantined_error());
+        }
         let entry = opcode::Read::new(types::Fd(fd), destination.as_mut_ptr(), len)
             .offset(offset)
             .build();
@@ -65,6 +68,9 @@ pub(super) fn write_all_at(file: &File, mut offset: u64, mut bytes: &[u8]) -> io
     let fd = file.as_raw_fd();
     while !bytes.is_empty() {
         let count = STATE.with_borrow_mut(|state| {
+            if state.quarantine.is_some() {
+                return Err(quarantined_error());
+            }
             let length = u32::try_from(bytes.len().min(MAX_IO_BYTES))
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "write too large"))?;
             let entry = opcode::Write::new(types::Fd(fd), bytes.as_ptr(), length)
@@ -98,6 +104,9 @@ pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io:
     let fd = file.as_raw_fd();
     let mut remainders = Vec::new();
     STATE.with_borrow_mut(|state| {
+        if state.quarantine.is_some() {
+            return Err(quarantined_error());
+        }
         let mut writes = writes.into_iter();
         loop {
             let window: Vec<_> = writes.by_ref().take(RING_ENTRIES as usize).collect();
@@ -170,6 +179,9 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
     }
     let fd = file.as_raw_fd();
     STATE.with_borrow_mut(|state| {
+        if state.quarantine.is_some() {
+            return Err(quarantined_error());
+        }
         let mut completions = Vec::new();
         let mut request = 0_usize;
         while request < reads.len() {
@@ -247,6 +259,10 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
         }
         assemble_reads(buffers, completions)
     })
+}
+
+fn quarantined_error() -> io::Error {
+    io::Error::other("io_uring is quarantined after an uncertain completion")
 }
 
 fn read_large(
@@ -575,12 +591,7 @@ impl<'a> BatchCompletions<'a> {
 }
 
 fn submit_retry(ring: &mut Option<IoUring>, entry: &io_uring::squeue::Entry) -> io::Result<usize> {
-    loop {
-        match submit_one(ring, entry) {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => return result,
-        }
-    }
+    submit_one(ring, entry)
 }
 
 fn submit_one(ring: &mut Option<IoUring>, entry: &io_uring::squeue::Entry) -> io::Result<usize> {
@@ -596,7 +607,12 @@ fn submit_one(ring: &mut Option<IoUring>, entry: &io_uring::squeue::Entry) -> io
     let result = loop {
         match active.submit_and_wait(1) {
             Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                if let Some(completion) = active.completion().next() {
+                    break completion_result(&completion);
+                }
+                continue;
+            }
             Err(error) => {
                 if let Some(completion) = active.completion().next() {
                     break completion_result(&completion);
@@ -604,6 +620,12 @@ fn submit_one(ring: &mut Option<IoUring>, entry: &io_uring::squeue::Entry) -> io
                 let mut submissions = active.submission();
                 submissions.sync();
                 if submissions.is_empty() {
+                    // The SQE left userspace but no CQE proves completion. The
+                    // borrowed buffer must remain live, so fail closed by
+                    // retaining this thread and ring until the CQE arrives.
+                    // A non-EINTR submit error is surfaced only after the
+                    // matching completion establishes buffer safety.
+                    unsubmitted_error = Some(error);
                     continue;
                 }
                 unsubmitted_error = Some(error);
