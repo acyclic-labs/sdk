@@ -878,9 +878,9 @@ pub struct DirectoryRecordPage {
     pub has_more: bool,
 }
 
-/// One bounded directory page requested from a [`PinnedReader`].
+/// One bounded directory binding page requested from a [`PinnedReader`].
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DirectoryRecordPageRequest {
+pub struct DirectoryPageRequest {
     /// Exact directory namespace path.
     pub path: NamespacePath,
     /// Exclusive canonical name cursor.
@@ -4034,54 +4034,33 @@ impl<A, O> Checkout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
-    async fn list_directory_records(
+    async fn list_directory_page(
         &self,
-        request: DirectoryRecordPageRequest,
+        request: DirectoryPageRequest,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> FsResult<DirectoryRecordPage> {
-        let dependencies = CheckoutDependencies::new(
-            std::iter::empty(),
-            std::iter::empty(),
-            self.volume.config.limits.maximum_checkout_dependencies,
+    ) -> FsResult<DirectoryPage> {
+        list_directory_page_pinned(
+            &self.volume,
+            &self.root,
+            &request.path,
+            request.after.as_ref(),
+            request.maximum_entries,
+            budget,
+            cancellation,
         )
-        .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let mut checkout = Checkout {
-            volume: self.volume.clone(),
-            base_generation_root: self.generation_root,
-            generation_root: self.generation_root,
-            base_file_table: self.root.file_table,
-            base_root: self.root.clone(),
-            root: self.root.clone(),
-            authority_head: None,
-            authored_operation_id: None,
-            pending_operations: Vec::new(),
-            live_operation_id: None,
-            last_commit: None,
-            prepared_merge_parent: None,
-            dependencies,
-            mode: CheckoutMode::read_only_pinned(),
-        };
-        checkout
-            .list_directory_records(
-                &request.path,
-                request.after.as_ref(),
-                request.maximum_entries,
-                budget,
-                cancellation,
-            )
-            .await
+        .await
     }
 
-    /// Lists ordered directory pages with at most `concurrency` requests in
-    /// flight while preserving input order.
-    pub async fn list_directory_record_pages(
+    /// Lists ordered directory binding pages with at most `concurrency`
+    /// requests in flight while preserving input order.
+    pub async fn list_directory_pages(
         &self,
-        requests: &[DirectoryRecordPageRequest],
+        requests: &[DirectoryPageRequest],
         concurrency: usize,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> FsResult<Vec<DirectoryRecordPage>> {
+    ) -> FsResult<Vec<DirectoryPage>> {
         if concurrency == 0
             || requests.len()
                 > usize::try_from(self.volume.config.limits.maximum_paths_per_batch)
@@ -4102,7 +4081,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                         (
                             index,
                             reader
-                                .list_directory_records(request, budget, cancellation)
+                                .list_directory_page(request, budget, cancellation)
                                 .await,
                         )
                     }
@@ -4467,6 +4446,52 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         .await;
         order_batch_results(results, budget)
     }
+}
+
+async fn list_directory_page_pinned<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    volume: &Volume<A, O>,
+    root: &GenerationRoot,
+    path: &NamespacePath,
+    after: Option<&LogicalName>,
+    maximum_entries: u32,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> FsResult<DirectoryPage> {
+    let lookup = crate::kernel::observe_path_edges_async(
+        &volume.fs.inner.objects,
+        root,
+        path,
+        volume.config,
+        budget,
+        cancellation,
+    )
+    .await
+    .map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), FsError::Path))?;
+    let mut work = lookup.lookup.work;
+    let record = lookup
+        .lookup
+        .record
+        .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
+    let FilePayload::Directory { entries } = record.payload else {
+        return Err(OperationFailure::new(FsError::NotDirectory, work));
+    };
+    if record.kind != FileKind::Directory {
+        return Err(OperationFailure::new(FsError::NotDirectory, work));
+    }
+    let mut page = list_tree_entries_async(
+        &volume.fs.inner.objects,
+        entries,
+        after,
+        maximum_entries,
+        decode_limits(volume.config),
+        remaining(work, budget)?,
+        cancellation,
+    )
+    .await
+    .map_err(|failure| failure.map_with_prior_work(work, FsError::Directory))?;
+    work = add(work, page.work)?;
+    page.work = work;
+    Ok(FsReceipt { value: page, work })
 }
 
 fn order_batch_results<T>(

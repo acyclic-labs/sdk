@@ -1699,14 +1699,14 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
             ..
         })
     ));
-    let pages = poll_ready(reader.list_directory_record_pages(
+    let pages = poll_ready(reader.list_directory_pages(
         &[
-            DirectoryRecordPageRequest {
+            DirectoryPageRequest {
                 path: second_directory,
                 after: None,
                 maximum_entries: 8,
             },
-            DirectoryRecordPageRequest {
+            DirectoryPageRequest {
                 path: first_directory,
                 after: Some(LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?),
                 maximum_entries: 1,
@@ -1740,14 +1740,9 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     assert!(!second_page.has_more);
     assert!(!first_page.has_more);
     assert!(
-        poll_ready(reader.list_directory_record_pages(
-            &[],
-            0,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("zero-concurrency directory batch blocked")?
-        .is_err()
+        poll_ready(reader.list_directory_pages(&[], 0, WorkBudget::UNBOUNDED, &cancellation,))
+            .ok_or("zero-concurrency directory batch blocked")?
+            .is_err()
     );
 
     let first = poll_ready(reader.read_file_range(
