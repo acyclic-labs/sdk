@@ -7,7 +7,6 @@ use std::cell::RefCell;
 use std::fs::File;
 use std::io;
 use std::os::fd::AsRawFd;
-use std::sync::{Mutex, OnceLock};
 
 use crate::{OwnedRead, OwnedWrite};
 use bytes::Bytes;
@@ -18,11 +17,13 @@ const MAX_IO_BYTES: usize = 1024 * 1024;
 thread_local! {
     static STATE: RefCell<RingState> = RefCell::new(RingState {
         ring: IoUring::new(RING_ENTRIES).ok(),
+        quarantine: None,
     });
 }
 
 struct RingState {
     ring: Option<IoUring>,
+    quarantine: Option<QuarantinedIo>,
 }
 
 #[allow(dead_code)]
@@ -35,11 +36,6 @@ struct QuarantinedIo {
 enum QuarantinedBuffers {
     Reads(Vec<Vec<u8>>),
     Writes(Vec<OwnedWrite>),
-}
-
-fn quarantine() -> &'static Mutex<Vec<QuarantinedIo>> {
-    static QUARANTINE: OnceLock<Mutex<Vec<QuarantinedIo>>> = OnceLock::new();
-    QUARANTINE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
@@ -131,14 +127,10 @@ pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io:
                         let failed = state.ring.take().ok_or_else(|| {
                             io::Error::other("io_uring disappeared during quarantine")
                         })?;
-                        quarantine()
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(QuarantinedIo {
-                                _ring: failed,
-                                _buffers: QuarantinedBuffers::Writes(window),
-                            });
-                        state.ring = IoUring::new(RING_ENTRIES).ok();
+                        state.quarantine = Some(QuarantinedIo {
+                            _ring: failed,
+                            _buffers: QuarantinedBuffers::Writes(window),
+                        });
                         return Err(error);
                     }
                     return Err(error.into_error());
@@ -215,13 +207,10 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
                         let failed = state.ring.take().ok_or_else(|| {
                             io::Error::other("io_uring disappeared during quarantine")
                         })?;
-                        quarantine()
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(QuarantinedIo {
-                                _ring: failed,
-                                _buffers: QuarantinedBuffers::Reads(buffers),
-                            });
+                        state.quarantine = Some(QuarantinedIo {
+                            _ring: failed,
+                            _buffers: QuarantinedBuffers::Reads(buffers),
+                        });
                         return Err(error);
                     }
                 };
@@ -247,13 +236,10 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
                     let failed = state.ring.take().ok_or_else(|| {
                         io::Error::other("io_uring disappeared during quarantine")
                     })?;
-                    quarantine()
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push(QuarantinedIo {
-                            _ring: failed,
-                            _buffers: QuarantinedBuffers::Reads(buffers),
-                        });
+                    state.quarantine = Some(QuarantinedIo {
+                        _ring: failed,
+                        _buffers: QuarantinedBuffers::Reads(buffers),
+                    });
                     return Err(error);
                 }
             }

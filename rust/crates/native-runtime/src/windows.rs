@@ -71,14 +71,14 @@ struct QuarantinedIo {
 struct PortState {
     port: Option<CompletionPort>,
     next_key: usize,
-    quarantine: Vec<QuarantinedIo>,
+    quarantine: Option<QuarantinedIo>,
 }
 
 thread_local! {
     static PORT: RefCell<PortState> = const { RefCell::new(PortState {
         port: None,
         next_key: 1,
-        quarantine: Vec::new(),
+        quarantine: None,
     }) };
 }
 
@@ -144,18 +144,24 @@ fn write_batch_on_port(
             }
         }
     }
-    if let Err(error) = complete_writes(port.0, key, accepted, &mut pending) {
-        first_error.get_or_insert(error);
-        let failed_port = state
-            .port
-            .take()
-            .ok_or_else(|| io::Error::other("completion port disappeared during quarantine"))?;
-        state.quarantine.push(QuarantinedIo {
-            _port: failed_port,
-            _file: overlapped,
-            _pending: QuarantinedPending::Writes { _requests: pending },
-        });
-        return first_error.map_or(Ok(()), Err);
+    match complete_writes(port.0, key, accepted, &mut pending) {
+        Ok(()) => {}
+        Err(CompletionError::Completed(error)) => {
+            first_error.get_or_insert(error);
+        }
+        Err(CompletionError::Uncertain(error)) => {
+            first_error.get_or_insert(error);
+            let failed_port = state
+                .port
+                .take()
+                .ok_or_else(|| io::Error::other("completion port disappeared during quarantine"))?;
+            state.quarantine = Some(QuarantinedIo {
+                _port: failed_port,
+                _file: overlapped,
+                _pending: QuarantinedPending::Writes { _requests: pending },
+            });
+            return first_error.map_or(Ok(()), Err);
+        }
     }
     first_error.map_or(Ok(()), Err)
 }
@@ -196,18 +202,24 @@ fn read_batch_on_port(
             }
         }
     }
-    if let Err(error) = complete_reads(port.0, key, accepted, &mut pending) {
-        first_error.get_or_insert(error);
-        let failed_port = state
-            .port
-            .take()
-            .ok_or_else(|| io::Error::other("completion port disappeared during quarantine"))?;
-        state.quarantine.push(QuarantinedIo {
-            _port: failed_port,
-            _file: overlapped,
-            _pending: QuarantinedPending::Reads { _requests: pending },
-        });
-        return first_error.map_or(Ok(Vec::new()), Err);
+    match complete_reads(port.0, key, accepted, &mut pending) {
+        Ok(()) => {}
+        Err(CompletionError::Completed(error)) => {
+            first_error.get_or_insert(error);
+        }
+        Err(CompletionError::Uncertain(error)) => {
+            first_error.get_or_insert(error);
+            let failed_port = state
+                .port
+                .take()
+                .ok_or_else(|| io::Error::other("completion port disappeared during quarantine"))?;
+            state.quarantine = Some(QuarantinedIo {
+                _port: failed_port,
+                _file: overlapped,
+                _pending: QuarantinedPending::Reads { _requests: pending },
+            });
+            return first_error.map_or(Ok(Vec::new()), Err);
+        }
     }
     if let Some(error) = first_error {
         return Err(error);
@@ -342,7 +354,7 @@ fn complete_reads(
     expected_key: usize,
     mut remaining: usize,
     pending: &mut [PendingRead],
-) -> io::Result<()> {
+) -> Result<(), CompletionError> {
     let mut first_error = None;
     while remaining != 0 {
         let mut transferred = 0;
@@ -353,22 +365,25 @@ fn complete_reads(
             GetQueuedCompletionStatus(port, &mut transferred, &mut key, &mut overlapped, INFINITE)
         };
         if overlapped.is_null() {
-            return Err(io::Error::last_os_error());
+            return Err(CompletionError::Uncertain(io::Error::last_os_error()));
         }
         if key != expected_key {
-            first_error.get_or_insert_with(|| io::Error::other("unknown completion batch"));
-            continue;
+            return Err(CompletionError::Uncertain(io::Error::other(
+                "unknown completion batch",
+            )));
         }
         let Some(read) = pending
             .iter_mut()
             .find(|read| std::ptr::eq(&*read.overlapped, overlapped))
         else {
-            first_error.get_or_insert_with(|| io::Error::other("unknown completion identity"));
-            continue;
+            return Err(CompletionError::Uncertain(io::Error::other(
+                "unknown completion identity",
+            )));
         };
         if read.completed.is_some() {
-            first_error.get_or_insert_with(|| io::Error::other("duplicate completion identity"));
-            continue;
+            return Err(CompletionError::Uncertain(io::Error::other(
+                "duplicate completion identity",
+            )));
         }
         remaining -= 1;
         if transferred as usize > read.buffer.len() {
@@ -381,7 +396,7 @@ fn complete_reads(
         }
         read.completed = Some(transferred as usize);
     }
-    first_error.map_or(Ok(()), Err)
+    first_error.map_or(Ok(()), |error| Err(CompletionError::Completed(error)))
 }
 
 fn complete_writes(
@@ -389,7 +404,7 @@ fn complete_writes(
     expected_key: usize,
     mut remaining: usize,
     pending: &mut [PendingWrite],
-) -> io::Result<()> {
+) -> Result<(), CompletionError> {
     let mut first_error = None;
     while remaining != 0 {
         let mut transferred = 0;
@@ -400,22 +415,25 @@ fn complete_writes(
             GetQueuedCompletionStatus(port, &mut transferred, &mut key, &mut overlapped, INFINITE)
         };
         if overlapped.is_null() {
-            return Err(io::Error::last_os_error());
+            return Err(CompletionError::Uncertain(io::Error::last_os_error()));
         }
         if key != expected_key {
-            first_error.get_or_insert_with(|| io::Error::other("unknown completion batch"));
-            continue;
+            return Err(CompletionError::Uncertain(io::Error::other(
+                "unknown completion batch",
+            )));
         }
         let Some(write) = pending
             .iter_mut()
             .find(|write| std::ptr::eq(&*write.overlapped, overlapped))
         else {
-            first_error.get_or_insert_with(|| io::Error::other("unknown completion identity"));
-            continue;
+            return Err(CompletionError::Uncertain(io::Error::other(
+                "unknown completion identity",
+            )));
         };
         if write.completed {
-            first_error.get_or_insert_with(|| io::Error::other("duplicate completion identity"));
-            continue;
+            return Err(CompletionError::Uncertain(io::Error::other(
+                "duplicate completion identity",
+            )));
         }
         remaining -= 1;
         if succeeded == 0 {
@@ -427,5 +445,10 @@ fn complete_writes(
         }
         write.completed = true;
     }
-    first_error.map_or(Ok(()), Err)
+    first_error.map_or(Ok(()), |error| Err(CompletionError::Completed(error)))
+}
+
+enum CompletionError {
+    Completed(io::Error),
+    Uncertain(io::Error),
 }
