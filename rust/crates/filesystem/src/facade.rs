@@ -453,6 +453,7 @@ pub struct Checkout<A, O> {
 /// not mutate checkout dependency state, so independent requests may overlap.
 pub struct PinnedReader<A, O> {
     volume: Volume<A, O>,
+    generation_root: ObjectId,
     root: GenerationRoot,
 }
 
@@ -460,6 +461,7 @@ impl<A, O> Clone for PinnedReader<A, O> {
     fn clone(&self) -> Self {
         Self {
             volume: self.volume.clone(),
+            generation_root: self.generation_root,
             root: self.root.clone(),
         }
     }
@@ -874,6 +876,17 @@ pub struct DirectoryRecordPage {
     pub entries: Vec<DirectoryRecordEntry>,
     /// Whether at least one additional entry exists.
     pub has_more: bool,
+}
+
+/// One bounded directory page requested from a [`PinnedReader`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectoryRecordPageRequest {
+    /// Exact directory namespace path.
+    pub path: NamespacePath,
+    /// Exclusive canonical name cursor.
+    pub after: Option<LogicalName>,
+    /// Maximum entries returned for this page.
+    pub maximum_entries: u32,
 }
 
 /// One present no-follow path result with authenticated metadata decoded in
@@ -4014,12 +4027,93 @@ impl<A, O> Checkout<A, O> {
         }
         Ok(PinnedReader {
             volume: self.volume.clone(),
+            generation_root: self.generation_root,
             root: self.root.clone(),
         })
     }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
+    async fn list_directory_records(
+        &self,
+        request: DirectoryRecordPageRequest,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<DirectoryRecordPage> {
+        let dependencies = CheckoutDependencies::new(
+            std::iter::empty(),
+            std::iter::empty(),
+            self.volume.config.limits.maximum_checkout_dependencies,
+        )
+        .map_err(|error| OperationFailure::before_work(error.into()))?;
+        let mut checkout = Checkout {
+            volume: self.volume.clone(),
+            base_generation_root: self.generation_root,
+            generation_root: self.generation_root,
+            base_file_table: self.root.file_table,
+            base_root: self.root.clone(),
+            root: self.root.clone(),
+            authority_head: None,
+            authored_operation_id: None,
+            pending_operations: Vec::new(),
+            live_operation_id: None,
+            last_commit: None,
+            prepared_merge_parent: None,
+            dependencies,
+            mode: CheckoutMode::read_only_pinned(),
+        };
+        checkout
+            .list_directory_records(
+                &request.path,
+                request.after.as_ref(),
+                request.maximum_entries,
+                budget,
+                cancellation,
+            )
+            .await
+    }
+
+    /// Lists ordered directory pages with at most `concurrency` requests in
+    /// flight while preserving input order.
+    pub async fn list_directory_record_pages(
+        &self,
+        requests: &[DirectoryRecordPageRequest],
+        concurrency: usize,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<DirectoryRecordPage>> {
+        if concurrency == 0
+            || requests.len()
+                > usize::try_from(self.volume.config.limits.maximum_paths_per_batch)
+                    .unwrap_or(usize::MAX)
+        {
+            return Err(OperationFailure::before_work(FsError::Path(
+                PathLookupError::TooManyPaths,
+            )));
+        }
+        let results = stream::iter(
+            requests
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, request)| {
+                    let reader = self.clone();
+                    async move {
+                        (
+                            index,
+                            reader
+                                .list_directory_records(request, budget, cancellation)
+                                .await,
+                        )
+                    }
+                }),
+        )
+        .buffer_unordered(concurrency.min(requests.len().max(1)))
+        .collect::<Vec<_>>()
+        .await;
+        order_batch_results(results, budget)
+    }
+
     /// Reads exact opaque symbolic-link target bytes from one authenticated
     /// record without resolving a namespace path.
     ///

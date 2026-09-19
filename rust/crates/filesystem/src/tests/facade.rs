@@ -1591,6 +1591,36 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
         &cancellation,
     ))
     .ok_or("link create blocked")??;
+    let first_directory = path("first-directory")?;
+    let second_directory = path("second-directory")?;
+    poll_ready(writer.create_directory(
+        first_directory.clone(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("first directory create blocked")??;
+    poll_ready(writer.create_directory(
+        second_directory.clone(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("second directory create blocked")??;
+    for name in ["a", "b"] {
+        poll_ready(writer.create_file(
+            path_parts(&["first-directory", name])?,
+            Bytes::from_static(b"x"),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("directory child create blocked")??;
+    }
+    poll_ready(writer.create_file(
+        path_parts(&["second-directory", "c"])?,
+        Bytes::from_static(b"y"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("second directory child create blocked")??;
     let reader = writer.pinned_reader()?;
     let requests = [
         FileRangeReadRequest {
@@ -1669,6 +1699,56 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
             ..
         })
     ));
+    let pages = poll_ready(reader.list_directory_record_pages(
+        &[
+            DirectoryRecordPageRequest {
+                path: second_directory,
+                after: None,
+                maximum_entries: 8,
+            },
+            DirectoryRecordPageRequest {
+                path: first_directory,
+                after: Some(LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?),
+                maximum_entries: 1,
+            },
+        ],
+        2,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("directory page batch blocked")??;
+    let second_page = pages.value.first().ok_or("second directory page missing")?;
+    let first_page = pages.value.get(1).ok_or("first directory page missing")?;
+    assert_eq!(
+        second_page
+            .entries
+            .first()
+            .ok_or("second entry missing")?
+            .name
+            .as_bytes(),
+        b"c"
+    );
+    assert_eq!(
+        first_page
+            .entries
+            .first()
+            .ok_or("first entry missing")?
+            .name
+            .as_bytes(),
+        b"b"
+    );
+    assert!(!second_page.has_more);
+    assert!(!first_page.has_more);
+    assert!(
+        poll_ready(reader.list_directory_record_pages(
+            &[],
+            0,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("zero-concurrency directory batch blocked")?
+        .is_err()
+    );
 
     let first = poll_ready(reader.read_file_range(
         &requests[0].path,
