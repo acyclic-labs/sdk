@@ -94,20 +94,23 @@ pub(super) fn read_batch(
         })
         .collect::<io::Result<Vec<_>>>()?;
     let queue = queue();
-    let cleanup = RcBlock::new(|_: c_int| {});
-    // SAFETY: the file descriptor remains live until every operation and channel completes.
-    let channel = unsafe {
-        DispatchIO::new(
-            DispatchIOStreamType::DISPATCH_IO_RANDOM,
-            file.as_raw_fd(),
-            &queue,
-            &cleanup,
-        )
-    };
-    let _registered = RegisteredChannel::new(cancellation, &channel);
     let mut completions = Vec::new();
     completions.try_reserve_exact(reads.len())?;
+    let mut channels = Vec::new();
+    channels.try_reserve_exact(reads.len())?;
     for (read, offset) in reads.iter().zip(offsets) {
+        let cleanup = RcBlock::new(|_: c_int| {});
+        // SAFETY: the file descriptor remains live until every operation and channel completes.
+        let channel = unsafe {
+            DispatchIO::new(
+                DispatchIOStreamType::DISPATCH_IO_RANDOM,
+                file.as_raw_fd(),
+                &queue,
+                &cleanup,
+            )
+        };
+        channel.set_low_water(read.length);
+        cancellation.register_apple(&channel);
         let completion = Completion::new();
         let callback = Arc::clone(&completion);
         let collected = Arc::new(Mutex::new(Vec::with_capacity(read.length)));
@@ -149,12 +152,18 @@ pub(super) fn read_batch(
         unsafe {
             channel.read(offset, read.length, &queue, handler);
         }
+        channels.push(channel);
         completions.push(completion);
     }
-    completions
+    let results = completions
         .into_iter()
         .map(|completion| completion.wait())
-        .collect()
+        .collect();
+    for channel in &channels {
+        cancellation.clear_apple(channel);
+        channel.close(dispatch2::DispatchIOCloseFlags::empty());
+    }
+    results
 }
 
 fn write_all_batch(

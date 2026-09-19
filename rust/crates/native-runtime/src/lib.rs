@@ -18,7 +18,7 @@ struct Cancellation {
     #[cfg(windows)]
     windows_handle: Mutex<Option<isize>>,
     #[cfg(target_vendor = "apple")]
-    apple_channel: Mutex<Option<dispatch2::DispatchRetained<dispatch2::DispatchIO>>>,
+    apple_channels: Mutex<Vec<dispatch2::DispatchRetained<dispatch2::DispatchIO>>>,
 }
 
 impl Cancellation {
@@ -129,10 +129,12 @@ impl Cancellation {
     fn register_apple(&self, channel: &dispatch2::DispatchIO) {
         use dispatch2::DispatchObject as _;
 
-        *self
-            .apple_channel
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(channel.retain());
+        {
+            self.apple_channels
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(channel.retain());
+        }
         if self.is_cancelled() {
             self.cancel_apple();
         }
@@ -141,15 +143,10 @@ impl Cancellation {
     #[cfg(target_vendor = "apple")]
     fn clear_apple(&self, channel: &dispatch2::DispatchIO) {
         let mut active = self
-            .apple_channel
+            .apple_channels
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if active
-            .as_deref()
-            .is_some_and(|candidate| std::ptr::eq(candidate, channel))
-        {
-            *active = None;
-        }
+        active.retain(|candidate| !std::ptr::eq(candidate.as_ref(), channel));
     }
 
     #[cfg(target_vendor = "apple")]
@@ -157,11 +154,11 @@ impl Cancellation {
         use dispatch2::DispatchIOCloseFlags;
 
         let active = self
-            .apple_channel
+            .apple_channels
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        if let Some(channel) = active {
+        for channel in active {
             channel.close(DispatchIOCloseFlags::DISPATCH_IO_STOP);
         }
     }
