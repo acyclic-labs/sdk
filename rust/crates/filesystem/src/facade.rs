@@ -504,6 +504,12 @@ pub struct ResolvedFile<A, O> {
 }
 
 impl<A, O> ResolvedFile<A, O> {
+    /// Stable file identity authenticated with this handle.
+    #[must_use]
+    pub const fn file_id(&self) -> FileId {
+        self.record.file_id
+    }
+
     /// Public semantic facts authenticated with this handle.
     #[must_use]
     pub const fn description(&self) -> &FileDescription {
@@ -4101,10 +4107,21 @@ impl<A, O> Checkout<A, O> {
         !self.pending_operations.is_empty() || self.prepared_merge_parent.is_some()
     }
 
-    /// Creates an immutable reader for this checkout's current candidate.
+    /// Creates an immutable reader for this checkout's current private candidate.
     ///
-    /// Pinned consistency is required because optimistic reads must record
-    /// dependencies on the mutable checkout before publication.
+    /// The reader snapshots the exact authenticated root already held by the
+    /// checkout, including pending private overlay state, without authority or
+    /// storage work. Later checkout mutations do not change the snapshot.
+    #[must_use]
+    pub fn snapshot_reader(&self) -> PinnedReader<A, O> {
+        PinnedReader {
+            volume: self.volume.clone(),
+            generation_root: self.generation_root,
+            root: self.root.clone(),
+        }
+    }
+
+    /// Creates an immutable reader for a pinned checkout.
     ///
     /// # Errors
     ///
@@ -4113,11 +4130,7 @@ impl<A, O> Checkout<A, O> {
         if self.mode.consistency != ConsistencyMode::Pinned {
             return Err(FsError::MutationNotAllowed);
         }
-        Ok(PinnedReader {
-            volume: self.volume.clone(),
-            generation_root: self.generation_root,
-            root: self.root.clone(),
-        })
+        Ok(self.snapshot_reader())
     }
 
     /// Creates an immutable content writer that can stage independent sources
