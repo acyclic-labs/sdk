@@ -23,7 +23,7 @@ io-uring = "0.7.14"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 indexed_db_futures = { version = "0.6.4", features = ["tx-done", "typed-arrays"] }
-jsonschema = { version = "0.55.0", default-features = false }
+jsonschema = { version = "0.56.0", default-features = false }
 js-sys = "0.3.94"
 napi = { version = "3.6.1", features = ["async", "napi8", "serde-json"] }
 napi-derive = "3.3.3"
