@@ -547,10 +547,31 @@ fn fuse_arguments(options: &[String]) -> Result<Vec<CString>, i32> {
     Ok(arguments)
 }
 
-fn is_mounted(destination: &Path, parent: &Metadata) -> bool {
-    destination
-        .metadata()
-        .is_ok_and(|metadata| metadata.dev() != parent.dev())
+fn is_mounted(destination: &Path, _parent: &Metadata) -> bool {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let mut mounts = std::ptr::null_mut::<libc::statfs>();
+    // SAFETY: `getmntinfo` initializes `mounts` to an OS-owned array retained
+    // until the next call; this function consumes it before returning.
+    let count = unsafe { libc::getmntinfo(&raw mut mounts, libc::MNT_NOWAIT) };
+    if count <= 0 || mounts.is_null() {
+        return false;
+    }
+    // SAFETY: a positive return value is the exact initialized array length.
+    let mounts = unsafe { std::slice::from_raw_parts(mounts, count as usize) };
+    let normalized = destination
+        .parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .and_then(|parent| destination.file_name().map(|name| parent.join(name)));
+    mounts.iter().any(|mount| {
+        // SAFETY: Darwin guarantees that `f_mntonname` is NUL terminated.
+        let mounted_at = unsafe { CStr::from_ptr(mount.f_mntonname.as_ptr()) };
+        mounted_at.to_bytes() == destination.as_os_str().as_bytes()
+            || normalized
+                .as_deref()
+                .is_some_and(|path| mounted_at.to_bytes() == path.as_os_str().as_bytes())
+    })
 }
 
 fn bounded_diskutil_unmount(destination: &Path) -> Result<UnmountEvidence, String> {
