@@ -224,8 +224,8 @@ pub use native_capture::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_exchange::{
     NativeExchangeError, NativeExchangeJournal, NativeExchangeOutcome, NativeExchangePhase,
-    exchange_native_entries, prepare_native_exchange, publish_native_exchange,
-    recover_native_exchange,
+    exchange_native_entries, prepare_native_exchange, prepare_native_exchange_with_recovery,
+    publish_native_exchange, recover_native_exchange,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_identity::NativeRootIdentity;

@@ -7,7 +7,8 @@ use thiserror::Error;
 use acyclic_native_runtime::durable_rename;
 
 const LEGACY_NATIVE_EXCHANGE_JOURNAL_VERSION: u32 = 1;
-const NATIVE_EXCHANGE_JOURNAL_VERSION: u32 = 2;
+const IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION: u32 = 2;
+const NATIVE_EXCHANGE_JOURNAL_VERSION: u32 = 3;
 
 /// Durable whole-tree exchange phase.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -27,6 +28,9 @@ pub struct NativeExchangeJournal {
     /// Stable identity of the caller-visible publication request.
     #[serde(default = "legacy_operation")]
     pub operation: crate::IdempotencyKey,
+    /// Opaque caller recovery bytes retained with the durable request.
+    #[serde(default)]
+    pub recovery: Vec<u8>,
     /// Current live root.
     pub live: PathBuf,
     /// Prepared tree before publication and displaced tree after publication.
@@ -62,10 +66,30 @@ pub fn prepare_native_exchange(
     operation: crate::IdempotencyKey,
     carried: Vec<PathBuf>,
 ) -> Result<(), NativeExchangeError> {
+    prepare_native_exchange_with_recovery(
+        journal_path,
+        live,
+        prepared,
+        operation,
+        carried,
+        Vec::new(),
+    )
+}
+
+/// Persists an exchange request with opaque bytes needed by consumer recovery.
+pub fn prepare_native_exchange_with_recovery(
+    journal_path: &Path,
+    live: &Path,
+    prepared: &Path,
+    operation: crate::IdempotencyKey,
+    carried: Vec<PathBuf>,
+    recovery: Vec<u8>,
+) -> Result<(), NativeExchangeError> {
     validate_layout(live, prepared)?;
     let journal = NativeExchangeJournal {
         version: NATIVE_EXCHANGE_JOURNAL_VERSION,
         operation,
+        recovery,
         live: live.to_path_buf(),
         prepared: prepared.to_path_buf(),
         carried,
@@ -126,7 +150,7 @@ pub fn publish_native_exchange(
         if journal.live != live || journal.prepared != prepared {
             return Err(NativeExchangeError::IncompatibleJournal);
         }
-        if journal.version == NATIVE_EXCHANGE_JOURNAL_VERSION
+        if journal.version >= IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION
             && journal.operation == operation
             && journal.carried != carried
         {
@@ -137,8 +161,8 @@ pub fn publish_native_exchange(
         {
             return Err(NativeExchangeError::AmbiguousLegacyJournal);
         }
-        let same_operation =
-            journal.version == NATIVE_EXCHANGE_JOURNAL_VERSION && journal.operation == operation;
+        let same_operation = journal.version >= IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION
+            && journal.operation == operation;
         let recovered = recover_native_exchange(journal_path)?;
         if recovered.published && same_operation {
             return Ok(recovered);
@@ -205,7 +229,9 @@ pub fn recover_native_exchange(
 fn read_journal(path: &Path) -> Result<NativeExchangeJournal, NativeExchangeError> {
     let journal: NativeExchangeJournal = serde_json::from_slice(&std::fs::read(path)?)?;
     match journal.version {
-        LEGACY_NATIVE_EXCHANGE_JOURNAL_VERSION | NATIVE_EXCHANGE_JOURNAL_VERSION => Ok(journal),
+        LEGACY_NATIVE_EXCHANGE_JOURNAL_VERSION
+        | IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION
+        | NATIVE_EXCHANGE_JOURNAL_VERSION => Ok(journal),
         version => Err(NativeExchangeError::UnsupportedJournalVersion(version)),
     }
 }
@@ -504,6 +530,7 @@ mod tests {
         let journal = NativeExchangeJournal {
             version: NATIVE_EXCHANGE_JOURNAL_VERSION,
             operation: crate::IdempotencyKey::from_bytes([1; 16]),
+            recovery: Vec::new(),
             live: live.clone(),
             prepared: prepared.clone(),
             carried: Vec::new(),
@@ -542,14 +569,29 @@ mod tests {
         let operation = crate::IdempotencyKey::from_bytes([12; 16]);
         let carried = vec![PathBuf::from("private")];
 
-        prepare_native_exchange(&journal_path, &live, &prepared, operation, carried.clone())
-            .expect("prepare exchange");
-        prepare_native_exchange(&journal_path, &live, &prepared, operation, carried.clone())
-            .expect("retry preparation");
+        prepare_native_exchange_with_recovery(
+            &journal_path,
+            &live,
+            &prepared,
+            operation,
+            carried.clone(),
+            vec![21; 32],
+        )
+        .expect("prepare exchange");
+        prepare_native_exchange_with_recovery(
+            &journal_path,
+            &live,
+            &prepared,
+            operation,
+            carried.clone(),
+            vec![21; 32],
+        )
+        .expect("retry preparation");
 
         let journal = read_journal(&journal_path).expect("read journal");
         assert_eq!(journal.operation, operation);
         assert_eq!(journal.carried, carried);
+        assert_eq!(journal.recovery, vec![21; 32]);
         assert_eq!(journal.phase, NativeExchangePhase::Carrying);
         assert!(matches!(
             prepare_native_exchange(
@@ -581,6 +623,7 @@ mod tests {
             &NativeExchangeJournal {
                 version: NATIVE_EXCHANGE_JOURNAL_VERSION,
                 operation: crate::IdempotencyKey::from_bytes([5; 16]),
+                recovery: Vec::new(),
                 live: first_live.clone(),
                 prepared: first_prepared.clone(),
                 carried: Vec::new(),
@@ -622,6 +665,7 @@ mod tests {
         let mut encoded = serde_json::to_value(NativeExchangeJournal {
             version: NATIVE_EXCHANGE_JOURNAL_VERSION,
             operation: crate::IdempotencyKey::from_bytes([9; 16]),
+            recovery: Vec::new(),
             live: live.clone(),
             prepared: prepared.clone(),
             carried: Vec::new(),
@@ -662,6 +706,7 @@ mod tests {
         let journal = NativeExchangeJournal {
             version: NATIVE_EXCHANGE_JOURNAL_VERSION + 1,
             operation: crate::IdempotencyKey::from_bytes([10; 16]),
+            recovery: Vec::new(),
             live: live.clone(),
             prepared: prepared.clone(),
             carried: Vec::new(),
@@ -708,6 +753,7 @@ mod tests {
         let mut journal = NativeExchangeJournal {
             version: NATIVE_EXCHANGE_JOURNAL_VERSION,
             operation: crate::IdempotencyKey::from_bytes([7; 16]),
+            recovery: Vec::new(),
             live: live.clone(),
             prepared: prepared.clone(),
             carried: vec![PathBuf::from("private")],
@@ -757,6 +803,7 @@ mod tests {
         let mut journal = NativeExchangeJournal {
             version: NATIVE_EXCHANGE_JOURNAL_VERSION,
             operation: crate::IdempotencyKey::from_bytes([8; 16]),
+            recovery: Vec::new(),
             live: live.clone(),
             prepared: prepared.clone(),
             carried: vec![PathBuf::from("private")],
@@ -839,6 +886,7 @@ mod tests {
         let stale = NativeExchangeJournal {
             version: NATIVE_EXCHANGE_JOURNAL_VERSION,
             operation: crate::IdempotencyKey::from_bytes([3; 16]),
+            recovery: Vec::new(),
             live: live.clone(),
             prepared: prepared.clone(),
             carried: Vec::new(),
@@ -887,6 +935,7 @@ mod tests {
         let mut encoded = serde_json::to_value(NativeExchangeJournal {
             version: NATIVE_EXCHANGE_JOURNAL_VERSION,
             operation: crate::IdempotencyKey::from_bytes([12; 16]),
+            recovery: Vec::new(),
             live: live.clone(),
             prepared: prepared.clone(),
             carried: Vec::new(),
