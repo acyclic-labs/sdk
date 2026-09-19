@@ -149,9 +149,9 @@ pub use core_state::{LocalCoreStateStore, LocalCoreStateStoreError};
 pub use distributed::{ProviderObjectStore, StreamAuthorityStore};
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    CheckoutCommitOutcome, DetachedFile, DirectoryBindingChange, DirectoryPageRequest,
-    DirectoryRecordEntry, DirectoryRecordPage, EmbeddedCapabilities, FileCloneRequest,
-    FileDescription, FileRangeReadRequest, FileRecordChange, Fs, FsError, FsReceipt, FsResult,
+    CheckoutCommitOutcome, ContentStager, DetachedFile, DirectoryBindingChange,
+    DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage, EmbeddedCapabilities,
+    FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError, FsReceipt, FsResult,
     GenerationDiff, LiveMutationOutcome, MergeConflict, MergePreparation, NamedAttributeWriteMode,
     PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile,
     ResolvedFileRangeReadRequest, StagedContent, Volume,

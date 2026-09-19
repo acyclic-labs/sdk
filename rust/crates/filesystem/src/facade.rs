@@ -457,6 +457,22 @@ pub struct PinnedReader<A, O> {
     root: GenerationRoot,
 }
 
+/// Cheap cloneable writer for immutable authenticated file content.
+///
+/// Staging never mutates a checkout candidate, so independent native or
+/// network sources can overlap before one ordered mutation transaction.
+pub struct ContentStager<A, O> {
+    volume: Volume<A, O>,
+}
+
+impl<A, O> Clone for ContentStager<A, O> {
+    fn clone(&self) -> Self {
+        Self {
+            volume: self.volume.clone(),
+        }
+    }
+}
+
 impl<A, O> Clone for PinnedReader<A, O> {
     fn clone(&self) -> Self {
         Self {
@@ -465,15 +481,6 @@ impl<A, O> Clone for PinnedReader<A, O> {
             root: self.root.clone(),
         }
     }
-}
-
-/// One path and logical byte range requested from a [`PinnedReader`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FileRangeReadRequest {
-    /// Exact canonical path resolved against the pinned candidate.
-    pub path: NamespacePath,
-    /// Exact logical byte range returned.
-    pub range: ByteRange,
 }
 
 /// Public facts needed to plan reads without exposing generation-bound records.
@@ -4112,6 +4119,35 @@ impl<A, O> Checkout<A, O> {
             root: self.root.clone(),
         })
     }
+
+    /// Creates an immutable content writer that can stage independent sources
+    /// concurrently before this checkout admits their ordered mutations.
+    #[must_use]
+    pub fn content_stager(&self) -> ContentStager<A, O> {
+        ContentStager {
+            volume: self.volume.clone(),
+        }
+    }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ContentStager<A, O> {
+    /// Streams one bounded source into immutable authenticated chunks.
+    pub async fn stage<R: AsyncBlobSource>(
+        &self,
+        source: &mut R,
+        maximum_source_bytes: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<StagedContent> {
+        stage_content_for_volume(
+            &self.volume,
+            source,
+            maximum_source_bytes,
+            budget,
+            cancellation,
+        )
+        .await
+    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
@@ -4681,94 +4717,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             value: handles,
             work,
         })
-    }
-
-    /// Reads an ordered request group with at most `concurrency` operations in flight.
-    /// Finite budgets are consumed sequentially so no concurrent request can admit the
-    /// group's full budget independently; explicitly unbounded administrative calls may run
-    /// concurrently. A concurrent failure cancels no already-started work and returns exact
-    /// completed work plus the failed request's receipt.
-    pub async fn read_file_ranges(
-        &self,
-        requests: &[FileRangeReadRequest],
-        concurrency: usize,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<Vec<FileRangeRead>> {
-        if concurrency == 0
-            || requests.len()
-                > usize::try_from(self.volume.config.limits.maximum_paths_per_batch)
-                    .unwrap_or(usize::MAX)
-        {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let paths = requests
-            .iter()
-            .map(|request| request.path.clone())
-            .collect::<Vec<_>>();
-        let resolved = self
-            .resolve_file_records(&paths, budget, cancellation)
-            .await?;
-        let mut prior = resolved.work;
-        let mut records = Vec::new();
-        records
-            .try_reserve_exact(resolved.value.len())
-            .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), prior))?;
-        for record in resolved.value {
-            records.push(record.ok_or_else(|| OperationFailure::new(FsError::NotFound, prior))?);
-        }
-        if budget != WorkBudget::UNBOUNDED {
-            let mut ordered = Vec::new();
-            ordered
-                .try_reserve_exact(requests.len())
-                .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), prior))?;
-            for (request, record) in requests.iter().zip(records) {
-                let receipt = self
-                    .read_record_range(
-                        record,
-                        request.range,
-                        remaining(prior, budget)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|failure| {
-                        failure.map_with_prior_work(prior, std::convert::identity)
-                    })?;
-                prior = add(prior, receipt.work)?;
-                ordered.push(receipt.value);
-            }
-            return Ok(FsReceipt {
-                value: ordered,
-                work: prior,
-            });
-        }
-        let ranges = requests
-            .iter()
-            .map(|request| request.range)
-            .collect::<Vec<_>>();
-        let results = stream::iter(ranges.into_iter().zip(records).enumerate().map(
-            |(index, (range, record))| {
-                let reader = self.clone();
-                let cancellation = cancellation.clone();
-                async move {
-                    (
-                        index,
-                        reader
-                            .read_record_range(record, range, budget, &cancellation)
-                            .await,
-                    )
-                }
-            },
-        ))
-        .buffer_unordered(concurrency.min(requests.len().max(1)))
-        .collect::<Vec<_>>()
-        .await;
-        let mut ordered = order_batch_results(results, budget)
-            .map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
-        ordered.work = add(prior, ordered.work)?;
-        Ok(ordered)
     }
 
     /// Reads ranges from already resolved files with bounded concurrency and
@@ -8782,23 +8730,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<StagedContent> {
-        if maximum_source_bytes == 0
-            || maximum_source_bytes > self.volume.config.limits.maximum_generation_bytes
-        {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let blob = self
-            .stage_blob_source(source, maximum_source_bytes, budget, cancellation)
-            .await?;
-        Ok(FsReceipt {
-            value: StagedContent {
-                root: blob.value.root,
-                logical_bytes: blob.value.logical_bytes,
-            },
-            work: blob.work,
-        })
+        stage_content_for_volume(
+            &self.volume,
+            source,
+            maximum_source_bytes,
+            budget,
+            cancellation,
+        )
+        .await
     }
 
     async fn stage_blob(
@@ -8827,35 +8766,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<crate::kernel::BlobBuild> {
-        let chunk_bytes = u32::try_from(
-            self.volume
-                .config
-                .limits
-                .maximum_object_bytes
-                .min(1024 * 1024),
-        )
-        .unwrap_or(u32::MAX)
-        .max(1);
-        let page_bytes = u32::try_from(self.volume.config.limits.maximum_object_bytes)
-            .unwrap_or(u32::MAX)
-            .max(1);
-        let blob = build_blob_async(
-            &self.volume.fs.inner.objects,
+        let staged = stage_content_for_volume(
+            &self.volume,
             source,
-            BlobBuildOptions {
-                chunk_bytes,
-                page_items: self.volume.config.limits.maximum_directory_page_entries,
-                page_bytes,
-                maximum_blob_bytes,
-            },
+            maximum_blob_bytes,
             budget,
             cancellation,
         )
-        .await
-        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+        .await?;
         Ok(FsReceipt {
-            work: blob.work,
-            value: blob,
+            work: staged.work,
+            value: crate::kernel::BlobBuild {
+                root: staged.value.root,
+                logical_bytes: staged.value.logical_bytes,
+                work: staged.work,
+            },
         })
     }
 
@@ -10422,6 +10347,53 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .map_err(|error| OperationFailure::new(error.into(), work))?;
         Ok(work)
     }
+}
+
+async fn stage_content_for_volume<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    R: AsyncBlobSource,
+>(
+    volume: &Volume<A, O>,
+    source: &mut R,
+    maximum_source_bytes: u64,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> FsResult<StagedContent> {
+    if maximum_source_bytes == 0
+        || maximum_source_bytes > volume.config.limits.maximum_generation_bytes
+    {
+        return Err(OperationFailure::before_work(FsError::FileRead(
+            FileRangeReadError::InvalidRange,
+        )));
+    }
+    let chunk_bytes = u32::try_from(volume.config.limits.maximum_object_bytes.min(1024 * 1024))
+        .unwrap_or(u32::MAX)
+        .max(1);
+    let page_bytes = u32::try_from(volume.config.limits.maximum_object_bytes)
+        .unwrap_or(u32::MAX)
+        .max(1);
+    let blob = build_blob_async(
+        &volume.fs.inner.objects,
+        source,
+        BlobBuildOptions {
+            chunk_bytes,
+            page_items: volume.config.limits.maximum_directory_page_entries,
+            page_bytes,
+            maximum_blob_bytes: maximum_source_bytes,
+        },
+        budget,
+        cancellation,
+    )
+    .await
+    .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+    Ok(FsReceipt {
+        value: StagedContent {
+            root: blob.root,
+            logical_bytes: blob.logical_bytes,
+        },
+        work: blob.work,
+    })
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {

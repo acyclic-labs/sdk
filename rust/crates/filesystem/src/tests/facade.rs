@@ -1622,16 +1622,26 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     ))
     .ok_or("second directory child create blocked")??;
     let reader = writer.pinned_reader()?;
+    let request_paths = [path("second")?, path("first")?];
+    let resolved_batch =
+        poll_ready(reader.resolve_files(&request_paths, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("batch resolve blocked")??;
+    let second_file = resolved_batch.value[0]
+        .as_ref()
+        .ok_or("second resolved file absent")?;
+    let first_file = resolved_batch.value[1]
+        .as_ref()
+        .ok_or("first resolved file absent")?;
     let requests = [
-        FileRangeReadRequest {
-            path: path("second")?,
+        ResolvedFileRangeReadRequest {
+            file: second_file,
             range: ByteRange {
                 offset: 2,
                 length: 3,
             },
         },
-        FileRangeReadRequest {
-            path: path("first")?,
+        ResolvedFileRangeReadRequest {
+            file: first_file,
             range: ByteRange {
                 offset: 1,
                 length: 4,
@@ -1639,7 +1649,7 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
         },
     ];
     let batch =
-        poll_ready(reader.read_file_ranges(&requests, 2, WorkBudget::UNBOUNDED, &cancellation))
+        poll_ready(reader.read_resolved_ranges(&requests, 2, WorkBudget::UNBOUNDED, &cancellation))
             .ok_or("batch blocked")??;
     assert_eq!(&batch.value[0].bytes[..], b"234");
     assert_eq!(&batch.value[1].bytes[..], b"bcde");
@@ -1816,14 +1826,14 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     );
 
     let first = poll_ready(reader.read_file_range(
-        &requests[0].path,
+        &request_paths[0],
         requests[0].range,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("single read blocked")??;
     let second = poll_ready(reader.read_file_range(
-        &requests[1].path,
+        &request_paths[1],
         requests[1].range,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -1835,7 +1845,7 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     assert!(batch.work.page_reads < independent.page_reads);
 
     let Err(bounded_failure) =
-        poll_ready(reader.read_file_ranges(&requests, 2, first.work, &cancellation))
+        poll_ready(reader.read_resolved_ranges(&requests, 2, first.work, &cancellation))
             .ok_or("bounded batch blocked")?
     else {
         return Err("the second range received the first range's full budget".into());
@@ -1843,16 +1853,19 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     bounded_failure.work.verify(first.work)?;
 
     let concurrent_failure_requests = [
-        FileRangeReadRequest {
-            path: requests[0].path.clone(),
+        ResolvedFileRangeReadRequest {
+            file: second_file,
             range: ByteRange {
                 offset: 0,
                 length: u64::MAX,
             },
         },
-        requests[1].clone(),
+        ResolvedFileRangeReadRequest {
+            file: first_file,
+            range: requests[1].range,
+        },
     ];
-    let Err(concurrent_failure) = poll_ready(reader.read_file_ranges(
+    let Err(concurrent_failure) = poll_ready(reader.read_resolved_ranges(
         &concurrent_failure_requests,
         2,
         WorkBudget::UNBOUNDED,
