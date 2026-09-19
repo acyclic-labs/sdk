@@ -147,6 +147,7 @@ def consumer(root: Path, bun: str) -> dict[str, object]:
         else [bun]
     )
     commands = [
+        [*launcher, "install", "--frozen-lockfile"],
         [*launcher, "x", "tsc", "-b", "--force", "typescript/packages/sdk/tsconfig.json",
          "--pretty", "false"],
         [*launcher, "x", "tsc", "-p", "typescript/packages/sdk/consumer-tsconfig.json",
