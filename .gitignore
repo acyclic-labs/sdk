@@ -1,4 +1,8 @@
 /target/
+# acyclic CLI plugin: local release staging and the daemon's own state.
+/plugin/dist/
+/plugin/build/
+.acyclic/
 /target-*/
 __pycache__/
 /.tools/
