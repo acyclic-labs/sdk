@@ -1,15 +1,10 @@
-# acyclic (CLI plugin)
-
-This directory is the `acyclic` CLI, daemon and MCP server: a product built on the
-`acyclic-fs` crate two directories up. It lives in the sdk workspace as
-`plugin/crates/*` and releases from this repository as `plugin-v<version>` tags.
-Paths in this document are relative to `plugin/` unless they start with `rust/`.
+# graphcoder-plugin
 
 Checkpoint every agent action, rewind exactly, see the blast radius. The store captures what git can't give back: untracked files, gitignored artifacts, and what a `bash` step wrote. History survives across sessions and is linked to the conversation turn that caused it.
 
 **A local product with plugin distribution.** The product is an agent-native state engine that runs on your machine — snapshots, forks, and indexing over your working tree. The plugins are thin adapters that deliver it through Claude Code, Codex, OpenCode, any agent that can run a shell command, and Claude Desktop over MCP. The engine is the moat; the plugins are the channel.
 
-> Status: Launches 1–4 built (Rewind, Timeline, Forks, Safe Mode), acceptance suites green on macOS and Linux, published to npm as `@acyclic-labs/plugin`. Launch 1's release gate is met: snapshot exclusions, a store-growth proof, license scanning, an attested SBOM per binary, `scripts/install.sh`, and a clean-machine install test. What v1 deliberately does not do is prune or purge history; see [Retention and purge](#retention-and-purge). Launch 5 (Monorepo) is spec; see `docs/design/`.
+> Status: Launches 1–3 built (Rewind, Timeline, Forks), acceptance suites green on macOS, Linux, and Windows, published to npm as `@acyclic-labs/plugin`. Launch 1's release gate is met: snapshot exclusions, a store-growth proof, license scanning, an attested SBOM per binary, `scripts/install.sh`, and a clean-machine install test. What v1 deliberately does not do is prune or purge history; see [Retention and purge](#retention-and-purge). Launch 5 (Monorepo) is spec. The spec lives on the [Acyclic plugins docs page](https://acyclic.dev/docs/plugins).
 
 ## Install
 
@@ -20,10 +15,10 @@ npm i -g @acyclic-labs/plugin
 ```
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/acyclic-labs/sdk/main/plugin/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/acyclic-labs/graphcoder-plugin/main/scripts/install.sh | sh
 ```
 
-npm ships prebuilt binaries for macOS, Linux, and Windows x64, and is the path that works today. The installer script, which covers macOS and Linux only, downloads the binary for your machine from a GitHub release, checks it against that release's `SHA256SUMS`, and drops it in `~/.local/bin` — no sudo, no package manager. It installs the version named by `LATEST` in this directory on `main`; set `ACYCLIC_VERSION` to pin a release and `ACYCLIC_INSTALL_DIR` to install elsewhere. Until the first `plugin-v*` release exists the script exits with a 404 and points you back at npm.
+npm ships prebuilt binaries for macOS, Linux, and Windows x64, and is the path that works today. The installer script, which covers macOS and Linux only, downloads the binary for your machine from a GitHub release, checks it against that release's `SHA256SUMS`, and drops it in `~/.local/bin` — no sudo, no package manager. **No release is cut yet, so the script currently exits with a 404 and points you back at npm**; it goes live with the first tag. Set `ACYCLIC_VERSION` to pin a release and `ACYCLIC_INSTALL_DIR` to install elsewhere.
 
 **Step 2 — wire it into your repo.**
 
@@ -60,7 +55,7 @@ Not yet covered: an `install` writer for Codex's MCP config (TOML), Kimi Code CL
 
 ## The public name
 
-`product.toml` in this directory holds the public name once. The CLI command, `.<name>/config.toml`, the state and config directories, hook commands, skill names, message prefixes, the `<NAME>_TRACE` and `<NAME>_HOOK` variables, release asset names, and the npm bin all derive from it at build or packaging time (`crates/acyclic-engine/build.rs`, `scripts/product.sh`, the workflows). Crate names stay `acyclic*` because they are internal. `scripts/install.sh` is fetched standalone and mirrors the name, repo, and npm package; `scripts/check-product-name.sh` fails CI if any of them drifts or if any user-facing Rust string spells the name out. Renaming is: change `product.toml`, update the three mirror lines in `install.sh`, rebuild.
+`product.toml` at the repo root holds the public name once. The CLI command, `.<name>/config.toml`, the state and config directories, hook commands, skill names, message prefixes, the `<NAME>_TRACE` and `<NAME>_HOOK` variables, release asset names, and the npm bin all derive from it at build or packaging time (`crates/acyclic/build.rs`, `scripts/product.sh`, the workflows). Crate names stay `acyclic*` because they are internal. `scripts/install.sh` is fetched standalone and mirrors the name, repo, and npm package; `scripts/check-product-name.sh` fails CI if any of them drifts or if any user-facing Rust string spells the name out. Renaming is: change `product.toml`, update the three mirror lines in `install.sh`, rebuild.
 
 ## Configuration
 
@@ -73,11 +68,13 @@ Not yet covered: an `install` writer for Codex's MCP config (TOML), Kimi Code CL
 | `commit_every` / `commit_idle_ms` | `25` / `60000` | How often per-tool-call checkpoints are published to the durable store. |
 | `auto_checkpoint_idle_ms` | `5000` | Idle-timer safety net: checkpoints changes on its own once the watcher has been quiet this long, for hosts with no lifecycle-hook API (Claude Desktop). `0` disables it. Cheap no-op for hooked hosts, which already drain the watcher themselves. |
 | `quiesce_ms` / `quiesce_cap_ms` | `50` / `500` | Watcher quiet window before a capture. |
-| `dry_run` / `guarded_paths` | `false` / `[]` | Safe Mode (Launch 4). |
+| `guarded_paths` | `[]` | Repo-relative prefixes that mounted forks cannot write. Copy-mode forks do not enforce this mount-layer policy. |
 | `[decompose]` / `[merge]` | | Fork decomposition policy and merge limits (Launch 3). |
 | `store_dir` | `~/.local/share/acyclic/stores` | Where stores live. Never inside the repo. |
 
 Speculation is configured separately, in `~/.config/acyclic/speculate.toml` — per developer, never checked in, because turning it on can spend that developer's money. See [Speculation](#speculation).
+
+`exclude` matches **paths, not names**: `exclude = ["__pycache__"]` excludes a top-level `__pycache__/` and nothing else — it will not exclude `src/__pycache__/`. Name every path you mean (`"src/__pycache__"`), or exclude the directory that contains them. The wrong form fails silently and looks like it worked: the build output is captured anyway, and a Rust `target/` measured 1.4&nbsp;GB of store and +29&nbsp;s per build against 14&nbsp;MB and 35&nbsp;s with it excluded.
 
 Adding a path to `exclude` takes effect at the next daemon start; the baseline it builds is scrubbed, and every later checkpoint skips the path. Generations captured before the rule still hold it (see below).
 
@@ -114,7 +111,7 @@ Median lead is the number to watch: it is how far ahead of the request a claimed
 
 `acyclic status` reports the store size; trash is pruned by TTL. The store itself is never garbage-collected in v1, on purpose. At the pinned `acyclic-fs` revision a generation stays reachable only while it is a workspace head or carries a retention fact (checkpoint label, pin, fork base), retention facts cannot be released, and closure proofs do not follow generation parents. So the fs collector would either destroy every checkpoint but the head or, if every checkpoint were pinned first, never free anything again. Purge-through-history has the same dependency: content cannot be physically removed from a retained generation. Both land when the fs grows a retention-release fact; until then, keep secrets out of the store with `exclude`, which is the compliance control that ships. Details and the upstream ask are in `docs/design/implementation-rewind.md`, Phase 4.
 
-Known caveats: mtimes are not restored on rewind, a rewind warrants an editor reload, forks and Safe Mode sessions do not see excluded paths, and baseline capture runs at roughly 230 s/GiB on first `init`.
+Known caveats: mtimes are not restored on rewind, a rewind warrants an editor reload, forks do not see excluded paths, and baseline capture runs at roughly 230 s/GiB on first `init`.
 
 ## Thesis
 
@@ -127,7 +124,7 @@ V1 is entirely local: no sandboxes, no managed sessions, no cloud sync. It ships
 One engine, thin adapters:
 
 - **`acyclic` CLI + daemon** — watcher, Merkle-DAG snapshot store, index. Host-agnostic.
-- **Per-host adapters** — hook-based for CLIs with a lifecycle-hook API (Claude Code, Codex, Cursor), MCP-based for desktop apps and IDEs without one (Claude Desktop, VS Code; Cursor gets both). Every adapter is a `HostAdapter` in `crates/acyclic/src/install.rs`; the MCP server itself is `crates/acyclic/src/mcp.rs`, a thin translation of each tool call into the same `acyclic-proto::Op` the hooks send. The table under [Install](#per-host) says what each one writes and how far it has been verified; `docs/design/06-installation.md` has the design and the ship decision for the MCP path.
+- **Per-host adapters** — hook-based for CLIs with a lifecycle-hook API (Claude Code, Codex, Cursor), MCP-based for desktop apps and IDEs without one (Claude Desktop, VS Code; Cursor gets both). Every adapter is a `HostAdapter` in `crates/acyclic/src/install.rs`; the MCP server itself is `crates/acyclic/src/mcp.rs`, a thin translation of each tool call into the same private `proto::Op` the hooks send. The table under [Install](#per-host) says what each one writes and how far it has been verified; `docs/design/06-installation.md` has the design and the ship decision for the MCP path.
 
 ## Launch plan
 
@@ -136,12 +133,11 @@ One engine, thin adapters:
 | 1 | Rewind | Merkle snapshot store + host hooks | Never fear letting the agent loose | built (`tests/acceptance/journey.sh`, `crash.sh`, `soak.sh`, `latency.sh`, `claude-e2e.sh`) |
 | 2 | Timeline | Turn-linked metadata index | The repo at any point in the conversation | built (`timeline.sh`) |
 | 3 | Forks | Copy-on-write materialization | N parallel attempts, pick the winner | built: mounted forks, promote with three-way merge (`forks.sh`, `merge.sh`, `claude-merge-e2e.sh`) |
-| 4 | Safe Mode | Session redirection + interposition | Agents on the codebase, not agents' mistakes in it | built, needs the native mount layer (`safe-mode.sh`) |
 | 5 | Monorepo | Merkle-aware content + symbol index | The repo that finally works with agents | not started |
 
 Run everything with `tests/acceptance/run-all.sh`; the live Claude Code scenarios are gated by `ACYCLIC_E2E=1`.
 
-Full feature lists, user journeys, and technical requirements per launch: `docs/design/`.
+Full feature lists, user journeys, and technical requirements per launch: [docs/plugins](https://acyclic.dev/docs/plugins).
 
 ## Compliance posture
 
@@ -153,4 +149,4 @@ Releases carry a SLSA build-provenance attestation and an SPDX SBOM per binary, 
 
 ## License
 
-Apache-2.0 (see [LICENSE](../LICENSE)). Contributions follow [CONTRIBUTING.md](../CONTRIBUTING.md) and require DCO sign-off.
+Apache-2.0 (see [LICENSE](LICENSE)). Contributions require DCO sign-off.

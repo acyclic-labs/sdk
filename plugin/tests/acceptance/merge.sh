@@ -9,10 +9,8 @@
 # kind-changed, and directory-ancestry overlaps are refused outright and
 # leave the fork untouched.
 #
-# Works in mount mode (macOS NFS loopback, Linux FUSE) and copy mode (no
-# mount provider): the merge is judged on generations, not on how the fork
-# was realized. Each case starts from a fresh fork set so the cases are
-# independent of one another.
+# The merge is judged on generations and every fork is a routed native mount.
+# Each case starts from a fresh fork set so cases are independent.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 setup_repo

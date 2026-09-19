@@ -16,19 +16,23 @@ dependencies = [
 
 [[package]]
 name = "acyclic"
-version = "0.0.3"
+version = "0.1.0-rc.1"
 dependencies = [
- "acyclic-engine",
  "acyclic-fs",
- "acyclic-proto",
+ "blake3",
+ "bytes",
  "clap",
+ "hex",
  "libc",
  "rmcp",
+ "rusqlite",
  "schemars",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
+ "toml",
  "windows-sys 0.61.2",
 ]
 
@@ -48,7 +52,6 @@ dependencies = [
  "acyclic-harness",
  "acyclic-machines",
  "acyclic-memory",
- "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
  "async-trait",
@@ -57,32 +60,12 @@ dependencies = [
  "bytes",
  "futures",
  "hex",
- "notify",
  "rusqlite",
  "s3s",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
-]
-
-[[package]]
-name = "acyclic-engine"
-version = "0.0.3"
-dependencies = [
- "acyclic-fs",
- "blake3",
- "bytes",
- "diffy",
- "hex",
- "libc",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "toml",
 ]
 
 [[package]]
@@ -350,23 +333,6 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
-]
-
-[[package]]
-name = "acyclic-proto"
-version = "0.0.3"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "acyclic-qual"
-version = "0.0.3"
-dependencies = [
- "acyclic-engine",
- "acyclic-fs",
- "tokio",
 ]
 
 [[package]]

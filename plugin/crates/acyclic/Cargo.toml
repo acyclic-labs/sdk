@@ -1,43 +1,44 @@
 [package]
 name = "acyclic"
-version = "0.0.3"
+version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 publish = false
+build = "build.rs"
 description = "Agent-native state engine: checkpoints, rewind, and blast-radius diff for coding-agent sessions"
 
 [dependencies]
-acyclic-engine = { path = "../acyclic-engine" }
-acyclic-fs = { version = "=0.2.0-rc.5", path = "../../../rust/crates/filesystem", features = ["local", "native-watch", "native-mount"] }
-acyclic-proto = { path = "../acyclic-proto" }
+acyclic-fs.workspace = true
 clap.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process"] }
+rusqlite.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+tokio.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Handle-inheritance control for the daemon spawn (`client::spawn_daemon`),
 # the security descriptor that keeps the daemon's named pipe to this user
 # (`ipc::Listener::bind`), and the job object that makes a speculative run's
 # timeout reach the child's own children (`spec_runner::RunGroup`).
-windows-sys = { version = "0.61", features = [
-  "Win32_Foundation",
-  "Win32_Security",
-  "Win32_Security_Authorization",
-  "Win32_System_JobObjects",
-  "Win32_System_Memory",
-  "Win32_System_Threading",
-] }
+windows-sys.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
+
+[build-dependencies]
+toml.workspace = true
 
 [lints]
 workspace = true
