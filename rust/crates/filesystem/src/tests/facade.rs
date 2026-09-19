@@ -1653,6 +1653,21 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     assert_eq!(descriptions.value.len(), 3);
     assert_eq!(descriptions.value[0], descriptions.value[2]);
     assert!(descriptions.value.iter().all(Option::is_some));
+    let resolved =
+        poll_ready(reader.resolve_files(&[path("first")?], WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("resolve file blocked")??;
+    let resolved_file = resolved.value[0].as_ref().ok_or("resolved file absent")?;
+    let resolved_read = poll_ready(resolved_file.read_range(
+        ByteRange {
+            offset: 1,
+            length: 4,
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("resolved read blocked")??;
+    assert_eq!(&resolved_read.value.bytes[..], b"bcde");
+    assert_eq!(resolved_read.work.page_reads, 0);
     let target =
         poll_ready(reader.read_symbolic_link(&path("link")?, WorkBudget::UNBOUNDED, &cancellation))
             .ok_or("symlink read blocked")??;

@@ -487,6 +487,48 @@ pub struct FileDescription {
     pub metadata: FileMetadata,
 }
 
+/// One file resolved and authenticated by a specific pinned reader.
+///
+/// The private record and reader borrow make cross-generation use impossible.
+pub struct ResolvedFile<'a, A, O> {
+    reader: &'a PinnedReader<A, O>,
+    record: FileRecord,
+    description: FileDescription,
+}
+
+impl<A, O> ResolvedFile<'_, A, O> {
+    /// Public semantic facts authenticated with this handle.
+    #[must_use]
+    pub const fn description(&self) -> &FileDescription {
+        &self.description
+    }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<'_, A, O> {
+    /// Reads one logical regular-file range without another namespace lookup.
+    pub async fn read_range(
+        &self,
+        range: ByteRange,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<FileRangeRead> {
+        self.reader
+            .read_record_range(self.record, range, budget, cancellation)
+            .await
+    }
+
+    /// Reads opaque symbolic-link target bytes without another namespace lookup.
+    pub async fn read_symbolic_link(
+        &self,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Bytes> {
+        self.reader
+            .read_symbolic_link_record(self.record, budget, cancellation)
+            .await
+    }
+}
+
 #[derive(Clone, Copy)]
 struct LastCommit {
     operation_id: OperationId,
@@ -4035,7 +4077,7 @@ impl<A, O> Checkout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
-    async fn resolve_files(
+    async fn resolve_file_records(
         &self,
         paths: &[NamespacePath],
         budget: WorkBudget,
@@ -4388,6 +4430,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         cancellation: &CancellationToken,
     ) -> FsResult<Vec<Option<FileDescription>>> {
         let resolved = self.resolve_files(paths, budget, cancellation).await?;
+        let descriptions = resolved
+            .value
+            .into_iter()
+            .map(|file| file.map(|file| file.description))
+            .collect();
+        Ok(FsReceipt {
+            value: descriptions,
+            work: resolved.work,
+        })
+    }
+
+    /// Resolves and describes paths once, returning reader-scoped handles for
+    /// later body reads without another namespace traversal.
+    pub async fn resolve_files<'a>(
+        &'a self,
+        paths: &[NamespacePath],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<Option<ResolvedFile<'a, A, O>>>> {
+        let resolved = self
+            .resolve_file_records(paths, budget, cancellation)
+            .await?;
         let mut work = resolved.work;
         let mut requests = Vec::new();
         requests
@@ -4403,29 +4467,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                     maximum_bytes: self.volume.config.limits.maximum_object_bytes,
                 }),
         );
-        if requests.is_empty() {
-            return Ok(FsReceipt {
-                value: vec![None; resolved.value.len()],
-                work,
-            });
-        }
-        let reads = self
-            .volume
-            .fs
-            .inner
-            .objects
-            .read_many(&requests, remaining(work, budget)?, cancellation)
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
-        work = add(work, reads.work)?;
-        let mut descriptions = Vec::new();
-        descriptions
-            .try_reserve_exact(reads.value.len())
+        let reads = if requests.is_empty() {
+            Vec::new()
+        } else {
+            let receipt = self
+                .volume
+                .fs
+                .inner
+                .objects
+                .read_many(&requests, remaining(work, budget)?, cancellation)
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
+            work = add(work, receipt.work)?;
+            receipt.value
+        };
+        let mut reads = reads.into_iter();
+        let mut handles = Vec::new();
+        handles
+            .try_reserve_exact(resolved.value.len())
             .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
-        let mut reads = reads.value.into_iter();
         for record in resolved.value {
             let Some(record) = record else {
-                descriptions.push(None);
+                handles.push(None);
                 continue;
             };
             let bytes = reads
@@ -4441,14 +4504,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 FilePayload::SymbolicLink { target_bytes, .. } => target_bytes,
                 _ => 0,
             };
-            descriptions.push(Some(FileDescription {
-                kind: record.kind,
-                logical_bytes,
-                metadata,
+            handles.push(Some(ResolvedFile {
+                reader: self,
+                record,
+                description: FileDescription {
+                    kind: record.kind,
+                    logical_bytes,
+                    metadata,
+                },
             }));
         }
         Ok(FsReceipt {
-            value: descriptions,
+            value: handles,
             work,
         })
     }
@@ -4478,7 +4545,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             .iter()
             .map(|request| request.path.clone())
             .collect::<Vec<_>>();
-        let resolved = self.resolve_files(&paths, budget, cancellation).await?;
+        let resolved = self
+            .resolve_file_records(&paths, budget, cancellation)
+            .await?;
         let mut prior = resolved.work;
         let mut records = Vec::new();
         records

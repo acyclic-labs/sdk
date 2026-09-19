@@ -153,7 +153,7 @@ pub use facade::{
     DirectoryRecordEntry, DirectoryRecordPage, EmbeddedCapabilities, FileCloneRequest,
     FileDescription, FileRangeReadRequest, FileRecordChange, Fs, FsError, FsReceipt, FsResult,
     GenerationDiff, LiveMutationOutcome, MergeConflict, MergePreparation, NamedAttributeWriteMode,
-    PathMetadataLookup, PinnedReader, StagedContent, Volume,
+    PathMetadataLookup, PinnedReader, ResolvedFile, StagedContent, Volume,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use facade::{
