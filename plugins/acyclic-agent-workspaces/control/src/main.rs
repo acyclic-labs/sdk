@@ -1117,6 +1117,7 @@ impl ControlPlane {
             self.mounts.insert(agent_id.to_owned(), mount);
         }
         let Some(output) = command.map_err(display)? else {
+            self.persist()?;
             return Err(
                 "recovered a pending Git transition; retry the current command".to_owned(),
             );
@@ -2610,6 +2611,10 @@ mod tests {
             }))
             .await
             .is_err());
+        drop(control);
+        let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
+            .await
+            .expect("reopen after leased Git recovery");
         assert_eq!(control.state.routes["child"].workspace_id, repository_id.into_bytes());
         control
             .pre_tool(json!({
