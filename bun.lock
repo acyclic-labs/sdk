@@ -28,7 +28,7 @@
       "name": "@acyclic-labs/fs",
       "version": "0.2.0-rc.5",
       "dependencies": {
-        "@bufbuild/protobuf": "2.14.1",
+        "@bufbuild/protobuf": "2.15.0",
         "@connectrpc/connect": "2.1.1",
         "@connectrpc/connect-web": "2.1.1",
       },
@@ -41,7 +41,7 @@
       "name": "@acyclic-labs/harness",
       "version": "0.1.0-rc.1",
       "dependencies": {
-        "@bufbuild/protobuf": "2.14.1",
+        "@bufbuild/protobuf": "2.15.0",
       },
       "devDependencies": {
         "@types/bun": "1.4.0",
@@ -53,7 +53,7 @@
       "name": "@acyclic-labs/inference",
       "version": "1.0.0-rc.8",
       "dependencies": {
-        "@bufbuild/protobuf": "2.14.1",
+        "@bufbuild/protobuf": "2.15.0",
       },
       "devDependencies": {
         "@types/bun": "1.4.0",
@@ -194,7 +194,7 @@
 
     "@bufbuild/buf-win32-x64": ["@bufbuild/buf-win32-x64@1.72.0", "", { "os": "win32", "cpu": "x64" }, "sha512-X3eWqFzhDmu8CYQZz+Fu7i+PgH+yUl8UwJ5+x+bhZRYAIdcijikthodk60c5u/qq42m1Z2XAnAGyp/mTf7IffA=="],
 
-    "@bufbuild/protobuf": ["@bufbuild/protobuf@2.14.1", "", {}, "sha512-agRJn3+EJDUe8AvxTx/LnHA/GErvLE62pSaSk7+MwFOtOv8eWBu/qCq2qoZjBjVZ3C2aiFJCveuSs17KMkYGOw=="],
+    "@bufbuild/protobuf": ["@bufbuild/protobuf@2.15.0", "", {}, "sha512-DAheWUkVr/SJTWCc+lg9dhY0eN4SaWlf4+bG1KzHeXbnqt0AfB/NX0Z+VunGlM1ki1B4zVvye27MpKh/svySUA=="],
 
     "@bufbuild/protoc-gen-es": ["@bufbuild/protoc-gen-es@2.14.1", "", { "dependencies": { "@bufbuild/protobuf": "2.14.1", "@bufbuild/protoplugin": "2.14.1" }, "bin": { "protoc-gen-es": "bin/protoc-gen-es" } }, "sha512-agiGxvA1VAzWPdtOiktK39BNvGgHc1jHBCI1XYQtCQDSpt/5pZ7jTRGKv0fYzExbovDVu+yxJq4Srpv8zCIvUQ=="],
 
@@ -339,6 +339,10 @@
     "zimmerframe": ["zimmerframe@1.1.5", "", {}, "sha512-msJxIvYDYcoNL+PJsu+7qmpDWsYmAxTY+2TNYXXF0hzBzBk0BMecOqDOG/EckUoKCuKwObfbugIl8QpqHDXeFA=="],
 
     "zod": ["zod@4.5.4", "", {}, "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="],
+
+    "@bufbuild/protoc-gen-es/@bufbuild/protobuf": ["@bufbuild/protobuf@2.14.1", "", {}, "sha512-agRJn3+EJDUe8AvxTx/LnHA/GErvLE62pSaSk7+MwFOtOv8eWBu/qCq2qoZjBjVZ3C2aiFJCveuSs17KMkYGOw=="],
+
+    "@bufbuild/protoplugin/@bufbuild/protobuf": ["@bufbuild/protobuf@2.14.1", "", {}, "sha512-agRJn3+EJDUe8AvxTx/LnHA/GErvLE62pSaSk7+MwFOtOv8eWBu/qCq2qoZjBjVZ3C2aiFJCveuSs17KMkYGOw=="],
 
     "@bufbuild/protoplugin/typescript": ["typescript@5.4.5", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-vcI4UpRgg81oIRUFwR0WSIHKt11nJ7SAVlYNIu+QpqeyXP+gpQJy/Z4+F0aGxSE4MqwjyXvW/TzgkLAx2AGHwQ=="],
   }
