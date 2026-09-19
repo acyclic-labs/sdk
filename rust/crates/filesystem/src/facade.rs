@@ -476,14 +476,15 @@ pub struct FileRangeReadRequest {
     pub range: ByteRange,
 }
 
-/// One already resolved file record and logical byte range requested from a
-/// [`PinnedReader`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FileRecordRangeReadRequest {
-    /// Authenticated file record returned by the same pinned generation.
-    pub record: FileRecord,
-    /// Exact logical byte range returned.
-    pub range: ByteRange,
+/// Public facts needed to plan reads without exposing generation-bound records.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileDescription {
+    /// Terminal entry kind.
+    pub kind: FileKind,
+    /// Logical content length for regular files and symbolic links.
+    pub logical_bytes: u64,
+    /// Canonical metadata authenticated with the same pinned generation.
+    pub metadata: FileMetadata,
 }
 
 #[derive(Clone, Copy)]
@@ -4034,6 +4035,37 @@ impl<A, O> Checkout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
+    async fn resolve_files(
+        &self,
+        paths: &[NamespacePath],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<Option<FileRecord>>> {
+        let lookup = crate::kernel::lookup_paths_async(
+            &self.volume.fs.inner.objects,
+            &self.root,
+            paths,
+            self.volume.config,
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), FsError::Path))?;
+        let mut records = Vec::new();
+        records
+            .try_reserve_exact(lookup.entries.len())
+            .map_err(|_| {
+                OperationFailure::new(FsError::PendingMutationAllocationFailed, lookup.work)
+            })?;
+        for entry in lookup.entries {
+            records.push(entry.record);
+        }
+        Ok(FsReceipt {
+            value: records,
+            work: lookup.work,
+        })
+    }
+
     async fn list_directory_page(
         &self,
         request: DirectoryPageRequest,
@@ -4114,14 +4146,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         order_batch_results(results, budget)
     }
 
-    /// Reads exact opaque symbolic-link target bytes from one authenticated
-    /// record without resolving a namespace path.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed kind, corruption, cancellation, storage, allocation, or
-    /// bounded-work failures.
-    pub async fn read_symbolic_link_record(
+    async fn read_symbolic_link_record(
         &self,
         record: FileRecord,
         budget: WorkBudget,
@@ -4132,11 +4157,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
 
     async fn read_record_range(
         &self,
-        request: FileRecordRangeReadRequest,
+        record: FileRecord,
+        range: ByteRange,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<FileRangeRead> {
-        if request.range.length > self.volume.config.limits.maximum_read_bytes {
+        if range.length > self.volume.config.limits.maximum_read_bytes {
             return Err(OperationFailure::before_work(FsError::FileRead(
                 FileRangeReadError::InvalidRange,
             )));
@@ -4144,8 +4170,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         let read = read_file_range_async(
             &self.volume.fs.inner.objects,
             FileRangeRequest {
-                record: request.record,
-                range: request.range,
+                record,
+                range,
                 maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
                 limits: decode_limits(self.volume.config),
                 budget,
@@ -4314,6 +4340,119 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         Ok(FsReceipt { value: read, work })
     }
 
+    /// Reads exact opaque symbolic-link target bytes without following it.
+    pub async fn read_symbolic_link(
+        &self,
+        path: &NamespacePath,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Bytes> {
+        let resolved = self.resolve_file(path, budget, cancellation).await?;
+        let mut work = resolved.work;
+        let read = self
+            .read_symbolic_link_record(resolved.value, remaining(work, budget)?, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+        work = add(work, read.work)?;
+        Ok(FsReceipt {
+            value: read.value,
+            work,
+        })
+    }
+
+    /// Reads complete canonical metadata for one exact path.
+    pub async fn read_metadata(
+        &self,
+        path: &NamespacePath,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<FileMetadata> {
+        let resolved = self.resolve_file(path, budget, cancellation).await?;
+        let mut work = resolved.work;
+        let metadata = self
+            .read_record_metadata(resolved.value, remaining(work, budget)?, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+        work = add(work, metadata.work)?;
+        Ok(FsReceipt {
+            value: metadata.value,
+            work,
+        })
+    }
+
+    /// Describes an ordered path batch while sharing namespace and object traversal.
+    pub async fn describe_files(
+        &self,
+        paths: &[NamespacePath],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<Option<FileDescription>>> {
+        let resolved = self.resolve_files(paths, budget, cancellation).await?;
+        let mut work = resolved.work;
+        let mut requests = Vec::new();
+        requests
+            .try_reserve_exact(resolved.value.len())
+            .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
+        requests.extend(
+            resolved
+                .value
+                .iter()
+                .flatten()
+                .map(|record| ObjectReadRequest {
+                    object_id: record.metadata,
+                    maximum_bytes: self.volume.config.limits.maximum_object_bytes,
+                }),
+        );
+        if requests.is_empty() {
+            return Ok(FsReceipt {
+                value: vec![None; resolved.value.len()],
+                work,
+            });
+        }
+        let reads = self
+            .volume
+            .fs
+            .inner
+            .objects
+            .read_many(&requests, remaining(work, budget)?, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
+        work = add(work, reads.work)?;
+        let mut descriptions = Vec::new();
+        descriptions
+            .try_reserve_exact(reads.value.len())
+            .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
+        let mut reads = reads.value.into_iter();
+        for record in resolved.value {
+            let Some(record) = record else {
+                descriptions.push(None);
+                continue;
+            };
+            let bytes = reads
+                .next()
+                .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
+            let metadata = decode_file_metadata(&bytes, decode_limits(self.volume.config))
+                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            let logical_bytes = match record.payload {
+                FilePayload::InlineRegular(bytes) => {
+                    u64::try_from(bytes.as_bytes().len()).unwrap_or(u64::MAX)
+                }
+                FilePayload::Regular { logical_bytes, .. } => logical_bytes,
+                FilePayload::SymbolicLink { target_bytes, .. } => target_bytes,
+                _ => 0,
+            };
+            descriptions.push(Some(FileDescription {
+                kind: record.kind,
+                logical_bytes,
+                metadata,
+            }));
+        }
+        Ok(FsReceipt {
+            value: descriptions,
+            work,
+        })
+    }
+
     /// Reads an ordered request group with at most `concurrency` operations in flight.
     /// Finite budgets are consumed sequentially so no concurrent request can admit the
     /// group's full budget independently; explicitly unbounded administrative calls may run
@@ -4335,166 +4474,65 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 FileRangeReadError::InvalidRange,
             )));
         }
+        let paths = requests
+            .iter()
+            .map(|request| request.path.clone())
+            .collect::<Vec<_>>();
+        let resolved = self.resolve_files(&paths, budget, cancellation).await?;
+        let mut prior = resolved.work;
+        let mut records = Vec::new();
+        records
+            .try_reserve_exact(resolved.value.len())
+            .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), prior))?;
+        for record in resolved.value {
+            records.push(record.ok_or_else(|| OperationFailure::new(FsError::NotFound, prior))?);
+        }
         if budget != WorkBudget::UNBOUNDED {
-            let mut work = WorkCounters::default();
             let mut ordered = Vec::new();
             ordered
                 .try_reserve_exact(requests.len())
-                .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
-            for request in requests {
+                .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), prior))?;
+            for (request, record) in requests.iter().zip(records) {
                 let receipt = self
-                    .read_file_range(
-                        &request.path,
+                    .read_record_range(
+                        record,
                         request.range,
-                        remaining(work, budget)?,
+                        remaining(prior, budget)?,
                         cancellation,
                     )
                     .await
-                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-                work = add(work, receipt.work)?;
+                    .map_err(|failure| {
+                        failure.map_with_prior_work(prior, std::convert::identity)
+                    })?;
+                prior = add(prior, receipt.work)?;
                 ordered.push(receipt.value);
             }
             return Ok(FsReceipt {
                 value: ordered,
-                work,
+                work: prior,
             });
         }
-        let results = stream::iter(
-            requests
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(index, request)| {
-                    let reader = self.clone();
-                    async move {
-                        (
-                            index,
-                            reader
-                                .read_file_range(&request.path, request.range, budget, cancellation)
-                                .await,
-                        )
-                    }
-                }),
-        )
+        let results = stream::iter(requests.iter().zip(records).enumerate().map(
+            |(index, (request, record))| {
+                let reader = self.clone();
+                let range = request.range;
+                async move {
+                    (
+                        index,
+                        reader
+                            .read_record_range(record, range, budget, cancellation)
+                            .await,
+                    )
+                }
+            },
+        ))
         .buffer_unordered(concurrency.min(requests.len().max(1)))
         .collect::<Vec<_>>()
         .await;
-        order_batch_results(results, budget)
-    }
-
-    /// Reads ordered ranges from already resolved authenticated records with
-    /// at most `concurrency` operations in flight. Finite budgets are consumed
-    /// sequentially.
-    pub async fn read_file_record_ranges(
-        &self,
-        requests: &[FileRecordRangeReadRequest],
-        concurrency: usize,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<Vec<FileRangeRead>> {
-        if concurrency == 0
-            || requests.len()
-                > usize::try_from(self.volume.config.limits.maximum_paths_per_batch)
-                    .unwrap_or(usize::MAX)
-        {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        if budget != WorkBudget::UNBOUNDED {
-            let mut work = WorkCounters::default();
-            let mut ordered = Vec::new();
-            ordered
-                .try_reserve_exact(requests.len())
-                .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
-            for request in requests.iter().copied() {
-                let receipt = self
-                    .read_record_range(request, remaining(work, budget)?, cancellation)
-                    .await
-                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-                work = add(work, receipt.work)?;
-                ordered.push(receipt.value);
-            }
-            return Ok(FsReceipt {
-                value: ordered,
-                work,
-            });
-        }
-        let results = stream::iter(
-            requests
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(index, request)| {
-                    let reader = self.clone();
-                    async move {
-                        (
-                            index,
-                            reader
-                                .read_record_range(request, budget, cancellation)
-                                .await,
-                        )
-                    }
-                }),
-        )
-        .buffer_unordered(concurrency.min(requests.len().max(1)))
-        .collect::<Vec<_>>()
-        .await;
-        order_batch_results(results, budget)
-    }
-
-    /// Decodes metadata for authenticated records with bounded concurrency,
-    /// preserving request order. Finite budgets are consumed sequentially.
-    pub async fn read_record_metadata_batch(
-        &self,
-        records: &[FileRecord],
-        concurrency: usize,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<Vec<FileMetadata>> {
-        if concurrency == 0
-            || records.len()
-                > usize::try_from(self.volume.config.limits.maximum_paths_per_batch)
-                    .unwrap_or(usize::MAX)
-        {
-            return Err(OperationFailure::before_work(FsError::Path(
-                PathLookupError::TooManyPaths,
-            )));
-        }
-        if budget != WorkBudget::UNBOUNDED {
-            let mut work = WorkCounters::default();
-            let mut ordered = Vec::new();
-            ordered
-                .try_reserve_exact(records.len())
-                .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
-            for record in records.iter().copied() {
-                let receipt = self
-                    .read_record_metadata(record, remaining(work, budget)?, cancellation)
-                    .await
-                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-                work = add(work, receipt.work)?;
-                ordered.push(receipt.value);
-            }
-            return Ok(FsReceipt {
-                value: ordered,
-                work,
-            });
-        }
-        let results = stream::iter(records.iter().copied().enumerate().map(|(index, record)| {
-            let reader = self.clone();
-            async move {
-                (
-                    index,
-                    reader
-                        .read_record_metadata(record, budget, cancellation)
-                        .await,
-                )
-            }
-        }))
-        .buffer_unordered(concurrency.min(records.len().max(1)))
-        .collect::<Vec<_>>()
-        .await;
-        order_batch_results(results, budget)
+        let mut ordered = order_batch_results(results, budget)
+            .map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
+        ordered.work = add(prior, ordered.work)?;
+        Ok(ordered)
     }
 }
 

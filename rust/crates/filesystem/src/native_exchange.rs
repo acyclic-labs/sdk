@@ -793,6 +793,8 @@ mod tests {
         write_journal(&journal_path, &stale).expect("stale journal");
         exchange(&live, &prepared).expect("completed first exchange");
 
+        let recovered = recover_native_exchange(&journal_path).expect("recover completed exchange");
+        assert!(recovered.published);
         remove_entry(&prepared).expect("remove displaced tree");
         std::fs::create_dir(&prepared).expect("next prepared tree");
         std::fs::write(prepared.join("third"), b"third").expect("next prepared file");

@@ -1644,52 +1644,22 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     assert_eq!(&batch.value[0].bytes[..], b"234");
     assert_eq!(&batch.value[1].bytes[..], b"bcde");
 
-    let lookup = poll_ready(writer.lookup_batch_no_follow(
-        &[path("second")?, path("first")?, path("link")?],
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("record lookup blocked")??;
-    let second_record = lookup.value.entries[0].record.ok_or("second absent")?;
-    let first_record = lookup.value.entries[1].record.ok_or("first absent")?;
-    let link_record = lookup.value.entries[2].record.ok_or("link absent")?;
-    let record_reads = poll_ready(reader.read_file_record_ranges(
-        &[
-            FileRecordRangeReadRequest {
-                record: second_record,
-                range: requests[0].range,
-            },
-            FileRecordRangeReadRequest {
-                record: first_record,
-                range: requests[1].range,
-            },
-        ],
-        2,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("record range batch blocked")??;
-    assert_eq!(&record_reads.value[0].bytes[..], b"234");
-    assert_eq!(&record_reads.value[1].bytes[..], b"bcde");
-    let metadata = poll_ready(reader.read_record_metadata_batch(
-        &[first_record, second_record, first_record],
-        3,
+    let descriptions = poll_ready(reader.describe_files(
+        &[path("first")?, path("second")?, path("first")?],
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("metadata batch blocked")??;
-    assert_eq!(metadata.value.len(), 3);
-    assert_eq!(metadata.value[0], metadata.value[2]);
-    let target = poll_ready(reader.read_symbolic_link_record(
-        link_record,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("record symlink read blocked")??;
+    assert_eq!(descriptions.value.len(), 3);
+    assert_eq!(descriptions.value[0], descriptions.value[2]);
+    assert!(descriptions.value.iter().all(Option::is_some));
+    let target =
+        poll_ready(reader.read_symbolic_link(&path("link")?, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("symlink read blocked")??;
     assert_eq!(&target.value[..], b"first");
     assert!(matches!(
-        poll_ready(reader.read_symbolic_link_record(
-            first_record,
+        poll_ready(reader.read_symbolic_link(
+            &path("first")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
@@ -1759,7 +1729,10 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
         &cancellation,
     ))
     .ok_or("single read blocked")??;
-    assert_eq!(batch.work, first.work.checked_add(second.work)?);
+    let independent = first.work.checked_add(second.work)?;
+    assert!(batch.work.object_probes < independent.object_probes);
+    assert!(batch.work.backend_read_operations < independent.backend_read_operations);
+    assert!(batch.work.page_reads < independent.page_reads);
 
     let Err(bounded_failure) =
         poll_ready(reader.read_file_ranges(&requests, 2, first.work, &cancellation))
@@ -1789,7 +1762,15 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     else {
         return Err("the invalid concurrent range unexpectedly succeeded".into());
     };
-    assert_eq!(*concurrent_failure.work, second.work);
+    assert_eq!(
+        concurrent_failure.work.backend_read_operations,
+        batch.work.backend_read_operations
+    );
+    assert_eq!(concurrent_failure.work.page_reads, batch.work.page_reads);
+    assert_eq!(
+        concurrent_failure.work.output_bytes,
+        second.work.output_bytes
+    );
 
     let tracking = poll_ready(volume.checkout(
         GenerationSelector::Head,
