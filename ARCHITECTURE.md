@@ -28,6 +28,12 @@ The dependency graph is one way:
 9. `acyclic-harness-filesystem` and `acyclic-harness-machines` are genuine
    cross-family adapter boundaries. Provider-specific types never enter the
    pure/WASM harness core.
+10. `plugin/` is the `acyclic` CLI, daemon and MCP server: a customer-machine
+    product (the execution-boundary rule below) that consumes `acyclic-fs`
+    only through its public API, pinned exactly. It is not a family: no
+    wire schema, no provider trait, no conformance suite. Its acceptance
+    suite (`plugin/tests/acceptance`) qualifies it in the native lanes, and
+    no family crate depends on it.
 
 ## Consumption rules
 
