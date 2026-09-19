@@ -1316,17 +1316,19 @@ static void exclusive_remember(const darwinfuse_config_t *config,
 }
 
 /* True when this mount created `path` under `verf` recently: the OPEN is a
- * retransmit of one that succeeded, not a collision. The entry is consumed
- * so a later, unrelated request with a stale verifier cannot match. */
+ * retransmit of one that succeeded, not a collision. The entry stays until
+ * the ring overwrites it, because every lost reply is followed by another
+ * retransmit with the same verifier and each must succeed. An unrelated
+ * later create of the same path carries a fresh 64-bit verifier, so a
+ * lingering entry cannot make it succeed by mistake. */
 static int exclusive_recall(const darwinfuse_config_t *config,
                             const char *path, uint64_t verf) {
     int found = 0;
     pthread_mutex_lock(&exclusive_verifier_lock);
     for (unsigned i = 0; i < EXCLUSIVE_VERIFIERS; i++) {
-        exclusive_verifier_t *slot = &exclusive_verifiers[i];
+        const exclusive_verifier_t *slot = &exclusive_verifiers[i];
         if (slot->config == config && slot->verifier == verf &&
             strcmp(slot->path, path) == 0) {
-            slot->config = NULL;
             found = 1;
             break;
         }
