@@ -87,12 +87,18 @@ pub fn sync_parent(path: &Path, durability: Durability) -> io::Result<()> {
     sync_parent_impl(path, durability)
 }
 
+/// Destination behavior for one durable rename.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RenameMode {
+    /// Fail atomically when the destination already exists.
+    NoReplace,
+    /// Atomically replace a compatible destination entry.
+    Replace,
+}
+
 /// Renames one filesystem entry and durably publishes the affected namespace.
-///
-/// `replace` controls whether an existing destination may be replaced on
-/// Windows. Unix rename semantics already replace compatible destinations.
-pub fn durable_rename(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
-    durable_rename_impl(from, to, replace)
+pub fn durable_rename(from: &Path, to: &Path, mode: RenameMode) -> io::Result<()> {
+    durable_rename_impl(from, to, mode)
 }
 
 /// Reads at an absolute offset without changing the file cursor.
@@ -608,9 +614,54 @@ fn sync_parent_impl(path: &Path, durability: Durability) -> io::Result<()> {
     sync_file(&directory, durability)
 }
 
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code, reason = "renameat2 receives two live C paths")]
+fn durable_rename_impl(from: &Path, to: &Path, mode: RenameMode) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let from_path = std::ffi::CString::new(from.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "rename path contains NUL"))?;
+    let to_path = std::ffi::CString::new(to.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "rename path contains NUL"))?;
+    let flags = match mode {
+        RenameMode::NoReplace => libc::RENAME_NOREPLACE,
+        RenameMode::Replace => 0,
+    };
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            from_path.as_ptr(),
+            libc::AT_FDCWD,
+            to_path.as_ptr(),
+            flags,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    sync_rename_parents(from, to)
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code, reason = "renamex_np receives two live C paths")]
+fn durable_rename_impl(from: &Path, to: &Path, mode: RenameMode) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let from_path = std::ffi::CString::new(from.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "rename path contains NUL"))?;
+    let to_path = std::ffi::CString::new(to.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "rename path contains NUL"))?;
+    let flags = match mode {
+        RenameMode::NoReplace => libc::RENAME_EXCL,
+        RenameMode::Replace => 0,
+    };
+    if unsafe { libc::renamex_np(from_path.as_ptr(), to_path.as_ptr(), flags) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    sync_rename_parents(from, to)
+}
+
 #[cfg(unix)]
-fn durable_rename_impl(from: &Path, to: &Path, _replace: bool) -> io::Result<()> {
-    std::fs::rename(from, to)?;
+fn sync_rename_parents(from: &Path, to: &Path) -> io::Result<()> {
     fn namespace_parent(path: &Path) -> &Path {
         path.parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -627,7 +678,7 @@ fn durable_rename_impl(from: &Path, to: &Path, _replace: bool) -> io::Result<()>
 
 #[cfg(windows)]
 #[allow(unsafe_code, reason = "MoveFileExW receives terminated UTF-16 paths")]
-fn durable_rename_impl(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
+fn durable_rename_impl(from: &Path, to: &Path, mode: RenameMode) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -643,7 +694,7 @@ fn durable_rename_impl(from: &Path, to: &Path, replace: bool) -> io::Result<()> 
     from.push(0);
     to.push(0);
     let flags = MOVEFILE_WRITE_THROUGH
-        | if replace {
+        | if mode == RenameMode::Replace {
             MOVEFILE_REPLACE_EXISTING
         } else {
             0
@@ -687,12 +738,12 @@ mod tests {
         let source = directory.path().join("source");
         let destination = directory.path().join("destination");
         std::fs::write(&source, b"first")?;
-        durable_rename(&source, &destination, false)?;
+        durable_rename(&source, &destination, RenameMode::NoReplace)?;
         assert!(!source.exists());
         assert_eq!(std::fs::read(&destination)?, b"first");
 
         std::fs::write(&source, b"second")?;
-        durable_rename(&source, &destination, true)?;
+        durable_rename(&source, &destination, RenameMode::Replace)?;
         assert!(!source.exists());
         assert_eq!(std::fs::read(destination)?, b"second");
         Ok(())
@@ -706,12 +757,30 @@ mod tests {
         std::env::set_current_dir(temporary.path())?;
         let result = (|| {
             std::fs::write("from", b"relative")?;
-            durable_rename(Path::new("from"), Path::new("to"), false)?;
+            durable_rename(Path::new("from"), Path::new("to"), RenameMode::NoReplace)?;
             assert_eq!(std::fs::read("to")?, b"relative");
             Ok(())
         })();
         std::env::set_current_dir(original)?;
         result
+    }
+
+    #[test]
+    fn no_replace_preserves_both_entries() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("source");
+        let destination = directory.path().join("destination");
+        std::fs::write(&source, b"source")?;
+        std::fs::write(&destination, b"destination")?;
+        let Err(error) = durable_rename(&source, &destination, RenameMode::NoReplace) else {
+            return Err(io::Error::other(
+                "existing destination accepted no-replace rename",
+            ));
+        };
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(source)?, b"source");
+        assert_eq!(std::fs::read(destination)?, b"destination");
+        Ok(())
     }
 
     fn complete_read(mut read: ReadBatch) -> io::Result<Vec<Bytes>> {

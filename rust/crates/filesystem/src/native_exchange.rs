@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+use acyclic_native_runtime::durable_rename;
+
 /// Durable whole-tree exchange phase.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum NativeExchangePhase {
@@ -191,7 +193,11 @@ fn write_journal(path: &Path, journal: &NativeExchangeJournal) -> Result<(), Nat
     file.write_all(&serde_json::to_vec(journal)?)?;
     file.sync_all()?;
     drop(file);
-    durable_rename(&temporary, path, true)?;
+    durable_rename(
+        &temporary,
+        path,
+        acyclic_native_runtime::RenameMode::Replace,
+    )?;
     Ok(())
 }
 
@@ -229,10 +235,6 @@ fn remove_entry(path: &Path) -> Result<(), std::io::Error> {
     }
 }
 
-fn durable_rename(from: &Path, to: &Path, replace: bool) -> std::io::Result<()> {
-    acyclic_native_runtime::durable_rename(from, to, replace)
-}
-
 fn sync_parent(path: &Path) -> std::io::Result<()> {
     let parent = path
         .parent()
@@ -253,12 +255,28 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
     if entry_exists(&scratch)? {
         return Err(NativeExchangeError::IncompatibleJournal);
     }
-    durable_rename(live, &scratch, false)?;
-    if let Err(error) = durable_rename(prepared, live, false) {
-        let _ = durable_rename(&scratch, live, false);
+    durable_rename(
+        live,
+        &scratch,
+        acyclic_native_runtime::RenameMode::NoReplace,
+    )?;
+    if let Err(error) = durable_rename(
+        prepared,
+        live,
+        acyclic_native_runtime::RenameMode::NoReplace,
+    ) {
+        let _ = durable_rename(
+            &scratch,
+            live,
+            acyclic_native_runtime::RenameMode::NoReplace,
+        );
         return Err(error.into());
     }
-    durable_rename(&scratch, prepared, false)?;
+    durable_rename(
+        &scratch,
+        prepared,
+        acyclic_native_runtime::RenameMode::NoReplace,
+    )?;
     Ok(())
 }
 
@@ -274,11 +292,23 @@ fn recover_exchange(
     let published = live && scratch_exists && !prepared;
     if !live && scratch_exists {
         move_back(&journal.prepared, &scratch, &journal.carried)?;
-        durable_rename(&scratch, &journal.live, false)?;
+        durable_rename(
+            &scratch,
+            &journal.live,
+            acyclic_native_runtime::RenameMode::NoReplace,
+        )?;
     } else if live && scratch_exists && !prepared {
-        durable_rename(&scratch, &journal.prepared, false)?;
+        durable_rename(
+            &scratch,
+            &journal.prepared,
+            acyclic_native_runtime::RenameMode::NoReplace,
+        )?;
     } else if !live && prepared && !scratch_exists {
-        durable_rename(&journal.prepared, &journal.live, false)?;
+        durable_rename(
+            &journal.prepared,
+            &journal.live,
+            acyclic_native_runtime::RenameMode::NoReplace,
+        )?;
     } else if live && prepared && !scratch_exists {
         move_back(&journal.prepared, &journal.live, &journal.carried)?;
     } else if !(live && !prepared && !scratch_exists) {

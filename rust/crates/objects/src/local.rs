@@ -2078,7 +2078,11 @@ fn publish_new(temporary: &Path, destination: &Path) -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn publish_new(temporary: &Path, destination: &Path) -> std::io::Result<()> {
-    acyclic_native_runtime::durable_rename(temporary, destination, false)
+    acyclic_native_runtime::durable_rename(
+        temporary,
+        destination,
+        acyclic_native_runtime::RenameMode::NoReplace,
+    )
 }
 
 fn sync_file_data(file: &File, durability: LocalDurability) -> std::io::Result<()> {
