@@ -6,10 +6,14 @@
 //! inspect the filesystem return a typed action so the same state machine can
 //! drive embedded, hosted, mounted, and language-bound executors.
 
-use crate::kernel::{FileKind, NameEncoding};
+use crate::kernel::{FileKind, NameEncoding, NamespacePath};
+use crate::model::{CheckoutMode, GenerationSelector, VolumeLimits};
+use crate::storage::ByteRange;
+use crate::workspace::customer_path;
 use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, Generation, GenerationId, IdempotencyKey, OperationId,
-    TransactionCommit, Workspace, WorkspaceError, WorkspaceId,
+    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Generation, GenerationId,
+    IdempotencyKey, OperationId, ResolvedFile, ResolvedFileRangeReadRequest, TransactionCommit,
+    WorkBudget, Workspace, WorkspaceError, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,7 +25,73 @@ const STATE_VERSION: u32 = 7;
 const COMMIT_DOMAIN: &[u8] = b"acyclic-fs-git-compat-commit-v1\0";
 const ACTION_DOMAIN: &[u8] = b"acyclic-fs-git-compat-action-v1\0";
 const MAXIMUM_CAS_ATTEMPTS: u8 = 32;
+const GREP_READ_CONCURRENCY: usize = 32;
 const MAXIMUM_PATCH_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    reader: &crate::PinnedReader<A, O>,
+    root_display: String,
+    root: NamespacePath,
+    limits: VolumeLimits,
+    maximum_entries: usize,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<(String, ResolvedFile<A, O>)>, bool), WorkspaceError> {
+    let mut pending = vec![(root_display, root)];
+    let mut regular = Vec::new();
+    let mut visited = 0_usize;
+    let mut truncated = false;
+    'walk: while let Some((directory_display, directory)) = pending.pop() {
+        let mut after = None;
+        loop {
+            let page = reader
+                .resolve_directory_page(
+                    &directory,
+                    after.as_ref(),
+                    1_024,
+                    WorkBudget::UNBOUNDED,
+                    cancellation,
+                )
+                .await
+                .map_err(WorkspaceError::engine)?
+                .value;
+            let has_more = page.has_more;
+            after = page.entries.last().map(|entry| entry.name.clone());
+            for entry in page.entries {
+                if visited >= maximum_entries {
+                    truncated = true;
+                    break 'walk;
+                }
+                visited = visited.saturating_add(1);
+                let name = match entry.name.encoding() {
+                    NameEncoding::Utf8 => std::str::from_utf8(entry.name.as_bytes())
+                        .map_err(|_| WorkspaceError::path("non-UTF-8 Git path"))?,
+                    NameEncoding::PosixBytes | NameEncoding::WindowsUtf16Le => {
+                        return Err(WorkspaceError::path("non-portable Git path"));
+                    }
+                };
+                let path = if directory_display.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{directory_display}/{name}")
+                };
+                if entry.file.description().kind == FileKind::Directory {
+                    let mut components = directory.components().to_vec();
+                    components.push(entry.name);
+                    let child = NamespacePath::new(components, limits)
+                        .map_err(|error| WorkspaceError::path(error.to_string()))?;
+                    pending.push((path, child));
+                } else if entry.file.description().kind == FileKind::Regular {
+                    regular.push((path, entry.file));
+                }
+            }
+            if !has_more {
+                break;
+            }
+        }
+    }
+    regular.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok((regular, truncated))
+}
 
 /// Stable BLAKE3 compatibility commit identity.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -2652,24 +2722,62 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     maximum_file_bytes: u64,
     maximum_matches: u32,
 ) -> Result<GitGrepResult, WorkspaceError> {
-    let entries = walk_git_tree(generation, root, maximum_entries).await?;
+    let cancellation = CancellationToken::new();
+    let checkout = generation
+        .workspace
+        .engine_checkout(
+            GenerationSelector::Exact(generation.id()),
+            CheckoutMode::read_only_pinned(),
+        )
+        .await?;
+    let reader = checkout.pinned_reader().map_err(WorkspaceError::engine)?;
+    let limits = checkout.volume_config().limits;
+    let root = root.unwrap_or("/");
+    let root_path = customer_path(&format!("/{}", root.trim_start_matches('/')), limits)?;
+    let root_display = root.trim_matches('/').to_owned();
+    let maximum_entries = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
+    let (regular, mut truncated) = resolved_git_regular_files(
+        &reader,
+        root_display,
+        root_path,
+        limits,
+        maximum_entries,
+        &cancellation,
+    )
+    .await?;
     let mut matches = Vec::new();
-    let mut truncated = entries.len() >= usize::try_from(maximum_entries).unwrap_or(usize::MAX);
     let maximum_matches = usize::try_from(maximum_matches).unwrap_or(usize::MAX);
-    for entry in entries {
-        if entry.kind != "regular" {
-            continue;
-        }
-        let path = format!("/{}", entry.path);
-        let stat = generation.stat(&path).await?;
-        if stat
-            .logical_bytes
-            .is_some_and(|bytes| bytes > maximum_file_bytes)
-        {
+    let mut requests = Vec::new();
+    let mut selected = Vec::new();
+    for (index, (_, file)) in regular.iter().enumerate() {
+        if file.description().logical_bytes > maximum_file_bytes {
             truncated = true;
             continue;
         }
-        let bytes = generation.read(&path, maximum_file_bytes).await?;
+        requests.push(ResolvedFileRangeReadRequest {
+            file,
+            range: ByteRange {
+                offset: 0,
+                length: file.description().logical_bytes,
+            },
+        });
+        selected.push(index);
+    }
+    let reads = reader
+        .read_resolved_ranges(
+            &requests,
+            GREP_READ_CONCURRENCY,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(WorkspaceError::engine)?
+        .value;
+    for (index, read) in selected.into_iter().zip(reads) {
+        let (path, _) = regular
+            .get(index)
+            .ok_or_else(|| WorkspaceError::engine("Git grep result index is invalid"))?;
+        let bytes = read.bytes;
         let Ok(text) = std::str::from_utf8(&bytes) else {
             continue;
         };
@@ -2682,7 +2790,7 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     });
                 }
                 matches.push(GitGrepMatch {
-                    path: entry.path.clone(),
+                    path: path.clone(),
                     line: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
                     text: line.to_owned(),
                 });
@@ -3628,6 +3736,17 @@ mod tests {
             .write_text("/src/b.txt", "needle two\n")
             .await
             .expect("second file");
+        transaction
+            .write_text("/src/large.txt", "needle is too large")
+            .await
+            .expect("large file");
+        transaction
+            .write(
+                "/src/binary.bin",
+                bytes::Bytes::from_static(b"needle\xffbinary"),
+            )
+            .await
+            .expect("binary file");
         let TransactionCommit::Committed(generation) = transaction.commit().await.expect("commit")
         else {
             panic!("fixture did not commit");
@@ -3640,12 +3759,12 @@ mod tests {
                 .iter()
                 .map(|entry| entry.path.as_str())
                 .collect::<Vec<_>>(),
-            vec!["src/a.txt", "src/b.txt"]
+            vec!["src/a.txt", "src/b.txt", "src/binary.bin", "src/large.txt"]
         );
-        let result = grep_git_generation(&generation, "needle", Some("src"), 10, 1_024, 10)
+        let result = grep_git_generation(&generation, "needle", Some("src"), 10, 16, 10)
             .await
             .expect("grep");
-        assert!(!result.truncated);
+        assert!(result.truncated);
         assert_eq!(result.matches.len(), 2);
         assert_eq!(result.matches[0].line, 2);
         assert_eq!(result.matches[1].line, 1);

@@ -2027,6 +2027,14 @@ mod tests {
         ))
         .await?;
         let source_key = IdempotencyKey::from_bytes([66; 16]);
+        let acknowledged = workspace
+            .source()
+            .ok_or("source missing")?
+            .inner
+            .lock()
+            .await
+            .checkout
+            .generation_id();
         gate.arm(
             source_volume_operation_id(source_key, SourceOperation::Reconcile),
             AppendGatePhase::Before,
@@ -2050,6 +2058,7 @@ mod tests {
                 return Err("concurrent workspace advance was rejected".into());
             }
         };
+        assert_ne!(advanced.id(), acknowledged);
         gate.release();
 
         assert!(matches!(operation.await??, ReconcileOutcome::Conflict));
