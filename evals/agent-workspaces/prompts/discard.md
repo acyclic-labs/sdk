@@ -1,0 +1,1 @@
+Run one child agent and have it create `discarded.txt` with exact content `never publish\n`. Inspect the unpublished change, then discard that child with the agent-workspaces discard tool. Verify `discarded.txt` is absent in the root. Do not create or delete that path yourself.

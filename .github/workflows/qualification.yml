@@ -13,16 +13,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  CARGO_BUILD_JOBS: '4'
   CARGO_PROFILE_DEV_DEBUG: '0'
   CARGO_PROFILE_TEST_DEBUG: '0'
   CARGO_TERM_COLOR: always
-  CMAKE_BUILD_PARALLEL_LEVEL: '4'
-  MAKEFLAGS: -j4
-  RAYON_NUM_THREADS: '4'
   RUSTC_WRAPPER: sccache
-  RUST_TEST_THREADS: '4'
-  SCCACHE_GHA_ENABLED: 'true'
+  SCCACHE_CACHE_SIZE: 8G
   CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   CI_TARGET_BRANCH: ${{ github.event.pull_request.base.ref || '' }}
 
@@ -35,33 +30,51 @@ jobs:
         include:
           - lane: gate
             runner: blacksmith-4vcpu-ubuntu-2404
+            workers: 4
             artifact: coverage
             artifact_path: coverage
           - lane: linux
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: blacksmith-32vcpu-ubuntu-2404
+            workers: 32
             artifact: packages-linux
             artifact_path: packages
+          - lane: eval
+            runner: blacksmith-32vcpu-ubuntu-2404
+            workers: 32
+            artifact: ''
+            artifact_path: ''
           - lane: policy
             runner: blacksmith-4vcpu-ubuntu-2404
+            workers: 4
             artifact: ''
             artifact_path: ''
           - lane: web
             runner: blacksmith-4vcpu-ubuntu-2404
+            workers: 4
             artifact: ''
             artifact_path: ''
           - lane: linux-arm64
-            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            runner: blacksmith-32vcpu-ubuntu-2404-arm
+            workers: 32
             artifact: packages-linux-arm64
             artifact_path: packages
           - lane: windows
-            runner: blacksmith-4vcpu-windows-2025
+            runner: blacksmith-32vcpu-windows-2025
+            workers: 32
             artifact: ''
             artifact_path: ''
           - lane: macos
-            runner: blacksmith-6vcpu-macos-15
+            runner: blacksmith-12vcpu-macos-15
+            workers: 12
             artifact: packages-macos
             artifact_path: packages
     runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_BUILD_JOBS: ${{ matrix.workers }}
+      CMAKE_BUILD_PARALLEL_LEVEL: ${{ matrix.workers }}
+      MAKEFLAGS: -j${{ matrix.workers }}
+      RAYON_NUM_THREADS: ${{ matrix.workers }}
+      RUST_TEST_THREADS: ${{ matrix.workers }}
     timeout-minutes: 20
     steps:
       - name: Check out exact source
@@ -72,17 +85,20 @@ jobs:
           fetch-tags: false
           persist-credentials: false
 
+      - name: Configure lane-local compiler cache
+        shell: bash
+        run: echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
+
       - name: Restore shared dependencies
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            ~/.rustup
             ${{ runner.temp }}/bun-install-cache
-          key: sdk-deps-v5-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'bun.lock', 'scripts/ensure-bun.sh', 'scripts/ensure-bun.ps1') }}
+          key: sdk-deps-v7-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '**/Cargo.lock', 'bun.lock', 'scripts/ensure-bun.sh', 'scripts/ensure-bun.ps1') }}
           restore-keys: |
-            sdk-deps-v5-${{ runner.os }}-${{ runner.arch }}-
+            sdk-deps-v7-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Restore lane tools
         id: lane-tools
@@ -98,6 +114,31 @@ jobs:
         with:
           toolchain: 1.94.0
           components: ${{ matrix.lane == 'policy' && 'clippy,rustfmt' || '' }}
+
+      # Blacksmith transparently serves actions/cache from co-located storage. Keep
+      # compiler objects lane-local so seven matrix jobs restore/save once instead
+      # of contending on hundreds of sccache GHA object writes.
+      - name: Restore lane build cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ${{ runner.temp }}/sccache
+          key: sdk-build-v3-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clippy.toml', 'rustfmt.toml', 'deny.toml') }}-${{ hashFiles('rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'Cargo.lock', 'rust/**', 'plugin/**', 'plugins/**', 'generated/rust/**', 'proto/**', 'compatibility/**', 'scripts/qualify-ci.sh', 'scripts/qualify-ci.ps1', '.github/workflows/qualification.yml') }}
+          restore-keys: |
+            sdk-build-v3-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clippy.toml', 'rustfmt.toml', 'deny.toml') }}-
+
+      # Windows is the measured critical path: sccache avoids code generation,
+      # but Cargo still spends minutes relinking the same tests and binaries.
+      # Keep target artifacts separate so their restore cost and value remain
+      # independently measurable and Linux/macOS archives stay small.
+      - name: Restore Windows target cache
+        if: matrix.lane == 'windows'
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ runner.temp }}/target
+          key: sdk-target-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clippy.toml') }}-${{ hashFiles('rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'Cargo.lock', 'rust/**', 'plugin/**', 'plugins/**', 'generated/rust/**', 'proto/**', 'compatibility/**', 'scripts/qualify-ci.ps1', '.github/workflows/qualification.yml') }}
+          restore-keys: |
+            sdk-target-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clippy.toml') }}-
 
       - name: Enable compiler cache
         uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
