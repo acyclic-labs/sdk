@@ -127,7 +127,7 @@ fn root_replacement_during_a_baseline_invalidates_the_rescan()
 }
 
 #[test]
-fn paired_rename_is_exact_and_ambiguous_rename_invalidates()
+fn paired_rename_is_exact_and_an_unpaired_half_is_platform_defined()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(if cfg!(windows) { r"C:\root" } else { "/root" });
     let from = root.join("from");
@@ -143,19 +143,61 @@ fn paired_rename_is_exact_and_ambiguous_rename_invalidates()
     )?;
     assert!(matches!(paired.as_slice(), [WatchChange::Renamed { .. }]));
     for mode in [RenameMode::From, RenameMode::To] {
-        assert_eq!(
-            map_event(
-                &event(
-                    EventKind::Modify(ModifyKind::Name(mode)),
-                    vec![root.join("one-sided")],
-                ),
+        let unpaired = map_event(
+            &event(
+                EventKind::Modify(ModifyKind::Name(mode)),
+                vec![root.join("one-sided")],
+            ),
+            &root,
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        );
+        // inotify pairs halves by cookie before `map_event`, so a lone half
+        // there is a lost half; FSEvents and `ReadDirectoryChangesW` never
+        // pair, so a lone half is an ordinary "this path changed" hint.
+        if cfg!(target_os = "linux") {
+            assert_eq!(unpaired, Err(WatchInvalidationReason::AmbiguousRename));
+        } else {
+            let one_sided = relative_namespace_path(
                 &root,
+                &root.join("one-sided"),
                 FilesystemProfile::Portable,
                 VolumeLimits::default(),
-            ),
-            Err(WatchInvalidationReason::AmbiguousRename)
-        );
+            )?;
+            assert_eq!(unpaired, Ok(vec![WatchChange::Modified(one_sided)]));
+        }
     }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn rename_any_yields_one_modified_hint_per_path() -> Result<(), Box<dyn std::error::Error>> {
+    let root = PathBuf::from(if cfg!(windows) { r"C:\root" } else { "/root" });
+    let changes = map_event(
+        &event(
+            EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+            vec![root.join("staged"), root.join("final")],
+        ),
+        &root,
+        FilesystemProfile::Portable,
+        VolumeLimits::default(),
+    )?;
+    let relative = |name: &str| {
+        relative_namespace_path(
+            &root,
+            &root.join(name),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        )
+    };
+    assert_eq!(
+        changes,
+        vec![
+            WatchChange::Modified(relative("staged")?),
+            WatchChange::Modified(relative("final")?),
+        ]
+    );
     Ok(())
 }
 

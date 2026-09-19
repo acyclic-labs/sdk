@@ -1035,7 +1035,21 @@ fn map_event(
                 from: from.clone(),
                 to: to.clone(),
             }]),
+            // inotify pairs both halves by cookie before they reach here
+            // (see `map_native_event`), so a lone half on Linux means the
+            // other half was lost.
+            #[cfg(target_os = "linux")]
             _ => Err(WatchInvalidationReason::AmbiguousRename),
+            // FSEvents never pairs renames, and `ReadDirectoryChangesW`
+            // delivers each half as its own event, so a lone half is the
+            // ordinary case there. It proves the same thing a creation hint
+            // does: this path changed, look at it. The capture resolves a
+            // modified hint by stat, treating a vanished path as removed
+            // (subtree and all), so both ends of a rename land exactly
+            // without guessing which was which. Invalidating instead made
+            // every atomic save, `mv`, and `git checkout` cost a full rescan.
+            #[cfg(not(target_os = "linux"))]
+            (_, paths) => Ok(paths.iter().cloned().map(WatchChange::Modified).collect()),
         };
     }
     let mut changes = Vec::new();
