@@ -823,28 +823,42 @@ pub mod native {
                 source_path_components: path.depth() as u64,
                 ..WorkCounters::default()
             };
-            let prepared = (|| -> Result<_, DemandError> {
-                self.check(source, cancellation)?;
-                let relative = self.relative(path)?;
-                let file = match self.inner.root.open_file(&relative) {
-                    Ok(file) => file,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        return Err(DemandError::Absent);
+            let path = path.clone();
+            let prepared = self
+                .run_blocking(cancellation, move |provider, worker_cancellation| {
+                    provider
+                        .check(source, &worker_cancellation)
+                        .map_err(|error| OperationFailure::new(error, work))?;
+                    let relative = provider
+                        .relative(&path)
+                        .map_err(|error| OperationFailure::new(error, work))?;
+                    let file = match provider.inner.root.open_file(&relative) {
+                        Ok(file) => file,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            return Err(OperationFailure::new(DemandError::Absent, work));
+                        }
+                        Err(error) => {
+                            return Err(OperationFailure::new(error.into(), work));
+                        }
+                    };
+                    let before = file
+                        .metadata()
+                        .map_err(|error| OperationFailure::new(error.into(), work))?;
+                    if !before.is_file() {
+                        return Err(OperationFailure::new(DemandError::NotRegularFile, work));
                     }
-                    Err(error) => return Err(error.into()),
-                };
-                let before = file.metadata()?;
-                if !before.is_file() {
-                    return Err(DemandError::NotRegularFile);
-                }
-                if version(&before) != expected {
-                    return Err(DemandError::StaleVersion);
-                }
-                let available = before.len().saturating_sub(offset);
-                let length = length.min(usize::try_from(available).unwrap_or(usize::MAX));
-                Ok((relative, file.into_std(), length))
-            })()
-            .map_err(|error| OperationFailure::new(error, work))?;
+                    if version(&before) != expected {
+                        return Err(OperationFailure::new(DemandError::StaleVersion, work));
+                    }
+                    let available = before.len().saturating_sub(offset);
+                    let length = length.min(usize::try_from(available).unwrap_or(usize::MAX));
+                    Ok(OperationReceipt {
+                        value: (relative, file.into_std(), length),
+                        work,
+                    })
+                })
+                .await?
+                .value;
             let (relative, file, length) = prepared;
             let validation_file = file
                 .try_clone()
@@ -870,23 +884,28 @@ pub mod native {
             if cancelled {
                 return Err(OperationFailure::new(DemandError::Cancelled, work));
             }
-            let after = cap_std::fs::File::from_std(validation_file)
-                .metadata()
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
-            if version(&after) != expected
-                || self
-                    .inner
-                    .root
-                    .symlink_metadata(&relative)
-                    .as_ref()
-                    .map(version)
-                    .ok()
-                    != Some(expected)
-            {
-                return Err(OperationFailure::new(DemandError::StaleVersion, work));
-            }
-            self.check(source, cancellation)
-                .map_err(|error| OperationFailure::new(error, work))?;
+            self.run_blocking(cancellation, move |provider, worker_cancellation| {
+                let after = cap_std::fs::File::from_std(validation_file)
+                    .metadata()
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
+                if version(&after) != expected
+                    || provider
+                        .inner
+                        .root
+                        .symlink_metadata(&relative)
+                        .as_ref()
+                        .map(version)
+                        .ok()
+                        != Some(expected)
+                {
+                    return Err(OperationFailure::new(DemandError::StaleVersion, work));
+                }
+                provider
+                    .check(source, &worker_cancellation)
+                    .map_err(|error| OperationFailure::new(error, work))?;
+                Ok(OperationReceipt { value: (), work })
+            })
+            .await?;
             work.output_bytes = bytes.len() as u64;
             Ok(OperationReceipt { value: bytes, work })
         }
