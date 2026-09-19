@@ -537,6 +537,23 @@ pub struct ResolvedFileRangeReadRequest<'a, A, O> {
     pub range: ByteRange,
 }
 
+/// One child returned from an authenticated directory page, resolved by the
+/// originating pinned reader without a second namespace traversal.
+pub struct ResolvedDirectoryEntry<'a, A, O> {
+    /// Exact canonical child name.
+    pub name: LogicalName,
+    /// Generation-scoped child handle with authenticated metadata.
+    pub file: ResolvedFile<'a, A, O>,
+}
+
+/// One bounded authenticated directory page with reader-scoped child handles.
+pub struct ResolvedDirectoryPage<'a, A, O> {
+    /// Ordered children strictly after the supplied cursor.
+    pub entries: Vec<ResolvedDirectoryEntry<'a, A, O>>,
+    /// Whether at least one additional child exists.
+    pub has_more: bool,
+}
+
 #[derive(Clone, Copy)]
 struct LastCommit {
     operation_id: OperationId,
@@ -4196,6 +4213,113 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         order_batch_results(results, budget)
     }
 
+    /// Resolves one bounded directory page into generation-scoped child
+    /// handles in the same authenticated traversal. Child metadata is fetched
+    /// as one object batch; no child path is looked up again.
+    pub async fn resolve_directory_page<'a>(
+        &'a self,
+        path: &NamespacePath,
+        after: Option<&LogicalName>,
+        maximum_entries: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<ResolvedDirectoryPage<'a, A, O>> {
+        let listing = list_directory_page_pinned(
+            &self.volume,
+            &self.root,
+            path,
+            after,
+            maximum_entries,
+            budget,
+            cancellation,
+        )
+        .await?;
+        let mut work = listing.work;
+        let page = listing.value;
+        let mut file_ids = Vec::new();
+        file_ids
+            .try_reserve_exact(page.entries.len())
+            .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
+        file_ids.extend(page.entries.iter().map(|entry| entry.file_id));
+        let records = if file_ids.is_empty() {
+            Vec::new()
+        } else {
+            let receipt = lookup_file_records_async(
+                &self.volume.fs.inner.objects,
+                self.root.file_table,
+                &file_ids,
+                maximum_entries,
+                decode_limits(self.volume.config),
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRecord))?;
+            work = add(work, receipt.work)?;
+            receipt.records
+        };
+        let mut metadata_requests = Vec::new();
+        metadata_requests
+            .try_reserve_exact(records.len())
+            .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
+        for record in &records {
+            let record = record
+                .as_ref()
+                .ok_or_else(|| OperationFailure::new(FsError::InvalidDirectoryRecord, work))?;
+            metadata_requests.push(ObjectReadRequest {
+                object_id: record.metadata,
+                maximum_bytes: self.volume.config.limits.maximum_object_bytes,
+            });
+        }
+        let metadata = if metadata_requests.is_empty() {
+            Vec::new()
+        } else {
+            let receipt = self
+                .volume
+                .fs
+                .inner
+                .objects
+                .read_many(&metadata_requests, remaining(work, budget)?, cancellation)
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
+            work = add(work, receipt.work)?;
+            receipt.value
+        };
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(page.entries.len())
+            .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
+        for ((binding, record), metadata) in page.entries.into_iter().zip(records).zip(metadata) {
+            let record = record
+                .ok_or_else(|| OperationFailure::new(FsError::InvalidDirectoryRecord, work))?;
+            if record.file_id != binding.file_id || record.kind != binding.kind {
+                return Err(OperationFailure::new(FsError::InvalidDirectoryRecord, work));
+            }
+            let metadata = decode_file_metadata(&metadata, decode_limits(self.volume.config))
+                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            let logical_bytes = record_logical_bytes(record);
+            entries.push(ResolvedDirectoryEntry {
+                name: binding.name,
+                file: ResolvedFile {
+                    reader: self,
+                    record,
+                    description: FileDescription {
+                        kind: record.kind,
+                        logical_bytes,
+                        metadata,
+                    },
+                },
+            });
+        }
+        Ok(FsReceipt {
+            value: ResolvedDirectoryPage {
+                entries,
+                has_more: page.has_more,
+            },
+            work,
+        })
+    }
+
     async fn read_symbolic_link_record(
         &self,
         record: FileRecord,
@@ -4504,14 +4628,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
             let metadata = decode_file_metadata(&bytes, decode_limits(self.volume.config))
                 .map_err(|error| OperationFailure::new(error.into(), work))?;
-            let logical_bytes = match record.payload {
-                FilePayload::InlineRegular(bytes) => {
-                    u64::try_from(bytes.as_bytes().len()).unwrap_or(u64::MAX)
-                }
-                FilePayload::Regular { logical_bytes, .. } => logical_bytes,
-                FilePayload::SymbolicLink { target_bytes, .. } => target_bytes,
-                _ => 0,
-            };
+            let logical_bytes = record_logical_bytes(record);
             handles.push(Some(ResolvedFile {
                 reader: self,
                 record,
@@ -4662,6 +4779,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         .collect::<Vec<_>>()
         .await;
         order_batch_results(results, budget)
+    }
+}
+
+fn record_logical_bytes(record: FileRecord) -> u64 {
+    match record.payload {
+        FilePayload::InlineRegular(bytes) => {
+            u64::try_from(bytes.as_bytes().len()).unwrap_or(u64::MAX)
+        }
+        FilePayload::Regular { logical_bytes, .. } => logical_bytes,
+        FilePayload::SymbolicLink { target_bytes, .. } => target_bytes,
+        _ => 0,
     }
 }
 

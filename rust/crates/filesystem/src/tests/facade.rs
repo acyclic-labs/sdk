@@ -1692,7 +1692,7 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
                 maximum_entries: 8,
             },
             DirectoryPageRequest {
-                path: first_directory,
+                path: first_directory.clone(),
                 after: Some(LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?),
                 maximum_entries: 1,
             },
@@ -1724,6 +1724,34 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     );
     assert!(!second_page.has_more);
     assert!(!first_page.has_more);
+    let resolved_page = poll_ready(reader.resolve_directory_page(
+        &first_directory,
+        None,
+        1,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("resolved directory page blocked")??;
+    assert_eq!(resolved_page.value.entries.len(), 1);
+    assert!(resolved_page.value.has_more);
+    let resolved_entry = resolved_page
+        .value
+        .entries
+        .first()
+        .ok_or("resolved directory entry missing")?;
+    assert_eq!(resolved_entry.name.as_bytes(), b"a");
+    assert_eq!(resolved_entry.file.description().kind, FileKind::Regular);
+    let resolved_child = poll_ready(resolved_entry.file.read_range(
+        ByteRange {
+            offset: 0,
+            length: 1,
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("resolved child read blocked")??;
+    assert_eq!(&resolved_child.value.bytes[..], b"x");
+    assert_eq!(resolved_child.work.page_reads, 0);
     assert!(
         poll_ready(reader.list_directory_pages(&[], 0, WorkBudget::UNBOUNDED, &cancellation,))
             .ok_or("zero-concurrency directory batch blocked")?
