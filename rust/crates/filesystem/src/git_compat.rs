@@ -300,6 +300,30 @@ impl Default for GitTransitionId {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum GitPendingMutation {
+    /// Clear the durable action intent without changing compatibility state.
+    NoOp,
+    /// Record a commit only after its filtered filesystem snapshot is durable.
+    CaptureCommit {
+        /// Complete live generation that was captured.
+        workspace_generation: GenerationId,
+        /// Commit message retained across executor recovery.
+        message: String,
+        /// Commit author retained across executor recovery.
+        author: String,
+        /// Signed Unix epoch timestamp retained across executor recovery.
+        authored_at_seconds: i64,
+        /// Exact compatibility head that must still be current.
+        expected_head: Option<GitCommitId>,
+    },
+    /// Register a compatibility branch only after its SDK workspace exists.
+    ForkBranch {
+        /// New branch name.
+        branch: String,
+        /// Compatibility head inherited by the branch.
+        head: Option<GitCommitId>,
+        /// Whether the new branch becomes current.
+        switch: bool,
+    },
     /// Select a branch after its generation is installed.
     Switch {
         /// Branch selected after restoration.
@@ -953,9 +977,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .execute(pending.id.operation_id(), &pending.action)
             .await
             .map_err(GitCompatRunError::Executor)?;
-        let output = self
-            .complete_transition(pending.id, result.resulting_generation())
-            .await?;
+        let output = self.complete_transition_result(pending.id, &result).await?;
         Ok(Some(if matches!(output, GitCommandOutput::NoOp) {
             GitCommandOutput::Filesystem(result)
         } else {
@@ -985,9 +1007,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .await
             .map_err(GitCompatRunError::Executor)?;
         if let Some(transition) = transition {
-            let completed = self
-                .complete_transition(transition, result.resulting_generation())
-                .await?;
+            let completed = self.complete_transition_result(transition, &result).await?;
             return Ok(if matches!(completed, GitCommandOutput::NoOp) {
                 GitCommandOutput::Filesystem(result)
             } else {
@@ -1054,6 +1074,12 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             let before = state.clone();
             let output = execute_command(&mut state, command.clone(), workspace_generation)
                 .map_err(map_state_error)?;
+            let output = match output {
+                GitCommandOutput::Action(action) => {
+                    prepare_transition(&mut state, action, GitPendingMutation::NoOp)
+                }
+                output => output,
+            };
             if state == before {
                 return Ok(output);
             }
@@ -1084,6 +1110,24 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         transition: GitTransitionId,
         resulting_generation: Option<GenerationId>,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
+        self.complete_transition_result(
+            transition,
+            &GitFilesystemResult::Applied {
+                generation: resulting_generation,
+            },
+        )
+        .await
+    }
+
+    /// Commits a prepared transition using the executor's complete typed result.
+    ///
+    /// Capture and branch transitions require their full result so recovery can
+    /// publish compatibility state without reconstructing filesystem facts.
+    pub async fn complete_transition_result(
+        &self,
+        transition: GitTransitionId,
+        result: &GitFilesystemResult,
+    ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;
             let pending = state
@@ -1091,7 +1135,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 .clone()
                 .filter(|pending| pending.id == transition)
                 .ok_or(GitCompatError::StaleTransition)?;
-            let output = complete_pending(&mut state, pending.mutation, resulting_generation)?;
+            let output = complete_pending(&mut state, pending.mutation, result)?;
             state.pending = None;
             let expected = state.revision;
             state.revision = expected.saturating_add(1);
@@ -1160,40 +1204,13 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let branch = branch.into();
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;
-            if let Some(existing) = state.branches.get(&branch) {
-                if existing.workspace_id != workspace_id || existing.head != head {
-                    return Err(GitCompatError::BranchExists(branch));
-                }
-                if switch && state.current_branch != branch {
-                    let expected = state.revision;
-                    state.current_branch = branch.clone();
-                    state.revision = expected.saturating_add(1);
-                    if !self
-                        .store
-                        .compare_and_swap(self.workspace_id, expected, state)
-                        .await
-                        .map_err(GitCompatError::Store)?
-                    {
-                        continue;
-                    }
-                }
-                return Ok(GitCommandOutput::NoOp);
-            }
-            state.branches.insert(
+            let output = register_branch_workspace_state(
+                &mut state,
                 branch.clone(),
-                GitBranch {
-                    name: branch.clone(),
-                    workspace_id,
-                    head,
-                    tracked_paths: head
-                        .and_then(|head| state.commits.get(&head))
-                        .map(|commit| commit.tracked_paths.clone())
-                        .unwrap_or_default(),
-                },
-            );
-            if switch {
-                state.current_branch = branch.clone();
-            }
+                workspace_id,
+                head,
+                switch,
+            )?;
             let expected = state.revision;
             state.revision = expected.saturating_add(1);
             if self
@@ -1202,7 +1219,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 .await
                 .map_err(GitCompatError::Store)?
             {
-                return Ok(GitCommandOutput::NoOp);
+                return Ok(output);
             }
         }
         Err(GitCompatError::Contended)
@@ -1248,34 +1265,19 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         } = record;
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;
-            let current = state.current().map_err(map_state_error)?.clone();
-            if current.head != expected_head {
-                return Err(GitCompatError::InvalidState);
-            }
-            let head_generation = current
-                .head
-                .and_then(|id| state.commits.get(&id).map(|commit| commit.generation));
-            if head_generation == Some(generation) {
-                return Err(GitCompatError::NothingToCommit);
-            }
-            let commit = GitCommit::new_with_workspace_generation(
-                generation,
-                workspace_generation,
-                current.head.into_iter().collect(),
-                author.clone(),
-                authored_at_seconds,
-                message.clone(),
-            );
-            let commit = GitCommit {
-                generation_workspace_id: generation_workspace_id.or(Some(current.workspace_id)),
-                tracked_paths: tracked_paths.clone(),
-                ..commit
-            };
-            state.reflog.insert(0, current.head);
-            state.commits.insert(commit.id, commit.clone());
-            let current = state.current_mut().map_err(map_state_error)?;
-            current.head = Some(commit.id);
-            current.tracked_paths = tracked_paths.clone();
+            let output = record_captured_commit_state(
+                &mut state,
+                GitCommitRecord {
+                    expected_head,
+                    generation,
+                    generation_workspace_id,
+                    workspace_generation,
+                    tracked_paths: tracked_paths.clone(),
+                    message: message.clone(),
+                    author: author.clone(),
+                    authored_at_seconds,
+                },
+            )?;
             let expected = state.revision;
             state.revision = expected.saturating_add(1);
             if self
@@ -1284,7 +1286,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 .await
                 .map_err(GitCompatError::Store)?
             {
-                return Ok(GitCommandOutput::Committed(commit));
+                return Ok(output);
             }
         }
         Err(GitCompatError::Contended)
@@ -1407,28 +1409,48 @@ fn execute_command(
             if head_workspace_generation == Some(workspace) {
                 return Err(GitCompatStateError::NothingToCommit);
             }
-            GitCommandOutput::Action(GitFilesystemAction::CaptureCommit {
+            let action = GitFilesystemAction::CaptureCommit {
                 workspace_generation: workspace,
                 head_generation,
                 tracked_paths: current.tracked_paths.clone(),
-                message,
-                author,
+                message: message.clone(),
+                author: author.clone(),
                 authored_at_seconds,
                 expected_head: current.head,
-            })
+            };
+            prepare_transition(
+                state,
+                action,
+                GitPendingMutation::CaptureCommit {
+                    workspace_generation: workspace,
+                    message,
+                    author,
+                    authored_at_seconds,
+                    expected_head: current.head,
+                },
+            )
         }
         GitCommand::Branch { create } => {
             if let Some(name) = create {
                 if state.branches.contains_key(&name) {
                     return Err(GitCompatStateError::BranchExists(name));
                 }
-                return Ok(GitCommandOutput::Action(GitFilesystemAction::ForkBranch {
-                    branch: name,
+                let action = GitFilesystemAction::ForkBranch {
+                    branch: name.clone(),
                     source_workspace: current.workspace_id,
                     source_generation: workspace,
                     head: current.head,
                     switch: false,
-                }));
+                };
+                return Ok(prepare_transition(
+                    state,
+                    action,
+                    GitPendingMutation::ForkBranch {
+                        branch: name,
+                        head: current.head,
+                        switch: false,
+                    },
+                ));
             }
             GitCommandOutput::Branches {
                 current: state.current_branch.clone(),
@@ -1437,13 +1459,22 @@ fn execute_command(
         }
         GitCommand::Switch { branch, create } => {
             if create && !state.branches.contains_key(&branch) {
-                return Ok(GitCommandOutput::Action(GitFilesystemAction::ForkBranch {
-                    branch,
+                let action = GitFilesystemAction::ForkBranch {
+                    branch: branch.clone(),
                     source_workspace: current.workspace_id,
                     source_generation: workspace,
                     head: current.head,
                     switch: true,
-                }));
+                };
+                return Ok(prepare_transition(
+                    state,
+                    action,
+                    GitPendingMutation::ForkBranch {
+                        branch,
+                        head: current.head,
+                        switch: true,
+                    },
+                ));
             }
             let target = state
                 .branches
@@ -1719,12 +1750,95 @@ fn prepare_transition(
     GitCommandOutput::Prepared { transition, action }
 }
 
+fn register_branch_workspace_state<E: std::error::Error + 'static>(
+    state: &mut GitCompatState,
+    branch: String,
+    workspace_id: WorkspaceId,
+    head: Option<GitCommitId>,
+    switch: bool,
+) -> Result<GitCommandOutput, GitCompatError<E>> {
+    if let Some(existing) = state.branches.get(&branch) {
+        if existing.workspace_id != workspace_id || existing.head != head {
+            return Err(GitCompatError::BranchExists(branch));
+        }
+        if switch {
+            state.current_branch = branch;
+        }
+        return Ok(GitCommandOutput::NoOp);
+    }
+    let tracked_paths = head
+        .and_then(|head| state.commits.get(&head))
+        .map(|commit| commit.tracked_paths.clone())
+        .unwrap_or_default();
+    state.branches.insert(
+        branch.clone(),
+        GitBranch {
+            name: branch.clone(),
+            workspace_id,
+            head,
+            tracked_paths,
+        },
+    );
+    if switch {
+        state.current_branch = branch;
+    }
+    Ok(GitCommandOutput::NoOp)
+}
+
+fn record_captured_commit_state<E: std::error::Error + 'static>(
+    state: &mut GitCompatState,
+    record: GitCommitRecord,
+) -> Result<GitCommandOutput, GitCompatError<E>> {
+    let current = state
+        .current()
+        .map_err(|_| GitCompatError::InvalidState)?
+        .clone();
+    if current.head != record.expected_head {
+        return Err(GitCompatError::InvalidState);
+    }
+    let head_generation = current
+        .head
+        .and_then(|id| state.commits.get(&id).map(|commit| commit.generation));
+    if head_generation == Some(record.generation) {
+        return Err(GitCompatError::NothingToCommit);
+    }
+    let commit = GitCommit::new_with_workspace_generation(
+        record.generation,
+        record.workspace_generation,
+        current.head.into_iter().collect(),
+        record.author,
+        record.authored_at_seconds,
+        record.message,
+    );
+    let commit = GitCommit {
+        generation_workspace_id: record
+            .generation_workspace_id
+            .or(Some(current.workspace_id)),
+        tracked_paths: record.tracked_paths.clone(),
+        ..commit
+    };
+    state.reflog.insert(0, current.head);
+    state.commits.insert(commit.id, commit.clone());
+    let current = state
+        .current_mut()
+        .map_err(|_| GitCompatError::InvalidState)?;
+    current.head = Some(commit.id);
+    current.tracked_paths = record.tracked_paths;
+    Ok(GitCommandOutput::Committed(commit))
+}
+
 fn complete_pending<E: std::error::Error + 'static>(
     state: &mut GitCompatState,
     mutation: GitPendingMutation,
-    resulting_generation: Option<GenerationId>,
+    result: &GitFilesystemResult,
 ) -> Result<GitCommandOutput, GitCompatError<E>> {
+    let resulting_generation = result.resulting_generation();
     match mutation {
+        GitPendingMutation::NoOp => Ok(GitCommandOutput::NoOp),
+        mutation @ (GitPendingMutation::CaptureCommit { .. }
+        | GitPendingMutation::ForkBranch { .. }) => {
+            complete_creation_pending(state, mutation, result)
+        }
         GitPendingMutation::Switch { branch } => {
             if !state.branches.contains_key(&branch) {
                 return Err(GitCompatError::InvalidState);
@@ -1808,6 +1922,50 @@ fn complete_pending<E: std::error::Error + 'static>(
             state.bisect = *replacement;
             Ok(GitCommandOutput::Bisect(result))
         }
+    }
+}
+
+fn complete_creation_pending<E: std::error::Error + 'static>(
+    state: &mut GitCompatState,
+    mutation: GitPendingMutation,
+    result: &GitFilesystemResult,
+) -> Result<GitCommandOutput, GitCompatError<E>> {
+    match (mutation, result) {
+        (
+            GitPendingMutation::CaptureCommit {
+                workspace_generation,
+                message,
+                author,
+                authored_at_seconds,
+                expected_head,
+            },
+            GitFilesystemResult::Captured {
+                generation,
+                workspace_id,
+                tracked_paths,
+            },
+        ) => record_captured_commit_state(
+            state,
+            GitCommitRecord {
+                expected_head,
+                generation: *generation,
+                generation_workspace_id: Some(*workspace_id),
+                workspace_generation,
+                tracked_paths: tracked_paths.clone(),
+                message,
+                author,
+                authored_at_seconds,
+            },
+        ),
+        (
+            GitPendingMutation::ForkBranch {
+                branch,
+                head,
+                switch,
+            },
+            GitFilesystemResult::Forked { workspace_id },
+        ) => register_branch_workspace_state(state, branch, *workspace_id, head, switch),
+        _ => Err(GitCompatError::InvalidState),
     }
 }
 
@@ -3216,13 +3374,10 @@ mod tests {
         };
         assert!(status.dirty);
         assert!(status.all_changes_staged);
-        let GitCommandOutput::Action(GitFilesystemAction::CaptureCommit {
-            expected_head,
-            message,
-            author,
-            authored_at_seconds,
-            ..
-        }) = repository
+        let GitCommandOutput::Prepared {
+            transition,
+            action: GitFilesystemAction::CaptureCommit { .. },
+        } = repository
             .execute(
                 GitCommand::Commit {
                     message: "initial".to_owned(),
@@ -3237,13 +3392,13 @@ mod tests {
             panic!("expected commit capture");
         };
         let GitCommandOutput::Committed(commit) = repository
-            .record_commit(
-                expected_head,
-                generation(1),
-                BTreeSet::from(["tracked.txt".to_owned()]),
-                message,
-                author,
-                authored_at_seconds,
+            .complete_transition_result(
+                transition,
+                &GitFilesystemResult::Captured {
+                    generation: generation(1),
+                    workspace_id: workspace(),
+                    tracked_paths: BTreeSet::from(["tracked.txt".to_owned()]),
+                },
             )
             .await
             .expect("record commit")
@@ -3672,13 +3827,10 @@ mod tests {
     #[tokio::test]
     async fn cached_diff_is_head_to_workspace_and_add_is_noop() {
         let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
-        let GitCommandOutput::Action(GitFilesystemAction::CaptureCommit {
-            expected_head,
-            message,
-            author,
-            authored_at_seconds,
-            ..
-        }) = repository
+        let GitCommandOutput::Prepared {
+            transition,
+            action: GitFilesystemAction::CaptureCommit { .. },
+        } = repository
             .execute(
                 GitCommand::Commit {
                     message: "initial".to_owned(),
@@ -3693,13 +3845,13 @@ mod tests {
             panic!("expected commit capture");
         };
         repository
-            .record_commit(
-                expected_head,
-                generation(1),
-                BTreeSet::new(),
-                message,
-                author,
-                authored_at_seconds,
+            .complete_transition_result(
+                transition,
+                &GitFilesystemResult::Captured {
+                    generation: generation(1),
+                    workspace_id: workspace(),
+                    tracked_paths: BTreeSet::new(),
+                },
             )
             .await
             .expect("record commit");
@@ -3720,10 +3872,13 @@ mod tests {
                 .execute(GitCommand::Diff { cached: true }, generation(2))
                 .await
                 .expect("diff"),
-            GitCommandOutput::Action(GitFilesystemAction::Diff {
-                from: Some(from),
-                to
-            }) if from.generation == generation(1)
+            GitCommandOutput::Prepared {
+                action: GitFilesystemAction::Diff {
+                    from: Some(from),
+                    to
+                },
+                ..
+            } if from.generation == generation(1)
                 && from.workspace_id == workspace()
                 && to.generation == generation(2)
                 && to.workspace_id == workspace()
@@ -3733,13 +3888,17 @@ mod tests {
     #[tokio::test]
     async fn every_branch_requests_and_registers_a_distinct_workspace() {
         let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
-        let GitCommandOutput::Action(GitFilesystemAction::ForkBranch {
-            branch,
-            source_workspace,
-            source_generation,
-            head,
-            switch,
-        }) = repository
+        let GitCommandOutput::Prepared {
+            transition,
+            action:
+                GitFilesystemAction::ForkBranch {
+                    source_workspace,
+                    source_generation,
+                    head,
+                    switch,
+                    ..
+                },
+        } = repository
             .execute(
                 GitCommand::Switch {
                     branch: "feature".to_owned(),
@@ -3761,7 +3920,12 @@ mod tests {
             &WorkspaceName::new("feature").expect("valid workspace name"),
         );
         repository
-            .register_branch_workspace(branch, child, head, switch)
+            .complete_transition_result(
+                transition,
+                &GitFilesystemResult::Forked {
+                    workspace_id: child,
+                },
+            )
             .await
             .expect("register branch workspace");
         let GitCommandOutput::Status(status) = repository
@@ -3803,10 +3967,10 @@ mod tests {
                     10,
                 )
                 .await,
-            Ok(GitCommandOutput::Action(GitFilesystemAction::Clean {
-                dry_run: true,
+            Ok(GitCommandOutput::Prepared {
+                action: GitFilesystemAction::Clean { dry_run: true, .. },
                 ..
-            }))
+            })
         ));
         assert!(matches!(
             repository
@@ -3819,13 +3983,10 @@ mod tests {
     #[tokio::test]
     async fn state_changing_filesystem_actions_are_prepared_then_completed() {
         let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
-        let GitCommandOutput::Action(GitFilesystemAction::CaptureCommit {
-            expected_head,
-            message,
-            author,
-            authored_at_seconds,
-            ..
-        }) = repository
+        let GitCommandOutput::Prepared {
+            transition,
+            action: GitFilesystemAction::CaptureCommit { .. },
+        } = repository
             .execute(
                 GitCommand::Commit {
                     message: "initial".to_owned(),
@@ -3840,13 +4001,13 @@ mod tests {
             panic!("expected commit capture");
         };
         let GitCommandOutput::Committed(commit) = repository
-            .record_commit(
-                expected_head,
-                generation(1),
-                BTreeSet::new(),
-                message,
-                author,
-                authored_at_seconds,
+            .complete_transition_result(
+                transition,
+                &GitFilesystemResult::Captured {
+                    generation: generation(1),
+                    workspace_id: workspace(),
+                    tracked_paths: BTreeSet::new(),
+                },
             )
             .await
             .expect("record commit")

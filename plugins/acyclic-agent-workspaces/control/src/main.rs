@@ -967,17 +967,6 @@ impl ControlPlane {
         ) {
             return Err("Git compatibility commands require an idle agent workspace".to_owned());
         }
-        let now = now_millis();
-        let lease = coordinator
-            .begin(
-                workspace.id(),
-                parent.head().await.map_err(display)?.id(),
-                format!("{agent_id}:git"),
-                now,
-                now.saturating_add(15 * 60 * 1_000),
-            )
-            .await
-            .map_err(display)?;
         self.mounts
             .get(agent_id)
             .ok_or_else(|| "subagent mount is unavailable".to_owned())?
@@ -996,16 +985,7 @@ impl ControlPlane {
         } else {
             acyclic_fs::WorkspaceId::from_bytes(route.repository_workspace_id)
         };
-        let executor = PluginGitExecutor {
-            fs: &self.fs,
-            store: self.store.clone(),
-            current: workspace.clone(),
-            repository_id,
-            ignore,
-            switched: Mutex::new(None),
-        };
-        let repository = GitCompatRepository::new(repository_id, self.store.clone());
-        let command = if argv.first().is_some_and(|command| command == "apply") {
+        let patch = if argv.first().is_some_and(|command| command == "apply") {
             let patch_path = git_apply_patch_path(&argv)?;
             validate_path(patch_path, &route.path)?;
             let patch_path = if Path::new(patch_path).is_absolute() {
@@ -1017,6 +997,36 @@ impl ControlPlane {
             if patch.len() > 64 * 1024 * 1024 {
                 return Err("git apply patch exceeds the 64 MiB compatibility bound".to_owned());
             }
+            Some(patch)
+        } else {
+            None
+        };
+        let now = now_millis();
+        let lease = coordinator
+            .begin(
+                workspace.id(),
+                parent.head().await.map_err(display)?.id(),
+                format!("{agent_id}:git"),
+                now,
+                now.saturating_add(15 * 60 * 1_000),
+            )
+            .await
+            .map_err(display)?;
+        let executor = PluginGitExecutor {
+            fs: &self.fs,
+            store: self.store.clone(),
+            current: workspace.clone(),
+            repository_id,
+            ignore,
+            switched: Mutex::new(None),
+        };
+        let repository = GitCompatRepository::new(repository_id, self.store.clone());
+        let resumed = repository.resume(&executor).await;
+        let command = if let Ok(Some(output)) = resumed {
+            Ok(output)
+        } else if let Err(error) = resumed {
+            Err(error)
+        } else if let Some(patch) = patch {
             repository
                 .run(GitCommand::Apply { patch }, head.id(), &executor)
                 .await
@@ -1031,13 +1041,15 @@ impl ControlPlane {
                 )
                 .await
         };
-        let switched = executor.switched_workspace().map_err(display)?;
-        drop(executor);
-
-        coordinator
-            .observe_parent(workspace.id(), parent.head().await.map_err(display)?.id())
-            .await
-            .map_err(display)?;
+        let parent_head = parent.head().await.map(|generation| generation.id());
+        let observed: Result<(), String> = match parent_head {
+            Ok(parent_head) => coordinator
+                .observe_parent(workspace.id(), parent_head)
+                .await
+                .map(|_| ())
+                .map_err(display),
+            Err(error) => Err(display(error)),
+        };
         let finish = coordinator
             .finish(&lease, now_millis())
             .await
@@ -1074,6 +1086,9 @@ impl ControlPlane {
                 return Err("Git compatibility command lease expired".to_owned());
             }
         }
+        observed?;
+        let switched = executor.switched_workspace().map_err(display)?;
+        drop(executor);
         self.mounts
             .get(agent_id)
             .ok_or_else(|| "subagent mount is unavailable".to_owned())?
@@ -1312,6 +1327,10 @@ impl ControlPlane {
             acyclic_fs::WorkspaceId::from_bytes(route.repository_workspace_id)
         };
         let mut visited = BTreeSet::new();
+        // Compatibility branches are private descendants of this agent's repository workspace,
+        // not independently addressable agents. Validate every direct lineage edge, then publish
+        // the agent's selected branch to its authorized parent with one filesystem CAS so a crash
+        // cannot expose a partially advanced compatibility chain.
         while lineage_cursor.id() != repository_id {
             if !visited.insert(lineage_cursor.id()) || visited.len() > 64 {
                 return Err("Git compatibility branch lineage is cyclic or too deep".to_owned());
@@ -2482,6 +2501,29 @@ mod tests {
             }))
             .await
             .expect("child start");
+        assert!(
+            control
+                .pre_tool(json!({
+                    "turn_id":"child-turn","tool_use_id":"git-apply-missing",
+                    "tool_name":"exec_command",
+                    "tool_input":{"cmd":"git apply missing.patch","workdir":root.display().to_string()}
+                }))
+                .await
+                .is_err()
+        );
+        let initial_route = control.state.routes["child"].clone();
+        let initial_workspace = control
+            .workspace(&initial_route)
+            .await
+            .expect("initial child workspace");
+        assert!(matches!(
+            OperationWindowCoordinator::new(control.store.clone())
+                .snapshot(initial_workspace.id())
+                .await
+                .expect("operation window after rejected Git command")
+                .phase,
+            acyclic_fs::OperationWindowPhase::Idle
+        ));
         control
             .pre_tool(json!({
                 "turn_id":"child-turn","tool_use_id":"git-switch",
@@ -2499,6 +2541,14 @@ mod tests {
         assert_ne!(
             branch.id(),
             acyclic_fs::WorkspaceId::from_bytes(route.repository_workspace_id)
+        );
+        let root_workspace = control.root.clone().expect("root workspace");
+        assert!(
+            WorkspaceGraph::new(control.store.clone())
+                .authorize_join(branch.id(), root_workspace.id())
+                .await
+                .is_err(),
+            "a compatibility branch cannot bypass its repository lineage"
         );
         let mut transaction = branch
             .begin_transaction(IdempotencyKey::new())
@@ -2519,13 +2569,51 @@ mod tests {
             .expect("publish compatibility branch");
         assert!(matches!(merged["status"].as_str(), Some("applied" | "already-applied")));
         assert_eq!(fs::read(root.join("branch.txt")).expect("root branch file"), b"branch");
+        let repository_id = acyclic_fs::WorkspaceId::from_bytes(route.repository_workspace_id);
+        let repository = GitCompatRepository::new(repository_id, control.store.clone());
+        assert!(matches!(
+            repository
+                .execute(
+                    GitCommand::Switch {
+                        branch: "main".to_owned(),
+                        create: false,
+                    },
+                    branch.head().await.expect("branch head").id(),
+                )
+                .await
+                .expect("prepare interrupted switch"),
+            acyclic_fs::GitCommandOutput::Prepared { .. }
+        ));
+        drop(control);
+
+        let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
+            .await
+            .expect("reopen with interrupted Git transition");
+        assert!(
+            GitCompatRepository::new(repository_id, control.store.clone())
+                .pending_transition()
+                .await
+                .expect("pending transition")
+                .is_some()
+        );
         control
-            .agent_discard(json!({"agent":"child","_caller_turn_id":"root-turn"}))
+            .pre_tool(json!({
+                "turn_id":"child-turn","tool_use_id":"recover-git-switch",
+                "tool_name":"exec_command",
+                "tool_input":{"cmd":"git status","workdir":root.display().to_string()}
+            }))
+            .await
+            .expect("recover interrupted Git transition through a leased command");
+        assert_eq!(control.state.routes["child"].workspace_id, repository_id.into_bytes());
+        control
+            .user_prompt(json!({"session_id":"session","turn_id":"root-turn-recovered"}))
+            .expect("recovered root turn");
+        control
+            .agent_discard(json!({"agent":"child","_caller_turn_id":"root-turn-recovered"}))
             .await
             .expect("discard compatibility branch");
         assert!(!control.state.routes.contains_key("child"));
         assert!(!control.mounts.contains_key("child"));
-        let repository_id = acyclic_fs::WorkspaceId::from_bytes(route.repository_workspace_id);
         assert!(
             <LocalCoreStateStore as acyclic_fs::GitCompatStore>::load(
                 &control.store,

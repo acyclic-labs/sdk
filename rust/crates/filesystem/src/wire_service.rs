@@ -2525,6 +2525,7 @@ fn status(error: &WorkspaceError) -> Status {
         | WorkspaceError::NoCommonAncestor
         | WorkspaceError::LineageLimit
         | WorkspaceError::JoinLimit
+        | WorkspaceError::ChangedPathLimit
         | WorkspaceError::NotFork => Status::failed_precondition(error.to_string()),
         WorkspaceError::Engine(_) => Status::unavailable(error.to_string()),
     }

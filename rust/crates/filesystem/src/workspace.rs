@@ -2332,13 +2332,26 @@ fn merge_binding_endpoint(
     Ok(())
 }
 
+struct NamespaceRecordSearch {
+    records: BTreeMap<FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>>,
+    complete: bool,
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
     /// Resolves every changed record or binding to exact paths with one bounded traversal of each
     /// endpoint. Equal Merkle subtrees remain skipped by the semantic diff that created this set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::ChangedPathLimit`] instead of a partial result when either
+    /// endpoint exceeds `maximum_entries`.
     pub async fn changed_paths(
         &self,
         maximum_entries: u32,
     ) -> Result<Vec<ChangedPath>, WorkspaceError> {
+        if self.changes.truncated {
+            return Err(WorkspaceError::ChangedPathLimit);
+        }
         let file_ids: BTreeSet<_> = self
             .changes
             .files
@@ -2365,6 +2378,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
             .to
             .namespace_records_for_file_ids(file_ids.iter().copied(), maximum_entries);
         let (before, after) = futures::try_join!(before, after)?;
+        if !before.complete || !after.complete {
+            return Err(WorkspaceError::ChangedPathLimit);
+        }
+        let before = before.records;
+        let after = after.records;
         let mut paths = BTreeMap::<NamespacePath, (Option<_>, Option<_>)>::new();
         let before_records: BTreeMap<_, _> = before
             .iter()
@@ -3562,27 +3580,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         paths: &[NamespacePath],
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::FsReceipt<Vec<Option<crate::kernel::FileRecord>>>, WorkspaceError> {
-        let mut checkout = self
+    ) -> crate::FsResult<Vec<Option<crate::kernel::FileRecord>>> {
+        let checkout = self
             .workspace
-            .engine_checkout(
+            .volume
+            .checkout(
                 GenerationSelector::Exact(self.id),
                 CheckoutMode::read_only_pinned(),
+                budget,
+                cancellation,
             )
             .await?;
-        checkout
-            .lookup_batch_no_follow(paths, budget, cancellation)
+        let checkout_work = checkout.work;
+        let remaining = checkout_work
+            .remaining(budget)
+            .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
+        let mut checkout = checkout.value;
+        let lookup = checkout
+            .lookup_batch_no_follow(paths, remaining, cancellation)
             .await
-            .map(|receipt| crate::FsReceipt {
-                value: receipt
-                    .value
-                    .entries
-                    .into_iter()
-                    .map(|entry| entry.record)
-                    .collect(),
-                work: receipt.work,
-            })
-            .map_err(WorkspaceError::engine)
+            .map_err(|failure| failure.map_with_prior_work(checkout_work, |error| error))?;
+        let work = checkout_work
+            .checked_add(lookup.work)
+            .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
+        Ok(crate::FsReceipt {
+            value: lookup
+                .value
+                .entries
+                .into_iter()
+                .map(|entry| entry.record)
+                .collect(),
+            work,
+        })
     }
 
     /// Returns one authenticated bounded directory page from this generation.
@@ -3656,6 +3685,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         Ok(self
             .namespace_records_for_file_ids(file_ids, maximum_entries)
             .await?
+            .records
             .into_iter()
             .map(|(file_id, records)| {
                 (file_id, records.into_iter().map(|(path, _)| path).collect())
@@ -3667,14 +3697,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         &self,
         file_ids: impl IntoIterator<Item = FileId>,
         maximum_entries: u32,
-    ) -> Result<BTreeMap<FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>>, WorkspaceError>
-    {
-        if maximum_entries == 0 {
-            return Ok(BTreeMap::new());
-        }
+    ) -> Result<NamespaceRecordSearch, WorkspaceError> {
         let file_ids: BTreeSet<_> = file_ids.into_iter().collect();
         if file_ids.is_empty() {
-            return Ok(BTreeMap::new());
+            return Ok(NamespaceRecordSearch {
+                records: BTreeMap::new(),
+                complete: true,
+            });
+        }
+        if maximum_entries == 0 {
+            return Ok(NamespaceRecordSearch {
+                records: BTreeMap::new(),
+                complete: false,
+            });
         }
         let maximum = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
         let limits = self.workspace.volume.config.limits;
@@ -3724,7 +3759,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                         for records in matches.values_mut() {
                             records.sort_by(|left, right| left.0.cmp(&right.0));
                         }
-                        return Ok(matches);
+                        return Ok(NamespaceRecordSearch {
+                            records: matches,
+                            complete: false,
+                        });
                     }
                     let mut components = directory.components().to_vec();
                     components.push(entry.name.clone());
@@ -3749,7 +3787,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         for records in matches.values_mut() {
             records.sort_by(|left, right| left.0.cmp(&right.0));
         }
-        Ok(matches)
+        Ok(NamespaceRecordSearch {
+            records: matches,
+            complete: true,
+        })
     }
 
     /// Reads one opaque symbolic-link target from this generation.
@@ -3898,6 +3939,9 @@ pub enum WorkspaceError {
     /// Change sets do not share one exact contiguous endpoint and deployment.
     #[error("change sets are not contiguous")]
     ChangeSetContinuity,
+    /// Resolving changed paths exhausted the caller's namespace traversal bound.
+    #[error("changed paths exceed the caller's traversal bound")]
+    ChangedPathLimit,
     /// A staged concatenation omitted every part.
     #[error("staged content set is empty")]
     EmptyContentSet,

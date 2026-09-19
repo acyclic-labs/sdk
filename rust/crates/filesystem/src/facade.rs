@@ -4053,7 +4053,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Lists ordered directory binding pages with at most `concurrency`
-    /// requests in flight while preserving input order.
+    /// requests in flight while preserving input order. Finite budgets are
+    /// consumed sequentially so concurrent requests cannot each admit the
+    /// complete group budget.
     pub async fn list_directory_pages(
         &self,
         requests: &[DirectoryPageRequest],
@@ -4069,6 +4071,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             return Err(OperationFailure::before_work(FsError::Path(
                 PathLookupError::TooManyPaths,
             )));
+        }
+        if budget != WorkBudget::UNBOUNDED {
+            let mut work = WorkCounters::default();
+            let mut ordered = Vec::new();
+            ordered
+                .try_reserve_exact(requests.len())
+                .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
+            for request in requests.iter().cloned() {
+                let receipt = self
+                    .list_directory_page(request, remaining(work, budget)?, cancellation)
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                work = add(work, receipt.work)?;
+                ordered.push(receipt.value);
+            }
+            return Ok(FsReceipt {
+                value: ordered,
+                work,
+            });
         }
         let results = stream::iter(
             requests
@@ -4293,9 +4314,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         Ok(FsReceipt { value: read, work })
     }
 
-    /// Reads an ordered request group with at most `concurrency` operations
-    /// in flight. A failure cancels no already-started work and returns the
-    /// exact work reported by the failed request.
+    /// Reads an ordered request group with at most `concurrency` operations in flight.
+    /// Finite budgets are consumed sequentially so no concurrent request can admit the
+    /// group's full budget independently; explicitly unbounded administrative calls may run
+    /// concurrently. A concurrent failure cancels no already-started work and returns exact
+    /// completed work plus the failed request's receipt.
     pub async fn read_file_ranges(
         &self,
         requests: &[FileRangeReadRequest],
@@ -4311,6 +4334,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             return Err(OperationFailure::before_work(FsError::FileRead(
                 FileRangeReadError::InvalidRange,
             )));
+        }
+        if budget != WorkBudget::UNBOUNDED {
+            let mut work = WorkCounters::default();
+            let mut ordered = Vec::new();
+            ordered
+                .try_reserve_exact(requests.len())
+                .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
+            for request in requests {
+                let receipt = self
+                    .read_file_range(
+                        &request.path,
+                        request.range,
+                        remaining(work, budget)?,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                work = add(work, receipt.work)?;
+                ordered.push(receipt.value);
+            }
+            return Ok(FsReceipt {
+                value: ordered,
+                work,
+            });
         }
         let results = stream::iter(
             requests
@@ -4336,7 +4383,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Reads ordered ranges from already resolved authenticated records with
-    /// at most `concurrency` operations in flight.
+    /// at most `concurrency` operations in flight. Finite budgets are consumed
+    /// sequentially.
     pub async fn read_file_record_ranges(
         &self,
         requests: &[FileRecordRangeReadRequest],
@@ -4352,6 +4400,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             return Err(OperationFailure::before_work(FsError::FileRead(
                 FileRangeReadError::InvalidRange,
             )));
+        }
+        if budget != WorkBudget::UNBOUNDED {
+            let mut work = WorkCounters::default();
+            let mut ordered = Vec::new();
+            ordered
+                .try_reserve_exact(requests.len())
+                .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
+            for request in requests.iter().copied() {
+                let receipt = self
+                    .read_record_range(request, remaining(work, budget)?, cancellation)
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                work = add(work, receipt.work)?;
+                ordered.push(receipt.value);
+            }
+            return Ok(FsReceipt {
+                value: ordered,
+                work,
+            });
         }
         let results = stream::iter(
             requests
@@ -4377,7 +4444,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 
     /// Decodes metadata for authenticated records with bounded concurrency,
-    /// preserving request order.
+    /// preserving request order. Finite budgets are consumed sequentially.
     pub async fn read_record_metadata_batch(
         &self,
         records: &[FileRecord],
@@ -4393,6 +4460,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             return Err(OperationFailure::before_work(FsError::Path(
                 PathLookupError::TooManyPaths,
             )));
+        }
+        if budget != WorkBudget::UNBOUNDED {
+            let mut work = WorkCounters::default();
+            let mut ordered = Vec::new();
+            ordered
+                .try_reserve_exact(records.len())
+                .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
+            for record in records.iter().copied() {
+                let receipt = self
+                    .read_record_metadata(record, remaining(work, budget)?, cancellation)
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                work = add(work, receipt.work)?;
+                ordered.push(receipt.value);
+            }
+            return Ok(FsReceipt {
+                value: ordered,
+                work,
+            });
         }
         let results = stream::iter(records.iter().copied().enumerate().map(|(index, record)| {
             let reader = self.clone();
@@ -4502,14 +4588,16 @@ async fn read_symbolic_link_record<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 fn order_batch_results<T>(
-    results: Vec<(usize, FsResult<T>)>,
+    mut results: Vec<(usize, FsResult<T>)>,
     budget: WorkBudget,
 ) -> FsResult<Vec<T>> {
+    results.sort_unstable_by_key(|(index, _)| *index);
     let mut work = WorkCounters::default();
     let mut completed = Vec::new();
     completed
         .try_reserve_exact(results.len())
         .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
+    let mut first_failure = None;
     for (index, result) in results {
         match result {
             Ok(receipt) => {
@@ -4517,13 +4605,18 @@ fn order_batch_results<T>(
                 completed.push((index, receipt.value));
             }
             Err(failure) => {
-                return Err(failure.map_with_prior_work(work, std::convert::identity));
+                work = add(work, *failure.work)?;
+                if first_failure.is_none() {
+                    first_failure = Some(failure.error);
+                }
             }
         }
     }
     work.verify(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
-    completed.sort_unstable_by_key(|(index, _)| *index);
+    if let Some(error) = first_failure {
+        return Err(OperationFailure::new(error, work));
+    }
     Ok(FsReceipt {
         value: completed.into_iter().map(|(_, value)| value).collect(),
         work,

@@ -270,6 +270,7 @@ fn map_error(error: WorkspaceError) -> Error {
         | WorkspaceError::JoinLimit
         | WorkspaceError::InvalidMergeResolution
         | WorkspaceError::ChangeSetContinuity
+        | WorkspaceError::ChangedPathLimit
         | WorkspaceError::EmptyContentSet
         | WorkspaceError::NotFork
         | WorkspaceError::ContentLengthOverflow => Error::Invalid(error.to_string()),

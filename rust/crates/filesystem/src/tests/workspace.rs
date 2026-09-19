@@ -1324,6 +1324,31 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
     assert!(!paths.iter().any(|change| {
         super::namespace_path_text(&change.path).is_ok_and(|path| path == "/linked")
     }));
+    assert!(matches!(
+        before.diff_to(&after, 64).await?.changed_paths(1).await,
+        Err(WorkspaceError::ChangedPathLimit)
+    ));
+    let exact = before.diff_to(&after, 64).await?;
+    let mut truncated_changes = exact.changes().clone();
+    truncated_changes.truncated = true;
+    let truncated = ChangeSet {
+        from: before.clone(),
+        to: after.clone(),
+        changes: truncated_changes,
+        work: exact.work(),
+    };
+    assert!(matches!(
+        truncated.changed_paths(64).await,
+        Err(WorkspaceError::ChangedPathLimit)
+    ));
+    assert!(
+        after
+            .diff_to(&after, 1)
+            .await?
+            .changed_paths(0)
+            .await?
+            .is_empty()
+    );
     Ok(())
 }
 
@@ -1351,11 +1376,22 @@ async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    assert!(
-        generation
-            .lookup_paths(&[present], WorkBudget::UNBOUNDED, &cancelled)
-            .await
-            .is_err()
-    );
+    let cancelled_failure = generation
+        .lookup_paths(
+            std::slice::from_ref(&present),
+            WorkBudget::UNBOUNDED,
+            &cancelled,
+        )
+        .await
+        .err()
+        .ok_or_else(|| std::io::Error::other("pre-cancelled lookup must fail"))?;
+    assert_eq!(*cancelled_failure.work, crate::WorkCounters::default());
+    let budget_failure = generation
+        .lookup_paths(&[present], WorkBudget::default(), &CancellationToken::new())
+        .await
+        .err()
+        .ok_or_else(|| std::io::Error::other("zero-budget checkout must fail"))?;
+    assert_ne!(*budget_failure.work, crate::WorkCounters::default());
+    assert!(budget_failure.work.verify(WorkBudget::default()).is_err());
     Ok(())
 }

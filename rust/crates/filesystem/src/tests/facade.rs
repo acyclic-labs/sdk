@@ -1761,6 +1761,36 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     .ok_or("single read blocked")??;
     assert_eq!(batch.work, first.work.checked_add(second.work)?);
 
+    let Err(bounded_failure) =
+        poll_ready(reader.read_file_ranges(&requests, 2, first.work, &cancellation))
+            .ok_or("bounded batch blocked")?
+    else {
+        return Err("the second range received the first range's full budget".into());
+    };
+    bounded_failure.work.verify(first.work)?;
+
+    let concurrent_failure_requests = [
+        FileRangeReadRequest {
+            path: requests[0].path.clone(),
+            range: ByteRange {
+                offset: 0,
+                length: u64::MAX,
+            },
+        },
+        requests[1].clone(),
+    ];
+    let Err(concurrent_failure) = poll_ready(reader.read_file_ranges(
+        &concurrent_failure_requests,
+        2,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("concurrent failure batch blocked")?
+    else {
+        return Err("the invalid concurrent range unexpectedly succeeded".into());
+    };
+    assert_eq!(*concurrent_failure.work, second.work);
+
     let tracking = poll_ready(volume.checkout(
         GenerationSelector::Head,
         tracking(),
