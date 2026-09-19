@@ -3123,8 +3123,12 @@ struct ControlEndpoint {
     endpoint: String,
     shutdown: watch::Sender<bool>,
     task: tokio::task::JoinHandle<Result<(), String>>,
+    #[cfg(test)]
+    accepted: Arc<tokio::sync::Notify>,
     #[cfg(unix)]
     socket_path: PathBuf,
+    #[cfg(all(windows, test))]
+    pipe_path: String,
 }
 
 impl ControlEndpoint {
@@ -3146,6 +3150,8 @@ async fn start_control_endpoint(
 ) -> Result<ControlEndpoint, String> {
     let opaque_id = hex::encode(OperationId::new().into_bytes());
     let (shutdown, receiver) = watch::channel(false);
+    #[cfg(test)]
+    let accepted = Arc::new(tokio::sync::Notify::new());
 
     #[cfg(unix)]
     {
@@ -3154,11 +3160,20 @@ async fn start_control_endpoint(
         let listener = tokio::net::UnixListener::bind(&socket_path).map_err(display)?;
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).map_err(display)?;
         let endpoint = format!("unix://{}", socket_path.display());
-        let task = tokio::spawn(serve_unix_control(listener, control, receiver));
+        let task = tokio::spawn(serve_unix_control(
+            listener,
+            control,
+            shutdown.clone(),
+            receiver,
+            #[cfg(test)]
+            Arc::clone(&accepted),
+        ));
         Ok(ControlEndpoint {
             endpoint,
             shutdown,
             task,
+            #[cfg(test)]
+            accepted,
             socket_path,
         })
     }
@@ -3168,11 +3183,22 @@ async fn start_control_endpoint(
         let opaque_name = format!("acyclic-agent-workspaces-{opaque_id}");
         let endpoint = format!("npipe://./pipe/{opaque_name}");
         let pipe_path = format!(r"\\.\pipe\{opaque_name}");
-        let task = tokio::spawn(serve_windows_control(pipe_path, control, receiver));
+        let task = tokio::spawn(serve_windows_control(
+            pipe_path.clone(),
+            control,
+            shutdown.clone(),
+            receiver,
+            #[cfg(test)]
+            Arc::clone(&accepted),
+        ));
         Ok(ControlEndpoint {
             endpoint,
             shutdown,
             task,
+            #[cfg(test)]
+            accepted,
+            #[cfg(test)]
+            pipe_path,
         })
     }
 }
@@ -3181,72 +3207,114 @@ async fn start_control_endpoint(
 async fn serve_unix_control(
     listener: tokio::net::UnixListener,
     control: Arc<AsyncMutex<ControlPlane>>,
+    shutdown_sender: watch::Sender<bool>,
     mut shutdown: watch::Receiver<bool>,
+    #[cfg(test)] accepted: Arc<tokio::sync::Notify>,
 ) -> Result<(), String> {
-    loop {
+    let mut connections = tokio::task::JoinSet::new();
+    let result = loop {
         tokio::select! {
-            accepted = listener.accept() => {
-                let (stream, _) = accepted.map_err(display)?;
+            incoming = listener.accept() => {
+                let (stream, _) = match incoming {
+                    Ok(accepted) => accepted,
+                    Err(error) => break Err(display(error)),
+                };
                 let control = Arc::clone(&control);
-                tokio::spawn(async move {
-                    let _ = handle_control_connection(stream, control).await;
+                let connection_shutdown = shutdown.clone();
+                connections.spawn(async move {
+                    let _ = handle_control_connection(stream, control, connection_shutdown).await;
                 });
+                #[cfg(test)]
+                accepted.notify_one();
+            }
+            completed = connections.join_next(), if !connections.is_empty() => {
+                let _ = completed;
             }
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
-                    return Ok(());
+                    break Ok(());
                 }
             }
         }
-    }
+    };
+    let _ = shutdown_sender.send(true);
+    while connections.join_next().await.is_some() {}
+    result
 }
 
 #[cfg(windows)]
 async fn serve_windows_control(
     pipe_path: String,
     control: Arc<AsyncMutex<ControlPlane>>,
+    shutdown_sender: watch::Sender<bool>,
     mut shutdown: watch::Receiver<bool>,
+    #[cfg(test)] accepted: Arc<tokio::sync::Notify>,
 ) -> Result<(), String> {
     let mut first = true;
-    loop {
+    let mut connections = tokio::task::JoinSet::new();
+    let result = loop {
         let server = tokio::net::windows::named_pipe::ServerOptions::new()
             .first_pipe_instance(first)
             .reject_remote_clients(true)
-            .create(&pipe_path)
-            .map_err(display)?;
+            .create(&pipe_path);
+        let server = match server {
+            Ok(server) => server,
+            Err(error) => break Err(display(error)),
+        };
         first = false;
         tokio::select! {
             connected = server.connect() => {
-                connected.map_err(display)?;
+                if let Err(error) = connected {
+                    break Err(display(error));
+                }
                 let control = Arc::clone(&control);
-                tokio::spawn(async move {
-                    let _ = handle_control_connection(server, control).await;
+                let connection_shutdown = shutdown.clone();
+                connections.spawn(async move {
+                    let _ = handle_control_connection(server, control, connection_shutdown).await;
                 });
+                #[cfg(test)]
+                accepted.notify_one();
+            }
+            completed = connections.join_next(), if !connections.is_empty() => {
+                let _ = completed;
             }
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
-                    return Ok(());
+                    break Ok(());
                 }
             }
         }
-    }
+    };
+    let _ = shutdown_sender.send(true);
+    while connections.join_next().await.is_some() {}
+    result
 }
 
 async fn handle_control_connection<S>(
     mut stream: S,
     control: Arc<AsyncMutex<ControlPlane>>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut request = Vec::new();
-    {
+    let read = async {
         let reader = BufReader::new(&mut stream);
         let mut bounded = reader.take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64);
         bounded
             .read_until(b'\n', &mut request)
             .await
-            .map_err(display)?;
+            .map_err(display)
+    };
+    tokio::select! {
+        read = read => {
+            read?;
+        }
+        changed = shutdown.changed() => {
+            let _ = changed;
+            return Ok(());
+        }
     }
     let response = if request.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
         control_response(Err(
@@ -3422,7 +3490,13 @@ async fn run_rpc(
     }
     .await;
     let endpoint_shutdown = endpoint.shutdown().await;
-    let control_shutdown = control.lock().await.shutdown().await;
+    let mut control = Arc::try_unwrap(control)
+        .map_err(|_| "control endpoint retained an active request during shutdown".to_owned())?
+        .into_inner();
+    let control_shutdown = control.shutdown().await;
+    // LocalFs owns the exclusive Stream journal. Release it before reporting
+    // graceful EOF so a replacement host can reopen the same plugin data.
+    drop(control);
     service.and(endpoint_shutdown).and(control_shutdown)
 }
 
@@ -3519,6 +3593,24 @@ mod tests {
             .expect("plugin RPC host thread");
     }
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn endpoint_shutdown_cancels_inflight_requests_before_reopen() {
+        std::thread::Builder::new()
+            .name("plugin-endpoint-shutdown".to_owned())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime")
+                    .block_on(endpoint_shutdown_case());
+            })
+            .expect("test thread")
+            .join()
+            .expect("plugin endpoint shutdown thread");
+    }
+
     #[test]
     fn authenticated_control_protocol_dispatches_git() {
         std::thread::Builder::new()
@@ -3588,6 +3680,68 @@ mod tests {
             .expect("reopen after graceful RPC EOF");
         assert!(reopened.mounts.contains_key("child"));
         reopened.shutdown().await.expect("second graceful shutdown");
+    }
+
+    #[cfg(any(unix, windows))]
+    async fn endpoint_shutdown_case() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        let root = temporary.path().join("root");
+        fs::create_dir_all(&root).expect("root directory");
+        let mut control = ControlPlane::open(data.clone())
+            .await
+            .expect("control plane");
+        control
+            .session_start(json!({"session_id":"session","cwd":root.display().to_string()}))
+            .await
+            .expect("root session");
+        let shared = Arc::new(AsyncMutex::new(control));
+        let endpoint = start_control_endpoint(Arc::clone(&shared))
+            .await
+            .expect("control endpoint");
+        #[cfg(unix)]
+        let mut client = tokio::net::UnixStream::connect(&endpoint.socket_path)
+            .await
+            .expect("connect control endpoint");
+        #[cfg(windows)]
+        let mut client = connect_test_pipe(&endpoint.pipe_path).await;
+        endpoint.accepted.notified().await;
+        client
+            .write_all(b"{\"version\":1")
+            .await
+            .expect("write incomplete request");
+        endpoint.shutdown().await.expect("endpoint shutdown");
+        drop(client);
+
+        let mut control = match Arc::try_unwrap(shared) {
+            Ok(control) => control.into_inner(),
+            Err(_) => panic!("endpoint retained an in-flight control request"),
+        };
+        control.shutdown().await.expect("control shutdown");
+        drop(control);
+        let mut reopened = ControlPlane::open(data)
+            .await
+            .expect("reopen after in-flight request shutdown");
+        reopened.shutdown().await.expect("reopened shutdown");
+    }
+
+    #[cfg(windows)]
+    async fn connect_test_pipe(
+        pipe_path: &str,
+    ) -> tokio::net::windows::named_pipe::NamedPipeClient {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match tokio::net::windows::named_pipe::ClientOptions::new().open(pipe_path) {
+                Ok(client) => return client,
+                Err(error) if std::time::Instant::now() < deadline => {
+                    let _ = error;
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("connect control pipe: {error}"),
+            }
+        }
     }
 
     async fn lifecycle_hardening_case() {
@@ -3956,7 +4110,12 @@ mod tests {
             assert!(rejected.is_err(), "strict Git argv must fail closed");
         }
         let (mut client, server) = tokio::io::duplex(64 * 1024);
-        let handler = tokio::spawn(handle_control_connection(server, Arc::clone(&shared)));
+        let (_connection_shutdown, receiver) = watch::channel(false);
+        let handler = tokio::spawn(handle_control_connection(
+            server,
+            Arc::clone(&shared),
+            receiver,
+        ));
         let request = serde_json::to_vec(&json!({
             "version":1,"token":token,"command":"git","argv":["switch","-c","feature"]
         }))
