@@ -57,6 +57,7 @@ cc = "1.2.56"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-native-runtime = { version = "=0.1.0", path = "../native-runtime" }
 cap-primitives = "4.0.3"
+cap-fs-ext = "4.0.2"
 cap-std = "4.0.3"
 fs2 = { workspace = true, optional = true }
 prost.workspace = true

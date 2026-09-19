@@ -97,7 +97,7 @@ pub fn prepare_native_exchange_with_recovery(
         phase: NativeExchangePhase::Carrying,
     };
     match read_journal(journal_path) {
-        Ok(existing) if existing == journal => Ok(()),
+        Ok(existing) if same_prepared_request(&existing, &journal) => Ok(()),
         Ok(_) => Err(NativeExchangeError::IncompatibleJournal),
         Err(NativeExchangeError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
             write_journal(journal_path, &journal)
@@ -151,8 +151,7 @@ pub fn publish_native_exchange(
             return Err(NativeExchangeError::IncompatibleJournal);
         }
         if journal.version >= IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION
-            && journal.operation == operation
-            && journal.carried != carried
+            && (journal.operation != operation || journal.carried != carried)
         {
             return Err(NativeExchangeError::IncompatibleJournal);
         }
@@ -189,6 +188,20 @@ pub fn publish_native_exchange(
         published: true,
         displaced: Some(prepared.to_path_buf()),
     })
+}
+
+fn same_prepared_request(
+    existing: &NativeExchangeJournal,
+    requested: &NativeExchangeJournal,
+) -> bool {
+    existing.version >= IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION
+        && existing.operation == requested.operation
+        && existing.recovery == requested.recovery
+        && existing.live == requested.live
+        && existing.prepared == requested.prepared
+        && existing.carried == requested.carried
+        && existing.roots == requested.roots
+        && existing.phase == requested.phase
 }
 
 /// Exchanges two existing sibling filesystem entries without flattening
@@ -603,6 +616,54 @@ mod tests {
             ),
             Err(NativeExchangeError::IncompatibleJournal)
         ));
+        assert!(matches!(
+            publish_native_exchange(
+                &journal_path,
+                &live,
+                &prepared,
+                crate::IdempotencyKey::from_bytes([13; 16]),
+                Vec::new(),
+            ),
+            Err(NativeExchangeError::IncompatibleJournal)
+        ));
+        assert_eq!(
+            read_journal(&journal_path)
+                .expect("preserved journal")
+                .operation,
+            operation
+        );
+    }
+
+    #[test]
+    fn prior_identity_journal_retries_without_reencoding() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let prepared = temporary.path().join("prepared");
+        std::fs::create_dir(&live).expect("live tree");
+        std::fs::create_dir(&prepared).expect("prepared tree");
+        let journal_path = temporary.path().join("exchange.json");
+        let operation = crate::IdempotencyKey::from_bytes([14; 16]);
+        let journal = NativeExchangeJournal {
+            version: IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION,
+            operation,
+            recovery: Vec::new(),
+            live: live.clone(),
+            prepared: prepared.clone(),
+            carried: Vec::new(),
+            roots: [
+                root_identity(&live).expect("live identity"),
+                root_identity(&prepared).expect("prepared identity"),
+            ],
+            phase: NativeExchangePhase::Carrying,
+        };
+        write_journal(&journal_path, &journal).expect("journal");
+
+        prepare_native_exchange(&journal_path, &live, &prepared, operation, Vec::new())
+            .expect("compatible retry");
+        assert_eq!(
+            read_journal(&journal_path).expect("journal").version,
+            IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION
+        );
     }
 
     #[test]

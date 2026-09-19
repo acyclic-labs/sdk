@@ -112,6 +112,7 @@ pub(super) fn read_batch(
         let callback = Arc::clone(&completion);
         let collected = Arc::new(Mutex::new(Vec::with_capacity(read.length)));
         let callback_bytes = Arc::clone(&collected);
+        let requested = read.length;
         let handler = RcBlock::new(move |done: u8, data: *mut DispatchData, error: c_int| {
             if error != 0 {
                 callback.finish(Err(io::Error::from_raw_os_error(error)));
@@ -119,10 +120,15 @@ pub(super) fn read_batch(
             }
             if !data.is_null() {
                 // SAFETY: Dispatch guarantees data is live for this handler invocation.
-                callback_bytes
+                let mut bytes = callback_bytes
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .extend_from_slice(&unsafe { &*data }.to_vec());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let remaining = requested.saturating_sub(bytes.len());
+                let delivered = unsafe { &*data }.to_vec();
+                let take = remaining.min(delivered.len());
+                if let Some(selected) = delivered.get(..take) {
+                    bytes.extend_from_slice(selected);
+                }
             }
             if done != 0 {
                 let bytes = std::mem::take(

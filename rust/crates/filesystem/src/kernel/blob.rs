@@ -449,7 +449,7 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
             }
             continue;
         }
-        let (mut bytes, filled, retained_capacity, simultaneous, next_work) = read_blob_chunk(
+        let (bytes, filled, retained_capacity, simultaneous, next_work) = read_blob_chunk(
             source,
             allocation,
             index.live_allocation_bytes,
@@ -463,11 +463,19 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
         if filled == 0 {
             break;
         }
-        bytes.truncate(filled);
+        let bytes = if filled == bytes.len() {
+            Bytes::from(bytes)
+        } else {
+            Bytes::copy_from_slice(
+                bytes
+                    .get(..filled)
+                    .ok_or_else(|| build_failed(BlobBuildError::TooLarge, work))?,
+            )
+        };
         (logical_bytes, work) = accept_owned_blob_chunk(
             &mut batching,
             &mut index,
-            Bytes::from(bytes).slice(..filled),
+            bytes,
             allocation,
             retained,
             false,

@@ -421,6 +421,7 @@ pub async fn capture_subtrees_with_policy<A: AsyncAuthorityStore, O: AsyncObject
                 limits,
                 root,
                 policy,
+                maximum,
                 &mut paths,
                 &mut work,
                 budget,
@@ -710,6 +711,7 @@ pub async fn capture_baseline_with_policy<A: AsyncAuthorityStore, O: AsyncObject
         checkout,
         limits,
         policy,
+        maximum,
         &mut paths,
         &mut work,
         budget,
@@ -956,6 +958,7 @@ fn collect_host_subtree_paths(
     host_root: PathBuf,
     volume_root: NamespacePath,
     policy: &CapturePolicy,
+    maximum: usize,
     paths: &mut Vec<NamespacePath>,
     work: &mut WorkCounters,
     budget: WorkBudget,
@@ -978,7 +981,7 @@ fn collect_host_subtree_paths(
             if policy.excludes(&child) {
                 continue;
             }
-            append_scanned_path(paths, child.clone(), work, budget)?;
+            append_scanned_path(paths, child.clone(), maximum, work, budget)?;
             let host_child = host_parent.join(entry.file_name());
             // Directory enumeration already supplies a no-follow file kind.
             // Capture later reopens and validates every selected path; this
@@ -999,6 +1002,7 @@ async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     limits: crate::model::VolumeLimits,
     policy: &CapturePolicy,
+    maximum: usize,
     paths: &mut Vec<NamespacePath>,
     work: &mut WorkCounters,
     budget: WorkBudget,
@@ -1011,6 +1015,7 @@ async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         limits,
         root,
         policy,
+        maximum,
         paths,
         work,
         budget,
@@ -1025,6 +1030,7 @@ async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
     limits: crate::model::VolumeLimits,
     root: NamespacePath,
     policy: &CapturePolicy,
+    maximum: usize,
     paths: &mut Vec<NamespacePath>,
     work: &mut WorkCounters,
     budget: WorkBudget,
@@ -1061,7 +1067,7 @@ async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
                 if policy.excludes(&child) {
                     continue;
                 }
-                append_scanned_path(paths, child.clone(), work, budget)?;
+                append_scanned_path(paths, child.clone(), maximum, work, budget)?;
                 if entry.record.kind == FileKind::Directory {
                     pending.push(child);
                 }
@@ -1078,9 +1084,13 @@ async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
 fn append_scanned_path(
     paths: &mut Vec<NamespacePath>,
     path: NamespacePath,
+    maximum: usize,
     work: &mut WorkCounters,
     budget: WorkBudget,
 ) -> Result<(), OperationFailure<CaptureError>> {
+    if paths.len() >= maximum {
+        return Err(OperationFailure::new(CaptureError::InvalidOptions, *work));
+    }
     let encoded_bytes = u64::from(path.encoded_bytes());
     paths.push(path);
     *work = add_work(
@@ -1483,7 +1493,6 @@ struct PreparedRegular {
     path: NamespacePath,
     host_path: PathBuf,
     snapshot: HostSnapshot,
-    file: cap_std::fs::File,
     exists_with_kind: bool,
     canonical_metadata: FileMetadata,
 }
@@ -1544,6 +1553,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             host_path,
             volume_path.clone(),
             policy,
+            maximum,
             &mut paths,
             &mut receipt.work,
             budget,
@@ -1568,6 +1578,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 limits,
                 volume_path,
                 policy,
+                maximum,
                 &mut paths,
                 &mut receipt.work,
                 budget,
@@ -1735,11 +1746,11 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
                 ensure_same_host_node(&snapshot, &opened)
                     .map_err(|error| OperationFailure::new(error, receipt.work))?;
+                drop(file);
                 Some(PreparedPath::Regular(Box::new(PreparedRegular {
                     path,
                     host_path,
                     snapshot,
-                    file,
                     exists_with_kind,
                     canonical_metadata,
                 })))
@@ -1915,7 +1926,7 @@ async fn finish_prepared_regular<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         source_root,
         &prepared.host_path,
         &prepared.snapshot,
-        Some(prepared.file),
+        None,
         maximum_extent_spans,
         receipt.work,
         budget,
@@ -1964,7 +1975,6 @@ async fn finish_prepared_regular_batch<A: AsyncAuthorityStore, O: AsyncObjectSto
                 path,
                 host_path,
                 snapshot,
-                file,
                 exists_with_kind,
                 canonical_metadata,
             } = prepared;
@@ -1973,7 +1983,7 @@ async fn finish_prepared_regular_batch<A: AsyncAuthorityStore, O: AsyncObjectSto
                 source_root,
                 &host_path,
                 &snapshot,
-                Some(file),
+                None,
                 maximum_extent_spans,
                 WorkCounters::default(),
                 WorkBudget::UNBOUNDED,

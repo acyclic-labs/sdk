@@ -1,6 +1,7 @@
 //! Capability-rooted native filesystem access shared by capture and materialization.
 #![allow(missing_docs, unsafe_code)]
 
+use cap_fs_ext::DirExt as _;
 use cap_std::fs::{Dir, Metadata, OpenOptions, Permissions, ReadDir};
 #[cfg(unix)]
 use std::ffi::OsStr;
@@ -99,11 +100,11 @@ impl HostRoot {
                     "invalid directory path",
                 ));
             };
-            match current.open_dir(name) {
+            match current.open_dir_nofollow(name) {
                 Ok(next) => current = next,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     current.create_dir(name)?;
-                    current = current.open_dir(name)?;
+                    current = current.open_dir_nofollow(name)?;
                 }
                 Err(error) => return Err(error),
             }
@@ -274,7 +275,7 @@ impl HostDirectory {
     pub fn create_dir_held(&self, name: &Path) -> io::Result<Self> {
         self.directory.create_dir(name)?;
         Ok(Self {
-            directory: self.directory.open_dir(name)?,
+            directory: self.directory.open_dir_nofollow(name)?,
         })
     }
 

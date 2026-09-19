@@ -486,6 +486,27 @@ pub mod native {
             result.map_err(|_| OperationFailure::before_work(DemandError::WorkerUnavailable))?
         }
 
+        async fn run_blocking_after_work<T: Send + 'static>(
+            &self,
+            work: WorkCounters,
+            job: impl FnOnce(Self) -> DemandResult<T> + Send + 'static,
+        ) -> DemandResult<T> {
+            let permit = self
+                .inner
+                .requests
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| OperationFailure::new(DemandError::WorkerUnavailable, work))?;
+            let source = self.clone();
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                job(source)
+            })
+            .await
+            .map_err(|_| OperationFailure::new(DemandError::WorkerUnavailable, work))?
+        }
+
         /// Invalidates prior source references and directory cursors without
         /// reading any descendant. Watch overflow and broad hints use this.
         pub fn invalidate(&self) -> SourceReference {
@@ -884,7 +905,7 @@ pub mod native {
             if cancelled {
                 return Err(OperationFailure::new(DemandError::Cancelled, work));
             }
-            self.run_blocking(cancellation, move |provider, worker_cancellation| {
+            self.run_blocking_after_work(work, move |provider| {
                 let after = cap_std::fs::File::from_std(validation_file)
                     .metadata()
                     .map_err(|error| OperationFailure::new(error.into(), work))?;
@@ -901,7 +922,7 @@ pub mod native {
                     return Err(OperationFailure::new(DemandError::StaleVersion, work));
                 }
                 provider
-                    .check(source, &worker_cancellation)
+                    .check(source, &CancellationToken::new())
                     .map_err(|error| OperationFailure::new(error, work))?;
                 Ok(OperationReceipt { value: (), work })
             })

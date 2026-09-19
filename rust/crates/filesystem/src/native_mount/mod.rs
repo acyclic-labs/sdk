@@ -2337,6 +2337,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn baseline_path_limit_stops_unbounded_traversal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let fs = Fs::memory();
+        let volume = fs
+            .create_volume_with_id(
+                VolumeId::from_bytes([94; 16]),
+                VolumeConfig::portable(Lifecycle::Ephemeral),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        let mut checkout = volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode {
+                    access: AccessMode::ReadWrite,
+                    consistency: ConsistencyMode::Pinned,
+                    mutations: MutationMode::PrivateOverlay,
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        let host = tempfile::tempdir()?;
+        for index in 0..3 {
+            std::fs::write(host.path().join(format!("file-{index}")), b"x")?;
+        }
+        let result = capture_baseline(
+            &mut checkout,
+            &CaptureOptions {
+                expected_root_identity: capture_root_identity(host.path())?,
+                source_root: host.path().to_path_buf(),
+                maximum_paths: 2,
+                maximum_extent_spans: 16,
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await;
+        let Err(error) = result else {
+            return Err("path cap unexpectedly permitted traversal".into());
+        };
+        assert!(matches!(error.error, CaptureError::InvalidOptions));
+        assert!(error.work.items_examined <= 2);
+        Ok(())
+    }
+
+    #[tokio::test]
     #[allow(clippy::too_many_lines)]
     async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
     -> Result<(), Box<dyn std::error::Error>> {
