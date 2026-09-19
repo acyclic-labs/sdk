@@ -61,9 +61,14 @@ that set, so it lands together with the fixes in a follow-up PR instead of break
 Open a GitHub issue for regular bugs. For security vulnerabilities, follow
 [SECURITY.md](SECURITY.md) instead of filing a public issue.
 
-`.github/workflows/qualification.yml` is the only authored qualification graph.
-Its seven Linux, Linux ARM64, Windows, macOS, browser, coverage, and policy lanes
-run on Blacksmith and form a bounded graph. Every lane caps Cargo, CMake, Make,
+`.github/workflows/qualification.yml` is the only authored qualification graph;
+its lanes are the matrix in that file, each driven by `scripts/qualify-ci.sh`
+(`scripts/qualify-ci.ps1` on Windows). They run on Blacksmith and form a
+bounded graph. The Linux, macOS and Windows lanes also build the `acyclic` CLI
+plugin (`plugin/`) as a stripped release binary, drive its acceptance suite
+(`plugin/tests/acceptance`, or the Windows smoke) against it, and retain those
+exact bytes as `plugin-<lane>` artifacts for publication; the policy lane runs
+the plugin's product-name and code-quality guards. Every lane caps Cargo, CMake, Make,
 Rayon, and test parallelism at four processes. The macOS runner is Blacksmith's
 smallest six-vCPU image but still uses only four processes. Blacksmith's colocated
 dependency/tool cache and sccache make cold and warm runs fast without archiving

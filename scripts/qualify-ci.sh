@@ -77,6 +77,24 @@ case "$lane" in
     python3 scripts/test-npm-publication.py
     bash -n scripts/prepare-crate-publication.sh scripts/prepare-npm-publication.sh \
       scripts/check-typescript-packages.sh
+
+    # acyclic CLI plugin (plugin/): the release binary the acceptance suite
+    # drives is retained as this lane's qualified artifact, so it is built
+    # stripped, exactly as it ships. The suite covers the daemon, hooks,
+    # checkpoints, rewind, forks, merges, safe mode and the MCP server.
+    CARGO_PROFILE_RELEASE_STRIP=symbols \
+      cargo build --release --locked -p acyclic -p acyclic-qual
+    plugin_target="$(cd "${CARGO_TARGET_DIR:-target}" && pwd)"
+    # The sdk's acyclic-cli also emits an `acyclic` binary; make sure the
+    # suite drives the plugin's (retain-binary.sh re-checks before retaining).
+    test "$("$plugin_target/release/acyclic" --version)" = \
+      "acyclic $(awk -F'"' '/^version = /{print $2; exit}' plugin/crates/acyclic/Cargo.toml)"
+    (cd plugin && ACYCLIC_BIN="$plugin_target/release/acyclic" \
+      ACYCLIC_QUAL="$plugin_target/release/acyclic-qual" \
+      ACYCLIC_LAT_FILES=5000 ACYCLIC_LAT_MB=64 ACYCLIC_SOAK_ROUNDS=30 \
+      bash tests/acceptance/run-all.sh)
+    bash plugin/scripts/retain-binary.sh "$plugin_target/release/acyclic" \
+      "$SDK_ARTIFACT_DIR/plugin/linux-x64"
     ;;
   eval)
     python3 evals/agent-workspaces/protocol_check.py \
@@ -132,6 +150,14 @@ case "$lane" in
     fi
     "$TOOLS_DIR/gitleaks-8.30.1/gitleaks" detect --source . --no-banner --redact \
       --log-opts "$base..$head"
+
+    # acyclic CLI plugin (plugin/): its product name is single-sourced from
+    # plugin/product.toml, and its own code-quality rules (line width, TODO
+    # format, comment-block length, jscpd duplication) hold for its tree.
+    source scripts/ensure-bun.sh
+    (cd plugin && bash scripts/check-product-name.sh)
+    (cd plugin && JSCPD="bun x jscpd@4.3.0" bash scripts/check-code-quality.sh)
+    bash -n plugin/scripts/*.sh plugin/tests/acceptance/*.sh plugin/packaging/npm/*.sh
     ;;
   web)
     bash scripts/ensure-rust-target.sh wasm32-unknown-unknown
@@ -157,6 +183,14 @@ case "$lane" in
       --ignored --test-threads=1
     cargo build -p acyclic-fs-napi --locked
     bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
+    # acyclic CLI plugin (plugin/): the linux-arm64 binary is built stripped
+    # and retained for publication. The acceptance suite is not run here
+    # yet; the lane's budget is measured first (RELEASING.md says so).
+    CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --release --locked -p acyclic
+    plugin_target="$(cd "${CARGO_TARGET_DIR:-target}" && pwd)"
+    "$plugin_target/release/acyclic" --version
+    bash plugin/scripts/retain-binary.sh "$plugin_target/release/acyclic" \
+      "$SDK_ARTIFACT_DIR/plugin/linux-arm64"
     ;;
   macos)
     bash scripts/test-ensure-rust-target.sh
@@ -173,6 +207,33 @@ case "$lane" in
     bash scripts/ensure-rust-target.sh x86_64-apple-darwin
     cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
       --target x86_64-apple-darwin --locked
+
+    # acyclic CLI plugin (plugin/): the release binary the acceptance suite
+    # drives is retained as this lane's qualified artifact, so it is built
+    # stripped, exactly as it ships. The suite covers the daemon, hooks,
+    # checkpoints, rewind, forks, merges, safe mode and the MCP server.
+    CARGO_PROFILE_RELEASE_STRIP=symbols \
+      cargo build --release --locked -p acyclic -p acyclic-qual
+    plugin_target="$(cd "${CARGO_TARGET_DIR:-target}" && pwd)"
+    # The sdk's acyclic-cli also emits an `acyclic` binary; make sure the
+    # suite drives the plugin's (retain-binary.sh re-checks before retaining).
+    test "$("$plugin_target/release/acyclic" --version)" = \
+      "acyclic $(awk -F'"' '/^version = /{print $2; exit}' plugin/crates/acyclic/Cargo.toml)"
+    (cd plugin && ACYCLIC_BIN="$plugin_target/release/acyclic" \
+      ACYCLIC_QUAL="$plugin_target/release/acyclic-qual" \
+      ACYCLIC_LAT_FILES=5000 ACYCLIC_LAT_MB=64 ACYCLIC_SOAK_ROUNDS=30 \
+      bash tests/acceptance/run-all.sh)
+    bash plugin/scripts/retain-binary.sh "$plugin_target/release/acyclic" \
+      "$SDK_ARTIFACT_DIR/plugin/darwin-arm64"
+    # No Intel macOS runner exists here: the darwin-x64 plugin binary is a
+    # cross-build smoke-tested under Rosetta, retained but not acceptance-
+    # qualified (plugin/packaging/npm/RELEASING.md says so).
+    CARGO_PROFILE_RELEASE_STRIP=symbols \
+      cargo build --release --locked -p acyclic --target x86_64-apple-darwin
+    arch -x86_64 "$plugin_target/x86_64-apple-darwin/release/acyclic" --version
+    bash plugin/scripts/retain-binary.sh \
+      "$plugin_target/x86_64-apple-darwin/release/acyclic" \
+      "$SDK_ARTIFACT_DIR/plugin/darwin-x64"
     ;;
   *)
     echo "unknown qualification lane: $lane" >&2

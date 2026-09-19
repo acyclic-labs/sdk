@@ -69,3 +69,15 @@ $env:CC_aarch64_pc_windows_msvc = Join-Path $clangDirectory 'clang.exe'
 rustup target add aarch64-pc-windows-msvc
 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features `
     --target aarch64-pc-windows-msvc --locked
+
+# acyclic CLI plugin (plugin/): the Windows smoke drives the named-pipe
+# transport, UTF-16LE names, rewind and copy-mode forks through the real
+# release binary, which is then retained as this lane's qualified artifact.
+$env:CARGO_PROFILE_RELEASE_STRIP = 'symbols'
+cargo build --release --locked -p acyclic
+Remove-Item Env:CARGO_PROFILE_RELEASE_STRIP
+$pluginTarget = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { 'target' }
+$env:ACYCLIC_BIN = (Join-Path $pluginTarget 'release\acyclic.exe') -replace '\\', '/'
+bash plugin/tests/acceptance/windows-smoke.sh
+bash plugin/scripts/retain-binary.sh $env:ACYCLIC_BIN `
+    ((Join-Path $env:SDK_ARTIFACT_DIR 'plugin\win32-x64') -replace '\\', '/')
