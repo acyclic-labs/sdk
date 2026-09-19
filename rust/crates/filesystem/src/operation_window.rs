@@ -855,4 +855,36 @@ mod tests {
             OperationWindowFinish::Reconcile(_)
         ));
     }
+
+    #[tokio::test]
+    async fn duplicate_close_persists_expiry_of_the_remaining_lease() {
+        let workspace = WorkspaceId::derive(
+            [11; 16],
+            &crate::WorkspaceName::new("duplicate-expiry").expect("valid test workspace"),
+        );
+        let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
+        let first = coordinator
+            .begin(workspace, generation(1), "first", 1, 10)
+            .await
+            .expect("first lease");
+        coordinator
+            .begin(workspace, generation(1), "second", 2, 40)
+            .await
+            .expect("second lease");
+        assert_eq!(
+            coordinator.finish(&first, 5).await.expect("first close"),
+            OperationWindowFinish::StillActive { remaining: 1 }
+        );
+        assert_eq!(
+            coordinator
+                .finish(&first, 50)
+                .await
+                .expect("duplicate close"),
+            OperationWindowFinish::AlreadyClosed
+        );
+        assert!(matches!(
+            coordinator.inspect(workspace).await.expect("inspect").phase,
+            OperationWindowPhase::Reconciling { .. }
+        ));
+    }
 }
