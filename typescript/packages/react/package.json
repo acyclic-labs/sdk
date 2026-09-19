@@ -12,5 +12,5 @@
   "files": ["dist"],
   "scripts": { "build": "tsc -b", "test": "tsc -b --pretty false && bun test test" },
   "peerDependencies": { "@acyclic-labs/harness": "0.1.0-rc.1", "react": ">=18" },
-  "devDependencies": { "@acyclic-labs/harness": "workspace:*", "@types/react": "19.1.12", "@types/react-test-renderer": "19.1.0", "react-test-renderer": "19.2.0", "typescript": "7.0.2" }
+  "devDependencies": { "@acyclic-labs/harness": "workspace:*", "@types/react": "19.3.0", "@types/react-test-renderer": "19.1.0", "react-test-renderer": "19.2.0", "typescript": "7.0.2" }
 }
