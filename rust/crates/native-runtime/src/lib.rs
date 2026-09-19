@@ -59,12 +59,31 @@ impl Cancellation {
     }
 
     #[cfg(windows)]
-    fn cancel_windows(&self) {
-        let handle = *self
+    fn with_windows_submission<T>(
+        &self,
+        handle: isize,
+        submit: impl FnOnce() -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        let active = self
             .windows_handle
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(handle) = handle {
+        if self.is_cancelled() || *active != Some(handle) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "native I/O cancelled",
+            ));
+        }
+        submit()
+    }
+
+    #[cfg(windows)]
+    fn cancel_windows(&self) {
+        let active = self
+            .windows_handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(handle) = *active {
             windows::cancel(handle);
         }
     }
@@ -1086,6 +1105,35 @@ mod tests {
                 assert_eq!(actual.get(start + 3), Some(&0));
             }
         }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn completed_batches_retire_cancellation_polls() -> io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(temporary.path().join("retired-cancellation"))?;
+        for value in 0_u16..256 {
+            complete_write(write_all_batch_async(
+                file.try_clone()?,
+                vec![OwnedWrite {
+                    offset: u64::from(value),
+                    bytes: Bytes::copy_from_slice(&[value.to_le_bytes()[0]]),
+                }],
+            ))?;
+        }
+        let contents = complete_read(read_batch_async(
+            file,
+            vec![OwnedRead {
+                offset: 0,
+                length: 256,
+            }],
+        ))?;
+        assert_eq!(contents.first().map(Bytes::len), Some(256));
         Ok(())
     }
 

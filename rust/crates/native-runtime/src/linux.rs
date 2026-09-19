@@ -16,6 +16,8 @@ const RING_ENTRIES: u32 = 16;
 const IO_ENTRIES: usize = RING_ENTRIES as usize - 1;
 const MAX_IO_BYTES: usize = 1024 * 1024;
 const CANCELLATION_ID: u64 = u64::MAX;
+const RETIRE_CANCELLATION_ID: u64 = u64::MAX - 1;
+const CANCEL_REQUEST_BASE: u64 = u64::MAX / 2;
 
 thread_local! {
     static STATE: RefCell<RingState> = RefCell::new(RingState {
@@ -440,6 +442,8 @@ fn drain_reads(
     cancellation: &CancellationEvent,
 ) -> Result<Vec<Option<usize>>, DrainReadError> {
     let mut batch = ReadCompletions::new(count);
+    let mut cancellation_seen = false;
+    let mut cancellation_requests_pending = 0_usize;
     arm_cancellation(ring, cancellation).map_err(DrainReadError::Completed)?;
     while batch.remaining() != 0 {
         match ring.submit_and_wait(batch.remaining()) {
@@ -450,13 +454,27 @@ fn drain_reads(
         let completions: Vec<_> = ring.completion().collect();
         for completion in completions {
             if completion.user_data() == CANCELLATION_ID {
-                cancel_remaining(ring).map_err(DrainReadError::Uncertain)?;
+                cancellation_seen = true;
+                request_cancellation(ring, count).map_err(DrainReadError::Uncertain)?;
+                cancellation_requests_pending = count;
+                continue;
+            }
+            if completion.user_data() >= CANCEL_REQUEST_BASE
+                && completion.user_data() < CANCEL_REQUEST_BASE.saturating_add(count as u64)
+            {
+                cancellation_requests_pending = cancellation_requests_pending.saturating_sub(1);
                 continue;
             }
             if let Err(error) = batch.record(completion.user_data(), completion.result()) {
                 return Err(DrainReadError::Uncertain(error));
             }
         }
+    }
+    if !cancellation_seen {
+        retire_cancellation(ring).map_err(DrainReadError::Uncertain)?;
+    } else if cancellation_requests_pending != 0 {
+        drain_cancellation_requests(ring, count, cancellation_requests_pending)
+            .map_err(DrainReadError::Uncertain)?;
     }
     batch.finish().map_err(DrainReadError::Completed)
 }
@@ -565,6 +583,8 @@ fn submit_batch(
     }
     arm_cancellation(active, cancellation).map_err(BatchSubmitError::Completed)?;
     let mut batch = BatchCompletions::new(writes);
+    let mut cancellation_seen = false;
+    let mut cancellation_requests_pending = 0_usize;
     while batch.remaining() != 0 {
         match active.submit_and_wait(batch.remaining()) {
             Ok(_) => {}
@@ -574,13 +594,27 @@ fn submit_batch(
         let completions: Vec<_> = active.completion().collect();
         for completion in completions {
             if completion.user_data() == CANCELLATION_ID {
-                cancel_remaining(active).map_err(BatchSubmitError::Uncertain)?;
+                cancellation_seen = true;
+                request_cancellation(active, entries.len()).map_err(BatchSubmitError::Uncertain)?;
+                cancellation_requests_pending = entries.len();
+                continue;
+            }
+            if completion.user_data() >= CANCEL_REQUEST_BASE
+                && completion.user_data() < CANCEL_REQUEST_BASE.saturating_add(entries.len() as u64)
+            {
+                cancellation_requests_pending = cancellation_requests_pending.saturating_sub(1);
                 continue;
             }
             if let Err(error) = batch.record(completion.user_data(), completion.result()) {
                 return Err(BatchSubmitError::Uncertain(error));
             }
         }
+    }
+    if !cancellation_seen {
+        retire_cancellation(active).map_err(BatchSubmitError::Uncertain)?;
+    } else if cancellation_requests_pending != 0 {
+        drain_cancellation_requests(active, entries.len(), cancellation_requests_pending)
+            .map_err(BatchSubmitError::Uncertain)?;
     }
     batch.finish().map_err(BatchSubmitError::Completed)
 }
@@ -595,15 +629,84 @@ fn arm_cancellation(ring: &mut IoUring, cancellation: &CancellationEvent) -> io:
     Ok(())
 }
 
-fn cancel_remaining(ring: &IoUring) -> io::Result<()> {
-    match ring
-        .submitter()
-        .register_sync_cancel(None, types::CancelBuilder::any())
-    {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+fn request_cancellation(ring: &mut IoUring, count: usize) -> io::Result<()> {
+    for identity in 0..count {
+        let entry = opcode::AsyncCancel::new(identity as u64)
+            .build()
+            .user_data(CANCEL_REQUEST_BASE + identity as u64);
+        // SAFETY: all resulting CQEs are drained by the batch completion loop.
+        unsafe { ring.submission().push(&entry) }
+            .map_err(|_| io::Error::other("io_uring cancellation queue is full"))?;
     }
+    Ok(())
+}
+
+fn retire_cancellation(ring: &mut IoUring) -> io::Result<()> {
+    let entry = opcode::PollRemove::new(CANCELLATION_ID)
+        .build()
+        .user_data(RETIRE_CANCELLATION_ID);
+    // SAFETY: the matching poll and removal CQEs are both drained below.
+    unsafe { ring.submission().push(&entry) }
+        .map_err(|_| io::Error::other("io_uring cancellation retirement queue is full"))?;
+    let mut poll_retired = false;
+    let mut removal_completed = false;
+    while !poll_retired || !removal_completed {
+        match ring.submit_and_wait(1) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+        for completion in ring.completion() {
+            match completion.user_data() {
+                CANCELLATION_ID => poll_retired = true,
+                RETIRE_CANCELLATION_ID => {
+                    match completion_result_code(completion.result()) {
+                        Ok(_) => {}
+                        Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {}
+                        Err(error) => return Err(error),
+                    }
+                    removal_completed = true;
+                }
+                _ => {
+                    return Err(io::Error::other(
+                        "unexpected completion while retiring poll",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn drain_cancellation_requests(
+    ring: &mut IoUring,
+    count: usize,
+    mut pending: usize,
+) -> io::Result<()> {
+    while pending != 0 {
+        match ring.submit_and_wait(1) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+        for completion in ring.completion() {
+            let identity = completion.user_data();
+            if identity < CANCEL_REQUEST_BASE
+                || identity >= CANCEL_REQUEST_BASE.saturating_add(count as u64)
+            {
+                return Err(io::Error::other(
+                    "unexpected completion after native I/O drained",
+                ));
+            }
+            match completion_result_code(completion.result()) {
+                Ok(_) => {}
+                Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {}
+                Err(error) => return Err(error),
+            }
+            pending = pending.saturating_sub(1);
+        }
+    }
+    Ok(())
 }
 
 enum BatchSubmitError {

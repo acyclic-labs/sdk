@@ -180,7 +180,8 @@ fn write_batch_on_port(
     let mut accepted = 0;
     let mut first_error = None;
     for write in writes {
-        match submit_write(handle, write) {
+        match cancellation.with_windows_submission(handle as isize, || submit_write(handle, write))
+        {
             Ok((write, queued)) => {
                 accepted += usize::from(queued);
                 pending.push(write);
@@ -245,7 +246,7 @@ fn read_batch_on_port(
     let mut accepted = 0;
     let mut first_error = None;
     for read in reads {
-        match submit_read(handle, *read) {
+        match cancellation.with_windows_submission(handle as isize, || submit_read(handle, *read)) {
             Ok((read, queued)) => {
                 accepted += usize::from(queued);
                 pending.push(read);
