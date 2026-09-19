@@ -156,9 +156,14 @@ impl FuseSession {
         })
     }
 
-    #[allow(clippy::unnecessary_wraps)]
     pub(super) fn stop(&mut self) -> Result<(), NativeMountError> {
-        drop(self.session.take());
+        if let Some(session) = self.session.take()
+            && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.join())).is_err()
+        {
+            return Err(NativeMountError::Driver(
+                "FUSE background session failed during shutdown".to_owned(),
+            ));
+        }
         Ok(())
     }
 }

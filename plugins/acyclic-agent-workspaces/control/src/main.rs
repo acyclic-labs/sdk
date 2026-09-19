@@ -3334,9 +3334,18 @@ where
         }
     };
     let encoded = encode_control_response(&response)?;
-    stream.write_all(&encoded).await.map_err(display)?;
-    stream.write_all(b"\n").await.map_err(display)?;
-    stream.flush().await.map_err(display)
+    let write = async {
+        stream.write_all(&encoded).await.map_err(display)?;
+        stream.write_all(b"\n").await.map_err(display)?;
+        stream.flush().await.map_err(display)
+    };
+    tokio::select! {
+        result = write => result,
+        changed = shutdown.changed() => {
+            let _ = changed;
+            Ok(())
+        }
+    }
 }
 
 async fn dispatch_control_request(
@@ -4063,9 +4072,10 @@ mod tests {
 
     async fn authenticated_control_protocol_case() {
         let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
         let root = temporary.path().join("root");
         fs::create_dir(&root).expect("root directory");
-        let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
+        let mut control = ControlPlane::open(data.clone())
             .await
             .expect("control plane");
         control
@@ -4089,6 +4099,7 @@ mod tests {
             .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"git-switch","tool_name":"exec_command","tool_input":{"cmd":"acyclic git switch -c feature","workdir":root.display().to_string()}}))
             .await
             .expect("open authenticated command");
+        let original_workspace = control.state.routes["child"].workspace_id;
         let token = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(control.state.routes["child"].workspace_token);
         let shared = Arc::new(AsyncMutex::new(control));
@@ -4117,7 +4128,7 @@ mod tests {
             receiver,
         ));
         let request = serde_json::to_vec(&json!({
-            "version":1,"token":token,"command":"git","argv":["switch","-c","feature"]
+            "version":1,"token":token,"command":"git","argv":["status"]
         }))
         .expect("control request");
         client.write_all(&request).await.expect("write request");
@@ -4136,6 +4147,42 @@ mod tests {
             .await
             .expect("handler task")
             .expect("handler result");
+
+        let (mut client, server) = tokio::io::duplex(1);
+        let (connection_shutdown, receiver) = watch::channel(false);
+        let handler = tokio::spawn(handle_control_connection(
+            server,
+            Arc::clone(&shared),
+            receiver,
+        ));
+        let request = serde_json::to_vec(&json!({
+            "version":1,"token":token,"command":"git","argv":["switch","-c","feature"]
+        }))
+        .expect("control request");
+        client.write_all(&request).await.expect("write request");
+        client.write_all(b"\n").await.expect("write newline");
+        client.flush().await.expect("flush request");
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let control = shared.lock().await;
+                if control.state.routes["child"].workspace_id != original_workspace {
+                    break;
+                }
+                drop(control);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the accepted Git switch must finish before response cancellation");
+        connection_shutdown
+            .send(true)
+            .expect("signal connection shutdown");
+        tokio::time::timeout(std::time::Duration::from_secs(5), handler)
+            .await
+            .expect("blocked response shutdown")
+            .expect("handler task")
+            .expect("handler result");
+        drop(client);
 
         let mut control = shared.lock().await;
         control
@@ -4160,7 +4207,16 @@ mod tests {
         };
         drop(control);
         assert!(dispatch_control_request(&shared, stale).await.is_err());
-        shared.lock().await.shutdown().await.expect("shutdown");
+        let mut control = match Arc::try_unwrap(shared) {
+            Ok(control) => control.into_inner(),
+            Err(_) => panic!("response cancellation retained the control plane"),
+        };
+        control.shutdown().await.expect("shutdown");
+        drop(control);
+        let mut reopened = ControlPlane::open(data)
+            .await
+            .expect("reopen after blocked response shutdown");
+        reopened.shutdown().await.expect("reopened shutdown");
     }
 
     #[allow(
