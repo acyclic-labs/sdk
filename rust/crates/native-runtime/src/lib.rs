@@ -10,6 +10,58 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::task::{Context, Poll, Waker};
 
+#[derive(Default)]
+struct Cancellation {
+    cancelled: AtomicBool,
+    #[cfg(windows)]
+    windows_handle: Mutex<Option<isize>>,
+}
+
+impl Cancellation {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        #[cfg(windows)]
+        self.cancel_windows();
+    }
+
+    #[cfg(windows)]
+    fn register_windows(&self, handle: isize) {
+        *self
+            .windows_handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
+        if self.is_cancelled() {
+            self.cancel_windows();
+        }
+    }
+
+    #[cfg(windows)]
+    fn clear_windows(&self, handle: isize) {
+        let mut active = self
+            .windows_handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *active == Some(handle) {
+            *active = None;
+        }
+    }
+
+    #[cfg(windows)]
+    fn cancel_windows(&self) {
+        let handle = *self
+            .windows_handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(handle) = handle {
+            windows::cancel(handle);
+        }
+    }
+}
+
 /// One file owned by the native I/O runtime.
 ///
 /// Callers retain responsibility for capability-safe path resolution and pass
@@ -144,7 +196,7 @@ pub struct ReadBatch {
     state: Arc<Mutex<ReadBatchState>>,
     pending: Option<NativeJob>,
     waiter: Option<u64>,
-    cancelled: Arc<AtomicBool>,
+    cancellation: Arc<Cancellation>,
 }
 
 /// Runtime-independent future for one owned native write batch.
@@ -152,7 +204,7 @@ pub struct WriteBatch {
     state: Arc<Mutex<WriteBatchState>>,
     pending: Option<NativeJob>,
     waiter: Option<u64>,
-    cancelled: Arc<AtomicBool>,
+    cancellation: Arc<Cancellation>,
 }
 
 struct ReadBatchState {
@@ -170,13 +222,13 @@ enum NativeJob {
         file: File,
         reads: Vec<OwnedRead>,
         state: Arc<Mutex<ReadBatchState>>,
-        cancelled: Arc<AtomicBool>,
+        cancellation: Arc<Cancellation>,
     },
     Write {
         file: File,
         writes: Vec<OwnedWrite>,
         state: Arc<Mutex<WriteBatchState>>,
-        cancelled: Arc<AtomicBool>,
+        cancellation: Arc<Cancellation>,
     },
 }
 
@@ -187,16 +239,16 @@ impl NativeJob {
                 file,
                 reads,
                 state,
-                cancelled,
+                cancellation,
             } => {
-                let result = if cancelled.load(Ordering::Acquire) {
+                let result = if cancellation.is_cancelled() {
                     Err(io::Error::new(
                         io::ErrorKind::Interrupted,
                         "native read cancelled before execution",
                     ))
                 } else {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        read_batch_impl(&file, &reads)
+                        read_batch_impl(&file, &reads, &cancellation)
                     }))
                     .unwrap_or_else(|_| Err(io::Error::other("native read worker panicked")))
                 };
@@ -210,16 +262,16 @@ impl NativeJob {
                 file,
                 writes,
                 state,
-                cancelled,
+                cancellation,
             } => {
-                let result = if cancelled.load(Ordering::Acquire) {
+                let result = if cancellation.is_cancelled() {
                     Err(io::Error::new(
                         io::ErrorKind::Interrupted,
                         "native write cancelled before execution",
                     ))
                 } else {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        write_all_batch_owned(&file, writes)
+                        write_all_batch_owned(&file, writes, &cancellation)
                     }))
                     .unwrap_or_else(|_| Err(io::Error::other("native write worker panicked")))
                 };
@@ -245,17 +297,17 @@ impl ReadBatch {
             result: None,
             waker: None,
         }));
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancellation = Arc::new(Cancellation::default());
         Self {
             pending: Some(NativeJob::Read {
                 file,
                 reads,
                 state: Arc::clone(&state),
-                cancelled: Arc::clone(&cancelled),
+                cancellation: Arc::clone(&cancellation),
             }),
             state,
             waiter: None,
-            cancelled,
+            cancellation,
         }
     }
 }
@@ -266,17 +318,17 @@ impl WriteBatch {
             result: None,
             waker: None,
         }));
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancellation = Arc::new(Cancellation::default());
         Self {
             pending: Some(NativeJob::Write {
                 file,
                 writes,
                 state: Arc::clone(&state),
-                cancelled: Arc::clone(&cancelled),
+                cancellation: Arc::clone(&cancellation),
             }),
             state,
             waiter: None,
-            cancelled,
+            cancellation,
         }
     }
 }
@@ -441,7 +493,7 @@ fn native_workers() -> io::Result<&'static NativeWorkers> {
 
 impl Drop for ReadBatch {
     fn drop(&mut self) {
-        self.cancelled.store(true, Ordering::Release);
+        self.cancellation.cancel();
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -462,7 +514,7 @@ impl Drop for ReadBatch {
 
 impl Drop for WriteBatch {
     fn drop(&mut self) {
-        self.cancelled.store(true, Ordering::Release);
+        self.cancellation.cancel();
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -530,12 +582,22 @@ fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io::Result<()> {
+fn write_all_batch_owned(
+    file: &File,
+    writes: Vec<OwnedWrite>,
+    cancellation: &Cancellation,
+) -> io::Result<()> {
+    let _ = cancellation;
     linux::write_all_batch_owned(file, writes)
 }
 
 #[cfg(target_os = "linux")]
-fn read_batch_impl(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
+fn read_batch_impl(
+    file: &File,
+    reads: &[OwnedRead],
+    cancellation: &Cancellation,
+) -> io::Result<Vec<Bytes>> {
+    let _ = cancellation;
     linux::read_batch(file, reads)
 }
 
@@ -552,12 +614,22 @@ fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io::Result<()> {
+fn write_all_batch_owned(
+    file: &File,
+    writes: Vec<OwnedWrite>,
+    cancellation: &Cancellation,
+) -> io::Result<()> {
+    let _ = cancellation;
     apple::write_all_batch_owned(file, writes)
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-fn read_batch_impl(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
+fn read_batch_impl(
+    file: &File,
+    reads: &[OwnedRead],
+    cancellation: &Cancellation,
+) -> io::Result<Vec<Bytes>> {
+    let _ = cancellation;
     apple::read_batch(file, reads)
 }
 
@@ -594,13 +666,21 @@ fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io::Result<()> {
-    windows::write_all_batch_owned(file, writes)
+fn write_all_batch_owned(
+    file: &File,
+    writes: Vec<OwnedWrite>,
+    cancellation: &Cancellation,
+) -> io::Result<()> {
+    windows::write_all_batch_owned(file, writes, cancellation)
 }
 
 #[cfg(windows)]
-fn read_batch_impl(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
-    windows::read_batch(file, reads)
+fn read_batch_impl(
+    file: &File,
+    reads: &[OwnedRead],
+    cancellation: &Cancellation,
+) -> io::Result<Vec<Bytes>> {
+    windows::read_batch(file, reads, cancellation)
 }
 
 #[cfg(target_vendor = "apple")]
