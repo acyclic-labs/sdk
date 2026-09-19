@@ -4020,6 +4020,58 @@ impl<A, O> Checkout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
+    /// Reads exact opaque symbolic-link target bytes from one authenticated
+    /// record without resolving a namespace path.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed kind, corruption, cancellation, storage, allocation, or
+    /// bounded-work failures.
+    pub async fn read_symbolic_link_record(
+        &self,
+        record: FileRecord,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Bytes> {
+        let FilePayload::SymbolicLink {
+            target_bytes,
+            target,
+        } = record.payload
+        else {
+            return Err(OperationFailure::before_work(FsError::NotSymbolicLink));
+        };
+        if target_bytes > self.volume.config.limits.maximum_read_bytes {
+            return Err(OperationFailure::before_work(FsError::FileRead(
+                FileRangeReadError::InvalidRange,
+            )));
+        }
+        if target_bytes == 0 {
+            return Ok(FsReceipt {
+                value: Bytes::new(),
+                work: WorkCounters::default(),
+            });
+        }
+        let read = read_blob_range_async(
+            &self.volume.fs.inner.objects,
+            target,
+            ByteRange {
+                offset: 0,
+                length: target_bytes,
+            },
+            decode_limits(self.volume.config),
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| {
+            failure.map_with_prior_work(WorkCounters::default(), FsError::BlobRead)
+        })?;
+        Ok(FsReceipt {
+            value: read.bytes,
+            work: read.work,
+        })
+    }
+
     async fn read_record_range(
         &self,
         request: FileRecordRangeReadRequest,
@@ -6763,41 +6815,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .value
             .record
             .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
-        let FilePayload::SymbolicLink {
-            target_bytes,
-            target,
-        } = record.payload
-        else {
-            return Err(OperationFailure::new(FsError::NotSymbolicLink, work));
-        };
-        if target_bytes > self.volume.config.limits.maximum_read_bytes {
-            return Err(OperationFailure::new(
-                FsError::FileRead(FileRangeReadError::InvalidRange),
-                work,
-            ));
-        }
-        if target_bytes == 0 {
-            return Ok(FsReceipt {
-                value: Bytes::new(),
-                work,
-            });
-        }
-        let read = read_blob_range_async(
-            &self.volume.fs.inner.objects,
-            target,
-            ByteRange {
-                offset: 0,
-                length: target_bytes,
-            },
-            decode_limits(self.volume.config),
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, FsError::BlobRead))?;
+        let read = self
+            .pinned_reader()
+            .map_err(|error| OperationFailure::new(error, work))?
+            .read_symbolic_link_record(record, remaining(work, budget)?, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
         work = add(work, read.work)?;
         Ok(FsReceipt {
-            value: read.bytes,
+            value: read.value,
             work,
         })
     }

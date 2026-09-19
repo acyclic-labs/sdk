@@ -1584,6 +1584,13 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
         &cancellation,
     ))
     .ok_or("second create blocked")??;
+    poll_ready(writer.create_symbolic_link(
+        path("link")?,
+        Bytes::from_static(b"first"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("link create blocked")??;
     let reader = writer.pinned_reader()?;
     let requests = [
         FileRangeReadRequest {
@@ -1608,13 +1615,14 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     assert_eq!(&batch.value[1].bytes[..], b"bcde");
 
     let lookup = poll_ready(writer.lookup_batch_no_follow(
-        &[path("second")?, path("first")?],
+        &[path("second")?, path("first")?, path("link")?],
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("record lookup blocked")??;
     let second_record = lookup.value.entries[0].record.ok_or("second absent")?;
     let first_record = lookup.value.entries[1].record.ok_or("first absent")?;
+    let link_record = lookup.value.entries[2].record.ok_or("link absent")?;
     let record_reads = poll_ready(reader.read_file_record_ranges(
         &[
             FileRecordRangeReadRequest {
@@ -1642,6 +1650,25 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     .ok_or("metadata batch blocked")??;
     assert_eq!(metadata.value.len(), 3);
     assert_eq!(metadata.value[0], metadata.value[2]);
+    let target = poll_ready(reader.read_symbolic_link_record(
+        link_record,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("record symlink read blocked")??;
+    assert_eq!(&target.value[..], b"first");
+    assert!(matches!(
+        poll_ready(reader.read_symbolic_link_record(
+            first_record,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("wrong-kind symlink read blocked")?,
+        Err(OperationFailure {
+            error: FsError::NotSymbolicLink,
+            ..
+        })
+    ));
 
     let first = poll_ready(reader.read_file_range(
         &requests[0].path,
