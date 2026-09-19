@@ -443,6 +443,12 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<HostPathRestore>, OperationFailure<MaterializeError>> {
     validate_host_relative(relative).map_err(OperationFailure::before_work)?;
+    validate_bounds(options).map_err(OperationFailure::before_work)?;
+    if cancellation.is_cancelled() {
+        return Err(OperationFailure::before_work(MaterializeError::Engine(
+            "materialization cancelled".into(),
+        )));
+    }
     let destination_root = options.destination.clone();
     let relative = relative.to_path_buf();
     let (destination, stage_root) = tokio::task::spawn_blocking({
@@ -1128,13 +1134,7 @@ async fn apply_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 fn validate_options(options: &MaterializeOptions) -> Result<HostRoot, MaterializeError> {
-    if options.maximum_directory_entries == 0
-        || options.maximum_extent_spans == 0
-        || options.transfer_bytes == 0
-        || usize::try_from(options.transfer_bytes).is_err()
-    {
-        return Err(MaterializeError::InvalidOptions);
-    }
+    validate_bounds(options)?;
     let root =
         HostRoot::open(&options.destination).map_err(|_| MaterializeError::InvalidDestination)?;
     if !root
@@ -1144,6 +1144,17 @@ fn validate_options(options: &MaterializeOptions) -> Result<HostRoot, Materializ
         return Err(MaterializeError::InvalidDestination);
     }
     Ok(root)
+}
+
+fn validate_bounds(options: &MaterializeOptions) -> Result<(), MaterializeError> {
+    if options.maximum_directory_entries == 0
+        || options.maximum_extent_spans == 0
+        || options.transfer_bytes == 0
+        || usize::try_from(options.transfer_bytes).is_err()
+    {
+        return Err(MaterializeError::InvalidOptions);
+    }
+    Ok(())
 }
 
 fn append_path(

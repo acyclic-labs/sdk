@@ -647,6 +647,50 @@ pub struct RangeReader<'a> {
     remaining: u64,
 }
 
+/// Bounded asynchronous positional source backed by the native completion path.
+pub struct AsyncRangeReader {
+    file: File,
+    offset: u64,
+    remaining: u64,
+}
+
+impl AsyncRangeReader {
+    /// Creates a source for at most `length` bytes starting at `offset`.
+    pub const fn new(file: File, offset: u64, length: u64) -> Self {
+        Self {
+            file,
+            offset,
+            remaining: length,
+        }
+    }
+
+    /// Reads the next bounded chunk without blocking the caller's executor.
+    pub async fn read(&mut self, maximum: usize) -> io::Result<Bytes> {
+        let length = usize::try_from(self.remaining.min(maximum as u64))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "range too large"))?;
+        if length == 0 {
+            return Ok(Bytes::new());
+        }
+        let mut result = read_batch_async(
+            self.file.try_clone()?,
+            vec![OwnedRead {
+                offset: self.offset,
+                length,
+            }],
+        )
+        .await?;
+        let bytes = result
+            .pop()
+            .ok_or_else(|| io::Error::other("native read returned no result"))?;
+        self.offset = self
+            .offset
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "read offset overflow"))?;
+        self.remaining -= bytes.len() as u64;
+        Ok(bytes)
+    }
+}
+
 impl<'a> RangeReader<'a> {
     /// Creates a source for at most `length` bytes starting at `offset`.
     pub const fn new(file: &'a File, offset: u64, length: u64) -> Self {

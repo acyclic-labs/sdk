@@ -25,7 +25,6 @@ pub fn capture_root_identity(path: &Path) -> Result<NativeRootIdentity, CaptureE
         .map_err(|_| CaptureError::InvalidOptions)
 }
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -2122,7 +2121,7 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<StagedRegularBody, OperationFailure<CaptureError>> {
-    let mut file = if let Some(file) = opened_file {
+    let file = if let Some(file) = opened_file {
         file
     } else {
         source_root
@@ -2146,7 +2145,7 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let ranges = allocated_data_ranges(&file, logical_bytes, maximum_extent_spans)
         .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
     let content =
-        stage_host_ranges(stager, &mut file, &ranges, prior_work, budget, cancellation).await?;
+        stage_host_ranges(stager, &file, &ranges, prior_work, budget, cancellation).await?;
     let accumulated = prior_work
         .checked_add(content.work)
         .map_err(|error| OperationFailure::new(CaptureError::Work(error), prior_work))?;
@@ -2414,7 +2413,7 @@ struct StagedHostRanges {
 
 async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     stager: &ContentStager<A, O>,
-    file: &mut cap_std::fs::File,
+    file: &cap_std::fs::File,
     ranges: &[HostDataRange],
     prior_work: WorkCounters,
     budget: WorkBudget,
@@ -2430,9 +2429,15 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let accumulated = prior_work
             .checked_add(work)
             .map_err(|error| OperationFailure::new(CaptureError::Work(error), prior_work))?;
-        file.seek(SeekFrom::Start(range.offset))
+        let native = file
+            .try_clone()
+            .map(cap_std::fs::File::into_std)
             .map_err(|error| OperationFailure::new(error.into(), accumulated))?;
-        let mut bounded = (&mut *file).take(range.length);
+        let mut bounded = NativeRangeSource(acyclic_native_runtime::AsyncRangeReader::new(
+            native,
+            range.offset,
+            range.length,
+        ));
         let remaining = accumulated
             .remaining(budget)
             .map_err(|error| OperationFailure::new(CaptureError::Work(error), accumulated))?;
@@ -2463,6 +2468,43 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         work,
         bytes,
     })
+}
+
+struct NativeRangeSource(acyclic_native_runtime::AsyncRangeReader);
+
+impl crate::kernel::AsyncBlobSource for NativeRangeSource {
+    async fn read<'a>(
+        &'a mut self,
+        destination: &'a mut [u8],
+        cancellation: &'a CancellationToken,
+    ) -> std::io::Result<usize> {
+        if cancellation.is_cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "native capture cancelled",
+            ));
+        }
+        let bytes = self.0.read(destination.len()).await?;
+        destination
+            .get_mut(..bytes.len())
+            .ok_or_else(|| std::io::Error::other("native read exceeded destination"))?
+            .copy_from_slice(&bytes);
+        Ok(bytes.len())
+    }
+
+    async fn read_owned(
+        &mut self,
+        maximum: usize,
+        cancellation: &CancellationToken,
+    ) -> std::io::Result<Option<bytes::Bytes>> {
+        if cancellation.is_cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "native capture cancelled",
+            ));
+        }
+        self.0.read(maximum).await.map(Some)
+    }
 }
 
 fn append_special_state(

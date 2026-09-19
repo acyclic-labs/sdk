@@ -346,6 +346,15 @@ pub trait AsyncBlobSource {
         destination: &'a mut [u8],
         cancellation: &'a CancellationToken,
     ) -> impl Future<Output = std::io::Result<usize>>;
+
+    /// Optionally returns one owned chunk without copying into a caller buffer.
+    fn read_owned(
+        &mut self,
+        _maximum: usize,
+        _cancellation: &CancellationToken,
+    ) -> impl Future<Output = std::io::Result<Option<Bytes>>> {
+        async { Ok(None) }
+    }
 }
 
 impl<T: Read> AsyncBlobSource for T {
@@ -412,36 +421,44 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
             .saturating_add(1);
         let allocation = chunk_capacity.min(usize::try_from(detection_bytes).unwrap_or(usize::MAX));
         let retained = batching.retained_bytes();
-        let (mut bytes, prospective, simultaneous, retained_capacity) = allocate_chunk_buffer(
+        let owned = source
+            .read_owned(allocation, cancellation)
+            .await
+            .map_err(|error| build_failed(BlobBuildError::Source(error), work))?;
+        if let Some(chunk) = owned {
+            if chunk.is_empty() {
+                break;
+            }
+            let filled = chunk.len();
+            (logical_bytes, work) = accept_owned_blob_chunk(
+                &mut batching,
+                &mut index,
+                chunk,
+                allocation,
+                retained,
+                logical_bytes,
+                options.maximum_blob_bytes,
+                budget,
+                work,
+                cancellation,
+            )
+            .await?;
+            if filled < allocation {
+                break;
+            }
+            continue;
+        }
+        let (mut bytes, filled, retained_capacity, simultaneous, next_work) = read_blob_chunk(
+            source,
             allocation,
             index.live_allocation_bytes,
             retained,
             work,
             budget,
-        )?;
-        work = prospective;
-        let mut filled = 0_usize;
-        while filled < bytes.len() {
-            if cancellation.is_cancelled() {
-                return Err(build_failed(BlobBuildError::Cancelled, work));
-            }
-            #[allow(clippy::indexing_slicing, reason = "bounded by while loop above")]
-            match AsyncBlobSource::read(source, &mut bytes[filled..], cancellation).await {
-                Ok(0) => break,
-                Ok(count) => {
-                    filled = filled.saturating_add(count);
-                    work = build_add(
-                        work,
-                        WorkCounters {
-                            source_bytes_read: u64::try_from(count).unwrap_or(u64::MAX),
-                            ..WorkCounters::default()
-                        },
-                    )?;
-                    build_verify(work, budget)?;
-                }
-                Err(error) => return Err(build_failed(BlobBuildError::Source(error), work)),
-            }
-        }
+            cancellation,
+        )
+        .await?;
+        work = next_work;
         if filled == 0 {
             break;
         }
@@ -453,38 +470,20 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
         if logical_bytes > options.maximum_blob_bytes {
             return Err(build_failed(BlobBuildError::TooLarge, work));
         }
-        let first_offset = logical_bytes - filled_u64;
-        let chunk_bytes = Bytes::from(bytes);
-        let chunk = ObjectId {
-            kind: ObjectKind::BlobChunk,
-            digest: object_digest(ObjectKind::BlobChunk, &chunk_bytes),
-        };
-        work = build_put(
+        (logical_bytes, work) = accept_owned_blob_chunk(
             &mut batching,
-            chunk,
-            chunk_bytes,
-            PutAllocation {
-                retained: retained_capacity,
-                live: simultaneous,
-            },
+            &mut index,
+            Bytes::from(bytes),
+            allocation,
+            retained,
+            logical_bytes - filled_u64,
+            options.maximum_blob_bytes,
             budget,
             work,
             cancellation,
         )
         .await?;
-        index
-            .push_chunk(
-                &mut batching,
-                BlobChunkRef {
-                    first_offset,
-                    end_offset: logical_bytes,
-                    chunk,
-                },
-                budget,
-                &mut work,
-                cancellation,
-            )
-            .await?;
+        let _ = (retained_capacity, simultaneous);
         if filled < allocation {
             break;
         }
@@ -498,6 +497,115 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
         logical_bytes,
         work,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn read_blob_chunk<R: AsyncBlobSource>(
+    source: &mut R,
+    allocation: usize,
+    index_bytes: u64,
+    retained: u64,
+    mut work: WorkCounters,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<u8>, usize, u64, u64, WorkCounters), BlobBuildFailure> {
+    let (mut bytes, prospective, simultaneous, retained_capacity) =
+        allocate_chunk_buffer(allocation, index_bytes, retained, work, budget)?;
+    work = prospective;
+    let mut filled = 0_usize;
+    while filled < bytes.len() {
+        if cancellation.is_cancelled() {
+            return Err(build_failed(BlobBuildError::Cancelled, work));
+        }
+        #[allow(clippy::indexing_slicing, reason = "bounded by while loop above")]
+        match AsyncBlobSource::read(source, &mut bytes[filled..], cancellation).await {
+            Ok(0) => break,
+            Ok(count) => {
+                filled = filled.saturating_add(count);
+                work = build_add(
+                    work,
+                    WorkCounters {
+                        source_bytes_read: u64::try_from(count).unwrap_or(u64::MAX),
+                        ..WorkCounters::default()
+                    },
+                )?;
+                build_verify(work, budget)?;
+            }
+            Err(error) => return Err(build_failed(BlobBuildError::Source(error), work)),
+        }
+    }
+    Ok((bytes, filled, retained_capacity, simultaneous, work))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
+    batching: &mut BlobBatchStore<'_, S>,
+    index: &mut BlobIndexBuilder,
+    chunk: Bytes,
+    allocation: usize,
+    retained: u64,
+    logical_bytes: u64,
+    maximum_blob_bytes: u64,
+    budget: WorkBudget,
+    work: WorkCounters,
+    cancellation: &CancellationToken,
+) -> Result<(u64, WorkCounters), BlobBuildFailure> {
+    if chunk.len() > allocation {
+        return Err(build_failed(BlobBuildError::TooLarge, work));
+    }
+    let retained_capacity = chunk.len() as u64;
+    let prospective = build_add(
+        work,
+        WorkCounters {
+            source_bytes_read: retained_capacity,
+            peak_allocation_bytes: index
+                .live_allocation_bytes
+                .saturating_add(retained)
+                .saturating_add(retained_capacity),
+            ..WorkCounters::default()
+        },
+    )?;
+    build_verify(prospective, budget)?;
+    let logical_bytes = logical_bytes
+        .checked_add(retained_capacity)
+        .ok_or_else(|| build_failed(BlobBuildError::TooLarge, prospective))?;
+    if logical_bytes > maximum_blob_bytes {
+        return Err(build_failed(BlobBuildError::TooLarge, prospective));
+    }
+    let first_offset = logical_bytes - retained_capacity;
+    let chunk_id = ObjectId {
+        kind: ObjectKind::BlobChunk,
+        digest: object_digest(ObjectKind::BlobChunk, &chunk),
+    };
+    let mut work = build_put(
+        batching,
+        chunk_id,
+        chunk,
+        PutAllocation {
+            retained: retained_capacity,
+            live: index
+                .live_allocation_bytes
+                .saturating_add(retained_capacity),
+        },
+        budget,
+        prospective,
+        cancellation,
+    )
+    .await?;
+    index
+        .push_chunk(
+            batching,
+            BlobChunkRef {
+                first_offset,
+                end_offset: logical_bytes,
+                chunk: chunk_id,
+            },
+            budget,
+            &mut work,
+            cancellation,
+        )
+        .await?;
+    Ok((logical_bytes, work))
 }
 
 fn validate_blob_build(

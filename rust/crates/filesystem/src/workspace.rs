@@ -3561,6 +3561,44 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         .map_err(|failure| WorkspaceError::engine(failure.error))
     }
 
+    /// Restores a bounded sequence of paths through one pinned checkout.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn restore_host_paths(
+        &self,
+        paths: &[std::path::PathBuf],
+        replacement: crate::HostPathReplacement,
+        options: &crate::MaterializeOptions,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Vec<crate::HostPathRestore>, WorkspaceError> {
+        let mut checkout = self
+            .workspace
+            .engine_checkout(
+                GenerationSelector::Exact(self.id),
+                CheckoutMode::read_only_pinned(),
+            )
+            .await?;
+        let mut restored = Vec::new();
+        restored
+            .try_reserve_exact(paths.len())
+            .map_err(|_| WorkspaceError::engine("restore path result allocation failed"))?;
+        for path in paths {
+            restored.push(
+                crate::restore_checkout_host_path(
+                    &mut checkout,
+                    path,
+                    replacement,
+                    options,
+                    crate::WorkBudget::UNBOUNDED,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| WorkspaceError::engine(failure.error))?
+                .value,
+            );
+        }
+        Ok(restored)
+    }
+
     /// Returns the exact immutable parent generation identities.
     ///
     /// # Errors
