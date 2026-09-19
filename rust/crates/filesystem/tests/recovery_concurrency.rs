@@ -550,8 +550,9 @@ fn plan(case: u8) -> MaterializationPlan {
 #[tokio::test]
 async fn restart_completes_from_every_forward_journal_boundary() {
     let expected = target_tree();
-    // Prepared, Applying, three edit-progress records, Applied.
-    for boundary in 1..=6 {
+    // Prepared, Applying, one progress record per edit, Applied.
+    let boundary_count = plan(0).edits.len() + 3;
+    for boundary in 1..=boundary_count {
         let store = CrashJournalStore::default();
         store.fail_on_relative_write(boundary);
         let backend = TreeBackend::source();
@@ -585,9 +586,10 @@ async fn restart_completes_from_every_forward_journal_boundary() {
 #[tokio::test]
 async fn restart_rolls_back_every_partial_forward_boundary() {
     let expected = source_tree();
-    // Prepared, Applying, and all three edit-progress records. The terminal Applied
+    // Prepared, Applying, and one progress record per edit. The terminal Applied
     // boundary is covered by the reverse-boundary test below.
-    for boundary in 1..=5 {
+    let boundary_count = plan(0).edits.len() + 2;
+    for boundary in 1..=boundary_count {
         let store = CrashJournalStore::default();
         store.fail_on_relative_write(boundary);
         let backend = TreeBackend::source();
@@ -613,8 +615,9 @@ async fn restart_rolls_back_every_partial_forward_boundary() {
 #[tokio::test]
 async fn restart_rolls_back_from_every_reverse_journal_boundary() {
     let expected = source_tree();
-    // RollingBack, three reverse restore-progress records, RolledBack.
-    for boundary in 1..=5 {
+    // RollingBack, one reverse restore-progress record per edit, RolledBack.
+    let boundary_count = plan(0).edits.len() + 2;
+    for boundary in 1..=boundary_count {
         let store = CrashJournalStore::default();
         let backend = TreeBackend::source();
         let operation = plan(u8::try_from(boundary + 8).expect("small boundary"));
