@@ -82,6 +82,29 @@ pub async fn list_tree_entries_async<S: AsyncObjectStore>(
     .map_err(map_failure)
 }
 
+pub(crate) async fn list_tree_entries_at_or_after_async<S: AsyncObjectStore>(
+    store: &S,
+    root: ObjectId,
+    at: &LogicalName,
+    maximum_entries: u32,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<DirectoryPage, DirectoryReadFailure> {
+    persistent_pagination::paginate_async_at_or_after::<S, TreeFormat>(
+        store,
+        root,
+        at,
+        maximum_entries,
+        limits,
+        budget,
+        cancellation,
+    )
+    .await
+    .map(to_page)
+    .map_err(map_failure)
+}
+
 fn to_page(receipt: persistent_pagination::Receipt<TreeEntry>) -> DirectoryPage {
     DirectoryPage {
         entries: receipt.values,

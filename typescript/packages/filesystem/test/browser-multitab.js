@@ -10,7 +10,7 @@ const query = new URLSearchParams(location.search);
 const runId = query.get("run");
 const actor = query.get("actor");
 const databaseName = query.get("database");
-const workspaceProfiles = ["indexeddb", "opfs-required"];
+const workspaceProfiles = ["indexeddb", "opfs"];
 const volumeIdentity = new Uint8Array(16).fill(71);
 const checkoutOptions = {
   access: "read-write",
@@ -54,7 +54,7 @@ function databaseOptions(name) {
   return {
     databaseName: name,
     maximumObjectBytes: 64 * 1024 * 1024,
-    objectAcceleration: "opfs-required",
+    objectAcceleration: "opfs",
     objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
   };
 }
@@ -217,7 +217,7 @@ async function runActor() {
     try {
       if (message.command === "prepare") {
         fs = await openBrowserFs(databaseOptions(databaseName));
-        assert(fs.capabilities.immutableObjects === "indexeddb-opfs", "OPFS acceleration was not selected");
+        assert(fs.capabilities.immutableObjects === "opfs", "OPFS acceleration was not selected");
         const volume = await fs.openVolume(volumeIdentity);
         checkout = await volume.checkout(checkoutOptions);
         authoredPath = `/${actor}.txt`;
@@ -230,7 +230,7 @@ async function runActor() {
       }
       if (message.command === "targeted-prepare") {
         fs = await openBrowserFs(databaseOptions(message.database));
-        assert(fs.capabilities.immutableObjects === "indexeddb-opfs", "targeted actor lost OPFS acceleration");
+        assert(fs.capabilities.immutableObjects === "opfs", "targeted actor lost OPFS acceleration");
         const volume = await fs.openVolume(new Uint8Array(message.volumeIdentity));
         targetedVolume = volume;
         targetedAccounting = emptyAccounting();
@@ -310,7 +310,7 @@ async function runActor() {
       }
       if (message.command === "verify") {
         fs = await openBrowserFs(databaseOptions(databaseName));
-        assert(fs.capabilities.immutableObjects === "indexeddb-opfs", "reopened actor lost OPFS acceleration");
+        assert(fs.capabilities.immutableObjects === "opfs", "reopened actor lost OPFS acceleration");
         const volume = await fs.openVolume(volumeIdentity);
         const readOnly = await volume.checkout({
           access: "read-only",
@@ -501,7 +501,7 @@ async function runCoordinator() {
   const channel = new BroadcastChannel(`acyclic-fs-multitab-${run}`);
   const nextMessage = messageQueue(channel);
   const initial = await openBrowserFs(databaseOptions(database));
-  assert(initial.capabilities.immutableObjects === "indexeddb-opfs", "coordinator could not require OPFS");
+  assert(initial.capabilities.immutableObjects === "opfs", "coordinator could not require OPFS");
   const volume = await initial.createVolumeWithId(
     volumeIdentity,
     portableVolumeOptions("durable"),
@@ -529,7 +529,7 @@ async function runCoordinator() {
   const prepared = await Promise.all(["left", "right"].map((name) =>
     nextMessage((message) => message.actor === name && message.event === "prepared", `${name} prepared`)
   ));
-  assert(prepared.every((message) => message.immutableObjects === "indexeddb-opfs"), "one tab bypassed OPFS");
+  assert(prepared.every((message) => message.immutableObjects === "opfs"), "one tab bypassed OPFS");
 
   channel.postMessage({ target: "all", command: "commit" });
   const outcomes = await Promise.all(["left", "right"].map((name) =>

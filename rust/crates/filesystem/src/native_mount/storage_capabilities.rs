@@ -108,7 +108,7 @@ fn probe_platform(root: &Path) -> Result<NativeStorageCapabilities, NativeStorag
         )
         .map_err(|error| NativeStorageCapabilityError::Platform(error.to_string()))?;
     }
-    let storage = probe_file_storage(root)?;
+    let storage = probe_root_storage(root)?;
     let mut flags = 0_u32;
     let mut filesystem_name = vec![0_u16; 256];
     // SAFETY: the input path is NUL-terminated; the output slice and flags
@@ -164,51 +164,62 @@ fn probe_platform(root: &Path) -> Result<NativeStorageCapabilities, NativeStorag
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn probe_file_storage(
+fn probe_root_storage(
     root: &Path,
 ) -> Result<windows::Win32::Storage::FileSystem::FILE_STORAGE_INFO, NativeStorageCapabilityError> {
     use std::mem::size_of;
+    use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
-        FILE_STORAGE_INFO, FileStorageInfo, GetFileInformationByHandleEx,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FILE_STORAGE_INFO, FileStorageInfo, GetFileInformationByHandleEx,
     };
 
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| NativeStorageCapabilityError::Platform(error.to_string()))?
-        .as_nanos();
-    let probe_path = root.join(format!(
-        ".acyclic-fs-storage-capability-{}-{nonce}",
-        std::process::id()
-    ));
-    let probe_file = std::fs::OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .open(&probe_path)
+    // FileStorageInfo is available on a directory handle. Querying the
+    // existing root avoids a temporary file, filesystem mutation, and USN
+    // journal advance on every capability probe.
+    let directory = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES.0)
+        .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+        .open(root)
         .map_err(|error| NativeStorageCapabilityError::Platform(error.to_string()))?;
     let mut storage = FILE_STORAGE_INFO::default();
-    // SAFETY: the handle is borrowed from the live probe file and the output
+    // SAFETY: the handle is borrowed from the live root directory and the output
     // pointer names one correctly sized, exclusively borrowed structure.
-    let storage_result = unsafe {
+    unsafe {
         GetFileInformationByHandleEx(
-            HANDLE(probe_file.as_raw_handle()),
+            HANDLE(directory.as_raw_handle()),
             FileStorageInfo,
             (&raw mut storage).cast(),
             u32::try_from(size_of::<FILE_STORAGE_INFO>())
                 .map_err(|_| NativeStorageCapabilityError::InvalidGeometry)?,
         )
-    };
-    drop(probe_file);
-    let remove_result = std::fs::remove_file(&probe_path);
-    storage_result.map_err(|error| NativeStorageCapabilityError::Platform(error.to_string()))?;
-    remove_result.map_err(|error| NativeStorageCapabilityError::Platform(error.to_string()))?;
+    }
+    .map_err(|error| NativeStorageCapabilityError::Platform(error.to_string()))?;
     Ok(storage)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+#[path = "storage_capabilities_macos.rs"]
+mod macos;
+
+#[cfg(target_os = "macos")]
+fn probe_platform(root: &Path) -> Result<NativeStorageCapabilities, NativeStorageCapabilityError> {
+    macos::probe(root)
+}
+
+#[cfg(target_os = "linux")]
+#[path = "storage_capabilities_linux.rs"]
+mod linux;
+
+#[cfg(target_os = "linux")]
+fn probe_platform(root: &Path) -> Result<NativeStorageCapabilities, NativeStorageCapabilityError> {
+    linux::probe(root)
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn probe_platform(_root: &Path) -> Result<NativeStorageCapabilities, NativeStorageCapabilityError> {
     Err(NativeStorageCapabilityError::UnsupportedTarget)
 }

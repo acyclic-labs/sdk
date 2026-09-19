@@ -5,7 +5,7 @@ export interface EngineCapabilities {
   readonly platform: string;
   readonly architecture: string;
   readonly authority: "memory" | "indexeddb" | "local" | "remote";
-  readonly immutableObjects: "memory" | "indexeddb" | "indexeddb-opfs" | "local" | "remote";
+  readonly immutableObjects: "memory" | "indexeddb" | "opfs" | "local" | "remote";
   readonly nativeMount: "none" | "linux-fuse" | "macos-nfs" | "windows-projfs";
   readonly writableNativeMount: boolean;
   readonly nativeWatch: boolean;
@@ -252,6 +252,15 @@ export interface FsJoinPlan {
   readonly commonAncestor: Uint8Array;
   apply(ifTarget: Uint8Array, idempotencyKey?: Uint8Array): Promise<JoinResult>;
   close(): Promise<void>;
+}
+
+/** Native join plan with declarative, generation-fenced conflict selection. */
+export interface ResolvableFsJoinPlan extends FsJoinPlan {
+  applySides(
+    ifTarget: Uint8Array,
+    selections: readonly MergeConflictSelection[],
+    idempotencyKey?: Uint8Array,
+  ): Promise<JoinResult>;
 }
 
 export type TransactionConflictRegionKind =
@@ -505,6 +514,21 @@ export interface LookupResult {
 
 export interface FileReadResult {
   readonly bytes: Uint8Array;
+  readonly work: WorkCounters;
+}
+
+/** One immutable file handle resolved against a pinned checkout generation. */
+export interface ResolvedFile {
+  readonly kind: string;
+  readonly logicalBytes: bigint;
+  readonly metadataCanonicalBytes: Uint8Array;
+  readRange(offset: bigint, length: bigint): Promise<FileReadResult>;
+  readSymbolicLink(): Promise<FileReadResult>;
+}
+
+/** Original-order handles and the shared namespace-resolution work receipt. */
+export interface ResolvedFilesResult {
+  readonly files: readonly (ResolvedFile | undefined)[];
   readonly work: WorkCounters;
 }
 
@@ -768,6 +792,10 @@ export type MergeConflict =
       readonly name: NativePathComponent;
     };
 
+export type MergeConflictSelection = MergeConflict & {
+  readonly side: "base" | "ours" | "theirs";
+};
+
 export type MergePreparationResult =
   | {
       readonly status: "prepared";
@@ -911,6 +939,7 @@ export interface FsCheckout {
     attributeClass: NamedAttributeClass,
     name: Uint8Array,
   ): Promise<MutationResult>;
+  resolveFiles(paths: readonly string[]): Promise<ResolvedFilesResult>;
   readFileRange(path: string, offset: bigint, length: bigint): Promise<FileReadResult>;
   readFileRangeById(fileId: Uint8Array, offset: bigint, length: bigint): Promise<FileReadResult>;
   planFileExtents(
@@ -1048,7 +1077,7 @@ export interface FsVolume {
 export interface BrowserFsOptions {
   readonly databaseName: string;
   readonly maximumObjectBytes: number;
-  readonly objectAcceleration: "indexeddb" | "opfs-required" | "opfs-if-available";
+  readonly objectAcceleration: "indexeddb" | "opfs";
   readonly objectCache: ObjectCacheOptions;
 }
 
@@ -1119,6 +1148,7 @@ export interface NativeWorkspaceMount {
 }
 
 export interface NativeFsWorkspace extends FsWorkspace {
+  joinInto(target: FsWorkspace, options: JoinOptions): Promise<ResolvableFsJoinPlan>;
   mount(destination: string, options: NativeWorkspaceMountOptions): Promise<NativeWorkspaceMount>;
   sourceState(): Promise<NativeSourceResult>;
   reconcileSource(): Promise<NativeSourceResult>;
@@ -1131,6 +1161,8 @@ export interface NativeSourceOptions {
   readonly maximumPaths: number;
   readonly maximumExtentSpans: number;
   readonly maximumQueuedChanges: number;
+  /** Canonical absolute prefixes omitted from capture and deletion inference. */
+  readonly excludedPaths?: readonly string[];
 }
 
 export type SourceStatus =
@@ -1421,6 +1453,7 @@ export interface WasmRawCheckout {
   listNamedAttributes(path: string, afterClass: NamedAttributeClass | undefined, afterName: Uint8Array | undefined, maximumEntries: number): Promise<NamedAttributePage>;
   writeNamedAttribute(path: string, attributeClass: NamedAttributeClass, name: Uint8Array, bytes: Uint8Array, mode: NamedAttributeWriteMode): Promise<MutationResult>;
   removeNamedAttribute(path: string, attributeClass: NamedAttributeClass, name: Uint8Array): Promise<MutationResult>;
+  resolveFiles(paths: readonly string[]): Promise<WasmRawResolvedFiles>;
   readFileRange(path: string, offset: bigint, length: bigint): Promise<FileReadResult>;
   readFileRangeById(fileId: Uint8Array, offset: bigint, length: bigint): Promise<FileReadResult>;
   planFileExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<{
@@ -1549,6 +1582,20 @@ export interface WasmRawCheckout {
   discard(): Promise<MutationResult>;
 }
 
+export interface WasmRawResolvedFile {
+  readonly kind: string;
+  readonly logicalBytes: bigint;
+  readonly metadataCanonicalBytes: Uint8Array;
+  readRange(offset: bigint, length: bigint): Promise<FileReadResult>;
+  readSymbolicLink(): Promise<FileReadResult>;
+}
+
+export interface WasmRawResolvedFiles {
+  readonly length: number;
+  readonly work: WorkCounters;
+  take(index: number): WasmRawResolvedFile | undefined;
+}
+
 export interface NativeBindings {
   nativeCapabilities(): {
     readonly version: string;
@@ -1566,6 +1613,138 @@ export interface NativeBindings {
   readonly NativeFs: {
     open(root: string, objectCache: NativeRawObjectCacheOptions): Promise<NativeRawFs>;
   };
+  readonly NativeGitCompatRepository: {
+    open(stateRoot: string, workspaceId: Uint8Array): NativeRawGitCompatRepository;
+  };
+  readonly NativeWorkspaceGraph: {
+    open(stateRoot: string): NativeRawWorkspaceGraph;
+  };
+  readonly NativeOperationWindowCoordinator: {
+    open(stateRoot: string): NativeRawOperationWindowCoordinator;
+  };
+}
+
+export interface NativeRawWorkspaceLineageRecord {
+  readonly version: number;
+  readonly revision: bigint;
+  readonly workspaceId: Uint8Array;
+  readonly workspaceName: string;
+  readonly parentWorkspaceId: Uint8Array | undefined;
+  readonly parentWorkspaceName: string | undefined;
+  readonly forkGeneration: Uint8Array;
+  readonly initialGeneration: Uint8Array;
+}
+
+export interface NativeRawWorkspaceGraph {
+  registerRoot(workspace: NativeRawWorkspace): Promise<NativeRawWorkspaceLineageRecord>;
+  fork(
+    parent: NativeRawWorkspace,
+    destination: string,
+    idempotencyKey?: Uint8Array,
+  ): Promise<NativeRawWorkspace>;
+  authorizeJoin(
+    childWorkspaceId: Uint8Array,
+    parentWorkspaceId: Uint8Array,
+  ): Promise<NativeRawWorkspaceLineageRecord>;
+  ancestors(
+    workspaceId: Uint8Array,
+    maximum: number,
+  ): Promise<readonly NativeRawWorkspaceLineageRecord[]>;
+}
+
+export interface NativeRawOperationWindowLease {
+  readonly workspaceId: Uint8Array;
+  readonly leaseId: Uint8Array;
+  readonly pinnedParent: Uint8Array;
+  readonly expiresAtMillis: bigint;
+}
+
+export interface NativeRawOperationWindowPhase {
+  readonly kind: string;
+  readonly ticket: Uint8Array | undefined;
+  readonly pinnedParent: Uint8Array | undefined;
+  readonly pendingParent: Uint8Array | undefined;
+  readonly activeLeaseCount: number | undefined;
+}
+
+export interface NativeRawOperationWindowClose {
+  readonly kind: string;
+  readonly remaining: number | undefined;
+  readonly ticket: Uint8Array | undefined;
+  readonly pinnedParent: Uint8Array | undefined;
+  readonly pendingParent: Uint8Array | undefined;
+}
+
+export interface NativeRawWorkspaceOperationWindowClose {
+  readonly kind: string;
+  readonly remaining: number | undefined;
+  readonly rebase: NativeRawJoinResult | undefined;
+}
+
+export interface NativeRawOperationWindowCoordinator {
+  begin(
+    workspaceId: Uint8Array,
+    parent: Uint8Array,
+    owner: string,
+    nowMillis: bigint,
+    expiresAtMillis: bigint,
+  ): Promise<NativeRawOperationWindowLease>;
+  observeParent(workspaceId: Uint8Array, parent: Uint8Array): Promise<boolean>;
+  finish(
+    lease: NativeRawOperationWindowLease,
+    nowMillis: bigint,
+  ): Promise<NativeRawOperationWindowClose>;
+  inspect(workspaceId: Uint8Array): Promise<NativeRawOperationWindowPhase>;
+  finishWorkspace(
+    workspace: NativeRawWorkspace,
+    lease: NativeRawOperationWindowLease,
+    nowMillis: bigint,
+    options: {
+      readonly maximumGenerations: number;
+      readonly maximumChanges: number;
+      readonly maximumConflicts: number;
+    },
+  ): Promise<NativeRawWorkspaceOperationWindowClose>;
+  recoverWorkspace(
+    workspace: NativeRawWorkspace,
+    nowMillis: bigint,
+    options: {
+      readonly maximumGenerations: number;
+      readonly maximumChanges: number;
+      readonly maximumConflicts: number;
+    },
+  ): Promise<NativeRawJoinResult | undefined>;
+}
+
+export interface NativeRawGitCompatRepository {
+  executeJson(commandJson: string, workspaceGeneration: Uint8Array): Promise<string>;
+  executeArgvJson(
+    argv: readonly string[],
+    workspaceGeneration: Uint8Array,
+    defaultAuthor: string,
+    nowSeconds: string,
+  ): Promise<string>;
+  pendingTransitionJson(): Promise<string | undefined>;
+  completeTransitionJson(
+    transition: Uint8Array,
+    resultingGeneration?: Uint8Array,
+  ): Promise<string>;
+  completeTransitionResultJson(transition: Uint8Array, resultJson: string): Promise<string>;
+  abortTransition(transition: Uint8Array): Promise<void>;
+  registerBranchWorkspaceJson(
+    branch: string,
+    workspaceId: Uint8Array,
+    head: Uint8Array | undefined,
+    switchToBranch: boolean,
+  ): Promise<string>;
+  recordCommitJson(
+    expectedHead: Uint8Array | undefined,
+    generation: Uint8Array,
+    trackedPaths: readonly string[],
+    message: string,
+    author: string,
+    authoredAtSeconds: string,
+  ): Promise<string>;
 }
 
 export interface NativeRawObjectCacheOptions {
@@ -1704,6 +1883,7 @@ export interface NativeRawCheckout {
   listNamedAttributes(path: string, afterClass: NamedAttributeClass | undefined, afterName: Uint8Array | undefined, maximumEntries: number): Promise<{ readonly entries: readonly NamedAttributeName[]; readonly hasMore: boolean; readonly workJson: string }>;
   writeNamedAttribute(path: string, attributeClass: NamedAttributeClass, name: Uint8Array, bytes: Uint8Array, mode: NamedAttributeWriteMode): Promise<NativeRawMutation>;
   removeNamedAttribute(path: string, attributeClass: NamedAttributeClass, name: Uint8Array): Promise<NativeRawMutation>;
+  resolveFiles(paths: readonly string[]): Promise<NativeRawResolvedFiles>;
   readFileRange(
     path: string,
     offset: bigint,
@@ -1857,6 +2037,20 @@ export interface NativeRawCheckout {
   }>;
   discard(): Promise<NativeRawMutation>;
   cancel(): void;
+}
+
+export interface NativeRawResolvedFile {
+  readonly kind: string;
+  readonly logicalBytes: bigint;
+  readonly metadataCanonicalBytes: Uint8Array;
+  readRange(offset: bigint, length: bigint): Promise<{ readonly bytes: Uint8Array; readonly workJson: string }>;
+  readSymbolicLink(): Promise<{ readonly bytes: Uint8Array; readonly workJson: string }>;
+}
+
+export interface NativeRawResolvedFiles {
+  readonly length: number;
+  readonly workJson: string;
+  take(index: number): NativeRawResolvedFile | undefined;
 }
 
 export interface NativeRawTransactionOperation {
@@ -2040,6 +2234,11 @@ export interface NativeRawJoinPlan {
   readonly targetHead: Uint8Array;
   readonly commonAncestor: Uint8Array;
   apply(ifTarget: Uint8Array, idempotencyKey?: Uint8Array): Promise<NativeRawJoinResult>;
+  applySides(
+    ifTarget: Uint8Array,
+    idempotencyKey: Uint8Array | undefined,
+    selections: readonly MergeConflictSelection[],
+  ): Promise<NativeRawJoinResult>;
 }
 
 export interface NativeRawJoinResult {

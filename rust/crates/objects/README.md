@@ -22,3 +22,5 @@ let client = Client::connect_with_ca_certificate(
 ```
 
 Use conditional writes and idempotency keys for retryable mutations. Listings are paginated and bound to a captured view; multipart uploads require an explicit completion manifest. The [crate API](https://docs.rs/acyclic-objects/latest/acyclic_objects/) exposes the transport-independent provider surface, and the [v1 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/objects) defines compatibility semantics.
+
+The local provider fails closed after an uncertain journal write: reads, mutations, and garbage collection return unavailable until the owner closes and reopens the store. Reopen repairs only an incomplete final frame; corruption or a host read error fails recovery. Retrying a mutation after an unavailable result should use its original idempotency key because the last outcome may be uncertain.

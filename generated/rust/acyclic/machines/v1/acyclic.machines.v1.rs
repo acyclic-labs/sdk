@@ -747,4 +747,5 @@ impl EventKind {
         }
     }
 }
+include!("acyclic.machines.v1.tonic.rs");
 // @@protoc_insertion_point(module)

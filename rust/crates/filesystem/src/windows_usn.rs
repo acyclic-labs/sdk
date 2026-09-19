@@ -3,7 +3,8 @@
 //! The adapter proves only the strongest inexpensive case: the exact root,
 //! volume journal, and volume-wide next USN are unchanged. Any journal advance
 //! or ambiguity requires the canonical watcher baseline; it is never treated
-//! as proof that the watched subtree was unchanged.
+//! as proof that the watched subtree was unchanged. A same-volume checkpoint
+//! write advances the journal itself, so it cannot use this fast path.
 
 #![allow(unsafe_code)]
 
@@ -151,7 +152,7 @@ pub fn capture_windows_usn_checkpoint(
 /// # Errors
 ///
 /// Returns only environmental/native failures. Every semantic mismatch is a
-/// successful `BaselineRequired` outcome so callers cannot confuse fallback
+/// successful `BaselineRequired` outcome so callers cannot confuse baseline
 /// with transport failure.
 pub fn validate_windows_usn_checkpoint(
     root: &Path,

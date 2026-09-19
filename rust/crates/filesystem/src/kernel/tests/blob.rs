@@ -7,14 +7,76 @@ use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::ObjectReadRequest;
 use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll, Waker};
+
+struct PeakRecordingStore {
+    calls: AtomicU64,
+    peak: u64,
+}
+
+impl AsyncObjectStore for PeakRecordingStore {
+    async fn put(
+        &self,
+        _object_id: ObjectId,
+        _bytes: Bytes,
+        _budget: WorkBudget,
+        _cancellation: &CancellationToken,
+    ) -> crate::storage::ObjectResult<()> {
+        unreachable!()
+    }
+
+    async fn put_many(
+        &self,
+        _writes: &[crate::storage::ObjectWrite],
+        budget: WorkBudget,
+        _cancellation: &CancellationToken,
+    ) -> crate::storage::ObjectResult<()> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let work = WorkCounters {
+            peak_allocation_bytes: self.peak,
+            ..WorkCounters::default()
+        };
+        work.verify(budget)
+            .map_err(|error| ObjectFailure::before_work(error.into()))?;
+        Ok(crate::storage::ObjectReceipt { value: (), work })
+    }
+
+    async fn read(
+        &self,
+        _object_id: ObjectId,
+        _maximum_bytes: u64,
+        _budget: WorkBudget,
+        _cancellation: &CancellationToken,
+    ) -> crate::storage::ObjectResult<crate::storage::ObjectRead> {
+        unreachable!()
+    }
+
+    async fn read_many(
+        &self,
+        _requests: &[ObjectReadRequest],
+        _budget: WorkBudget,
+        _cancellation: &CancellationToken,
+    ) -> crate::storage::ObjectResult<Vec<crate::storage::ObjectRead>> {
+        unreachable!()
+    }
+
+    async fn contains(
+        &self,
+        _object_id: ObjectId,
+        _budget: WorkBudget,
+        _cancellation: &CancellationToken,
+    ) -> crate::storage::ObjectResult<bool> {
+        unreachable!()
+    }
+}
 
 struct ScriptedSource {
     bytes: Bytes,
     position: usize,
     maximum_per_read: usize,
     fail_after: Option<usize>,
-    cancel_after_first: bool,
+    cancel_at: Option<usize>,
 }
 
 impl AsyncBlobSource for ScriptedSource {
@@ -35,7 +97,7 @@ impl AsyncBlobSource for ScriptedSource {
             .min(self.bytes.len() - self.position);
         destination[..count].copy_from_slice(&self.bytes[self.position..self.position + count]);
         self.position += count;
-        if self.cancel_after_first && self.position == count {
+        if self.cancel_at.is_some_and(|offset| self.position >= offset) {
             cancellation.cancel();
         }
         Ok(count)
@@ -340,6 +402,61 @@ fn owned_blob_pages_and_chunks_preserve_exact_range_results()
 }
 
 #[test]
+fn asynchronous_blob_ranges_batch_intersecting_leaf_chunks()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let chunks = [b"abc".as_slice(), b"def".as_slice(), b"ghi".as_slice()]
+        .into_iter()
+        .map(|bytes| put(&store, ObjectKind::BlobChunk, Bytes::copy_from_slice(bytes)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let [first, second, third] = chunks.as_slice() else {
+        return Err("expected exactly three chunks".into());
+    };
+    let page = BlobPage {
+        first_offset: 0,
+        end_offset: 9,
+        node: BlobNode::Leaf(vec![
+            BlobChunkRef {
+                first_offset: 0,
+                end_offset: 3,
+                chunk: *first,
+            },
+            BlobChunkRef {
+                first_offset: 3,
+                end_offset: 6,
+                chunk: *second,
+            },
+            BlobChunkRef {
+                first_offset: 6,
+                end_offset: 9,
+                chunk: *third,
+            },
+        ]),
+    };
+    let root = put(
+        &store,
+        ObjectKind::Blob,
+        Bytes::from(encode_blob_page(&page, 8)?),
+    )?;
+    let read = crate::async_storage::poll_ready(read_blob_range_async(
+        &store,
+        root,
+        ByteRange {
+            offset: 1,
+            length: 7,
+        },
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    ))
+    .ok_or("memory blob batch blocked")??;
+    assert_eq!(read.bytes, Bytes::from_static(b"bcdefgh"));
+    assert_eq!(read.work.backend_read_operations, 2);
+    assert_eq!(read.work.object_probes, 4);
+    Ok(())
+}
+
+#[test]
 fn blob_page_publication_rejects_the_exact_encoded_byte_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
@@ -362,9 +479,11 @@ fn blob_page_publication_rejects_the_exact_encoded_byte_boundary()
         page_bytes: 1,
         maximum_blob_bytes: 1,
     };
+    let (mut batch, batch_work) = BlobBatchStore::new(&store, WorkBudget::UNBOUNDED)?;
+    assert_eq!(batch_work.allocation_operations, 1);
     let mut work = WorkCounters::default();
     let failure = crate::async_storage::poll_ready(put_blob_page(
-        &store,
+        &mut batch,
         &page,
         options,
         0,
@@ -384,6 +503,86 @@ fn blob_page_publication_rejects_the_exact_encoded_byte_boundary()
     ));
     assert_eq!(*failure.work, WorkCounters::default());
     assert_eq!(work, WorkCounters::default());
+    Ok(())
+}
+
+#[test]
+fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = PeakRecordingStore {
+        calls: AtomicU64::new(0),
+        peak: 1,
+    };
+    let retained_per_object = 3_u64;
+    let vector_bytes = u64::try_from(BLOB_BATCH_OBJECTS)?
+        * u64::try_from(size_of::<crate::storage::ObjectWrite>())?;
+    let total_live = vector_bytes + retained_per_object * u64::try_from(BLOB_BATCH_OBJECTS)?;
+    let total_budget = WorkBudget {
+        peak_allocation_bytes: total_live + store.peak,
+        ..WorkBudget::UNBOUNDED
+    };
+    let (mut batch, _) = BlobBatchStore::new(&store, total_budget)?;
+    let cancellation = CancellationToken::new();
+    for value in 0..BLOB_BATCH_OBJECTS {
+        let bytes = Bytes::from(vec![
+            u8::try_from(value)?;
+            usize::try_from(retained_per_object)?
+        ]);
+        let id = ObjectId {
+            kind: ObjectKind::BlobChunk,
+            digest: object_digest(ObjectKind::BlobChunk, &bytes),
+        };
+        let residual = WorkBudget {
+            peak_allocation_bytes: total_budget
+                .peak_allocation_bytes
+                .checked_sub(vector_bytes + retained_per_object * u64::try_from(value + 1)?)
+                .ok_or("invalid residual peak")?,
+            ..WorkBudget::UNBOUNDED
+        };
+        crate::async_storage::poll_ready(batch.put_with_retained(
+            id,
+            bytes,
+            retained_per_object,
+            residual,
+            &cancellation,
+        ))
+        .ok_or("batch write blocked")??;
+    }
+    assert_eq!(store.calls.load(Ordering::Relaxed), 1);
+
+    let final_store = PeakRecordingStore {
+        calls: AtomicU64::new(0),
+        peak: 1,
+    };
+    let final_live = vector_bytes + retained_per_object;
+    let final_budget = WorkBudget {
+        peak_allocation_bytes: final_live + final_store.peak,
+        ..WorkBudget::UNBOUNDED
+    };
+    let (mut final_batch, _) = BlobBatchStore::new(&final_store, final_budget)?;
+    let bytes = Bytes::from_static(b"one");
+    let id = ObjectId {
+        kind: ObjectKind::BlobChunk,
+        digest: object_digest(ObjectKind::BlobChunk, &bytes),
+    };
+    crate::async_storage::poll_ready(final_batch.put_with_retained(
+        id,
+        bytes,
+        retained_per_object,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("retained batch write blocked")??;
+    assert_eq!(final_store.calls.load(Ordering::Relaxed), 0);
+    crate::async_storage::poll_ready(final_batch.finish(
+        WorkBudget {
+            peak_allocation_bytes: final_store.peak,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    ))
+    .ok_or("final batch flush blocked")??;
+    assert_eq!(final_store.calls.load(Ordering::Relaxed), 1);
     Ok(())
 }
 
@@ -928,7 +1127,7 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
         position: 0,
         maximum_per_read: 1,
         fail_after: None,
-        cancel_after_first: false,
+        cancel_at: None,
     };
     let built = crate::async_storage::poll_ready(build_blob_async(
         &store,
@@ -960,7 +1159,7 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
         position: 0,
         maximum_per_read: 1,
         fail_after: Some(1),
-        cancel_after_first: false,
+        cancel_at: None,
     };
     let failure = crate::async_storage::poll_ready(build_blob_async(
         &MemoryObjectStore::default(),
@@ -982,7 +1181,7 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
         position: 0,
         maximum_per_read: 1,
         fail_after: None,
-        cancel_after_first: true,
+        cancel_at: Some(1),
     };
     let cancelled = crate::async_storage::poll_ready(build_blob_async(
         &MemoryObjectStore::default(),
@@ -997,6 +1196,45 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
     assert!(matches!(cancelled.error, BlobBuildError::Cancelled));
     assert_eq!(cancelled.work.source_bytes_read, 1);
     assert_eq!(cancelled.work.backend_write_operations, 0);
+
+    let cancellation = CancellationToken::new();
+    let mut queued = ScriptedSource {
+        bytes: Bytes::from_static(b"abcdef"),
+        position: 0,
+        maximum_per_read: 1,
+        fail_after: None,
+        cancel_at: Some(5),
+    };
+    let cancelled = crate::async_storage::poll_ready(build_blob_async(
+        &MemoryObjectStore::default(),
+        &mut queued,
+        options,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("queued midstream cancellation blocked")?
+    .err()
+    .ok_or("queued midstream cancellation unexpectedly built")?;
+    assert!(matches!(cancelled.error, BlobBuildError::Cancelled));
+    assert_eq!(cancelled.work.source_bytes_read, 5);
+    assert_eq!(cancelled.work.backend_write_operations, 0);
+
+    let mut tight_budget = WorkBudget::UNBOUNDED;
+    tight_budget.peak_allocation_bytes = cancelled.work.peak_allocation_bytes.saturating_sub(1);
+    let mut bounded = std::io::Cursor::new(Bytes::from_static(b"abcdef"));
+    let rejected = crate::async_storage::poll_ready(build_blob_async(
+        &MemoryObjectStore::default(),
+        &mut bounded,
+        options,
+        tight_budget,
+        &CancellationToken::new(),
+    ))
+    .ok_or("peak-bounded source build blocked")?
+    .err()
+    .ok_or("one-byte-short retained-buffer budget unexpectedly built")?;
+    assert!(matches!(rejected.error, BlobBuildError::Work(_)));
+    assert_eq!(rejected.work.source_bytes_read, 4);
+    assert_eq!(rejected.work.backend_write_operations, 0);
     Ok(())
 }
 
@@ -1435,6 +1673,7 @@ fn impossible_blob_buffers_fail_before_allocation_and_preserve_accounting()
 -> Result<(), Box<dyn std::error::Error>> {
     let chunk = allocate_chunk_buffer(
         usize::MAX,
+        0,
         0,
         WorkCounters::default(),
         WorkBudget::UNBOUNDED,

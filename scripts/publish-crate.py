@@ -25,6 +25,7 @@ CRATES_IO_PUBLISH_URL = "https://crates.io/api/v1/crates/new"
 MAX_CRATE_BYTES = 104_857_600
 MAX_TAR_BYTES = 536_870_912
 PACKAGE_PATHS = {
+    "acyclic-native-runtime": "rust/crates/native-runtime",
     "acyclic-objects": "rust/crates/objects",
     "acyclic-stream": "rust/crates/stream",
     "acyclic-inference": "rust/crates/inference",

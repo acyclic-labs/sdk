@@ -25,14 +25,14 @@
     "objects": {
       "version": "1.0.0-rc.4",
       "crateVersion": "1.0.0-rc.4",
-      "schemaDigest": "sha256:4c7b8c63943a08e1bcebd4fb24d0671c5258cc0ce658e98b68abb2d4b162c735",
-      "descriptorDigest": "sha256:d9911c653465f15a4c44a1feaa8212d949eef177058d1232468532102eba2adb",
+      "schemaDigest": "sha256:06627627b50fac3f780c2e36e1bb79f6f22eedc4112c805a3ac8009279067b95",
+      "descriptorDigest": "sha256:a8f752994e10dda894fd3f41ce2aa720d92d86acf05e83bfc5c763491253ff7c",
       "conformanceDigest": "sha256:a473cb36590f3d05d7c749f2e35c13e9783c2cbc8ef0bb569b91b2e88dbaad7b"
     },
     "machines": {
       "version": "1.0.0-rc.7",
       "schemaDigest": "sha256:0a512bd7c81d2fdaf2d4790869da6ed9b30795575c146f9ec9ba9a5f05d5fa2a",
-      "descriptorDigest": "sha256:8e3d25a892f893af32296162fbaa76cc4ffdad13b0e9388db8d38b1a8831666b",
+      "descriptorDigest": "sha256:feecab59d30a2033fdbae96f63f6db42e7f6c77bfef6fc66c0955c153d1c3916",
       "conformanceDigest": "sha256:b32915837f981a26c4b6573f00feac9409f9392015c209d12ecbdce24e328dd0"
     },
     "inference": {

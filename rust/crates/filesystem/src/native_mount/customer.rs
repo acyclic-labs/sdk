@@ -100,6 +100,32 @@ where
             .map_err(MountLifecycleError::Source)
     }
 
+    /// Publishes pending writes and advances the live checkout to workspace head.
+    ///
+    /// This keeps a direct-parent agent mount coherent after a child join
+    /// without exposing remount orchestration to adapters.
+    pub async fn refresh(&self) -> Result<(), MountLifecycleError> {
+        self.sync().await?;
+        self.advance_to_head().await
+    }
+
+    /// Advances an already-clean live checkout to the workspace head.
+    ///
+    /// Use this after an external, fenced workspace publication when the
+    /// caller already synchronized the mount before that publication. Unlike
+    /// [`Self::refresh`], this does not try to republish against the newer head.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed conflict or storage failure without changing the
+    /// mounted generation.
+    pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
+        self.source
+            .advance_to_head_async()
+            .await
+            .map_err(MountLifecycleError::Source)
+    }
+
     /// Publishes all pending effects on the source's dedicated callback runtime.
     ///
     /// # Errors

@@ -142,18 +142,203 @@ fn paired_rename_is_exact_and_ambiguous_rename_invalidates()
         VolumeLimits::default(),
     )?;
     assert!(matches!(paired.as_slice(), [WatchChange::Renamed { .. }]));
-    assert_eq!(
-        map_event(
-            &event(
-                EventKind::Modify(ModifyKind::Name(RenameMode::From)),
-                vec![root.join("old")],
+    for mode in [RenameMode::From, RenameMode::To] {
+        assert_eq!(
+            map_event(
+                &event(
+                    EventKind::Modify(ModifyKind::Name(mode)),
+                    vec![root.join("one-sided")],
+                ),
+                &root,
+                FilesystemProfile::Portable,
+                VolumeLimits::default(),
             ),
-            &root,
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-        ),
-        Err(WatchInvalidationReason::AmbiguousRename)
+            Err(WatchInvalidationReason::AmbiguousRename)
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn tracked_rename(kind: RenameMode, paths: Vec<PathBuf>, tracker: usize) -> Event {
+    let mut event = event(EventKind::Modify(ModifyKind::Name(kind)), paths);
+    event.attrs.set_tracker(tracker);
+    event
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_tracked_rename_uses_one_queue_slot_and_keeps_exact_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = PathBuf::from("/root");
+    let from = root.join("from");
+    let to = root.join("to");
+    let context = NativeEventContext {
+        root,
+        root_identity: NativeRootIdentity {
+            device: 0,
+            object: 0,
+        },
+        profile: FilesystemProfile::Portable,
+        limits: VolumeLimits::default(),
+        maximum_queued_changes: 1,
+    };
+    let (sender, receiver) = sync_channel(1);
+    let queued = Arc::new(AtomicU32::new(0));
+    let shared = Arc::new(Mutex::new(SharedState {
+        invalidation: None,
+        pending_rename: None,
+    }));
+    for event in [
+        tracked_rename(RenameMode::From, vec![from.clone()], 7),
+        tracked_rename(RenameMode::To, vec![to.clone()], 7),
+        tracked_rename(RenameMode::Both, vec![from, to], 7),
+    ] {
+        accept_native_event(Ok(event), &context, &sender, &shared, &queued);
+    }
+    assert_eq!(
+        shared.lock().map_err(|_| "poisoned")?.seal_invalidation(),
+        None
     );
+    assert_eq!(queued.load(Ordering::Acquire), 1);
+    assert!(matches!(receiver.try_recv()?, WatchChange::Renamed { .. }));
+    assert!(receiver.try_recv().is_err());
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_unpaired_or_mismatched_rename_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let root = PathBuf::from("/root");
+    let from = root.join("from");
+    let to = root.join("to");
+    let context = NativeEventContext {
+        root: root.clone(),
+        root_identity: NativeRootIdentity {
+            device: 0,
+            object: 0,
+        },
+        profile: FilesystemProfile::Portable,
+        limits: VolumeLimits::default(),
+        maximum_queued_changes: 1,
+    };
+    let scenarios = [
+        vec![tracked_rename(RenameMode::To, vec![to.clone()], 7)],
+        vec![tracked_rename(RenameMode::From, vec![from.clone()], 7)],
+        vec![event(
+            EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+            vec![from.clone()],
+        )],
+        vec![event(
+            EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+            vec![to.clone()],
+        )],
+        vec![tracked_rename(
+            RenameMode::Both,
+            vec![from.clone(), to.clone()],
+            7,
+        )],
+        vec![
+            tracked_rename(RenameMode::From, vec![from.clone()], 7),
+            tracked_rename(RenameMode::From, vec![from.clone()], 8),
+        ],
+        vec![
+            tracked_rename(RenameMode::From, vec![from.clone()], 7),
+            tracked_rename(RenameMode::To, vec![to.clone()], 8),
+        ],
+        vec![
+            tracked_rename(RenameMode::From, vec![from.clone()], 7),
+            tracked_rename(RenameMode::To, vec![to.clone()], 7),
+            tracked_rename(RenameMode::To, vec![to.clone()], 7),
+        ],
+        vec![
+            tracked_rename(RenameMode::From, vec![from.clone()], 7),
+            tracked_rename(RenameMode::To, vec![to.clone()], 7),
+            tracked_rename(RenameMode::Both, vec![from.clone(), to.clone()], 8),
+        ],
+        vec![
+            tracked_rename(RenameMode::From, vec![from.clone()], 7),
+            tracked_rename(RenameMode::To, vec![to.clone()], 7),
+            tracked_rename(RenameMode::Both, vec![from, root.join("wrong")], 7),
+        ],
+    ];
+    for events in scenarios {
+        let (sender, receiver) = sync_channel(1);
+        let queued = Arc::new(AtomicU32::new(0));
+        let shared = Arc::new(Mutex::new(SharedState {
+            invalidation: None,
+            pending_rename: None,
+        }));
+        for event in events {
+            accept_native_event(Ok(event), &context, &sender, &shared, &queued);
+        }
+        assert_eq!(
+            shared.lock().map_err(|_| "poisoned")?.seal_invalidation(),
+            Some(WatchInvalidationReason::AmbiguousRename)
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let mut watch = NativeWatch::open(
+        directory.path(),
+        NativeWatchOptions {
+            maximum_queued_changes: 1,
+            ..NativeWatchOptions::new(VolumeLimits::default())
+        },
+    )?;
+    watch.begin_rescan()?;
+    watch.shared.lock().map_err(|_| "poisoned")?.pending_rename = Some(PendingRename {
+        tracker: 7,
+        from: directory.path().join("moved-out"),
+        to: None,
+    });
+    assert!(matches!(
+        watch.finish_rescan()?,
+        WatchBatch::RescanRequired {
+            reason: WatchInvalidationReason::AmbiguousRename,
+            ..
+        }
+    ));
+    watch.begin_rescan()?;
+    assert!(
+        watch
+            .shared
+            .lock()
+            .map_err(|_| "poisoned")?
+            .pending_rename
+            .is_none()
+    );
+    assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
+    watch.shared.lock().map_err(|_| "poisoned")?.pending_rename = Some(PendingRename {
+        tracker: 8,
+        from: directory.path().join("moved-out-again"),
+        to: None,
+    });
+    assert!(matches!(
+        watch
+            .poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value,
+        WatchBatch::RescanRequired {
+            reason: WatchInvalidationReason::AmbiguousRename,
+            ..
+        }
+    ));
+    watch.shared.lock().map_err(|_| "poisoned")?.pending_rename = None;
+    assert!(matches!(
+        watch
+            .poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value,
+        WatchBatch::RescanRequired {
+            reason: WatchInvalidationReason::AmbiguousRename,
+            ..
+        }
+    ));
     Ok(())
 }
 
@@ -202,7 +387,11 @@ fn bounded_callback_overflow_invalidates_instead_of_dropping_silently()
     let root = PathBuf::from(if cfg!(windows) { r"C:\root" } else { "/root" });
     let (sender, _receiver) = sync_channel(1);
     let queued = Arc::new(AtomicU32::new(0));
-    let shared = Arc::new(Mutex::new(SharedState { invalidation: None }));
+    let shared = Arc::new(Mutex::new(SharedState {
+        invalidation: None,
+        #[cfg(target_os = "linux")]
+        pending_rename: None,
+    }));
     let context = NativeEventContext {
         root: root.clone(),
         root_identity: NativeRootIdentity {
@@ -211,6 +400,8 @@ fn bounded_callback_overflow_invalidates_instead_of_dropping_silently()
         },
         profile: FilesystemProfile::Portable,
         limits: VolumeLimits::default(),
+        #[cfg(target_os = "linux")]
+        maximum_queued_changes: 1,
     };
     for name in ["a", "b"] {
         accept_native_event(
@@ -404,10 +595,12 @@ fn live_native_backend_fences_a_replaced_root_without_backend_assistance()
     std::fs::rename(&root, &displaced)?;
     std::fs::create_dir(&root)?;
     let observed = watch.poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
+    // The native rename callback can invalidate first; either reason fences
+    // the replaced root before any stale change is published.
     assert!(matches!(
         observed.value,
         WatchBatch::RescanRequired {
-            reason: WatchInvalidationReason::RootChanged,
+            reason: WatchInvalidationReason::RootChanged | WatchInvalidationReason::AmbiguousRename,
             ..
         }
     ));

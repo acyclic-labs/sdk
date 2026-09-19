@@ -1,4 +1,5 @@
 import { HttpStreamProvider } from "./http.js";
+import { MemoryStreamProvider } from "./memory.js";
 import type {
   AccessToken, AppendOptions, AppendResult, CommitId, CommittedEnvelope, CommitOptions,
   CommitRequest, CommitResult, CreateTokenRequest, DeleteReceipt, FollowOptions, ForkOptions,
@@ -36,6 +37,8 @@ export function jsonCodec<Value extends JsonValue>(): Codec<Value> {
 /** Account client and documented entry point. */
 export class StreamClient {
   readonly tokens: { create(request: CreateTokenRequest): Promise<AccessToken> };
+  /** Creates a deterministic process-local client for tests and examples. */
+  static memory(): StreamClient { return new StreamClient(new MemoryStreamProvider()); }
   constructor(readonly provider: StreamProvider) {
     this.tokens = { create: request => {
       if (provider.createToken === undefined) throw new StreamError("unsupported", "provider does not support token creation");

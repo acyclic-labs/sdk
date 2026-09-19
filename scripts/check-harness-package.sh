@@ -119,6 +119,7 @@ cd "$root"
 # until Stream is published, so test the extracted archives together and keep the
 # release order explicit.
 metadata="$("$cargo_bin" metadata --locked --no-deps --format-version 1)"
+runtime_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-native-runtime").version)')"
 stream_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-stream").version)')"
 harness_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-harness").version)')"
 package_target="$work/package-target"
@@ -127,21 +128,26 @@ if [[ "$cargo_bin" == "cargo.exe" ]]; then
   cargo_package_target="$(wslpath -w "$cargo_package_target")"
 fi
 "$cargo_bin" package --locked --no-verify --allow-dirty --target-dir "$cargo_package_target" \
-  -p acyclic-stream -p acyclic-harness
+  -p acyclic-native-runtime -p acyclic-stream -p acyclic-harness
+runtime_crate="$package_target/package/acyclic-native-runtime-$runtime_version.crate"
 stream_crate="$package_target/package/acyclic-stream-$stream_version.crate"
 harness_crate="$package_target/package/acyclic-harness-$harness_version.crate"
 
 mkdir "$work/crates"
+tar -xf "$runtime_crate" -C "$work/crates"
 tar -xf "$stream_crate" -C "$work/crates"
 tar -xf "$harness_crate" -C "$work/crates"
 mkdir -p "$work/crates/.cargo"
 install -m 0644 "$root/rust-toolchain.toml" "$work/crates/rust-toolchain.toml"
+runtime_patch_path="$work/crates/acyclic-native-runtime-$runtime_version"
 stream_patch_path="$work/crates/acyclic-stream-$stream_version"
 if [[ "$cargo_bin" == "cargo.exe" ]]; then
+  runtime_patch_path="$(wslpath -m "$runtime_patch_path")"
   stream_patch_path="$(wslpath -m "$stream_patch_path")"
 fi
 cat >"$work/crates/.cargo/config.toml" <<EOF
 [patch.crates-io]
+acyclic-native-runtime = { path = "$runtime_patch_path" }
 acyclic-stream = { path = "$stream_patch_path" }
 EOF
 cd "$work/crates"
@@ -150,8 +156,9 @@ cd "$work/crates"
 
 mkdir -p "$output"
 install -m 0644 "$archive" "$output/"
-install -m 0644 "$stream_crate" "$harness_crate" "$output/"
+install -m 0644 "$runtime_crate" "$stream_crate" "$harness_crate" "$output/"
 cmp --silent "$archive" "$output/acyclic-harness.tgz"
+cmp --silent "$runtime_crate" "$output/acyclic-native-runtime-$runtime_version.crate"
 cmp --silent "$stream_crate" "$output/acyclic-stream-$stream_version.crate"
 cmp --silent "$harness_crate" "$output/acyclic-harness-$harness_version.crate"
 normalizer="$root/scripts/normalize-harness-evidence.mjs"
@@ -160,6 +167,7 @@ typescript_log="$work/typescript-package-test.log"
 evidence_output="$output/CONFORMANCE-EVIDENCE.json"
 evidence_artifacts=(
   "$output/acyclic-harness.tgz"
+  "$output/acyclic-native-runtime-$runtime_version.crate"
   "$output/acyclic-stream-$stream_version.crate"
   "$output/acyclic-harness-$harness_version.crate"
 )

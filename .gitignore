@@ -1,4 +1,6 @@
 /target/
+/target-*/
+__pycache__/
 /.tools/
 node_modules/
 /typescript/packages/*/dist/

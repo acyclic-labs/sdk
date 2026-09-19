@@ -17,6 +17,7 @@ use crate::kernel::FileMetadata;
 use bytes::Bytes;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -50,6 +51,45 @@ fn remap_file_id(id: FileId, tag: [u8; 16]) -> FileId {
 
 fn cross_route_error() -> MountSourceError {
     MountSourceError::Unsupported("operation spans two different routes".to_owned())
+}
+
+#[cfg(windows)]
+fn host_route_name(name: &[u8]) -> Result<OsString, MountSourceError> {
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut units = name.chunks_exact(2);
+    let wide = units
+        .by_ref()
+        .map(|pair| {
+            let Some((&lo, rest)) = pair.split_first() else {
+                return 0;
+            };
+            let Some(&hi) = rest.first() else {
+                return 0;
+            };
+            u16::from_le_bytes([lo, hi])
+        })
+        .collect::<Vec<_>>();
+    if !units.remainder().is_empty()
+        || wide.is_empty()
+        || wide.iter().any(|unit| matches!(*unit, 0 | 0x2f | 0x5c))
+        || wide == [u16::from(b'.')]
+        || wide == [u16::from(b'.'), u16::from(b'.')]
+    {
+        return Err(MountSourceError::Invalid("invalid route name".to_owned()));
+    }
+    Ok(OsString::from_wide(&wide))
+}
+
+#[cfg(unix)]
+fn host_route_name(name: &[u8]) -> Result<OsString, MountSourceError> {
+    use std::os::unix::ffi::OsStringExt;
+
+    if name.is_empty() || name == b"." || name == b".." || name.contains(&0) || name.contains(&b'/')
+    {
+        return Err(MountSourceError::Invalid("invalid route name".to_owned()));
+    }
+    Ok(OsString::from_vec(name.to_vec()))
 }
 
 struct Route {
@@ -150,6 +190,15 @@ impl RoutedMountSource {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .is_empty()
+    }
+
+    /// Number of routes currently projected by this source.
+    #[must_use]
+    pub fn route_count(&self) -> usize {
+        self.routes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     fn locate(
@@ -737,9 +786,29 @@ impl MountFilesystem for RoutedMountSource {
                 "the synthetic mount root cannot capture host state".to_owned(),
             ));
         };
+        // The child source's path is route-relative; its host root must be
+        // route-relative too, or close-boundary captures read a sibling of
+        // the route and silently miss authored writes.
+        let route_root = source_root.join(host_route_name(&routed.name)?);
         routed
             .source
-            .capture_host_path(source_root, &routed.sub_path)
+            .capture_host_path(&route_root, &routed.sub_path)
+    }
+
+    fn capture_host_subtree(
+        &self,
+        source_root: &Path,
+        path: &MountPath,
+    ) -> Result<(), MountSourceError> {
+        let Some(routed) = self.route(path)? else {
+            return Err(MountSourceError::Unsupported(
+                "the synthetic mount root cannot capture host state".to_owned(),
+            ));
+        };
+        let route_root = source_root.join(host_route_name(&routed.name)?);
+        routed
+            .source
+            .capture_host_subtree(&route_root, &routed.sub_path)
     }
 }
 
@@ -921,8 +990,10 @@ mod tests {
     #[test]
     fn root_lists_route_names_as_directories() -> Result<(), Box<dyn std::error::Error>> {
         let router = RoutedMountSource::new();
+        assert_eq!(router.route_count(), 0);
         router.add_route(component("a"), memory_source()?)?;
         router.add_route(component("b"), memory_source()?)?;
+        assert_eq!(router.route_count(), 2);
         let page = router.read_directory(&MountPath::root(), None, 16)?;
         let mut names: Vec<&[u8]> = page
             .entries
@@ -952,6 +1023,30 @@ mod tests {
         router.create_file(&path, metadata())?;
         router.write_range(&path, 0, Bytes::from_static(b"hi"))?;
         assert_eq!(router.read_range(&path, 0, 2)?.as_ref(), b"hi");
+        Ok(())
+    }
+
+    #[test]
+    fn host_capture_is_rooted_inside_its_route() -> Result<(), Box<dyn std::error::Error>> {
+        let router = RoutedMountSource::new();
+        #[cfg(windows)]
+        let profile = FilesystemProfile::Windows;
+        #[cfg(not(windows))]
+        let profile = FilesystemProfile::Portable;
+        router.add_route(component("a"), memory_source_with_profile(profile)?)?;
+        router.add_route(component("b"), memory_source_with_profile(profile)?)?;
+        let host = tempfile::tempdir()?;
+        std::fs::create_dir(host.path().join("a"))?;
+        std::fs::create_dir(host.path().join("b"))?;
+        std::fs::write(host.path().join("b").join("captured.bin"), b"inside-b")?;
+        let path = test_path("b").child(component("captured.bin"));
+        router.capture_host_path(host.path(), &path)?;
+        assert_eq!(router.read_range(&path, 0, 8)?.as_ref(), b"inside-b");
+        assert!(
+            router
+                .lookup(&test_path("a").child(component("captured.bin")))?
+                .is_none()
+        );
         Ok(())
     }
 

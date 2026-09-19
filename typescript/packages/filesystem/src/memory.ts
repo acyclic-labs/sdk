@@ -1,10 +1,11 @@
 import type { FsVolumeEngine, MemoryFsOptions, WasmBindings } from "./contracts.js";
-import { adaptWasmFs } from "./wasm-adapter.js";
+import { openMemoryFsWith } from "./memory-options.js";
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOptions } from "./contracts.js";
 export { CrossVolumeError, MountedView } from "./mounted.js";
 export type { MountedCheckout, MountedSnapshot } from "./mounted.js";
+export { DEFAULT_MEMORY_FS_OPTIONS } from "./memory-options.js";
 
 let bindingsPromise: Promise<WasmBindings> | undefined;
 
@@ -18,15 +19,8 @@ async function bindings(): Promise<WasmBindings> {
   return bindingsPromise;
 }
 
-export async function openMemoryFs(options: MemoryFsOptions): Promise<FsVolumeEngine> {
-  if (!Number.isSafeInteger(options.maximumObjectBytes) || options.maximumObjectBytes <= 0) {
-    throw new RangeError("memory filesystem object bound must be a positive safe integer");
-  }
-  if (
-    !Number.isSafeInteger(options.maximumMemoryBytes)
-    || options.maximumMemoryBytes < options.maximumObjectBytes
-  ) {
-    throw new RangeError("memory filesystem aggregate bound must cover one maximum object");
-  }
-  return adaptWasmFs(await (await bindings()).openMemoryFs(options));
+export function openMemoryFs(): Promise<FsVolumeEngine>;
+export function openMemoryFs(options: MemoryFsOptions): Promise<FsVolumeEngine>;
+export function openMemoryFs(options?: MemoryFsOptions): Promise<FsVolumeEngine> {
+  return openMemoryFsWith(options, async (resolved) => (await bindings()).openMemoryFs(resolved));
 }

@@ -1,6 +1,8 @@
 use super::*;
-use crate::Fs;
+use crate::model::{Lifecycle, VolumeConfig};
+use crate::{CancellationToken, Fs, WorkBudget};
 use std::error::Error;
+use std::sync::Arc;
 
 #[test]
 fn names_are_canonical_bounded_and_path_independent() -> Result<(), Box<dyn Error>> {
@@ -65,6 +67,203 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
 }
 
 #[tokio::test]
+async fn exact_generation_restore_is_fenced_and_idempotent() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("restore-exact").await?;
+    workspace.write_text("/state", "first").await?;
+    let first = workspace.head().await?;
+    workspace.write_text("/state", "second").await?;
+    let second = workspace.head().await?;
+    let key = IdempotencyKey::from_bytes([0x51; 16]);
+
+    assert!(matches!(
+        workspace.restore_generation(&first, second.id(), key).await?,
+        WorkspaceRestore::Restored(ref generation) if generation.id() == first.id()
+    ));
+    assert!(matches!(
+        workspace.restore_generation(&first, second.id(), key).await?,
+        WorkspaceRestore::AlreadyRestored(ref generation) if generation.id() == first.id()
+    ));
+    assert!(matches!(
+        workspace
+            .restore_generation(&second, first.id(), key)
+            .await?,
+        WorkspaceRestore::IdempotencyConflict
+    ));
+    assert!(matches!(
+        workspace
+            .restore_generation(&second, second.id(), IdempotencyKey::new())
+            .await?,
+        WorkspaceRestore::Stale(ref generation) if generation.id() == first.id()
+    ));
+    assert_eq!(workspace.head().await?.id(), first.id());
+    Ok(())
+}
+
+#[tokio::test]
+async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("restore-paths").await?;
+    let mut transaction = workspace
+        .begin_transaction(IdempotencyKey::from_bytes([0x60; 16]))
+        .await?;
+    transaction.create_dir_all("/tree").await?;
+    transaction
+        .create_file(
+            "/tree/tracked",
+            Bytes::from_static(b"committed"),
+            FileMetadata::default(),
+        )
+        .await?;
+    transaction
+        .hard_link("/tree/tracked", "/tree/ignored-link")
+        .await?;
+    assert!(matches!(
+        transaction.commit().await?,
+        TransactionCommit::Committed(_)
+    ));
+    workspace.write_text("/ignored", "live").await?;
+    let committed = workspace.head().await?;
+    let snapshot = workspace
+        .fork(
+            "restore-paths-snapshot",
+            ForkOptions::from_generation(committed, IdempotencyKey::from_bytes([0x61; 16])),
+        )
+        .await?;
+    snapshot.remove("/ignored").await?;
+    let source = snapshot.head().await?;
+
+    workspace.write_text("/tree/tracked", "dirty").await?;
+    workspace.write_text("/ignored", "still-live").await?;
+    let dirty = workspace.head().await?;
+    let outcome = workspace
+        .restore_paths_from(
+            &source,
+            &["tree/tracked".to_owned()],
+            dirty.id(),
+            IdempotencyKey::from_bytes([0x62; 16]),
+        )
+        .await?;
+    assert!(matches!(outcome, TransactionCommit::Committed(_)));
+    assert_eq!(
+        workspace.read("/tree/tracked", 64).await?,
+        Bytes::from_static(b"committed")
+    );
+    assert_eq!(
+        workspace.read("/tree/ignored-link", 64).await?,
+        Bytes::from_static(b"committed")
+    );
+    assert_eq!(
+        workspace.read("/ignored", 64).await?,
+        Bytes::from_static(b"still-live")
+    );
+    let tracked = workspace.stat("/tree/tracked").await?;
+    let linked = workspace.stat("/tree/ignored-link").await?;
+    assert_eq!(tracked.file_id, linked.file_id);
+    assert_eq!(tracked.link_count, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("apply-paths").await?;
+    workspace.write_text("/file", "base").await?;
+    let base = workspace.head().await?;
+    let source_workspace = workspace
+        .fork(
+            "apply-paths-source",
+            ForkOptions::from_generation(base.clone(), IdempotencyKey::from_bytes([0x63; 16])),
+        )
+        .await?;
+    source_workspace.write_text("/file", "source").await?;
+    let source = source_workspace.head().await?;
+    let current = workspace.head().await?;
+    assert!(matches!(
+        workspace
+            .apply_paths_from(
+                Some(&base),
+                Some(&source),
+                &["file".to_owned()],
+                current.id(),
+                IdempotencyKey::from_bytes([0x64; 16]),
+            )
+            .await?,
+        WorkspacePathApply::Applied(_)
+    ));
+    assert_eq!(
+        workspace.read("/file", 64).await?,
+        Bytes::from_static(b"source")
+    );
+
+    let conflicting = fs.create_workspace("apply-paths-conflict").await?;
+    conflicting.write_text("/file", "base").await?;
+    let conflict_base = conflicting.head().await?;
+    let conflict_source = conflicting
+        .fork(
+            "apply-paths-conflict-source",
+            ForkOptions::from_generation(
+                conflict_base.clone(),
+                IdempotencyKey::from_bytes([0x65; 16]),
+            ),
+        )
+        .await?;
+    conflict_source.write_text("/file", "source").await?;
+    let conflict_source = conflict_source.head().await?;
+    conflicting.write_text("/file", "ours").await?;
+    let conflict_current = conflicting.head().await?;
+    let WorkspacePathApply::Conflicted(conflicts) = conflicting
+        .apply_paths_from(
+            Some(&conflict_base),
+            Some(&conflict_source),
+            &["file".to_owned()],
+            conflict_current.id(),
+            IdempotencyKey::from_bytes([0x66; 16]),
+        )
+        .await?
+    else {
+        return Err("overlapping path application did not conflict".into());
+    };
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].path, "file");
+    assert_eq!(conflicts[0].kind, ConflictKind::Binary);
+    Ok(())
+}
+
+#[tokio::test]
+async fn existing_volume_adopts_workspace_api_without_changing_identity()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let volume_id = VolumeId::new();
+    let volume = fs
+        .create_volume_with_id(
+            volume_id,
+            VolumeConfig::portable(Lifecycle::Ephemeral),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value;
+    let expected = volume
+        .checkout(
+            GenerationSelector::Head,
+            CheckoutMode::read_only_pinned(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value
+        .generation_id();
+
+    let workspace = fs.open_volume_workspace("legacy", volume_id).await?;
+
+    assert_eq!(workspace.id().into_bytes(), volume_id.into_bytes());
+    assert_eq!(workspace.head().await?.id(), expected);
+    Ok(())
+}
+
+#[tokio::test]
 async fn public_workspace_checkout_opens_pinned_and_live_private_views()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -85,6 +284,78 @@ async fn public_workspace_checkout_opens_pinned_and_live_private_views()
         )
         .await?;
     assert_eq!(live_private.generation_id(), head.id());
+    Ok(())
+}
+
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn public_generation_materialize_path_is_a_complete_consumer_flow()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("materialize-consumer").await?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    transaction.create_dir_all("/output/nested").await?;
+    transaction
+        .write_text("/output/nested/status", "ready")
+        .await?;
+    #[cfg(unix)]
+    transaction
+        .set_metadata(
+            "/output/nested",
+            FileMetadata {
+                posix_mode: crate::kernel::MetadataField::Value(0o700),
+                ..FileMetadata::default()
+            },
+        )
+        .await?;
+    let TransactionCommit::Committed(generation) = transaction.commit().await? else {
+        return Err("materialize fixture did not commit".into());
+    };
+    let destination = tempfile::tempdir()?;
+    let receipt = generation
+        .materialize_path(
+            "/output/nested/status",
+            &crate::MaterializeOptions {
+                destination: destination.path().to_path_buf(),
+                maximum_directory_entries: 32,
+                maximum_extent_spans: 32,
+                transfer_bytes: 4096,
+            },
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?;
+    assert_eq!(receipt.value.files, 1);
+    assert_eq!(
+        std::fs::read(destination.path().join("output/nested/status"))?,
+        b"ready"
+    );
+    let directory_destination = tempfile::tempdir()?;
+    generation
+        .materialize_path(
+            "/output/nested",
+            &crate::MaterializeOptions {
+                destination: directory_destination.path().to_path_buf(),
+                maximum_directory_entries: 32,
+                maximum_extent_spans: 32,
+                transfer_bytes: 4096,
+            },
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?;
+    assert_eq!(
+        std::fs::read(directory_destination.path().join("output/nested/status"))?,
+        b"ready"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(directory_destination.path().join("output/nested"))?
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
     Ok(())
 }
 
@@ -391,6 +662,19 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
         return Err("shape publication did not commit".into());
     };
 
+    let file_id = workspace.stat("/tree/a").await?.file_id;
+    let directory_id = workspace.stat("/tree").await?.file_id;
+    let missing_id = FileId::from_bytes([0xff; 16]);
+    let paths = exact
+        .paths_for_file_ids([file_id, directory_id, missing_id], 32)
+        .await?;
+    assert_eq!(
+        paths.get(&file_id),
+        Some(&vec!["/tree/a".to_owned(), "/tree/b".to_owned()])
+    );
+    assert_eq!(paths.get(&directory_id), Some(&vec!["/tree".to_owned()]));
+    assert!(!paths.contains_key(&missing_id));
+
     assert_eq!(
         workspace.read_range("/tree/a", 1, 5).await?,
         Bytes::from_static(b"b\0\0ef")
@@ -531,6 +815,18 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     let JoinOutcome::Applied(joined) = outcome else {
         return Err("join did not publish".into());
     };
+    assert_eq!(
+        main.operation_generation(idempotency_key)
+            .await?
+            .ok_or("join operation was not recoverable")?
+            .id(),
+        joined.id()
+    );
+    assert!(
+        main.operation_generation(IdempotencyKey::new())
+            .await?
+            .is_none()
+    );
     assert_eq!(joined.read("/base", 16).await?, Bytes::from_static(b"base"));
     assert_eq!(main.read("/agent", 16).await?, Bytes::from_static(b"agent"));
     assert_eq!(main.read("/main", 16).await?, Bytes::from_static(b"main"));
@@ -808,6 +1104,125 @@ async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<
     Ok(())
 }
 
+struct SelectTheirsDriver;
+
+impl crate::MergeDriver for SelectTheirsDriver {
+    fn fingerprint(&self) -> &[u8] {
+        b"workspace-select-theirs-v1"
+    }
+
+    fn mode(&self) -> crate::MergeDriverMode {
+        crate::MergeDriverMode::Deterministic
+    }
+
+    fn resolve(
+        &self,
+        conflict: &crate::ConflictView,
+    ) -> Result<crate::MergeResolution, crate::DriverError> {
+        assert_eq!(conflict.kind, crate::ConflictKind::Text);
+        assert_eq!(conflict.base, crate::ConflictValue::Text("base".into()));
+        assert_eq!(conflict.ours, crate::ConflictValue::Text("main".into()));
+        assert_eq!(conflict.theirs, crate::ConflictValue::Text("agent".into()));
+        Ok(crate::MergeResolution::Select(crate::ConflictSide::Theirs))
+    }
+}
+
+#[tokio::test]
+async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let main = fs.create_workspace("driver-main").await?;
+    main.write_text("/shared", "base").await?;
+    let agent = main
+        .fork(
+            "driver-agent",
+            ForkOptions::from_generation(main.head().await?, IdempotencyKey::new()),
+        )
+        .await?;
+    agent.write_text("/shared", "agent").await?;
+    main.write_text("/shared", "main").await?;
+
+    let plan = agent.join_into(&main).plan().await?;
+    let mut registry = crate::MergeDriverRegistry::new();
+    registry.register("theirs", Arc::new(SelectTheirsDriver))?;
+    registry.set_default("theirs")?;
+    let mut cache = crate::MemoryMergeResolutionCache::default();
+    let outcome = plan
+        .apply_with_drivers(
+            ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: IdempotencyKey::new(),
+            },
+            &registry,
+            &mut cache,
+            false,
+        )
+        .await?;
+    assert!(matches!(outcome, JoinOutcome::Applied(_)));
+    assert_eq!(
+        main.read("/shared", 16).await?,
+        Bytes::from_static(b"agent")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let main = fs.create_workspace("text-driver-main").await?;
+    main.write_text("/shared", "base\n").await?;
+    let agent = main
+        .fork(
+            "text-driver-agent",
+            ForkOptions::from_generation(main.head().await?, IdempotencyKey::new()),
+        )
+        .await?;
+    agent.write_text("/shared", "agent\n").await?;
+    main.write_text("/shared", "main\n").await?;
+
+    let plan = agent.join_into(&main).plan().await?;
+    let JoinOutcome::Conflicted {
+        conflicts,
+        truncated,
+    } = plan
+        .apply(ApplyOptions {
+            if_target: plan.target_head(),
+            idempotency_key: IdempotencyKey::new(),
+        })
+        .await?
+    else {
+        return Err("text join did not expose its conflict".into());
+    };
+    let described = plan.describe_conflicts(&conflicts, truncated).await?;
+    assert_eq!(described.conflicts.len(), 1);
+    assert_eq!(described.conflicts[0].path.as_deref(), Some("/shared"));
+    assert_eq!(described.conflicts[0].kind, crate::ConflictKind::Text);
+    assert!(matches!(
+        described.conflicts[0].ours,
+        crate::ConflictValue::Text(ref text) if text == "main\n"
+    ));
+    let mut registry = crate::MergeDriverRegistry::new();
+    registry.register("text", Arc::new(crate::DefaultTextMergeDriver))?;
+    registry.set_default("text")?;
+    let mut cache = crate::MemoryMergeResolutionCache::default();
+    let outcome = plan
+        .apply_with_drivers(
+            ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: IdempotencyKey::new(),
+            },
+            &registry,
+            &mut cache,
+            false,
+        )
+        .await?;
+    assert!(matches!(outcome, JoinOutcome::Applied(_)));
+    let merged = String::from_utf8(main.read("/shared", 1024).await?.to_vec())?;
+    assert!(merged.contains("<<<<<<< ours"));
+    assert!(merged.contains("main"));
+    assert!(merged.contains("agent"));
+    Ok(())
+}
+
 #[tokio::test]
 async fn contiguous_change_sets_compose_by_outer_semantics() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -832,5 +1247,151 @@ async fn contiguous_change_sets_compose_by_outer_semantics() -> Result<(), Box<d
         second.compose(&first, 32).await,
         Err(WorkspaceError::ChangeSetContinuity)
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result<(), Box<dyn Error>>
+{
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("changed-paths").await?;
+    let mut initial = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    initial.create_dir_all("/nested/deep").await?;
+    initial
+        .write("/rename", Bytes::from_static(b"same"))
+        .await?;
+    initial
+        .write("/remove", Bytes::from_static(b"gone"))
+        .await?;
+    initial
+        .write("/linked", Bytes::from_static(b"links"))
+        .await?;
+    initial
+        .write("/modified", Bytes::from_static(b"before"))
+        .await?;
+    assert!(matches!(
+        initial.commit().await?,
+        TransactionCommit::Committed(_)
+    ));
+    let before = workspace.head().await?;
+
+    let mut changed = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    changed.rename("/rename", "/renamed").await?;
+    changed.remove("/remove").await?;
+    changed.hard_link("/linked", "/nested/link").await?;
+    changed
+        .write("/nested/deep/added", Bytes::from_static(b"new"))
+        .await?;
+    changed
+        .write("/modified", Bytes::from_static(b"after"))
+        .await?;
+    let TransactionCommit::Committed(after) = changed.commit().await? else {
+        return Err("changed paths did not commit".into());
+    };
+
+    let paths = before.diff_to(&after, 64).await?.changed_paths(64).await?;
+    let names: Vec<_> = paths
+        .iter()
+        .map(|change| super::namespace_path_text(&change.path))
+        .collect::<Result<_, _>>()?;
+    assert_eq!(
+        names,
+        [
+            "/modified",
+            "/nested/deep/added",
+            "/nested/link",
+            "/remove",
+            "/rename",
+            "/renamed"
+        ]
+    );
+    assert!(paths.iter().any(|change| {
+        super::namespace_path_text(&change.path).is_ok_and(|path| path == "/remove")
+            && change.before.is_some()
+            && change.after.is_none()
+    }));
+    assert!(paths.iter().any(|change| {
+        super::namespace_path_text(&change.path).is_ok_and(|path| path == "/nested/deep/added")
+            && change.before.is_none()
+            && change.after.is_some()
+    }));
+    assert!(paths.iter().any(|change| {
+        super::namespace_path_text(&change.path).is_ok_and(|path| path == "/modified")
+            && change.before.is_some()
+            && change.after.is_some()
+            && change.before != change.after
+    }));
+    assert!(!paths.iter().any(|change| {
+        super::namespace_path_text(&change.path).is_ok_and(|path| path == "/linked")
+    }));
+    assert!(matches!(
+        before.diff_to(&after, 64).await?.changed_paths(1).await,
+        Err(WorkspaceError::ChangedPathLimit)
+    ));
+    let exact = before.diff_to(&after, 64).await?;
+    let mut truncated_changes = exact.changes().clone();
+    truncated_changes.truncated = true;
+    let truncated = ChangeSet {
+        from: before.clone(),
+        to: after.clone(),
+        changes: truncated_changes,
+        work: exact.work(),
+    };
+    assert!(matches!(
+        truncated.changed_paths(64).await,
+        Err(WorkspaceError::ChangedPathLimit)
+    ));
+    assert!(
+        after
+            .diff_to(&after, 1)
+            .await?
+            .changed_paths(0)
+            .await?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("lookup-paths").await?;
+    workspace.write_text("/present", "body").await?;
+    let generation = workspace.head().await?;
+    let limits = crate::model::VolumeLimits::default();
+    let present = customer_path("/present", limits)?;
+    let absent = customer_path("/absent", limits)?;
+    let records = generation
+        .lookup_paths(
+            &[present.clone(), absent, present.clone()],
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+    assert_eq!(records.value.len(), 3);
+    assert!(records.value[0].is_some());
+    assert!(records.value[1].is_none());
+    assert_eq!(records.value[0], records.value[2]);
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let cancelled_failure = generation
+        .lookup_paths(
+            std::slice::from_ref(&present),
+            WorkBudget::UNBOUNDED,
+            &cancelled,
+        )
+        .await
+        .err()
+        .ok_or_else(|| std::io::Error::other("pre-cancelled lookup must fail"))?;
+    assert_eq!(*cancelled_failure.work, crate::WorkCounters::default());
+    let budget_failure = generation
+        .lookup_paths(&[present], WorkBudget::default(), &CancellationToken::new())
+        .await
+        .err()
+        .ok_or_else(|| std::io::Error::other("zero-budget checkout must fail"))?;
+    assert_ne!(*budget_failure.work, crate::WorkCounters::default());
+    assert!(budget_failure.work.verify(WorkBudget::default()).is_err());
     Ok(())
 }

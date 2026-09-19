@@ -9,7 +9,7 @@ use crate::storage::{
     AppendOutcome, AuthorityFailure, AuthorityReceipt, AuthorityResult, AuthorityStore,
     AuthorityStoreError, CreateAuthorityOutcome, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure,
     ObjectId, ObjectRead, ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStore,
-    ObjectStoreError, ReplayLimit, object_digest,
+    ObjectStoreError, ObjectWrite, ReplayLimit, object_digest,
 };
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -534,6 +534,67 @@ impl ObjectStore for MemoryObjectStore {
             return Ok(ObjectReceipt { value: (), work });
         }
         objects.insert(object_id, bytes);
+        Ok(ObjectReceipt { value: (), work })
+    }
+
+    fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget) -> ObjectResult<()> {
+        if writes.is_empty() {
+            return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
+                "object write batch is empty".to_owned(),
+            )));
+        }
+        let item_count = u64::try_from(writes.len()).unwrap_or(u64::MAX);
+        let mut work = WorkCounters {
+            object_probes: item_count,
+            backend_write_operations: 1,
+            items_examined: item_count,
+            ..WorkCounters::default()
+        };
+        for write in writes {
+            let length = u64::try_from(write.bytes.len()).unwrap_or(u64::MAX);
+            if length > self.maximum_object_bytes {
+                return Err(ObjectFailure::new(
+                    ObjectStoreError::TooLarge {
+                        observed: length,
+                        maximum: self.maximum_object_bytes,
+                    },
+                    work,
+                ));
+            }
+            work.object_bytes_written =
+                work.object_bytes_written
+                    .checked_add(length)
+                    .ok_or_else(|| {
+                        ObjectFailure::new(ObjectStoreError::Work(crate::WorkError::Overflow), work)
+                    })?;
+            work.bytes_hashed = work
+                .bytes_hashed
+                .checked_add(length.saturating_add(OBJECT_DIGEST_ENVELOPE_BYTES))
+                .ok_or_else(|| {
+                    ObjectFailure::new(ObjectStoreError::Work(crate::WorkError::Overflow), work)
+                })?;
+            if object_digest(write.object_id.kind, &write.bytes) != write.object_id.digest {
+                return Err(ObjectFailure::new(ObjectStoreError::DigestMismatch, work));
+            }
+        }
+        work.verify(budget)
+            .map_err(|error| ObjectFailure::before_work(error.into()))?;
+        let mut objects = self
+            .objects
+            .write()
+            .map_err(|_| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
+        for write in writes {
+            if let Some(existing) = objects.get(&write.object_id)
+                && existing != &write.bytes
+            {
+                return Err(ObjectFailure::new(ObjectStoreError::Corrupt, work));
+            }
+        }
+        for write in writes {
+            objects
+                .entry(write.object_id)
+                .or_insert_with(|| write.bytes.clone());
+        }
         Ok(ObjectReceipt { value: (), work })
     }
 

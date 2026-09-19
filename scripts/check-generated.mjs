@@ -90,6 +90,20 @@ try {
     if (!canonical.equals(packaged)) throw new Error(`packaged Objects Rust drift: ${relative}`);
   }
 
+  {
+    for (const file of ["acyclic.machines.v1.rs", "acyclic.machines.v1.tonic.rs"]) {
+      const canonical = readFileSync(
+        join(root, "generated/rust/acyclic/machines/v1", file),
+        "utf8",
+      );
+      const packaged = readFileSync(
+        join(root, "rust/crates/machines/src/generated", file),
+        "utf8",
+      );
+      if (canonical !== packaged) throw new Error(`packaged Machines Rust drift: ${file}`);
+    }
+  }
+
   for (const relative of [
     "filesystem/v2/filesystem_pb.js",
     "filesystem/v2/filesystem_pb.d.ts",

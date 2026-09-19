@@ -20,21 +20,22 @@ use crate::kernel::{
     FileTableMutationError, FileTablePage, GenerationExportManifest, GenerationMutationError,
     GenerationRoot, GenerationTransferBatch, GenerationTransferError, InlineFileData,
     InlineFileDataError, LivePublicationObservation, LiveRetryAction, LiveRetryError,
-    LiveRetryState, LogicalName, MAXIMUM_GENERATION_ROOT_BYTES, MergeGenerationError,
-    MergeGenerationOutcome, MergeGenerationRequest, MetadataField, Mutation, NameEncoding,
-    NamespacePath, PathBatchLookup, PathLookup, PathLookupError, PersistentDiffError, ProbeLimits,
-    PublicationError, PublishGenerationRequest, RebaseConflict, RebaseDecision, RebaseError,
-    RegularMutation, RegularMutationError, RetentionCreated, RetentionCreatedError, RetentionKind,
-    TransferCursor, TreeMutationError, TreePage, VolumeCreated, VolumeCreatedError,
-    apply_attribute_mutations_async, apply_generation_mutations_retaining_async,
-    apply_regular_mutation_async, authenticate_generation_export_manifest_async, build_blob_async,
-    build_checkpoint_async, build_generation_export_manifest_async, classify_rebase_async,
-    decode_file_metadata, decode_published_generation, decode_volume_created,
-    decode_workspace_deleted, diff_file_records_async, diff_tree_entries_async,
-    encode_attribute_page, encode_file_metadata, encode_file_table_page, encode_generation_root,
-    encode_retention_created, encode_tree_page, encode_volume_created, encode_workspace_deleted,
-    export_generation_batch_async, generation_root_parent_count, import_generation_batch_async,
-    list_attributes_async, list_tree_entries_async, lookup_attribute_async,
+    LiveRetryState, LogicalName, MAXIMUM_GENERATION_ROOT_BYTES, MergeConflictResolution,
+    MergeConflictSide, MergeGenerationError, MergeGenerationOutcome, MergeGenerationRequest,
+    MetadataField, Mutation, NameEncoding, NamespacePath, PathBatchLookup, PathLookup,
+    PathLookupError, PersistentDiffError, ProbeLimits, PublicationError, PublishGenerationRequest,
+    RebaseConflict, RebaseDecision, RebaseError, RegularMutation, RegularMutationError,
+    RetentionCreated, RetentionCreatedError, RetentionKind, TransferCursor, TreeMutationError,
+    TreePage, VolumeCreated, VolumeCreatedError, apply_attribute_mutations_async,
+    apply_generation_mutations_retaining_async, apply_regular_mutation_async,
+    authenticate_generation_export_manifest_async, build_blob_async, build_checkpoint_async,
+    build_generation_export_manifest_async, classify_rebase_async, decode_file_metadata,
+    decode_published_generation, decode_volume_created, decode_workspace_deleted,
+    diff_file_records_async, diff_tree_entries_async, encode_attribute_page, encode_file_metadata,
+    encode_file_table_page, encode_generation_root, encode_retention_created, encode_tree_page,
+    encode_volume_created, encode_workspace_deleted, export_generation_batch_async,
+    generation_root_parent_count, import_generation_batch_async, list_attributes_async,
+    list_tree_entries_async, list_tree_entries_at_or_after_async, lookup_attribute_async,
     lookup_file_record_async, lookup_file_records_async, merge_generation_async,
     plan_extent_range_async, prove_generation_closure_async, publish_generation_async,
     publish_generation_async_with_context, read_blob_range_async, read_file_range_async,
@@ -65,6 +66,7 @@ use crate::storage::{
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use acyclic_objects::ObjectsProvider as _;
 use bytes::Bytes;
+use futures::{StreamExt as _, stream};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::mem::size_of;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -75,6 +77,35 @@ use std::sync::{OnceLock, Weak};
 use thiserror::Error;
 
 const MAXIMUM_VOLUME_EVENT_BYTES: u64 = 4 * 1024;
+const STAGED_METADATA_CACHE_ENTRIES: usize = 16;
+
+struct AuthoredMetadataCache {
+    entries: [Option<(FileMetadata, ObjectId)>; STAGED_METADATA_CACHE_ENTRIES],
+    next: usize,
+}
+
+impl AuthoredMetadataCache {
+    fn new() -> Self {
+        Self {
+            entries: [None; STAGED_METADATA_CACHE_ENTRIES],
+            next: 0,
+        }
+    }
+
+    fn get(&self, metadata: FileMetadata) -> Option<ObjectId> {
+        self.entries
+            .iter()
+            .flatten()
+            .find_map(|(cached, object)| (*cached == metadata).then_some(*object))
+    }
+
+    fn remember(&mut self, metadata: FileMetadata, object: ObjectId) {
+        if let Some(slot) = self.entries.get_mut(self.next) {
+            *slot = Some((metadata, object));
+        }
+        self.next = (self.next + 1) % STAGED_METADATA_CACHE_ENTRIES;
+    }
+}
 /// Directory-listing page size used to scan siblings for a case-folded
 /// collision under `CaseSensitivity::ProfileFolded`. This makes admitting a
 /// new name under that policy O(directory size) rather than O(1); the tree's
@@ -107,6 +138,7 @@ pub(crate) struct WorkspaceJoinRequest<'a, A, O> {
     pub maximum_generations: u32,
     pub maximum_changes: u32,
     pub maximum_conflicts: u32,
+    pub resolutions: BTreeMap<MergeConflict, MergeConflictResolution>,
 }
 
 impl<A, O> WorkspaceJoinRequest<'_, A, O> {
@@ -128,7 +160,126 @@ impl<A, O> WorkspaceJoinRequest<'_, A, O> {
         hasher.update(&self.maximum_generations.to_le_bytes());
         hasher.update(&self.maximum_changes.to_le_bytes());
         hasher.update(&self.maximum_conflicts.to_le_bytes());
+        for (conflict, resolution) in &self.resolutions {
+            match conflict {
+                MergeConflict::File(file_id) => {
+                    hasher.update(&[0]);
+                    hasher.update(&file_id.into_bytes());
+                }
+                MergeConflict::Binding { directory_id, name } => {
+                    hasher.update(&[1]);
+                    hasher.update(&directory_id.into_bytes());
+                    hasher.update(&[match name.encoding() {
+                        NameEncoding::Utf8 => 0,
+                        NameEncoding::PosixBytes => 1,
+                        NameEncoding::WindowsUtf16Le => 2,
+                    }]);
+                    hasher.update(&(name.as_bytes().len() as u64).to_le_bytes());
+                    hasher.update(name.as_bytes());
+                }
+            }
+            hash_merge_resolution(&mut hasher, resolution);
+        }
         Digest::from_bytes(*hasher.finalize().as_bytes())
+    }
+}
+
+fn hash_merge_resolution(hasher: &mut blake3::Hasher, resolution: &MergeConflictResolution) {
+    let hash_side = |hasher: &mut blake3::Hasher, side: MergeConflictSide| {
+        hasher.update(&[match side {
+            MergeConflictSide::Base => 0,
+            MergeConflictSide::Ours => 1,
+            MergeConflictSide::Theirs => 2,
+        }]);
+    };
+    match resolution {
+        MergeConflictResolution::Select(side) => {
+            hasher.update(&[0]);
+            hash_side(hasher, *side);
+        }
+        MergeConflictResolution::File(record) => {
+            hasher.update(&[1]);
+            if let Some(record) = record {
+                hasher.update(&[1]);
+                hasher.update(&record.file_id.into_bytes());
+                hasher.update(&[match record.kind {
+                    FileKind::Regular => 0,
+                    FileKind::Directory => 1,
+                    FileKind::SymbolicLink => 2,
+                    FileKind::Fifo => 3,
+                    FileKind::Socket => 4,
+                    FileKind::CharacterDevice => 5,
+                    FileKind::BlockDevice => 6,
+                    FileKind::ReparsePoint => 7,
+                    FileKind::MountBoundary => 8,
+                }]);
+                hasher.update(&record.link_count.to_le_bytes());
+                hash_object_id(hasher, record.metadata);
+                hash_file_payload(hasher, record.payload);
+            } else {
+                hasher.update(&[0]);
+            }
+        }
+        MergeConflictResolution::Binding(file_id) => {
+            hasher.update(&[2]);
+            if let Some(file_id) = file_id {
+                hasher.update(&[1]);
+                hasher.update(&file_id.into_bytes());
+            } else {
+                hasher.update(&[0]);
+            }
+        }
+    }
+}
+
+fn hash_object_id(hasher: &mut blake3::Hasher, object: ObjectId) {
+    hasher.update(&[object.kind.canonical_tag()]);
+    hasher.update(object.digest.as_bytes());
+}
+
+fn hash_file_payload(hasher: &mut blake3::Hasher, payload: FilePayload) {
+    match payload {
+        FilePayload::InlineRegular(data) => {
+            hasher.update(&[0]);
+            hasher.update(&(data.as_bytes().len() as u64).to_le_bytes());
+            hasher.update(data.as_bytes());
+        }
+        FilePayload::Regular {
+            logical_bytes,
+            extents,
+        } => {
+            hasher.update(&[1]);
+            hasher.update(&logical_bytes.to_le_bytes());
+            hash_object_id(hasher, extents);
+        }
+        FilePayload::Directory { entries } => {
+            hasher.update(&[2]);
+            hash_object_id(hasher, entries);
+        }
+        FilePayload::SymbolicLink {
+            target_bytes,
+            target,
+        } => {
+            hasher.update(&[3]);
+            hasher.update(&target_bytes.to_le_bytes());
+            hash_object_id(hasher, target);
+        }
+        FilePayload::Empty => {
+            hasher.update(&[4]);
+        }
+        FilePayload::Device { major, minor } => {
+            hasher.update(&[5]);
+            hasher.update(&major.to_le_bytes());
+            hasher.update(&minor.to_le_bytes());
+        }
+        FilePayload::ReparsePoint {
+            payload_bytes,
+            payload,
+        } => {
+            hasher.update(&[6]);
+            hasher.update(&payload_bytes.to_le_bytes());
+            hash_object_id(hasher, payload);
+        }
     }
 }
 
@@ -180,10 +331,8 @@ pub struct LocalGarbageCollection {
     pub examined: u64,
     /// Unreachable immutable filesystem object versions removed.
     pub removed: u64,
-    /// Physical body manifests removed after logical reclamation.
-    pub manifests_removed: u64,
-    /// Physical body chunks removed after logical reclamation.
-    pub chunks_removed: u64,
+    /// Physical body segments removed after logical reclamation.
+    pub segments_removed: u64,
     /// Crash-left temporary body publications removed.
     pub temporary_files_removed: u64,
 }
@@ -296,6 +445,133 @@ pub struct Checkout<A, O> {
     prepared_merge_parent: Option<ObjectId>,
     dependencies: CheckoutDependencies,
     mode: CheckoutMode,
+}
+
+/// Cheap immutable reader over one authenticated pinned checkout candidate.
+///
+/// Clones share the underlying stores and immutable generation root. Reads do
+/// not mutate checkout dependency state, so independent requests may overlap.
+pub struct PinnedReader<A, O> {
+    volume: Volume<A, O>,
+    generation_root: ObjectId,
+    root: GenerationRoot,
+}
+
+/// Cheap cloneable writer for immutable authenticated file content.
+///
+/// Staging never mutates a checkout candidate, so independent native or
+/// network sources can overlap before one ordered mutation transaction.
+pub struct ContentStager<A, O> {
+    volume: Volume<A, O>,
+}
+
+impl<A, O> Clone for ContentStager<A, O> {
+    fn clone(&self) -> Self {
+        Self {
+            volume: self.volume.clone(),
+        }
+    }
+}
+
+impl<A, O> Clone for PinnedReader<A, O> {
+    fn clone(&self) -> Self {
+        Self {
+            volume: self.volume.clone(),
+            generation_root: self.generation_root,
+            root: self.root.clone(),
+        }
+    }
+}
+
+/// Public facts needed to plan reads without exposing generation-bound records.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileDescription {
+    /// Terminal entry kind.
+    pub kind: FileKind,
+    /// Logical content length for regular files and symbolic links.
+    pub logical_bytes: u64,
+    /// Canonical metadata authenticated with the same pinned generation.
+    pub metadata: FileMetadata,
+}
+
+/// One file resolved and authenticated by a specific pinned reader.
+///
+/// The private record and reader borrow make cross-generation use impossible.
+pub struct ResolvedFile<A, O> {
+    reader: PinnedReader<A, O>,
+    record: FileRecord,
+    description: FileDescription,
+}
+
+impl<A, O> ResolvedFile<A, O> {
+    /// Public semantic facts authenticated with this handle.
+    #[must_use]
+    pub const fn description(&self) -> &FileDescription {
+        &self.description
+    }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<A, O> {
+    /// Reads one logical regular-file range without another namespace lookup.
+    pub async fn read_range(
+        &self,
+        range: ByteRange,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<FileRangeRead> {
+        self.reader
+            .read_record_range(self.record, range, budget, cancellation)
+            .await
+    }
+
+    /// Reads opaque symbolic-link target bytes without another namespace lookup.
+    pub async fn read_symbolic_link(
+        &self,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Bytes> {
+        self.reader
+            .read_symbolic_link_record(self.record, budget, cancellation)
+            .await
+    }
+
+    /// Plans sparse physical spans without another namespace lookup.
+    pub async fn plan_extents(
+        &self,
+        range: ByteRange,
+        maximum_spans: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Option<ExtentPlan>> {
+        self.reader
+            .plan_record_extents(self.record, range, maximum_spans, budget, cancellation)
+            .await
+    }
+}
+
+/// One range requested from a reader-scoped resolved file.
+pub struct ResolvedFileRangeReadRequest<'a, A, O> {
+    /// Exact resolved file handle.
+    pub file: &'a ResolvedFile<A, O>,
+    /// Exact logical byte range returned.
+    pub range: ByteRange,
+}
+
+/// One child returned from an authenticated directory page, resolved by the
+/// originating pinned reader without a second namespace traversal.
+pub struct ResolvedDirectoryEntry<A, O> {
+    /// Exact canonical child name.
+    pub name: LogicalName,
+    /// Generation-scoped child handle with authenticated metadata.
+    pub file: ResolvedFile<A, O>,
+}
+
+/// One bounded authenticated directory page with reader-scoped child handles.
+pub struct ResolvedDirectoryPage<A, O> {
+    /// Ordered children strictly after the supplied cursor.
+    pub entries: Vec<ResolvedDirectoryEntry<A, O>>,
+    /// Whether at least one additional child exists.
+    pub has_more: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -688,6 +964,17 @@ pub struct DirectoryRecordPage {
     pub entries: Vec<DirectoryRecordEntry>,
     /// Whether at least one additional entry exists.
     pub has_more: bool,
+}
+
+/// One bounded directory binding page requested from a [`PinnedReader`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectoryPageRequest {
+    /// Exact directory namespace path.
+    pub path: NamespacePath,
+    /// Exclusive canonical name cursor.
+    pub after: Option<LogicalName>,
+    /// Maximum entries returned for this page.
+    pub maximum_entries: u32,
 }
 
 /// One present no-follow path result with authenticated metadata decoded in
@@ -1469,8 +1756,7 @@ impl
         Ok(LocalGarbageCollection {
             examined,
             removed,
-            manifests_removed: physical.manifests_removed,
-            chunks_removed: physical.chunks_removed,
+            segments_removed: physical.segments_removed,
             temporary_files_removed: physical.temporary_files_removed,
         })
     }
@@ -1662,7 +1948,6 @@ impl
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn observe_volume_operation(
         &self,
         volume_id: VolumeId,
@@ -1813,6 +2098,64 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
+    /// Opens an existing volume through the workspace API without changing
+    /// its stable identity or durable state.
+    ///
+    /// This is the migration boundary for consumers created before named
+    /// workspaces existed. The supplied name is descriptive; the existing
+    /// volume remains the sole durable identity.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid names, absent volumes, and malformed creation state.
+    pub async fn open_volume_workspace(
+        &self,
+        name: impl AsRef<str>,
+        volume_id: VolumeId,
+    ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
+        let name = crate::WorkspaceName::new(name)?;
+        let volume = self
+            .open_volume(volume_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(crate::workspace::WorkspaceError::engine)?
+            .value;
+        volume
+            .resolve_head_generation(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+        Ok(crate::Workspace {
+            name,
+            id: crate::WorkspaceId::from_volume_id(volume_id),
+            volume,
+            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+            source: None,
+        })
+    }
+
+    /// Adopts an already authenticated volume into the workspace facade.
+    ///
+    /// This avoids reopening durable creation state when a compatibility
+    /// consumer already owns the volume returned by creation or migration.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid descriptive name.
+    pub fn adopt_volume_workspace(
+        &self,
+        name: impl AsRef<str>,
+        volume: Volume<A, O>,
+    ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
+        let name = crate::WorkspaceName::new(name)?;
+        let id = crate::WorkspaceId::from_volume_id(volume.id);
+        Ok(crate::Workspace {
+            name,
+            id,
+            volume,
+            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+            source: None,
+        })
+    }
+
     /// Terminally deletes one named workspace without requiring a live handle.
     /// This stateless form preserves exact retry resolution after the durable
     /// tombstone makes ordinary workspace opening fail closed.
@@ -1915,49 +2258,56 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             crate::WorkspaceId::derive(self.inner.workspace_namespace, &destination);
         let config = source.workspace.volume.config;
         let cancellation = CancellationToken::new();
-        let (generation_root, mut work) = self
-            .materialize_forked_generation_root(source, destination_id, config, &cancellation)
-            .await?;
-        self.retain_workspace_generation(
+        let (generation_root, mut work) = Box::pin(self.materialize_forked_generation_root(
+            source,
+            destination_id,
+            config,
+            &cancellation,
+        ))
+        .await?;
+        Box::pin(self.retain_workspace_generation(
             &source.workspace.volume,
             source.id,
             RetentionKind::ForkBase,
             hex::encode(destination_id.into_bytes()),
-        )
+        ))
         .await?;
-        if self.inner.authority.supports_native_generation_fork() {
-            let forked = self
-                .inner
-                .authority
-                .fork_generation_authority(
-                    volume_authority_id(source.workspace.volume.id),
-                    source.id,
-                    volume_authority_id(destination_id.volume_id()),
-                    idempotency_key.operation_id(),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-                .map_err(crate::workspace::WorkspaceError::engine)?;
-            work = add(work, forked.work).map_err(crate::workspace::WorkspaceError::engine)?;
-        }
-        let volume = self
-            .publish_volume_creation(
-                VolumeCreation {
-                    volume_id: destination_id.volume_id(),
-                    config,
-                    generation_root,
-                    operation_id: Some(idempotency_key.operation_id()),
+        if self.inner.authority.supports_generation_lineage_prefix() {
+            let lineage = if Box::pin(source.workspace.head()).await?.id == source.id {
+                crate::GenerationFork::PublishedPrefix
+            } else {
+                crate::GenerationFork::Independent
+            };
+            let forked = Box::pin(self.inner.authority.fork_generation_authority(
+                crate::GenerationForkSource {
+                    authority: volume_authority_id(source.workspace.volume.id),
+                    generation: source.id,
+                    lineage,
                 },
-                work,
+                volume_authority_id(destination_id.volume_id()),
+                idempotency_key.operation_id(),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            )
+            ))
             .await
-            .map_err(crate::workspace::WorkspaceError::engine)?
-            .value;
-        volume
-            .resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+            work = add(work, forked.work).map_err(crate::workspace::WorkspaceError::engine)?;
+        }
+        let volume = Box::pin(self.publish_volume_creation(
+            VolumeCreation {
+                volume_id: destination_id.volume_id(),
+                config,
+                generation_root,
+                operation_id: Some(idempotency_key.operation_id()),
+            },
+            work,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?
+        .value;
+        Box::pin(volume.resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation))
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?;
         Ok(crate::Workspace {
@@ -2224,6 +2574,291 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok((GenerationId::new(root.digest), head))
     }
 
+    pub(crate) async fn workspace_operation_generation(
+        &self,
+        workspace: &Volume<A, O>,
+        operation_id: OperationId,
+    ) -> Result<Option<GenerationId>, crate::workspace::WorkspaceError> {
+        let cancellation = CancellationToken::new();
+        let observed = self
+            .observe_volume_operation(
+                workspace.id,
+                operation_id,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+        observed
+            .value
+            .as_ref()
+            .map(|commit| {
+                generation_from_record(commit, workspace.id, observed.work)
+                    .map(|object| GenerationId::new(object.digest))
+                    .map_err(crate::workspace::WorkspaceError::engine)
+            })
+            .transpose()
+    }
+
+    pub(crate) async fn workspace_conflict_record(
+        &self,
+        workspace: &Volume<A, O>,
+        generation: GenerationId,
+        file_id: FileId,
+    ) -> Result<Option<FileRecord>, crate::workspace::WorkspaceError> {
+        let cancellation = CancellationToken::new();
+        let generation_root = ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: generation.digest(),
+        };
+        let (root, work) = read_generation_root(
+            &self.inner.objects,
+            generation_root,
+            workspace.config,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        let lookup = lookup_file_record_async(
+            &self.inner.objects,
+            root.file_table,
+            file_id,
+            decode_limits(workspace.config),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        let _ = work;
+        Ok(lookup.record)
+    }
+
+    pub(crate) async fn workspace_conflict_bytes(
+        &self,
+        workspace: &Volume<A, O>,
+        record: FileRecord,
+    ) -> Result<Option<Bytes>, crate::workspace::WorkspaceError> {
+        let logical_bytes = match record.payload {
+            FilePayload::InlineRegular(data) => {
+                return Ok(Some(Bytes::copy_from_slice(data.as_bytes())));
+            }
+            FilePayload::Regular { logical_bytes, .. } => logical_bytes,
+            _ => return Ok(None),
+        };
+        if logical_bytes > workspace.config.limits.maximum_read_bytes {
+            return Ok(None);
+        }
+        let read = read_file_range_async(
+            &self.inner.objects,
+            FileRangeRequest {
+                record,
+                range: ByteRange {
+                    offset: 0,
+                    length: logical_bytes,
+                },
+                maximum_spans: workspace.config.limits.maximum_directory_page_entries,
+                limits: decode_limits(workspace.config),
+                budget: WorkBudget::UNBOUNDED,
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        Ok(Some(read.bytes))
+    }
+
+    pub(crate) async fn workspace_conflict_metadata(
+        &self,
+        workspace: &Volume<A, O>,
+        record: FileRecord,
+    ) -> Result<Vec<u8>, crate::workspace::WorkspaceError> {
+        let read = self
+            .inner
+            .objects
+            .read(
+                record.metadata,
+                workspace.config.limits.maximum_object_bytes,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+        decode_file_metadata(&read.value.bytes, decode_limits(workspace.config))
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+        Ok(read.value.bytes.to_vec())
+    }
+
+    pub(crate) async fn stage_merge_regular_record(
+        &self,
+        workspace: &Volume<A, O>,
+        mut record: FileRecord,
+        bytes: Bytes,
+    ) -> Result<FileRecord, crate::workspace::WorkspaceError> {
+        if record.kind != FileKind::Regular
+            || u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                > workspace.config.limits.maximum_read_bytes
+        {
+            return Err(crate::workspace::WorkspaceError::InvalidMergeResolution);
+        }
+        if bytes.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {
+            record.payload = FilePayload::InlineRegular(
+                InlineFileData::new(&bytes).map_err(crate::workspace::WorkspaceError::engine)?,
+            );
+            return Ok(record);
+        }
+        let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX).max(1);
+        let mut source = std::io::Cursor::new(bytes);
+        let blob = build_blob_async(
+            &self.inner.objects,
+            &mut source,
+            BlobBuildOptions {
+                chunk_bytes: u32::try_from(
+                    workspace
+                        .config
+                        .limits
+                        .maximum_object_bytes
+                        .min(1024 * 1024),
+                )
+                .unwrap_or(u32::MAX)
+                .max(1),
+                page_items: workspace.config.limits.maximum_directory_page_entries,
+                page_bytes: u32::try_from(workspace.config.limits.maximum_object_bytes)
+                    .unwrap_or(u32::MAX)
+                    .max(1),
+                maximum_blob_bytes,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        let payload = apply_regular_mutation_async(
+            &self.inner.objects,
+            FilePayload::InlineRegular(
+                InlineFileData::new(&[]).map_err(crate::workspace::WorkspaceError::engine)?,
+            ),
+            RegularMutation::Write {
+                offset: 0,
+                length: blob.logical_bytes,
+                content: blob.root,
+                content_offset: 0,
+            },
+            workspace.config,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        record.payload = payload.payload;
+        Ok(record)
+    }
+
+    pub(crate) async fn stage_merge_metadata(
+        &self,
+        workspace: &Volume<A, O>,
+        bytes: &[u8],
+    ) -> Result<ObjectId, crate::workspace::WorkspaceError> {
+        decode_file_metadata(bytes, decode_limits(workspace.config))
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+        let (object, _) = self
+            .put_encoded(
+                ObjectKind::Metadata,
+                bytes.to_vec(),
+                WorkCounters::default(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+        Ok(object)
+    }
+
+    pub(crate) async fn restore_workspace_generation(
+        &self,
+        workspace: &Volume<A, O>,
+        generation: GenerationId,
+        expected: GenerationId,
+        operation_id: OperationId,
+    ) -> Result<crate::workspace::WorkspaceRestoreOutcome, crate::workspace::WorkspaceError> {
+        let cancellation = CancellationToken::new();
+        if let Some(recorded) = self
+            .workspace_operation_generation(workspace, operation_id)
+            .await?
+        {
+            return Ok(if recorded == generation {
+                crate::workspace::WorkspaceRestoreOutcome::AlreadyRestored(recorded)
+            } else {
+                crate::workspace::WorkspaceRestoreOutcome::IdempotencyConflict
+            });
+        }
+        let (current, authority_head, _) = workspace
+            .resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+        let current = GenerationId::new(current.digest);
+        if current != expected {
+            return Ok(crate::workspace::WorkspaceRestoreOutcome::Stale(current));
+        }
+        if current == generation {
+            return Ok(crate::workspace::WorkspaceRestoreOutcome::Current(current));
+        }
+        let generation_root = ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: generation.digest(),
+        };
+        let (root, _) = read_generation_root(
+            &self.inner.objects,
+            generation_root,
+            workspace.config,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        if root.volume_id != workspace.id {
+            return Err(crate::workspace::WorkspaceError::ForeignGeneration);
+        }
+        let publication = publish_generation_async(
+            &self.inner.objects,
+            &self.inner.authority,
+            PublishGenerationRequest {
+                authority_id: volume_authority_id(workspace.id),
+                volume_id: workspace.id,
+                epoch: authority_head.epoch,
+                expected: authority_head,
+                operation_id,
+                generation_root,
+            },
+            closure_limits(workspace.config),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        Ok(match publication.outcome {
+            AppendOutcome::Committed(_) => {
+                crate::workspace::WorkspaceRestoreOutcome::Restored(publication.proof.generation_id)
+            }
+            AppendOutcome::AlreadyCommitted(_) => {
+                crate::workspace::WorkspaceRestoreOutcome::AlreadyRestored(
+                    publication.proof.generation_id,
+                )
+            }
+            AppendOutcome::Conflict { .. } => {
+                let (actual, _, _) = workspace
+                    .resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation)
+                    .await
+                    .map_err(crate::workspace::WorkspaceError::engine)?;
+                crate::workspace::WorkspaceRestoreOutcome::Stale(GenerationId::new(actual.digest))
+            }
+            AppendOutcome::Fenced { .. } => crate::workspace::WorkspaceRestoreOutcome::Fenced,
+            AppendOutcome::IdempotencyConflict { .. } => {
+                crate::workspace::WorkspaceRestoreOutcome::IdempotencyConflict
+            }
+        })
+    }
+
     #[allow(clippy::too_many_lines)]
     pub(crate) async fn live_rebase_workspace(
         &self,
@@ -2356,6 +2991,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 retain_theirs_parent: false,
                 maximum_changes,
                 maximum_conflicts,
+                resolutions: BTreeMap::new(),
             },
             decode_limits(target.config),
             WorkBudget::UNBOUNDED,
@@ -2441,6 +3077,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             maximum_generations,
             maximum_changes,
             maximum_conflicts,
+            resolutions,
         } = request;
         if maximum_generations == 0 || maximum_changes == 0 || maximum_conflicts == 0 {
             return Err(crate::workspace::WorkspaceError::JoinLimit);
@@ -2550,6 +3187,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 retain_theirs_parent: history == crate::workspace::JoinHistory::Merge,
                 maximum_changes,
                 maximum_conflicts,
+                resolutions,
             },
             decode_limits(target.config),
             WorkBudget::UNBOUNDED,
@@ -3462,6 +4100,825 @@ impl<A, O> Checkout<A, O> {
     pub const fn has_pending_mutations(&self) -> bool {
         !self.pending_operations.is_empty() || self.prepared_merge_parent.is_some()
     }
+
+    /// Creates an immutable reader for this checkout's current candidate.
+    ///
+    /// Pinned consistency is required because optimistic reads must record
+    /// dependencies on the mutable checkout before publication.
+    ///
+    /// # Errors
+    ///
+    /// Rejects non-pinned checkouts before any storage work.
+    pub fn pinned_reader(&self) -> Result<PinnedReader<A, O>, FsError> {
+        if self.mode.consistency != ConsistencyMode::Pinned {
+            return Err(FsError::MutationNotAllowed);
+        }
+        Ok(PinnedReader {
+            volume: self.volume.clone(),
+            generation_root: self.generation_root,
+            root: self.root.clone(),
+        })
+    }
+
+    /// Creates an immutable content writer that can stage independent sources
+    /// concurrently before this checkout admits their ordered mutations.
+    #[must_use]
+    pub fn content_stager(&self) -> ContentStager<A, O> {
+        ContentStager {
+            volume: self.volume.clone(),
+        }
+    }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ContentStager<A, O> {
+    /// Streams one bounded source into immutable authenticated chunks.
+    pub async fn stage<R: AsyncBlobSource>(
+        &self,
+        source: &mut R,
+        maximum_source_bytes: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<StagedContent> {
+        stage_content_for_volume(
+            &self.volume,
+            source,
+            maximum_source_bytes,
+            budget,
+            cancellation,
+        )
+        .await
+    }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
+    async fn resolve_file_records(
+        &self,
+        paths: &[NamespacePath],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<Option<FileRecord>>> {
+        let lookup = crate::kernel::lookup_paths_async(
+            &self.volume.fs.inner.objects,
+            &self.root,
+            paths,
+            self.volume.config,
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), FsError::Path))?;
+        let mut records = Vec::new();
+        records
+            .try_reserve_exact(lookup.entries.len())
+            .map_err(|_| {
+                OperationFailure::new(FsError::PendingMutationAllocationFailed, lookup.work)
+            })?;
+        for entry in lookup.entries {
+            records.push(entry.record);
+        }
+        Ok(FsReceipt {
+            value: records,
+            work: lookup.work,
+        })
+    }
+
+    async fn list_directory_page(
+        &self,
+        request: DirectoryPageRequest,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<DirectoryPage> {
+        list_directory_page_pinned(
+            &self.volume,
+            &self.root,
+            &request.path,
+            request.after.as_ref(),
+            request.maximum_entries,
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Lists ordered directory binding pages with at most `concurrency`
+    /// requests in flight while preserving input order. Finite budgets are
+    /// consumed sequentially so concurrent requests cannot each admit the
+    /// complete group budget.
+    pub async fn list_directory_pages(
+        &self,
+        requests: &[DirectoryPageRequest],
+        concurrency: usize,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<DirectoryPage>> {
+        if concurrency == 0
+            || requests.len()
+                > usize::try_from(self.volume.config.limits.maximum_paths_per_batch)
+                    .unwrap_or(usize::MAX)
+        {
+            return Err(OperationFailure::before_work(FsError::Path(
+                PathLookupError::TooManyPaths,
+            )));
+        }
+        if budget != WorkBudget::UNBOUNDED {
+            let mut work = WorkCounters::default();
+            let mut ordered = Vec::new();
+            ordered
+                .try_reserve_exact(requests.len())
+                .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
+            for request in requests.iter().cloned() {
+                let receipt = self
+                    .list_directory_page(request, remaining(work, budget)?, cancellation)
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                work = add(work, receipt.work)?;
+                ordered.push(receipt.value);
+            }
+            return Ok(FsReceipt {
+                value: ordered,
+                work,
+            });
+        }
+        let results = stream::iter(
+            requests
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, request)| {
+                    let reader = self.clone();
+                    async move {
+                        (
+                            index,
+                            reader
+                                .list_directory_page(request, budget, cancellation)
+                                .await,
+                        )
+                    }
+                }),
+        )
+        .buffer_unordered(concurrency.min(requests.len().max(1)))
+        .collect::<Vec<_>>()
+        .await;
+        order_batch_results(results, budget)
+    }
+
+    /// Resolves one bounded directory page into generation-scoped child
+    /// handles in the same authenticated traversal. Child metadata is fetched
+    /// as one object batch; no child path is looked up again.
+    pub async fn resolve_directory_page(
+        &self,
+        path: &NamespacePath,
+        after: Option<&LogicalName>,
+        maximum_entries: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<ResolvedDirectoryPage<A, O>> {
+        let listing = list_directory_page_pinned(
+            &self.volume,
+            &self.root,
+            path,
+            after,
+            maximum_entries,
+            budget,
+            cancellation,
+        )
+        .await?;
+        let mut work = listing.work;
+        let page = listing.value;
+        let mut file_ids = Vec::new();
+        file_ids
+            .try_reserve_exact(page.entries.len())
+            .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
+        file_ids.extend(page.entries.iter().map(|entry| entry.file_id));
+        let records = if file_ids.is_empty() {
+            Vec::new()
+        } else {
+            let receipt = lookup_file_records_async(
+                &self.volume.fs.inner.objects,
+                self.root.file_table,
+                &file_ids,
+                maximum_entries,
+                decode_limits(self.volume.config),
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRecord))?;
+            work = add(work, receipt.work)?;
+            receipt.records
+        };
+        let mut metadata_requests = Vec::new();
+        metadata_requests
+            .try_reserve_exact(records.len())
+            .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
+        for record in &records {
+            let record = record
+                .as_ref()
+                .ok_or_else(|| OperationFailure::new(FsError::InvalidDirectoryRecord, work))?;
+            metadata_requests.push(ObjectReadRequest {
+                object_id: record.metadata,
+                maximum_bytes: self.volume.config.limits.maximum_object_bytes,
+            });
+        }
+        let metadata = if metadata_requests.is_empty() {
+            Vec::new()
+        } else {
+            let receipt = self
+                .volume
+                .fs
+                .inner
+                .objects
+                .read_many(&metadata_requests, remaining(work, budget)?, cancellation)
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
+            work = add(work, receipt.work)?;
+            receipt.value
+        };
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(page.entries.len())
+            .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
+        for ((binding, record), metadata) in page.entries.into_iter().zip(records).zip(metadata) {
+            let record = record
+                .ok_or_else(|| OperationFailure::new(FsError::InvalidDirectoryRecord, work))?;
+            if record.file_id != binding.file_id || record.kind != binding.kind {
+                return Err(OperationFailure::new(FsError::InvalidDirectoryRecord, work));
+            }
+            let metadata = decode_file_metadata(&metadata, decode_limits(self.volume.config))
+                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            let logical_bytes = record_logical_bytes(record);
+            entries.push(ResolvedDirectoryEntry {
+                name: binding.name,
+                file: ResolvedFile {
+                    reader: self.clone(),
+                    record,
+                    description: FileDescription {
+                        kind: record.kind,
+                        logical_bytes,
+                        metadata,
+                    },
+                },
+            });
+        }
+        Ok(FsReceipt {
+            value: ResolvedDirectoryPage {
+                entries,
+                has_more: page.has_more,
+            },
+            work,
+        })
+    }
+
+    async fn read_symbolic_link_record(
+        &self,
+        record: FileRecord,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Bytes> {
+        read_symbolic_link_record(&self.volume, record, budget, cancellation).await
+    }
+
+    async fn read_record_range(
+        &self,
+        record: FileRecord,
+        range: ByteRange,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<FileRangeRead> {
+        if range.length > self.volume.config.limits.maximum_read_bytes {
+            return Err(OperationFailure::before_work(FsError::FileRead(
+                FileRangeReadError::InvalidRange,
+            )));
+        }
+        let read = read_file_range_async(
+            &self.volume.fs.inner.objects,
+            FileRangeRequest {
+                record,
+                range,
+                maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
+                limits: decode_limits(self.volume.config),
+                budget,
+            },
+            cancellation,
+        )
+        .await
+        .map_err(|failure| {
+            failure.map_with_prior_work(WorkCounters::default(), FsError::FileRead)
+        })?;
+        Ok(FsReceipt {
+            work: read.work,
+            value: read,
+        })
+    }
+
+    async fn read_record_metadata(
+        &self,
+        record: FileRecord,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<FileMetadata> {
+        let metadata = self
+            .volume
+            .fs
+            .inner
+            .objects
+            .read(
+                record.metadata,
+                self.volume.config.limits.maximum_object_bytes,
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| {
+                failure.map_with_prior_work(WorkCounters::default(), FsError::Object)
+            })?;
+        let value = decode_file_metadata(&metadata.value, decode_limits(self.volume.config))
+            .map_err(|error| OperationFailure::new(error.into(), metadata.work))?;
+        Ok(FsReceipt {
+            value,
+            work: metadata.work,
+        })
+    }
+
+    async fn resolve_file(
+        &self,
+        path: &NamespacePath,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<FileRecord> {
+        let lookup = crate::kernel::observe_path_edges_async(
+            &self.volume.fs.inner.objects,
+            &self.root,
+            path,
+            self.volume.config,
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), FsError::Path))?;
+        let work = lookup.lookup.work;
+        let record = lookup
+            .lookup
+            .record
+            .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
+        Ok(FsReceipt {
+            value: record,
+            work,
+        })
+    }
+
+    /// Plans sparse physical spans without reading content bodies.
+    pub async fn plan_file_extents(
+        &self,
+        path: &NamespacePath,
+        range: ByteRange,
+        maximum_spans: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Option<ExtentPlan>> {
+        let resolved = self.resolve_file(path, budget, cancellation).await?;
+        let mut work = resolved.work;
+        let plan = self
+            .plan_record_extents(
+                resolved.value,
+                range,
+                maximum_spans,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+        work = add(work, plan.work)?;
+        Ok(FsReceipt {
+            value: plan.value,
+            work,
+        })
+    }
+
+    async fn plan_record_extents(
+        &self,
+        record: FileRecord,
+        range: ByteRange,
+        maximum_spans: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Option<ExtentPlan>> {
+        if maximum_spans == 0 || range.length > self.volume.config.limits.maximum_generation_bytes {
+            return Err(OperationFailure::before_work(FsError::FileRead(
+                FileRangeReadError::InvalidRange,
+            )));
+        }
+        let mut work = WorkCounters::default();
+        let (logical_bytes, extents) = match record.payload {
+            FilePayload::InlineRegular(data) => {
+                validate_planned_file_range(
+                    u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX),
+                    range,
+                    work,
+                )?;
+                return Ok(FsReceipt { value: None, work });
+            }
+            FilePayload::Regular {
+                logical_bytes,
+                extents,
+            } => (logical_bytes, extents),
+            _ => {
+                return Err(OperationFailure::new(
+                    FsError::FileRead(FileRangeReadError::NotRegular),
+                    work,
+                ));
+            }
+        };
+        let mut plan = plan_extent_range_async(
+            &self.volume.fs.inner.objects,
+            ExtentRangeRequest {
+                root: extents,
+                file_size: logical_bytes,
+                range,
+                maximum_spans,
+                limits: decode_limits(self.volume.config),
+                budget: remaining(work, budget)?,
+            },
+            cancellation,
+        )
+        .await
+        .map_err(|failure| {
+            failure.map_with_prior_work(work, |error| {
+                FsError::FileRead(FileRangeReadError::Extent(error))
+            })
+        })?;
+        work = add(work, plan.work)?;
+        plan.work = work;
+        Ok(FsReceipt {
+            value: Some(plan),
+            work,
+        })
+    }
+
+    /// Reads one exact logical range without mutating checkout state.
+    pub async fn read_file_range(
+        &self,
+        path: &NamespacePath,
+        range: ByteRange,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<FileRangeRead> {
+        if range.length > self.volume.config.limits.maximum_read_bytes {
+            return Err(OperationFailure::before_work(FsError::FileRead(
+                FileRangeReadError::InvalidRange,
+            )));
+        }
+        let resolved = self.resolve_file(path, budget, cancellation).await?;
+        let mut work = resolved.work;
+        let record = resolved.value;
+        let read = read_file_range_async(
+            &self.volume.fs.inner.objects,
+            FileRangeRequest {
+                record,
+                range,
+                maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
+                limits: decode_limits(self.volume.config),
+                budget: remaining(work, budget)?,
+            },
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRead))?;
+        work = add(work, read.work)?;
+        Ok(FsReceipt { value: read, work })
+    }
+
+    /// Reads exact opaque symbolic-link target bytes without following it.
+    pub async fn read_symbolic_link(
+        &self,
+        path: &NamespacePath,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Bytes> {
+        let resolved = self.resolve_file(path, budget, cancellation).await?;
+        let mut work = resolved.work;
+        let read = self
+            .read_symbolic_link_record(resolved.value, remaining(work, budget)?, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+        work = add(work, read.work)?;
+        Ok(FsReceipt {
+            value: read.value,
+            work,
+        })
+    }
+
+    /// Reads complete canonical metadata for one exact path.
+    pub async fn read_metadata(
+        &self,
+        path: &NamespacePath,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<FileMetadata> {
+        let resolved = self.resolve_file(path, budget, cancellation).await?;
+        let mut work = resolved.work;
+        let metadata = self
+            .read_record_metadata(resolved.value, remaining(work, budget)?, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+        work = add(work, metadata.work)?;
+        Ok(FsReceipt {
+            value: metadata.value,
+            work,
+        })
+    }
+
+    /// Describes an ordered path batch while sharing namespace and object traversal.
+    pub async fn describe_files(
+        &self,
+        paths: &[NamespacePath],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<Option<FileDescription>>> {
+        let resolved = self.resolve_files(paths, budget, cancellation).await?;
+        let descriptions = resolved
+            .value
+            .into_iter()
+            .map(|file| file.map(|file| file.description))
+            .collect();
+        Ok(FsReceipt {
+            value: descriptions,
+            work: resolved.work,
+        })
+    }
+
+    /// Resolves and describes paths once, returning reader-scoped handles for
+    /// later body reads without another namespace traversal.
+    pub async fn resolve_files(
+        &self,
+        paths: &[NamespacePath],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<Option<ResolvedFile<A, O>>>> {
+        let resolved = self
+            .resolve_file_records(paths, budget, cancellation)
+            .await?;
+        let mut work = resolved.work;
+        let mut requests = Vec::new();
+        requests
+            .try_reserve_exact(resolved.value.len())
+            .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
+        requests.extend(
+            resolved
+                .value
+                .iter()
+                .flatten()
+                .map(|record| ObjectReadRequest {
+                    object_id: record.metadata,
+                    maximum_bytes: self.volume.config.limits.maximum_object_bytes,
+                }),
+        );
+        let reads = if requests.is_empty() {
+            Vec::new()
+        } else {
+            let receipt = self
+                .volume
+                .fs
+                .inner
+                .objects
+                .read_many(&requests, remaining(work, budget)?, cancellation)
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
+            work = add(work, receipt.work)?;
+            receipt.value
+        };
+        let mut reads = reads.into_iter();
+        let mut handles = Vec::new();
+        handles
+            .try_reserve_exact(resolved.value.len())
+            .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
+        for record in resolved.value {
+            let Some(record) = record else {
+                handles.push(None);
+                continue;
+            };
+            let bytes = reads
+                .next()
+                .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
+            let metadata = decode_file_metadata(&bytes, decode_limits(self.volume.config))
+                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            let logical_bytes = record_logical_bytes(record);
+            handles.push(Some(ResolvedFile {
+                reader: self.clone(),
+                record,
+                description: FileDescription {
+                    kind: record.kind,
+                    logical_bytes,
+                    metadata,
+                },
+            }));
+        }
+        Ok(FsReceipt {
+            value: handles,
+            work,
+        })
+    }
+
+    /// Reads ranges from already resolved files with bounded concurrency and
+    /// no additional namespace traversal.
+    pub async fn read_resolved_ranges(
+        &self,
+        requests: &[ResolvedFileRangeReadRequest<'_, A, O>],
+        concurrency: usize,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<FileRangeRead>> {
+        if concurrency == 0
+            || requests.len()
+                > usize::try_from(self.volume.config.limits.maximum_paths_per_batch)
+                    .unwrap_or(usize::MAX)
+        {
+            return Err(OperationFailure::before_work(FsError::FileRead(
+                FileRangeReadError::InvalidRange,
+            )));
+        }
+        if budget != WorkBudget::UNBOUNDED {
+            let mut work = WorkCounters::default();
+            let mut reads = Vec::new();
+            reads
+                .try_reserve_exact(requests.len())
+                .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
+            for request in requests {
+                let read = request
+                    .file
+                    .read_range(request.range, remaining(work, budget)?, cancellation)
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                work = add(work, read.work)?;
+                reads.push(read.value);
+            }
+            return Ok(FsReceipt { value: reads, work });
+        }
+        let cancellation = cancellation.clone();
+        let pending = requests
+            .iter()
+            .enumerate()
+            .map(|(index, request)| {
+                (
+                    index,
+                    request.file.reader.clone(),
+                    request.file.record,
+                    request.range,
+                )
+            })
+            .collect::<Vec<_>>();
+        let results = stream::iter(pending.into_iter().map(|(index, reader, record, range)| {
+            let cancellation = cancellation.clone();
+            async move {
+                (
+                    index,
+                    reader
+                        .read_record_range(record, range, budget, &cancellation)
+                        .await,
+                )
+            }
+        }))
+        .buffer_unordered(concurrency.min(requests.len().max(1)))
+        .collect::<Vec<_>>()
+        .await;
+        order_batch_results(results, budget)
+    }
+}
+
+fn record_logical_bytes(record: FileRecord) -> u64 {
+    match record.payload {
+        FilePayload::InlineRegular(bytes) => {
+            u64::try_from(bytes.as_bytes().len()).unwrap_or(u64::MAX)
+        }
+        FilePayload::Regular { logical_bytes, .. } => logical_bytes,
+        FilePayload::SymbolicLink { target_bytes, .. } => target_bytes,
+        _ => 0,
+    }
+}
+
+async fn list_directory_page_pinned<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    volume: &Volume<A, O>,
+    root: &GenerationRoot,
+    path: &NamespacePath,
+    after: Option<&LogicalName>,
+    maximum_entries: u32,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> FsResult<DirectoryPage> {
+    let lookup = crate::kernel::observe_path_edges_async(
+        &volume.fs.inner.objects,
+        root,
+        path,
+        volume.config,
+        budget,
+        cancellation,
+    )
+    .await
+    .map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), FsError::Path))?;
+    let mut work = lookup.lookup.work;
+    let record = lookup
+        .lookup
+        .record
+        .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
+    let FilePayload::Directory { entries } = record.payload else {
+        return Err(OperationFailure::new(FsError::NotDirectory, work));
+    };
+    if record.kind != FileKind::Directory {
+        return Err(OperationFailure::new(FsError::NotDirectory, work));
+    }
+    let mut page = list_tree_entries_async(
+        &volume.fs.inner.objects,
+        entries,
+        after,
+        maximum_entries,
+        decode_limits(volume.config),
+        remaining(work, budget)?,
+        cancellation,
+    )
+    .await
+    .map_err(|failure| failure.map_with_prior_work(work, FsError::Directory))?;
+    work = add(work, page.work)?;
+    page.work = work;
+    Ok(FsReceipt { value: page, work })
+}
+
+async fn read_symbolic_link_record<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    volume: &Volume<A, O>,
+    record: FileRecord,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> FsResult<Bytes> {
+    let FilePayload::SymbolicLink {
+        target_bytes,
+        target,
+    } = record.payload
+    else {
+        return Err(OperationFailure::before_work(FsError::NotSymbolicLink));
+    };
+    if target_bytes > volume.config.limits.maximum_read_bytes {
+        return Err(OperationFailure::before_work(FsError::FileRead(
+            FileRangeReadError::InvalidRange,
+        )));
+    }
+    if target_bytes == 0 {
+        return Ok(FsReceipt {
+            value: Bytes::new(),
+            work: WorkCounters::default(),
+        });
+    }
+    let read = read_blob_range_async(
+        &volume.fs.inner.objects,
+        target,
+        ByteRange {
+            offset: 0,
+            length: target_bytes,
+        },
+        decode_limits(volume.config),
+        budget,
+        cancellation,
+    )
+    .await
+    .map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), FsError::BlobRead))?;
+    Ok(FsReceipt {
+        value: read.bytes,
+        work: read.work,
+    })
+}
+
+fn order_batch_results<T>(
+    mut results: Vec<(usize, FsResult<T>)>,
+    budget: WorkBudget,
+) -> FsResult<Vec<T>> {
+    results.sort_unstable_by_key(|(index, _)| *index);
+    let mut work = WorkCounters::default();
+    let mut completed = Vec::new();
+    completed
+        .try_reserve_exact(results.len())
+        .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
+    let mut first_failure = None;
+    for (index, result) in results {
+        match result {
+            Ok(receipt) => {
+                work = add(work, receipt.work)?;
+                completed.push((index, receipt.value));
+            }
+            Err(failure) => {
+                work = add(work, *failure.work)?;
+                if first_failure.is_none() {
+                    first_failure = Some(failure.error);
+                }
+            }
+        }
+    }
+    work.verify(budget)
+        .map_err(|error| OperationFailure::new(error.into(), work))?;
+    if let Some(error) = first_failure {
+        return Err(OperationFailure::new(error, work));
+    }
+    Ok(FsReceipt {
+        value: completed.into_iter().map(|(_, value)| value).collect(),
+        work,
+    })
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
@@ -3530,6 +4987,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 retain_theirs_parent: true,
                 maximum_changes,
                 maximum_conflicts,
+                resolutions: BTreeMap::new(),
             },
             decode_limits(self.volume.config),
             remaining(work, budget)?,
@@ -3693,21 +5151,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(FsReceipt { value: (), work })
     }
 
-    /// Explicitly advances one clean manual checkout to the current head.
+    /// Explicitly advances one clean manual or tracking checkout to head.
     ///
     /// Equal generations avoid an immutable-object read. Dirty overlays are
     /// retained and rejected because adopting them requires safe rebase.
     ///
     /// # Errors
     ///
-    /// Rejects non-manual or dirty checkouts and returns exact authority,
+    /// Rejects pinned, live, or dirty checkouts and returns exact authority,
     /// storage, authentication, cancellation, or budget failures.
     pub async fn refresh_head(
         &mut self,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<GenerationId> {
-        if self.mode.consistency != ConsistencyMode::Manual {
+        if !matches!(
+            self.mode.consistency,
+            ConsistencyMode::Manual | ConsistencyMode::TrackingSafe
+        ) {
             return Err(OperationFailure::before_work(FsError::RefreshNotAllowed));
         }
         if self.has_pending_mutations() {
@@ -4361,14 +5822,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 FsError::TooManyPendingMutations,
             ));
         }
-        // Keep the public mutation futures small: folded-name admission is a
-        // bounded, independently stateful planning phase and must not inflate
-        // every SDK mutation future's stack frame.
+        // Keep the public mutation future within the Windows default thread
+        // stack. Each planning and mutation phase is boxed once per
+        // transaction rather than growing one deeply nested future.
         let admitted =
             Box::pin(self.admit_mutation_names(&mut operations, budget, cancellation)).await?;
-        let captured = self
-            .capture_mutation_dependencies(&operations, budget, cancellation)
-            .await?;
+        let captured =
+            Box::pin(self.capture_mutation_dependencies(&operations, budget, cancellation)).await?;
         let dependency_work = add(admitted.work, captured.work)?;
         let mutation_dependencies = captured.value;
         let mut next_dependencies = self.dependencies.clone();
@@ -4379,14 +5839,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .map_err(|error| OperationFailure::new(error.into(), dependency_work))?;
         let prior_file_table = self.root.file_table;
-        let (receipt, retained_operations) = apply_generation_mutations_retaining_async(
+        let (receipt, retained_operations) = Box::pin(apply_generation_mutations_retaining_async(
             &self.volume.fs.inner.objects,
             &self.root,
             operations,
             self.volume.config,
             remaining(dependency_work, budget)?,
             cancellation,
-        )
+        ))
         .await
         .map_err(|failure| failure.map_with_prior_work(dependency_work, FsError::Mutation))?;
         let mut work = add(dependency_work, receipt.work)?;
@@ -4462,7 +5922,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
             work = add(work, parent_canonicalized.work)?;
             match operation {
-                Mutation::Create { path, record } => {
+                Mutation::Create { path, record } | Mutation::Restore { path, record } => {
                     let allowed = removed_binding_id(path, &removed);
                     let allowed_ids: &[FileId] = match allowed {
                         Some(ref file_id) => std::slice::from_ref(file_id),
@@ -4721,9 +6181,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 destination,
                 ..
             } => Some((source, destination)),
-            Mutation::Create { .. } | Mutation::File { .. } | Mutation::CloneFileRange { .. } => {
-                None
-            }
+            Mutation::Create { .. }
+            | Mutation::Restore { .. }
+            | Mutation::File { .. }
+            | Mutation::CloneFileRange { .. } => None,
         };
         if let Some((source, destination)) = paths {
             let resolved_source = self
@@ -4937,6 +6398,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let mut work = WorkCounters::default();
         let mut operations = Vec::new();
         let mut created_file_ids = Vec::new();
+        // Metadata objects are immutable. Reuse durable admissions throughout
+        // this authored transaction, including across paths and file kinds.
+        let mut staged_metadata = AuthoredMetadataCache::new();
         operations
             .try_reserve_exact(operation_count)
             .map_err(|_| OperationFailure::before_work(FsError::PendingMutationAllocationFailed))?;
@@ -4953,6 +6417,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     authored_mutation,
                     &mut operations,
                     &mut work,
+                    &mut staged_metadata,
                     budget,
                     cancellation,
                 )
@@ -4982,6 +6447,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         authored: AuthoredMutation,
         operations: &mut Vec<Mutation>,
         work: &mut WorkCounters,
+        staged_metadata: &mut AuthoredMetadataCache,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<Option<FileId>, OperationFailure<FsError>> {
@@ -5000,7 +6466,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     ));
                 }
                 let metadata = self
-                    .stage_metadata(metadata, remaining(*work, budget)?, cancellation)
+                    .stage_authored_metadata(
+                        metadata,
+                        staged_metadata,
+                        remaining(*work, budget)?,
+                        cancellation,
+                    )
                     .await
                     .map_err(|failure| {
                         failure.map_with_prior_work(*work, std::convert::identity)
@@ -5058,7 +6529,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 metadata,
             } => {
                 let metadata = self
-                    .stage_metadata(metadata, remaining(*work, budget)?, cancellation)
+                    .stage_authored_metadata(
+                        metadata,
+                        staged_metadata,
+                        remaining(*work, budget)?,
+                        cancellation,
+                    )
                     .await
                     .map_err(|failure| {
                         failure.map_with_prior_work(*work, std::convert::identity)
@@ -5106,6 +6582,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     },
                     metadata,
                     work,
+                    staged_metadata,
                     budget,
                     cancellation,
                 )
@@ -5134,6 +6611,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     },
                     metadata,
                     work,
+                    staged_metadata,
                     budget,
                     cancellation,
                 )
@@ -5159,6 +6637,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     FilePayload::Empty,
                     metadata,
                     work,
+                    staged_metadata,
                     budget,
                     cancellation,
                 )
@@ -5183,6 +6662,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     FilePayload::Device { major, minor },
                     metadata,
                     work,
+                    staged_metadata,
                     budget,
                     cancellation,
                 )
@@ -5212,6 +6692,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     },
                     metadata,
                     work,
+                    staged_metadata,
                     budget,
                     cancellation,
                 )
@@ -5296,7 +6777,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
             AuthoredMutation::SetMetadata { path, metadata } => {
                 let metadata = self
-                    .stage_metadata(metadata, remaining(*work, budget)?, cancellation)
+                    .stage_authored_metadata(
+                        metadata,
+                        staged_metadata,
+                        remaining(*work, budget)?,
+                        cancellation,
+                    )
                     .await
                     .map_err(|failure| {
                         failure.map_with_prior_work(*work, std::convert::identity)
@@ -5380,11 +6866,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         payload: FilePayload,
         metadata: FileMetadata,
         work: &mut WorkCounters,
+        staged_metadata: &mut AuthoredMetadataCache,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<FileId, OperationFailure<FsError>> {
         let staged = self
-            .stage_metadata(metadata, remaining(*work, budget)?, cancellation)
+            .stage_authored_metadata(
+                metadata,
+                staged_metadata,
+                remaining(*work, budget)?,
+                cancellation,
+            )
             .await
             .map_err(|failure| failure.map_with_prior_work(*work, std::convert::identity))?;
         *work = add(*work, staged.work)?;
@@ -5449,6 +6941,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .await?;
         Ok(FsReceipt { value, work })
+    }
+
+    async fn stage_authored_metadata(
+        &self,
+        metadata: FileMetadata,
+        staged: &mut AuthoredMetadataCache,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<ObjectId> {
+        cancellation
+            .check()
+            .map_err(|error| OperationFailure::before_work(error.into()))?;
+        if let Some(value) = staged.get(metadata) {
+            return Ok(FsReceipt {
+                value,
+                work: WorkCounters::default(),
+            });
+        }
+        let receipt = self.stage_metadata(metadata, budget, cancellation).await?;
+        staged.remember(metadata, receipt.value);
+        Ok(receipt)
     }
 
     async fn stage_empty_tree(
@@ -5819,41 +7332,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .value
             .record
             .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
-        let FilePayload::SymbolicLink {
-            target_bytes,
-            target,
-        } = record.payload
-        else {
-            return Err(OperationFailure::new(FsError::NotSymbolicLink, work));
-        };
-        if target_bytes > self.volume.config.limits.maximum_read_bytes {
-            return Err(OperationFailure::new(
-                FsError::FileRead(FileRangeReadError::InvalidRange),
-                work,
-            ));
-        }
-        if target_bytes == 0 {
-            return Ok(FsReceipt {
-                value: Bytes::new(),
-                work,
-            });
-        }
-        let read = read_blob_range_async(
-            &self.volume.fs.inner.objects,
-            target,
-            ByteRange {
-                offset: 0,
-                length: target_bytes,
-            },
-            decode_limits(self.volume.config),
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, FsError::BlobRead))?;
+        let read =
+            read_symbolic_link_record(&self.volume, record, remaining(work, budget)?, cancellation)
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
         work = add(work, read.work)?;
         Ok(FsReceipt {
-            value: read.bytes,
+            value: read.value,
             work,
         })
     }
@@ -7245,23 +8730,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<StagedContent> {
-        if maximum_source_bytes == 0
-            || maximum_source_bytes > self.volume.config.limits.maximum_generation_bytes
-        {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let blob = self
-            .stage_blob_source(source, maximum_source_bytes, budget, cancellation)
-            .await?;
-        Ok(FsReceipt {
-            value: StagedContent {
-                root: blob.value.root,
-                logical_bytes: blob.value.logical_bytes,
-            },
-            work: blob.work,
-        })
+        stage_content_for_volume(
+            &self.volume,
+            source,
+            maximum_source_bytes,
+            budget,
+            cancellation,
+        )
+        .await
     }
 
     async fn stage_blob(
@@ -7290,35 +8766,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<crate::kernel::BlobBuild> {
-        let chunk_bytes = u32::try_from(
-            self.volume
-                .config
-                .limits
-                .maximum_object_bytes
-                .min(1024 * 1024),
-        )
-        .unwrap_or(u32::MAX)
-        .max(1);
-        let page_bytes = u32::try_from(self.volume.config.limits.maximum_object_bytes)
-            .unwrap_or(u32::MAX)
-            .max(1);
-        let blob = build_blob_async(
-            &self.volume.fs.inner.objects,
+        let staged = stage_content_for_volume(
+            &self.volume,
             source,
-            BlobBuildOptions {
-                chunk_bytes,
-                page_items: self.volume.config.limits.maximum_directory_page_entries,
-                page_bytes,
-                maximum_blob_bytes,
-            },
+            maximum_blob_bytes,
             budget,
             cancellation,
         )
-        .await
-        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+        .await?;
         Ok(FsReceipt {
-            work: blob.work,
-            value: blob,
+            work: staged.work,
+            value: crate::kernel::BlobBuild {
+                root: staged.value.root,
+                logical_bytes: staged.value.logical_bytes,
+                work: staged.work,
+            },
         })
     }
 
@@ -7716,11 +9178,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if lookup.value.record.is_none()
             && self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
         {
-            // Boxed: this whole fallback (and everything it transitively
+            // Boxed: this folded lookup path (and everything it transitively
             // calls, including a retried lookup) is a cold path that would
             // otherwise inline into every caller's future, including ones
             // that never touch a `ProfileFolded` volume.
-            let fallback = Box::pin(self.resolve_case_fold_fallback(
+            let folded = Box::pin(self.resolve_profile_folded_path(
                 path,
                 remaining(total, budget)?,
                 cancellation,
@@ -7728,8 +9190,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             ))
             .await
             .map_err(|failure| failure.map_with_prior_work(total, std::convert::identity))?;
-            total = add(total, fallback.work)?;
-            if let Some(resolved) = fallback.value {
+            total = add(total, folded.work)?;
+            if let Some(resolved) = folded.value {
                 lookup.value = resolved;
             }
         }
@@ -7743,7 +9205,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// siblings. Returns `Ok(None)` when `path` is the root (no siblings to
     /// fold against) or no folded match exists, leaving the original
     /// exact-match result in place.
-    async fn resolve_case_fold_fallback(
+    async fn resolve_profile_folded_path(
         &mut self,
         path: &NamespacePath,
         budget: WorkBudget,
@@ -7942,6 +9404,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<DirectoryPage> {
+        self.list_directory_with_bound(path, after, false, maximum_entries, budget, cancellation)
+            .await
+    }
+
+    async fn list_directory_with_bound(
+        &mut self,
+        path: &NamespacePath,
+        after: Option<&LogicalName>,
+        inclusive: bool,
+        maximum_entries: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<DirectoryPage> {
         let lookup = self
             .lookup_no_follow_observed(path, budget, cancellation, false)
             .await?;
@@ -7956,16 +9431,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if record.kind != FileKind::Directory {
             return Err(OperationFailure::new(FsError::NotDirectory, work));
         }
-        let mut page = list_tree_entries_async(
-            &self.volume.fs.inner.objects,
-            entries,
-            after,
-            maximum_entries,
-            decode_limits(self.volume.config),
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
+        let mut page = if let Some(at) = after.filter(|_| inclusive) {
+            list_tree_entries_at_or_after_async(
+                &self.volume.fs.inner.objects,
+                entries,
+                at,
+                maximum_entries,
+                decode_limits(self.volume.config),
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+        } else {
+            list_tree_entries_async(
+                &self.volume.fs.inner.objects,
+                entries,
+                after,
+                maximum_entries,
+                decode_limits(self.volume.config),
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+        }
         .map_err(|failure| failure.map_with_prior_work(work, FsError::Directory))?;
         work = add(work, page.work)?;
         if self.mode.consistency != ConsistencyMode::Pinned {
@@ -8022,8 +9510,57 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<DirectoryRecordPage> {
+        self.list_directory_records_with_bound(
+            path,
+            after,
+            false,
+            maximum_entries,
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    pub(crate) async fn list_directory_records_at_or_after(
+        &mut self,
+        path: &NamespacePath,
+        at: &LogicalName,
+        maximum_entries: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<DirectoryRecordPage> {
+        if self.mode.consistency != ConsistencyMode::Pinned {
+            return Err(OperationFailure::before_work(FsError::UnsupportedCheckout));
+        }
+        self.list_directory_records_with_bound(
+            path,
+            Some(at),
+            true,
+            maximum_entries,
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn list_directory_records_with_bound(
+        &mut self,
+        path: &NamespacePath,
+        after: Option<&LogicalName>,
+        inclusive: bool,
+        maximum_entries: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<DirectoryRecordPage> {
         let listing = self
-            .list_directory(path, after, maximum_entries, budget, cancellation)
+            .list_directory_with_bound(
+                path,
+                after,
+                inclusive,
+                maximum_entries,
+                budget,
+                cancellation,
+            )
             .await?;
         let mut work = listing.work;
         let page = listing.value;
@@ -8812,6 +10349,53 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 }
 
+async fn stage_content_for_volume<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    R: AsyncBlobSource,
+>(
+    volume: &Volume<A, O>,
+    source: &mut R,
+    maximum_source_bytes: u64,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> FsResult<StagedContent> {
+    if maximum_source_bytes == 0
+        || maximum_source_bytes > volume.config.limits.maximum_generation_bytes
+    {
+        return Err(OperationFailure::before_work(FsError::FileRead(
+            FileRangeReadError::InvalidRange,
+        )));
+    }
+    let chunk_bytes = u32::try_from(volume.config.limits.maximum_object_bytes.min(1024 * 1024))
+        .unwrap_or(u32::MAX)
+        .max(1);
+    let page_bytes = u32::try_from(volume.config.limits.maximum_object_bytes)
+        .unwrap_or(u32::MAX)
+        .max(1);
+    let blob = build_blob_async(
+        &volume.fs.inner.objects,
+        source,
+        BlobBuildOptions {
+            chunk_bytes,
+            page_items: volume.config.limits.maximum_directory_page_entries,
+            page_bytes,
+            maximum_blob_bytes: maximum_source_bytes,
+        },
+        budget,
+        cancellation,
+    )
+    .await
+    .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+    Ok(FsReceipt {
+        value: StagedContent {
+            root: blob.root,
+            logical_bytes: blob.logical_bytes,
+        },
+        work: blob.work,
+    })
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     /// Stable file identity retained across last-link removal.
     #[must_use]
@@ -9289,33 +10873,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         }
         let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX).max(1);
         let mut source = std::io::Cursor::new(bytes);
-        let blob = build_blob_async(
-            &self.volume.fs.inner.objects,
+        let staged = stage_content_for_volume(
+            &self.volume,
             &mut source,
-            BlobBuildOptions {
-                chunk_bytes: u32::try_from(
-                    self.volume
-                        .config
-                        .limits
-                        .maximum_object_bytes
-                        .min(1024 * 1024),
-                )
-                .unwrap_or(u32::MAX)
-                .max(1),
-                page_items: self.volume.config.limits.maximum_directory_page_entries,
-                page_bytes: u32::try_from(self.volume.config.limits.maximum_object_bytes)
-                    .unwrap_or(u32::MAX)
-                    .max(1),
-                maximum_blob_bytes,
-            },
+            maximum_blob_bytes,
             budget,
             cancellation,
         )
-        .await
-        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+        .await?;
         Ok(FsReceipt {
-            work: blob.work,
-            value: blob,
+            work: staged.work,
+            value: crate::kernel::BlobBuild {
+                root: staged.value.root,
+                logical_bytes: staged.value.logical_bytes,
+                work: staged.work,
+            },
         })
     }
 
@@ -9383,37 +10955,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         }
         let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let mut source = std::io::Cursor::new(bytes);
-        let blob = build_blob_async(
-            &self.volume.fs.inner.objects,
+        let blob = stage_content_for_volume(
+            &self.volume,
             &mut source,
-            BlobBuildOptions {
-                chunk_bytes: u32::try_from(
-                    self.volume
-                        .config
-                        .limits
-                        .maximum_object_bytes
-                        .min(1024 * 1024),
-                )
-                .unwrap_or(u32::MAX)
-                .max(1),
-                page_items: self.volume.config.limits.maximum_directory_page_entries,
-                page_bytes: u32::try_from(self.volume.config.limits.maximum_object_bytes)
-                    .unwrap_or(u32::MAX)
-                    .max(1),
-                maximum_blob_bytes,
-            },
+            maximum_blob_bytes,
             budget,
             cancellation,
         )
-        .await
-        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+        .await?;
         let mut work = blob.work;
         let mutation = self
             .mutate_regular(
                 RegularMutation::Write {
                     offset,
-                    length: blob.logical_bytes,
-                    content: blob.root,
+                    length: blob.value.logical_bytes,
+                    content: blob.value.root,
                     content_offset: 0,
                 },
                 remaining(work, budget)?,
@@ -9578,6 +11134,10 @@ fn exact_mutation_regions(
     let mut regions = [None, None, None, None];
     match mutation {
         Mutation::Create { .. } | Mutation::Link { .. } => {}
+        Mutation::Restore { .. } => {
+            regions[0] =
+                first.map(|record| (Some(record), DependencyRegion::FileRecord(record.file_id)));
+        }
         Mutation::Remove { .. } => {
             regions[0] =
                 first.map(|record| (Some(record), DependencyRegion::FileRecord(record.file_id)));

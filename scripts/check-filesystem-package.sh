@@ -27,20 +27,45 @@ fi
 grep -q 'ENOENT' "$work/missing-wasm.log"
 
 cd "$root"
-# Cargo stages this public dependency closure together, then verifies each extracted crate.
-# No source-path dependency or private registry is substituted into consumer manifests.
-cargo package --locked --all-features -p acyclic-objects -p acyclic-stream -p acyclic-fs
-archives="$(cargo metadata --locked --no-deps --format-version 1 | bun -e '
+# Stage the exact dependency closure. The higher crates cannot be registry-verified
+# until the native runtime is published, so verify the extracted archives together.
+metadata="$(cargo metadata --locked --no-deps --format-version 1)"
+package_target="$work/package-target"
+cargo package --locked --all-features --no-verify --allow-dirty --target-dir "$package_target" \
+  -p acyclic-native-runtime -p acyclic-objects -p acyclic-stream -p acyclic-fs
+archives="$(printf '%s' "$metadata" | bun -e '
 const metadata = await Bun.stdin.json();
-for (const name of ["acyclic-objects", "acyclic-stream", "acyclic-fs"]) {
+for (const name of ["acyclic-native-runtime", "acyclic-objects", "acyclic-stream", "acyclic-fs"]) {
   const packages = metadata.packages.filter(item => item.name === name);
   if (packages.length !== 1) throw new Error(`ambiguous package ${name}`);
-  console.log(`${metadata.target_directory}/package/${name}-${packages[0].version}.crate`);
+  console.log(`${name}-${packages[0].version}.crate`);
 }')"
+runtime_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-native-runtime").version)')"
+objects_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-objects").version)')"
+stream_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-stream").version)')"
+fs_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-fs").version)')"
+mkdir "$work/crates"
+while IFS= read -r archive; do
+  tar -xf "$package_target/package/$archive" -C "$work/crates"
+done <<< "$archives"
+mkdir -p "$work/crates/.cargo"
+runtime_path="$work/crates/acyclic-native-runtime-$runtime_version"
+objects_path="$work/crates/acyclic-objects-$objects_version"
+stream_path="$work/crates/acyclic-stream-$stream_version"
+cat >"$work/crates/.cargo/config.toml" <<EOF
+[patch.crates-io]
+acyclic-native-runtime = { path = "$runtime_path" }
+acyclic-objects = { path = "$objects_path" }
+acyclic-stream = { path = "$stream_path" }
+EOF
+(
+  cd "$work/crates/acyclic-fs-$fs_version"
+  cargo test --all-features --offline --target-dir "$work/verify-target" --no-run
+)
 mkdir -p "$output"
 install -m 0644 "$work/acyclic-fs.tgz" "$output/acyclic-fs.tgz"
 while IFS= read -r archive; do
-  install -m 0644 "$archive" "$output/"
+  install -m 0644 "$package_target/package/$archive" "$output/"
 done <<< "$archives"
 cd "$output"
 sha256sum acyclic-fs.tgz acyclic-*.crate > SHA256SUMS

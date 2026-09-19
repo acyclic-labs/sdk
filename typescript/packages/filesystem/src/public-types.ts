@@ -15,6 +15,7 @@ export type {
   EngineCapabilities,
   FileRecordChange,
   FileRecordSnapshot,
+  FileReadResult,
   FsChangeSet,
   FsCheckout,
   FsEngine,
@@ -67,6 +68,8 @@ export type {
   ObjectCacheOptions,
   ObjectCacheStats,
   RebaseResult,
+  ResolvedFile,
+  ResolvedFilesResult,
   S3Access,
   S3AccessKeyId,
   S3Bucket,
@@ -94,3 +97,5 @@ export type {
   WatchCaptureResult,
   WatchReconcileResult,
 } from "./contracts.js";
+
+export type * from "./compat.js";

@@ -7,8 +7,9 @@ use crate::model::FilesystemProfile;
 use crate::native_host::{HostDataRange, HostRoot, allocated_data_ranges};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, Checkout,
-    NativeRootIdentity, OperationFailure, OperationReceipt, StagedContent, WatchBatch, WatchChange,
-    WatchEpoch, WatchInvalidationReason, WatchSequence, WorkBudget, WorkCounters, WorkError,
+    ContentStager, NativeRootIdentity, OperationFailure, OperationReceipt, StagedContent,
+    WatchBatch, WatchChange, WatchEpoch, WatchInvalidationReason, WatchSequence, WorkBudget,
+    WorkCounters, WorkError,
 };
 
 /// Returns the stable identity of a no-follow, capability-held capture root.
@@ -38,6 +39,149 @@ pub struct CaptureOptions {
     pub maximum_paths: u32,
     /// Maximum physically allocated host ranges admitted per regular file.
     pub maximum_extent_spans: u32,
+}
+
+/// Canonical path eligibility for native capture.
+///
+/// Excluded prefixes are omitted symmetrically from host discovery, checkout
+/// discovery, explicit capture, and watcher reconciliation. An excluded
+/// checkout path is therefore never mistaken for a host-side deletion.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CapturePolicy {
+    excluded_prefixes: Vec<NamespacePath>,
+}
+
+impl CapturePolicy {
+    /// Admits every path.
+    #[must_use]
+    pub const fn allow_all() -> Self {
+        Self {
+            excluded_prefixes: Vec::new(),
+        }
+    }
+
+    /// Creates a policy from canonical namespace prefixes.
+    ///
+    /// Redundant descendants are removed so equivalent policies have one
+    /// stable fingerprint. The volume root cannot be excluded.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an attempt to exclude the complete capture root.
+    pub fn excluding(mut prefixes: Vec<NamespacePath>) -> Result<Self, CaptureError> {
+        if prefixes.iter().any(NamespacePath::is_root) {
+            return Err(CaptureError::InvalidOptions);
+        }
+        prefixes.sort();
+        prefixes.dedup();
+        let mut canonical = Vec::<NamespacePath>::new();
+        for prefix in prefixes {
+            if canonical
+                .last()
+                .is_some_and(|ancestor| prefix.is_within(ancestor))
+            {
+                continue;
+            }
+            canonical.push(prefix);
+        }
+        Ok(Self {
+            excluded_prefixes: canonical,
+        })
+    }
+
+    /// Returns whether a path is excluded by an exact prefix.
+    #[must_use]
+    pub fn excludes(&self, path: &NamespacePath) -> bool {
+        let candidate = self
+            .excluded_prefixes
+            .partition_point(|prefix| prefix <= path)
+            .checked_sub(1)
+            .and_then(|index| self.excluded_prefixes.get(index));
+        candidate.is_some_and(|prefix| path.is_within(prefix))
+    }
+
+    /// Stable semantic identity used by durable source binding.
+    #[must_use]
+    pub fn fingerprint(&self) -> crate::foundation::Digest {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"acyclic-fs-capture-policy-v1\0");
+        for prefix in &self.excluded_prefixes {
+            hasher.update(&(prefix.depth() as u64).to_le_bytes());
+            for component in prefix.components() {
+                hasher.update(&[match component.encoding() {
+                    NameEncoding::Utf8 => 1,
+                    NameEncoding::PosixBytes => 2,
+                    NameEncoding::WindowsUtf16Le => 3,
+                }]);
+                hasher.update(&(component.as_bytes().len() as u64).to_le_bytes());
+                hasher.update(component.as_bytes());
+            }
+        }
+        crate::foundation::Digest::from_bytes(*hasher.finalize().as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod capture_policy_tests {
+    use super::*;
+
+    fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
+        let limits = crate::model::VolumeLimits::default();
+        Ok(NamespacePath::from_portable(
+            &crate::path::PortablePath::parse(value, limits)?,
+            limits,
+        )?)
+    }
+
+    #[test]
+    fn canonical_policy_uses_the_nearest_sorted_prefix() -> Result<(), Box<dyn std::error::Error>> {
+        let policy = CapturePolicy::excluding(vec![
+            path("/z/private/nested")?,
+            path("/a/cache")?,
+            path("/z/private")?,
+            path("/a/cache/deeper")?,
+            path("/m")?,
+        ])?;
+
+        assert_eq!(
+            policy.excluded_prefixes,
+            vec![path("/a/cache")?, path("/m")?, path("/z/private")?]
+        );
+        assert!(policy.excludes(&path("/a/cache/object")?));
+        assert!(policy.excludes(&path("/m")?));
+        assert!(policy.excludes(&path("/z/private/nested/object")?));
+        assert!(!policy.excludes(&path("/a/cached")?));
+        assert!(!policy.excludes(&path("/n")?));
+        assert!(!policy.excludes(&path("/z/public")?));
+        Ok(())
+    }
+
+    #[test]
+    fn subtree_roots_collapse_duplicates_and_descendants() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let policy = CapturePolicy::excluding(vec![path("/excluded")?])?;
+        assert_eq!(
+            canonical_subtree_roots(
+                &[
+                    path("/z/child")?,
+                    path("/a")?,
+                    path("/z")?,
+                    path("/a")?,
+                    path("/excluded/child")?,
+                ],
+                &policy,
+            ),
+            vec![path("/a")?, path("/z")?]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn combined_host_and_checkout_paths_share_one_limit() {
+        assert!(!combined_path_count_exceeds(2, 1, 3));
+        assert!(combined_path_count_exceeds(2, 2, 3));
+        assert!(combined_path_count_exceeds(usize::MAX, 1, usize::MAX));
+    }
 }
 
 /// Successful authored host-state capture.
@@ -108,7 +252,11 @@ pub enum CaptureError {
 /// transaction.
 ///
 /// Regular files stream directly into immutable chunks; their complete bodies
-/// are never retained in memory. Missing host paths become removals only when
+/// are never retained in memory. Before applying the transaction, capture
+/// rechecks the path and open handle against the observed host metadata.
+/// This is not an atomic host snapshot: callers that need one must quiesce
+/// the source or reconcile changes through a native watcher. Missing host
+/// paths become removals only when
 /// the checkout currently contains the path. Existing paths are replaced only
 /// when kind changes; same-kind regular files preserve stable file identity.
 /// Watch notifications are suitable inputs because they are treated only as
@@ -127,11 +275,32 @@ pub async fn capture_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    capture_paths_with_policy(
+        checkout,
+        paths,
+        options,
+        &CapturePolicy::allow_all(),
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+/// Captures eligible paths under an exact, symmetric path policy.
+pub async fn capture_paths_with_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    paths: &[NamespacePath],
+    options: &CaptureOptions,
+    policy: &CapturePolicy,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     validate_path_count(paths, options).map_err(OperationFailure::before_work)?;
     let source_root = open_source_root(options).map_err(OperationFailure::before_work)?;
     capture_paths_from_root(
         checkout,
         paths,
+        policy,
         options.maximum_extent_spans,
         &source_root,
         budget,
@@ -140,21 +309,210 @@ pub async fn capture_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     .await
 }
 
+/// Reconciles one host directory and every descendant as one authored
+/// transaction. Both host and checkout descendants are included so removals
+/// inside a replaced imported tree are exact.
+pub async fn capture_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    root: NamespacePath,
+    options: &CaptureOptions,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    capture_subtrees_with_policy(
+        checkout,
+        &[root],
+        options,
+        &CapturePolicy::allow_all(),
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+/// Reconciles one eligible host subtree under an exact path policy.
+pub async fn capture_subtree_with_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    root: NamespacePath,
+    options: &CaptureOptions,
+    policy: &CapturePolicy,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    capture_subtrees_with_policy(checkout, &[root], options, policy, budget, cancellation).await
+}
+
+/// Reconciles eligible disjoint host subtrees as one authored transaction.
+///
+/// Redundant descendants and duplicate roots are removed before any host or
+/// checkout work. The remaining roots share one capability root, one batched
+/// checkout lookup, and one atomic mutation transaction.
+pub async fn capture_subtrees_with_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    roots: &[NamespacePath],
+    options: &CaptureOptions,
+    policy: &CapturePolicy,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
+        return Err(OperationFailure::before_work(CaptureError::InvalidOptions));
+    }
+    let source_root = open_source_root(options).map_err(OperationFailure::before_work)?;
+    cancellation
+        .check()
+        .map_err(|error| OperationFailure::before_work(CaptureError::Engine(error.to_string())))?;
+    let canonical = canonical_subtree_roots(roots, policy);
+    if canonical.is_empty() {
+        return Ok(OperationReceipt {
+            value: CaptureReceipt::default(),
+            work: WorkCounters::default(),
+        });
+    }
+    let limits = checkout.volume_config().limits;
+    let maximum = usize::try_from(options.maximum_paths)
+        .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
+    let profile = checkout.volume_config().profile;
+    let mut observed = BTreeMap::new();
+    let mut paths = canonical.iter().cloned().collect::<BTreeSet<_>>();
+    let mut work = WorkCounters::default();
+    collect_host_subtree_roots(
+        &source_root,
+        profile,
+        limits,
+        maximum,
+        &canonical,
+        policy,
+        &mut observed,
+        &mut work,
+        budget,
+        cancellation,
+    )?;
+    let remaining = work
+        .remaining(budget)
+        .map_err(|error| OperationFailure::new(CaptureError::Work(error), work))?;
+    let current = checkout
+        .lookup_batch_no_follow(&canonical, remaining, cancellation)
+        .await
+        .map_err(|failure| map_engine_failure(failure, work))?;
+    work = add_work(work, current.work)?;
+    for (root, entry) in canonical.into_iter().zip(current.value.entries) {
+        if entry
+            .record
+            .is_some_and(|record| record.kind == FileKind::Directory)
+        {
+            collect_checkout_subtree_paths(
+                checkout,
+                limits,
+                maximum,
+                root,
+                policy,
+                &mut paths,
+                &mut work,
+                budget,
+                cancellation,
+            )
+            .await?;
+        }
+    }
+    let ordered = order_host_checkout_union(observed, paths, maximum)
+        .map_err(|error| OperationFailure::new(error, work))?;
+    let remaining = work
+        .remaining(budget)
+        .map_err(|error| OperationFailure::new(CaptureError::Work(error), work))?;
+    let mut captured = capture_observed_paths_from_root(
+        checkout,
+        ordered,
+        options.maximum_extent_spans,
+        &source_root,
+        remaining,
+        cancellation,
+    )
+    .await
+    .map_err(|failure| map_capture_failure(failure, work))?;
+    let combined = add_work(work, captured.work)?;
+    captured.value.work = combined;
+    Ok(OperationReceipt {
+        value: captured.value,
+        work: combined,
+    })
+}
+
+fn canonical_subtree_roots(roots: &[NamespacePath], policy: &CapturePolicy) -> Vec<NamespacePath> {
+    let mut sorted = roots
+        .iter()
+        .filter(|root| !policy.excludes(root))
+        .cloned()
+        .collect::<Vec<_>>();
+    sorted.sort();
+    sorted.dedup();
+    let mut canonical = Vec::<NamespacePath>::new();
+    for root in sorted {
+        if canonical
+            .last()
+            .is_none_or(|ancestor| !root.is_within(ancestor))
+        {
+            canonical.push(root);
+        }
+    }
+    canonical
+}
+
 async fn capture_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     paths: &[NamespacePath],
+    policy: &CapturePolicy,
     maximum_extent_spans: u32,
     source_root: &HostRoot,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
-    let mut ordered = paths.to_vec();
-    ordered.sort_by(|left, right| {
-        let left_present =
-            relative_host_path(left).is_ok_and(|path| source_root.symlink_metadata(&path).is_ok());
-        let right_present =
-            relative_host_path(right).is_ok_and(|path| source_root.symlink_metadata(&path).is_ok());
-        match (left_present, right_present) {
+    let mut unique = paths
+        .iter()
+        .filter(|path| !policy.excludes(path))
+        .cloned()
+        .collect::<Vec<_>>();
+    unique.sort();
+    if unique
+        .windows(2)
+        .any(|pair| matches!(pair, [left, right] if left == right))
+    {
+        return Err(OperationFailure::before_work(CaptureError::InvalidOptions));
+    }
+    capture_unique_paths_from_root(
+        checkout,
+        unique,
+        maximum_extent_spans,
+        source_root,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+async fn capture_unique_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    unique: Vec<NamespacePath>,
+    maximum_extent_spans: u32,
+    source_root: &HostRoot,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    // A comparator must not inspect a changing host tree: one path could
+    // otherwise alternate between present and absent during the sort. This
+    // also reduces host metadata probes from O(paths * log paths) to O(paths).
+    let mut ordered = unique
+        .into_iter()
+        .map(|path| {
+            let observation = namespace_to_host_path(&path)
+                .ok()
+                .and_then(|host_path| source_root.symlink_metadata(&host_path).ok())
+                .map(HostObservation::from_metadata);
+            (observation, path)
+        })
+        .collect::<Vec<_>>();
+    ordered.sort_by(|(left_observation, left), (right_observation, right)| {
+        match (left_observation.is_some(), right_observation.is_some()) {
             (true, true) => left
                 .depth()
                 .cmp(&right.depth())
@@ -167,24 +525,75 @@ async fn capture_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             (false, true) => std::cmp::Ordering::Greater,
         }
     });
-    ordered.dedup();
-    if ordered.len() != paths.len() {
-        return Err(OperationFailure::before_work(CaptureError::InvalidOptions));
-    }
+    capture_observed_paths_from_root(
+        checkout,
+        ordered,
+        maximum_extent_spans,
+        source_root,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    ordered: Vec<(Option<HostObservation>, NamespacePath)>,
+    maximum_extent_spans: u32,
+    source_root: &HostRoot,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let mut receipt = CaptureReceipt::default();
     let mut mutations = Vec::new();
+    let mut host_links = BTreeMap::new();
     mutations
-        .try_reserve(paths.len().saturating_mul(3))
+        .try_reserve(ordered.len().saturating_mul(3))
         .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
 
-    for path in ordered {
+    let mut observations = Vec::new();
+    let mut paths = Vec::new();
+    observations
+        .try_reserve(ordered.len())
+        .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
+    paths
+        .try_reserve(ordered.len())
+        .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
+    for (observation, path) in ordered {
+        observations.push(observation);
+        paths.push(path);
+    }
+    let current = if paths.is_empty() {
+        Vec::new()
+    } else {
+        let remaining = receipt
+            .work
+            .remaining(budget)
+            .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
+        let lookup = checkout
+            .lookup_batch_no_follow(&paths, remaining, cancellation)
+            .await
+            .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+        receipt.work = add_work(receipt.work, lookup.work)?;
+        lookup
+            .value
+            .entries
+            .into_iter()
+            .map(|entry| entry.record)
+            .collect()
+    };
+
+    for ((observation, path), current) in observations.into_iter().zip(paths).zip(current) {
         capture_final_path(
             checkout,
             path,
-            CurrentRecord::Lookup,
+            CurrentRecord::Known(current),
             CaptureIntent::Complete,
             maximum_extent_spans,
             source_root,
+            observation,
+            &mut host_links,
+            None,
             &mut mutations,
             &mut receipt,
             budget,
@@ -225,6 +634,24 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    capture_baseline_with_policy(
+        checkout,
+        options,
+        &CapturePolicy::allow_all(),
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+/// Captures a complete eligible baseline under an exact path policy.
+pub async fn capture_baseline_with_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    options: &CaptureOptions,
+    policy: &CapturePolicy,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     if checkout.has_pending_mutations() {
         return Err(OperationFailure::before_work(CaptureError::DirtyCheckout));
     }
@@ -238,12 +665,12 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
     let mut paths = BTreeSet::new();
     let mut work = WorkCounters::default();
-    collect_host_paths(
+    let observed = collect_host_observations(
         &source_root,
         profile,
         limits,
         maximum,
-        &mut paths,
+        policy,
         &mut work,
         budget,
         cancellation,
@@ -252,19 +679,21 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         checkout,
         limits,
         maximum,
+        policy,
         &mut paths,
         &mut work,
         budget,
         cancellation,
     ))
     .await?;
-    let paths = paths.into_iter().collect::<Vec<_>>();
+    let ordered = order_host_checkout_union(observed, paths, maximum)
+        .map_err(|error| OperationFailure::new(error, work))?;
     let remaining = work
         .remaining(budget)
         .map_err(|error| OperationFailure::new(CaptureError::Work(error), work))?;
-    let mut captured = Box::pin(capture_paths_from_root(
+    let mut captured = Box::pin(capture_observed_paths_from_root(
         checkout,
-        &paths,
+        ordered,
         options.maximum_extent_spans,
         &source_root,
         remaining,
@@ -281,30 +710,212 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn collect_host_paths(
+fn collect_host_observations(
     root: &HostRoot,
     profile: FilesystemProfile,
     limits: crate::model::VolumeLimits,
     maximum: usize,
-    paths: &mut BTreeSet<NamespacePath>,
+    policy: &CapturePolicy,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<BTreeMap<NamespacePath, HostObservation>, OperationFailure<CaptureError>> {
+    let mut observed = BTreeMap::new();
+    let volume_root = NamespacePath::new(Vec::new(), limits)
+        .map_err(|error| OperationFailure::before_work(CaptureError::Engine(error.to_string())))?;
+    let mut pending = vec![(PathBuf::new(), volume_root)];
+    while let Some((host_parent, volume_parent)) = pending.pop() {
+        cancellation.check().map_err(|error| {
+            OperationFailure::new(CaptureError::Engine(error.to_string()), *work)
+        })?;
+        for entry in root
+            .read_dir(&host_parent)
+            .map_err(|error| OperationFailure::new(error.into(), *work))?
+        {
+            let entry = entry.map_err(|error| OperationFailure::new(error.into(), *work))?;
+            let child = append_path(
+                &volume_parent,
+                logical_host_name(&entry.file_name(), profile, limits)
+                    .map_err(|error| OperationFailure::new(error, *work))?,
+                limits,
+            )
+            .map_err(|error| OperationFailure::new(error, *work))?;
+            if policy.excludes(&child) {
+                continue;
+            }
+            let host_child = host_parent.join(entry.file_name());
+            let metadata = root
+                .symlink_metadata(&host_child)
+                .map_err(|error| OperationFailure::new(error.into(), *work))?;
+            let file_type = metadata.file_type();
+            insert_host_observation(
+                &mut observed,
+                child.clone(),
+                metadata,
+                maximum,
+                work,
+                budget,
+            )?;
+            if file_type.is_dir() && !file_type.is_symlink() {
+                pending.push((host_child, child));
+            }
+        }
+    }
+    Ok(observed)
+}
+
+fn order_host_checkout_union(
+    observed: BTreeMap<NamespacePath, HostObservation>,
+    mut checkout_paths: BTreeSet<NamespacePath>,
+    maximum: usize,
+) -> Result<Vec<(Option<HostObservation>, NamespacePath)>, CaptureError> {
+    for path in observed.keys() {
+        checkout_paths.remove(path);
+    }
+    if combined_path_count_exceeds(observed.len(), checkout_paths.len(), maximum) {
+        return Err(CaptureError::InvalidOptions);
+    }
+    let mut ordered = observed
+        .into_iter()
+        .map(|(path, observation)| (Some(observation), path))
+        .collect::<Vec<_>>();
+    ordered.sort_by(|(_, left), (_, right)| {
+        left.depth()
+            .cmp(&right.depth())
+            .then_with(|| left.cmp(right))
+    });
+    let mut absent = checkout_paths.into_iter().collect::<Vec<_>>();
+    absent.sort_by(|left, right| {
+        right
+            .depth()
+            .cmp(&left.depth())
+            .then_with(|| left.cmp(right))
+    });
+    ordered.extend(absent.into_iter().map(|path| (None, path)));
+    Ok(ordered)
+}
+
+fn combined_path_count_exceeds(observed: usize, checkout_only: usize, maximum: usize) -> bool {
+    observed
+        .checked_add(checkout_only)
+        .is_none_or(|combined| combined > maximum)
+}
+
+fn insert_host_observation(
+    observed: &mut BTreeMap<NamespacePath, HostObservation>,
+    path: NamespacePath,
+    metadata: cap_std::fs::Metadata,
+    maximum: usize,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+) -> Result<(), OperationFailure<CaptureError>> {
+    let encoded_bytes = u64::from(path.encoded_bytes());
+    observed.insert(path, HostObservation::from_metadata(metadata));
+    if observed.len() > maximum {
+        return Err(OperationFailure::new(CaptureError::InvalidOptions, *work));
+    }
+    *work = add_work(
+        *work,
+        WorkCounters {
+            bytes_copied: encoded_bytes,
+            items_examined: 1,
+            allocation_operations: 1,
+            peak_allocation_bytes: encoded_bytes,
+            ..WorkCounters::default()
+        },
+    )?;
+    work.verify(budget)
+        .map_err(|error| OperationFailure::new(CaptureError::Work(error), *work))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_host_subtree_roots(
+    source_root: &HostRoot,
+    profile: FilesystemProfile,
+    limits: crate::model::VolumeLimits,
+    maximum: usize,
+    roots: &[NamespacePath],
+    policy: &CapturePolicy,
+    observed: &mut BTreeMap<NamespacePath, HostObservation>,
     work: &mut WorkCounters,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure<CaptureError>> {
-    let volume_root = NamespacePath::new(Vec::new(), limits)
-        .map_err(|error| OperationFailure::before_work(CaptureError::Engine(error.to_string())))?;
-    collect_host_subtree_paths(
-        root,
-        profile,
-        limits,
-        maximum,
-        PathBuf::new(),
-        volume_root,
-        paths,
-        work,
-        budget,
-        cancellation,
-    )
+    for root in roots {
+        let host_root = namespace_to_host_path(root).map_err(OperationFailure::before_work)?;
+        match source_root.symlink_metadata(&host_root) {
+            Ok(metadata) => {
+                let file_type = metadata.file_type();
+                insert_host_observation(observed, root.clone(), metadata, maximum, work, budget)?;
+                if file_type.is_dir() && !file_type.is_symlink() {
+                    collect_host_subtree_observations(
+                        source_root,
+                        profile,
+                        limits,
+                        maximum,
+                        host_root,
+                        root.clone(),
+                        policy,
+                        observed,
+                        work,
+                        budget,
+                        cancellation,
+                    )?;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(OperationFailure::new(error.into(), *work)),
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_host_subtree_observations(
+    root: &HostRoot,
+    profile: FilesystemProfile,
+    limits: crate::model::VolumeLimits,
+    maximum: usize,
+    host_root: PathBuf,
+    volume_root: NamespacePath,
+    policy: &CapturePolicy,
+    observed: &mut BTreeMap<NamespacePath, HostObservation>,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<(), OperationFailure<CaptureError>> {
+    let mut pending = vec![(host_root, volume_root)];
+    while let Some((host_parent, volume_parent)) = pending.pop() {
+        cancellation.check().map_err(|error| {
+            OperationFailure::new(CaptureError::Engine(error.to_string()), *work)
+        })?;
+        for entry in root
+            .read_dir(&host_parent)
+            .map_err(|error| OperationFailure::new(error.into(), *work))?
+        {
+            let entry = entry.map_err(|error| OperationFailure::new(error.into(), *work))?;
+            let child = append_path(
+                &volume_parent,
+                logical_host_name(&entry.file_name(), profile, limits)
+                    .map_err(|error| OperationFailure::new(error, *work))?,
+                limits,
+            )
+            .map_err(|error| OperationFailure::new(error, *work))?;
+            if policy.excludes(&child) {
+                continue;
+            }
+            let host_child = host_parent.join(entry.file_name());
+            let metadata = root
+                .symlink_metadata(&host_child)
+                .map_err(|error| OperationFailure::new(error.into(), *work))?;
+            let file_type = metadata.file_type();
+            insert_host_observation(observed, child.clone(), metadata, maximum, work, budget)?;
+            if file_type.is_dir() && !file_type.is_symlink() {
+                pending.push((host_child, child));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -315,6 +926,7 @@ fn collect_host_subtree_paths(
     maximum: usize,
     host_root: PathBuf,
     volume_root: NamespacePath,
+    policy: &CapturePolicy,
     paths: &mut BTreeSet<NamespacePath>,
     work: &mut WorkCounters,
     budget: WorkBudget,
@@ -334,12 +946,18 @@ fn collect_host_subtree_paths(
                 .map_err(|error| OperationFailure::new(error, *work))?;
             let child = append_path(&volume_parent, name, limits)
                 .map_err(|error| OperationFailure::new(error, *work))?;
+            if policy.excludes(&child) {
+                continue;
+            }
             insert_scanned_path(paths, child.clone(), maximum, work, budget)?;
             let host_child = host_parent.join(entry.file_name());
-            let metadata = root
-                .symlink_metadata(&host_child)
+            // Directory enumeration already supplies a no-follow file kind.
+            // Capture later reopens and validates every selected path; this
+            // probe only decides which descendants need enumeration.
+            let file_type = entry
+                .file_type()
                 .map_err(|error| OperationFailure::new(error.into(), *work))?;
-            if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            if file_type.is_dir() && !file_type.is_symlink() {
                 pending.push((host_child, child));
             }
         }
@@ -352,6 +970,7 @@ async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     limits: crate::model::VolumeLimits,
     maximum: usize,
+    policy: &CapturePolicy,
     paths: &mut BTreeSet<NamespacePath>,
     work: &mut WorkCounters,
     budget: WorkBudget,
@@ -364,6 +983,7 @@ async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         limits,
         maximum,
         root,
+        policy,
         paths,
         work,
         budget,
@@ -378,6 +998,7 @@ async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
     limits: crate::model::VolumeLimits,
     maximum: usize,
     root: NamespacePath,
+    policy: &CapturePolicy,
     paths: &mut BTreeSet<NamespacePath>,
     work: &mut WorkCounters,
     budget: WorkBudget,
@@ -411,6 +1032,9 @@ async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
             for entry in &page.value.entries {
                 let child = append_path(&directory, entry.name.clone(), limits)
                     .map_err(|error| OperationFailure::new(error, *work))?;
+                if policy.excludes(&child) {
+                    continue;
+                }
                 insert_scanned_path(paths, child.clone(), maximum, work, budget)?;
                 if entry.record.kind == FileKind::Directory {
                     pending.push(child);
@@ -475,6 +1099,39 @@ fn logical_host_name(
         .map_err(|error| CaptureError::Engine(error.to_string()))
 }
 
+/// Converts one host-relative path to an exact bounded namespace path.
+///
+/// The supplied profile selects the canonical name encoding. Absolute paths,
+/// parent traversal, platform prefixes, empty paths, and names that cannot be
+/// represented exactly by that profile are rejected.
+///
+/// # Errors
+///
+/// Returns [`CaptureError::UnrepresentablePath`] unless every component can be
+/// represented exactly within `limits`.
+pub fn host_path_to_namespace(
+    path: &std::path::Path,
+    profile: FilesystemProfile,
+    limits: crate::model::VolumeLimits,
+) -> Result<NamespacePath, CaptureError> {
+    use std::path::Component;
+
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(name) => components.push(logical_host_name(name, profile, limits)?),
+            Component::CurDir => {}
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                return Err(CaptureError::UnrepresentablePath);
+            }
+        }
+    }
+    if components.is_empty() {
+        return Err(CaptureError::UnrepresentablePath);
+    }
+    NamespacePath::new(components, limits).map_err(|_| CaptureError::UnrepresentablePath)
+}
+
 /// Atomically captures one contiguous native-watcher batch.
 ///
 /// Paired renames are replayed in watcher order and preserve the exact
@@ -486,7 +1143,8 @@ fn logical_host_name(
 /// # Errors
 ///
 /// Returns [`CaptureError::RescanRequired`] without touching the checkout for
-/// an invalidated watcher epoch. Other failures are the union of exact rename,
+/// an invalidated epoch or a new hard link whose source lies outside the hint
+/// batch. Other failures are the union of exact rename,
 /// host-state capture, cancellation, engine, allocation, and bounded-work
 /// failures from [`capture_paths`].
 #[allow(clippy::too_many_lines)]
@@ -494,6 +1152,27 @@ pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     batch: WatchBatch,
     options: &CaptureOptions,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<WatchCaptureReceipt>, OperationFailure<CaptureError>> {
+    capture_watch_batch_with_policy(
+        checkout,
+        batch,
+        options,
+        &CapturePolicy::allow_all(),
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+/// Captures one watcher batch while omitting excluded paths symmetrically.
+#[allow(clippy::too_many_lines)]
+pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    batch: WatchBatch,
+    options: &CaptureOptions,
+    policy: &CapturePolicy,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<WatchCaptureReceipt>, OperationFailure<CaptureError>> {
@@ -531,7 +1210,18 @@ pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let mut rename_records = BTreeMap::<NamespacePath, FileRecord>::new();
     let mut moved_away = BTreeSet::new();
 
-    for change in changes {
+    for change in changes.into_iter().filter_map(|change| match &change {
+        WatchChange::Created(path)
+        | WatchChange::Modified(path)
+        | WatchChange::Removed(path)
+        | WatchChange::MetadataChanged(path) => (!policy.excludes(path)).then_some(change),
+        WatchChange::Renamed { from, to } => match (policy.excludes(from), policy.excludes(to)) {
+            (false, false) => Some(change),
+            (true, false) => Some(WatchChange::Created(to.clone())),
+            (false, true) => Some(WatchChange::Removed(from.clone())),
+            (true, true) => None,
+        },
+    }) {
         match change {
             WatchChange::Created(path) => {
                 let current = rename_records.get(&path).copied().map_or_else(
@@ -624,12 +1314,40 @@ pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &mut ordinary,
         &source_root,
         options.maximum_paths,
+        policy,
         &mut receipt,
         budget,
         cancellation,
     ))
     .await?;
 
+    let lookup_paths = ordinary
+        .iter()
+        .filter(|(_, (current, _))| matches!(current, CurrentRecord::Lookup))
+        .map(|(path, _)| path.clone())
+        .collect::<Vec<_>>();
+    if !lookup_paths.is_empty() {
+        let remaining = receipt
+            .work
+            .remaining(budget)
+            .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
+        let lookup = checkout
+            .lookup_batch_no_follow(&lookup_paths, remaining, cancellation)
+            .await
+            .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+        receipt.work = add_work(receipt.work, lookup.work)?;
+        for (path, entry) in lookup_paths.into_iter().zip(lookup.value.entries) {
+            let Some((current, _)) = ordinary.get_mut(&path) else {
+                return Err(OperationFailure::new(
+                    CaptureError::Engine("capture lookup path disappeared".into()),
+                    receipt.work,
+                ));
+            };
+            *current = CurrentRecord::Known(entry.record);
+        }
+    }
+
+    let mut host_links = BTreeMap::new();
     for (path, record) in rename_records {
         if ordinary.contains_key(&path) {
             continue;
@@ -641,6 +1359,9 @@ pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             CaptureIntent::Complete,
             options.maximum_extent_spans,
             &source_root,
+            None,
+            &mut host_links,
+            Some(epoch.get()),
             &mut mutations,
             &mut receipt,
             budget,
@@ -651,16 +1372,17 @@ pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let mut ordinary = ordinary
         .into_iter()
         .map(|(path, (current, intent))| {
-            let host_path = relative_host_path(&path)?;
-            let exists = match source_root.symlink_metadata(&host_path) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-                Ok(_) | Err(_) => true,
+            let host_path = namespace_to_host_path(&path)?;
+            let observation = match source_root.symlink_metadata(&host_path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(_) => None,
+                Ok(metadata) => Some(HostObservation::from_metadata(metadata)),
             };
-            Ok((path, current, intent, exists))
+            Ok((path, current, intent, observation))
         })
         .collect::<Result<Vec<_>, CaptureError>>()
         .map_err(|error| OperationFailure::new(error, receipt.work))?;
-    ordinary.sort_by(|left, right| match (left.3, right.3) {
+    ordinary.sort_by(|left, right| match (left.3.is_some(), right.3.is_some()) {
         (true, true) => left
             .0
             .depth()
@@ -674,7 +1396,7 @@ pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
     });
-    for (path, current, intent, _exists) in ordinary {
+    for (path, current, intent, observation) in ordinary {
         capture_final_path(
             checkout,
             path,
@@ -682,6 +1404,9 @@ pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             intent,
             options.maximum_extent_spans,
             &source_root,
+            observation,
+            &mut host_links,
+            Some(epoch.get()),
             &mut mutations,
             &mut receipt,
             budget,
@@ -720,6 +1445,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     ordinary: &mut BTreeMap<NamespacePath, (CurrentRecord, CaptureIntent)>,
     source_root: &HostRoot,
     maximum_paths: u32,
+    policy: &CapturePolicy,
     receipt: &mut CaptureReceipt,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -737,7 +1463,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let roots = ordinary
         .keys()
         .filter_map(|path| {
-            let host_path = relative_host_path(path).ok()?;
+            let host_path = namespace_to_host_path(path).ok()?;
             source_root
                 .symlink_metadata(&host_path)
                 .ok()
@@ -754,6 +1480,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             maximum,
             host_path,
             volume_path.clone(),
+            policy,
             &mut paths,
             &mut receipt.work,
             budget,
@@ -778,6 +1505,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 limits,
                 maximum,
                 volume_path,
+                policy,
                 &mut paths,
                 &mut receipt.work,
                 budget,
@@ -795,6 +1523,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn capture_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     path: NamespacePath,
@@ -802,6 +1531,9 @@ async fn capture_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     intent: CaptureIntent,
     maximum_extent_spans: u32,
     source_root: &HostRoot,
+    observation: Option<HostObservation>,
+    host_links: &mut BTreeMap<[u8; 16], NamespacePath>,
+    watch_epoch: Option<u64>,
     mutations: &mut Vec<AuthoredMutation>,
     receipt: &mut CaptureReceipt,
     budget: WorkBudget,
@@ -810,8 +1542,8 @@ async fn capture_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     cancellation.check().map_err(|error| {
         OperationFailure::new(CaptureError::Engine(error.to_string()), receipt.work)
     })?;
-    let host_path =
-        relative_host_path(&path).map_err(|error| OperationFailure::new(error, receipt.work))?;
+    let host_path = namespace_to_host_path(&path)
+        .map_err(|error| OperationFailure::new(error, receipt.work))?;
     let current = match current {
         CurrentRecord::Known(record) => record,
         CurrentRecord::Lookup => {
@@ -827,9 +1559,60 @@ async fn capture_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             lookup.value.record
         }
     };
-    match source_root.symlink_metadata(&host_path) {
-        Ok(metadata) => {
+    let metadata = observation.map_or_else(
+        || {
+            source_root
+                .symlink_metadata(&host_path)
+                .map(HostObservation::from_metadata)
+        },
+        Ok,
+    );
+    match metadata {
+        Ok(observation) => {
+            let metadata = observation.metadata;
             let host_kind = host_kind(&metadata)?;
+            let snapshot = HostSnapshot::from_metadata(&metadata)
+                .map_err(|error| OperationFailure::new(error, receipt.work))?;
+            let link_probe =
+                if host_kind == FileKind::Regular && checkout.volume_config().hard_links {
+                    host_link_count(source_root, &host_path, &snapshot, &metadata)
+                        .map_err(|error| OperationFailure::new(error, receipt.work))?
+                } else {
+                    HostLinkProbe::unlinked()
+                };
+            let linked_regular = link_probe.count > 1;
+            if linked_regular {
+                let identity = snapshot.identity.to_bytes();
+                if let Some(source) = host_links.get(&identity) {
+                    ensure_current_host_node(source_root, &host_path, &snapshot)
+                        .map_err(|error| OperationFailure::new(error, receipt.work))?;
+                    if let Some(record) = current {
+                        mutations.push(AuthoredMutation::Remove {
+                            path: path.clone(),
+                            expected_file_id: Some(record.file_id),
+                        });
+                    }
+                    mutations.push(AuthoredMutation::HardLink {
+                        source: source.clone(),
+                        destination: path,
+                    });
+                    receipt.changed_paths = checked_increment(receipt.changed_paths, receipt.work)?;
+                    receipt.examined_paths =
+                        checked_increment(receipt.examined_paths, receipt.work)?;
+                    return Ok(());
+                }
+                if let Some(epoch) = watch_epoch {
+                    // An existing alias may lie outside this hint batch.
+                    // Rebaseline instead of recording a second FileId.
+                    return Err(OperationFailure::new(
+                        CaptureError::RescanRequired {
+                            epoch,
+                            reason: WatchInvalidationReason::NativeRescanRequired,
+                        },
+                        receipt.work,
+                    ));
+                }
+            }
             // A created hint replaces same-kind regular files with a fresh
             // identity, but a directory that is still a directory keeps its
             // identity: its replacement cannot be expressed as one remove
@@ -852,7 +1635,7 @@ async fn capture_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             let mut canonical_metadata = if host_kind == FileKind::SymbolicLink {
                 unrestorable_metadata()
             } else {
-                capture_metadata(&metadata)
+                snapshot.metadata
             };
             if let Some(record) = current.filter(|record| {
                 exists_with_kind && record.kind == host_kind && host_kind != FileKind::SymbolicLink
@@ -867,7 +1650,10 @@ async fn capture_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 receipt.work = add_work(receipt.work, prior.work)?;
                 canonical_metadata = preserve_unobserved_metadata(canonical_metadata, prior.value);
             }
+            let linked_path = path.clone();
             if intent == CaptureIntent::MetadataOnly && exists_with_kind {
+                ensure_current_host_node(source_root, &host_path, &snapshot)
+                    .map_err(|error| OperationFailure::new(error, receipt.work))?;
                 mutations.push(AuthoredMutation::SetMetadata {
                     path,
                     metadata: canonical_metadata,
@@ -880,6 +1666,8 @@ async fn capture_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     source_root,
                     host_path,
                     metadata,
+                    snapshot,
+                    link_probe.file,
                     host_kind,
                     exists_with_kind,
                     canonical_metadata,
@@ -891,6 +1679,9 @@ async fn capture_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .await?;
             }
             receipt.changed_paths = checked_increment(receipt.changed_paths, receipt.work)?;
+            if linked_regular {
+                host_links.insert(snapshot.identity.to_bytes(), linked_path);
+            }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             if let Some(record) = current {
@@ -946,6 +1737,8 @@ async fn append_final_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     source_root: &HostRoot,
     host_path: PathBuf,
     metadata: cap_std::fs::Metadata,
+    snapshot: HostSnapshot,
+    opened_file: Option<cap_std::fs::File>,
     kind: FileKind,
     exists_with_kind: bool,
     canonical_metadata: FileMetadata,
@@ -962,6 +1755,8 @@ async fn append_final_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 maximum_extent_spans,
                 source_root,
                 &host_path,
+                &snapshot,
+                opened_file,
                 exists_with_kind,
                 canonical_metadata,
                 mutations,
@@ -1017,6 +1812,8 @@ async fn append_final_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             ));
         }
     }
+    ensure_current_host_node(source_root, &host_path, &snapshot)
+        .map_err(|error| OperationFailure::new(error, receipt.work))?;
     Ok(())
 }
 
@@ -1027,6 +1824,8 @@ async fn append_regular_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     maximum_extent_spans: u32,
     source_root: &HostRoot,
     host_path: &Path,
+    snapshot: &HostSnapshot,
+    opened_file: Option<cap_std::fs::File>,
     exists_with_kind: bool,
     canonical_metadata: FileMetadata,
     mutations: &mut Vec<AuthoredMutation>,
@@ -1034,25 +1833,102 @@ async fn append_regular_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure<CaptureError>> {
-    let mut file = source_root
-        .open_file(host_path)
-        .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+    let staged = stage_regular_body(
+        &checkout.content_stager(),
+        source_root,
+        host_path,
+        snapshot,
+        opened_file,
+        maximum_extent_spans,
+        receipt.work,
+        budget,
+        cancellation,
+    )
+    .await?;
+    receipt.work = add_work(receipt.work, staged.content.work)?;
+    receipt.staged_file_bytes = receipt
+        .staged_file_bytes
+        .checked_add(staged.content.bytes)
+        .ok_or_else(|| {
+            OperationFailure::new(CaptureError::Work(WorkError::Overflow), receipt.work)
+        })?;
+    append_staged_regular_state(
+        path,
+        staged.logical_bytes,
+        exists_with_kind,
+        canonical_metadata,
+        staged.content.ranges,
+        mutations,
+    );
+    Ok(())
+}
+
+struct StagedRegularBody {
+    logical_bytes: u64,
+    content: StagedHostRanges,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    stager: &ContentStager<A, O>,
+    source_root: &HostRoot,
+    host_path: &Path,
+    snapshot: &HostSnapshot,
+    opened_file: Option<cap_std::fs::File>,
+    maximum_extent_spans: u32,
+    prior_work: WorkCounters,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<StagedRegularBody, OperationFailure<CaptureError>> {
+    let mut file = if let Some(file) = opened_file {
+        file
+    } else {
+        source_root
+            .open_file(host_path)
+            .map_err(|error| OperationFailure::new(error.into(), prior_work))?
+    };
     let metadata = file
         .metadata()
-        .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+        .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
     if !metadata.is_file() {
         return Err(OperationFailure::new(
             CaptureError::Io(std::io::Error::other(
                 "host file kind changed during capture",
             )),
-            receipt.work,
+            prior_work,
         ));
     }
+    ensure_same_host_node(snapshot, &metadata)
+        .map_err(|error| OperationFailure::new(error, prior_work))?;
     let logical_bytes = metadata.len();
     let ranges = allocated_data_ranges(&file, logical_bytes, maximum_extent_spans)
-        .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
-    let staged =
-        stage_host_ranges(checkout, &mut file, &ranges, receipt, budget, cancellation).await?;
+        .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
+    let content =
+        stage_host_ranges(stager, &mut file, &ranges, prior_work, budget, cancellation).await?;
+    let accumulated = prior_work
+        .checked_add(content.work)
+        .map_err(|error| OperationFailure::new(CaptureError::Work(error), prior_work))?;
+    let after = file
+        .metadata()
+        .map_err(|error| OperationFailure::new(error.into(), accumulated))?;
+    ensure_same_host_node(snapshot, &after)
+        .map_err(|error| OperationFailure::new(error, accumulated))?;
+    ensure_current_host_node(source_root, host_path, snapshot)
+        .map_err(|error| OperationFailure::new(error, accumulated))?;
+    Ok(StagedRegularBody {
+        logical_bytes,
+        content,
+    })
+}
+
+fn append_staged_regular_state(
+    path: NamespacePath,
+    logical_bytes: u64,
+    exists_with_kind: bool,
+    canonical_metadata: FileMetadata,
+    ranges: Vec<(HostDataRange, StagedContent)>,
+    mutations: &mut Vec<AuthoredMutation>,
+) {
     if exists_with_kind {
         mutations.push(AuthoredMutation::Resize {
             path: path.clone(),
@@ -1071,7 +1947,7 @@ async fn append_regular_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             logical_bytes,
         });
     }
-    mutations.extend(staged.into_iter().map(|(range, content)| {
+    mutations.extend(ranges.into_iter().map(|(range, content)| {
         AuthoredMutation::WriteFromContent {
             path: path.clone(),
             offset: range.offset,
@@ -1082,52 +1958,269 @@ async fn append_regular_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         path,
         metadata: canonical_metadata,
     });
+}
+
+#[derive(Clone, Copy)]
+struct HostSnapshot {
+    identity: NativeRootIdentity,
+    length: u64,
+    metadata: FileMetadata,
+}
+
+struct HostObservation {
+    metadata: cap_std::fs::Metadata,
+}
+
+impl HostObservation {
+    fn from_metadata(metadata: cap_std::fs::Metadata) -> Self {
+        Self { metadata }
+    }
+}
+
+struct HostLinkProbe {
+    count: u64,
+    file: Option<cap_std::fs::File>,
+}
+
+impl HostLinkProbe {
+    const fn unlinked() -> Self {
+        Self {
+            count: 1,
+            file: None,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn host_link_count(
+    _source_root: &HostRoot,
+    _host_path: &Path,
+    _snapshot: &HostSnapshot,
+    metadata: &cap_std::fs::Metadata,
+) -> Result<HostLinkProbe, CaptureError> {
+    use cap_std::fs::MetadataExt;
+    Ok(HostLinkProbe {
+        count: metadata.nlink(),
+        file: None,
+    })
+}
+
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "reads FILE_STANDARD_INFO through a held capability-opened file handle"
+)]
+fn host_link_count(
+    source_root: &HostRoot,
+    host_path: &Path,
+    snapshot: &HostSnapshot,
+    _metadata: &cap_std::fs::Metadata,
+) -> Result<HostLinkProbe, CaptureError> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        FILE_STANDARD_INFO, FileStandardInfo, GetFileInformationByHandleEx,
+    };
+
+    let file = source_root.open_file(host_path)?;
+    ensure_same_host_node(snapshot, &file.metadata()?)?;
+    let mut information = FILE_STANDARD_INFO::default();
+    // SAFETY: file stays open and information is a correctly sized output.
+    unsafe {
+        GetFileInformationByHandleEx(
+            HANDLE(file.as_raw_handle()),
+            FileStandardInfo,
+            (&raw mut information).cast(),
+            u32::try_from(size_of::<FILE_STANDARD_INFO>())
+                .map_err(|_| CaptureError::InvalidOptions)?,
+        )
+        .map_err(|error| CaptureError::Io(std::io::Error::other(error)))?;
+    }
+    Ok(HostLinkProbe {
+        count: u64::from(information.NumberOfLinks),
+        file: Some(file),
+    })
+}
+
+impl HostSnapshot {
+    fn from_metadata(metadata: &cap_std::fs::Metadata) -> Result<Self, CaptureError> {
+        Ok(Self {
+            identity: NativeRootIdentity::from_metadata(metadata)?,
+            length: metadata.len(),
+            metadata: capture_metadata(metadata),
+        })
+    }
+}
+
+fn ensure_same_host_node(
+    expected: &HostSnapshot,
+    observed: &cap_std::fs::Metadata,
+) -> Result<(), CaptureError> {
+    let observed_identity = NativeRootIdentity::from_metadata(observed)?;
+    let mut expected_metadata = expected.metadata;
+    let mut observed_metadata = capture_metadata(observed);
+    // Reading the file can legitimately update its access time.
+    expected_metadata.accessed_ns = MetadataField::Unavailable;
+    observed_metadata.accessed_ns = MetadataField::Unavailable;
+    if expected.identity != observed_identity
+        || expected.length != observed.len()
+        || expected_metadata != observed_metadata
+    {
+        return Err(CaptureError::Io(std::io::Error::other(
+            "host file changed during capture",
+        )));
+    }
     Ok(())
 }
 
+fn ensure_current_host_node(
+    source_root: &HostRoot,
+    host_path: &Path,
+    expected: &HostSnapshot,
+) -> Result<(), CaptureError> {
+    let observed = source_root.symlink_metadata(host_path)?;
+    ensure_same_host_node(expected, &observed)
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod host_file_race_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_a_replaced_file_between_path_metadata_and_open()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let current = temporary.path().join("current");
+        let replacement = temporary.path().join("replacement");
+        std::fs::write(&current, b"first")?;
+        std::fs::write(&replacement, b"other")?;
+        let root = HostRoot::open(temporary.path())?;
+        let expected = HostSnapshot::from_metadata(&root.symlink_metadata(Path::new("current"))?)?;
+        std::fs::rename(&current, temporary.path().join("displaced"))?;
+        std::fs::rename(&replacement, &current)?;
+        let opened = root.open_file(Path::new("current"))?;
+        assert!(matches!(
+            ensure_same_host_node(&expected, &opened.metadata()?),
+            Err(CaptureError::Io(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_changed_file_after_open() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let current = temporary.path().join("current");
+        std::fs::write(&current, b"first")?;
+        let root = HostRoot::open(temporary.path())?;
+        let expected = HostSnapshot::from_metadata(&root.symlink_metadata(Path::new("current"))?)?;
+        let opened = root.open_file(Path::new("current"))?;
+        ensure_same_host_node(&expected, &opened.metadata()?)?;
+        std::fs::write(&current, b"changed body")?;
+        assert!(matches!(
+            ensure_same_host_node(&expected, &opened.metadata()?),
+            Err(CaptureError::Io(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_path_replaced_after_open() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let current = temporary.path().join("current");
+        let replacement = temporary.path().join("replacement");
+        std::fs::write(&current, b"first")?;
+        std::fs::write(&replacement, b"other")?;
+        let root = HostRoot::open(temporary.path())?;
+        let expected = HostSnapshot::from_metadata(&root.symlink_metadata(Path::new("current"))?)?;
+        let opened = root.open_file(Path::new("current"))?;
+        std::fs::rename(&current, temporary.path().join("displaced"))?;
+        std::fs::rename(&replacement, &current)?;
+        let _held_metadata = opened.metadata()?;
+        let path_matches =
+            ensure_same_host_node(&expected, &root.symlink_metadata(Path::new("current"))?).is_ok();
+        assert!(!path_matches);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_replaced_directory_before_capture_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let current = temporary.path().join("current");
+        let replacement = temporary.path().join("replacement");
+        std::fs::create_dir(&current)?;
+        std::fs::create_dir(&replacement)?;
+        let root = HostRoot::open(temporary.path())?;
+        let expected = HostSnapshot::from_metadata(&root.symlink_metadata(Path::new("current"))?)?;
+        std::fs::rename(&current, temporary.path().join("displaced"))?;
+        std::fs::rename(&replacement, &current)?;
+        assert!(matches!(
+            ensure_current_host_node(&root, Path::new("current"), &expected),
+            Err(CaptureError::Io(_))
+        ));
+        Ok(())
+    }
+}
+
+struct StagedHostRanges {
+    ranges: Vec<(HostDataRange, StagedContent)>,
+    work: WorkCounters,
+    bytes: u64,
+}
+
 async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &Checkout<A, O>,
+    stager: &ContentStager<A, O>,
     file: &mut cap_std::fs::File,
     ranges: &[HostDataRange],
-    receipt: &mut CaptureReceipt,
+    prior_work: WorkCounters,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<Vec<(HostDataRange, StagedContent)>, OperationFailure<CaptureError>> {
+) -> Result<StagedHostRanges, OperationFailure<CaptureError>> {
     let mut staged = Vec::new();
     staged
         .try_reserve(ranges.len())
-        .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, receipt.work))?;
+        .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, prior_work))?;
+    let mut work = WorkCounters::default();
+    let mut bytes = 0_u64;
     for range in ranges {
+        let accumulated = prior_work
+            .checked_add(work)
+            .map_err(|error| OperationFailure::new(CaptureError::Work(error), prior_work))?;
         file.seek(SeekFrom::Start(range.offset))
-            .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+            .map_err(|error| OperationFailure::new(error.into(), accumulated))?;
         let mut bounded = (&mut *file).take(range.length);
-        let remaining = receipt
-            .work
+        let remaining = accumulated
             .remaining(budget)
-            .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
-        let content = checkout
-            .stage_content(&mut bounded, range.length, remaining, cancellation)
+            .map_err(|error| OperationFailure::new(CaptureError::Work(error), accumulated))?;
+        let content = stager
+            .stage(&mut bounded, range.length, remaining, cancellation)
             .await
-            .map_err(|failure| map_engine_failure(failure, receipt.work))?;
-        receipt.work = add_work(receipt.work, content.work)?;
+            .map_err(|failure| map_engine_failure(failure, accumulated))?;
+        work = add_work(work, content.work)?;
+        let accumulated = prior_work
+            .checked_add(work)
+            .map_err(|error| OperationFailure::new(CaptureError::Work(error), prior_work))?;
         if content.value.logical_bytes() != range.length {
             return Err(OperationFailure::new(
                 CaptureError::Io(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "host file changed while capturing a sparse range",
                 )),
-                receipt.work,
+                accumulated,
             ));
         }
-        receipt.staged_file_bytes = receipt
-            .staged_file_bytes
-            .checked_add(range.length)
-            .ok_or_else(|| {
-                OperationFailure::new(CaptureError::Work(WorkError::Overflow), receipt.work)
-            })?;
+        bytes = bytes.checked_add(range.length).ok_or_else(|| {
+            OperationFailure::new(CaptureError::Work(WorkError::Overflow), accumulated)
+        })?;
         staged.push((*range, content.value));
     }
-    Ok(staged)
+    Ok(StagedHostRanges {
+        ranges: staged,
+        work,
+        bytes,
+    })
 }
 
 fn append_special_state(
@@ -1193,7 +2286,15 @@ fn open_source_root(options: &CaptureOptions) -> Result<HostRoot, CaptureError> 
     Ok(root)
 }
 
-fn relative_host_path(path: &NamespacePath) -> Result<PathBuf, CaptureError> {
+/// Converts one exact namespace path to a host-relative path without lossy text projection.
+///
+/// Native profile names retain their platform representation. A foreign profile is accepted only
+/// when every component has an exact representation on this host.
+///
+/// # Errors
+///
+/// Returns [`CaptureError::UnrepresentablePath`] when any component cannot be represented exactly.
+pub fn namespace_to_host_path(path: &NamespacePath) -> Result<PathBuf, CaptureError> {
     let mut result = PathBuf::new();
     for component in path.components() {
         result.push(capture_host_name(component)?);
@@ -1236,9 +2337,14 @@ fn capture_host_name(component: &LogicalName) -> Result<std::ffi::OsString, Capt
 fn capture_host_name(component: &LogicalName) -> Result<std::ffi::OsString, CaptureError> {
     use std::os::windows::ffi::OsStringExt;
     match component.encoding() {
-        NameEncoding::Utf8 => std::str::from_utf8(component.as_bytes())
-            .map(std::ffi::OsString::from)
-            .map_err(|_| CaptureError::UnrepresentablePath),
+        NameEncoding::Utf8 | NameEncoding::PosixBytes => {
+            let name = std::str::from_utf8(component.as_bytes())
+                .map_err(|_| CaptureError::UnrepresentablePath)?;
+            if name.contains(['/', '\\']) {
+                return Err(CaptureError::UnrepresentablePath);
+            }
+            Ok(std::ffi::OsString::from(name))
+        }
         NameEncoding::WindowsUtf16Le => {
             let units = component
                 .as_bytes()
@@ -1252,7 +2358,68 @@ fn capture_host_name(component: &LogicalName) -> Result<std::ffi::OsString, Capt
                 .collect::<Vec<_>>();
             Ok(std::ffi::OsString::from_wide(&units))
         }
-        NameEncoding::PosixBytes => Err(CaptureError::UnrepresentablePath),
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_name_tests {
+    use super::*;
+
+    #[test]
+    fn posix_profile_names_round_trip_through_utf8_on_windows()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let valid = LogicalName::new(
+            NameEncoding::PosixBytes,
+            "uni-é中.txt".as_bytes().to_vec(),
+            255,
+        )?;
+        assert_eq!(
+            capture_host_name(&valid)?,
+            std::ffi::OsString::from("uni-é中.txt")
+        );
+
+        let invalid = LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?;
+        assert!(matches!(
+            capture_host_name(&invalid),
+            Err(CaptureError::UnrepresentablePath)
+        ));
+        let alias = LogicalName::new(NameEncoding::PosixBytes, b"a\\b".to_vec(), 255)?;
+        assert!(matches!(
+            capture_host_name(&alias),
+            Err(CaptureError::UnrepresentablePath)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn host_path_round_trips_through_windows_profile() -> Result<(), Box<dyn std::error::Error>> {
+        let limits = crate::model::VolumeLimits {
+            maximum_component_bytes: 510,
+            ..crate::model::VolumeLimits::default()
+        };
+        let host = std::path::Path::new("src/ünïcøde/日本語.rs");
+        let namespace = host_path_to_namespace(host, FilesystemProfile::Windows, limits)?;
+        assert_eq!(namespace_to_host_path(&namespace)?, host);
+        Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_name_tests {
+    use super::*;
+    use std::os::unix::ffi::OsStrExt;
+
+    #[test]
+    fn host_path_round_trips_arbitrary_posix_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        let raw = std::ffi::OsStr::from_bytes(b"src/\xff.rs");
+        let host = std::path::Path::new(raw);
+        let namespace = host_path_to_namespace(
+            host,
+            FilesystemProfile::Posix,
+            crate::model::VolumeLimits::default(),
+        )?;
+        assert_eq!(namespace_to_host_path(&namespace)?, host);
+        Ok(())
     }
 }
 

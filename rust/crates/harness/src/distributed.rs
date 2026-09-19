@@ -24,8 +24,6 @@ const COORDINATOR_PATH: &str = "harness/coordinator/events";
 const READ_PAGE_SIZE: u32 = 1_024;
 const COORDINATOR_WIRE_VERSION: &str = "1";
 const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v1";
-const LEGACY_HARNESS_DESCRIPTOR_DIGEST: &str =
-    "b7506282912690d6a9cd875ca426b3b4f3c9dd937b457377f6865d83c1d2b3d9";
 
 /// Pull worker capacity and placement identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -595,10 +593,7 @@ fn validate_coordinator_protocol(protocol: Option<&wire::ProtocolIdentity>) -> R
     let actual =
         protocol.ok_or_else(|| Error::Storage("coordinator event protocol is missing".into()))?;
     let current = coordinator_protocol_identity();
-    if actual.version == COORDINATOR_WIRE_VERSION
-        && (actual.descriptor_digest == current.descriptor_digest
-            || actual.descriptor_digest == LEGACY_HARNESS_DESCRIPTOR_DIGEST)
-    {
+    if actual == &current {
         Ok(())
     } else {
         Err(Error::Unsupported(
@@ -666,31 +661,6 @@ mod tests {
             orchestration: Orchestration::Leaf,
             state: Value::Null,
         }
-    }
-
-    fn historical_coordinator_record(
-        revision: u64,
-        operation_id: OperationId,
-        key: &str,
-        event: &SchedulerEvent,
-    ) -> Result<Bytes> {
-        let canonical =
-            serde_json::to_vec(event).map_err(|error| Error::Invalid(error.to_string()))?;
-        let digest = *blake3::hash(&canonical).as_bytes();
-        Ok(Bytes::from(
-            wire::SchedulerEventEnvelope {
-                protocol: Some(wire::ProtocolIdentity {
-                    version: COORDINATOR_WIRE_VERSION.into(),
-                    descriptor_digest: LEGACY_HARNESS_DESCRIPTOR_DIGEST.into(),
-                }),
-                revision,
-                operation_id: operation_id.to_string(),
-                idempotency_key: key.into(),
-                canonical_event_json: canonical,
-                event_digest: digest.to_vec(),
-            }
-            .encode_to_vec(),
-        ))
     }
 
     #[tokio::test]
@@ -808,51 +778,6 @@ mod tests {
                 .await,
             Err(Error::Unauthorized(_))
         ));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn legacy_non_recursive_cancel_reopens_and_retries_exactly() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
-        let operation_id = OperationId::from_bytes([33; 16]);
-        let declaration = Scheduler::new().declare(spec(operation_id, 0))?;
-        let cancellation = SchedulerEvent::CancellationRequested {
-            operation_id,
-            recursive: false,
-        };
-        let stream = client
-            .stream(COORDINATOR_PATH)
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        stream
-            .append_batch(
-                vec![
-                    historical_coordinator_record(
-                        1,
-                        operation_id,
-                        "declare-legacy-cancel",
-                        &declaration,
-                    )?,
-                    historical_coordinator_record(2, operation_id, "legacy-cancel", &cancellation)?,
-                ],
-                Some(0),
-                Some(stream_key("seed-legacy-history")?),
-            )
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        let mut reopened = DistributedCoordinator::open(&client).await?;
-        assert_eq!(
-            reopened
-                .apply(
-                    operation_id,
-                    IdempotencyKey::new("legacy-cancel")?,
-                    SchedulerEvent::CancellationRequested {
-                        operation_id,
-                        recursive: false,
-                    },
-                )
-                .await?,
-            CoordinatorApply::Replayed
-        );
         Ok(())
     }
 

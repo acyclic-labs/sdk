@@ -8,7 +8,7 @@
 use super::{
     MountAttributeWriteMode, MountDirectoryEntry, MountFilesystem, MountLookup, MountNodeKind,
     MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError,
-    NativeMountError, NativeMountRequest,
+    NativeMountError, NativeMountRequest, metadata_or, system_time_ns,
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
@@ -143,13 +143,13 @@ impl DirectoryHandle {
 struct DarwinMountContext {
     source: Arc<dyn MountFilesystem>,
     writable: bool,
-    fallback_uid: u32,
-    fallback_gid: u32,
+    mount_uid: u32,
+    mount_gid: u32,
     next_handle: AtomicU64,
     next_inode: AtomicU64,
     inodes: Mutex<HashMap<FileId, u64>>,
     files: RwLock<HashMap<u64, FileHandle>>,
-    directories: Mutex<HashMap<u64, DirectoryHandle>>,
+    directories: Mutex<HashMap<u64, Arc<Mutex<DirectoryHandle>>>>,
 }
 
 impl DarwinMountContext {
@@ -162,8 +162,8 @@ impl DarwinMountContext {
         Self {
             source,
             writable,
-            fallback_uid: metadata.uid(),
-            fallback_gid: metadata.gid(),
+            mount_uid: metadata.uid(),
+            mount_gid: metadata.gid(),
             next_handle: AtomicU64::new(1),
             next_inode: AtomicU64::new(ROOT_INODE + 1),
             inodes: Mutex::new(HashMap::from([(root_file_id, ROOT_INODE)])),
@@ -248,8 +248,8 @@ impl DarwinMountContext {
             MountNodeKind::BlockDevice => mode::IFBLK,
             MountNodeKind::Unsupported => return Err(libc::EOPNOTSUPP),
         };
-        let fallback_mode = if self.writable { 0o755 } else { 0o555 };
-        let mode = metadata_u32(lookup.metadata.posix_mode, fallback_mode) & 0o7777;
+        let default_mode = if self.writable { 0o755 } else { 0o555 };
+        let mode = metadata_or(lookup.metadata.posix_mode, default_mode) & 0o7777;
         let (accessed_seconds, accessed_nanoseconds) = metadata_time(lookup.metadata.accessed_ns);
         let (modified_seconds, modified_nanoseconds) = metadata_time(lookup.metadata.modified_ns);
         let (changed_seconds, changed_nanoseconds) = metadata_time(lookup.metadata.changed_ns);
@@ -268,8 +268,8 @@ impl DarwinMountContext {
             created_nanoseconds,
             mode: file_kind | mode,
             link_count: u32::try_from(node.link_count).unwrap_or(u32::MAX),
-            uid: metadata_u32(lookup.metadata.posix_uid, self.fallback_uid),
-            gid: metadata_u32(lookup.metadata.posix_gid, self.fallback_gid),
+            uid: metadata_or(lookup.metadata.posix_uid, self.mount_uid),
+            gid: metadata_or(lookup.metadata.posix_gid, self.mount_gid),
             device: node
                 .device
                 .map(|(major, minor)| {
@@ -279,7 +279,7 @@ impl DarwinMountContext {
                 .transpose()?
                 .unwrap_or(0),
             block_size: 4096,
-            flags: u32::try_from(metadata_u64(lookup.metadata.posix_flags, 0)).unwrap_or(u32::MAX),
+            flags: u32::try_from(metadata_or(lookup.metadata.posix_flags, 0)).unwrap_or(u32::MAX),
         })
     }
 
@@ -858,7 +858,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
         let allocated = context.allocate_handle()?;
         let mut directories = context.directories.lock().map_err(|_| libc::EIO)?;
         directories.try_reserve(1).map_err(|_| libc::ENOMEM)?;
-        directories.insert(allocated, DirectoryHandle::new(path));
+        directories.insert(allocated, Arc::new(Mutex::new(DirectoryHandle::new(path))));
         unsafe { handle.write(allocated) };
         Ok(0)
     })
@@ -875,8 +875,14 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
 ) -> c_int {
     ffi_status(|| {
         let context = context(address)?;
-        let mut directories = context.directories.lock().map_err(|_| libc::EIO)?;
-        let directory = directories.get_mut(&handle).ok_or(libc::ESTALE)?;
+        let directory = context
+            .directories
+            .lock()
+            .map_err(|_| libc::EIO)?
+            .get(&handle)
+            .cloned()
+            .ok_or(libc::ESTALE)?;
+        let mut directory = directory.lock().map_err(|_| libc::EIO)?;
         if offset == 0 && directory.emitted != 0 {
             directory.rewind();
         } else if offset != directory.emitted {
@@ -1170,7 +1176,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_chmod(
 ) -> c_int {
     ffi_status(|| {
         context(address)?.mutate_metadata(&mount_path(path)?, handle, |metadata| {
-            let kind = metadata_u32(metadata.posix_mode, 0) & mode::IFMT;
+            let kind = metadata_or(metadata.posix_mode, 0) & mode::IFMT;
             metadata.posix_mode = MetadataField::Value(kind | (mode & 0o7777));
             Ok(())
         })?;
@@ -1537,20 +1543,6 @@ fn update_time(field: &mut MetadataField<i64>, seconds: i64, nanoseconds: i64) -
     Ok(())
 }
 
-fn metadata_u32(field: MetadataField<u32>, unavailable: u32) -> u32 {
-    match field {
-        MetadataField::Unavailable => unavailable,
-        MetadataField::Value(value) => value,
-    }
-}
-
-fn metadata_u64(field: MetadataField<u64>, unavailable: u64) -> u64 {
-    match field {
-        MetadataField::Unavailable => unavailable,
-        MetadataField::Value(value) => value,
-    }
-}
-
 fn metadata_time(field: MetadataField<i64>) -> (i64, u32) {
     let nanos = match field {
         MetadataField::Unavailable => 0,
@@ -1560,15 +1552,6 @@ fn metadata_time(field: MetadataField<i64>) -> (i64, u32) {
         nanos.div_euclid(1_000_000_000),
         u32::try_from(nanos.rem_euclid(1_000_000_000)).unwrap_or(0),
     )
-}
-
-fn system_time_ns(value: SystemTime) -> Result<i64, i32> {
-    match value.duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(duration) => i64::try_from(duration.as_nanos()).map_err(|_| libc::EOVERFLOW),
-        Err(error) => i64::try_from(error.duration().as_nanos())
-            .map(|nanos| -nanos)
-            .map_err(|_| libc::EOVERFLOW),
-    }
 }
 
 fn errno(error: &MountSourceError) -> i32 {

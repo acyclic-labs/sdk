@@ -534,12 +534,12 @@ impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
                         )
                         .unwrap_or(ZERO_HASH_BLOCK.len());
                         // `count = min(remaining_zeroes, ZERO_HASH_BLOCK.len())`
-                        // as computed immediately above (the `unwrap_or` fallback
+                        // as computed immediately above (the `unwrap_or` branch
                         // is itself `ZERO_HASH_BLOCK.len()`), so `count <=
                         // ZERO_HASH_BLOCK.len()` always holds.
                         #[allow(
                             clippy::indexing_slicing,
-                            reason = "count <= ZERO_HASH_BLOCK.len() by construction above (min() and its unwrap_or fallback are both bounded by ZERO_HASH_BLOCK.len())"
+                            reason = "count <= ZERO_HASH_BLOCK.len() by construction above (min() and its unwrap_or branch are both bounded by ZERO_HASH_BLOCK.len())"
                         )]
                         hasher.update(&ZERO_HASH_BLOCK[..count]);
                         remaining_zeroes -= u64::try_from(count).unwrap_or(0);
@@ -981,12 +981,12 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
                         )
                         .unwrap_or(ZERO_HASH_BLOCK.len());
                         // `count = min(remaining_zeroes, ZERO_HASH_BLOCK.len())`
-                        // as computed immediately above (the `unwrap_or` fallback
+                        // as computed immediately above (the `unwrap_or` branch
                         // is itself `ZERO_HASH_BLOCK.len()`), so `count <=
                         // ZERO_HASH_BLOCK.len()` always holds.
                         #[allow(
                             clippy::indexing_slicing,
-                            reason = "count <= ZERO_HASH_BLOCK.len() by construction above (min() and its unwrap_or fallback are both bounded by ZERO_HASH_BLOCK.len())"
+                            reason = "count <= ZERO_HASH_BLOCK.len() by construction above (min() and its unwrap_or branch are both bounded by ZERO_HASH_BLOCK.len())"
                         )]
                         hasher.update(&ZERO_HASH_BLOCK[..count]);
                         remaining_zeroes -= u64::try_from(count).unwrap_or(0);

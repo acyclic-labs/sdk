@@ -130,12 +130,12 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         .into_iter()
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| error(&err))?;
-    if children
+    let mut child_paths = children
         .into_iter()
         .map(|child| child.path)
-        .collect::<Vec<_>>()
-        != vec![path("conformance/child")?, path("conformance/source")?]
-    {
+        .collect::<Vec<_>>();
+    child_paths.sort();
+    if child_paths != vec![path("conformance/child")?, path("conformance/source")?] {
         return Err("direct child listing changed its fixed snapshot".into());
     }
     let mut follow = provider
@@ -205,11 +205,17 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     }
     let committed_path = path("conformance/committed")?;
     let request = CommitRequest {
-        conditions: vec![CommitCondition::Absent {
-            path: committed_path.clone(),
-        }],
+        conditions: vec![
+            CommitCondition::Tail {
+                path: source.clone(),
+                expected: 2,
+            },
+            CommitCondition::Absent {
+                path: committed_path.clone(),
+            },
+        ],
         mutations: vec![CommitMutation::Fork {
-            source,
+            source: source.clone(),
             destination: committed_path,
             at_tail: 2,
         }],
@@ -231,6 +237,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     {
         return Err("coordinated commit replay or envelope changed".into());
     }
+    verify_stale_tail_condition(provider, source.clone()).await?;
     let absent = path("conformance/absent-tail")?;
     let absent_key = key(b"stream-absent-tail")?;
     let absent_request = CommitRequest {
@@ -273,6 +280,45 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         || absent_observation.outcome != IdempotencyOutcome::Commit(absent_conflict)
     {
         return Err("commit-conflict inspection did not preserve the terminal result".into());
+    }
+    Ok(())
+}
+
+async fn verify_stale_tail_condition(
+    provider: &dyn StreamProvider,
+    source: StreamPath,
+) -> Result<(), String> {
+    let stale_path = path("conformance/stale-commit")?;
+    let stale_conflict = CommitOutcome::Conflict(vec![CommitConflict::Tail {
+        path: source.clone(),
+        expected: 1,
+        actual: Some(2),
+    }]);
+    if provider
+        .commit(CommitRequest {
+            conditions: vec![
+                CommitCondition::Tail {
+                    path: source.clone(),
+                    expected: 1,
+                },
+                CommitCondition::Absent {
+                    path: stale_path.clone(),
+                },
+            ],
+            mutations: vec![CommitMutation::Fork {
+                source: source.clone(),
+                destination: stale_path.clone(),
+                at_tail: 2,
+            }],
+            idempotency_key: key(b"stream-stale-commit")?,
+        })
+        .await
+        .map_err(|err| error(&err))?
+        != stale_conflict
+        || provider.tail(stale_path).await != Err(StreamError::NotFound)
+        || provider.tail(source).await.map_err(|err| error(&err))? != 2
+    {
+        return Err("stale tail condition mutated a coordinated commit".into());
     }
     Ok(())
 }

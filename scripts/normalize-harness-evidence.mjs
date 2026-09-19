@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 
-if (process.argv.length !== 8) {
+if (process.argv.length !== 9) {
   throw new Error(
-    "usage: normalize-harness-evidence.mjs RUST_LOG TYPESCRIPT_LOG OUTPUT.json NPM.tgz STREAM.crate HARNESS.crate",
+    "usage: normalize-harness-evidence.mjs RUST_LOG TYPESCRIPT_LOG OUTPUT.json NPM.tgz RUNTIME.crate STREAM.crate HARNESS.crate",
   );
 }
 const [rustPath, typescriptPath, outputPath, ...artifactPaths] = process.argv.slice(2).map(path => resolve(path));

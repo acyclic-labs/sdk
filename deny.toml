@@ -13,6 +13,16 @@ allow = [
   "Zlib",
 ]
 
+[[licenses.exceptions]]
+allow = ["MPL-2.0"]
+name = "imbl"
+version = "=7.0.2"
+
+[[licenses.exceptions]]
+allow = ["MPL-2.0"]
+name = "imbl-sized-chunks"
+version = "=0.2.0"
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"

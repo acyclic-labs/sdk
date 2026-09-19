@@ -37,16 +37,18 @@ mod bindings {
         NamedAttributeWriteMode, ObjectCacheOptions, ObjectId, ObjectKind, ObjectReadRequest,
         ObjectResidency, OperationId, PromotionAdmission, PromotionDestination, PromotionRejection,
         PromotionSpeculatorOptions, ProviderObjectStore, ResidencyAdmission, ResidencyHint,
-        ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions, SpeculationController,
-        SpeculationOptions, StorageLocationId, StorageTier, StreamAuthorityStore, Transaction,
-        TransactionCommit, TransactionConflict, TransactionConflictRegion,
-        TransactionDependencyUse, TransactionRebase, TransactionSparseSeek, Volume, VolumeId,
-        WorkBudget, Workspace, WorkspaceDelete, WorkspaceDirectoryPage, WorkspaceExtentKind,
-        WorkspaceExtentPlan, WorkspaceMetadata, WorkspaceRebase, WorkspaceStat,
-        decode_generation_export_manifest, encode_generation_export_manifest,
+        ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions, ResolvedFile,
+        SpeculationController, SpeculationOptions, StorageLocationId, StorageTier,
+        StreamAuthorityStore, Transaction, TransactionCommit, TransactionConflict,
+        TransactionConflictRegion, TransactionDependencyUse, TransactionRebase,
+        TransactionSparseSeek, Volume, VolumeId, WorkBudget, Workspace, WorkspaceDelete,
+        WorkspaceDirectoryPage, WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceMetadata,
+        WorkspaceRebase, WorkspaceStat, decode_generation_export_manifest,
+        encode_generation_export_manifest,
     };
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
+    use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
 
     type IndexedDbObjects = CachedObjectStore<IndexedDbObjectStore>;
@@ -71,6 +73,12 @@ mod bindings {
         IndexedDb(Checkout<IndexedDbAuthorityStore, IndexedDbObjects>),
         IndexedDbOpfs(Checkout<IndexedDbAuthorityStore, OpfsObjects>),
         Memory(Checkout<MemoryAuthority, MemoryObjects>),
+    }
+
+    enum BrowserResolvedFileEngine {
+        IndexedDb(ResolvedFile<IndexedDbAuthorityStore, IndexedDbObjects>),
+        IndexedDbOpfs(ResolvedFile<IndexedDbAuthorityStore, OpfsObjects>),
+        Memory(ResolvedFile<MemoryAuthority, MemoryObjects>),
     }
 
     enum BrowserWorkspaceEngine {
@@ -142,6 +150,19 @@ mod bindings {
         engine: BrowserCheckoutEngine,
         limits: VolumeLimits,
         acquisition_work: acyclic_fs::WorkCounters,
+    }
+
+    /// One immutable file resolved against a pinned checkout generation.
+    #[wasm_bindgen]
+    pub struct BrowserResolvedFile {
+        engine: BrowserResolvedFileEngine,
+    }
+
+    /// One original-order resolved path batch and its shared work receipt.
+    #[wasm_bindgen]
+    pub struct BrowserResolvedFiles {
+        files: Vec<Option<BrowserResolvedFile>>,
+        work: acyclic_fs::WorkCounters,
     }
 
     /// One named customer workspace.
@@ -341,15 +362,24 @@ mod bindings {
         pub async fn sync(&self) -> Result<BrowserGeneration, JsValue> {
             let engine = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => BrowserGenerationEngine::IndexedDb(
-                    value.sync().await.map_err(js_error)?.into_generation(),
+                    Box::pin(value.sync())
+                        .await
+                        .map_err(js_error)?
+                        .into_generation(),
                 ),
                 BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
                     BrowserGenerationEngine::IndexedDbOpfs(
-                        value.sync().await.map_err(js_error)?.into_generation(),
+                        Box::pin(value.sync())
+                            .await
+                            .map_err(js_error)?
+                            .into_generation(),
                     )
                 }
                 BrowserWorkspaceEngine::Memory(value) => BrowserGenerationEngine::Memory(
-                    value.sync().await.map_err(js_error)?.into_generation(),
+                    Box::pin(value.sync())
+                        .await
+                        .map_err(js_error)?
+                        .into_generation(),
                 ),
             };
             Ok(BrowserGeneration { engine })
@@ -360,8 +390,7 @@ mod bindings {
         pub async fn checkpoint(&self, label: String) -> Result<BrowserGeneration, JsValue> {
             let engine = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => BrowserGenerationEngine::IndexedDb(
-                    value
-                        .checkpoint(label)
+                    Box::pin(value.checkpoint(label))
                         .await
                         .map_err(js_error)?
                         .generation()
@@ -369,8 +398,7 @@ mod bindings {
                 ),
                 BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
                     BrowserGenerationEngine::IndexedDbOpfs(
-                        value
-                            .checkpoint(label)
+                        Box::pin(value.checkpoint(label))
                             .await
                             .map_err(js_error)?
                             .generation()
@@ -378,8 +406,7 @@ mod bindings {
                     )
                 }
                 BrowserWorkspaceEngine::Memory(value) => BrowserGenerationEngine::Memory(
-                    value
-                        .checkpoint(label)
+                    Box::pin(value.checkpoint(label))
                         .await
                         .map_err(js_error)?
                         .generation()
@@ -394,8 +421,7 @@ mod bindings {
         pub async fn pin(&self, identity: String) -> Result<BrowserGeneration, JsValue> {
             let engine = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => BrowserGenerationEngine::IndexedDb(
-                    value
-                        .pin(identity)
+                    Box::pin(value.pin(identity))
                         .await
                         .map_err(js_error)?
                         .generation()
@@ -403,8 +429,7 @@ mod bindings {
                 ),
                 BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
                     BrowserGenerationEngine::IndexedDbOpfs(
-                        value
-                            .pin(identity)
+                        Box::pin(value.pin(identity))
                             .await
                             .map_err(js_error)?
                             .generation()
@@ -412,8 +437,7 @@ mod bindings {
                     )
                 }
                 BrowserWorkspaceEngine::Memory(value) => BrowserGenerationEngine::Memory(
-                    value
-                        .pin(identity)
+                    Box::pin(value.pin(identity))
                         .await
                         .map_err(js_error)?
                         .generation()
@@ -449,11 +473,15 @@ mod bindings {
         #[wasm_bindgen]
         pub async fn read(&self, path: String, maximum_bytes: u64) -> Result<Vec<u8>, JsValue> {
             let bytes = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => value.read(&path, maximum_bytes).await,
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    value.read(&path, maximum_bytes).await
+                BrowserWorkspaceEngine::IndexedDb(value) => {
+                    Box::pin(value.read(&path, maximum_bytes)).await
                 }
-                BrowserWorkspaceEngine::Memory(value) => value.read(&path, maximum_bytes).await,
+                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
+                    Box::pin(value.read(&path, maximum_bytes)).await
+                }
+                BrowserWorkspaceEngine::Memory(value) => {
+                    Box::pin(value.read(&path, maximum_bytes)).await
+                }
             }
             .map_err(js_error)?;
             Ok(bytes.to_vec())
@@ -567,18 +595,21 @@ mod bindings {
         #[wasm_bindgen]
         pub async fn write(&self, path: String, bytes: Vec<u8>) -> Result<JsValue, JsValue> {
             let outcome = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => value
-                    .write(&path, bytes::Bytes::from(bytes))
-                    .await
-                    .map(browser_workspace_commit),
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => value
-                    .write(&path, bytes::Bytes::from(bytes))
-                    .await
-                    .map(browser_workspace_commit),
-                BrowserWorkspaceEngine::Memory(value) => value
-                    .write(&path, bytes::Bytes::from(bytes))
-                    .await
-                    .map(browser_workspace_commit),
+                BrowserWorkspaceEngine::IndexedDb(value) => {
+                    Box::pin(value.write(&path, bytes::Bytes::from(bytes)))
+                        .await
+                        .map(browser_workspace_commit)
+                }
+                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
+                    Box::pin(value.write(&path, bytes::Bytes::from(bytes)))
+                        .await
+                        .map(browser_workspace_commit)
+                }
+                BrowserWorkspaceEngine::Memory(value) => {
+                    Box::pin(value.write(&path, bytes::Bytes::from(bytes)))
+                        .await
+                        .map(browser_workspace_commit)
+                }
             }
             .map_err(js_error)?;
             serde_wasm_bindgen::to_value(&outcome).map_err(js_error)
@@ -588,15 +619,15 @@ mod bindings {
         #[wasm_bindgen]
         pub async fn remove(&self, path: String) -> Result<JsValue, JsValue> {
             let outcome = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => {
-                    value.remove(&path).await.map(browser_workspace_commit)
-                }
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    value.remove(&path).await.map(browser_workspace_commit)
-                }
-                BrowserWorkspaceEngine::Memory(value) => {
-                    value.remove(&path).await.map(browser_workspace_commit)
-                }
+                BrowserWorkspaceEngine::IndexedDb(value) => Box::pin(value.remove(&path))
+                    .await
+                    .map(browser_workspace_commit),
+                BrowserWorkspaceEngine::IndexedDbOpfs(value) => Box::pin(value.remove(&path))
+                    .await
+                    .map(browser_workspace_commit),
+                BrowserWorkspaceEngine::Memory(value) => Box::pin(value.remove(&path))
+                    .await
+                    .map(browser_workspace_commit),
             }
             .map_err(js_error)?;
             serde_wasm_bindgen::to_value(&outcome).map_err(js_error)
@@ -615,39 +646,36 @@ mod bindings {
             )?;
             let engine = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => {
-                    let generation = value.head().await.map_err(js_error)?;
+                    let generation = Box::pin(value.head()).await.map_err(js_error)?;
                     BrowserWorkspaceEngine::IndexedDb(
-                        value
-                            .fork(
-                                destination,
-                                ForkOptions::from_generation(generation, idempotency_key),
-                            )
-                            .await
-                            .map_err(js_error)?,
+                        Box::pin(value.fork(
+                            destination,
+                            ForkOptions::from_generation(generation, idempotency_key),
+                        ))
+                        .await
+                        .map_err(js_error)?,
                     )
                 }
                 BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    let generation = value.head().await.map_err(js_error)?;
+                    let generation = Box::pin(value.head()).await.map_err(js_error)?;
                     BrowserWorkspaceEngine::IndexedDbOpfs(
-                        value
-                            .fork(
-                                destination,
-                                ForkOptions::from_generation(generation, idempotency_key),
-                            )
-                            .await
-                            .map_err(js_error)?,
+                        Box::pin(value.fork(
+                            destination,
+                            ForkOptions::from_generation(generation, idempotency_key),
+                        ))
+                        .await
+                        .map_err(js_error)?,
                     )
                 }
                 BrowserWorkspaceEngine::Memory(value) => {
-                    let generation = value.head().await.map_err(js_error)?;
+                    let generation = Box::pin(value.head()).await.map_err(js_error)?;
                     BrowserWorkspaceEngine::Memory(
-                        value
-                            .fork(
-                                destination,
-                                ForkOptions::from_generation(generation, idempotency_key),
-                            )
-                            .await
-                            .map_err(js_error)?,
+                        Box::pin(value.fork(
+                            destination,
+                            ForkOptions::from_generation(generation, idempotency_key),
+                        ))
+                        .await
+                        .map_err(js_error)?,
                     )
                 }
             };
@@ -671,37 +699,34 @@ mod bindings {
                     BrowserWorkspaceEngine::IndexedDb(value),
                     BrowserGenerationEngine::IndexedDb(generation),
                 ) => BrowserWorkspaceEngine::IndexedDb(
-                    value
-                        .fork(
-                            destination,
-                            ForkOptions::from_generation(generation.clone(), idempotency_key),
-                        )
-                        .await
-                        .map_err(js_error)?,
+                    Box::pin(value.fork(
+                        destination,
+                        ForkOptions::from_generation(generation.clone(), idempotency_key),
+                    ))
+                    .await
+                    .map_err(js_error)?,
                 ),
                 (
                     BrowserWorkspaceEngine::IndexedDbOpfs(value),
                     BrowserGenerationEngine::IndexedDbOpfs(generation),
                 ) => BrowserWorkspaceEngine::IndexedDbOpfs(
-                    value
-                        .fork(
-                            destination,
-                            ForkOptions::from_generation(generation.clone(), idempotency_key),
-                        )
-                        .await
-                        .map_err(js_error)?,
+                    Box::pin(value.fork(
+                        destination,
+                        ForkOptions::from_generation(generation.clone(), idempotency_key),
+                    ))
+                    .await
+                    .map_err(js_error)?,
                 ),
                 (
                     BrowserWorkspaceEngine::Memory(value),
                     BrowserGenerationEngine::Memory(generation),
                 ) => BrowserWorkspaceEngine::Memory(
-                    value
-                        .fork(
-                            destination,
-                            ForkOptions::from_generation(generation.clone(), idempotency_key),
-                        )
-                        .await
-                        .map_err(js_error)?,
+                    Box::pin(value.fork(
+                        destination,
+                        ForkOptions::from_generation(generation.clone(), idempotency_key),
+                    ))
+                    .await
+                    .map_err(js_error)?,
                 ),
                 _ => {
                     return Err(JsValue::from_str(
@@ -724,22 +749,19 @@ mod bindings {
             )?;
             let engine = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => BrowserTransactionEngine::IndexedDb(
-                    value
-                        .begin_transaction(idempotency_key)
+                    Box::pin(value.begin_transaction(idempotency_key))
                         .await
                         .map_err(js_error)?,
                 ),
                 BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
                     BrowserTransactionEngine::IndexedDbOpfs(
-                        value
-                            .begin_transaction(idempotency_key)
+                        Box::pin(value.begin_transaction(idempotency_key))
                             .await
                             .map_err(js_error)?,
                     )
                 }
                 BrowserWorkspaceEngine::Memory(value) => BrowserTransactionEngine::Memory(
-                    value
-                        .begin_transaction(idempotency_key)
+                    Box::pin(value.begin_transaction(idempotency_key))
                         .await
                         .map_err(js_error)?,
                 ),
@@ -1096,11 +1118,15 @@ mod bindings {
         #[wasm_bindgen]
         pub async fn read(&self, path: String, maximum_bytes: u64) -> Result<Vec<u8>, JsValue> {
             let bytes = match &self.engine {
-                BrowserGenerationEngine::IndexedDb(value) => value.read(&path, maximum_bytes).await,
-                BrowserGenerationEngine::IndexedDbOpfs(value) => {
-                    value.read(&path, maximum_bytes).await
+                BrowserGenerationEngine::IndexedDb(value) => {
+                    Box::pin(value.read(&path, maximum_bytes)).await
                 }
-                BrowserGenerationEngine::Memory(value) => value.read(&path, maximum_bytes).await,
+                BrowserGenerationEngine::IndexedDbOpfs(value) => {
+                    Box::pin(value.read(&path, maximum_bytes)).await
+                }
+                BrowserGenerationEngine::Memory(value) => {
+                    Box::pin(value.read(&path, maximum_bytes)).await
+                }
             }
             .map_err(js_error)?;
             Ok(bytes.to_vec())
@@ -1215,8 +1241,7 @@ mod bindings {
         pub async fn pin(&self, identity: String) -> Result<BrowserGeneration, JsValue> {
             let engine = match &self.engine {
                 BrowserGenerationEngine::IndexedDb(value) => BrowserGenerationEngine::IndexedDb(
-                    value
-                        .pin(identity)
+                    Box::pin(value.pin(identity))
                         .await
                         .map_err(js_error)?
                         .generation()
@@ -1224,8 +1249,7 @@ mod bindings {
                 ),
                 BrowserGenerationEngine::IndexedDbOpfs(value) => {
                     BrowserGenerationEngine::IndexedDbOpfs(
-                        value
-                            .pin(identity)
+                        Box::pin(value.pin(identity))
                             .await
                             .map_err(js_error)?
                             .generation()
@@ -1233,8 +1257,7 @@ mod bindings {
                     )
                 }
                 BrowserGenerationEngine::Memory(value) => BrowserGenerationEngine::Memory(
-                    value
-                        .pin(identity)
+                    Box::pin(value.pin(identity))
                         .await
                         .map_err(js_error)?
                         .generation()
@@ -1251,9 +1274,15 @@ mod bindings {
         #[wasm_bindgen(js_name = createDirAll)]
         pub async fn create_dir_all(&mut self, path: String) -> Result<(), JsValue> {
             match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => value.create_dir_all(&path).await,
-                BrowserTransactionEngine::IndexedDbOpfs(value) => value.create_dir_all(&path).await,
-                BrowserTransactionEngine::Memory(value) => value.create_dir_all(&path).await,
+                BrowserTransactionEngine::IndexedDb(value) => {
+                    Box::pin(value.create_dir_all(&path)).await
+                }
+                BrowserTransactionEngine::IndexedDbOpfs(value) => {
+                    Box::pin(value.create_dir_all(&path)).await
+                }
+                BrowserTransactionEngine::Memory(value) => {
+                    Box::pin(value.create_dir_all(&path)).await
+                }
             }
             .map_err(js_error)
         }
@@ -1298,9 +1327,15 @@ mod bindings {
         pub async fn write(&mut self, path: String, bytes: Vec<u8>) -> Result<(), JsValue> {
             let bytes = bytes::Bytes::from(bytes);
             match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => value.write(&path, bytes).await,
-                BrowserTransactionEngine::IndexedDbOpfs(value) => value.write(&path, bytes).await,
-                BrowserTransactionEngine::Memory(value) => value.write(&path, bytes).await,
+                BrowserTransactionEngine::IndexedDb(value) => {
+                    Box::pin(value.write(&path, bytes)).await
+                }
+                BrowserTransactionEngine::IndexedDbOpfs(value) => {
+                    Box::pin(value.write(&path, bytes)).await
+                }
+                BrowserTransactionEngine::Memory(value) => {
+                    Box::pin(value.write(&path, bytes)).await
+                }
             }
             .map_err(js_error)
         }
@@ -1321,12 +1356,14 @@ mod bindings {
         pub async fn copy(&mut self, source: String, destination: String) -> Result<(), JsValue> {
             match &mut self.engine {
                 BrowserTransactionEngine::IndexedDb(value) => {
-                    value.copy(&source, &destination).await
+                    Box::pin(value.copy(&source, &destination)).await
                 }
                 BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value.copy(&source, &destination).await
+                    Box::pin(value.copy(&source, &destination)).await
                 }
-                BrowserTransactionEngine::Memory(value) => value.copy(&source, &destination).await,
+                BrowserTransactionEngine::Memory(value) => {
+                    Box::pin(value.copy(&source, &destination)).await
+                }
             }
             .map_err(js_error)
         }
@@ -1336,13 +1373,13 @@ mod bindings {
         pub async fn rename(&mut self, source: String, destination: String) -> Result<(), JsValue> {
             match &mut self.engine {
                 BrowserTransactionEngine::IndexedDb(value) => {
-                    value.rename(&source, &destination).await
+                    Box::pin(value.rename(&source, &destination)).await
                 }
                 BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value.rename(&source, &destination).await
+                    Box::pin(value.rename(&source, &destination)).await
                 }
                 BrowserTransactionEngine::Memory(value) => {
-                    value.rename(&source, &destination).await
+                    Box::pin(value.rename(&source, &destination)).await
                 }
             }
             .map_err(js_error)
@@ -1507,13 +1544,13 @@ mod bindings {
         pub async fn commit(&mut self) -> Result<JsValue, JsValue> {
             let outcome = match &mut self.engine {
                 BrowserTransactionEngine::IndexedDb(value) => {
-                    value.commit().await.map(browser_workspace_commit)
+                    Box::pin(value.commit()).await.map(browser_workspace_commit)
                 }
                 BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value.commit().await.map(browser_workspace_commit)
+                    Box::pin(value.commit()).await.map(browser_workspace_commit)
                 }
                 BrowserTransactionEngine::Memory(value) => {
-                    value.commit().await.map(browser_workspace_commit)
+                    Box::pin(value.commit()).await.map(browser_workspace_commit)
                 }
             }
             .map_err(js_error)?;
@@ -1957,8 +1994,7 @@ mod bindings {
     #[serde(rename_all = "kebab-case")]
     enum Acceleration {
         Indexeddb,
-        OpfsRequired,
-        OpfsIfAvailable,
+        Opfs,
     }
 
     #[derive(Deserialize)]
@@ -2562,7 +2598,7 @@ mod bindings {
             })
         }
 
-        /// Releases browser handles. Durable state remains in `IndexedDB`.
+        /// Releases browser handles. Durable state remains in the selected browser stores.
         pub fn close(&mut self) {
             if let Some(engine) = self.engine.take() {
                 match engine {
@@ -3401,6 +3437,118 @@ mod bindings {
     }
 
     #[wasm_bindgen]
+    impl BrowserResolvedFiles {
+        /// Number of original-order results.
+        #[wasm_bindgen(getter)]
+        #[must_use]
+        pub fn length(&self) -> usize {
+            self.files.len()
+        }
+
+        /// Exact work receipt for the shared namespace traversal.
+        #[wasm_bindgen(getter)]
+        pub fn work(&self) -> Result<JsValue, JsValue> {
+            serde_wasm_bindgen::to_value(&self.work).map_err(js_error)
+        }
+
+        /// Transfers one generation-bound handle to JavaScript. Each index may be taken once.
+        pub fn take(&mut self, index: usize) -> Result<Option<BrowserResolvedFile>, JsValue> {
+            self.files
+                .get_mut(index)
+                .ok_or_else(|| JsValue::from_str("resolved file index is out of bounds"))
+                .map(Option::take)
+        }
+    }
+
+    #[wasm_bindgen]
+    impl BrowserResolvedFile {
+        /// Terminal file kind authenticated by the pinned generation.
+        #[wasm_bindgen(getter)]
+        #[must_use]
+        pub fn kind(&self) -> String {
+            let kind = match &self.engine {
+                BrowserResolvedFileEngine::IndexedDb(file) => file.description().kind,
+                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file.description().kind,
+                BrowserResolvedFileEngine::Memory(file) => file.description().kind,
+            };
+            file_kind(kind).to_owned()
+        }
+
+        /// Logical content length authenticated by the pinned generation.
+        #[wasm_bindgen(getter, js_name = logicalBytes)]
+        #[must_use]
+        pub fn logical_bytes(&self) -> u64 {
+            match &self.engine {
+                BrowserResolvedFileEngine::IndexedDb(file) => file.description().logical_bytes,
+                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file.description().logical_bytes,
+                BrowserResolvedFileEngine::Memory(file) => file.description().logical_bytes,
+            }
+        }
+
+        /// Complete canonical metadata authenticated by the pinned generation.
+        #[wasm_bindgen(getter, js_name = metadataCanonicalBytes)]
+        pub fn metadata_canonical_bytes(&self) -> Result<Vec<u8>, JsValue> {
+            let metadata = match &self.engine {
+                BrowserResolvedFileEngine::IndexedDb(file) => file.description().metadata,
+                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file.description().metadata,
+                BrowserResolvedFileEngine::Memory(file) => file.description().metadata,
+            };
+            encode_file_metadata(metadata).map_err(js_error)
+        }
+
+        /// Reads one exact logical range without another namespace lookup.
+        #[wasm_bindgen(js_name = readRange)]
+        pub async fn read_range(&self, offset: u64, length: u64) -> Result<JsValue, JsValue> {
+            let cancellation = CancellationToken::default();
+            let range = ByteRange { offset, length };
+            let receipt = match &self.engine {
+                BrowserResolvedFileEngine::IndexedDb(file) => file
+                    .read_range(range, boundary_budget(), &cancellation)
+                    .await
+                    .map_err(js_error)?,
+                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file
+                    .read_range(range, boundary_budget(), &cancellation)
+                    .await
+                    .map_err(js_error)?,
+                BrowserResolvedFileEngine::Memory(file) => file
+                    .read_range(range, boundary_budget(), &cancellation)
+                    .await
+                    .map_err(js_error)?,
+            };
+            serde_wasm_bindgen::to_value(&FileReadResult {
+                bytes: receipt.value.bytes.to_vec(),
+                work: receipt.work,
+            })
+            .map_err(js_error)
+        }
+
+        /// Reads opaque symbolic-link target bytes without another namespace lookup.
+        #[wasm_bindgen(js_name = readSymbolicLink)]
+        pub async fn read_symbolic_link(&self) -> Result<JsValue, JsValue> {
+            let cancellation = CancellationToken::default();
+            let receipt = match &self.engine {
+                BrowserResolvedFileEngine::IndexedDb(file) => file
+                    .read_symbolic_link(boundary_budget(), &cancellation)
+                    .await
+                    .map_err(js_error)?,
+                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file
+                    .read_symbolic_link(boundary_budget(), &cancellation)
+                    .await
+                    .map_err(js_error)?,
+                BrowserResolvedFileEngine::Memory(file) => file
+                    .read_symbolic_link(boundary_budget(), &cancellation)
+                    .await
+                    .map_err(js_error)?,
+            };
+            serde_wasm_bindgen::to_value(&FileReadResult {
+                bytes: receipt.value.to_vec(),
+                work: receipt.work,
+            })
+            .map_err(js_error)
+        }
+    }
+
+    #[wasm_bindgen]
     impl BrowserCheckout {
         /// Returns exact bounded work used to acquire this checkout handle.
         ///
@@ -4052,6 +4200,98 @@ mod bindings {
                 work: receipt.work,
             })
             .map_err(js_error)
+        }
+
+        /// Resolves an ordered path batch once into immutable generation-bound handles.
+        ///
+        /// # Errors
+        ///
+        /// Returns a JavaScript error for non-pinned checkouts, malformed paths,
+        /// corruption, cancellation, or bounded work.
+        #[wasm_bindgen(js_name = resolveFiles)]
+        pub async fn resolve_files(
+            &mut self,
+            paths: JsValue,
+        ) -> Result<BrowserResolvedFiles, JsValue> {
+            let paths_array = paths
+                .dyn_ref::<js_sys::Array>()
+                .ok_or_else(|| js_error("resolved file paths must be an array"))?;
+            let maximum = self.limits.maximum_paths_per_batch;
+            if paths_array.length() > maximum {
+                return Err(js_error("resolved file batch exceeds the configured bound"));
+            }
+            let paths: Vec<String> = serde_wasm_bindgen::from_value(paths).map_err(js_error)?;
+            if paths.capacity() > usize::try_from(maximum).unwrap_or(usize::MAX) {
+                return Err(js_error("resolved file batch exceeds the configured bound"));
+            }
+            let mut parsed = Vec::new();
+            parsed
+                .try_reserve_exact(paths.len())
+                .map_err(|error| js_error(error.to_string()))?;
+            for path in paths {
+                parsed.push(browser_path(&path, self.limits)?);
+            }
+            let cancellation = CancellationToken::default();
+            let (files, work) = match &mut self.engine {
+                BrowserCheckoutEngine::IndexedDb(checkout) => {
+                    let reader = checkout.pinned_reader().map_err(js_error)?;
+                    let receipt = reader
+                        .resolve_files(&parsed, boundary_budget(), &cancellation)
+                        .await
+                        .map_err(js_error)?;
+                    (
+                        receipt
+                            .value
+                            .into_iter()
+                            .map(|file| {
+                                file.map(|file| BrowserResolvedFile {
+                                    engine: BrowserResolvedFileEngine::IndexedDb(file),
+                                })
+                            })
+                            .collect(),
+                        receipt.work,
+                    )
+                }
+                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => {
+                    let reader = checkout.pinned_reader().map_err(js_error)?;
+                    let receipt = reader
+                        .resolve_files(&parsed, boundary_budget(), &cancellation)
+                        .await
+                        .map_err(js_error)?;
+                    (
+                        receipt
+                            .value
+                            .into_iter()
+                            .map(|file| {
+                                file.map(|file| BrowserResolvedFile {
+                                    engine: BrowserResolvedFileEngine::IndexedDbOpfs(file),
+                                })
+                            })
+                            .collect(),
+                        receipt.work,
+                    )
+                }
+                BrowserCheckoutEngine::Memory(checkout) => {
+                    let reader = checkout.pinned_reader().map_err(js_error)?;
+                    let receipt = reader
+                        .resolve_files(&parsed, boundary_budget(), &cancellation)
+                        .await
+                        .map_err(js_error)?;
+                    (
+                        receipt
+                            .value
+                            .into_iter()
+                            .map(|file| {
+                                file.map(|file| BrowserResolvedFile {
+                                    engine: BrowserResolvedFileEngine::Memory(file),
+                                })
+                            })
+                            .collect(),
+                        receipt.work,
+                    )
+                }
+            };
+            Ok(BrowserResolvedFiles { files, work })
         }
 
         /// Reads one exact logical regular-file range.
@@ -5347,7 +5587,7 @@ mod bindings {
         }
     }
 
-    /// Opens transactional `IndexedDB` correctness storage with optional OPFS acceleration.
+    /// Opens transactional browser storage with explicit `IndexedDB` or OPFS immutable objects.
     ///
     /// # Errors
     ///
@@ -5380,41 +5620,21 @@ mod bindings {
                     "indexeddb",
                 )
             }
-            Acceleration::OpfsRequired | Acceleration::OpfsIfAvailable => {
-                match OpfsAcceleratedObjectStore::open(
+            Acceleration::Opfs => {
+                let objects = OpfsAcceleratedObjectStore::open(
                     &options.database_name,
                     options.maximum_object_bytes,
                 )
                 .await
-                {
-                    Ok(objects) => (
-                        BrowserEngine::IndexedDbOpfs(Fs::new(
-                            authority,
-                            cached_objects(objects, object_cache)?,
-                            EmbeddedCapabilities { durable: true },
-                        )),
-                        "indexeddb-opfs",
-                    ),
-                    Err(_error)
-                        if matches!(options.object_acceleration, Acceleration::OpfsIfAvailable) =>
-                    {
-                        let objects = IndexedDbObjectStore::open(
-                            &options.database_name,
-                            options.maximum_object_bytes,
-                        )
-                        .await
-                        .map_err(js_error)?;
-                        (
-                            BrowserEngine::IndexedDb(Fs::new(
-                                authority,
-                                cached_objects(objects, object_cache)?,
-                                EmbeddedCapabilities { durable: true },
-                            )),
-                            "indexeddb",
-                        )
-                    }
-                    Err(error) => return Err(js_error(error)),
-                }
+                .map_err(js_error)?;
+                (
+                    BrowserEngine::IndexedDbOpfs(Fs::new(
+                        authority,
+                        cached_objects(objects, object_cache)?,
+                        EmbeddedCapabilities { durable: true },
+                    )),
+                    "opfs",
+                )
             }
         };
         Ok(BrowserFs {
@@ -5984,10 +6204,13 @@ mod bindings {
                 "object identity must be exactly 33 bytes",
             ));
         }
-        let kind = ObjectKind::from_canonical_tag(bytes[0]).map_err(js_error)?;
+        let (tag, digest) = bytes
+            .split_first()
+            .ok_or_else(|| JsValue::from_str("object identity is empty"))?;
+        let kind = ObjectKind::from_canonical_tag(*tag).map_err(js_error)?;
         Ok(ObjectId {
             kind,
-            digest: Digest::from_bytes(fixed_32(&bytes[1..], "object digest")?),
+            digest: Digest::from_bytes(fixed_32(digest, "object digest")?),
         })
     }
 
@@ -6591,6 +6814,8 @@ mod bindings {
             bytes_copied: BYTES,
             bytes_encoded: BYTES,
             source_bytes_read: BYTES,
+            source_path_components: OPERATIONS,
+            source_entries_visited: OPERATIONS,
             output_bytes: BYTES,
             items_examined: OPERATIONS,
             items_returned: OPERATIONS,
@@ -6831,43 +7056,43 @@ mod bindings {
             workspace: &BrowserWorkspace,
             payload: &[u8],
         ) -> Result<(), JsValue> {
-            workspace
-                .write("/binary".to_owned(), payload.to_vec())
+            Box::pin(workspace.write("/binary".to_owned(), payload.to_vec())).await?;
+            let mut transaction = Box::pin(workspace.begin_transaction(Some(vec![10; 16]))).await?;
+            Box::pin(transaction.create_dir_all("/output/nested".to_owned())).await?;
+            Box::pin(transaction.copy("/binary".to_owned(), "/output/nested/copied".to_owned()))
                 .await?;
-            let mut transaction = workspace.begin_transaction(Some(vec![10; 16])).await?;
-            transaction
-                .create_dir_all("/output/nested".to_owned())
-                .await?;
-            transaction
-                .copy("/binary".to_owned(), "/output/nested/copied".to_owned())
-                .await?;
-            transaction
-                .rename(
-                    "/output/nested/copied".to_owned(),
-                    "/output/result".to_owned(),
-                )
-                .await?;
-            transaction
-                .write("/output/status".to_owned(), b"ready".to_vec())
-                .await?;
-            transaction.commit().await.map(|_| ())
+            Box::pin(transaction.rename(
+                "/output/nested/copied".to_owned(),
+                "/output/result".to_owned(),
+            ))
+            .await?;
+            Box::pin(transaction.write("/output/status".to_owned(), b"ready".to_vec())).await?;
+            Box::pin(transaction.commit()).await.map(|_| ())
         }
 
         async fn verify_transaction_tree_fork(
             workspace: &BrowserWorkspace,
             payload: &[u8],
         ) -> Result<(), JsValue> {
-            let fork = workspace.fork("mutated-fork".to_owned(), None).await?;
-            assert_eq!(fork.read("/output/result".to_owned(), 5).await?, payload);
-            assert_eq!(fork.read("/output/status".to_owned(), 5).await?, b"ready");
-            workspace.remove("/output/status".to_owned()).await?;
+            let fork = Box::pin(workspace.fork("mutated-fork".to_owned(), None)).await?;
+            assert_eq!(
+                Box::pin(fork.read("/output/result".to_owned(), 5)).await?,
+                payload
+            );
+            assert_eq!(
+                Box::pin(fork.read("/output/status".to_owned(), 5)).await?,
+                b"ready"
+            );
+            Box::pin(workspace.remove("/output/status".to_owned())).await?;
             assert!(
-                workspace
-                    .read("/output/status".to_owned(), 5)
+                Box::pin(workspace.read("/output/status".to_owned(), 5))
                     .await
                     .is_err()
             );
-            assert_eq!(fork.read("/output/status".to_owned(), 5).await?, b"ready");
+            assert_eq!(
+                Box::pin(fork.read("/output/status".to_owned(), 5)).await?,
+                b"ready"
+            );
             Ok(())
         }
 

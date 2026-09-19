@@ -39,9 +39,8 @@ pub enum LocalDurability {
     #[default]
     FullFlush,
     /// Every publication is ordered behind earlier writes without waiting for the device
-    /// cache (`F_BARRIERFSYNC` on Apple platforms, `fdatasync` elsewhere). Acknowledged
-    /// frames survive process crashes; a power loss before the device drains its cache can
-    /// lose the newest ones, which startup recovery discards as a torn tail.
+    /// cache. This requires Apple's `F_BARRIERFSYNC`; opening on a target without that exact
+    /// primitive fails with an I/O error instead of substituting different semantics.
     Barrier,
 }
 
@@ -147,21 +146,21 @@ impl LocalStream {
         }
     }
 
-    async fn prepare(&self, command: Command) -> Result<PreparedFrame, StreamError> {
-        let journal = Arc::clone(&self.inner.journal);
-        tokio::task::spawn_blocking(move || {
-            journal
-                .lock()
-                .map_err(|_| LocalStreamError::Corrupt)?
-                .prepare(&command)
-        })
-        .await
-        .map_err(|_| LocalStreamError::Executor)
-        .and_then(|result| result)
-        .map_err(|error| match error {
+    fn prepare(&self, command: &Command) -> Result<PreparedFrame, StreamError> {
+        let frame = PreparedFrame::encode(command).map_err(|error| match error {
             LocalStreamError::InvalidLimits => StreamError::Capacity,
             _ => StreamError::Unavailable,
-        })
+        })?;
+        self.inner
+            .journal
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .admit(&frame)
+            .map_err(|error| match error {
+                LocalStreamError::InvalidLimits => StreamError::Capacity,
+                _ => StreamError::Unavailable,
+            })?;
+        Ok(frame)
     }
 
     async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
@@ -220,7 +219,7 @@ impl StreamProvider for LocalStream {
         let _visibility = self.inner.visibility.write().await;
         self.check_available()?;
         let command = Command::Append(request.clone());
-        let frame = self.prepare(command).await?;
+        let frame = self.prepare(&command)?;
         let retain_conflict = request.idempotency_key.is_some();
         let outcome = self.inner.provider.append(request).await?;
         if matches!(outcome, AppendOutcome::Committed(_)) || retain_conflict {
@@ -234,7 +233,7 @@ impl StreamProvider for LocalStream {
         let _visibility = self.inner.visibility.write().await;
         self.check_available()?;
         let command = Command::Fork(request.clone());
-        let frame = self.prepare(command).await?;
+        let frame = self.prepare(&command)?;
         let outcome = self.inner.provider.fork(request).await?;
         self.persist(frame).await?;
         Ok(outcome)
@@ -254,7 +253,7 @@ impl StreamProvider for LocalStream {
             before,
             idempotency_key: idempotency_key.clone(),
         };
-        let frame = self.prepare(command).await?;
+        let frame = self.prepare(&command)?;
         let outcome = self
             .inner
             .provider
@@ -276,7 +275,7 @@ impl StreamProvider for LocalStream {
             path: path.clone(),
             idempotency_key: idempotency_key.clone(),
         };
-        let frame = self.prepare(command).await?;
+        let frame = self.prepare(&command)?;
         let outcome = self.inner.provider.delete(path, idempotency_key).await?;
         self.persist(frame).await?;
         Ok(outcome)
@@ -346,7 +345,7 @@ impl StreamProvider for LocalStream {
         let _visibility = self.inner.visibility.write().await;
         self.check_available()?;
         let command = Command::Commit(request.clone());
-        let frame = self.prepare(command).await?;
+        let frame = self.prepare(&command)?;
         let outcome = self.inner.provider.commit(request).await?;
         self.persist(frame).await?;
         Ok(outcome)
@@ -385,10 +384,39 @@ struct Journal {
 }
 
 struct PreparedFrame {
-    length: [u8; 4],
-    command: Vec<u8>,
-    checksum: [u8; FRAME_CHECKSUM_BYTES],
+    encoded: Vec<u8>,
     bytes: u64,
+}
+
+impl PreparedFrame {
+    fn encode(command: &Command) -> Result<Self, LocalStreamError> {
+        let journal = journal_command(command);
+        let command_length = journal.encoded_len();
+        if command_length > MAX_COMMAND_BYTES {
+            return Err(LocalStreamError::InvalidLimits);
+        }
+        let command_length =
+            u32::try_from(command_length).map_err(|_| LocalStreamError::InvalidLimits)?;
+        let length = command_length.to_le_bytes();
+        let command_length_usize =
+            usize::try_from(command_length).map_err(|_| LocalStreamError::InvalidLimits)?;
+        let capacity = 4_usize
+            .checked_add(command_length_usize)
+            .and_then(|value| value.checked_add(FRAME_CHECKSUM_BYTES))
+            .ok_or(LocalStreamError::InvalidLimits)?;
+        let mut encoded = Vec::with_capacity(capacity);
+        encoded.extend_from_slice(&length);
+        journal
+            .encode(&mut encoded)
+            .map_err(|_| LocalStreamError::InvalidLimits)?;
+        let command_bytes = encoded.get(4..).ok_or(LocalStreamError::InvalidLimits)?;
+        let checksum = frame_checksum(&length, command_bytes);
+        encoded.extend_from_slice(&checksum);
+        Ok(Self {
+            encoded,
+            bytes: u64::try_from(capacity).map_err(|_| LocalStreamError::InvalidLimits)?,
+        })
+    }
 }
 
 impl Journal {
@@ -484,36 +512,20 @@ impl Journal {
         })
     }
 
-    fn prepare(&self, command: &Command) -> Result<PreparedFrame, LocalStreamError> {
-        let encoded = encode_command(command)?;
-        let command_length =
-            u32::try_from(encoded.len()).map_err(|_| LocalStreamError::InvalidLimits)?;
-        let length_bytes = command_length.to_le_bytes();
-        let checksum = frame_checksum(&length_bytes, &encoded);
-        let frame_bytes = 4_u64
-            .checked_add(u64::from(command_length))
-            .and_then(|value| value.checked_add(u64::try_from(FRAME_CHECKSUM_BYTES).ok()?))
-            .ok_or(LocalStreamError::InvalidLimits)?;
+    fn admit(&self, frame: &PreparedFrame) -> Result<(), LocalStreamError> {
         if self.operations >= self.limits.journal_operations
             || self
                 .bytes
-                .checked_add(frame_bytes)
+                .checked_add(frame.bytes)
                 .is_none_or(|value| value > self.limits.journal_bytes)
         {
             return Err(LocalStreamError::InvalidLimits);
         }
-        Ok(PreparedFrame {
-            length: length_bytes,
-            command: encoded,
-            checksum,
-            bytes: frame_bytes,
-        })
+        Ok(())
     }
 
     fn append(&mut self, frame: &PreparedFrame) -> Result<(), LocalStreamError> {
-        self.file.write_all(&frame.length)?;
-        self.file.write_all(&frame.command)?;
-        self.file.write_all(&frame.checksum)?;
+        self.file.write_all(&frame.encoded)?;
         sync_file_data(&self.file, self.limits.durability)?;
         self.operations += 1;
         self.bytes += frame.bytes;
@@ -533,50 +545,22 @@ fn truncate_torn_tail(
 }
 
 fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
-    match durability {
-        LocalDurability::FullFlush => file.sync_all(),
-        LocalDurability::Barrier => barrier_sync(file),
-    }
+    acyclic_native_runtime::sync_file(file, native_durability(durability))
 }
 
 fn sync_file_data(file: &File, durability: LocalDurability) -> std::io::Result<()> {
+    acyclic_native_runtime::sync_data(file, native_durability(durability))
+}
+
+fn native_durability(durability: LocalDurability) -> acyclic_native_runtime::Durability {
     match durability {
-        LocalDurability::FullFlush => file.sync_data(),
-        LocalDurability::Barrier => barrier_sync(file),
+        LocalDurability::FullFlush => acyclic_native_runtime::Durability::Full,
+        LocalDurability::Barrier => acyclic_native_runtime::Durability::Barrier,
     }
 }
 
-/// Orders every earlier write to `file` ahead of later ones without waiting for the device
-/// cache. Falls back to a full flush where the filesystem cannot issue a barrier.
-#[cfg(target_vendor = "apple")]
-#[allow(unsafe_code)]
-fn barrier_sync(file: &File) -> std::io::Result<()> {
-    use std::os::fd::AsRawFd as _;
-    // SAFETY: `F_BARRIERFSYNC` takes no argument and only acts on the descriptor, which
-    // `file` keeps open for the duration of the call.
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC) } == 0 {
-        Ok(())
-    } else {
-        file.sync_all()
-    }
-}
-
-#[cfg(not(target_vendor = "apple"))]
-fn barrier_sync(file: &File) -> std::io::Result<()> {
-    file.sync_data()
-}
-
-#[cfg(unix)]
 fn sync_directory(path: &Path, durability: LocalDurability) -> Result<(), LocalStreamError> {
-    sync_file(&File::open(path)?, durability)?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn sync_directory(_path: &Path, _durability: LocalDurability) -> Result<(), LocalStreamError> {
-    // `FlushFileBuffers` on the newly created journal durably admits both its contents and
-    // directory entry on supported Windows filesystems. Windows does not expose a portable
-    // flush operation for directory handles.
+    acyclic_native_runtime::sync_parent(path, native_durability(durability))?;
     Ok(())
 }
 
@@ -664,7 +648,7 @@ async fn replay(provider: &MemoryStream, command: Command) -> Result<(), StreamE
     }
 }
 
-fn encode_command(command: &Command) -> Result<Vec<u8>, LocalStreamError> {
+fn journal_command(command: &Command) -> JournalCommand {
     let operation = match command {
         Command::Append(request) => journal_command::Operation::Append(wire_append(request)),
         Command::Fork(request) => journal_command::Operation::Fork(wire_fork(request)),
@@ -686,14 +670,9 @@ fn encode_command(command: &Command) -> Result<Vec<u8>, LocalStreamError> {
         }),
         Command::Commit(request) => journal_command::Operation::Commit(wire_commit(request)),
     };
-    let encoded = JournalCommand {
+    JournalCommand {
         operation: Some(operation),
     }
-    .encode_to_vec();
-    if encoded.len() > MAX_COMMAND_BYTES {
-        return Err(LocalStreamError::InvalidLimits);
-    }
-    Ok(encoded)
 }
 
 fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
@@ -819,6 +798,23 @@ fn domain_commit(request: crate::wire::CommitRequest) -> Result<CommitRequest, S
 mod tests {
     use super::*;
     use crate::conformance;
+
+    #[cfg(not(target_vendor = "apple"))]
+    #[tokio::test]
+    async fn barrier_policy_rejects_targets_without_exact_barrier_semantics()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let limits = LocalStreamLimits {
+            durability: LocalDurability::Barrier,
+            ..LocalStreamLimits::default()
+        };
+        assert!(matches!(
+            LocalStream::open(directory.path(), limits).await,
+            Err(LocalStreamError::Io(error))
+                if error.kind() == std::io::ErrorKind::Unsupported
+        ));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn local_provider_reopens_and_passes_public_conformance()

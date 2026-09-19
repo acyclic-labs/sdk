@@ -254,7 +254,6 @@ pub enum SchedulerEvent {
         /// Operation whose cancellation should propagate.
         operation_id: OperationId,
         /// Whether cancellation propagates through the complete structured subtree.
-        #[serde(default, skip_serializing_if = "is_false")]
         recursive: bool,
     },
     /// A terminal or indeterminate observation was recorded.
@@ -1204,10 +1203,6 @@ fn event_operation(event: &SchedulerEvent) -> OperationId {
     }
 }
 
-const fn is_false(value: &bool) -> bool {
-    !*value
-}
-
 /// One durable typed inbox item with a gapless per-task sequence.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InboxItem<T> {
@@ -1471,27 +1466,6 @@ mod tests {
             slot: "late".into(),
         });
         assert!(matches!(scheduler.declare(child), Err(Error::Conflict(_))));
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_cancellation_records_remain_non_recursive() -> Result<()> {
-        let operation_id = id(1);
-        let event: SchedulerEvent = serde_json::from_value(serde_json::json!({
-            "kind": "cancellation_requested",
-            "operation_id": operation_id,
-        }))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(
-            event,
-            SchedulerEvent::CancellationRequested {
-                operation_id,
-                recursive: false,
-            }
-        );
-        let canonical =
-            serde_json::to_value(&event).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(canonical.get("recursive"), None);
         Ok(())
     }
 

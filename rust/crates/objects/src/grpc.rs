@@ -1681,9 +1681,14 @@ mod tests {
                 return Err(Status::unauthenticated("missing exact bearer credential"));
             }
             let request = request.into_inner();
-            let range_requested = request.range_requested
-                || request.range_start != 0
-                || request.range_end_inclusive.is_some();
+            if !request.range_requested
+                && (request.range_start != 0 || request.range_end_inclusive.is_some())
+            {
+                return Err(Status::invalid_argument(
+                    "range fields require range_requested",
+                ));
+            }
+            let range_requested = request.range_requested;
             let body = match (
                 range_requested,
                 request.range_start,
@@ -1780,34 +1785,27 @@ mod tests {
 
     fn assert_provider<T: crate::ObjectsProvider>() {}
 
-    async fn assert_legacy_bounded_range(
+    async fn assert_implicit_range_is_rejected(
         client: &Client,
         bucket: &Bucket,
-        start: u64,
-        end_inclusive: u64,
-        expected: &[u8],
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut legacy_client =
+        let mut wire_client =
             wire::objects_service_client::ObjectsServiceClient::new(client.channel.clone());
-        let mut stream = legacy_client
+        let error = wire_client
             .get_object(authenticated(
                 &client.authorization,
                 wire::GetObjectRequest {
                     target: Some(bucket_target(&bucket.reference())),
                     object_key: "object".into(),
-                    range_start: start,
-                    range_end_inclusive: Some(end_inclusive),
+                    range_start: 1,
+                    range_end_inclusive: Some(1),
                     ..wire::GetObjectRequest::default()
                 },
             ))
-            .await?
-            .into_inner();
-        let _version = stream.message().await?.ok_or("missing version frame")?;
-        let body = stream.message().await?.ok_or("missing body frame")?;
-        assert!(matches!(
-            body.frame,
-            Some(wire::get_object_response::Frame::Body(body)) if body == expected
-        ));
+            .await
+            .err()
+            .ok_or("implicit range unexpectedly succeeded")?;
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
         Ok(())
     }
 
@@ -1982,8 +1980,7 @@ mod tests {
             assert_eq!(bounded.range_end_inclusive, Some(1));
         }
 
-        assert_legacy_bounded_range(&client, &bucket, 1, 1, b"b").await?;
-        assert_legacy_bounded_range(&client, &bucket, 0, 1, b"ab").await?;
+        assert_implicit_range_is_rejected(&client, &bucket).await?;
 
         let _ = shutdown_tx.send(());
         server.await??;

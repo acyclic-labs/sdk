@@ -2,10 +2,11 @@
 #![cfg(feature = "distributed")]
 
 use acyclic_fs::{
-    AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, CancellationToken,
-    CreateAuthorityOutcome, Digest, EmbeddedCapabilities, Epoch, FenceOutcome, ForkOptions, Fs,
-    GenerationId, Head, IdempotencyKey, ObjectId, ObjectKind, OperationId, ProposedCommit,
-    ReplayLimit, Sequence, WorkBudget, object_digest,
+    AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, AuthorityStoreError,
+    CancellationToken, CreateAuthorityOutcome, Digest, EmbeddedCapabilities, Epoch, FenceOutcome,
+    ForkOptions, Fs, GenerationFork, GenerationForkSource, GenerationId, Head, IdempotencyKey,
+    ObjectId, ObjectKind, OperationFailure, OperationId, ProposedCommit, ReplayLimit, Sequence,
+    WorkBudget, object_digest,
 };
 use acyclic_fs::{ProviderObjectStore, StreamAuthorityStore};
 use acyclic_objects::{MemoryObjects, ObjectsProvider};
@@ -364,7 +365,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
 }
 
 #[tokio::test]
-async fn generation_fork_falls_back_for_an_authority_without_lineage_locators()
+async fn generation_fork_rejects_an_authority_without_lineage_locators()
 -> Result<(), Box<dyn std::error::Error>> {
     let streams = Arc::new(MemoryStream::default());
     let store = StreamAuthorityStore::new(streams);
@@ -374,27 +375,32 @@ async fn generation_fork_falls_back_for_an_authority_without_lineage_locators()
     store
         .create_authority(source, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation)
         .await?;
-    let forked = store
+    let Err(error) = store
         .fork_generation_authority(
-            source,
-            GenerationId::new(Digest::from_bytes([0x63; 32])),
+            GenerationForkSource {
+                authority: source,
+                generation: GenerationId::new(Digest::from_bytes([0x63; 32])),
+                lineage: GenerationFork::PublishedPrefix,
+            },
             destination,
             OperationId::from_bytes([0x64; 16]),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
-        .await?;
-    assert_eq!(
-        forked.value,
-        CreateAuthorityOutcome::Created(Head::genesis(Epoch::GENESIS))
-    );
-    assert_eq!(
+        .await
+    else {
+        return Err("missing lineage locator unexpectedly forked".into());
+    };
+    assert!(matches!(error.error, AuthorityStoreError::Rejected(_)));
+    assert!(matches!(
         store
             .head(destination, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value,
-        Head::genesis(Epoch::GENESIS)
-    );
+            .await,
+        Err(OperationFailure {
+            error: AuthorityStoreError::Missing,
+            ..
+        })
+    ));
     Ok(())
 }
 
@@ -438,8 +444,11 @@ async fn failed_atomic_generation_fork_leaves_no_destination_lineage()
     assert!(
         store
             .fork_generation_authority(
-                source_authority,
-                selected.id(),
+                GenerationForkSource {
+                    authority: source_authority,
+                    generation: selected.id(),
+                    lineage: GenerationFork::PublishedPrefix,
+                },
                 destination_authority,
                 OperationId::from_bytes([0x65; 16]),
                 WorkBudget::UNBOUNDED,

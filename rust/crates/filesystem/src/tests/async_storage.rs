@@ -363,7 +363,7 @@ fn explicitly_immediate_stores_expose_the_complete_async_contract()
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn async_adapters_and_sequential_fallback_fail_closed_before_or_at_exact_work()
+fn async_adapters_and_explicit_sequential_reads_fail_closed_before_or_at_exact_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancelled = CancellationToken::new();
     cancelled.cancel();

@@ -4,6 +4,12 @@ import { HttpObjectsProvider, MemoryObjectsProvider, ObjectError, Objects, Objec
 const key = (value: string) => value as IdempotencyKey;
 
 describe("objects", () => {
+  test("opens the local provider without exposing provider setup", async () => {
+    const bucket = await Objects.memory().createBucket("memory");
+    await bucket.put("answer", 42, jsonCodec<number>());
+    expect((await bucket.get("answer", jsonCodec<number>())).value).toBe(42);
+  });
+
   test("keeps values typed across versions, snapshots, ranges, and forks", async () => {
     const objects = new Objects(new MemoryObjectsProvider());
     const bucket = await objects.createBucket("artifacts", { idempotencyKey: key("create") });

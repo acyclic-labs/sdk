@@ -1,20 +1,23 @@
 //! Explicit native materialization of one authenticated checkout.
 
+#[cfg(any(target_os = "macos", windows))]
+use crate::ObjectId;
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, NameEncoding, NamespacePath,
 };
 use crate::native_host::HostRoot;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Checkout, FileId,
-    OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
+    OperationFailure, OperationReceipt, PinnedReader, ResolvedFileRangeReadRequest, WorkBudget,
+    WorkCounters, WorkError,
 };
 use bytes::Bytes;
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::ffi::OsStr;
 use std::ffi::OsString;
+#[cfg(windows)]
 use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -59,6 +62,12 @@ pub enum MaterializeError {
     /// A canonical name cannot be represented exactly on this host.
     #[error("canonical name cannot be represented exactly on this host")]
     UnrepresentableName,
+    /// The requested authenticated path is absent from the checkout.
+    #[error("requested path is absent from the checkout")]
+    MissingPath,
+    /// Host path is empty, absolute, escapes the root, or cannot be encoded.
+    #[error("requested host path is not a valid relative path")]
+    InvalidPath,
     /// This host adapter cannot recreate the authenticated kind exactly.
     #[error("file kind {0:?} cannot be materialized exactly on this host")]
     UnsupportedKind(FileKind),
@@ -81,7 +90,7 @@ pub enum MaterializeError {
 /// Sparse files are pre-sized and only authenticated content or allocated-zero
 /// spans are written. Hole spans issue no body I/O. Hard links are recreated by
 /// stable file identity, and directory enumeration remains bounded and paged.
-/// This function is never used as a fallback for failed native mounting.
+/// This function is only invoked by explicit materialization requests.
 ///
 /// # Errors
 ///
@@ -102,6 +111,11 @@ pub async fn materialize_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let mut pending = vec![(root.clone(), PathBuf::new())];
     let mut deferred_directory_metadata = vec![(root, PathBuf::new())];
     let mut known_files = HashMap::<FileId, PathBuf>::new();
+    #[cfg(any(target_os = "macos", windows))]
+    let mut known_payloads = HashMap::<(u64, ObjectId, ObjectId), PathBuf>::new();
+    #[cfg(any(target_os = "macos", windows))]
+    let clone_available = crate::probe_native_storage_capabilities(&options.destination)
+        .is_ok_and(|capabilities| capabilities.block_cloning);
     let mut receipt = MaterializationReceipt::default();
 
     while let Some((directory, host_directory)) = pending.pop() {
@@ -142,10 +156,16 @@ pub async fn materialize_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     entry.record.file_id,
                     entry.record.kind,
                     entry.record.payload,
+                    #[cfg(any(target_os = "macos", windows))]
+                    entry.record.metadata,
                     options,
                     budget,
                     cancellation,
                     &mut known_files,
+                    #[cfg(any(target_os = "macos", windows))]
+                    &mut known_payloads,
+                    #[cfg(any(target_os = "macos", windows))]
+                    clone_available,
                     &mut pending,
                     &mut receipt,
                 )
@@ -178,6 +198,203 @@ pub async fn materialize_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     })
 }
 
+/// Materializes one authenticated path into an empty destination directory.
+///
+/// The destination receives the same relative logical path below its root;
+/// for example, `src/main.rs` is written to
+/// `options.destination/src/main.rs`.  This lets callers stage a path in a
+/// sibling directory and perform their own atomic host-side exchange without
+/// reimplementing authenticated lookup, sparse-file handling, hard links, or
+/// platform name conversion.  Parent directories created for the selected
+/// path are not included in the receipt; the selected node and its subtree
+/// are. Hard links within that subtree retain their shared identity; a link
+/// to a node outside the selected subtree becomes an independent copy.
+#[allow(clippy::too_many_lines)]
+pub async fn materialize_checkout_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    path: &NamespacePath,
+    options: &MaterializeOptions,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
+    let host_root = validate_options(options).map_err(OperationFailure::before_work)?;
+    if path.components().is_empty() {
+        return Err(OperationFailure::before_work(
+            MaterializeError::InvalidOptions,
+        ));
+    }
+    let lookup = checkout
+        .lookup_no_follow(path, budget, cancellation)
+        .await
+        .map_err(|failure| map_engine_failure(failure, WorkCounters::default()))?;
+    let record = lookup
+        .value
+        .record
+        .ok_or_else(|| OperationFailure::new(MaterializeError::MissingPath, lookup.work))?;
+    let mut host_path = PathBuf::new();
+    for component in path.components() {
+        host_path
+            .push(host_name(component).map_err(|error| OperationFailure::new(error, lookup.work))?);
+    }
+    let mut parent = PathBuf::new();
+    for component in host_path.parent().into_iter().flat_map(Path::components) {
+        parent.push(component.as_os_str());
+        host_root
+            .create_dir(&parent)
+            .map_err(|error| OperationFailure::new(error.into(), lookup.work))?;
+    }
+
+    let mut receipt = MaterializationReceipt {
+        work: lookup.work,
+        ..MaterializationReceipt::default()
+    };
+    let mut known_files = HashMap::<FileId, PathBuf>::new();
+    #[cfg(any(target_os = "macos", windows))]
+    let mut known_payloads = HashMap::<(u64, ObjectId, ObjectId), PathBuf>::new();
+    #[cfg(any(target_os = "macos", windows))]
+    let clone_available = crate::probe_native_storage_capabilities(&options.destination)
+        .is_ok_and(|capabilities| capabilities.block_cloning);
+    let mut pending = Vec::new();
+    let mut deferred_directory_metadata = Vec::new();
+    if record.kind == FileKind::Directory {
+        deferred_directory_metadata.push((path.clone(), host_path.clone()));
+    }
+    materialize_entry(
+        checkout,
+        &host_root,
+        path,
+        &host_path,
+        record.file_id,
+        record.kind,
+        record.payload,
+        #[cfg(any(target_os = "macos", windows))]
+        record.metadata,
+        options,
+        budget,
+        cancellation,
+        &mut known_files,
+        #[cfg(any(target_os = "macos", windows))]
+        &mut known_payloads,
+        #[cfg(any(target_os = "macos", windows))]
+        clone_available,
+        &mut pending,
+        &mut receipt,
+    )
+    .await?;
+
+    while let Some((directory, host_directory)) = pending.pop() {
+        cancellation.check().map_err(|error| {
+            OperationFailure::new(MaterializeError::Engine(error.to_string()), receipt.work)
+        })?;
+        let mut after = None;
+        loop {
+            let remaining = receipt.work.remaining(budget).map_err(|error| {
+                OperationFailure::new(MaterializeError::Work(error), receipt.work)
+            })?;
+            let page = checkout
+                .list_directory_records(
+                    &directory,
+                    after.as_ref(),
+                    options.maximum_directory_entries,
+                    remaining,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+            receipt.work = add_work(receipt.work, page.work)?;
+            for entry in page.value.entries {
+                let child = append_path(
+                    &directory,
+                    entry.name.clone(),
+                    checkout.volume_config().limits,
+                )
+                .map_err(|error| OperationFailure::new(error, receipt.work))?;
+                let child_host = host_directory.join(
+                    host_name(&entry.name)
+                        .map_err(|error| OperationFailure::new(error, receipt.work))?,
+                );
+                materialize_entry(
+                    checkout,
+                    &host_root,
+                    &child,
+                    &child_host,
+                    entry.record.file_id,
+                    entry.record.kind,
+                    entry.record.payload,
+                    #[cfg(any(target_os = "macos", windows))]
+                    entry.record.metadata,
+                    options,
+                    budget,
+                    cancellation,
+                    &mut known_files,
+                    #[cfg(any(target_os = "macos", windows))]
+                    &mut known_payloads,
+                    #[cfg(any(target_os = "macos", windows))]
+                    clone_available,
+                    &mut pending,
+                    &mut receipt,
+                )
+                .await?;
+                if entry.record.kind == FileKind::Directory {
+                    deferred_directory_metadata.push((child, child_host));
+                }
+                after = Some(entry.name);
+            }
+            if !page.value.has_more {
+                break;
+            }
+        }
+    }
+    for (directory, host_directory) in deferred_directory_metadata.into_iter().rev() {
+        apply_metadata(
+            checkout,
+            &host_root,
+            &directory,
+            &host_directory,
+            budget,
+            cancellation,
+            &mut receipt,
+        )
+        .await?;
+    }
+    Ok(OperationReceipt {
+        value: receipt,
+        work: receipt.work,
+    })
+}
+
+/// Materializes a host-relative path using the checkout's configured name
+/// profile. Native consumers do not need to construct logical names or know
+/// whether this platform stores them as bytes or UTF-16 units.
+pub async fn materialize_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    relative: &Path,
+    options: &MaterializeOptions,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
+    let limits = checkout.volume_config().limits;
+    let profile = checkout.volume_config().profile;
+    let mut names = Vec::new();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(OperationFailure::before_work(MaterializeError::InvalidPath));
+        };
+        let (encoding, bytes) =
+            crate::native_name::host_name_bytes(name, profile, limits.maximum_component_bytes)
+                .map_err(|_| OperationFailure::before_work(MaterializeError::InvalidPath))?;
+        let logical = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
+            .map_err(|_| OperationFailure::before_work(MaterializeError::InvalidPath))?;
+        names.push(logical);
+    }
+    if names.is_empty() {
+        return Err(OperationFailure::before_work(MaterializeError::InvalidPath));
+    }
+    let path = NamespacePath::new(names, limits)
+        .map_err(|_| OperationFailure::before_work(MaterializeError::InvalidPath))?;
+    materialize_checkout_path(checkout, &path, options, budget, cancellation).await
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
@@ -187,10 +404,16 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     file_id: FileId,
     kind: FileKind,
     payload: FilePayload,
+    #[cfg(any(target_os = "macos", windows))] metadata_id: ObjectId,
     options: &MaterializeOptions,
     budget: WorkBudget,
     cancellation: &CancellationToken,
     known_files: &mut HashMap<FileId, PathBuf>,
+    #[cfg(any(target_os = "macos", windows))] known_payloads: &mut HashMap<
+        (u64, ObjectId, ObjectId),
+        PathBuf,
+    >,
+    #[cfg(any(target_os = "macos", windows))] clone_available: bool,
     pending: &mut Vec<(NamespacePath, PathBuf)>,
     receipt: &mut MaterializationReceipt,
 ) -> Result<(), OperationFailure<MaterializeError>> {
@@ -205,6 +428,7 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         return Ok(());
     }
 
+    let mut authenticated_metadata = None;
     match (kind, payload) {
         (FileKind::Directory, FilePayload::Directory { .. }) => {
             host_root
@@ -219,10 +443,10 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             return Ok(());
         }
         (FileKind::Regular, FilePayload::InlineRegular(data)) => {
-            let mut file = create_file(host_root, host_path, receipt.work)?;
-            file.write_all(data.as_bytes())
+            let file = create_file(host_root, host_path, receipt.work)?;
+            acyclic_native_runtime::write_all_at(file.as_file(), 0, data.as_bytes())
                 .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
-            file.sync_all()
+            file.sync(acyclic_native_runtime::Durability::Full)
                 .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
             known_files.insert(file_id, host_path.to_path_buf());
             account_file(
@@ -232,28 +456,66 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 budget,
             )?;
         }
-        (FileKind::Regular, FilePayload::Regular { logical_bytes, .. }) => {
-            let mut file = create_file(host_root, host_path, receipt.work)?;
-            #[cfg(windows)]
+        (
+            FileKind::Regular,
+            FilePayload::Regular {
+                logical_bytes,
+                extents,
+            },
+        ) => {
+            #[cfg(not(any(target_os = "macos", windows)))]
+            let _ = extents;
+            #[cfg(any(target_os = "macos", windows))]
+            let cloned = if clone_available
+                && let Some(source) = known_payloads.get(&(logical_bytes, extents, metadata_id))
             {
-                mark_sparse(&file)
+                host_root
+                    .clone_file(source, host_path)
+                    .map_err(|error| OperationFailure::new(error.into(), receipt.work))?
+            } else {
+                false
+            };
+            #[cfg(not(any(target_os = "macos", windows)))]
+            let cloned = false;
+            if !cloned {
+                let reader = checkout.pinned_reader().map_err(|error| {
+                    OperationFailure::new(MaterializeError::Engine(error.to_string()), receipt.work)
+                })?;
+                let mut file = create_file(host_root, host_path, receipt.work)?;
+                #[cfg(windows)]
+                {
+                    mark_sparse(file.as_file())
+                        .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+                }
+                file.set_len(logical_bytes)
+                    .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+                authenticated_metadata = Some(
+                    materialize_sparse_file(
+                        &reader,
+                        path,
+                        &mut file,
+                        logical_bytes,
+                        options,
+                        budget,
+                        cancellation,
+                        receipt,
+                    )
+                    .await?,
+                );
+                file.sync(acyclic_native_runtime::Durability::Full)
                     .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
             }
-            file.set_len(logical_bytes)
-                .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
-            materialize_sparse_file(
-                checkout,
-                path,
-                &mut file,
-                logical_bytes,
-                options,
-                budget,
-                cancellation,
-                receipt,
-            )
-            .await?;
-            file.sync_all()
-                .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+            #[cfg(target_os = "macos")]
+            if cloned {
+                host_root
+                    .open_file(host_path)
+                    .and_then(|file| file.sync_all())
+                    .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+            }
+            #[cfg(any(target_os = "macos", windows))]
+            known_payloads
+                .entry((logical_bytes, extents, metadata_id))
+                .or_insert_with(|| host_path.to_path_buf());
             known_files.insert(file_id, host_path.to_path_buf());
             receipt.files = receipt.files.checked_add(1).ok_or_else(|| {
                 OperationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work)
@@ -317,16 +579,21 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             ));
         }
     }
-    apply_metadata(
-        checkout,
-        host_root,
-        path,
-        host_path,
-        budget,
-        cancellation,
-        receipt,
-    )
-    .await
+    if let Some(metadata) = authenticated_metadata {
+        apply_host_metadata(host_root, host_path, metadata)
+            .map_err(|error| OperationFailure::new(error, receipt.work))
+    } else {
+        apply_metadata(
+            checkout,
+            host_root,
+            path,
+            host_path,
+            budget,
+            cancellation,
+            receipt,
+        )
+        .await
+    }
 }
 
 #[cfg(windows)]
@@ -348,16 +615,33 @@ fn mark_sparse(file: &File) -> std::io::Result<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn materialize_sparse_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
+    reader: &PinnedReader<A, O>,
     path: &NamespacePath,
-    file: &mut File,
+    file: &mut acyclic_native_runtime::NativeFile,
     logical_bytes: u64,
     options: &MaterializeOptions,
     budget: WorkBudget,
     cancellation: &CancellationToken,
     receipt: &mut MaterializationReceipt,
-) -> Result<(), OperationFailure<MaterializeError>> {
+) -> Result<FileMetadata, OperationFailure<MaterializeError>> {
+    let remaining = receipt
+        .work
+        .remaining(budget)
+        .map_err(|error| OperationFailure::new(MaterializeError::Work(error), receipt.work))?;
+    let resolved = reader
+        .resolve_files(std::slice::from_ref(path), remaining, cancellation)
+        .await
+        .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+    receipt.work = add_work(receipt.work, resolved.work)?;
+    let resolved = resolved
+        .value
+        .into_iter()
+        .next()
+        .flatten()
+        .ok_or_else(|| OperationFailure::new(MaterializeError::MissingPath, receipt.work))?;
+    let metadata = resolved.description().metadata;
     let mut offset = 0_u64;
     while offset < logical_bytes {
         let length = options.transfer_bytes.min(logical_bytes - offset);
@@ -365,9 +649,8 @@ async fn materialize_sparse_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             .work
             .remaining(budget)
             .map_err(|error| OperationFailure::new(MaterializeError::Work(error), receipt.work))?;
-        let plan = checkout
-            .plan_file_extents(
-                path,
+        let plan = resolved
+            .plan_extents(
                 ByteRange { offset, length },
                 options.maximum_extent_spans,
                 remaining,
@@ -384,78 +667,155 @@ async fn materialize_sparse_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 receipt.work,
             ));
         };
+        let mut writes = Vec::new();
+        writes
+            .try_reserve_exact(plan.spans.len())
+            .map_err(|_| OperationFailure::new(MaterializeError::InvalidOptions, receipt.work))?;
+        let mut reads = Vec::new();
+        reads
+            .try_reserve_exact(plan.spans.len())
+            .map_err(|_| OperationFailure::new(MaterializeError::InvalidOptions, receipt.work))?;
         for span in plan.spans {
             match span.kind {
                 ExtentKind::Hole => {
                     #[cfg(target_os = "macos")]
-                    crate::native_host::punch_hole(file, span.offset, span.length);
+                    crate::native_host::punch_hole(file.as_file(), span.offset, span.length)
+                        .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
                 }
                 ExtentKind::AllocatedZero => {
-                    write_zeros(
-                        file,
+                    queue_zero_writes(
+                        &mut writes,
                         span.offset,
                         span.length,
                         options.transfer_bytes,
-                        receipt,
-                        budget,
+                        receipt.work,
                     )?;
                 }
                 ExtentKind::Content { .. } => {
-                    let remaining = receipt.work.remaining(budget).map_err(|error| {
-                        OperationFailure::new(MaterializeError::Work(error), receipt.work)
-                    })?;
-                    let read = checkout
-                        .read_file_range(
-                            path,
-                            ByteRange {
-                                offset: span.offset,
-                                length: span.length,
-                            },
-                            remaining,
-                            cancellation,
-                        )
-                        .await
-                        .map_err(|failure| map_engine_failure(failure, receipt.work))?;
-                    receipt.work = add_work(receipt.work, read.work)?;
-                    file.seek(SeekFrom::Start(span.offset))
-                        .and_then(|_| file.write_all(&read.value.bytes))
-                        .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
-                    account_written(receipt, span.length, budget)?;
+                    reads.push(ResolvedFileRangeReadRequest {
+                        file: &resolved,
+                        range: ByteRange {
+                            offset: span.offset,
+                            length: span.length,
+                        },
+                    });
                 }
             }
+        }
+        if !reads.is_empty() {
+            read_content_spans(
+                reader,
+                reads,
+                options.maximum_extent_spans,
+                budget,
+                cancellation,
+                receipt,
+                &mut writes,
+            )
+            .await?;
+        }
+        cancellation.check().map_err(|error| {
+            OperationFailure::new(MaterializeError::Engine(error.to_string()), receipt.work)
+        })?;
+        let written_bytes = writes.iter().try_fold(0_u64, |total, write| {
+            total
+                .checked_add(u64::try_from(write.bytes.len()).unwrap_or(u64::MAX))
+                .ok_or_else(|| {
+                    OperationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work)
+                })
+        })?;
+        let mut write = file
+            .write_all_batch_async(writes)
+            .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+        let mut cancelled = false;
+        tokio::select! {
+            result = &mut write => {
+                result.map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+            }
+            () = cancellation.cancelled() => {
+                cancelled = true;
+                write.await.map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+            }
+        }
+        account_written(receipt, written_bytes, budget)?;
+        if cancelled {
+            return Err(OperationFailure::new(
+                MaterializeError::Engine("operation cancelled".to_owned()),
+                receipt.work,
+            ));
         }
         offset = offset.checked_add(length).ok_or_else(|| {
             OperationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work)
         })?;
     }
+    Ok(metadata)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn read_content_spans<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    reader: &PinnedReader<A, O>,
+    reads: Vec<ResolvedFileRangeReadRequest<'_, A, O>>,
+    maximum_extent_spans: u32,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    receipt: &mut MaterializationReceipt,
+    writes: &mut Vec<acyclic_native_runtime::OwnedWrite>,
+) -> Result<(), OperationFailure<MaterializeError>> {
+    let remaining = receipt
+        .work
+        .remaining(budget)
+        .map_err(|error| OperationFailure::new(MaterializeError::Work(error), receipt.work))?;
+    let read = reader
+        .read_resolved_ranges(
+            &reads,
+            usize::try_from(maximum_extent_spans).unwrap_or(usize::MAX),
+            remaining,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+    receipt.work = add_work(receipt.work, read.work)?;
+    writes.extend(reads.into_iter().zip(read.value).map(|(request, result)| {
+        acyclic_native_runtime::OwnedWrite {
+            offset: request.range.offset,
+            bytes: result.bytes,
+        }
+    }));
     Ok(())
 }
 
-fn write_zeros(
-    file: &mut File,
+fn queue_zero_writes(
+    writes: &mut Vec<acyclic_native_runtime::OwnedWrite>,
     offset: u64,
     length: u64,
     transfer_bytes: u64,
-    receipt: &mut MaterializationReceipt,
-    budget: WorkBudget,
+    work: WorkCounters,
 ) -> Result<(), OperationFailure<MaterializeError>> {
+    if transfer_bytes == 0 {
+        return Err(OperationFailure::new(
+            MaterializeError::InvalidOptions,
+            work,
+        ));
+    }
     let capacity = usize::try_from(transfer_bytes.min(length))
-        .map_err(|_| OperationFailure::new(MaterializeError::InvalidOptions, receipt.work))?;
-    let zeros = vec![0_u8; capacity];
-    file.seek(SeekFrom::Start(offset))
-        .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+        .map_err(|_| OperationFailure::new(MaterializeError::InvalidOptions, work))?;
+    let zeros = bytes::Bytes::from(vec![0_u8; capacity]);
+    let chunks = length.div_ceil(transfer_bytes);
+    writes
+        .try_reserve(usize::try_from(chunks).unwrap_or(usize::MAX))
+        .map_err(|_| OperationFailure::new(MaterializeError::InvalidOptions, work))?;
     let mut remaining = length;
+    let mut position = offset;
     while remaining != 0 {
         let count = usize::try_from(remaining.min(transfer_bytes))
-            .map_err(|_| OperationFailure::new(MaterializeError::InvalidOptions, receipt.work))?;
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "count = min(remaining, transfer_bytes) and remaining <= length by the loop invariant, so count <= min(length, transfer_bytes) = capacity = zeros.len()"
-        )]
-        let zero_slice = &zeros[..count];
-        file.write_all(zero_slice)
-            .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
-        account_written(receipt, count as u64, budget)?;
+            .map_err(|_| OperationFailure::new(MaterializeError::InvalidOptions, work))?;
+        writes.push(acyclic_native_runtime::OwnedWrite {
+            offset: position,
+            bytes: zeros.slice(..count),
+        });
+        position = position.checked_add(count as u64).ok_or_else(|| {
+            OperationFailure::new(MaterializeError::Work(WorkError::Overflow), work)
+        })?;
         remaining -= count as u64;
     }
     Ok(())
@@ -517,9 +877,10 @@ fn create_file(
     host_root: &HostRoot,
     path: &Path,
     work: WorkCounters,
-) -> Result<File, OperationFailure<MaterializeError>> {
+) -> Result<acyclic_native_runtime::NativeFile, OperationFailure<MaterializeError>> {
     host_root
         .create_file(path)
+        .map(acyclic_native_runtime::NativeFile::from_file)
         .map_err(|error| OperationFailure::new(error.into(), work))
 }
 
@@ -619,7 +980,7 @@ pub(crate) fn host_name(name: &LogicalName) -> Result<OsString, MaterializeError
 pub(crate) fn host_name(name: &LogicalName) -> Result<OsString, MaterializeError> {
     use std::os::windows::ffi::OsStringExt;
     match name.encoding() {
-        NameEncoding::Utf8 => std::str::from_utf8(name.as_bytes())
+        NameEncoding::Utf8 | NameEncoding::PosixBytes => std::str::from_utf8(name.as_bytes())
             .map(OsString::from)
             .map_err(|_| MaterializeError::UnrepresentableName),
         NameEncoding::WindowsUtf16Le => {
@@ -634,7 +995,29 @@ pub(crate) fn host_name(name: &LogicalName) -> Result<OsString, MaterializeError
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(OsString::from_wide(&units))
         }
-        NameEncoding::PosixBytes => Err(MaterializeError::UnrepresentableName),
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_name_tests {
+    use super::*;
+
+    #[test]
+    fn posix_profile_names_materialize_through_utf8_on_windows()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let valid = LogicalName::new(
+            NameEncoding::PosixBytes,
+            "uni-é中.txt".as_bytes().to_vec(),
+            255,
+        )?;
+        assert_eq!(host_name(&valid)?, OsString::from("uni-é中.txt"));
+
+        let invalid = LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?;
+        assert!(matches!(
+            host_name(&invalid),
+            Err(MaterializeError::UnrepresentableName)
+        ));
+        Ok(())
     }
 }
 
@@ -799,4 +1182,112 @@ fn metadata_is_unavailable(metadata: FileMetadata) -> bool {
         && matches!(metadata.named_attributes, MetadataField::Unavailable)
         && matches!(metadata.acl, MetadataField::Unavailable)
         && matches!(metadata.security_descriptor, MetadataField::Unavailable)
+}
+
+#[cfg(all(test, any(target_os = "macos", windows)))]
+mod clone_tests {
+    use super::*;
+    use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
+    use crate::model::{
+        AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode,
+        FilesystemProfile, GenerationSelector, Lifecycle, MutationMode, UnicodePolicy,
+        VolumeConfig, VolumeLimits,
+    };
+    use crate::{Fs, VolumeId};
+
+    #[tokio::test]
+    async fn identical_regular_payloads_use_native_clone_without_aliasing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        #[cfg(target_os = "macos")]
+        let directory = tempfile::tempdir()?;
+        #[cfg(windows)]
+        let directory = {
+            if let Some(parent) = std::env::var_os("ACYCLIC_TEST_BLOCK_CLONE_ROOT") {
+                tempfile::Builder::new()
+                    .prefix("acyclic-materialize-clone-")
+                    .tempdir_in(parent)?
+            } else {
+                tempfile::tempdir()?
+            }
+        };
+        let clone_available =
+            crate::probe_native_storage_capabilities(directory.path())?.block_cloning;
+        let limits = VolumeLimits::default();
+        let fs = Fs::memory();
+        let cancellation = CancellationToken::new();
+        let volume = fs
+            .create_volume_with_id(
+                VolumeId::from_bytes([73; 16]),
+                VolumeConfig {
+                    profile: FilesystemProfile::Portable,
+                    concurrency: ConcurrencyMode::Optimistic,
+                    lifecycle: Lifecycle::Ephemeral,
+                    case_sensitivity: CaseSensitivity::Sensitive,
+                    unicode: UnicodePolicy::Preserve,
+                    symbolic_links: true,
+                    hard_links: true,
+                    sparse_files: true,
+                    limits,
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        let mut checkout = volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode {
+                    access: AccessMode::ReadWrite,
+                    consistency: ConsistencyMode::Pinned,
+                    mutations: MutationMode::PrivateOverlay,
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        // The payload deliberately ends between cluster boundaries: Windows
+        // must clone the aligned body and copy the short tail.
+        let bytes = Bytes::from(vec![0xA5; 128 * 1024 + 17]);
+        for name in ["first.bin", "second.bin"] {
+            let path = NamespacePath::new(
+                vec![LogicalName::new(
+                    NameEncoding::Utf8,
+                    name.as_bytes().to_vec(),
+                    limits.maximum_component_bytes,
+                )?],
+                limits,
+            )?;
+            checkout
+                .create_file(path, bytes.clone(), WorkBudget::UNBOUNDED, &cancellation)
+                .await?;
+        }
+        let destination = directory.path().join("view");
+        std::fs::create_dir(&destination)?;
+        let receipt = materialize_checkout(
+            &mut checkout,
+            &MaterializeOptions {
+                destination: destination.clone(),
+                maximum_directory_entries: 16,
+                maximum_extent_spans: 16,
+                transfer_bytes: 64 * 1024,
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        assert_eq!(receipt.value.files, 2);
+        assert_eq!(
+            receipt.value.written_bytes,
+            bytes.len() as u64 * if clone_available { 1 } else { 2 }
+        );
+        let first = destination.join("first.bin");
+        let second = destination.join("second.bin");
+        assert_eq!(std::fs::read(&first)?.as_slice(), bytes.as_ref());
+        assert_eq!(std::fs::read(&second)?.as_slice(), bytes.as_ref());
+        std::fs::write(&first, b"changed")?;
+        assert_eq!(std::fs::read(&second)?.as_slice(), bytes.as_ref());
+        Ok(())
+    }
 }

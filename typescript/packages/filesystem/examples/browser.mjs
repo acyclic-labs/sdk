@@ -6,7 +6,7 @@ import {
 const fs = await openBrowserFs({
   databaseName: "acyclic-fs-example",
   maximumObjectBytes: 64 * 1024 * 1024,
-  objectAcceleration: "opfs-if-available",
+  objectAcceleration: "opfs",
   objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
 });
 const workspace = await fs.createWorkspace("main");

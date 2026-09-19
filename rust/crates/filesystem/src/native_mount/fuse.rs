@@ -3,6 +3,7 @@
 use super::{
     MountDirectoryEntry, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
     MountPath, MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest,
+    metadata_or, system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
 use bytes::Bytes;
@@ -12,8 +13,8 @@ use fuser::{
     ReplyXattr, Request, TimeOrNow,
 };
 use std::collections::{HashMap, VecDeque};
-use std::ffi::{OsStr, OsString};
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -66,8 +67,8 @@ struct FileHandle {
 struct FuseProjection {
     source: Arc<dyn MountFilesystem>,
     writable: bool,
-    fallback_uid: u32,
-    fallback_gid: u32,
+    mount_uid: u32,
+    mount_gid: u32,
     next_inode: u64,
     next_handle: u64,
     by_inode: HashMap<u64, InodeEntry>,
@@ -82,6 +83,23 @@ pub(super) struct FuseSession {
 }
 
 impl FuseSession {
+    pub(super) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
+        let name = path.strip_prefix(b"/").unwrap_or(path);
+        if name.is_empty() || name.contains(&b'/') || name.contains(&0) {
+            return Err(NativeMountError::Driver(
+                "FUSE invalidation requires one root entry name".to_owned(),
+            ));
+        }
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| NativeMountError::Driver("session is stopped".to_owned()))?;
+        session
+            .notifier()
+            .inval_entry(ROOT_INODE, OsStr::from_bytes(name))
+            .map_err(|error| NativeMountError::Driver(error.to_string()))
+    }
+
     pub(super) fn start(
         request: &NativeMountRequest,
         source: Arc<dyn MountFilesystem>,
@@ -114,8 +132,8 @@ impl FuseSession {
         let filesystem = FuseProjection {
             source,
             writable: request.writable,
-            fallback_uid: destination_metadata.uid(),
-            fallback_gid: destination_metadata.gid(),
+            mount_uid: destination_metadata.uid(),
+            mount_gid: destination_metadata.gid(),
             next_inode: ROOT_INODE + 1,
             next_handle: 1,
             by_inode,
@@ -347,7 +365,7 @@ impl FuseProjection {
             MountNodeKind::BlockDevice => FileType::BlockDevice,
             MountNodeKind::Unsupported => return Err(libc::EOPNOTSUPP),
         };
-        let fallback_mode = if self.writable { 0o755 } else { 0o555 };
+        let default_mode = if self.writable { 0o755 } else { 0o555 };
         Ok(FileAttr {
             ino: inode,
             size: node.logical_bytes,
@@ -357,18 +375,18 @@ impl FuseProjection {
             ctime: metadata_time(lookup.metadata.changed_ns),
             crtime: metadata_time(lookup.metadata.created_ns),
             kind,
-            perm: u16::try_from(metadata_u32(lookup.metadata.posix_mode, fallback_mode) & 0o7777)
+            perm: u16::try_from(metadata_or(lookup.metadata.posix_mode, default_mode) & 0o7777)
                 .unwrap_or(0o7777),
             nlink: u32::try_from(node.link_count).unwrap_or(u32::MAX),
-            uid: metadata_u32(lookup.metadata.posix_uid, self.fallback_uid),
-            gid: metadata_u32(lookup.metadata.posix_gid, self.fallback_gid),
+            uid: metadata_or(lookup.metadata.posix_uid, self.mount_uid),
+            gid: metadata_or(lookup.metadata.posix_gid, self.mount_gid),
             rdev: node
                 .device
                 .map(|(major, minor)| native_device_number(major, minor))
                 .transpose()?
                 .unwrap_or(0),
             blksize: 4096,
-            flags: u32::try_from(metadata_u64(lookup.metadata.posix_flags, 0)).unwrap_or(u32::MAX),
+            flags: u32::try_from(metadata_or(lookup.metadata.posix_flags, 0)).unwrap_or(u32::MAX),
         })
     }
 
@@ -1100,16 +1118,14 @@ impl Filesystem for FuseProjection {
                         Err(error) => return reply.error(errno(error)),
                     }
                 }
-                directory
-                    .entries
-                    .front()
-                    .cloned()
-                    .map(|entry| (entry, directory.path.clone(), directory.emitted))
+                directory.entries.pop_front().map(|entry| {
+                    let child_path = directory.path.child(entry.name.clone());
+                    (entry, child_path, directory.emitted)
+                })
             };
-            let Some((entry, directory_path, emitted)) = next_entry else {
+            let Some((entry, child_path, emitted)) = next_entry else {
                 return reply.ok();
             };
-            let child_path = directory_path.child(entry.name.clone());
             let child_inode = match self.intern_enumerated(
                 child_path,
                 &MountLookup {
@@ -1118,7 +1134,10 @@ impl Filesystem for FuseProjection {
                 },
             ) {
                 Ok(inode) => inode,
-                Err(error) => return reply.error(error),
+                Err(error) => {
+                    self.restore_directory_entry(handle, entry);
+                    return reply.error(error);
+                }
             };
             let kind = match entry.node.kind {
                 MountNodeKind::Regular => FileType::RegularFile,
@@ -1128,21 +1147,19 @@ impl Filesystem for FuseProjection {
                 MountNodeKind::Socket => FileType::Socket,
                 MountNodeKind::CharacterDevice => FileType::CharDevice,
                 MountNodeKind::BlockDevice => FileType::BlockDevice,
-                MountNodeKind::Unsupported => return reply.error(libc::EOPNOTSUPP),
+                MountNodeKind::Unsupported => {
+                    self.restore_directory_entry(handle, entry);
+                    return reply.error(libc::EOPNOTSUPP);
+                }
             };
             let next = emitted.saturating_add(1);
-            if reply.add(
-                child_inode,
-                next,
-                kind,
-                OsString::from_vec(entry.name.clone()),
-            ) {
+            if reply.add(child_inode, next, kind, OsStr::from_bytes(&entry.name)) {
+                self.restore_directory_entry(handle, entry);
                 return reply.ok();
             }
             let Some(directory) = self.directories.get_mut(&handle) else {
                 return reply.error(libc::ESTALE);
             };
-            directory.entries.pop_front();
             directory.emitted = next;
         }
     }
@@ -1483,6 +1500,12 @@ impl Filesystem for FuseProjection {
 }
 
 impl FuseProjection {
+    fn restore_directory_entry(&mut self, handle: u64, entry: MountDirectoryEntry) {
+        if let Some(directory) = self.directories.get_mut(&handle) {
+            directory.entries.push_front(entry);
+        }
+    }
+
     fn remove_callback(
         &mut self,
         _request: &Request<'_>,
@@ -1554,20 +1577,6 @@ fn replace_prefix(
     Some(rebased)
 }
 
-fn metadata_u32(field: MetadataField<u32>, unavailable: u32) -> u32 {
-    match field {
-        MetadataField::Unavailable => unavailable,
-        MetadataField::Value(value) => value,
-    }
-}
-
-fn metadata_u64(field: MetadataField<u64>, unavailable: u64) -> u64 {
-    match field {
-        MetadataField::Unavailable => unavailable,
-        MetadataField::Value(value) => value,
-    }
-}
-
 fn metadata_time(field: MetadataField<i64>) -> SystemTime {
     match field {
         MetadataField::Unavailable => SystemTime::UNIX_EPOCH,
@@ -1577,15 +1586,6 @@ fn metadata_time(field: MetadataField<i64>) -> SystemTime {
         MetadataField::Value(value) => {
             SystemTime::UNIX_EPOCH - Duration::from_nanos(value.unsigned_abs())
         }
-    }
-}
-
-fn system_time_ns(value: SystemTime) -> Result<i64, i32> {
-    match value.duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(duration) => i64::try_from(duration.as_nanos()).map_err(|_| libc::EOVERFLOW),
-        Err(error) => i64::try_from(error.duration().as_nanos())
-            .map(|nanos| -nanos)
-            .map_err(|_| libc::EOVERFLOW),
     }
 }
 

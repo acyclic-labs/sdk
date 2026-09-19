@@ -12,7 +12,7 @@ import { DEFAULT_OBJECT_CACHE_OPTIONS, openBrowserFs } from "@acyclic-labs/fs/br
 const fs = await openBrowserFs({
   databaseName: "my-app",
   maximumObjectBytes: 64 * 1024 * 1024,
-  objectAcceleration: "opfs-if-available",
+  objectAcceleration: "opfs",
   objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
 });
 const workspace = await fs.createWorkspace("main");

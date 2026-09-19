@@ -69,10 +69,8 @@ pub enum ConnectError {
 #[derive(Clone)]
 pub struct Client {
     channels: Arc<[Channel]>,
-    follow_channels: Arc<[Channel]>,
     authorization: MetadataValue<Ascii>,
     preferred: Arc<AtomicUsize>,
-    follow_preferred: Arc<AtomicUsize>,
 }
 
 /// Thin server adapter from the canonical wire service to one provider.
@@ -117,24 +115,6 @@ impl Client {
         Self::connect_with_tls(endpoints, bearer_token, None)
     }
 
-    /// Connects ordinary operations and long-lived follows through independent endpoint pools.
-    ///
-    /// Follow endpoints may include disposable Relay processes followed by durable data endpoints;
-    /// every other operation always uses `endpoints`.
-    pub async fn connect_endpoints_with_follow_endpoints<I, S, F, T>(
-        endpoints: I,
-        follow_endpoints: F,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-        F: IntoIterator<Item = T>,
-        T: AsRef<str>,
-    {
-        Self::connect_pools_with_tls(endpoints, follow_endpoints, bearer_token, None)
-    }
-
     /// Connects to a TLS endpoint augmented by one caller-pinned private CA certificate.
     pub async fn connect_with_ca_certificate(
         endpoint: impl AsRef<str>,
@@ -162,27 +142,6 @@ impl Client {
         Self::connect_with_tls(endpoints, bearer_token, Some(certificate_pem.as_ref()))
     }
 
-    /// Connects independent operation and follow pools using one caller-pinned private CA.
-    pub async fn connect_endpoints_with_follow_endpoints_and_ca_certificate<I, S, F, T>(
-        endpoints: I,
-        follow_endpoints: F,
-        bearer_token: impl AsRef<str>,
-        certificate_pem: impl AsRef<[u8]>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-        F: IntoIterator<Item = T>,
-        T: AsRef<str>,
-    {
-        Self::connect_pools_with_tls(
-            endpoints,
-            follow_endpoints,
-            bearer_token,
-            Some(certificate_pem.as_ref()),
-        )
-    }
-
     fn connect_with_tls<I, S>(
         endpoints: I,
         bearer_token: impl AsRef<str>,
@@ -198,34 +157,7 @@ impl Client {
             certificate_pem,
             OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
         )?;
-        let follow_channels = Arc::clone(&channels);
-        Self::from_pools(channels, follow_channels, bearer_token)
-    }
-
-    fn connect_pools_with_tls<I, S, F, T>(
-        endpoints: I,
-        follow_endpoints: F,
-        bearer_token: impl AsRef<str>,
-        certificate_pem: Option<&[u8]>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-        F: IntoIterator<Item = T>,
-        T: AsRef<str>,
-    {
-        let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
-        let channels = Self::channels_with_tls(
-            endpoints,
-            certificate_pem,
-            OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
-        )?;
-        let follow_channels = Self::channels_with_tls(
-            follow_endpoints,
-            certificate_pem,
-            FOLLOW_ENDPOINT_ATTEMPT_TIMEOUT,
-        )?;
-        Self::from_pools(channels, follow_channels, bearer_token)
+        Self::from_channels(channels, bearer_token)
     }
 
     fn channels_with_tls<I, S>(
@@ -267,9 +199,8 @@ impl Client {
         Ok(channels.into())
     }
 
-    fn from_pools(
+    fn from_channels(
         channels: Arc<[Channel]>,
-        follow_channels: Arc<[Channel]>,
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, ConnectError> {
         let authorization = format!("Bearer {}", bearer_token.as_ref())
@@ -277,10 +208,8 @@ impl Client {
             .map_err(|_| ConnectError::InvalidCredential)?;
         Ok(Self {
             channels,
-            follow_channels,
             authorization,
             preferred: Arc::new(AtomicUsize::new(0)),
-            follow_preferred: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -331,8 +260,8 @@ impl Client {
         ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
     {
         self.unary_on(
-            &self.follow_channels,
-            &self.follow_preferred,
+            &self.channels,
+            &self.preferred,
             body,
             FOLLOW_ENDPOINT_ATTEMPT_TIMEOUT,
             &mut call,
@@ -474,8 +403,8 @@ impl RecordCursor {
         if self.remaining.is_some() {
             return;
         }
-        let next = (observed + 1) % self.client.follow_channels.len();
-        let _ = self.client.follow_preferred.compare_exchange(
+        let next = (observed + 1) % self.client.channels.len();
+        let _ = self.client.preferred.compare_exchange(
             observed,
             next,
             Ordering::Relaxed,
@@ -1523,7 +1452,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn endpoint_pools_are_explicit_bounded_and_default_to_one_authority()
+    async fn endpoint_pool_is_explicit_and_bounded()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let shared = Client::connect_endpoints(
             ["https://data-a.invalid", "https://data-b.invalid"],
@@ -1531,35 +1460,9 @@ mod tests {
         )
         .await?;
         assert_eq!(shared.channels.len(), 2);
-        assert!(Arc::ptr_eq(&shared.channels, &shared.follow_channels));
-
-        let split = Client::connect_endpoints_with_follow_endpoints(
-            ["https://data.invalid"],
-            ["https://relay-a.invalid", "https://data.invalid"],
-            "fixture",
-        )
-        .await?;
-        assert_eq!(split.channels.len(), 1);
-        assert_eq!(split.follow_channels.len(), 2);
-        assert!(!Arc::ptr_eq(&split.channels, &split.follow_channels));
-        assert!(!Arc::ptr_eq(&split.preferred, &split.follow_preferred));
 
         assert!(matches!(
-            Client::connect_endpoints_with_follow_endpoints(
-                std::iter::empty::<&str>(),
-                ["https://relay.invalid"],
-                "fixture",
-            )
-            .await,
-            Err(ConnectError::NoEndpoints)
-        ));
-        assert!(matches!(
-            Client::connect_endpoints_with_follow_endpoints(
-                ["https://data.invalid"],
-                std::iter::empty::<&str>(),
-                "fixture",
-            )
-            .await,
+            Client::connect_endpoints(std::iter::empty::<&str>(), "fixture").await,
             Err(ConnectError::NoEndpoints)
         ));
         assert!(matches!(
@@ -1677,9 +1580,8 @@ mod tests {
                 idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"slow-tail"))?),
             })
             .await?;
-        let transport = Client::from_pools(
+        let transport = Client::from_channels(
             Arc::from([stalled_channel(), provider_channel(Service::new(provider))]),
-            Arc::from([unavailable_channel()]),
             "fixture",
         )?;
         let tail = tokio::time::timeout(
@@ -1688,58 +1590,6 @@ mod tests {
         )
         .await??;
         assert_eq!(tail, 1);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn finite_reads_use_data_while_follows_use_the_independent_pool()
-    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let data = Arc::new(MemoryStream::default());
-        let relay = Arc::new(MemoryStream::default());
-        for (provider, value, key) in [
-            (&data, Bytes::from_static(b"durable"), b"data".as_slice()),
-            (&relay, Bytes::from_static(b"relayed"), b"relay".as_slice()),
-        ] {
-            provider
-                .append(AppendRequest {
-                    path: StreamPath::new("accounts/events")?,
-                    records: vec![value],
-                    if_tail: Some(0),
-                    idempotency_key: Some(IdempotencyKey::new(Bytes::copy_from_slice(key))?),
-                })
-                .await?;
-        }
-
-        let transport = Client::from_pools(
-            Arc::from([unavailable_channel(), in_memory_channel(data)]),
-            Arc::from([stalled_channel(), in_memory_channel(relay)]),
-            "fixture",
-        )?;
-        let data_preferred = Arc::clone(&transport.preferred);
-        let follow_preferred = Arc::clone(&transport.follow_preferred);
-        let stream = crate::StreamClient::new(Arc::new(transport)).stream("accounts/events")?;
-
-        let finite = stream
-            .read(0, 1)
-            .await?
-            .next()
-            .await
-            .ok_or("finite read ended")??;
-        assert_eq!(finite.value, Bytes::from_static(b"durable"));
-        assert_eq!(data_preferred.load(Ordering::Relaxed), 1);
-        assert_eq!(follow_preferred.load(Ordering::Relaxed), 0);
-
-        let followed = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            stream
-                .follow(0)
-                .await?
-                .next()
-                .await
-                .ok_or(StreamError::Unavailable)?
-        })
-        .await??;
-        assert_eq!(followed.value, Bytes::from_static(b"relayed"));
-        assert_eq!(follow_preferred.load(Ordering::Relaxed), 1);
         Ok(())
     }
 
@@ -1760,15 +1610,14 @@ mod tests {
                 idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"resume"))?),
             })
             .await?;
-        let transport = Client::from_pools(
-            Arc::from([in_memory_channel(Arc::clone(&durable))]),
+        let transport = Client::from_channels(
             Arc::from([
                 provider_channel(Service::new(Arc::clone(&ended))),
                 in_memory_channel(durable),
             ]),
             "fixture",
         )?;
-        let preferred = Arc::clone(&transport.follow_preferred);
+        let preferred = Arc::clone(&transport.preferred);
         let stream = crate::StreamClient::new(Arc::new(transport)).stream("accounts/events")?;
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -1786,8 +1635,7 @@ mod tests {
 
         // A stale cursor cannot overwrite a newer successful endpoint choice.
         let stale = RecordCursor {
-            client: Client::from_pools(
-                Arc::from([unavailable_channel()]),
+            client: Client::from_channels(
                 Arc::from([unavailable_channel(), unavailable_channel()]),
                 "fixture",
             )?,
@@ -1796,9 +1644,9 @@ mod tests {
             remaining: None,
             active: None,
         };
-        stale.client.follow_preferred.store(1, Ordering::Relaxed);
+        stale.client.preferred.store(1, Ordering::Relaxed);
         stale.advance_follow(0);
-        assert_eq!(stale.client.follow_preferred.load(Ordering::Relaxed), 1);
+        assert_eq!(stale.client.preferred.load(Ordering::Relaxed), 1);
         Ok(())
     }
 

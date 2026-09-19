@@ -52,12 +52,13 @@ const artifacts = readdirSync(artifactDirectory)
   .filter(name => name.endsWith(".crate") || name.endsWith(".tgz"))
   .sort();
 if (
-  artifacts.length !== 3
+  artifacts.length !== 4
   || !artifacts.includes("acyclic-harness.tgz")
   || artifacts.filter(name => /^acyclic-harness-[^-].*\.crate$/.test(name)).length !== 1
+  || artifacts.filter(name => /^acyclic-native-runtime-[^-].*\.crate$/.test(name)).length !== 1
   || artifacts.filter(name => /^acyclic-stream-[^-].*\.crate$/.test(name)).length !== 1
 ) {
-  throw new Error("expected exact Stream, Harness, and npm archives");
+  throw new Error("expected exact native runtime, Stream, Harness, and npm archives");
 }
 const artifactEvidence = artifacts.map(name => ({
   name,

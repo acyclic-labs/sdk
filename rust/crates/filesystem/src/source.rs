@@ -7,11 +7,12 @@ use crate::kernel::{
     decode_source_fact, encode_source_fact, source_authority_id, volume_authority_id,
 };
 use crate::model::{CheckoutMode, GenerationSelector};
+use crate::path::PortablePath;
 use crate::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, CancellationToken, CaptureOptions,
-    Checkout, CheckoutCommitOutcome, CreateAuthorityOutcome, Fs, Generation, IdempotencyKey,
-    NativeWatch, NativeWatchOptions, ReplayLimit, WatchBatch, WatchInvalidationReason, WorkBudget,
-    Workspace,
+    CapturePolicy, Checkout, CheckoutCommitOutcome, CreateAuthorityOutcome, Fs, Generation,
+    IdempotencyKey, NativeWatch, NativeWatchOptions, ReplayLimit, WatchBatch,
+    WatchInvalidationReason, WorkBudget, Workspace,
 };
 use bytes::Bytes;
 use std::path::{Path, PathBuf};
@@ -29,7 +30,7 @@ pub enum SourceMode {
 }
 
 /// Exact bounded native-source configuration.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceOptions {
     /// Source advancement behavior.
     pub mode: SourceMode,
@@ -39,6 +40,8 @@ pub struct SourceOptions {
     pub maximum_extent_spans: u32,
     /// Maximum pending native hints before continuity is invalidated.
     pub maximum_queued_changes: u32,
+    /// Canonical portable prefixes omitted from capture and deletion inference.
+    pub excluded_paths: Vec<PortablePath>,
 }
 
 impl Default for SourceOptions {
@@ -48,6 +51,7 @@ impl Default for SourceOptions {
             maximum_paths: 262_144,
             maximum_extent_spans: 65_536,
             maximum_queued_changes: 65_536,
+            excluded_paths: Vec::new(),
         }
     }
 }
@@ -128,6 +132,7 @@ struct SourceSession<A, O> {
     checkout: Checkout<A, O>,
     watcher: NativeWatch,
     capture: CaptureOptions,
+    capture_policy: CapturePolicy,
     mode: SourceMode,
     maximum_queued_changes: u32,
     state: SourceState,
@@ -151,6 +156,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
     /// Returns the current fail-closed semantic state.
     pub async fn state(&self) -> SourceState {
         self.inner.lock().await.state
+    }
+
+    /// Re-establishes a clean source baseline after the core materializer has
+    /// installed a published workspace generation into the attached root.
+    ///
+    /// A fresh checkout is opened at authenticated workspace HEAD and a full
+    /// bounded rescan proves the resulting host tree. Any concurrent host
+    /// change is captured as a later generation instead of being discarded.
+    pub async fn acknowledge_materialization(
+        &self,
+        key: IdempotencyKey,
+    ) -> Result<ReconcileOutcome<A, O>, SourceError> {
+        let mut session = self.inner.lock().await;
+        refresh_source_authority(&mut session).await?;
+        session.checkout = session
+            .workspace
+            .volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(engine)?
+            .value;
+        session.state = SourceState::NeedsRescan(WatchInvalidationReason::InitialSnapshotRequired);
+        begin_source_operation(&mut session, key, SourceOperation::Rescan).await?;
+        rescan_session(
+            &mut session,
+            key,
+            SourceOperation::Rescan,
+            SourceState::Clean,
+        )
+        .await
     }
 
     /// Captures one bounded contiguous watcher interval and publishes it.
@@ -212,10 +252,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
             return reconcile_outcome_from_fact(&session, fact);
         }
         let capture = session.capture.clone();
-        crate::capture_watch_batch(
+        let policy = session.capture_policy.clone();
+        crate::capture_watch_batch_with_policy(
             &mut session.checkout,
             batch,
             &capture,
+            &policy,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
@@ -325,9 +367,11 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     terminal_state: SourceState,
 ) -> Result<ReconcileOutcome<A, O>, SourceError> {
     session.watcher.begin_rescan().map_err(engine)?;
-    let capture = crate::capture_baseline(
+    let policy = session.capture_policy.clone();
+    let capture = crate::capture_baseline_with_policy(
         &mut session.checkout,
         &session.capture,
+        &policy,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     )
@@ -351,10 +395,12 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         return reconcile_outcome_from_fact(session, fact);
     }
     let capture = session.capture.clone();
-    crate::capture_watch_batch(
+    let policy = session.capture_policy.clone();
+    crate::capture_watch_batch_with_policy(
         &mut session.checkout,
         trailing,
         &capture,
+        &policy,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     )
@@ -588,10 +634,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             maximum_paths: options.maximum_paths,
             maximum_extent_spans: options.maximum_extent_spans,
         };
+        let capture_policy = CapturePolicy::excluding(
+            options
+                .excluded_paths
+                .iter()
+                .map(|path| {
+                    crate::kernel::NamespacePath::from_portable(
+                        path,
+                        workspace.volume.config().limits,
+                    )
+                    .map_err(engine)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+        .map_err(engine)?;
         let generation = workspace.head().await.map_err(engine)?;
-        let authority_head =
-            attach_source_authority(&workspace, watcher.root_identity(), options, generation.id)
-                .await?;
+        let authority_head = attach_source_authority(
+            &workspace,
+            watcher.root_identity(),
+            &options,
+            capture_policy.fingerprint(),
+            generation.id,
+        )
+        .await?;
         let checkout = workspace
             .volume
             .checkout(
@@ -609,6 +674,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 checkout,
                 watcher,
                 capture,
+                capture_policy,
                 mode: options.mode,
                 maximum_queued_changes: options.maximum_queued_changes,
                 state: SourceState::NeedsRescan(WatchInvalidationReason::InitialSnapshotRequired),
@@ -633,7 +699,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 async fn attach_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
     root_identity: crate::NativeRootIdentity,
-    options: SourceOptions,
+    options: &SourceOptions,
+    capture_policy: Digest,
     generation_id: crate::GenerationId,
 ) -> Result<Head, SourceError> {
     let authority_id = source_authority_id(workspace.volume.id());
@@ -661,6 +728,8 @@ async fn attach_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             || latest.maximum_paths != options.maximum_paths
             || latest.maximum_extent_spans != options.maximum_extent_spans
             || latest.maximum_queued_changes != options.maximum_queued_changes
+            || (latest.schema_version == 1 && !options.excluded_paths.is_empty())
+            || (latest.schema_version >= 2 && latest.capture_policy != capture_policy)
         {
             return Err(SourceError::BindingMismatch);
         }
@@ -669,12 +738,14 @@ async fn attach_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         workspace,
         head,
         SourceFact {
+            schema_version: 2,
             volume_id: workspace.volume.id(),
             root_identity: root_identity.to_bytes(),
             mode: durable_mode(options.mode),
             maximum_paths: options.maximum_paths,
             maximum_extent_spans: options.maximum_extent_spans,
             maximum_queued_changes: options.maximum_queued_changes,
+            capture_policy,
             state: DurableSourceState::NeedsRescan(SourceInvalidation::InitialSnapshotRequired),
             generation_id,
         },
@@ -939,6 +1010,8 @@ fn validate_source_fact_binding<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         || fact.maximum_paths != session.capture.maximum_paths
         || fact.maximum_extent_spans != session.capture.maximum_extent_spans
         || fact.maximum_queued_changes != session.maximum_queued_changes
+        || (fact.schema_version == 1 && session.capture_policy != CapturePolicy::allow_all())
+        || (fact.schema_version >= 2 && fact.capture_policy != session.capture_policy.fingerprint())
     {
         return Err(SourceError::BindingMismatch);
     }
@@ -1103,12 +1176,14 @@ fn source_fact<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation_id: crate::GenerationId,
 ) -> SourceFact {
     SourceFact {
+        schema_version: 2,
         volume_id: session.workspace.volume.id(),
         root_identity: session.watcher.root_identity().to_bytes(),
         mode: durable_mode(session.mode),
         maximum_paths: session.capture.maximum_paths,
         maximum_extent_spans: session.capture.maximum_extent_spans,
         maximum_queued_changes: session.maximum_queued_changes,
+        capture_policy: session.capture_policy.fingerprint(),
         state: durable_state(state),
         generation_id,
     }
@@ -1381,6 +1456,25 @@ mod tests {
     }
 
     impl AsyncAuthorityStore for GatedAuthorityStore {
+        async fn fork_generation_authority(
+            &self,
+            source: crate::GenerationForkSource,
+            destination_authority: crate::foundation::AuthorityId,
+            operation_id: crate::foundation::OperationId,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> crate::AuthorityResult<CreateAuthorityOutcome> {
+            self.inner
+                .fork_generation_authority(
+                    source,
+                    destination_authority,
+                    operation_id,
+                    budget,
+                    cancellation,
+                )
+                .await
+        }
+
         async fn create_authority(
             &self,
             authority_id: crate::foundation::AuthorityId,
@@ -1499,18 +1593,21 @@ mod tests {
         begin_source_operation(&mut session, key, operation).await?;
         session.watcher.begin_rescan()?;
         let capture = session.capture.clone();
-        crate::capture_baseline(
+        let policy = session.capture_policy.clone();
+        crate::capture_baseline_with_policy(
             &mut session.checkout,
             &capture,
+            &policy,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
         .await?;
         let trailing = session.watcher.finish_rescan()?;
-        crate::capture_watch_batch(
+        crate::capture_watch_batch_with_policy(
             &mut session.checkout,
             trailing,
             &capture,
+            &policy,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
@@ -1568,6 +1665,38 @@ mod tests {
             sealed.read("/before.txt", 16).await?,
             Bytes::from_static(b"after")
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn attached_directory_excludes_private_prefixes_from_all_rescans()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join(".git"))?;
+        std::fs::write(root.path().join(".git").join("config"), b"private")?;
+        std::fs::write(root.path().join("visible.txt"), b"visible")?;
+        let options = SourceOptions {
+            excluded_paths: vec![PortablePath::parse(
+                "/.git",
+                crate::model::VolumeLimits::default(),
+            )?],
+            ..SourceOptions::default()
+        };
+        let workspace =
+            Box::pin(Fs::memory().attach_directory("filtered", root.path(), options)).await?;
+        assert_eq!(
+            workspace.read("/visible.txt", 16).await?,
+            Bytes::from_static(b"visible")
+        );
+        assert!(workspace.read("/.git/config", 16).await.is_err());
+
+        std::fs::write(root.path().join(".git").join("config"), b"changed")?;
+        let source = workspace.source().ok_or("source handle missing")?;
+        assert!(matches!(
+            Box::pin(source.rescan()).await?,
+            ReconcileOutcome::Clean(_)
+        ));
+        assert!(workspace.read("/.git/config", 16).await.is_err());
         Ok(())
     }
 
@@ -1898,6 +2027,14 @@ mod tests {
         ))
         .await?;
         let source_key = IdempotencyKey::from_bytes([66; 16]);
+        let acknowledged = workspace
+            .source()
+            .ok_or("source missing")?
+            .inner
+            .lock()
+            .await
+            .checkout
+            .generation_id();
         gate.arm(
             source_volume_operation_id(source_key, SourceOperation::Reconcile),
             AppendGatePhase::Before,
@@ -1921,6 +2058,7 @@ mod tests {
                 return Err("concurrent workspace advance was rejected".into());
             }
         };
+        assert_ne!(advanced.id(), acknowledged);
         gate.release();
 
         assert!(matches!(operation.await??, ReconcileOutcome::Conflict));

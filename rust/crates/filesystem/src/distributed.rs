@@ -6,11 +6,12 @@ use crate::foundation::{
     Sequence, authority_commit_digest,
 };
 use crate::kernel::{decode_published_generation, decode_volume_created, volume_authority_id};
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters};
+use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     AppendOutcome as FsAppendOutcome, AuthorityReceipt, AuthorityResult, AuthorityStoreError,
     CreateAuthorityOutcome, FenceOutcome, ObjectId, ObjectRead, ObjectReadRequest,
-    ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStoreError, ReplayLimit, object_digest,
+    ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStoreError, ObjectWrite, ReplayLimit,
+    object_digest,
 };
 use crate::streams_record::StreamsDurableRecord;
 use crate::{AsyncAuthorityStore, AsyncObjectStore};
@@ -19,6 +20,7 @@ use acyclic_objects::{
 };
 use bytes::Bytes;
 use futures::StreamExt;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 const STREAM_RECORD_LIMIT: u64 = acyclic_stream::MAX_RECORD_BYTES as u64;
@@ -220,22 +222,24 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     }
 
     /// Resolves the source lineage path and fork tail for one generation fork.
-    ///
-    /// Returns `None` when the source generation locator is absent, signaling
-    /// the caller should fall back to plain authority creation.
     async fn resolve_source_fork_point(
         &self,
         source_authority: AuthorityId,
         source_generation: GenerationId,
-    ) -> Result<Option<(acyclic_stream::StreamPath, u64)>, OperationFailure<AuthorityStoreError>>
-    {
+    ) -> Result<(acyclic_stream::StreamPath, u64), OperationFailure<AuthorityStoreError>> {
         let source_lineage =
             lineage_path(source_authority).map_err(OperationFailure::before_work)?;
         let source_locator = generation_path(source_authority, source_generation)
             .map_err(OperationFailure::before_work)?;
         let locator_record = match read_one(self.provider.as_ref(), source_locator, 0).await {
             Ok(record) => record,
-            Err(AuthorityStoreError::Missing) => return Ok(None),
+            Err(AuthorityStoreError::Missing) => {
+                return Err(OperationFailure::before_work(
+                    AuthorityStoreError::Rejected(
+                        "source authority has no generation lineage locator".to_owned(),
+                    ),
+                ));
+            }
             Err(error) => return Err(OperationFailure::before_work(error)),
         };
         let forked_at =
@@ -259,19 +263,18 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 "generation locator and lineage disagree".to_owned(),
             )));
         }
-        Ok(Some((source_lineage, forked_at)))
+        Ok((source_lineage, forked_at))
     }
 }
 
 impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityStore<P> {
-    fn supports_native_generation_fork(&self) -> bool {
+    fn supports_generation_lineage_prefix(&self) -> bool {
         true
     }
 
     async fn fork_generation_authority(
         &self,
-        source_authority: AuthorityId,
-        source_generation: GenerationId,
+        source: crate::GenerationForkSource,
         destination_authority: AuthorityId,
         operation_id: OperationId,
         budget: WorkBudget,
@@ -280,14 +283,14 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         cancellation
             .check()
             .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let Some((source_lineage, forked_at)) = self
-            .resolve_source_fork_point(source_authority, source_generation)
-            .await?
-        else {
+        if source.lineage == crate::GenerationFork::Independent {
             return self
                 .create_authority(destination_authority, Epoch::GENESIS, budget, cancellation)
                 .await;
-        };
+        }
+        let (source_lineage, forked_at) = self
+            .resolve_source_fork_point(source.authority, source.generation)
+            .await?;
         let destination_records =
             records_path(destination_authority).map_err(OperationFailure::before_work)?;
         let destination_root =
@@ -296,10 +299,10 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             epochs_path(destination_authority).map_err(OperationFailure::before_work)?;
         let destination_lineage =
             lineage_path(destination_authority).map_err(OperationFailure::before_work)?;
-        let destination_locator = generation_path(destination_authority, source_generation)
+        let destination_locator = generation_path(destination_authority, source.generation)
             .map_err(OperationFailure::before_work)?;
         if let Some(head) = self
-            .existing_fork_destination(destination_authority, source_generation, forked_at)
+            .existing_fork_destination(destination_authority, source.generation, forked_at)
             .await
             .map_err(OperationFailure::before_work)?
         {
@@ -336,7 +339,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                     .checked_add(authority_read_work(6))
                     .map_err(|error| OperationFailure::new(error.into(), work))?;
                 let head = self
-                    .existing_fork_destination(destination_authority, source_generation, forked_at)
+                    .existing_fork_destination(destination_authority, source.generation, forked_at)
                     .await
                     .map_err(|error| OperationFailure::new(error, work))?
                     .ok_or_else(|| {
@@ -856,6 +859,23 @@ pub struct ProviderObjectStore<P> {
     bucket: wire::BucketRef,
 }
 
+fn provider_put_request(bucket: &wire::BucketRef, write: &ObjectWrite) -> PutRequest {
+    PutRequest {
+        bucket: bucket.clone(),
+        object_key: object_key(write.object_id),
+        body: write.bytes.clone(),
+        metadata: wire::ObjectMetadata {
+            content_type: "application/vnd.acyclic.fs-object-v1".to_owned(),
+            ..wire::ObjectMetadata::default()
+        },
+        condition: Some(Condition::IfAbsent),
+        idempotency_key: Some(format!(
+            "fs-object-{}",
+            hex::encode(write.object_id.digest.as_bytes())
+        )),
+    }
+}
+
 impl<P> ProviderObjectStore<P> {
     /// Binds an authenticated provider to the account's dedicated filesystem bucket.
     #[must_use]
@@ -938,6 +958,64 @@ impl<P: ObjectsProvider> AsyncObjectStore for ProviderObjectStore<P> {
         }
     }
 
+    async fn put_many(
+        &self,
+        writes: &[ObjectWrite],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(ObjectStoreError::Cancelled))?;
+        if writes.is_empty() {
+            return Err(OperationFailure::before_work(ObjectStoreError::Rejected(
+                "object write batch is empty".to_owned(),
+            )));
+        }
+        let (requests, unique_writes, mut work) =
+            prepare_provider_put_batch(&self.bucket, writes, budget, cancellation)?;
+        work.backend_write_operations = 1;
+        admit(work, budget)?;
+        let results = self.provider.put_batch(requests).await;
+        if results.len() != unique_writes.len() {
+            return Err(OperationFailure::new(ObjectStoreError::Corrupt, work));
+        }
+        for (write_index, result) in unique_writes.into_iter().zip(results) {
+            let write = writes
+                .get(write_index)
+                .ok_or_else(|| OperationFailure::new(ObjectStoreError::Corrupt, work))?;
+            let byte_count = u64::try_from(write.bytes.len()).unwrap_or(u64::MAX);
+            match result {
+                Ok(version) if version.size == byte_count => {}
+                Ok(_) => return Err(OperationFailure::new(ObjectStoreError::Corrupt, work)),
+                Err(ObjectsError::PreconditionFailed) => {
+                    cancellation
+                        .check()
+                        .map_err(|_| OperationFailure::new(ObjectStoreError::Cancelled, work))?;
+                    work.backend_read_operations = work.backend_read_operations.saturating_add(1);
+                    let existing = self
+                        .provider
+                        .get(read_request(&self.bucket, write.object_id, byte_count))
+                        .await
+                        .map_err(|error| OperationFailure::new(map_objects_error(error), work))?;
+                    let existing_bytes = u64::try_from(existing.body.len()).unwrap_or(u64::MAX);
+                    work.object_bytes_read = work.object_bytes_read.saturating_add(existing_bytes);
+                    work.bytes_hashed = work.bytes_hashed.saturating_add(existing_bytes);
+                    if existing_bytes != byte_count
+                        || object_digest(write.object_id.kind, &existing.body)
+                            != write.object_id.digest
+                    {
+                        return Err(OperationFailure::new(ObjectStoreError::Corrupt, work));
+                    }
+                }
+                Err(error) => {
+                    return Err(OperationFailure::new(map_objects_error(error), work));
+                }
+            }
+        }
+        success((), work, budget)
+    }
+
     async fn read(
         &self,
         object_id: ObjectId,
@@ -999,33 +1077,83 @@ impl<P: ObjectsProvider> AsyncObjectStore for ProviderObjectStore<P> {
                 "object read batch is empty".to_owned(),
             )));
         }
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(ObjectStoreError::Cancelled))?;
         let mut values = Vec::new();
         values.try_reserve_exact(requests.len()).map_err(|_| {
             OperationFailure::before_work(ObjectStoreError::Rejected(
                 "object batch allocation failed".to_owned(),
             ))
         })?;
-        let mut work = WorkCounters::default();
-        for request in requests {
-            let remaining = work
-                .remaining(budget)
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
-            let receipt = self
-                .read(
-                    request.object_id,
-                    request.maximum_bytes,
-                    remaining,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| {
-                    let combined = work.checked_add(*failure.work).unwrap_or(work);
-                    OperationFailure::new(failure.error, combined)
-                })?;
+        let provider_requests = requests
+            .iter()
+            .map(|request| read_request(&self.bucket, request.object_id, request.maximum_bytes))
+            .collect();
+        let results = self.provider.get_batch(provider_requests).await;
+        if results.len() != requests.len() {
+            return Err(OperationFailure::before_work(ObjectStoreError::Corrupt));
+        }
+        let vector_bytes = u64::try_from(
+            requests
+                .len()
+                .saturating_mul(size_of::<ObjectRead>() + size_of::<GetRequest>()),
+        )
+        .unwrap_or(u64::MAX);
+        let retained_bytes = results.iter().try_fold(0_u64, |total, result| {
+            total.checked_add(result.as_ref().map_or(0, |value| {
+                u64::try_from(value.body.len()).unwrap_or(u64::MAX)
+            }))
+        });
+        let retained_bytes = retained_bytes.ok_or_else(|| {
+            OperationFailure::before_work(ObjectStoreError::Work(WorkError::Overflow))
+        })?;
+        let mut work = WorkCounters {
+            backend_read_operations: 1,
+            allocation_operations: 2,
+            peak_allocation_bytes: vector_bytes.checked_add(retained_bytes).ok_or_else(|| {
+                OperationFailure::before_work(ObjectStoreError::Work(WorkError::Overflow))
+            })?,
+            ..WorkCounters::default()
+        };
+        work.verify(budget)
+            .map_err(|error| OperationFailure::before_work(error.into()))?;
+        for (request, result) in requests.iter().zip(results) {
+            cancellation
+                .check()
+                .map_err(|_| OperationFailure::new(ObjectStoreError::Cancelled, work))?;
+            let value =
+                result.map_err(|error| OperationFailure::new(map_objects_error(error), work))?;
+            let observed = u64::try_from(value.body.len()).unwrap_or(u64::MAX);
             work = work
-                .checked_add(receipt.work)
+                .checked_add(WorkCounters {
+                    object_probes: 1,
+                    object_bytes_read: observed,
+                    bytes_hashed: observed,
+                    bytes_copied: observed,
+                    ..WorkCounters::default()
+                })
                 .map_err(|error| OperationFailure::new(error.into(), work))?;
-            values.push(receipt.value);
+            work.verify(budget)
+                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            if observed > request.maximum_bytes {
+                return Err(OperationFailure::new(
+                    ObjectStoreError::TooLarge {
+                        observed,
+                        maximum: request.maximum_bytes,
+                    },
+                    work,
+                ));
+            }
+            if object_digest(request.object_id.kind, &value.body) != request.object_id.digest {
+                return Err(OperationFailure::new(ObjectStoreError::Corrupt, work));
+            }
+            values.push(ObjectRead {
+                bytes: value.body,
+                retention: ObjectReadRetention::Owned {
+                    logical_bytes: observed,
+                },
+            });
         }
         success(values, work, budget)
     }
@@ -1445,6 +1573,85 @@ fn read_request(bucket: &wire::BucketRef, object_id: ObjectId, maximum_bytes: u6
     }
 }
 
+fn prepare_provider_put_batch(
+    bucket: &wire::BucketRef,
+    writes: &[ObjectWrite],
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<PutRequest>, Vec<usize>, WorkCounters), OperationFailure<ObjectStoreError>> {
+    let minimum_bytes =
+        u64::try_from(writes.len().saturating_mul(size_of::<PutRequest>())).unwrap_or(u64::MAX);
+    let prospective = WorkCounters {
+        allocation_operations: 1,
+        peak_allocation_bytes: minimum_bytes,
+        ..WorkCounters::default()
+    };
+    prospective
+        .verify(budget)
+        .map_err(|error| OperationFailure::before_work(error.into()))?;
+    let mut requests = Vec::new();
+    requests.try_reserve_exact(writes.len()).map_err(|_| {
+        OperationFailure::before_work(ObjectStoreError::Rejected(
+            "object batch allocation failed".to_owned(),
+        ))
+    })?;
+    let mut work = WorkCounters {
+        allocation_operations: 1,
+        peak_allocation_bytes: u64::try_from(
+            requests.capacity().saturating_mul(size_of::<PutRequest>()),
+        )
+        .unwrap_or(u64::MAX),
+        ..WorkCounters::default()
+    };
+    admit(work, budget)?;
+    let mut unique: BTreeMap<ObjectId, usize> = BTreeMap::new();
+    let mut unique_writes = Vec::new();
+    for (write_index, write) in writes.iter().enumerate() {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::new(ObjectStoreError::Cancelled, work))?;
+        if object_digest(write.object_id.kind, &write.bytes) != write.object_id.digest {
+            return Err(OperationFailure::new(
+                ObjectStoreError::DigestMismatch,
+                work,
+            ));
+        }
+        let byte_count = u64::try_from(write.bytes.len()).unwrap_or(u64::MAX);
+        work.object_bytes_written = work
+            .object_bytes_written
+            .checked_add(byte_count)
+            .ok_or_else(|| {
+                OperationFailure::new(
+                    ObjectStoreError::Rejected("object batch byte count overflowed".to_owned()),
+                    work,
+                )
+            })?;
+        work.bytes_hashed = work.bytes_hashed.checked_add(byte_count).ok_or_else(|| {
+            OperationFailure::new(
+                ObjectStoreError::Rejected("object batch byte count overflowed".to_owned()),
+                work,
+            )
+        })?;
+        admit(work, budget)?;
+        if let Some(existing_index) = unique.get(&write.object_id) {
+            if writes
+                .get(*existing_index)
+                .is_none_or(|existing| existing.bytes != write.bytes)
+            {
+                return Err(OperationFailure::new(
+                    ObjectStoreError::DigestMismatch,
+                    work,
+                ));
+            }
+        } else {
+            unique.insert(write.object_id, write_index);
+            unique_writes.push(write_index);
+            requests.push(provider_put_request(bucket, write));
+        }
+    }
+    Ok((requests, unique_writes, work))
+}
+
 fn map_objects_error(error: ObjectsError) -> ObjectStoreError {
     match error {
         ObjectsError::NotFound => ObjectStoreError::Missing,
@@ -1471,6 +1678,158 @@ mod tests {
     use crate::kernel::{VolumeCreated, encode_publication_payload, encode_volume_created};
     use crate::model::{Lifecycle, VolumeConfig};
     use crate::storage::ObjectKind;
+
+    #[tokio::test]
+    async fn provider_object_batch_reads_once_and_preserves_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (provider, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
+        let store = ProviderObjectStore::new(Arc::new(provider), bucket);
+        let first_bytes = Bytes::from_static(b"first");
+        let second_bytes = Bytes::from_static(b"second");
+        let first = ObjectId {
+            kind: ObjectKind::BlobChunk,
+            digest: object_digest(ObjectKind::BlobChunk, &first_bytes),
+        };
+        let second = ObjectId {
+            kind: ObjectKind::BlobChunk,
+            digest: object_digest(ObjectKind::BlobChunk, &second_bytes),
+        };
+        let cancellation = CancellationToken::new();
+        store
+            .put(
+                first,
+                first_bytes.clone(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        store
+            .put(
+                second,
+                second_bytes.clone(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        let receipt = store
+            .read_many(
+                &[
+                    ObjectReadRequest {
+                        object_id: second,
+                        maximum_bytes: 6,
+                    },
+                    ObjectReadRequest {
+                        object_id: first,
+                        maximum_bytes: 5,
+                    },
+                ],
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        assert_eq!(
+            receipt.value.first().map(|value| &value.bytes),
+            Some(&second_bytes)
+        );
+        assert_eq!(
+            receipt.value.get(1).map(|value| &value.bytes),
+            Some(&first_bytes)
+        );
+        assert_eq!(receipt.work.backend_read_operations, 1);
+        assert_eq!(receipt.work.object_probes, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn provider_object_batch_counts_one_backend_write()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (provider, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
+        let store = ProviderObjectStore::new(Arc::new(provider), bucket);
+        let first_bytes = Bytes::from_static(b"first");
+        let second_bytes = Bytes::from_static(b"second");
+        let writes = [
+            ObjectWrite {
+                object_id: ObjectId {
+                    kind: ObjectKind::BlobChunk,
+                    digest: object_digest(ObjectKind::BlobChunk, &first_bytes),
+                },
+                bytes: first_bytes,
+            },
+            ObjectWrite {
+                object_id: ObjectId {
+                    kind: ObjectKind::BlobChunk,
+                    digest: object_digest(ObjectKind::BlobChunk, &second_bytes),
+                },
+                bytes: second_bytes,
+            },
+        ];
+        let receipt = store
+            .put_many(&writes, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?;
+        assert_eq!(receipt.work.backend_write_operations, 1);
+        assert_eq!(receipt.work.object_bytes_written, 11);
+        Ok(())
+    }
+
+    #[test]
+    fn provider_put_batch_interns_identical_object_requests()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let bucket = wire::BucketRef {
+            bucket_id: "bucket".to_owned(),
+            name: "bucket".to_owned(),
+        };
+        let bytes = Bytes::from_static(b"shared");
+        let object_id = ObjectId {
+            kind: ObjectKind::BlobChunk,
+            digest: object_digest(ObjectKind::BlobChunk, &bytes),
+        };
+        let writes = [
+            ObjectWrite {
+                object_id,
+                bytes: bytes.clone(),
+            },
+            ObjectWrite { object_id, bytes },
+        ];
+        let (requests, unique_writes, work) = prepare_provider_put_batch(
+            &bucket,
+            &writes,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )?;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(unique_writes, [0]);
+        assert_eq!(work.object_bytes_written, 12);
+        assert_eq!(work.bytes_hashed, 12);
+        Ok(())
+    }
+
+    #[test]
+    fn provider_put_batch_rejects_unadmitted_request_allocation() {
+        let bucket = wire::BucketRef {
+            bucket_id: "bucket".to_owned(),
+            name: "bucket".to_owned(),
+        };
+        let bytes = Bytes::from_static(b"body");
+        let writes = [ObjectWrite {
+            object_id: ObjectId {
+                kind: ObjectKind::BlobChunk,
+                digest: object_digest(ObjectKind::BlobChunk, &bytes),
+            },
+            bytes,
+        }];
+        let mut budget = WorkBudget::UNBOUNDED;
+        budget.allocation_operations = 0;
+        let failure =
+            prepare_provider_put_batch(&bucket, &writes, budget, &CancellationToken::new())
+                .err()
+                .unwrap_or_else(|| {
+                    OperationFailure::before_work(ObjectStoreError::Rejected(
+                        "unadmitted allocation unexpectedly succeeded".to_owned(),
+                    ))
+                });
+        assert!(matches!(failure.error, ObjectStoreError::Work(_)));
+        assert_eq!(*failure.work, WorkCounters::default());
+    }
 
     #[test]
     fn generation_records_are_bound_to_their_authority_and_sequence()

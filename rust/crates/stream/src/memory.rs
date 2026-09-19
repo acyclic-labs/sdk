@@ -391,7 +391,7 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        let receiver = {
+        let (receiver, cursor) = {
             let state = self.state.read().await;
             reject_retired(&state, &path)?;
             let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
@@ -401,26 +401,26 @@ impl StreamProvider for MemoryStream {
             if from < stream.trim_point {
                 return Err(StreamError::OutOfRange);
             }
-            stream.changed.subscribe()
+            (
+                stream.changed.subscribe(),
+                HistoryCursor::new(stream.history.as_ref(), stream.tail, from),
+            )
         };
         let state = Arc::clone(&self.state);
         Ok(stream::unfold(
-            (state, path, from, receiver),
-            |(state, path, next, mut receiver)| async move {
+            (state, path, receiver, cursor),
+            |(state, path, mut receiver, mut cursor)| async move {
                 loop {
                     let record = {
                         let guard = state.read().await;
                         if reject_retired(&guard, &path).is_err() {
                             Err(StreamError::Retired)
                         } else if let Some(current) = guard.paths.get(&path) {
-                            if next < current.trim_point {
+                            if cursor.next < current.trim_point {
                                 Err(StreamError::OutOfRange)
                             } else {
-                                Ok(
-                                    read_history(current.history.as_ref(), current.tail, next, 1)
-                                        .into_iter()
-                                        .next(),
-                                )
+                                cursor.sync(current.history.as_ref(), current.tail);
+                                Ok(cursor.next_record())
                             }
                         } else {
                             Err(StreamError::NotFound)
@@ -429,20 +429,18 @@ impl StreamProvider for MemoryStream {
                     let Some(record) = (match record {
                         Ok(record) => record,
                         Err(error) => {
-                            return Some((Err(error), (state, path, next, receiver)));
+                            return Some((Err(error), (state, path, receiver, cursor)));
                         }
                     }) else {
                         if receiver.changed().await.is_err() {
                             return Some((
                                 Err(StreamError::Unavailable),
-                                (state, path, next, receiver),
+                                (state, path, receiver, cursor),
                             ));
                         }
                         continue;
                     };
-                    {
-                        return Some((Ok(record), (state, path, next + 1, receiver)));
-                    }
+                    return Some((Ok(record), (state, path, receiver, cursor)));
                 }
             },
         )
@@ -723,7 +721,173 @@ fn build_records(
         .collect()
 }
 
+struct HistoryWindow {
+    records: Arc<[Record]>,
+    start: usize,
+    end: usize,
+}
+
+/// Incremental cursor over the immutable history graph used by `follow`.
+///
+/// A follow can live for a long time while one-record batches are appended.
+/// Replaying the linked graph from its root for every item makes that workload
+/// quadratic.  The cursor indexes the initial graph once and then only walks
+/// the newly added batch suffix after each publication.
+struct HistoryCursor {
+    root: Option<Arc<History>>,
+    windows: Vec<HistoryWindow>,
+    window: usize,
+    record: usize,
+    next: u64,
+}
+
+impl HistoryCursor {
+    fn new(history: Option<&Arc<History>>, tail: u64, next: u64) -> Self {
+        let mut cursor = Self {
+            root: None,
+            windows: Vec::new(),
+            window: 0,
+            record: 0,
+            next,
+        };
+        cursor.rebuild(history, tail);
+        cursor
+    }
+
+    fn rebuild(&mut self, root: Option<&Arc<History>>, tail: u64) {
+        self.root = root.cloned();
+        self.windows = collect_history_windows(root, tail);
+        self.window = 0;
+        self.record = 0;
+        self.seek_next();
+    }
+
+    fn sync(&mut self, history: Option<&Arc<History>>, tail: u64) {
+        let Some(root) = history else {
+            self.rebuild(None, tail);
+            return;
+        };
+        if self.root.as_ref().is_some_and(|old| Arc::ptr_eq(old, root)) {
+            return;
+        }
+
+        // Appends form a new Batch chain whose parent is the previous root.
+        // Walk that suffix once, then attach its windows in chronological order.
+        // A Prefix in a changed suffix can alter visibility of old batches, so
+        // use the bounded full rebuild for that uncommon graph transition.
+        let mut cursor = Some(Arc::clone(root));
+        let mut suffix = Vec::new();
+        let mut reaches_old = false;
+        while let Some(node) = cursor {
+            if self
+                .root
+                .as_ref()
+                .is_some_and(|old| Arc::ptr_eq(old, &node))
+            {
+                reaches_old = true;
+                break;
+            }
+            match node.as_ref() {
+                History::Batch { parent, records } => {
+                    suffix.push(Arc::clone(records));
+                    cursor = parent.clone();
+                }
+                History::Prefix { .. } => break,
+            }
+        }
+        if !reaches_old {
+            self.rebuild(Some(root), tail);
+            return;
+        }
+
+        suffix.reverse();
+        let mut added = suffix
+            .into_iter()
+            .filter_map(|records| history_window(records, tail))
+            .collect::<Vec<_>>();
+        self.windows.append(&mut added);
+        self.root = Some(Arc::clone(root));
+    }
+
+    fn seek_next(&mut self) {
+        while let Some(window) = self.windows.get(self.window) {
+            while self.record < window.end.saturating_sub(window.start) {
+                let index = window.start + self.record;
+                let Some(record) = window.records.get(index) else {
+                    break;
+                };
+                if record.sequence >= self.next {
+                    return;
+                }
+                self.record += 1;
+            }
+            self.window += 1;
+            self.record = 0;
+        }
+    }
+
+    fn next_record(&mut self) -> Option<Record> {
+        self.seek_next();
+        let window = self.windows.get(self.window)?;
+        let index = window.start + self.record;
+        let record = window.records.get(index)?.clone();
+        self.record += 1;
+        self.next = record.sequence.checked_add(1)?;
+        Some(record)
+    }
+}
+
+fn collect_history_windows(history: Option<&Arc<History>>, tail: u64) -> Vec<HistoryWindow> {
+    let mut cursor = history.cloned();
+    let mut ceiling = tail;
+    let mut batches = Vec::new();
+    while let Some(history) = cursor {
+        match history.as_ref() {
+            History::Batch { parent, records } => {
+                batches.push((Arc::clone(records), ceiling));
+                cursor = parent.clone();
+            }
+            History::Prefix { source, tail } => {
+                ceiling = ceiling.min(*tail);
+                cursor = source.clone();
+            }
+        }
+    }
+    batches.reverse();
+    batches
+        .into_iter()
+        .filter_map(|(records, ceiling)| history_window(records, ceiling))
+        .collect()
+}
+
+fn history_window(records: Arc<[Record]>, ceiling: u64) -> Option<HistoryWindow> {
+    let first = records.first()?.sequence;
+    let batch_end = records
+        .len()
+        .try_into()
+        .ok()
+        .and_then(|length: u64| first.checked_add(length))
+        .unwrap_or(u64::MAX);
+    let end_sequence = ceiling.min(batch_end);
+    if end_sequence <= first {
+        return None;
+    }
+    let end = usize::try_from(end_sequence - first).ok()?;
+    Some(HistoryWindow {
+        records,
+        start: 0,
+        end,
+    })
+}
+
 fn read_history(history: Option<&Arc<History>>, tail: u64, from: u64, limit: usize) -> Vec<Record> {
+    // Follow asks for one record at a time.  Walking every historical batch and
+    // materializing all of them makes that hot path quadratic as a stream grows.
+    // A single-record read can seek through the newest immutable batches and
+    // clone only the requested record.
+    if limit == 1 {
+        return read_one_history(history, tail, from).into_iter().collect();
+    }
     let mut cursor = history.cloned();
     let mut ceiling = tail;
     let mut batches = Vec::new();
@@ -751,6 +915,39 @@ fn read_history(history: Option<&Arc<History>>, tail: u64, from: u64, limit: usi
         }
     }
     result
+}
+
+fn read_one_history(history: Option<&Arc<History>>, tail: u64, from: u64) -> Option<Record> {
+    let mut cursor = history.cloned();
+    let mut ceiling = tail;
+    while let Some(history) = cursor {
+        match history.as_ref() {
+            History::Batch { parent, records } => {
+                let Some(first) = records.first() else {
+                    cursor = parent.clone();
+                    continue;
+                };
+                let batch_end = records
+                    .len()
+                    .try_into()
+                    .ok()
+                    .and_then(|length: u64| first.sequence.checked_add(length))
+                    .unwrap_or(u64::MAX);
+                let visible_end = ceiling.min(batch_end);
+                if from >= first.sequence && from < visible_end {
+                    let offset = usize::try_from(from - first.sequence).ok()?;
+                    return records.get(offset).cloned();
+                }
+                ceiling = ceiling.min(first.sequence);
+                cursor = parent.clone();
+            }
+            History::Prefix { source, tail } => {
+                ceiling = ceiling.min(*tail);
+                cursor = source.clone();
+            }
+        }
+    }
+    None
 }
 
 fn is_direct_child(parent: &StreamPath, candidate: &StreamPath) -> bool {
@@ -1349,6 +1546,77 @@ mod tests {
             .await?;
         let live = tokio::time::timeout(std::time::Duration::from_secs(1), follow.next()).await;
         assert!(matches!(live, Ok(Some(Ok(Record { sequence: 2, .. })))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), StreamError> {
+        let provider = MemoryStream::default();
+        let source = path("seek/source")?;
+        for index in 0..256_u64 {
+            provider
+                .append(AppendRequest {
+                    path: source.clone(),
+                    records: vec![Bytes::from(index.to_string())],
+                    if_tail: Some(index),
+                    idempotency_key: None,
+                })
+                .await?;
+        }
+        let destination = path("seek/prefix")?;
+        provider
+            .fork(ForkRequest {
+                source: source.clone(),
+                destination: destination.clone(),
+                at_tail: Some(128),
+                idempotency_key: None,
+            })
+            .await?;
+
+        for (path, expected_tail, expected) in [
+            (&source, 256_u64, b"255".as_slice()),
+            (&destination, 128_u64, b"127".as_slice()),
+        ] {
+            let record = provider
+                .read(ReadRequest {
+                    path: path.clone(),
+                    from: expected_tail - 1,
+                    limit: 1,
+                })
+                .await?
+                .next()
+                .await
+                .ok_or(StreamError::Unavailable)??;
+            assert_eq!(record.sequence, expected_tail - 1);
+            assert_eq!(record.value, expected);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "bounded scaling benchmark; run with --ignored --nocapture"]
+    async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
+        for count in [1_000_u64, 10_000] {
+            let provider = MemoryStream::default();
+            let stream = path("bench/follow")?;
+            for index in 0..count {
+                provider
+                    .append(AppendRequest {
+                        path: stream.clone(),
+                        records: vec![Bytes::from_static(b"x")],
+                        if_tail: Some(index),
+                        idempotency_key: None,
+                    })
+                    .await?;
+            }
+            let started = std::time::Instant::now();
+            let mut follow = provider.follow(stream, 0).await?;
+            for expected in 0..count {
+                let record = follow.next().await.ok_or(StreamError::Unavailable)??;
+                assert_eq!(record.sequence, expected);
+            }
+            eprintln!("follow history={count} read={:?}", started.elapsed());
+        }
         Ok(())
     }
 

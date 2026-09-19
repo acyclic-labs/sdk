@@ -4,11 +4,11 @@ use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
     MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
-    NativeMountError, capture_paths, capture_root_identity, seal_checkout,
+    NativeMountError, capture_paths, capture_root_identity, capture_subtree, seal_checkout,
 };
 use crate::kernel::{
     AttributeClass, AttributeName, ExtentSeekTarget, FileKind, FileMetadata, FilePayload,
-    FileRecord, LogicalName, NameEncoding, NamespacePath,
+    FileRecord, LogicalName, NameEncoding, NamespacePath, RebaseDecision,
 };
 use crate::model::{FilesystemProfile, VolumeConfig, VolumeLimits};
 use crate::{
@@ -901,6 +901,48 @@ impl<A, O> CheckoutMountSource<A, O> {
         checkout.seal(&self.cancellation).await
     }
 
+    /// Safely advances a clean mounted checkout to the workspace head.
+    ///
+    /// Callers must publish pending native mutations first. Exact read
+    /// dependencies are retained and checked against the candidate head;
+    /// conflict leaves the mounted generation unchanged.
+    pub async fn refresh_async(&self) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let mut checkout = self.checkout.lock().await;
+        checkout.ensure_publication_resolved()?;
+        let decision = checkout
+            .rebase_head(
+                self.limits.maximum_checkout_dependencies,
+                WorkBudget::UNBOUNDED,
+                &self.cancellation,
+            )
+            .await
+            .map_err(engine_error)?;
+        match decision.value {
+            RebaseDecision::Safe { .. } => Ok(()),
+            RebaseDecision::Conflicted { .. } => Err(MountSourceError::Stale),
+        }
+    }
+
+    /// Adopts the workspace head after this checkout's mutations were
+    /// synchronized and a separate fenced operation published that head.
+    pub async fn advance_to_head_async(&self) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let mut checkout = self.checkout.lock().await;
+        checkout.ensure_publication_resolved()?;
+        checkout
+            .refresh_head(WorkBudget::UNBOUNDED, &self.cancellation)
+            .await
+            .map_err(engine_error)?;
+        Ok(())
+    }
+
     fn path(&self, path: &MountPath) -> Result<NamespacePath, MountSourceError> {
         let mut components = self.root.components().to_vec();
         components.extend(
@@ -1780,6 +1822,37 @@ where
                 .await
         })
     }
+
+    fn capture_host_subtree(
+        &self,
+        source_root: &Path,
+        path: &MountPath,
+    ) -> Result<(), MountSourceError> {
+        let path = self.path(path)?;
+        self.runtime.wait(|| async {
+            let mut checkout = self.checkout.lock().await;
+            checkout.ensure_publication_resolved()?;
+            let expected_root_identity =
+                capture_root_identity(source_root).map_err(engine_error)?;
+            capture_subtree(
+                &mut checkout,
+                path,
+                &CaptureOptions {
+                    source_root: source_root.to_path_buf(),
+                    expected_root_identity,
+                    maximum_paths: 4_000_000,
+                    maximum_extent_spans: 65_536,
+                },
+                boundary_budget(),
+                &self.cancellation,
+            )
+            .await
+            .map_err(engine_error)?;
+            checkout
+                .publish_at_native_boundary(&self.cancellation)
+                .await
+        })
+    }
 }
 
 fn mount_node(record: FileRecord) -> MountNode {
@@ -1849,6 +1922,8 @@ fn boundary_budget() -> WorkBudget {
         bytes_copied: BYTES,
         bytes_encoded: BYTES,
         source_bytes_read: BYTES,
+        source_path_components: OPERATIONS,
+        source_entries_visited: OPERATIONS,
         output_bytes: BYTES,
         items_examined: OPERATIONS,
         items_returned: OPERATIONS,
@@ -1941,6 +2016,50 @@ mod tests {
         Ok((
             CheckoutMountSource::new(Arc::clone(&checkout), config)?,
             CheckoutMountSource::new(checkout, config)?,
+        ))
+    }
+
+    fn tracking_sources(
+        profile: FilesystemProfile,
+    ) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
+        let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
+        config.profile = profile;
+        let fs = Fs::memory();
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let (first, second) = runtime.block_on(async {
+            let cancellation = CancellationToken::new();
+            let volume = fs
+                .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value;
+            let mode = CheckoutMode {
+                access: AccessMode::ReadWrite,
+                consistency: ConsistencyMode::TrackingSafe,
+                mutations: MutationMode::PrivateOverlay,
+            };
+            let first = volume
+                .checkout(
+                    GenerationSelector::Head,
+                    mode,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await?
+                .value;
+            let second = volume
+                .checkout(
+                    GenerationSelector::Head,
+                    mode,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await?
+                .value;
+            Ok::<_, OperationFailure<FsError>>((first, second))
+        })?;
+        Ok((
+            CheckoutMountSource::new(Arc::new(SharedCheckout::new(first)), config)?,
+            CheckoutMountSource::new(Arc::new(SharedCheckout::new(second)), config)?,
         ))
     }
 
@@ -2037,6 +2156,34 @@ mod tests {
         let (after, pending) = checkout_state(&per_mutation)?;
         assert_ne!(after, before);
         assert!(!pending);
+        Ok(())
+    }
+
+    #[test]
+    fn refresh_preserves_overlapping_read_conflicts_and_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let profile = if cfg!(target_os = "windows") {
+            FilesystemProfile::Windows
+        } else {
+            FilesystemProfile::Posix
+        };
+        let (reader, writer) = tracking_sources(profile)?;
+        let path = native_test_path("observed.bin");
+        writer.create_file(&path, metadata())?;
+        writer.write_range(&path, 0, Bytes::from_static(b"first"))?;
+        writer.sync()?;
+        reader.runtime.block_on(|| reader.refresh_async())??;
+        assert_eq!(reader.read_range(&path, 0, 5)?.as_ref(), b"first");
+        let observed_generation = checkout_state(&reader)?.0;
+
+        writer.write_range(&path, 0, Bytes::from_static(b"other"))?;
+        writer.sync()?;
+        assert!(matches!(
+            reader.runtime.block_on(|| reader.refresh_async())?,
+            Err(MountSourceError::Stale)
+        ));
+        assert_eq!(checkout_state(&reader)?.0, observed_generation);
+        assert_eq!(reader.read_range(&path, 0, 5)?.as_ref(), b"first");
         Ok(())
     }
 

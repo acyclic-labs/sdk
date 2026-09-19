@@ -17,7 +17,7 @@ async function run() {
   const source = await openBrowserFs({
     databaseName: `acyclic-fs-smoke-source-${suffix}`,
     maximumObjectBytes: 64 * 1024 * 1024,
-    objectAcceleration: "opfs-if-available",
+    objectAcceleration: "opfs",
     objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
   });
   const volume = await source.createVolume(portableVolumeOptions("durable"));
@@ -253,7 +253,7 @@ async function run() {
   const reopened = await openBrowserFs({
     databaseName: `acyclic-fs-smoke-source-${suffix}`,
     maximumObjectBytes: 64 * 1024 * 1024,
-    objectAcceleration: "opfs-if-available",
+    objectAcceleration: "opfs",
     objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
   });
   assert(reopened.capabilities.nativeWatch === false, "browser reported native watcher support");

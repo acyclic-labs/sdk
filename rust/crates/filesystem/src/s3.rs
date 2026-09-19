@@ -27,6 +27,7 @@ pub struct S3ListOptions {
     /// Initial exclusive key marker. Ignored after a continuation is supplied.
     pub start_after: Option<String>,
     /// Opaque immutable-generation continuation returned by a prior page.
+    /// Callers should reuse the token returned by a prior page.
     pub continuation: Option<S3ListCursor>,
     /// Maximum combined objects and common prefixes returned.
     pub maximum_keys: u32,
@@ -79,6 +80,7 @@ pub struct S3List {
 pub struct S3ListCursor {
     generation: crate::GenerationId,
     after: String,
+    after_prefix: bool,
     query: crate::Digest,
 }
 
@@ -87,25 +89,33 @@ impl S3ListCursor {
     #[must_use]
     pub fn encode(&self) -> String {
         format!(
-            "v1.{}.{}.{}",
+            "v2.{}.{}.{}.{}",
             hex::encode(self.generation.digest().into_bytes()),
             hex::encode(self.query.into_bytes()),
+            if self.after_prefix { "p" } else { "o" },
             hex::encode(self.after.as_bytes())
         )
     }
 
-    /// Decodes one bounded canonical continuation token.
+    /// Decodes one bounded canonical continuation token. This checks syntax,
+    /// not the token's origin; the listing operation checks generation/query.
     ///
     /// # Errors
     ///
     /// Rejects malformed versions, identities, UTF-8, and oversized markers.
     pub fn decode(token: &str, maximum_key_bytes: u32) -> Result<Self, S3Error> {
         let mut fields = token.split('.');
-        if fields.next() != Some("v1") {
+        let version = fields.next().ok_or(S3Error::InvalidContinuation)?;
+        if version != "v2" {
             return Err(S3Error::InvalidContinuation);
         }
         let generation = decode_fixed::<32>(fields.next())?;
         let query = decode_fixed::<32>(fields.next())?;
+        let after_prefix = match fields.next() {
+            Some("o") => false,
+            Some("p") => true,
+            _ => return Err(S3Error::InvalidContinuation),
+        };
         let after = fields.next().ok_or(S3Error::InvalidContinuation)?;
         if fields.next().is_some() || after.len() > maximum_key_bytes as usize * 2 {
             return Err(S3Error::InvalidContinuation);
@@ -118,6 +128,7 @@ impl S3ListCursor {
         Ok(Self {
             generation: crate::GenerationId::new(crate::Digest::from_bytes(generation)),
             after,
+            after_prefix,
             query: crate::Digest::from_bytes(query),
         })
     }
@@ -334,41 +345,82 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         transaction.commit().await.map_err(Into::into)
     }
 
+    /// Prepares one S3 object from already staged immutable content in the
+    /// caller's transaction. The caller can validate its streaming checksums
+    /// before invoking this method and commits the transaction afterward.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign transaction, malformed key or staged content, or a
+    /// Filesystem mutation failure. No content is published on error.
+    pub async fn write_staged(
+        &self,
+        transaction: &mut crate::Transaction<A, O>,
+        key: &str,
+        parts: &[crate::StagedContent],
+    ) -> Result<(), S3Error> {
+        if transaction.workspace_id() != self.workspace.id() {
+            return Err(S3Error::ForeignTransaction);
+        }
+        create_parent_directories(transaction, key).await?;
+        transaction.write_staged(&absolute_key(key), parts).await?;
+        Ok(())
+    }
+
     /// Atomically removes one object.
     ///
     /// # Errors
     ///
-    /// Returns key, absence, transaction, or publication failures.
+    /// Returns key, transaction, or publication failures. An absent key is a
+    /// successful no-op, matching S3 delete semantics.
     pub async fn delete_object(
         &self,
         key: &str,
         idempotency_key: IdempotencyKey,
-    ) -> Result<TransactionCommit<A, O>, S3Error> {
+    ) -> Result<(), S3Error> {
         validate_key(key)?;
         let mut transaction = self.workspace.begin_transaction(idempotency_key).await?;
-        transaction.remove(&absolute_key(key)).await?;
-        transaction.commit().await.map_err(Into::into)
+        let mutated = match transaction.remove(&absolute_key(key)).await {
+            Ok(()) => true,
+            Err(WorkspaceError::NotFound) => false,
+            Err(error) => return Err(error.into()),
+        };
+        if mutated {
+            complete_delete(&transaction.commit().await?)
+        } else {
+            Ok(())
+        }
     }
 
     /// Atomically removes several objects through one workspace transaction.
     ///
     /// # Errors
     ///
-    /// Returns request, key, absence, transaction, or publication failures.
+    /// Returns request, key, transaction, or publication failures. Absent keys
+    /// are successful no-ops, including repeated bulk deletion.
     pub async fn delete_objects(
         &self,
         keys: &[String],
         idempotency_key: IdempotencyKey,
-    ) -> Result<TransactionCommit<A, O>, S3Error> {
+    ) -> Result<(), S3Error> {
         if keys.is_empty() {
             return Err(S3Error::InvalidRequest("delete set is empty"));
         }
         let mut transaction = self.workspace.begin_transaction(idempotency_key).await?;
+        let mut mutated = false;
         for key in keys {
             validate_key(key)?;
-            transaction.remove(&absolute_key(key)).await?;
+            match transaction.remove(&absolute_key(key)).await {
+                Ok(()) => mutated = true,
+                Err(WorkspaceError::NotFound) => {}
+                Err(error) => return Err(error.into()),
+            }
         }
-        transaction.commit().await.map_err(Into::into)
+        if mutated {
+            complete_delete(&transaction.commit().await?)
+        } else {
+            Ok(())
+        }
     }
 
     /// Copies one object through immutable extent references.
@@ -458,99 +510,267 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
                 return Ok(empty_list());
             }
         }
-        let pending = vec![(
+        list_objects_lazy(
+            &mut checkout,
+            &options,
+            limits,
+            generation.id(),
+            query,
             frontier,
             frontier_key,
             (!frontier_name_prefix.is_empty()).then_some(frontier_name_prefix),
-        )];
-        let (objects, prefixes, examined) =
-            walk_listing_directories(&mut checkout, &options, limits, &generation, pending).await?;
-        finish_list(
-            objects,
-            prefixes,
-            options.maximum_keys,
-            examined,
-            generation.id(),
-            query,
         )
+        .await
     }
 }
 
-/// Walks every pending directory frontier, paging its records and sorting
-/// each entry into matched objects or common prefixes.
-async fn walk_listing_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+enum ListingTask {
+    Directory {
+        path: NamespacePath,
+        key_prefix: String,
+        name_prefix: Option<String>,
+        after: Option<LogicalName>,
+        inclusive: bool,
+    },
+    Object {
+        key: String,
+        payload: FilePayload,
+    },
+}
+
+fn queue_listing_task(
+    pending: &mut BTreeMap<(String, u64), ListingTask>,
+    sequence: &mut u64,
+    lower_key: String,
+    task: ListingTask,
+) -> Result<(), S3Error> {
+    let next = sequence.checked_add(1).ok_or(S3Error::ListLimit)?;
+    pending.insert((lower_key, *sequence), task);
+    *sequence = next;
+    Ok(())
+}
+
+/// Seek only when every earlier child directory has a flattened `name/`
+/// bound below the marker. A marker such as `a.` is ambiguous because `a/x`
+/// sorts after it, so that case keeps the ordered walk.
+fn direct_child_seek(
+    options: &S3ListOptions,
+    limits: crate::model::VolumeLimits,
+    frontier_key: &str,
+) -> Option<(LogicalName, bool)> {
+    let Some(cursor) = &options.continuation else {
+        return None;
+    };
+    let relative = cursor.after.strip_prefix(frontier_key)?;
+    let name = if !cursor.after_prefix && !relative.contains('/') {
+        relative
+    } else if cursor.after_prefix && options.delimiter == Some('/') {
+        let name = relative.strip_suffix('/')?;
+        if name.contains('/') {
+            return None;
+        }
+        name
+    } else {
+        return None;
+    };
+    if name
+        .chars()
+        .skip(1)
+        .any(|character| (character as u32) < u32::from(b'/'))
+    {
+        return None;
+    }
+    LogicalName::new(
+        NameEncoding::Utf8,
+        name.as_bytes().to_vec(),
+        limits.maximum_component_bytes,
+    )
+    .ok()
+    .map(|name| (name, !cursor.after_prefix))
+}
+
+/// Merges directory-page lower bounds and object keys in flattened UTF-8
+/// order. A directory's `name/` bound is distinct from its component name:
+/// sibling `a.` must precede a descendant `a/x`.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut crate::Checkout<A, O>,
     options: &S3ListOptions,
     limits: crate::model::VolumeLimits,
-    generation: &crate::Generation<A, O>,
-    mut pending: Vec<(NamespacePath, String, Option<String>)>,
-) -> Result<(BTreeMap<String, S3Object>, BTreeSet<String>, u32), S3Error> {
-    let mut objects = BTreeMap::new();
-    let mut prefixes = BTreeSet::new();
+    generation: crate::GenerationId,
+    query: crate::Digest,
+    frontier: NamespacePath,
+    frontier_key: String,
+    frontier_name_prefix: Option<String>,
+) -> Result<S3List, S3Error> {
+    let mut pending = BTreeMap::new();
+    let mut sequence = 0_u64;
+    let seek = direct_child_seek(options, limits, &frontier_key);
+    queue_listing_task(
+        &mut pending,
+        &mut sequence,
+        frontier_key.clone(),
+        ListingTask::Directory {
+            path: frontier,
+            key_prefix: frontier_key,
+            name_prefix: frontier_name_prefix,
+            after: seek.as_ref().map(|(name, _)| name.clone()),
+            inclusive: seek.as_ref().is_some_and(|(_, inclusive)| *inclusive),
+        },
+    )?;
+    let maximum = usize::try_from(options.maximum_keys).map_err(|_| S3Error::ListLimit)?;
+    let mut result = empty_list();
+    let mut last: Option<(String, bool)> = None;
     let mut examined = 0_u32;
-    while let Some((directory, directory_key, name_prefix)) = pending.pop() {
-        let mut after: Option<LogicalName> = None;
-        loop {
-            let page = checkout
-                .list_directory_records(
-                    &directory,
-                    after.as_ref(),
-                    LIST_PAGE_ENTRIES,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .await
-                .map_err(|failure| S3Error::Workspace(WorkspaceError::engine(failure)))?
-                .value;
-            for entry in &page.entries {
-                examined = examined.checked_add(1).ok_or(S3Error::ListLimit)?;
-                if examined > options.maximum_entries_examined {
+    while let Some((_, task)) = pending.pop_first() {
+        match task {
+            ListingTask::Directory {
+                path,
+                key_prefix,
+                name_prefix,
+                after,
+                inclusive,
+            } => {
+                let remaining = options.maximum_entries_examined - examined;
+                if remaining == 0 {
                     return Err(S3Error::ListLimit);
                 }
-                let name = utf8_name(&entry.name)?;
-                if name_prefix
-                    .as_ref()
-                    .is_some_and(|prefix| !name.starts_with(prefix))
+                let page_limit = LIST_PAGE_ENTRIES
+                    .min(remaining)
+                    .min(options.maximum_keys.saturating_add(1));
+                let page = if inclusive {
+                    checkout
+                        .list_directory_records_at_or_after(
+                            &path,
+                            after.as_ref().ok_or(S3Error::InvalidContinuation)?,
+                            page_limit,
+                            WorkBudget::UNBOUNDED,
+                            &CancellationToken::new(),
+                        )
+                        .await
+                } else {
+                    checkout
+                        .list_directory_records(
+                            &path,
+                            after.as_ref(),
+                            page_limit,
+                            WorkBudget::UNBOUNDED,
+                            &CancellationToken::new(),
+                        )
+                        .await
+                }
+                .map_err(|failure| S3Error::Workspace(WorkspaceError::engine(failure)))?
+                .value;
+                examined = examined
+                    .checked_add(u32::try_from(page.entries.len()).map_err(|_| S3Error::ListLimit)?)
+                    .ok_or(S3Error::ListLimit)?;
+                let continuation = if page.has_more {
+                    let last_name = page
+                        .entries
+                        .last()
+                        .ok_or(S3Error::InvalidObject)?
+                        .name
+                        .clone();
+                    let lower_key = format!("{key_prefix}{}", utf8_name(&last_name)?);
+                    Some((lower_key, last_name))
+                } else {
+                    None
+                };
+                for entry in page.entries {
+                    let name = utf8_name(&entry.name)?;
+                    if name_prefix
+                        .as_ref()
+                        .is_some_and(|prefix| !name.starts_with(prefix))
+                    {
+                        continue;
+                    }
+                    let key = format!("{key_prefix}{name}");
+                    match entry.record.kind {
+                        FileKind::Directory => {
+                            let mut components = path.components().to_vec();
+                            components.push(entry.name);
+                            let child = NamespacePath::new(components, limits)
+                                .map_err(WorkspaceError::path)?;
+                            let child_key = format!("{key}/");
+                            queue_listing_task(
+                                &mut pending,
+                                &mut sequence,
+                                child_key.clone(),
+                                ListingTask::Directory {
+                                    path: child,
+                                    key_prefix: child_key,
+                                    name_prefix: None,
+                                    after: None,
+                                    inclusive: false,
+                                },
+                            )?;
+                        }
+                        FileKind::Regular => queue_listing_task(
+                            &mut pending,
+                            &mut sequence,
+                            key.clone(),
+                            ListingTask::Object {
+                                key,
+                                payload: entry.record.payload,
+                            },
+                        )?,
+                        _ => {}
+                    }
+                }
+                if let Some((lower_key, last_name)) = continuation {
+                    queue_listing_task(
+                        &mut pending,
+                        &mut sequence,
+                        lower_key,
+                        ListingTask::Directory {
+                            path,
+                            key_prefix,
+                            name_prefix,
+                            after: Some(last_name),
+                            inclusive: false,
+                        },
+                    )?;
+                }
+            }
+            ListingTask::Object { key, payload } => {
+                let Some(selected) = select_key(&key, options) else {
+                    continue;
+                };
+                let (selected_key, is_prefix) = match &selected {
+                    SelectedKey::Object => (key.as_str(), false),
+                    SelectedKey::Prefix(prefix) => (prefix.as_str(), true),
+                };
+                if is_prefix
+                    && last.as_ref().is_some_and(|(last_key, last_prefix)| {
+                        *last_prefix && last_key == selected_key
+                    })
                 {
                     continue;
                 }
-                let key = format!("{directory_key}{name}");
-                match entry.record.kind {
-                    FileKind::Directory => {
-                        let mut components = directory.components().to_vec();
-                        components.push(entry.name.clone());
-                        pending.push((
-                            NamespacePath::new(components, limits).map_err(WorkspaceError::path)?,
-                            format!("{key}/"),
-                            None,
-                        ));
-                    }
-                    FileKind::Regular => match select_key(&key, options) {
-                        Some(SelectedKey::Object) => {
-                            objects.insert(
-                                key.clone(),
-                                S3Object {
-                                    key: key.clone(),
-                                    content_length: regular_bytes(&entry.record.payload)?,
-                                    etag: etag(generation.id().digest().as_bytes(), &key),
-                                },
-                            );
-                        }
-                        Some(SelectedKey::Prefix(prefix)) => {
-                            prefixes.insert(prefix);
-                        }
-                        None => {}
-                    },
-                    _ => {}
+                if result.objects.len() + result.common_prefixes.len() == maximum {
+                    result.next_continuation = last.map(|(after, after_prefix)| S3ListCursor {
+                        generation,
+                        after,
+                        after_prefix,
+                        query,
+                    });
+                    break;
                 }
-            }
-            after = page.entries.last().map(|entry| entry.name.clone());
-            if !page.has_more {
-                break;
+                let selected_identity = (selected_key.to_owned(), is_prefix);
+                match selected {
+                    SelectedKey::Object => result.objects.push(S3Object {
+                        key: key.clone(),
+                        content_length: regular_bytes(&payload)?,
+                        etag: etag(generation.digest().as_bytes(), &key),
+                    }),
+                    SelectedKey::Prefix(prefix) => result.common_prefixes.push(prefix),
+                }
+                last = Some(selected_identity);
             }
         }
     }
-    Ok((objects, prefixes, examined))
+    result.entries_examined = examined;
+    Ok(result)
 }
 
 fn empty_list() -> S3List {
@@ -560,42 +780,6 @@ fn empty_list() -> S3List {
         next_continuation: None,
         entries_examined: 0,
     }
-}
-
-fn finish_list(
-    mut objects: BTreeMap<String, S3Object>,
-    mut prefixes: BTreeSet<String>,
-    maximum_keys: u32,
-    entries_examined: u32,
-    generation: crate::GenerationId,
-    query: crate::Digest,
-) -> Result<S3List, S3Error> {
-    let mut combined = objects
-        .keys()
-        .map(|key| (key.clone(), false))
-        .chain(prefixes.iter().map(|prefix| (prefix.clone(), true)))
-        .collect::<Vec<_>>();
-    combined.sort_unstable();
-    let maximum = usize::try_from(maximum_keys).map_err(|_| S3Error::ListLimit)?;
-    let has_more = combined.len() > maximum;
-    combined.truncate(maximum);
-    let selected = combined.iter().map(|(key, _)| key).collect::<BTreeSet<_>>();
-    objects.retain(|key, _| selected.contains(key));
-    prefixes.retain(|key| selected.contains(key));
-    Ok(S3List {
-        objects: objects.into_values().collect(),
-        common_prefixes: prefixes.into_iter().collect(),
-        next_continuation: has_more
-            .then(|| {
-                combined.last().map(|(key, _)| S3ListCursor {
-                    generation,
-                    after: key.clone(),
-                    query,
-                })
-            })
-            .flatten(),
-        entries_examined,
-    })
 }
 
 fn listing_frontier(
@@ -707,25 +891,30 @@ enum SelectedKey {
 }
 
 fn select_key(key: &str, options: &S3ListOptions) -> Option<SelectedKey> {
-    let after = options
-        .continuation
-        .as_ref()
-        .map(|cursor| cursor.after.as_str())
-        .or(options.start_after.as_deref());
     let remainder = key.strip_prefix(options.prefix.as_str())?;
-    if after.is_some_and(|after| key <= after) {
-        return None;
-    }
-    if options.delimiter == Some('/')
+    let selected = if options.delimiter == Some('/')
         && let Some(index) = remainder.find('/')
     {
-        return Some(SelectedKey::Prefix(format!(
-            "{}{}",
-            options.prefix,
-            remainder.get(..=index)?
-        )));
+        SelectedKey::Prefix(format!("{}{}", options.prefix, remainder.get(..=index)?))
+    } else {
+        SelectedKey::Object
+    };
+    let (selected_key, selected_prefix) = match &selected {
+        SelectedKey::Object => (key, false),
+        SelectedKey::Prefix(prefix) => (prefix.as_str(), true),
+    };
+    if let Some(cursor) = &options.continuation {
+        if (selected_key, selected_prefix) <= (cursor.after.as_str(), cursor.after_prefix) {
+            return None;
+        }
+    } else if options
+        .start_after
+        .as_ref()
+        .is_some_and(|after| selected_key <= after.as_str())
+    {
+        return None;
     }
-    Some(SelectedKey::Object)
+    Some(selected)
 }
 
 fn list_query_digest(options: &S3ListOptions) -> crate::Digest {
@@ -795,6 +984,16 @@ fn absolute_key(key: &str) -> String {
     format!("/{key}")
 }
 
+fn complete_delete<A, O>(outcome: &TransactionCommit<A, O>) -> Result<(), S3Error> {
+    match outcome {
+        TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_) => Ok(()),
+        TransactionCommit::Conflict { .. } | TransactionCommit::Fenced => {
+            Err(S3Error::WriteConflict)
+        }
+        TransactionCommit::IdempotencyConflict => Err(S3Error::IdempotencyConflict),
+    }
+}
+
 fn utf8_name(name: &LogicalName) -> Result<&str, S3Error> {
     if name.encoding() != NameEncoding::Utf8 {
         return Err(S3Error::UnsupportedNamespace);
@@ -853,9 +1052,18 @@ pub enum S3Error {
     /// Multipart completion referenced an absent part.
     #[error("S3 multipart part {0} is absent")]
     MissingPart(u32),
+    /// A concurrent writer or authority epoch won before publication.
+    #[error("S3 mutation conflicted with a concurrent writer")]
+    WriteConflict,
+    /// A retry identity was previously bound to different input.
+    #[error("S3 idempotency key was reused for different input")]
+    IdempotencyConflict,
     /// An exact-generation view was supplied for another workspace.
     #[error("S3 generation belongs to another workspace")]
     ForeignGeneration,
+    /// A staged write transaction belongs to another workspace.
+    #[error("S3 transaction belongs to another workspace")]
+    ForeignTransaction,
     /// Listing continuation is malformed or belongs to another query.
     #[error("invalid S3 listing continuation")]
     InvalidContinuation,
@@ -866,12 +1074,57 @@ mod tests {
     use super::*;
     use crate::Fs;
 
+    #[test]
+    fn listing_cursor_retains_object_prefix_identity() -> Result<(), S3Error> {
+        let generation = crate::GenerationId::new(crate::Digest::from_bytes([1; 32]));
+        let query = crate::Digest::from_bytes([2; 32]);
+        let token = S3ListCursor {
+            generation,
+            after: "a/".to_owned(),
+            after_prefix: false,
+            query,
+        }
+        .encode();
+        let cursor = S3ListCursor::decode(&token, 1_024)?;
+        let options = S3ListOptions {
+            continuation: Some(cursor),
+            ..S3ListOptions::default()
+        };
+        assert!(matches!(
+            select_key("a/b", &options),
+            Some(SelectedKey::Prefix(prefix)) if prefix == "a/"
+        ));
+        assert!(matches!(
+            select_key("a//b", &options),
+            Some(SelectedKey::Prefix(prefix)) if prefix == "a/"
+        ));
+        assert!(matches!(
+            S3ListCursor::decode(
+                &format!(
+                    "v1.{}.{}.{}",
+                    "01".repeat(32),
+                    "02".repeat(32),
+                    hex::encode("a/")
+                ),
+                1_024
+            ),
+            Err(S3Error::InvalidContinuation)
+        ));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn s3_view_is_the_same_generation_and_copy_is_body_free()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
         let workspace = fs.create_workspace("s3").await?;
         let s3 = workspace.s3();
+        let other = fs.create_workspace("another-s3-workspace").await?;
+        let mut foreign = other.begin_transaction(IdempotencyKey::new()).await?;
+        assert!(matches!(
+            s3.write_staged(&mut foreign, "foreign", &[]).await,
+            Err(S3Error::ForeignTransaction)
+        ));
         s3.put_object(
             "src/a.bin",
             Bytes::from_static(b"abcdef"),
@@ -933,6 +1186,13 @@ mod tests {
             s3.head_object("root.bin").await,
             Err(S3Error::NotFound)
         ));
+        s3.delete_objects(
+            &["copy/a.bin".to_owned(), "root.bin".to_owned()],
+            IdempotencyKey::new(),
+        )
+        .await?;
+        s3.delete_object("never-existed", IdempotencyKey::new())
+            .await?;
         Ok(())
     }
 
@@ -1000,6 +1260,333 @@ mod tests {
             .await,
             Err(S3Error::ListLimit)
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delimiter_pages_preserve_order_and_exact_resume()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fs = Fs::memory();
+        let workspace = fs.create_workspace("delimiter-pages").await?;
+        let s3 = workspace.s3();
+        for key in ["a/one", "a/two", "b/one", "c"] {
+            s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
+                .await?;
+        }
+        let mut options = S3ListOptions {
+            delimiter: Some('/'),
+            maximum_keys: 1,
+            ..S3ListOptions::default()
+        };
+        let mut entries = Vec::new();
+        let mut complete = false;
+        for _ in 0..4 {
+            let page = s3.list_objects(options.clone()).await?;
+            entries.extend(page.objects.into_iter().map(|object| (object.key, false)));
+            entries.extend(
+                page.common_prefixes
+                    .into_iter()
+                    .map(|prefix| (prefix, true)),
+            );
+            let Some(cursor) = page.next_continuation else {
+                complete = true;
+                break;
+            };
+            options.continuation = Some(S3ListCursor::decode(&cursor.encode(), 1_024)?);
+        }
+        assert!(complete, "listing did not terminate within four pages");
+        assert_eq!(
+            entries,
+            [
+                ("a/".to_owned(), true),
+                ("b/".to_owned(), true),
+                ("c".to_owned(), false)
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn listing_pages_use_flat_key_order_without_scanning_every_entry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fs = Fs::memory();
+        let workspace = fs.create_workspace("lazy-listing").await?;
+        let s3 = workspace.s3();
+        for key in ["a/x", "a-", "a.", "a0", "b", "z"] {
+            s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
+                .await?;
+        }
+        for index in 0..32 {
+            s3.put_object(
+                &format!("zz{index:02}"),
+                Bytes::from_static(b"x"),
+                IdempotencyKey::new(),
+            )
+            .await?;
+        }
+        for (delimiter, expected) in [
+            (None, ["a-", "a.", "a/x", "a0", "b", "z"]),
+            (Some('/'), ["a-", "a.", "a/", "a0", "b", "z"]),
+        ] {
+            let mut options = S3ListOptions {
+                delimiter,
+                maximum_keys: 1,
+                ..S3ListOptions::default()
+            };
+            let mut observed = Vec::new();
+            for page_index in 0..6 {
+                let page = s3.list_objects(options.clone()).await?;
+                if page_index == 0 {
+                    assert!(page.entries_examined < 38);
+                }
+                observed.extend(page.objects.into_iter().map(|object| object.key));
+                observed.extend(page.common_prefixes);
+                options.continuation = page.next_continuation;
+            }
+            assert_eq!(observed, expected);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn listing_matches_an_independent_key_model() -> Result<(), Box<dyn std::error::Error>> {
+        let fs = Fs::memory();
+        let workspace = fs.create_workspace("listing-model").await?;
+        let s3 = workspace.s3();
+        let keys = [
+            "a/x",
+            "a.",
+            "a-",
+            "a0",
+            "b",
+            "z",
+            "zz/one",
+            "zz/two",
+            "ünicode/α",
+        ];
+        for key in keys {
+            s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
+                .await?;
+        }
+        for prefix in ["", "a", "a/", "zz", "ü"] {
+            for delimiter in [None, Some('/')] {
+                let expected = keys
+                    .iter()
+                    .filter_map(|key| {
+                        let suffix = key.strip_prefix(prefix)?;
+                        Some(match (delimiter, suffix.split_once('/')) {
+                            (Some('/'), Some((head, _))) => (format!("{prefix}{head}/"), true),
+                            _ => ((*key).to_owned(), false),
+                        })
+                    })
+                    .collect::<BTreeSet<_>>();
+                for maximum_keys in [1, 2, 4] {
+                    let mut options = S3ListOptions {
+                        prefix: prefix.to_owned(),
+                        delimiter,
+                        maximum_keys,
+                        ..S3ListOptions::default()
+                    };
+                    let mut actual = Vec::new();
+                    for _ in 0..=expected.len() {
+                        let page = s3.list_objects(options.clone()).await?;
+                        let mut entries = page
+                            .objects
+                            .into_iter()
+                            .map(|object| (object.key, false))
+                            .chain(page.common_prefixes.into_iter().map(|name| (name, true)))
+                            .collect::<Vec<_>>();
+                        entries.sort();
+                        actual.extend(entries);
+                        let Some(cursor) = page.next_continuation else {
+                            break;
+                        };
+                        options.continuation = Some(S3ListCursor::decode(&cursor.encode(), 1_024)?);
+                    }
+                    assert_eq!(actual, expected.iter().cloned().collect::<Vec<_>>());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn listing_uses_fetched_witness_before_requesting_another_page()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fs = Fs::memory();
+        let workspace = fs.create_workspace("listing-witness").await?;
+        let s3 = workspace.s3();
+        for key in ["a", "b", "c", "d", "p/x"] {
+            s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
+                .await?;
+        }
+        let first = s3
+            .list_objects(S3ListOptions {
+                delimiter: None,
+                maximum_keys: 1,
+                maximum_entries_examined: 2,
+                ..S3ListOptions::default()
+            })
+            .await?;
+        assert_eq!(
+            first
+                .objects
+                .iter()
+                .map(|item| item.key.as_str())
+                .collect::<Vec<_>>(),
+            ["a"]
+        );
+        assert_eq!(first.entries_examined, 2);
+        assert!(first.next_continuation.is_some());
+        let two = s3
+            .list_objects(S3ListOptions {
+                delimiter: Some('/'),
+                maximum_keys: 2,
+                maximum_entries_examined: 3,
+                ..S3ListOptions::default()
+            })
+            .await?;
+        assert_eq!(
+            two.objects
+                .iter()
+                .map(|item| item.key.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert_eq!(two.entries_examined, 3);
+        assert!(two.next_continuation.is_some());
+
+        let workspace = fs.create_workspace("listing-prefix-witness").await?;
+        let s3 = workspace.s3();
+        for key in ["a", "b/x", "c", "d"] {
+            s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
+                .await?;
+        }
+        let with_prefix = s3
+            .list_objects(S3ListOptions {
+                maximum_keys: 2,
+                maximum_entries_examined: 4,
+                ..S3ListOptions::default()
+            })
+            .await?;
+        assert_eq!(
+            with_prefix
+                .objects
+                .iter()
+                .map(|item| item.key.as_str())
+                .collect::<Vec<_>>(),
+            ["a"]
+        );
+        assert_eq!(with_prefix.common_prefixes, ["b/"]);
+        assert_eq!(with_prefix.entries_examined, 4);
+        assert!(with_prefix.next_continuation.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn flat_continuations_seek_without_replaying_earlier_pages()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fs = Fs::memory();
+        let workspace = fs.create_workspace("flat-seek").await?;
+        let s3 = workspace.s3();
+        for index in 0..32 {
+            s3.put_object(
+                &format!("key{index:03}"),
+                Bytes::from_static(b"x"),
+                IdempotencyKey::new(),
+            )
+            .await?;
+        }
+        let mut options = S3ListOptions {
+            delimiter: None,
+            maximum_keys: 1,
+            maximum_entries_examined: 3,
+            ..S3ListOptions::default()
+        };
+        for index in 0..32 {
+            let page = s3.list_objects(options.clone()).await?;
+            assert!(page.entries_examined <= 3);
+            assert_eq!(page.objects.len(), 1);
+            assert_eq!(page.objects[0].key, format!("key{index:03}"));
+            options.continuation = page.next_continuation;
+        }
+        assert!(options.continuation.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn object_cursor_seeks_past_dense_predecessor_keys()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fs = Fs::memory();
+        let workspace = fs.create_workspace("dense-list-cursor").await?;
+        let s3 = workspace.s3();
+        for index in 0..32 {
+            s3.put_object(
+                &format!("a9{index:03}"),
+                Bytes::from_static(b"x"),
+                IdempotencyKey::new(),
+            )
+            .await?;
+        }
+        for key in ["a:", "a;"] {
+            s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
+                .await?;
+        }
+        let first = s3
+            .list_objects(S3ListOptions {
+                delimiter: None,
+                maximum_keys: 33,
+                maximum_entries_examined: 34,
+                ..S3ListOptions::default()
+            })
+            .await?;
+        assert_eq!(
+            first.objects.last().map(|object| object.key.as_str()),
+            Some("a:")
+        );
+        let page = s3
+            .list_objects(S3ListOptions {
+                delimiter: None,
+                maximum_keys: 1,
+                maximum_entries_examined: 2,
+                continuation: first.next_continuation,
+                ..S3ListOptions::default()
+            })
+            .await?;
+        assert_eq!(page.objects[0].key, "a;");
+        assert!(page.entries_examined <= 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn object_cursor_at_a_directory_includes_its_descendants()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fs = Fs::memory();
+        let workspace = fs.create_workspace("directory-marker").await?;
+        let s3 = workspace.s3();
+        s3.put_object("a/x", Bytes::from_static(b"x"), IdempotencyKey::new())
+            .await?;
+        for delimiter in [None, Some('/')] {
+            let mut options = S3ListOptions {
+                delimiter,
+                maximum_keys: 1,
+                maximum_entries_examined: 2,
+                ..S3ListOptions::default()
+            };
+            options.continuation = Some(S3ListCursor {
+                generation: workspace.head().await?.id(),
+                after: "a".to_owned(),
+                after_prefix: false,
+                query: list_query_digest(&options),
+            });
+            let page = s3.list_objects(options).await?;
+            if delimiter.is_some() {
+                assert_eq!(page.common_prefixes, ["a/"]);
+            } else {
+                assert_eq!(page.objects[0].key, "a/x");
+            }
+            assert!(page.entries_examined <= 2);
+        }
         Ok(())
     }
 
