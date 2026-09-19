@@ -6,7 +6,7 @@ use std::future::Future;
 use std::io::{self, Read};
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::task::{Context, Poll, Waker};
 
@@ -144,6 +144,7 @@ pub struct ReadBatch {
     state: Arc<Mutex<ReadBatchState>>,
     pending: Option<NativeJob>,
     waiter: Option<u64>,
+    cancelled: Arc<AtomicBool>,
 }
 
 /// Runtime-independent future for one owned native write batch.
@@ -151,6 +152,7 @@ pub struct WriteBatch {
     state: Arc<Mutex<WriteBatchState>>,
     pending: Option<NativeJob>,
     waiter: Option<u64>,
+    cancelled: Arc<AtomicBool>,
 }
 
 struct ReadBatchState {
@@ -168,12 +170,67 @@ enum NativeJob {
         file: File,
         reads: Vec<OwnedRead>,
         state: Arc<Mutex<ReadBatchState>>,
+        cancelled: Arc<AtomicBool>,
     },
     Write {
         file: File,
         writes: Vec<OwnedWrite>,
         state: Arc<Mutex<WriteBatchState>>,
+        cancelled: Arc<AtomicBool>,
     },
+}
+
+impl NativeJob {
+    fn run(self) -> Option<Waker> {
+        match self {
+            Self::Read {
+                file,
+                reads,
+                state,
+                cancelled,
+            } => {
+                let result = if cancelled.load(Ordering::Acquire) {
+                    Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "native read cancelled before execution",
+                    ))
+                } else {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        read_batch_impl(&file, &reads)
+                    }))
+                    .unwrap_or_else(|_| Err(io::Error::other("native read worker panicked")))
+                };
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.result = Some(result);
+                state.waker.take()
+            }
+            Self::Write {
+                file,
+                writes,
+                state,
+                cancelled,
+            } => {
+                let result = if cancelled.load(Ordering::Acquire) {
+                    Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "native write cancelled before execution",
+                    ))
+                } else {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        write_all_batch_owned(&file, writes)
+                    }))
+                    .unwrap_or_else(|_| Err(io::Error::other("native write worker panicked")))
+                };
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.result = Some(result);
+                state.waker.take()
+            }
+        }
+    }
 }
 
 struct NativeWorkers {
@@ -188,14 +245,17 @@ impl ReadBatch {
             result: None,
             waker: None,
         }));
+        let cancelled = Arc::new(AtomicBool::new(false));
         Self {
             pending: Some(NativeJob::Read {
                 file,
                 reads,
                 state: Arc::clone(&state),
+                cancelled: Arc::clone(&cancelled),
             }),
             state,
             waiter: None,
+            cancelled,
         }
     }
 }
@@ -206,14 +266,17 @@ impl WriteBatch {
             result: None,
             waker: None,
         }));
+        let cancelled = Arc::new(AtomicBool::new(false));
         Self {
             pending: Some(NativeJob::Write {
                 file,
                 writes,
                 state: Arc::clone(&state),
+                cancelled: Arc::clone(&cancelled),
             }),
             state,
             waiter: None,
+            cancelled,
         }
     }
 }
@@ -356,42 +419,7 @@ fn native_workers() -> io::Result<&'static NativeWorkers> {
                                         waker.wake();
                                     }));
                             }
-                            let waker = match job {
-                                NativeJob::Read { file, reads, state } => {
-                                    let result = std::panic::catch_unwind(
-                                        std::panic::AssertUnwindSafe(|| {
-                                            read_batch_impl(&file, &reads)
-                                        }),
-                                    )
-                                    .unwrap_or_else(|_| {
-                                        Err(io::Error::other("native read worker panicked"))
-                                    });
-                                    let mut state = state
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                    state.result = Some(result);
-                                    state.waker.take()
-                                }
-                                NativeJob::Write {
-                                    file,
-                                    writes,
-                                    state,
-                                } => {
-                                    let result = std::panic::catch_unwind(
-                                        std::panic::AssertUnwindSafe(|| {
-                                            write_all_batch_owned(&file, writes)
-                                        }),
-                                    )
-                                    .unwrap_or_else(|_| {
-                                        Err(io::Error::other("native write worker panicked"))
-                                    });
-                                    let mut state = state
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                    state.result = Some(result);
-                                    state.waker.take()
-                                }
-                            };
+                            let waker = job.run();
                             if let Some(waker) = waker {
                                 let _ =
                                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -413,6 +441,7 @@ fn native_workers() -> io::Result<&'static NativeWorkers> {
 
 impl Drop for ReadBatch {
     fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -433,6 +462,7 @@ impl Drop for ReadBatch {
 
 impl Drop for WriteBatch {
     fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
