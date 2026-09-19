@@ -2592,6 +2592,56 @@ mod tests {
         Ok(())
     }
 
+    // `O_CREAT|O_EXCL` is what mkstemp, git's index.lock and editors' atomic
+    // saves use. On macOS the NFS client sends it as an EXCLUSIVE4 create,
+    // whose verifier the server parks in the new file's timestamps until the
+    // client's follow-up SETATTR replaces them (RFC 7530 s16.16.5). The
+    // second create must see the existing file, and the timestamps a caller
+    // observes must be real ones, not the verifier.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    #[ignore = "mounts a live Unix session; requires the host's native mount capability"]
+    fn exclusive_create_on_a_unix_mount_creates_once_with_real_timestamps()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = Arc::new(source(FilesystemProfile::Posix)?);
+        let temporary = tempfile::tempdir()?;
+        let mut mount = crate::mount_native(
+            crate::NativeMountRequest {
+                mount_id: crate::MountId::new(),
+                volume_id: source.volume_id()?,
+                destination: temporary.path().to_path_buf(),
+                writable: true,
+            },
+            Arc::clone(&source) as Arc<dyn MountFilesystem>,
+        )?;
+
+        let path = temporary.path().join("index.lock");
+        let before = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let mut first = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        std::io::Write::write_all(&mut first, b"locked")?;
+        drop(first);
+        let second = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path);
+        assert_eq!(
+            second.err().map(|error| error.kind()),
+            Some(std::io::ErrorKind::AlreadyExists)
+        );
+        let metadata = std::fs::metadata(&path)?;
+        assert!(
+            metadata.modified()? >= before && metadata.accessed()? >= before,
+            "timestamps still carry the create verifier: {metadata:?}"
+        );
+        assert_eq!(std::fs::read(&path)?, b"locked");
+
+        assert!(mount.stop()?);
+        Ok(())
+    }
+
     // Simultaneous callers must receive independent servers, callback state,
     // kernel mounts, and teardown lifecycles.
     #[cfg(any(target_os = "linux", target_os = "macos"))]

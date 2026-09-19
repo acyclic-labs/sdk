@@ -1284,6 +1284,59 @@ static uint32_t handle_readdir(const darwinfuse_config_t *config,
 
 /* ---- OPEN ---- */
 
+/* EXCLUSIVE4 create verifiers (RFC 7530 s16.16.5). The spec parks the
+ * verifier in the new file's atime/mtime and relies on the client's
+ * follow-up SETATTR to put real times back; the macOS client never sends
+ * that SETATTR, so a file created with O_EXCL would keep a 1970 atime and
+ * a far-future mtime. Keep the verifiers server-side instead: a bounded
+ * ring shared by every connection, because the retransmit that needs it
+ * arrives on a fresh connection after the old one dropped. The ring is
+ * keyed by mount and path so concurrent mounts in one process stay apart.
+ * A daemon restart loses it, but a restart loses the open-owner state the
+ * replay would need anyway. */
+#define EXCLUSIVE_VERIFIERS 64
+typedef struct {
+    const darwinfuse_config_t *config;
+    uint64_t verifier;
+    char path[1024];
+} exclusive_verifier_t;
+static exclusive_verifier_t exclusive_verifiers[EXCLUSIVE_VERIFIERS];
+static unsigned exclusive_verifier_next;
+static pthread_mutex_t exclusive_verifier_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void exclusive_remember(const darwinfuse_config_t *config,
+                               const char *path, uint64_t verf) {
+    pthread_mutex_lock(&exclusive_verifier_lock);
+    exclusive_verifier_t *slot =
+        &exclusive_verifiers[exclusive_verifier_next++ % EXCLUSIVE_VERIFIERS];
+    slot->config = config;
+    slot->verifier = verf;
+    strlcpy(slot->path, path, sizeof(slot->path));
+    pthread_mutex_unlock(&exclusive_verifier_lock);
+}
+
+/* True when this mount created `path` under `verf` recently: the OPEN is a
+ * retransmit of one that succeeded, not a collision. The entry stays until
+ * the ring overwrites it, because every lost reply is followed by another
+ * retransmit with the same verifier and each must succeed. An unrelated
+ * later create of the same path carries a fresh 64-bit verifier, so a
+ * lingering entry cannot make it succeed by mistake. */
+static int exclusive_recall(const darwinfuse_config_t *config,
+                            const char *path, uint64_t verf) {
+    int found = 0;
+    pthread_mutex_lock(&exclusive_verifier_lock);
+    for (unsigned i = 0; i < EXCLUSIVE_VERIFIERS; i++) {
+        const exclusive_verifier_t *slot = &exclusive_verifiers[i];
+        if (slot->config == config && slot->verifier == verf &&
+            strcmp(slot->path, path) == 0) {
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&exclusive_verifier_lock);
+    return found;
+}
+
 static uint32_t handle_open(const darwinfuse_config_t *config,
                              nfs4_conn_state_t *conn,
                              nfs4_request_ctx_t *ctx,
@@ -1305,6 +1358,7 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
     int create_nwords = 0;
 
     uint32_t createmode = UNCHECKED4;
+    uint64_t createverf = 0;
     if (opentype == OPEN4_CREATE) {
         createmode = xdr_decode_uint32(req);
         if (createmode == EXCLUSIVE4) {
@@ -1313,8 +1367,10 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
              * attrs here misread the verifier as a bitmap and every
              * O_CREAT|O_EXCL open (mkstemp, git index.lock, editor
              * atomic saves) failed with EIO. The client sends the mode
-             * in a follow-up SETATTR, so 0644 is only a placeholder. */
-            xdr_decode_uint64(req);
+             * in a follow-up SETATTR, so 0644 is only a placeholder.
+             * The verifier is kept: it is stored on the created file so
+             * a retransmitted OPEN can be told from a real collision. */
+            createverf = xdr_decode_uint64(req);
         } else {
             /* Decode createattrs (bitmap + attr data) */
             decode_bitmap(req, create_bitmap, &create_nwords);
@@ -1425,6 +1481,13 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
 
             if (config->ops->create) {
                 int rc = config->ops->create(path_buf, create_mode, &fi);
+                if (rc == 0 && createmode == EXCLUSIVE4) {
+                    /* If this reply is lost and the client retransmits
+                     * with the same verifier, the EEXIST path below
+                     * recognises the replay instead of failing O_EXCL
+                     * on a file this very request created. */
+                    exclusive_remember(config, path_buf, createverf);
+                }
                 if (rc == 0) {
                     /* Store the fuse_fh */
                     target_ino = dfuse_itable_get_or_create(config->inode_table, path_buf);
@@ -1467,10 +1530,16 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
                 /* create failed — fall through to try open if EEXIST,
                  * but only for UNCHECKED4: GUARDED4 and EXCLUSIVE4 must
                  * report the existing file, or O_EXCL would silently
-                 * succeed on a file someone else created. */
+                 * succeed on a file someone else created. The one
+                 * exception is an EXCLUSIVE4 replay: the file exists
+                 * because this very request created it and the reply
+                 * was lost, which its remembered verifier proves. */
                 if (rc != -EEXIST)
                     return errno_to_nfs4(rc);
-                if (createmode != UNCHECKED4)
+                if (createmode == GUARDED4)
+                    return NFS4ERR_EXIST;
+                if (createmode == EXCLUSIVE4 &&
+                    !exclusive_recall(config, path_buf, createverf))
                     return NFS4ERR_EXIST;
             } else {
                 return NFS4ERR_NOTSUPP;
