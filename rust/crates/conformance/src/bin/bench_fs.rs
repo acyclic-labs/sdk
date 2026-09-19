@@ -15,6 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut batch = false;
     let mut barrier = false;
     let mut capture = false;
+    let mut file_bytes = 1024 * 1024_u64;
     for argument in std::env::args().skip(1) {
         if argument == "--batch" {
             batch = true;
@@ -24,6 +25,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             barrier = true;
         } else if let Some(count) = argument.strip_prefix("--writes=") {
             writes = count.parse()?;
+        } else if let Some(count) = argument.strip_prefix("--file-bytes=") {
+            file_bytes = count.parse()?;
         } else {
             return Err(format!("unknown argument: {argument}").into());
         }
@@ -32,7 +35,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("writes must be between 1 and 1024".into());
     }
     if capture {
-        return benchmark_capture(writes).await;
+        if file_bytes == 0 || file_bytes > 1024 * 1024 * 1024 {
+            return Err("file-bytes must be between 1 and 1073741824".into());
+        }
+        return benchmark_capture(writes, file_bytes).await;
     }
     let root = tempfile::tempdir()?;
     let mut options = LocalOptions::new(root.path());
@@ -86,10 +92,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn benchmark_capture(paths: u32) -> Result<(), Box<dyn std::error::Error>> {
+async fn benchmark_capture(paths: u32, file_bytes: u64) -> Result<(), Box<dyn std::error::Error>> {
     let source = tempfile::tempdir()?;
+    let body = vec![0x5a; usize::try_from(file_bytes)?];
     for index in 0..paths {
-        std::fs::write(source.path().join(format!("entry-{index:04}")), b"value")?;
+        std::fs::write(source.path().join(format!("entry-{index:04}")), &body)?;
     }
     let storage = tempfile::tempdir()?;
     let fs = Box::pin(Fs::local(LocalOptions::new(storage.path()))).await?;
@@ -115,6 +122,14 @@ async fn benchmark_capture(paths: u32) -> Result<(), Box<dyn std::error::Error>>
     .await?;
     let elapsed = started.elapsed();
     let work = receipt.work;
+    let total_bytes = file_bytes
+        .checked_mul(u64::from(paths))
+        .ok_or("capture byte count overflow")?;
+    let elapsed_ns = elapsed.as_nanos().max(1);
+    let bytes_per_second = u128::from(total_bytes)
+        .saturating_mul(1_000_000_000)
+        .checked_div(elapsed_ns)
+        .unwrap_or_default();
     println!(
         "{}",
         serde_json::json!({
@@ -123,7 +138,10 @@ async fn benchmark_capture(paths: u32) -> Result<(), Box<dyn std::error::Error>>
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
             "paths": paths,
+            "file_bytes": file_bytes,
+            "total_bytes": total_bytes,
             "elapsed_ms": elapsed.as_secs_f64() * 1000.0,
+            "bytes_per_second": bytes_per_second,
             "examined_paths": receipt.value.examined_paths,
             "changed_paths": receipt.value.changed_paths,
             "source_bytes_read": work.source_bytes_read,
