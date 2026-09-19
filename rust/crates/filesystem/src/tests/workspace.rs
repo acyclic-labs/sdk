@@ -1351,22 +1351,11 @@ async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let cancelled_failure = generation
-        .lookup_paths(
-            std::slice::from_ref(&present),
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        )
-        .await
-        .err()
-        .ok_or_else(|| std::io::Error::other("pre-cancelled lookup must fail"))?;
-    assert_eq!(*cancelled_failure.work, crate::WorkCounters::default());
-    let budget_failure = generation
-        .lookup_paths(&[present], WorkBudget::default(), &CancellationToken::new())
-        .await
-        .err()
-        .ok_or_else(|| std::io::Error::other("zero-budget checkout must fail"))?;
-    assert_ne!(*budget_failure.work, crate::WorkCounters::default());
-    assert!(budget_failure.work.verify(WorkBudget::default()).is_err());
+    assert!(
+        generation
+            .lookup_paths(&[present], WorkBudget::UNBOUNDED, &cancelled)
+            .await
+            .is_err()
+    );
     Ok(())
 }

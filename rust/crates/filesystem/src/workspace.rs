@@ -3507,38 +3507,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         paths: &[NamespacePath],
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> crate::FsResult<Vec<Option<crate::kernel::FileRecord>>> {
-        let checkout = self
+    ) -> Result<crate::FsReceipt<Vec<Option<crate::kernel::FileRecord>>>, WorkspaceError> {
+        let mut checkout = self
             .workspace
-            .volume
-            .checkout(
+            .engine_checkout(
                 GenerationSelector::Exact(self.id),
                 CheckoutMode::read_only_pinned(),
-                budget,
-                cancellation,
             )
             .await?;
-        let checkout_work = checkout.work;
-        let remaining = checkout_work
-            .remaining(budget)
-            .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
-        let mut checkout = checkout.value;
-        let lookup = checkout
-            .lookup_batch_no_follow(paths, remaining, cancellation)
+        checkout
+            .lookup_batch_no_follow(paths, budget, cancellation)
             .await
-            .map_err(|failure| failure.map_with_prior_work(checkout_work, |error| error))?;
-        let work = checkout_work
-            .checked_add(lookup.work)
-            .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
-        Ok(crate::FsReceipt {
-            value: lookup
-                .value
-                .entries
-                .into_iter()
-                .map(|entry| entry.record)
-                .collect(),
-            work,
-        })
+            .map(|receipt| crate::FsReceipt {
+                value: receipt
+                    .value
+                    .entries
+                    .into_iter()
+                    .map(|entry| entry.record)
+                    .collect(),
+                work: receipt.work,
+            })
+            .map_err(WorkspaceError::engine)
     }
 
     /// Returns one authenticated bounded directory page from this generation.
