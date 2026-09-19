@@ -2,6 +2,8 @@ use super::*;
 use crate::model::{Lifecycle, VolumeConfig};
 use crate::{CancellationToken, Fs, WorkBudget};
 use std::error::Error;
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+use std::path::Path;
 use std::sync::Arc;
 
 #[test]
@@ -356,6 +358,145 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
             .mode();
         assert_eq!(mode & 0o777, 0o700);
     }
+    Ok(())
+}
+
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_path()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("restore-host-consumer").await?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    transaction.create_dir_all("/nested").await?;
+    transaction
+        .write_text("/nested/file", "authenticated")
+        .await?;
+    let TransactionCommit::Committed(generation) = transaction.commit().await? else {
+        return Err("restore fixture did not commit".into());
+    };
+    let destination = tempfile::tempdir()?;
+    std::fs::create_dir(destination.path().join("nested"))?;
+    std::fs::write(destination.path().join("nested/file"), b"stale")?;
+    std::fs::write(destination.path().join("sibling"), b"untouched")?;
+    let options = crate::MaterializeOptions {
+        destination: destination.path().to_path_buf(),
+        maximum_directory_entries: 32,
+        maximum_extent_spans: 32,
+        transfer_bytes: 4096,
+    };
+    let restored = generation
+        .restore_host_path(
+            Path::new("nested/file"),
+            crate::HostPathReplacement::Atomic,
+            &options,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?;
+    assert_eq!(restored.value, crate::HostPathRestore::Restored);
+    assert_eq!(
+        std::fs::read(destination.path().join("nested/file"))?,
+        b"authenticated"
+    );
+    assert_eq!(
+        std::fs::read(destination.path().join("sibling"))?,
+        b"untouched"
+    );
+
+    std::fs::write(destination.path().join("missing"), b"remove me")?;
+    let removed = generation
+        .restore_host_path(
+            Path::new("missing"),
+            crate::HostPathReplacement::Atomic,
+            &options,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?;
+    assert_eq!(removed.value, crate::HostPathRestore::Removed);
+    assert!(!destination.path().join("missing").exists());
+    for invalid in [Path::new(""), Path::new("../escape"), destination.path()] {
+        assert!(
+            generation
+                .restore_host_path(
+                    invalid,
+                    crate::HostPathReplacement::Atomic,
+                    &options,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32"), unix))]
+#[tokio::test]
+async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Result<(), Box<dyn Error>>
+{
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("restore-host-containment").await?;
+    let generation = workspace.head().await?;
+    let destination = tempfile::tempdir()?;
+    let outside = tempfile::tempdir()?;
+    std::os::unix::fs::symlink(outside.path(), destination.path().join("escape"))?;
+    let result = generation
+        .restore_host_path(
+            Path::new("escape/file"),
+            crate::HostPathReplacement::Atomic,
+            &crate::MaterializeOptions {
+                destination: destination.path().to_path_buf(),
+                maximum_directory_entries: 32,
+                maximum_extent_spans: 32,
+                transfer_bytes: 4096,
+            },
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await;
+    assert!(result.is_err());
+    assert!(!outside.path().join("file").exists());
+    Ok(())
+}
+
+#[cfg(all(feature = "native-mount", windows))]
+#[tokio::test]
+async fn public_generation_restore_host_path_rejects_reparse_parent_when_available()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs
+        .create_workspace("restore-host-containment-windows")
+        .await?;
+    let generation = workspace.head().await?;
+    let destination = tempfile::tempdir()?;
+    let outside = tempfile::tempdir()?;
+    if let Err(error) =
+        std::os::windows::fs::symlink_dir(outside.path(), destination.path().join("escape"))
+    {
+        if error.kind() == std::io::ErrorKind::PermissionDenied {
+            return Ok(());
+        }
+        return Err(error.into());
+    }
+    let result = generation
+        .restore_host_path(
+            Path::new("escape/file"),
+            crate::HostPathReplacement::Atomic,
+            &crate::MaterializeOptions {
+                destination: destination.path().to_path_buf(),
+                maximum_directory_entries: 32,
+                maximum_extent_spans: 32,
+                transfer_bytes: 4096,
+            },
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await;
+    assert!(result.is_err());
+    assert!(!outside.path().join("file").exists());
     Ok(())
 }
 

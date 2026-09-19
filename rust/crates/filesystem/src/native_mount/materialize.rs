@@ -19,7 +19,10 @@ use std::ffi::OsString;
 #[cfg(windows)]
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
+
+static RESTORE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Exact hard bounds and destination for one materialization.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,6 +54,24 @@ pub struct MaterializationReceipt {
     pub written_bytes: u64,
     /// Complete canonical-engine and host-movement work.
     pub work: WorkCounters,
+}
+
+/// How a materialized host path replaces its current destination.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostPathReplacement {
+    /// Exchange an existing entry atomically on the same volume.
+    Atomic,
+    /// Route ordinary renames through a live kernel mount.
+    LiveMount,
+}
+
+/// Exact result of restoring one authenticated path into a host tree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostPathRestore {
+    /// The authenticated entry was materialized and published.
+    Restored,
+    /// The authenticated path was absent and the host entry was removed.
+    Removed,
 }
 
 /// Fail-closed explicit materialization errors.
@@ -393,6 +414,256 @@ pub async fn materialize_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObje
     let path = NamespacePath::new(names, limits)
         .map_err(|_| OperationFailure::before_work(MaterializeError::InvalidPath))?;
     materialize_checkout_path(checkout, &path, options, budget, cancellation).await
+}
+
+/// Restores one authenticated host-relative path without touching siblings.
+///
+/// Materialization occurs in a private same-volume stage. Existing entries are
+/// exchanged atomically or replaced through ordinary mount-visible renames.
+/// An absent authenticated path removes the current host entry.
+pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    relative: &Path,
+    replacement: HostPathReplacement,
+    options: &MaterializeOptions,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<HostPathRestore>, OperationFailure<MaterializeError>> {
+    validate_host_relative(relative).map_err(OperationFailure::before_work)?;
+    let destination_root = options.destination.clone();
+    let relative = relative.to_path_buf();
+    let (destination, stage_root) = tokio::task::spawn_blocking({
+        let destination_root = destination_root.clone();
+        let relative = relative.clone();
+        move || prepare_restore(&destination_root, &relative, replacement)
+    })
+    .await
+    .map_err(|error| OperationFailure::before_work(MaterializeError::Engine(error.to_string())))?
+    .map_err(OperationFailure::before_work)?;
+    let staged = stage_root.join(&relative);
+    let materialize_options = MaterializeOptions {
+        destination: stage_root.clone(),
+        maximum_directory_entries: options.maximum_directory_entries,
+        maximum_extent_spans: options.maximum_extent_spans,
+        transfer_bytes: options.transfer_bytes,
+    };
+    let materialized = materialize_checkout_host_path(
+        checkout,
+        &relative,
+        &materialize_options,
+        budget,
+        cancellation,
+    )
+    .await;
+    let receipt = match materialized {
+        Ok(receipt) => receipt,
+        Err(failure) if matches!(failure.error, MaterializeError::MissingPath) => {
+            let work = *failure.work;
+            tokio::task::spawn_blocking(move || {
+                ensure_real_parents(&destination_root, &relative).map_err(materialize_io_error)?;
+                remove_any(&stage_root)?;
+                remove_any(&destination)
+            })
+            .await
+            .map_err(|error| {
+                OperationFailure::new(MaterializeError::Engine(error.to_string()), work)
+            })?
+            .map_err(|error| OperationFailure::new(MaterializeError::Io(error), work))?;
+            return Ok(OperationReceipt {
+                value: HostPathRestore::Removed,
+                work,
+            });
+        }
+        Err(failure) => {
+            let _ = tokio::task::spawn_blocking(move || remove_any(&stage_root)).await;
+            return Err(failure);
+        }
+    };
+    tokio::task::spawn_blocking(move || {
+        publish_restore(
+            &destination_root,
+            &relative,
+            &destination,
+            &staged,
+            &stage_root,
+            replacement,
+        )
+    })
+    .await
+    .map_err(|error| {
+        OperationFailure::new(MaterializeError::Engine(error.to_string()), receipt.work)
+    })?
+    .map_err(|error| OperationFailure::new(error, receipt.work))?;
+    Ok(OperationReceipt {
+        value: HostPathRestore::Restored,
+        work: receipt.work,
+    })
+}
+
+fn materialize_io_error(error: MaterializeError) -> std::io::Error {
+    match error {
+        MaterializeError::Io(error) => error,
+        error => std::io::Error::other(error),
+    }
+}
+
+fn prepare_restore(
+    destination_root: &Path,
+    relative: &Path,
+    replacement: HostPathReplacement,
+) -> Result<(PathBuf, PathBuf), MaterializeError> {
+    let destination = destination_root.join(relative);
+    ensure_real_parents(destination_root, relative)?;
+    let stage_parent = match replacement {
+        HostPathReplacement::Atomic => destination_root
+            .parent()
+            .ok_or(MaterializeError::InvalidPath)?
+            .to_path_buf(),
+        HostPathReplacement::LiveMount => destination
+            .parent()
+            .ok_or(MaterializeError::InvalidPath)?
+            .to_path_buf(),
+    };
+    Ok((destination, create_restore_stage(&stage_parent)?))
+}
+
+fn publish_restore(
+    destination_root: &Path,
+    relative: &Path,
+    destination: &Path,
+    staged: &Path,
+    stage_root: &Path,
+    replacement: HostPathReplacement,
+) -> Result<(), MaterializeError> {
+    ensure_real_parents(destination_root, relative)?;
+    match std::fs::symlink_metadata(destination) {
+        Ok(_) => match replacement {
+            HostPathReplacement::Atomic => crate::exchange_native_entries(destination, staged)
+                .map_err(|error| MaterializeError::Engine(error.to_string()))?,
+            HostPathReplacement::LiveMount => replace_live_mount(
+                staged,
+                destination,
+                destination.parent().ok_or(MaterializeError::InvalidPath)?,
+            )?,
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => match replacement {
+            HostPathReplacement::Atomic => acyclic_native_runtime::durable_rename(
+                staged,
+                destination,
+                acyclic_native_runtime::RenameMode::NoReplace,
+            )?,
+            HostPathReplacement::LiveMount => std::fs::rename(staged, destination)?,
+        },
+        Err(error) => return Err(error.into()),
+    }
+    remove_any(stage_root)?;
+    Ok(())
+}
+
+fn validate_host_relative(relative: &Path) -> Result<(), MaterializeError> {
+    let mut any = false;
+    for component in relative.components() {
+        let std::path::Component::Normal(_) = component else {
+            return Err(MaterializeError::InvalidPath);
+        };
+        any = true;
+    }
+    if any {
+        Ok(())
+    } else {
+        Err(MaterializeError::InvalidPath)
+    }
+}
+
+fn ensure_real_parents(root: &Path, relative: &Path) -> Result<(), MaterializeError> {
+    fn check(path: &Path) -> Result<(), MaterializeError> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        #[cfg(windows)]
+        let reparse = {
+            use std::os::windows::fs::MetadataExt as _;
+            metadata.file_attributes() & 0x400 != 0
+        };
+        #[cfg(not(windows))]
+        let reparse = false;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() || reparse {
+            return Err(MaterializeError::InvalidDestination);
+        }
+        Ok(())
+    }
+
+    check(root)?;
+    let mut cursor = root.to_path_buf();
+    if let Some(parent) = relative.parent() {
+        for component in parent.components() {
+            let std::path::Component::Normal(name) = component else {
+                return Err(MaterializeError::InvalidPath);
+            };
+            cursor.push(name);
+            match std::fs::symlink_metadata(&cursor) {
+                Ok(_) => check(&cursor)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    std::fs::create_dir(&cursor)?;
+                    check(&cursor)?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn create_restore_stage(parent: &Path) -> Result<PathBuf, MaterializeError> {
+    for _ in 0..16 {
+        let sequence = RESTORE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let stage = parent.join(format!(
+            ".acyclic-restore-{}-{sequence}",
+            std::process::id()
+        ));
+        match std::fs::create_dir(&stage) {
+            Ok(()) => return Ok(stage),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(MaterializeError::Io(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "restore stage names are exhausted",
+    )))
+}
+
+fn remove_any(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn replace_live_mount(
+    staged: &Path,
+    destination: &Path,
+    parent: &Path,
+) -> Result<(), MaterializeError> {
+    let backup_root = create_restore_stage(parent)?;
+    let backup = backup_root.join("old");
+    if let Err(error) = std::fs::rename(destination, &backup) {
+        let _ = std::fs::remove_dir(&backup_root);
+        return Err(error.into());
+    }
+    if let Err(error) = std::fs::rename(staged, destination) {
+        if let Err(rollback) = std::fs::rename(&backup, destination) {
+            return Err(MaterializeError::Engine(format!(
+                "replacement failed: {error}; displaced entry remains at {} after rollback failed: {rollback}",
+                backup.display()
+            )));
+        }
+        let _ = std::fs::remove_dir(&backup_root);
+        return Err(error.into());
+    }
+    remove_any(&backup)?;
+    std::fs::remove_dir(&backup_root)?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]

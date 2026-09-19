@@ -3529,6 +3529,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             .map_err(|failure| WorkspaceError::engine(failure.error))
     }
 
+    /// Restores one path from this immutable generation into a host tree.
+    ///
+    /// Only the selected path is read and touched. Publication is same-volume
+    /// and atomic for an ordinary host tree, or mount-visible for a live mount.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn restore_host_path(
+        &self,
+        relative: &std::path::Path,
+        replacement: crate::HostPathReplacement,
+        options: &crate::MaterializeOptions,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<crate::HostPathRestore>, WorkspaceError> {
+        let mut checkout = self
+            .workspace
+            .engine_checkout(
+                GenerationSelector::Exact(self.id),
+                CheckoutMode::read_only_pinned(),
+            )
+            .await?;
+        crate::restore_checkout_host_path(
+            &mut checkout,
+            relative,
+            replacement,
+            options,
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| WorkspaceError::engine(failure.error))
+    }
+
     /// Returns the exact immutable parent generation identities.
     ///
     /// # Errors

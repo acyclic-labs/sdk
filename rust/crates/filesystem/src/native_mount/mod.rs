@@ -37,8 +37,9 @@ pub use crate::{
 
 mod materialize;
 pub use materialize::{
-    MaterializationReceipt, MaterializeError, MaterializeOptions, materialize_checkout,
-    materialize_checkout_host_path, materialize_checkout_path,
+    HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeError,
+    MaterializeOptions, materialize_checkout, materialize_checkout_host_path,
+    materialize_checkout_path, restore_checkout_host_path,
 };
 
 mod publication;
