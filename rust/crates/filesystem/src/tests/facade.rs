@@ -1607,6 +1607,42 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     assert_eq!(&batch.value[0].bytes[..], b"234");
     assert_eq!(&batch.value[1].bytes[..], b"bcde");
 
+    let lookup = poll_ready(writer.lookup_batch_no_follow(
+        &[path("second")?, path("first")?],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("record lookup blocked")??;
+    let second_record = lookup.value.entries[0].record.ok_or("second absent")?;
+    let first_record = lookup.value.entries[1].record.ok_or("first absent")?;
+    let record_reads = poll_ready(reader.read_file_record_ranges(
+        &[
+            FileRecordRangeReadRequest {
+                record: second_record,
+                range: requests[0].range,
+            },
+            FileRecordRangeReadRequest {
+                record: first_record,
+                range: requests[1].range,
+            },
+        ],
+        2,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("record range batch blocked")??;
+    assert_eq!(&record_reads.value[0].bytes[..], b"234");
+    assert_eq!(&record_reads.value[1].bytes[..], b"bcde");
+    let metadata = poll_ready(reader.read_record_metadata_batch(
+        &[first_record, second_record, first_record],
+        3,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("metadata batch blocked")??;
+    assert_eq!(metadata.value.len(), 3);
+    assert_eq!(metadata.value[0], metadata.value[2]);
+
     let first = poll_ready(reader.read_file_range(
         &requests[0].path,
         requests[0].range,

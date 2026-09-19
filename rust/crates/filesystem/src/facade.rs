@@ -474,6 +474,16 @@ pub struct FileRangeReadRequest {
     pub range: ByteRange,
 }
 
+/// One already resolved file record and logical byte range requested from a
+/// [`PinnedReader`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FileRecordRangeReadRequest {
+    /// Authenticated file record returned by the same pinned generation.
+    pub record: FileRecord,
+    /// Exact logical byte range returned.
+    pub range: ByteRange,
+}
+
 #[derive(Clone, Copy)]
 struct LastCommit {
     operation_id: OperationId,
@@ -4010,6 +4020,67 @@ impl<A, O> Checkout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
+    async fn read_record_range(
+        &self,
+        request: FileRecordRangeReadRequest,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<FileRangeRead> {
+        if request.range.length > self.volume.config.limits.maximum_read_bytes {
+            return Err(OperationFailure::before_work(FsError::FileRead(
+                FileRangeReadError::InvalidRange,
+            )));
+        }
+        let read = read_file_range_async(
+            &self.volume.fs.inner.objects,
+            FileRangeRequest {
+                record: request.record,
+                range: request.range,
+                maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
+                limits: decode_limits(self.volume.config),
+                budget,
+            },
+            cancellation,
+        )
+        .await
+        .map_err(|failure| {
+            failure.map_with_prior_work(WorkCounters::default(), FsError::FileRead)
+        })?;
+        Ok(FsReceipt {
+            work: read.work,
+            value: read,
+        })
+    }
+
+    async fn read_record_metadata(
+        &self,
+        record: FileRecord,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<FileMetadata> {
+        let metadata = self
+            .volume
+            .fs
+            .inner
+            .objects
+            .read(
+                record.metadata,
+                self.volume.config.limits.maximum_object_bytes,
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| {
+                failure.map_with_prior_work(WorkCounters::default(), FsError::Object)
+            })?;
+        let value = decode_file_metadata(&metadata.value, decode_limits(self.volume.config))
+            .map_err(|error| OperationFailure::new(error.into(), metadata.work))?;
+        Ok(FsReceipt {
+            value,
+            work: metadata.work,
+        })
+    }
+
     async fn resolve_file(
         &self,
         path: &NamespacePath,
@@ -4172,35 +4243,113 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         .buffer_unordered(concurrency.min(requests.len().max(1)))
         .collect::<Vec<_>>()
         .await;
-        let mut ordered = Vec::new();
-        ordered
-            .try_reserve_exact(results.len())
-            .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
-        let mut work = WorkCounters::default();
-        let mut completed = Vec::new();
-        completed
-            .try_reserve_exact(results.len())
-            .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
-        for (index, result) in results {
-            match result {
-                Ok(receipt) => {
-                    work = add(work, receipt.work)?;
-                    completed.push((index, receipt.value));
-                }
-                Err(failure) => {
-                    return Err(failure.map_with_prior_work(work, std::convert::identity));
-                }
+        order_batch_results(results, budget)
+    }
+
+    /// Reads ordered ranges from already resolved authenticated records with
+    /// at most `concurrency` operations in flight.
+    pub async fn read_file_record_ranges(
+        &self,
+        requests: &[FileRecordRangeReadRequest],
+        concurrency: usize,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<FileRangeRead>> {
+        if concurrency == 0
+            || requests.len()
+                > usize::try_from(self.volume.config.limits.maximum_paths_per_batch)
+                    .unwrap_or(usize::MAX)
+        {
+            return Err(OperationFailure::before_work(FsError::FileRead(
+                FileRangeReadError::InvalidRange,
+            )));
+        }
+        let results = stream::iter(
+            requests
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(index, request)| {
+                    let reader = self.clone();
+                    async move {
+                        (
+                            index,
+                            reader
+                                .read_record_range(request, budget, cancellation)
+                                .await,
+                        )
+                    }
+                }),
+        )
+        .buffer_unordered(concurrency.min(requests.len().max(1)))
+        .collect::<Vec<_>>()
+        .await;
+        order_batch_results(results, budget)
+    }
+
+    /// Decodes metadata for authenticated records with bounded concurrency,
+    /// preserving request order.
+    pub async fn read_record_metadata_batch(
+        &self,
+        records: &[FileRecord],
+        concurrency: usize,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<FileMetadata>> {
+        if concurrency == 0
+            || records.len()
+                > usize::try_from(self.volume.config.limits.maximum_paths_per_batch)
+                    .unwrap_or(usize::MAX)
+        {
+            return Err(OperationFailure::before_work(FsError::Path(
+                PathLookupError::TooManyPaths,
+            )));
+        }
+        let results = stream::iter(records.iter().copied().enumerate().map(|(index, record)| {
+            let reader = self.clone();
+            async move {
+                (
+                    index,
+                    reader
+                        .read_record_metadata(record, budget, cancellation)
+                        .await,
+                )
+            }
+        }))
+        .buffer_unordered(concurrency.min(records.len().max(1)))
+        .collect::<Vec<_>>()
+        .await;
+        order_batch_results(results, budget)
+    }
+}
+
+fn order_batch_results<T>(
+    results: Vec<(usize, FsResult<T>)>,
+    budget: WorkBudget,
+) -> FsResult<Vec<T>> {
+    let mut work = WorkCounters::default();
+    let mut completed = Vec::new();
+    completed
+        .try_reserve_exact(results.len())
+        .map_err(|_| OperationFailure::before_work(FsError::Work(WorkError::Overflow)))?;
+    for (index, result) in results {
+        match result {
+            Ok(receipt) => {
+                work = add(work, receipt.work)?;
+                completed.push((index, receipt.value));
+            }
+            Err(failure) => {
+                return Err(failure.map_with_prior_work(work, std::convert::identity));
             }
         }
-        work.verify(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        completed.sort_unstable_by_key(|(index, _)| *index);
-        ordered.extend(completed.into_iter().map(|(_, value)| value));
-        Ok(FsReceipt {
-            value: ordered,
-            work,
-        })
     }
+    work.verify(budget)
+        .map_err(|error| OperationFailure::new(error.into(), work))?;
+    completed.sort_unstable_by_key(|(index, _)| *index);
+    Ok(FsReceipt {
+        value: completed.into_iter().map(|(_, value)| value).collect(),
+        work,
+    })
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
