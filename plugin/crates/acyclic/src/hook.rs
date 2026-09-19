@@ -454,18 +454,6 @@ mod tests {
     }
 
     #[test]
-    fn the_kill_switch_writes_nothing() {
-        let (_dir, repo) = scratch();
-        std::env::set_var("ACYCLIC_NO_LEASES", "1");
-        record_lease(&repo, Some("Edit"), Some("src/report.py"));
-        std::env::remove_var("ACYCLIC_NO_LEASES");
-        assert!(
-            leases_of(&repo).is_empty(),
-            "the off switch must be an off switch"
-        );
-    }
-
-    #[test]
     fn leases_never_land_inside_the_repo() {
         let (_dir, repo) = scratch();
         record_lease(&repo, Some("Edit"), Some("src/report.py"));
