@@ -23,7 +23,7 @@ use crate::proto;
 use acyclic::product::{self, NAME};
 use rmcp::{
     handler::server::wrapper::Parameters,
-    model::{ErrorCode, Implementation, ServerCapabilities, ServerInfo},
+    model::{ErrorCode, Implementation, ServerCapabilities, ServerConfig},
     tool, tool_handler, tool_router,
     transport::stdio,
     ErrorData as McpError, ServerHandler, ServiceExt,
@@ -467,8 +467,8 @@ call `diff` and review the blast radius.";
 
 #[tool_handler]
 impl ServerHandler for McpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(NAME, env!("CARGO_PKG_VERSION")))
             .with_instructions(product::render(MCP_INSTRUCTIONS))
     }
