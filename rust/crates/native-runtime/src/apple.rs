@@ -2,7 +2,7 @@
 
 #![allow(unsafe_code)]
 
-use crate::{OwnedRead, OwnedWrite};
+use crate::{Cancellation, OwnedRead, OwnedWrite};
 use block2::RcBlock;
 use bytes::Bytes;
 use dispatch2::{
@@ -59,7 +59,32 @@ fn queue() -> dispatch2::DispatchRetained<DispatchQueue> {
     ))
 }
 
-pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
+struct RegisteredChannel<'a> {
+    cancellation: &'a Cancellation,
+    channel: &'a DispatchIO,
+}
+
+impl<'a> RegisteredChannel<'a> {
+    fn new(cancellation: &'a Cancellation, channel: &'a DispatchIO) -> Self {
+        cancellation.register_apple(channel);
+        Self {
+            cancellation,
+            channel,
+        }
+    }
+}
+
+impl Drop for RegisteredChannel<'_> {
+    fn drop(&mut self) {
+        self.cancellation.clear_apple(self.channel);
+    }
+}
+
+pub(super) fn read_batch(
+    file: &File,
+    reads: &[OwnedRead],
+    cancellation: &Cancellation,
+) -> io::Result<Vec<Bytes>> {
     let offsets = reads
         .iter()
         .map(|read| {
@@ -79,6 +104,7 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
             &cleanup,
         )
     };
+    let _registered = RegisteredChannel::new(cancellation, &channel);
     let mut completions = Vec::new();
     completions.try_reserve_exact(reads.len())?;
     for (read, offset) in reads.iter().zip(offsets) {
@@ -125,7 +151,11 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
         .collect()
 }
 
-fn write_all_batch(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
+fn write_all_batch(
+    file: &File,
+    writes: &[OwnedWrite],
+    cancellation: &Cancellation,
+) -> io::Result<()> {
     let offsets = writes
         .iter()
         .map(|write| {
@@ -145,6 +175,7 @@ fn write_all_batch(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
             &cleanup,
         )
     };
+    let _registered = RegisteredChannel::new(cancellation, &channel);
     let mut completions = Vec::new();
     completions.try_reserve_exact(writes.len())?;
     for (write, offset) in writes.iter().zip(offsets) {
@@ -184,6 +215,10 @@ fn write_all_batch(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io::Result<()> {
-    write_all_batch(file, &writes)
+pub(super) fn write_all_batch_owned(
+    file: &File,
+    writes: Vec<OwnedWrite>,
+    cancellation: &Cancellation,
+) -> io::Result<()> {
+    write_all_batch(file, &writes, cancellation)
 }

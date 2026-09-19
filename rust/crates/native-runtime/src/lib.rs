@@ -15,6 +15,8 @@ struct Cancellation {
     cancelled: AtomicBool,
     #[cfg(windows)]
     windows_handle: Mutex<Option<isize>>,
+    #[cfg(target_vendor = "apple")]
+    apple_channel: Mutex<Option<dispatch2::DispatchRetained<dispatch2::DispatchIO>>>,
 }
 
 impl Cancellation {
@@ -26,6 +28,8 @@ impl Cancellation {
         self.cancelled.store(true, Ordering::Release);
         #[cfg(windows)]
         self.cancel_windows();
+        #[cfg(target_vendor = "apple")]
+        self.cancel_apple();
     }
 
     #[cfg(windows)]
@@ -58,6 +62,47 @@ impl Cancellation {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(handle) = handle {
             windows::cancel(handle);
+        }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    fn register_apple(&self, channel: &dispatch2::DispatchIO) {
+        use dispatch2::DispatchObject as _;
+
+        *self
+            .apple_channel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(channel.retain());
+        if self.is_cancelled() {
+            self.cancel_apple();
+        }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    fn clear_apple(&self, channel: &dispatch2::DispatchIO) {
+        let mut active = self
+            .apple_channel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active
+            .as_deref()
+            .is_some_and(|candidate| std::ptr::eq(candidate, channel))
+        {
+            *active = None;
+        }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    fn cancel_apple(&self) {
+        use dispatch2::DispatchIOCloseFlags;
+
+        let active = self
+            .apple_channel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(channel) = active {
+            channel.close(DispatchIOCloseFlags::DISPATCH_IO_STOP);
         }
     }
 }
@@ -338,8 +383,9 @@ impl Future for ReadBatch {
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        if let Poll::Ready(result) = poll_submission(&mut this.pending, &mut this.waiter, context) {
-            result?;
+        match poll_submission(&mut this.pending, &mut this.waiter, context) {
+            Poll::Ready(result) => result?,
+            Poll::Pending => return Poll::Pending,
         }
         let mut state = this
             .state
@@ -364,8 +410,9 @@ impl Future for WriteBatch {
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        if let Poll::Ready(result) = poll_submission(&mut this.pending, &mut this.waiter, context) {
-            result?;
+        match poll_submission(&mut this.pending, &mut this.waiter, context) {
+            Poll::Ready(result) => result?,
+            Poll::Pending => return Poll::Pending,
         }
         let mut state = this
             .state
@@ -619,8 +666,7 @@ fn write_all_batch_owned(
     writes: Vec<OwnedWrite>,
     cancellation: &Cancellation,
 ) -> io::Result<()> {
-    let _ = cancellation;
-    apple::write_all_batch_owned(file, writes)
+    apple::write_all_batch_owned(file, writes, cancellation)
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -629,8 +675,7 @@ fn read_batch_impl(
     reads: &[OwnedRead],
     cancellation: &Cancellation,
 ) -> io::Result<Vec<Bytes>> {
-    let _ = cancellation;
-    apple::read_batch(file, reads)
+    apple::read_batch(file, reads, cancellation)
 }
 
 #[cfg(windows)]
