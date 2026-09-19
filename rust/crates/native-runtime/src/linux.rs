@@ -6,13 +6,16 @@ use io_uring::{IoUring, opcode, types};
 use std::cell::RefCell;
 use std::fs::File;
 use std::io;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::sync::Arc;
 
-use crate::{OwnedRead, OwnedWrite};
+use crate::{Cancellation, OwnedRead, OwnedWrite};
 use bytes::Bytes;
 
 const RING_ENTRIES: u32 = 16;
+const IO_ENTRIES: usize = RING_ENTRIES as usize - 1;
 const MAX_IO_BYTES: usize = 1024 * 1024;
+const CANCELLATION_ID: u64 = u64::MAX;
 
 thread_local! {
     static STATE: RefCell<RingState> = RefCell::new(RingState {
@@ -36,6 +39,50 @@ struct QuarantinedIo {
 enum QuarantinedBuffers {
     Reads(Vec<Vec<u8>>),
     Writes(Vec<OwnedWrite>),
+}
+
+pub(super) struct CancellationEvent(OwnedFd);
+
+impl CancellationEvent {
+    fn new() -> io::Result<Arc<Self>> {
+        // SAFETY: eventfd returns a new owned descriptor on success.
+        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: ownership of the freshly created descriptor transfers here.
+        Ok(Arc::new(Self(unsafe { OwnedFd::from_raw_fd(fd) })))
+    }
+
+    pub(super) fn signal(&self) {
+        let one = 1_u64.to_ne_bytes();
+        // SAFETY: the descriptor is live and the source is an eight-byte eventfd value.
+        unsafe {
+            libc::write(self.0.as_raw_fd(), one.as_ptr().cast(), one.len());
+        }
+    }
+}
+
+struct RegisteredCancellation<'a> {
+    cancellation: &'a Cancellation,
+    event: Arc<CancellationEvent>,
+}
+
+impl<'a> RegisteredCancellation<'a> {
+    fn new(cancellation: &'a Cancellation) -> io::Result<Self> {
+        let event = CancellationEvent::new()?;
+        cancellation.register_linux(&event);
+        Ok(Self {
+            cancellation,
+            event,
+        })
+    }
+}
+
+impl Drop for RegisteredCancellation<'_> {
+    fn drop(&mut self) {
+        self.cancellation.clear_linux(&self.event);
+    }
 }
 
 pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
@@ -97,11 +144,16 @@ pub(super) fn write_all_at(file: &File, mut offset: u64, mut bytes: &[u8]) -> io
     Ok(())
 }
 
-pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io::Result<()> {
+pub(super) fn write_all_batch_owned(
+    file: &File,
+    writes: Vec<OwnedWrite>,
+    cancellation: &Cancellation,
+) -> io::Result<()> {
     if writes.is_empty() {
         return Ok(());
     }
     let fd = file.as_raw_fd();
+    let registered = RegisteredCancellation::new(cancellation)?;
     let mut remainders = Vec::new();
     STATE.with_borrow_mut(|state| {
         if state.quarantine.is_some() {
@@ -109,7 +161,7 @@ pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io:
         }
         let mut writes = writes.into_iter();
         loop {
-            let window: Vec<_> = writes.by_ref().take(RING_ENTRIES as usize).collect();
+            let window: Vec<_> = writes.by_ref().take(IO_ENTRIES).collect();
             if window.is_empty() {
                 break;
             }
@@ -129,22 +181,23 @@ pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io:
                         .user_data(index as u64),
                 );
             }
-            let completions = match submit_batch(&mut state.ring, &entries, &window) {
-                Ok(completions) => completions,
-                Err(error) => {
-                    if let BatchSubmitError::Uncertain(error) = error {
-                        let failed = state.ring.take().ok_or_else(|| {
-                            io::Error::other("io_uring disappeared during quarantine")
-                        })?;
-                        state.quarantine = Some(QuarantinedIo {
-                            _ring: failed,
-                            _buffers: QuarantinedBuffers::Writes(window),
-                        });
-                        return Err(error);
+            let completions =
+                match submit_batch(&mut state.ring, &entries, &window, &registered.event) {
+                    Ok(completions) => completions,
+                    Err(error) => {
+                        if let BatchSubmitError::Uncertain(error) = error {
+                            let failed = state.ring.take().ok_or_else(|| {
+                                io::Error::other("io_uring disappeared during quarantine")
+                            })?;
+                            state.quarantine = Some(QuarantinedIo {
+                                _ring: failed,
+                                _buffers: QuarantinedBuffers::Writes(window),
+                            });
+                            return Err(error);
+                        }
+                        return Err(error.into_error());
                     }
-                    return Err(error.into_error());
-                }
-            };
+                };
             for (write, completed) in window.iter().zip(completions) {
                 if completed < write.bytes.len() {
                     let offset = write.offset.checked_add(completed as u64).ok_or_else(|| {
@@ -168,7 +221,11 @@ pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io:
     Ok(())
 }
 
-pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
+pub(super) fn read_batch(
+    file: &File,
+    reads: &[OwnedRead],
+    cancellation: &Cancellation,
+) -> io::Result<Vec<Bytes>> {
     if reads.is_empty() {
         return Ok(Vec::new());
     }
@@ -178,6 +235,7 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
         buffers.push(vec![0_u8; read.length]);
     }
     let fd = file.as_raw_fd();
+    let registered = RegisteredCancellation::new(cancellation)?;
     STATE.with_borrow_mut(|state| {
         if state.quarantine.is_some() {
             return Err(quarantined_error());
@@ -194,12 +252,10 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
                     .length
                     .div_ceil(MAX_IO_BYTES)
                     .max(1);
-                if operation_count != 0
-                    && operation_count.saturating_add(operations) > RING_ENTRIES as usize
-                {
+                if operation_count != 0 && operation_count.saturating_add(operations) > IO_ENTRIES {
                     break;
                 }
-                if operations > RING_ENTRIES as usize {
+                if operations > IO_ENTRIES {
                     break;
                 }
                 operation_count = operation_count.saturating_add(operations);
@@ -212,20 +268,21 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
                 let buffer = buffers
                     .get_mut(request)
                     .ok_or_else(|| io::Error::other("invalid read buffer"))?;
-                let completed = match read_large(&mut state.ring, fd, read, buffer) {
-                    Ok(completed) => completed,
-                    Err(LargeReadError::Completed(error)) => return Err(error),
-                    Err(LargeReadError::Uncertain(error)) => {
-                        let failed = state.ring.take().ok_or_else(|| {
-                            io::Error::other("io_uring disappeared during quarantine")
-                        })?;
-                        state.quarantine = Some(QuarantinedIo {
-                            _ring: failed,
-                            _buffers: QuarantinedBuffers::Reads(buffers),
-                        });
-                        return Err(error);
-                    }
-                };
+                let completed =
+                    match read_large(&mut state.ring, fd, read, buffer, &registered.event) {
+                        Ok(completed) => completed,
+                        Err(LargeReadError::Completed(error)) => return Err(error),
+                        Err(LargeReadError::Uncertain(error)) => {
+                            let failed = state.ring.take().ok_or_else(|| {
+                                io::Error::other("io_uring disappeared during quarantine")
+                            })?;
+                            state.quarantine = Some(QuarantinedIo {
+                                _ring: failed,
+                                _buffers: QuarantinedBuffers::Reads(buffers),
+                            });
+                            return Err(error);
+                        }
+                    };
                 completions.extend(completed);
                 request += 1;
                 continue;
@@ -241,7 +298,7 @@ pub(super) fn read_batch(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Byt
             let Some(active) = state.ring.as_mut() else {
                 return Err(io::Error::other("io_uring is unavailable"));
             };
-            match drain_reads(active, operation_count) {
+            match drain_reads(active, operation_count, &registered.event) {
                 Ok(window) => completions.extend(window),
                 Err(DrainReadError::Completed(error)) => return Err(error),
                 Err(DrainReadError::Uncertain(error)) => {
@@ -270,10 +327,11 @@ fn read_large(
     fd: i32,
     read: OwnedRead,
     buffer: &mut [u8],
+    cancellation: &CancellationEvent,
 ) -> Result<Vec<Option<usize>>, LargeReadError> {
     let mut completions = Vec::new();
     let mut offset = read.offset;
-    for window in buffer.chunks_mut(MAX_IO_BYTES * RING_ENTRIES as usize) {
+    for window in buffer.chunks_mut(MAX_IO_BYTES * IO_ENTRIES) {
         let Some(active) = ring.as_mut() else {
             return Err(LargeReadError::Completed(io::Error::other(
                 "io_uring is unavailable",
@@ -310,7 +368,7 @@ fn read_large(
                 LargeReadError::Completed(io::Error::other("io_uring submission queue is full"))
             })?;
         }
-        match drain_reads(active, entries.len()) {
+        match drain_reads(active, entries.len(), cancellation) {
             Ok(window) => completions.extend(window),
             Err(DrainReadError::Completed(error)) => return Err(LargeReadError::Completed(error)),
             Err(DrainReadError::Uncertain(error)) => return Err(LargeReadError::Uncertain(error)),
@@ -376,15 +434,25 @@ enum DrainReadError {
     Uncertain(io::Error),
 }
 
-fn drain_reads(ring: &mut IoUring, count: usize) -> Result<Vec<Option<usize>>, DrainReadError> {
+fn drain_reads(
+    ring: &mut IoUring,
+    count: usize,
+    cancellation: &CancellationEvent,
+) -> Result<Vec<Option<usize>>, DrainReadError> {
     let mut batch = ReadCompletions::new(count);
+    arm_cancellation(ring, cancellation).map_err(DrainReadError::Completed)?;
     while batch.remaining() != 0 {
         match ring.submit_and_wait(batch.remaining()) {
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(DrainReadError::Uncertain(error)),
         }
-        for completion in ring.completion() {
+        let completions: Vec<_> = ring.completion().collect();
+        for completion in completions {
+            if completion.user_data() == CANCELLATION_ID {
+                cancel_remaining(ring).map_err(DrainReadError::Uncertain)?;
+                continue;
+            }
             if let Err(error) = batch.record(completion.user_data(), completion.result()) {
                 return Err(DrainReadError::Uncertain(error));
             }
@@ -481,6 +549,7 @@ fn submit_batch(
     ring: &mut Option<IoUring>,
     entries: &[io_uring::squeue::Entry],
     writes: &[OwnedWrite],
+    cancellation: &CancellationEvent,
 ) -> Result<Vec<usize>, BatchSubmitError> {
     let Some(active) = ring.as_mut() else {
         return Err(BatchSubmitError::Completed(io::Error::other(
@@ -494,6 +563,7 @@ fn submit_batch(
             BatchSubmitError::Completed(io::Error::other("io_uring submission queue is full"))
         })?;
     }
+    arm_cancellation(active, cancellation).map_err(BatchSubmitError::Completed)?;
     let mut batch = BatchCompletions::new(writes);
     while batch.remaining() != 0 {
         match active.submit_and_wait(batch.remaining()) {
@@ -503,12 +573,37 @@ fn submit_batch(
         };
         let completions: Vec<_> = active.completion().collect();
         for completion in completions {
+            if completion.user_data() == CANCELLATION_ID {
+                cancel_remaining(active).map_err(BatchSubmitError::Uncertain)?;
+                continue;
+            }
             if let Err(error) = batch.record(completion.user_data(), completion.result()) {
                 return Err(BatchSubmitError::Uncertain(error));
             }
         }
     }
     batch.finish().map_err(BatchSubmitError::Completed)
+}
+
+fn arm_cancellation(ring: &mut IoUring, cancellation: &CancellationEvent) -> io::Result<()> {
+    let entry = opcode::PollAdd::new(types::Fd(cancellation.0.as_raw_fd()), libc::POLLIN as _)
+        .build()
+        .user_data(CANCELLATION_ID);
+    // SAFETY: the cancellation event remains live until every accepted CQE is drained.
+    unsafe { ring.submission().push(&entry) }
+        .map_err(|_| io::Error::other("io_uring cancellation queue is full"))?;
+    Ok(())
+}
+
+fn cancel_remaining(ring: &IoUring) -> io::Result<()> {
+    match ring
+        .submitter()
+        .register_sync_cancel(None, types::CancelBuilder::any())
+    {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 enum BatchSubmitError {

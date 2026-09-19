@@ -13,6 +13,8 @@ use std::task::{Context, Poll, Waker};
 #[derive(Default)]
 struct Cancellation {
     cancelled: AtomicBool,
+    #[cfg(target_os = "linux")]
+    linux_event: Mutex<Option<Arc<linux::CancellationEvent>>>,
     #[cfg(windows)]
     windows_handle: Mutex<Option<isize>>,
     #[cfg(target_vendor = "apple")]
@@ -28,6 +30,8 @@ impl Cancellation {
         self.cancelled.store(true, Ordering::Release);
         #[cfg(windows)]
         self.cancel_windows();
+        #[cfg(target_os = "linux")]
+        self.cancel_linux();
         #[cfg(target_vendor = "apple")]
         self.cancel_apple();
     }
@@ -62,6 +66,43 @@ impl Cancellation {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(handle) = handle {
             windows::cancel(handle);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn register_linux(&self, event: &Arc<linux::CancellationEvent>) {
+        *self
+            .linux_event
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(event));
+        if self.is_cancelled() {
+            event.signal();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn clear_linux(&self, event: &Arc<linux::CancellationEvent>) {
+        let mut active = self
+            .linux_event
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active
+            .as_ref()
+            .is_some_and(|candidate| Arc::ptr_eq(candidate, event))
+        {
+            *active = None;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn cancel_linux(&self) {
+        let event = self
+            .linux_event
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(event) = event {
+            event.signal();
         }
     }
 
@@ -634,8 +675,7 @@ fn write_all_batch_owned(
     writes: Vec<OwnedWrite>,
     cancellation: &Cancellation,
 ) -> io::Result<()> {
-    let _ = cancellation;
-    linux::write_all_batch_owned(file, writes)
+    linux::write_all_batch_owned(file, writes, cancellation)
 }
 
 #[cfg(target_os = "linux")]
@@ -644,8 +684,7 @@ fn read_batch_impl(
     reads: &[OwnedRead],
     cancellation: &Cancellation,
 ) -> io::Result<Vec<Bytes>> {
-    let _ = cancellation;
-    linux::read_batch(file, reads)
+    linux::read_batch(file, reads, cancellation)
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
