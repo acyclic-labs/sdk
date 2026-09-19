@@ -1668,6 +1668,63 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     .ok_or("resolved read blocked")??;
     assert_eq!(&resolved_read.value.bytes[..], b"bcde");
     assert_eq!(resolved_read.work.page_reads, 0);
+    let other_volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("other volume create blocked")??
+        .value;
+    let mut other_writer = poll_ready(other_volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("other checkout blocked")??
+    .value;
+    poll_ready(other_writer.create_file(
+        path("foreign")?,
+        Bytes::from_static(b"WXYZ"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("other file create blocked")??;
+    let other_reader = other_writer.pinned_reader()?;
+    let other_resolved = poll_ready(other_reader.resolve_files(
+        &[path("foreign")?],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("other resolve blocked")??;
+    let other_file = other_resolved.value[0]
+        .as_ref()
+        .ok_or("other resolved file absent")?;
+    let mixed_requests = [
+        ResolvedFileRangeReadRequest {
+            file: resolved_file,
+            range: ByteRange {
+                offset: 0,
+                length: 2,
+            },
+        },
+        ResolvedFileRangeReadRequest {
+            file: other_file,
+            range: ByteRange {
+                offset: 1,
+                length: 2,
+            },
+        },
+    ];
+    let mixed = poll_ready(reader.read_resolved_ranges(
+        &mixed_requests,
+        2,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("mixed resolved batch blocked")??;
+    assert_eq!(&mixed.value[0].bytes[..], b"ab");
+    assert_eq!(&mixed.value[1].bytes[..], b"XY");
+    let bounded_mixed =
+        poll_ready(reader.read_resolved_ranges(&mixed_requests, 2, mixed.work, &cancellation))
+            .ok_or("bounded mixed resolved batch blocked")??;
+    assert_eq!(bounded_mixed.value, mixed.value);
     let target =
         poll_ready(reader.read_symbolic_link(&path("link")?, WorkBudget::UNBOUNDED, &cancellation))
             .ok_or("symlink read blocked")??;

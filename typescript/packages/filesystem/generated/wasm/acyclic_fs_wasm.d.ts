@@ -406,7 +406,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for non-pinned checkouts, malformed paths,
      * corruption, cancellation, or bounded work.
      */
-    resolveFiles(paths: string[]): Promise<BrowserResolvedFiles>;
+    resolveFiles(paths: any): Promise<BrowserResolvedFiles>;
     /**
      * Resumes an unresolved direct-live transaction with the same operation identity.
      *
@@ -1116,7 +1116,7 @@ export interface InitOutput {
     readonly browsercheckout_rename: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly browsercheckout_resizeFile: (a: number, b: number, c: number, d: bigint) => any;
     readonly browsercheckout_resizeFileById: (a: number, b: number, c: number, d: bigint) => any;
-    readonly browsercheckout_resolveFiles: (a: number, b: number, c: number) => any;
+    readonly browsercheckout_resolveFiles: (a: number, b: any) => any;
     readonly browsercheckout_resumeLive: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browsercheckout_seekFileExtent: (a: number, b: number, c: number, d: bigint, e: number, f: number) => any;
     readonly browsercheckout_seekFileExtentById: (a: number, b: number, c: number, d: bigint, e: number, f: number) => any;

@@ -58,7 +58,7 @@ export const browsercheckout_removeNamedAttribute: (a: number, b: number, c: num
 export const browsercheckout_rename: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
 export const browsercheckout_resizeFile: (a: number, b: number, c: number, d: bigint) => any;
 export const browsercheckout_resizeFileById: (a: number, b: number, c: number, d: bigint) => any;
-export const browsercheckout_resolveFiles: (a: number, b: number, c: number) => any;
+export const browsercheckout_resolveFiles: (a: number, b: any) => any;
 export const browsercheckout_resumeLive: (a: number, b: number, c: number, d: number, e: number) => any;
 export const browsercheckout_seekFileExtent: (a: number, b: number, c: number, d: bigint, e: number, f: number) => any;
 export const browsercheckout_seekFileExtentById: (a: number, b: number, c: number, d: bigint, e: number, f: number) => any;

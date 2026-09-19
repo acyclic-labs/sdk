@@ -4210,8 +4210,19 @@ mod bindings {
         #[wasm_bindgen(js_name = resolveFiles)]
         pub async fn resolve_files(
             &mut self,
-            paths: Vec<String>,
+            paths: JsValue,
         ) -> Result<BrowserResolvedFiles, JsValue> {
+            if !js_sys::Array::is_array(&paths) {
+                return Err(js_error("resolved file paths must be an array"));
+            }
+            let maximum = self.limits.maximum_paths_per_batch;
+            if js_sys::Array::from(&paths).length() > maximum {
+                return Err(js_error("resolved file batch exceeds the configured bound"));
+            }
+            let paths: Vec<String> = serde_wasm_bindgen::from_value(paths).map_err(js_error)?;
+            if paths.capacity() > usize::try_from(maximum).unwrap_or(usize::MAX) {
+                return Err(js_error("resolved file batch exceeds the configured bound"));
+            }
             let mut parsed = Vec::new();
             parsed
                 .try_reserve_exact(paths.len())

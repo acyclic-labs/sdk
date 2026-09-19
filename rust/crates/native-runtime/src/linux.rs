@@ -603,7 +603,7 @@ fn submit_one(ring: &mut Option<IoUring>, entry: &io_uring::squeue::Entry) -> io
     // might still be executing in the kernel.
     unsafe { active.submission().push(entry) }
         .map_err(|_| io::Error::other("io_uring submission queue is full"))?;
-    let mut unsubmitted_error = None;
+    let mut submission_error = None;
     let result = loop {
         match active.submit_and_wait(1) {
             Ok(_) => {}
@@ -614,6 +614,7 @@ fn submit_one(ring: &mut Option<IoUring>, entry: &io_uring::squeue::Entry) -> io
                 continue;
             }
             Err(error) => {
+                submission_error = Some(error);
                 if let Some(completion) = active.completion().next() {
                     break completion_result(&completion);
                 }
@@ -623,12 +624,11 @@ fn submit_one(ring: &mut Option<IoUring>, entry: &io_uring::squeue::Entry) -> io
                     // The SQE left userspace but no CQE proves completion. The
                     // borrowed buffer must remain live, so fail closed by
                     // retaining this thread and ring until the CQE arrives.
-                    // A non-EINTR submit error is surfaced only after the
-                    // matching completion establishes buffer safety.
-                    unsubmitted_error = Some(error);
+                    // Once the matching completion arrives, its result is the
+                    // authoritative operation outcome. The submission error
+                    // only quarantines this ring from subsequent reuse.
                     continue;
                 }
-                unsubmitted_error = Some(error);
                 break Err(io::Error::other("io_uring submission was not consumed"));
             }
         }
@@ -636,9 +636,8 @@ fn submit_one(ring: &mut Option<IoUring>, entry: &io_uring::squeue::Entry) -> io
             break completion_result(&completion);
         }
     };
-    if let Some(error) = unsubmitted_error {
+    if submission_error.is_some() {
         *ring = None;
-        return Err(error);
     }
     result
 }

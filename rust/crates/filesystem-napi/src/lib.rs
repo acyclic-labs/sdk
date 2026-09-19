@@ -4683,6 +4683,14 @@ impl NativeCheckout {
     /// corruption, cancellation, or bounded work.
     #[napi]
     pub async fn resolve_files(&self, paths: Vec<String>) -> Result<NativeResolvedFiles> {
+        let maximum =
+            usize::try_from(self.config.limits.maximum_paths_per_batch).unwrap_or(usize::MAX);
+        if paths.len() > maximum || paths.capacity() > maximum {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "resolved file batch exceeds the configured bound",
+            ));
+        }
         let mut parsed = Vec::new();
         parsed
             .try_reserve_exact(paths.len())

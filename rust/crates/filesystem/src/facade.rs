@@ -4810,10 +4810,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         let pending = requests
             .iter()
             .enumerate()
-            .map(|(index, request)| (index, request.file.record, request.range))
+            .map(|(index, request)| {
+                (
+                    index,
+                    request.file.reader.clone(),
+                    request.file.record,
+                    request.range,
+                )
+            })
             .collect::<Vec<_>>();
-        let results = stream::iter(pending.into_iter().map(|(index, record, range)| {
-            let reader = self.clone();
+        let results = stream::iter(pending.into_iter().map(|(index, reader, record, range)| {
             let cancellation = cancellation.clone();
             async move {
                 (

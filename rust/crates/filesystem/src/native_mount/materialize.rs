@@ -428,6 +428,7 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         return Ok(());
     }
 
+    let mut authenticated_metadata = None;
     match (kind, payload) {
         (FileKind::Directory, FilePayload::Directory { .. }) => {
             host_root
@@ -488,17 +489,19 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 }
                 file.set_len(logical_bytes)
                     .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
-                materialize_sparse_file(
-                    &reader,
-                    path,
-                    &mut file,
-                    logical_bytes,
-                    options,
-                    budget,
-                    cancellation,
-                    receipt,
-                )
-                .await?;
+                authenticated_metadata = Some(
+                    materialize_sparse_file(
+                        &reader,
+                        path,
+                        &mut file,
+                        logical_bytes,
+                        options,
+                        budget,
+                        cancellation,
+                        receipt,
+                    )
+                    .await?,
+                );
                 file.sync(acyclic_native_runtime::Durability::Full)
                     .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
             }
@@ -576,16 +579,21 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             ));
         }
     }
-    apply_metadata(
-        checkout,
-        host_root,
-        path,
-        host_path,
-        budget,
-        cancellation,
-        receipt,
-    )
-    .await
+    if let Some(metadata) = authenticated_metadata {
+        apply_host_metadata(host_root, host_path, metadata)
+            .map_err(|error| OperationFailure::new(error, receipt.work))
+    } else {
+        apply_metadata(
+            checkout,
+            host_root,
+            path,
+            host_path,
+            budget,
+            cancellation,
+            receipt,
+        )
+        .await
+    }
 }
 
 #[cfg(windows)]
@@ -617,7 +625,7 @@ async fn materialize_sparse_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
     receipt: &mut MaterializationReceipt,
-) -> Result<(), OperationFailure<MaterializeError>> {
+) -> Result<FileMetadata, OperationFailure<MaterializeError>> {
     let remaining = receipt
         .work
         .remaining(budget)
@@ -633,6 +641,7 @@ async fn materialize_sparse_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .next()
         .flatten()
         .ok_or_else(|| OperationFailure::new(MaterializeError::MissingPath, receipt.work))?;
+    let metadata = resolved.description().metadata;
     let mut offset = 0_u64;
     while offset < logical_bytes {
         let length = options.transfer_bytes.min(logical_bytes - offset);
@@ -739,7 +748,7 @@ async fn materialize_sparse_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             OperationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work)
         })?;
     }
-    Ok(())
+    Ok(metadata)
 }
 
 #[allow(clippy::too_many_arguments)]

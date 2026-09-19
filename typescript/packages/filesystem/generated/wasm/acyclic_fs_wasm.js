@@ -826,13 +826,11 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for non-pinned checkouts, malformed paths,
      * corruption, cancellation, or bounded work.
-     * @param {string[]} paths
+     * @param {any} paths
      * @returns {Promise<BrowserResolvedFiles>}
      */
     resolveFiles(paths) {
-        const ptr0 = passArrayJsValueToWasm0(paths, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.browsercheckout_resolveFiles(this.__wbg_ptr, ptr0, len0);
+        const ret = wasm.browsercheckout_resolveFiles(this.__wbg_ptr, paths);
         return ret;
     }
     /**
@@ -3361,16 +3359,6 @@ function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
     WASM_VECTOR_LEN = arg.length;
-    return ptr;
-}
-
-function passArrayJsValueToWasm0(array, malloc) {
-    const ptr = malloc(array.length * 4, 4) >>> 0;
-    for (let i = 0; i < array.length; i++) {
-        const add = addToExternrefTable0(array[i]);
-        getDataViewMemory0().setUint32(ptr + 4 * i, add, true);
-    }
-    WASM_VECTOR_LEN = array.length;
     return ptr;
 }
 
