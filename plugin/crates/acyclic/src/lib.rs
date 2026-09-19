@@ -23,6 +23,7 @@
         clippy::cast_sign_loss
     )
 )]
+#![allow(missing_docs)]
 
 /// Seconds since the Unix epoch as the index stores them. Saturates rather
 /// than wrapping if the clock is somehow past `i64::MAX` seconds.
