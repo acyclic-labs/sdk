@@ -2537,8 +2537,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
     /// over-bound lineage, and malformed authenticated state.
     pub async fn plan(self) -> Result<JoinPlan<A, O>, WorkspaceError> {
         let source_head = self.source.head().await?;
-        let target_head = self.target.head().await?;
-        self.plan_at(&source_head, &target_head).await
+        let (target_head_id, target_authority_head) = self
+            .target
+            .volume
+            .fs
+            .workspace_head_state(&self.target.volume)
+            .await?;
+        let target_head = self.target.generation(target_head_id).await?;
+        self.plan_generations(source_head, target_head, target_authority_head)
+            .await
     }
 
     /// Plans a join from exact immutable endpoints while requiring `target`
