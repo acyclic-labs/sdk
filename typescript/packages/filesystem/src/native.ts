@@ -79,11 +79,7 @@ import type {
   GenerationIdentity,
   GitCommitIdentity,
   GitCompatCommand,
-  GitCompatOutput,
   GitCompatRepository,
-  GitFilesystemExecutor,
-  GitFilesystemResult,
-  GitPendingTransition,
   OperationIdentity,
   OperationWindowClose,
   OperationWindowCoordinator,
@@ -92,6 +88,14 @@ import type {
   WorkspaceGraph,
   WorkspaceIdentity,
   WorkspaceLineageRecord,
+} from "./compat.js";
+import {
+  encodeGitCompatCommand,
+  finishGitCompatOutput,
+  gitCompatSafeTimestamp,
+  parseGitCompatOutputJson,
+  parseGitPendingTransitionJson,
+  stringifyGitFilesystemResult,
 } from "./compat.js";
 
 const generationHandles = new WeakMap<FsGeneration, NativeRawGeneration>();
@@ -363,30 +367,30 @@ function adaptOperationWindowCoordinator(
 }
 
 function adaptGitCompat(raw: NativeRawGitCompatRepository): GitCompatRepository {
-  const parse = <T>(json: string): T => JSON.parse(json) as T;
   const repository: GitCompatRepository = {
     async execute(command: GitCompatCommand, workspaceGeneration: GenerationIdentity) {
-      return parse<GitCompatOutput>(
-        await raw.executeJson(JSON.stringify(nativeGitCommand(command)), workspaceGeneration),
+      return parseGitCompatOutputJson(
+        await raw.executeJson(JSON.stringify(encodeGitCompatCommand(command)), workspaceGeneration),
       );
     },
     async executeArgv(argv, workspaceGeneration, defaultAuthor, nowSeconds) {
-      return parse<GitCompatOutput>(
+      gitCompatSafeTimestamp(nowSeconds);
+      return parseGitCompatOutputJson(
         await raw.executeArgvJson(argv, workspaceGeneration, defaultAuthor, nowSeconds.toString()),
       );
     },
     async pendingTransition() {
       const value = await raw.pendingTransitionJson();
-      return value === undefined ? undefined : parse<GitPendingTransition>(value);
+      return value === undefined ? undefined : parseGitPendingTransitionJson(value);
     },
     async completeTransition(transition, resultingGeneration) {
-      return parse<GitCompatOutput>(
+      return parseGitCompatOutputJson(
         await raw.completeTransitionJson(transition, resultingGeneration),
       );
     },
     async completeTransitionResult(transition, result) {
-      return parse<GitCompatOutput>(
-        await raw.completeTransitionResultJson(transition, JSON.stringify(result)),
+      return parseGitCompatOutputJson(
+        await raw.completeTransitionResultJson(transition, stringifyGitFilesystemResult(result)),
       );
     },
     async run(command, workspaceGeneration, executor) {
@@ -406,8 +410,11 @@ function adaptGitCompat(raw: NativeRawGitCompatRepository): GitCompatRepository 
     async resume(executor) {
       const pending = await repository.pendingTransition();
       if (pending === undefined) return undefined;
-      const result = await executor.execute(pending.id, pending.action);
-      return repository.completeTransitionResult(pending.id, result);
+      return finishGitCompatOutput(
+        repository,
+        { Prepared: { transition: pending.id, action: pending.action } },
+        executor,
+      );
     },
     abortTransition(transition: OperationIdentity) {
       return raw.abortTransition(transition);
@@ -418,7 +425,7 @@ function adaptGitCompat(raw: NativeRawGitCompatRepository): GitCompatRepository 
       head: GitCommitIdentity | undefined,
       switchToBranch: boolean,
     ) {
-      return parse<GitCompatOutput>(
+      return parseGitCompatOutputJson(
         await raw.registerBranchWorkspaceJson(
           branch,
           workspaceId,
@@ -435,7 +442,8 @@ function adaptGitCompat(raw: NativeRawGitCompatRepository): GitCompatRepository 
       author: string,
       authoredAtSeconds: bigint,
     ) {
-      return parse<GitCompatOutput>(
+      gitCompatSafeTimestamp(authoredAtSeconds);
+      return parseGitCompatOutputJson(
         await raw.recordCommitJson(
           expectedHead === undefined ? undefined : gitCommitBytes(expectedHead),
           generation,
@@ -450,22 +458,6 @@ function adaptGitCompat(raw: NativeRawGitCompatRepository): GitCompatRepository 
   return repository;
 }
 
-async function finishGitCompatOutput(
-  repository: GitCompatRepository,
-  output: GitCompatOutput,
-  executor: GitFilesystemExecutor,
-): Promise<GitCompatOutput> {
-  if (typeof output === "object" && "Prepared" in output) {
-    const { transition, action } = output.Prepared;
-    const result: GitFilesystemResult = await executor.execute(transition, action);
-    return repository.completeTransitionResult(transition, result);
-  }
-  if (typeof output === "object" && "Action" in output) {
-    throw new Error("Git compatibility returned an action without a durable transition");
-  }
-  return output;
-}
-
 function gitCommitBytes(identity: GitCommitIdentity): Uint8Array {
   if (!/^[0-9a-f]{64}$/.test(identity)) {
     throw new TypeError("Git compatibility commit ID must be 64 lowercase hexadecimal characters");
@@ -474,44 +466,6 @@ function gitCommitBytes(identity: GitCommitIdentity): Uint8Array {
     identity.match(/../g) ?? [],
     (byte) => Number.parseInt(byte, 16),
   );
-}
-
-function nativeGitCommand(command: GitCompatCommand): Readonly<Record<string, unknown>> | string {
-  switch (command.kind) {
-    case "status": return "Status";
-    case "diff": return { Diff: { cached: command.cached ?? false } };
-    case "log": return { Log: { maximum: command.maximum } };
-    case "show": return { Show: { object: command.object ?? null } };
-    case "add": return { Add: { paths: command.paths } };
-    case "commit": {
-      const authoredAtSeconds = Number(command.authoredAtSeconds);
-      if (!Number.isSafeInteger(authoredAtSeconds)) {
-        throw new RangeError("Git compatibility commit time must fit a safe JSON integer");
-      }
-      return { Commit: { message: command.message, author: command.author, authored_at_seconds: authoredAtSeconds } };
-    }
-    case "branch": return { Branch: { create: command.create ?? null } };
-    case "switch": return { Switch: { branch: command.branch, create: command.create ?? false } };
-    case "restore": return { Restore: { source: command.source ?? null, paths: command.paths } };
-    case "reset": return { Reset: { target: command.target, mode: nativeResetMode(command.mode) } };
-    case "merge": return { Merge: { branch: command.branch } };
-    case "rebase": return { Rebase: { branch: command.branch } };
-    case "stash-push": return "StashPush";
-    case "stash-pop": return "StashPop";
-    case "cherry-pick": return { CherryPick: { object: command.object } };
-    case "revert": return { Revert: { object: command.object } };
-    case "tag": return { Tag: { name: command.name ?? null, target: command.target ?? null, delete: command.delete ?? false } };
-    case "blame": return { Blame: { path: command.path } };
-    case "grep": return { Grep: { pattern: command.pattern, path: command.path ?? null } };
-    case "clean": return { Clean: { dry_run: command.dryRun } };
-    case "archive": return { Archive: { object: command.object ?? null } };
-    case "apply": return { Apply: { patch: Array.from(command.patch) } };
-    case "bisect": return { Bisect: { arguments: command.arguments } };
-  }
-}
-
-function nativeResetMode(mode: "soft" | "mixed" | "hard"): string {
-  return mode[0]!.toUpperCase() + mode.slice(1);
 }
 
 function adaptFs(raw: NativeRawFs): NativeFsEngine {

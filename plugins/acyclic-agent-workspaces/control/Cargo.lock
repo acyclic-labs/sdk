@@ -9,6 +9,7 @@ dependencies = [
  "acyclic-fs",
  "base64",
  "blake3",
+ "getrandom 0.3.4",
  "hex",
  "serde",
  "serde_json",

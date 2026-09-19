@@ -2009,7 +2009,6 @@ mod tests {
     async fn no_op_reconcile_conflicts_when_an_advance_wins_before_its_fence()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        std::fs::write(root.path().join("source.txt"), b"source")?;
         let gate = Arc::new(AppendGate::new());
         let authority = GatedAuthorityStore {
             inner: Arc::new(crate::memory::MemoryAuthorityStore::default()),

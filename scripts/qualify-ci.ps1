@@ -28,8 +28,17 @@ cargo test --workspace `
 cargo test -p acyclic-fs --no-default-features `
     --features local,memory,native-watch --locked
 cargo test --workspace --all-features --no-run --locked
+cargo test --manifest-path `
+    plugins/acyclic-agent-workspaces/control/Cargo.toml --locked
+cargo clippy --manifest-path `
+    plugins/acyclic-agent-workspaces/control/Cargo.toml `
+    --all-targets --all-features --locked -- -D warnings
 cargo build -p acyclic-fs-napi --locked
-cargo run --locked -p acyclic-cli
+cargo run --locked -p acyclic-cli -- harness-demo
+python plugins/acyclic-agent-workspaces/scripts/package.py `
+    --output (Join-Path $env:SDK_ARTIFACT_DIR 'agent-workspaces-plugin')
+python plugins/acyclic-agent-workspaces/scripts/validate-package.py `
+    (Join-Path $env:SDK_ARTIFACT_DIR 'agent-workspaces-plugin\marketplace')
 bun run check
 bun test --parallel=4 typescript/packages
 bun run --filter '@acyclic-labs/fs' test:composition

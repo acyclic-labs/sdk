@@ -44,6 +44,7 @@
             "server": "acyclic_agent_workspaces",
             "tool": "_hook_pre_tool",
             "input": {
+              "session_id": "${session_id}",
               "turn_id": "${turn_id}",
               "tool_use_id": "${tool_use_id}",
               "tool_name": "${tool_name}",
@@ -64,6 +65,7 @@
             "server": "acyclic_agent_workspaces",
             "tool": "_hook_post_tool",
             "input": {
+              "session_id": "${session_id}",
               "turn_id": "${turn_id}",
               "tool_use_id": "${tool_use_id}",
               "tool_name": "${tool_name}"

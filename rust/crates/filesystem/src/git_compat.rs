@@ -1067,7 +1067,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .await
     }
 
-    /// Parses Git-like argv and executes it through [`Self::run`].
+    /// Parses argv following the `acyclic git` umbrella subcommand and executes
+    /// it through [`Self::run`]. This API never intercepts or invokes system
+    /// `git`.
     pub async fn run_argv<E: GitFilesystemExecutor>(
         &self,
         argv: &[String],
@@ -1293,7 +1295,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         Err(GitCompatError::Contended)
     }
 
-    /// Parses and executes a Git-like argv vector.
+    /// Parses and executes argv following the `acyclic git` umbrella
+    /// subcommand. Callers strip the two-token prefix before invoking this
+    /// method; bare system `git` is outside this façade.
     pub async fn execute_argv(
         &self,
         argv: &[String],
@@ -2454,61 +2458,173 @@ fn parse_argv<E: std::error::Error + 'static>(
     default_author: &str,
     now_seconds: i64,
 ) -> Result<GitCommand, GitCompatError<E>> {
+    reject_shell_composition(argv)?;
     let Some(command) = argv.first().map(String::as_str) else {
         return Err(GitCompatError::InvalidCommand("missing command".to_owned()));
     };
     let args = argv.get(1..).unwrap_or_default();
     match command {
-        "status" => Ok(GitCommand::Status),
-        "diff" => Ok(GitCommand::Diff {
-            cached: args
-                .iter()
-                .any(|arg| arg == "--cached" || arg == "--staged"),
+        "status" => {
+            require_only_options(command, args, &["--short", "--porcelain", "--porcelain=v1"])?;
+            Ok(GitCommand::Status)
+        }
+        "diff" => {
+            require_only_options(command, args, &["--cached", "--staged"])?;
+            Ok(GitCommand::Diff {
+                cached: args
+                    .iter()
+                    .any(|arg| arg == "--cached" || arg == "--staged"),
+            })
+        }
+        "log" => Ok(GitCommand::Log {
+            maximum: parse_log_maximum(args)?,
         }),
-        "log" => Ok(GitCommand::Log { maximum: 100 }),
         "show" => Ok(GitCommand::Show {
-            object: args.first().cloned().map(GitObjectName),
+            object: optional_single_value(command, args)?.map(GitObjectName),
         }),
-        "add" => Ok(GitCommand::Add {
-            paths: args.to_vec(),
-        }),
+        "add" => {
+            if args.is_empty() {
+                return Err(GitCompatError::InvalidCommand(
+                    "add requires a path or -A/--all".to_owned(),
+                ));
+            }
+            let mut options_ended = false;
+            let mut stages_without_paths = false;
+            let mut paths = Vec::new();
+            for arg in args {
+                if !options_ended && arg == "--" {
+                    options_ended = true;
+                } else if !options_ended && arg.starts_with('-') {
+                    if matches!(arg.as_str(), "-A" | "--all" | "-u" | "--update") {
+                        stages_without_paths = true;
+                    } else {
+                        return unsupported_option(command, arg);
+                    }
+                } else {
+                    paths.push(arg.clone());
+                }
+            }
+            if paths.is_empty() && !stages_without_paths {
+                return Err(GitCompatError::InvalidCommand(
+                    "add requires a path or -A/--all".to_owned(),
+                ));
+            }
+            Ok(GitCommand::Add { paths })
+        }
         "commit" => {
-            let message = option_value(args, "-m")
-                .or_else(|| option_value(args, "--message"))
-                .ok_or_else(|| GitCompatError::InvalidCommand("commit requires -m".to_owned()))?;
+            let mut message = None;
+            let mut author = default_author.to_owned();
+            let mut index = 0;
+            while index < args.len() {
+                let Some(argument) = args.get(index) else {
+                    break;
+                };
+                let (name, inline) = split_long_option(argument);
+                if name == "-m" || name == "--message" {
+                    let value = inline
+                        .map(str::to_owned)
+                        .or_else(|| args.get(index + 1).cloned())
+                        .ok_or_else(|| {
+                            GitCompatError::InvalidCommand("commit requires a message after -m".to_owned())
+                        })?;
+                    if message.replace(value).is_some() {
+                        return Err(GitCompatError::InvalidCommand(
+                            "multiple commit messages are not supported".to_owned(),
+                        ));
+                    }
+                    index += usize::from(inline.is_none());
+                } else if name == "--author" {
+                    author = inline
+                        .map(str::to_owned)
+                        .or_else(|| args.get(index + 1).cloned())
+                        .ok_or_else(|| {
+                            GitCompatError::InvalidCommand(
+                                "commit requires an author after --author".to_owned(),
+                            )
+                        })?;
+                    index += usize::from(inline.is_none());
+                } else {
+                    return unsupported_option(command, argument);
+                }
+                index += 1;
+            }
+            let message = message.ok_or_else(|| {
+                GitCompatError::InvalidCommand("commit requires -m".to_owned())
+            })?;
             Ok(GitCommand::Commit {
                 message,
-                author: default_author.to_owned(),
+                author,
                 authored_at_seconds: now_seconds,
             })
         }
         "branch" => Ok(GitCommand::Branch {
-            create: args.first().cloned(),
+            create: optional_single_value(command, args)?,
         }),
-        "switch" | "checkout" => {
-            let create = args.iter().any(|arg| arg == "-c" || arg == "-b");
-            let branch = args
-                .iter()
-                .find(|arg| !arg.starts_with('-'))
-                .cloned()
-                .ok_or_else(|| {
-                    GitCompatError::InvalidCommand("switch requires a branch".to_owned())
-                })?;
+        "switch" => {
+            let (create, values) = positional_with_options(command, args, &["-c"])?;
+            let branch = exactly_one(command, &values)?;
             Ok(GitCommand::Switch { branch, create })
         }
+        "checkout" => Err(GitCompatError::Unsupported {
+            command: command.to_owned(),
+            reason: "checkout is ambiguous between branch switching and path restoration; use switch or restore".to_owned(),
+        }),
         "restore" => {
-            let source = option_value(args, "--source").map(GitObjectName);
-            let paths = args
-                .iter()
-                .filter(|arg| {
-                    !arg.starts_with('-')
-                        && Some(arg.as_str()) != source.as_ref().map(|value| value.0.as_str())
-                })
-                .cloned()
-                .collect();
+            let mut source = None;
+            let mut paths = Vec::new();
+            let mut options_ended = false;
+            let mut index = 0;
+            while index < args.len() {
+                let Some(argument) = args.get(index) else {
+                    break;
+                };
+                if !options_ended && argument == "--" {
+                    options_ended = true;
+                } else if !options_ended {
+                    let (name, inline) = split_long_option(argument);
+                    if name == "--source" {
+                        let value = inline
+                            .map(str::to_owned)
+                            .or_else(|| args.get(index + 1).cloned())
+                            .ok_or_else(|| {
+                                GitCompatError::InvalidCommand(
+                                    "restore requires an object after --source".to_owned(),
+                                )
+                            })?;
+                        if source.replace(GitObjectName(value)).is_some() {
+                            return Err(GitCompatError::InvalidCommand(
+                                "restore accepts only one --source".to_owned(),
+                            ));
+                        }
+                        index += usize::from(inline.is_none());
+                    } else if argument.starts_with('-') {
+                        return unsupported_option(command, argument);
+                    } else {
+                        paths.push(argument.clone());
+                    }
+                } else {
+                    paths.push(argument.clone());
+                }
+                index += 1;
+            }
+            if paths.is_empty() {
+                return Err(GitCompatError::InvalidCommand(
+                    "restore requires at least one path".to_owned(),
+                ));
+            }
             Ok(GitCommand::Restore { source, paths })
         }
         "reset" => {
+            require_options(command, args, &["--hard", "--soft", "--mixed"])?;
+            let modes = args
+                .iter()
+                .filter(|arg| matches!(arg.as_str(), "--hard" | "--soft" | "--mixed"))
+                .count();
+            if modes > 1 {
+                return Err(GitCompatError::InvalidCommand(
+                    "reset accepts only one mode".to_owned(),
+                ));
+            }
             let mode = if args.iter().any(|arg| arg == "--hard") {
                 GitResetMode::Hard
             } else if args.iter().any(|arg| arg == "--soft") {
@@ -2516,20 +2632,25 @@ fn parse_argv<E: std::error::Error + 'static>(
             } else {
                 GitResetMode::Mixed
             };
-            let target = args
+            let targets = args
                 .iter()
-                .find(|arg| !arg.starts_with('-'))
+                .filter(|arg| !arg.starts_with('-'))
                 .cloned()
-                .unwrap_or_else(|| "HEAD".to_owned());
+                .collect::<Vec<_>>();
+            let target = match targets.as_slice() {
+                [] => "HEAD".to_owned(),
+                [target] => target.clone(),
+                _ => return Err(GitCompatError::InvalidCommand(
+                    "reset accepts only one target; path reset is not supported".to_owned(),
+                )),
+            };
             Ok(GitCommand::Reset {
                 target: GitObjectName(target),
                 mode,
             })
         }
         "merge" | "rebase" => {
-            let branch = args.first().cloned().ok_or_else(|| {
-                GitCompatError::InvalidCommand(format!("{command} requires a branch"))
-            })?;
+            let branch = exactly_one(command, args)?;
             if command == "merge" {
                 Ok(GitCommand::Merge { branch })
             } else {
@@ -2537,45 +2658,67 @@ fn parse_argv<E: std::error::Error + 'static>(
             }
         }
         "cherry-pick" | "revert" => {
-            let object = GitObjectName(args.first().cloned().ok_or_else(|| {
-                GitCompatError::InvalidCommand(format!("{command} requires a commit"))
-            })?);
+            let object = GitObjectName(exactly_one(command, args)?);
             if command == "cherry-pick" {
                 Ok(GitCommand::CherryPick { object })
             } else {
                 Ok(GitCommand::Revert { object })
             }
         }
-        "stash" => match args.first().map(String::as_str) {
-            None | Some("push") => Ok(GitCommand::StashPush),
-            Some("pop") => Ok(GitCommand::StashPop),
-            Some(other) => Err(GitCompatError::InvalidCommand(format!(
+        "stash" => match args {
+            [] => Ok(GitCommand::StashPush),
+            [operation] if operation == "push" => Ok(GitCommand::StashPush),
+            [operation] if operation == "pop" => Ok(GitCommand::StashPop),
+            [other] => Err(GitCompatError::InvalidCommand(format!(
                 "unsupported stash operation '{other}'"
             ))),
+            _ => Err(GitCompatError::InvalidCommand(
+                "stash accepts only push or pop".to_owned(),
+            )),
         },
         "tag" => {
             let delete = args.iter().any(|arg| arg == "-d" || arg == "--delete");
-            let values: Vec<_> = args.iter().filter(|arg| !arg.starts_with('-')).collect();
+            require_options(command, args, &["-d", "--delete"])?;
+            let values: Vec<_> = args.iter().filter(|arg| !arg.starts_with('-')).cloned().collect();
+            if values.len() > 2 || (delete && values.len() != 1) {
+                return Err(GitCompatError::InvalidCommand(
+                    "tag accepts [name [target]] or --delete name".to_owned(),
+                ));
+            }
             Ok(GitCommand::Tag {
-                name: values.first().map(|value| (*value).clone()),
-                target: values.get(1).map(|value| GitObjectName((*value).clone())),
+                name: values.first().cloned(),
+                target: values.get(1).cloned().map(GitObjectName),
                 delete,
             })
         }
         "blame" => Ok(GitCommand::Blame {
-            path: args.first().cloned().ok_or_else(|| {
-                GitCompatError::InvalidCommand("blame requires a path".to_owned())
-            })?,
+            path: exactly_one(command, args)?,
         }),
-        "grep" => Ok(GitCommand::Grep {
-            pattern: args.first().cloned().ok_or_else(|| {
-                GitCompatError::InvalidCommand("grep requires a pattern".to_owned())
-            })?,
-            path: args.get(1).cloned(),
-        }),
+        "grep" => match args {
+            [pattern] => Ok(GitCommand::Grep {
+                pattern: pattern.clone(),
+                path: None,
+            }),
+            [pattern, path] => Ok(GitCommand::Grep {
+                pattern: pattern.clone(),
+                path: Some(path.clone()),
+            }),
+            _ => Err(GitCompatError::InvalidCommand(
+                "grep requires a pattern and at most one path".to_owned(),
+            )),
+        },
         "clean" => {
-            let dry_run = args.iter().any(|arg| arg == "-n" || arg == "--dry-run");
-            let force = args.iter().any(|arg| arg == "-f" || arg == "--force");
+            require_only_options(
+                command,
+                args,
+                &["-n", "--dry-run", "-f", "--force"],
+            )?;
+            let dry_run = args
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "-n" | "--dry-run"));
+            let force = args
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "-f" | "--force"));
             if !dry_run && !force {
                 return Err(GitCompatError::InvalidCommand(
                     "clean requires -f or --force unless --dry-run is used".to_owned(),
@@ -2584,16 +2727,19 @@ fn parse_argv<E: std::error::Error + 'static>(
             Ok(GitCommand::Clean { dry_run })
         }
         "archive" => Ok(GitCommand::Archive {
-            object: args.first().cloned().map(GitObjectName),
+            object: optional_single_value(command, args)?.map(GitObjectName),
         }),
-        "apply" => Ok(GitCommand::Apply {
-            patch: args.join("\n").into_bytes(),
+        "apply" => Err(GitCompatError::Unsupported {
+            command: command.to_owned(),
+            reason: "argv cannot safely turn a patch filename into patch bytes; load the file and use the typed Apply command".to_owned(),
         }),
         "bisect" => Ok(GitCommand::Bisect {
             arguments: args.to_vec(),
         }),
         "clone" | "fetch" | "pull" | "push" | "remote" | "gc" | "repack" | "cat-file"
-        | "hash-object" => Err(GitCompatError::Unsupported {
+        | "hash-object" | "init" | "fsck" | "prune" | "pack-objects" | "index-pack"
+        | "receive-pack" | "upload-pack" | "read-tree" | "write-tree" | "commit-tree"
+        | "update-index" | "ls-files" | "rev-parse" | "worktree" | "submodule" => Err(GitCompatError::Unsupported {
             command: command.to_owned(),
             reason: "the compatibility layer has no Git object database or transport".to_owned(),
         }),
@@ -2603,10 +2749,137 @@ fn parse_argv<E: std::error::Error + 'static>(
     }
 }
 
-fn option_value(args: &[String], option: &str) -> Option<String> {
-    args.windows(2)
-        .find(|window| window.first().is_some_and(|value| value == option))
-        .and_then(|window| window.get(1).cloned())
+fn reject_shell_composition<E: std::error::Error + 'static>(
+    argv: &[String],
+) -> Result<(), GitCompatError<E>> {
+    if let Some(token) = argv.iter().find(|token| {
+        matches!(token.as_str(), "&&" | "||" | ";" | "|" | "&")
+            || token.starts_with('>')
+            || token.starts_with('<')
+            || token.contains('`')
+            || token.contains("$(")
+    }) {
+        return Err(GitCompatError::Unsupported {
+            command: token.clone(),
+            reason: "shell composition is outside the command-level compatibility façade"
+                .to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn require_options<E: std::error::Error + 'static>(
+    command: &str,
+    args: &[String],
+    allowed: &[&str],
+) -> Result<(), GitCompatError<E>> {
+    if let Some(argument) = args
+        .iter()
+        .find(|argument| argument.starts_with('-') && !allowed.contains(&argument.as_str()))
+    {
+        return unsupported_option(command, argument);
+    }
+    Ok(())
+}
+
+fn require_only_options<E: std::error::Error + 'static>(
+    command: &str,
+    args: &[String],
+    allowed: &[&str],
+) -> Result<(), GitCompatError<E>> {
+    require_options(command, args, allowed)?;
+    if args.iter().any(|argument| !argument.starts_with('-')) {
+        return Err(GitCompatError::InvalidCommand(format!(
+            "{command} does not accept positional arguments"
+        )));
+    }
+    Ok(())
+}
+
+fn unsupported_option<T, E: std::error::Error + 'static>(
+    command: &str,
+    argument: &str,
+) -> Result<T, GitCompatError<E>> {
+    Err(GitCompatError::Unsupported {
+        command: command.to_owned(),
+        reason: format!("option '{argument}' cannot be represented by the compatibility façade"),
+    })
+}
+
+fn optional_single_value<E: std::error::Error + 'static>(
+    command: &str,
+    args: &[String],
+) -> Result<Option<String>, GitCompatError<E>> {
+    match args {
+        [] => Ok(None),
+        [value] if !value.starts_with('-') => Ok(Some(value.clone())),
+        [option] => unsupported_option(command, option),
+        _ => Err(GitCompatError::InvalidCommand(format!(
+            "{command} accepts at most one argument"
+        ))),
+    }
+}
+
+fn exactly_one<E: std::error::Error + 'static>(
+    command: &str,
+    values: &[String],
+) -> Result<String, GitCompatError<E>> {
+    match values {
+        [value] if !value.starts_with('-') => Ok(value.clone()),
+        [option] => unsupported_option(command, option),
+        _ => Err(GitCompatError::InvalidCommand(format!(
+            "{command} requires exactly one argument"
+        ))),
+    }
+}
+
+fn positional_with_options<E: std::error::Error + 'static>(
+    command: &str,
+    args: &[String],
+    allowed: &[&str],
+) -> Result<(bool, Vec<String>), GitCompatError<E>> {
+    require_options(command, args, allowed)?;
+    Ok((
+        args.iter()
+            .any(|argument| allowed.contains(&argument.as_str())),
+        args.iter()
+            .filter(|argument| !allowed.contains(&argument.as_str()))
+            .cloned()
+            .collect(),
+    ))
+}
+
+fn split_long_option(argument: &str) -> (&str, Option<&str>) {
+    argument
+        .split_once('=')
+        .map_or((argument, None), |(name, value)| (name, Some(value)))
+}
+
+fn parse_log_maximum<E: std::error::Error + 'static>(
+    args: &[String],
+) -> Result<u32, GitCompatError<E>> {
+    if args.is_empty() {
+        return Ok(100);
+    }
+    let value = match args {
+        [option, value] if option == "-n" || option == "--max-count" => value.as_str(),
+        [option] if option.starts_with("--max-count=") => option
+            .split_once('=')
+            .map(|(_, value)| value)
+            .unwrap_or_default(),
+        [option] if option.len() > 1 => option
+            .strip_prefix('-')
+            .ok_or_else(|| GitCompatError::InvalidCommand("invalid log count".to_owned()))?,
+        [option] => return unsupported_option("log", option),
+        _ => {
+            return Err(GitCompatError::InvalidCommand(
+                "log accepts only -n <count>, -<count>, or --max-count=<count>".to_owned(),
+            ));
+        }
+    };
+    value.parse::<u32>().map_err(|_| {
+        GitCompatError::InvalidCommand("log count must be an unsigned 32-bit integer".to_owned())
+    })
 }
 
 /// Git-compatible ignore policy used by commit and parent-join capture.
@@ -3221,15 +3494,15 @@ where
     let mut excluded = Vec::<String>::new();
     let mut tracked_paths = BTreeSet::new();
     for (path, is_directory) in &entries {
-        if excluded.iter().any(|parent| is_path_below(path, parent)) {
-            continue;
-        }
+        let parent_excluded = excluded.iter().any(|parent| is_path_below(path, parent));
         let tracked = already_tracked.contains(path);
         let tracked_descendant = *is_directory
             && already_tracked
                 .iter()
                 .any(|candidate| is_path_below(candidate, path));
-        if !policy.eligible(path, *is_directory, tracked) && !tracked_descendant {
+        if parent_excluded
+            || (!policy.eligible(path, *is_directory, tracked) && !tracked_descendant)
+        {
             excluded.push(path.clone());
         } else if !is_directory {
             tracked_paths.insert(path.clone());
@@ -3257,7 +3530,7 @@ where
         generation
     } else {
         let mut transaction = capture.begin_transaction(commit_key).await?;
-        for path in &excluded {
+        for path in excluded.iter().rev() {
             transaction.remove(&format!("/{path}")).await?;
         }
         match transaction.commit().await? {
@@ -3467,6 +3740,7 @@ impl GitCompatStore for MemoryGitCompatStore {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::kernel::{FileMetadata, MetadataField};
     use crate::{Digest, Fs, WorkspaceName};
 
     #[derive(Debug, Error)]
@@ -3771,6 +4045,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitives() {
+        let fs = Fs::memory();
+        let workspace = fs
+            .create_workspace("git-capture-records")
+            .await
+            .expect("workspace");
+        let mut transaction = workspace
+            .begin_transaction(IdempotencyKey::from_bytes([0x41; 16]))
+            .await
+            .expect("transaction");
+        transaction
+            .write_text("/source.txt", "linked")
+            .await
+            .expect("source");
+        transaction
+            .set_metadata(
+                "/source.txt",
+                FileMetadata {
+                    posix_mode: MetadataField::Value(0o100_640),
+                    ..FileMetadata::default()
+                },
+            )
+            .await
+            .expect("metadata");
+        transaction
+            .hard_link("/source.txt", "/linked.txt")
+            .await
+            .expect("hard link");
+        transaction
+            .create_dir_all("/ignored")
+            .await
+            .expect("ignored directory");
+        transaction
+            .write_text("/ignored/drop.txt", "drop")
+            .await
+            .expect("ignored file");
+        transaction.commit().await.expect("commit fixture");
+
+        let captured = capture_git_compatible_generation(
+            &workspace,
+            &GitIgnorePolicy::parse("ignored/\n"),
+            &BTreeSet::new(),
+            OperationId::from_bytes([0x42; 16]),
+        )
+        .await
+        .expect("capture");
+        let source = captured
+            .generation
+            .stat("/source.txt")
+            .await
+            .expect("source stat");
+        let linked = captured
+            .generation
+            .stat("/linked.txt")
+            .await
+            .expect("link stat");
+        assert_eq!(source.file_id, linked.file_id);
+        assert_eq!(source.link_count, 2);
+        assert_eq!(source.metadata.posix_mode, Some(0o100_640));
+        assert!(captured.generation.stat("/ignored").await.is_err());
+    }
+
+    #[tokio::test]
     async fn tree_walk_and_grep_are_generation_bound_and_portable() {
         let fs = crate::Fs::memory();
         let workspace = fs
@@ -3849,7 +4186,6 @@ mod tests {
             .await
             .expect("no-newline fixture");
         transaction.commit().await.expect("commit fixture");
-
         let patch = b"--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-old\n+new\n";
         let operation = IdempotencyKey::from_bytes([0x34; 16]);
         let TransactionCommit::Committed(generation) =
@@ -4159,6 +4495,218 @@ mod tests {
                 .await,
             Err(GitCompatError::Unsupported { .. })
         ));
+    }
+
+    #[test]
+    fn argv_parser_has_an_explicit_command_conformance_matrix() {
+        let cases = [
+            ((&["status", "--short"] as &[&str]), GitCommand::Status),
+            (
+                (&["diff", "--staged"] as &[&str]),
+                GitCommand::Diff { cached: true },
+            ),
+            (
+                (&["log", "--max-count=7"] as &[&str]),
+                GitCommand::Log { maximum: 7 },
+            ),
+            (
+                (&["show", "HEAD"] as &[&str]),
+                GitCommand::Show {
+                    object: Some(GitObjectName("HEAD".to_owned())),
+                },
+            ),
+            (
+                (&["add", "--all"] as &[&str]),
+                GitCommand::Add { paths: Vec::new() },
+            ),
+            (
+                (&["commit", "--message=ready", "--author=agent"] as &[&str]),
+                GitCommand::Commit {
+                    message: "ready".to_owned(),
+                    author: "agent".to_owned(),
+                    authored_at_seconds: 10,
+                },
+            ),
+            (
+                (&["branch", "topic"] as &[&str]),
+                GitCommand::Branch {
+                    create: Some("topic".to_owned()),
+                },
+            ),
+            (
+                (&["switch", "-c", "topic"] as &[&str]),
+                GitCommand::Switch {
+                    branch: "topic".to_owned(),
+                    create: true,
+                },
+            ),
+            (
+                (&["restore", "--source=HEAD", "--", "file"] as &[&str]),
+                GitCommand::Restore {
+                    source: Some(GitObjectName("HEAD".to_owned())),
+                    paths: vec!["file".to_owned()],
+                },
+            ),
+            (
+                (&["reset", "--hard", "HEAD"] as &[&str]),
+                GitCommand::Reset {
+                    target: GitObjectName("HEAD".to_owned()),
+                    mode: GitResetMode::Hard,
+                },
+            ),
+            (
+                (&["merge", "topic"] as &[&str]),
+                GitCommand::Merge {
+                    branch: "topic".to_owned(),
+                },
+            ),
+            (
+                (&["rebase", "main"] as &[&str]),
+                GitCommand::Rebase {
+                    branch: "main".to_owned(),
+                },
+            ),
+            ((&["stash", "push"] as &[&str]), GitCommand::StashPush),
+            ((&["stash", "pop"] as &[&str]), GitCommand::StashPop),
+            (
+                (&["cherry-pick", "HEAD"] as &[&str]),
+                GitCommand::CherryPick {
+                    object: GitObjectName("HEAD".to_owned()),
+                },
+            ),
+            (
+                (&["revert", "HEAD"] as &[&str]),
+                GitCommand::Revert {
+                    object: GitObjectName("HEAD".to_owned()),
+                },
+            ),
+            (
+                (&["tag", "v1", "HEAD"] as &[&str]),
+                GitCommand::Tag {
+                    name: Some("v1".to_owned()),
+                    target: Some(GitObjectName("HEAD".to_owned())),
+                    delete: false,
+                },
+            ),
+            (
+                (&["blame", "file"] as &[&str]),
+                GitCommand::Blame {
+                    path: "file".to_owned(),
+                },
+            ),
+            (
+                (&["grep", "needle", "src"] as &[&str]),
+                GitCommand::Grep {
+                    pattern: "needle".to_owned(),
+                    path: Some("src".to_owned()),
+                },
+            ),
+            (
+                (&["clean", "-n"] as &[&str]),
+                GitCommand::Clean { dry_run: true },
+            ),
+            (
+                (&["archive", "HEAD"] as &[&str]),
+                GitCommand::Archive {
+                    object: Some(GitObjectName("HEAD".to_owned())),
+                },
+            ),
+            (
+                (&["bisect", "start", "bad", "good"] as &[&str]),
+                GitCommand::Bisect {
+                    arguments: vec!["start".to_owned(), "bad".to_owned(), "good".to_owned()],
+                },
+            ),
+        ];
+        for (argv, expected) in cases {
+            let argv = argv
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                parse_argv::<MemoryGitCompatStoreError>(&argv, "default", 10)
+                    .expect("supported argv"),
+                expected,
+                "argv: {argv:?}"
+            );
+        }
+        assert_eq!(
+            parse_argv::<MemoryGitCompatStoreError>(
+                &["add".to_owned(), "--".to_owned(), "--all".to_owned()],
+                "default",
+                10,
+            )
+            .expect("literal option-looking path"),
+            GitCommand::Add {
+                paths: vec!["--all".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn argv_rejects_semantically_unrepresentable_and_shell_composed_commands() {
+        for command in [
+            "clone",
+            "fetch",
+            "pull",
+            "push",
+            "remote",
+            "gc",
+            "repack",
+            "cat-file",
+            "hash-object",
+            "init",
+            "fsck",
+            "prune",
+            "pack-objects",
+            "index-pack",
+            "receive-pack",
+            "upload-pack",
+            "read-tree",
+            "write-tree",
+            "commit-tree",
+            "update-index",
+            "ls-files",
+            "rev-parse",
+            "worktree",
+            "submodule",
+            "checkout",
+            "apply",
+        ] {
+            let argv = vec![command.to_owned()];
+            assert!(
+                matches!(
+                    parse_argv::<MemoryGitCompatStoreError>(&argv, "agent", 10),
+                    Err(GitCompatError::Unsupported { .. })
+                ),
+                "command should be explicitly unsupported: {command}"
+            );
+        }
+        for argv in [
+            vec!["status", "&&", "push"],
+            vec!["status", "|", "cat"],
+            vec!["status", ">result"],
+            vec!["status", "$(push)"],
+        ] {
+            let argv = argv.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert!(matches!(
+                parse_argv::<MemoryGitCompatStoreError>(&argv, "agent", 10),
+                Err(GitCompatError::Unsupported { reason, .. }) if reason.contains("shell composition")
+            ));
+        }
+        for argv in [
+            vec!["status", "unexpected"],
+            vec!["diff", "--stat"],
+            vec!["reset", "HEAD", "path"],
+            vec!["merge", "topic", "other"],
+            vec!["restore", "--source", "HEAD"],
+            vec!["clean", "-d"],
+            vec!["clean", "-fd"],
+            vec!["clean", "-nd"],
+        ] {
+            let argv = argv.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert!(parse_argv::<MemoryGitCompatStoreError>(&argv, "agent", 10).is_err());
+        }
     }
 
     #[tokio::test]
