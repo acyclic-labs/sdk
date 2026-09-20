@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "acyclic-jev"
+version = "0.0.1"
+description = "Multi-agent swarms over System One typed decisions on acyclic forks, with an append-only decision log"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = []
+keywords = ["acyclic", "agents", "swarm", "system-one", "calibration", "forks"]
+
+[project.optional-dependencies]
+space = ["gradio_client>=1.0"]
+local = ["torch>=2.4", "transformers==5.17.0", "peft==0.21.0", "accelerate>=1.15"]
+dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://acyclic.dev"
+Source = "https://github.com/acyclic-labs/sdk/tree/main/plugin/packaging/jev"
+
+[project.scripts]
+jev = "jev.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jev"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
