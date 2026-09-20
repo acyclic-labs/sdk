@@ -103,10 +103,16 @@ if [ -n "$block_hits" ]; then
   fail=1
 fi
 
-# 4. Duplication.
-if command -v npx >/dev/null 2>&1; then
-  if ! npx --yes jscpd@4.3.0 --config .jscpd.json crates tests scripts packaging >/tmp/jscpd.out 2>&1; then
-    echo "duplication above the 3% token threshold (see .jscpd.json):" >&2
+# 4. Duplication. $JSCPD names the runner (CI passes `bun x jscpd@4.3.0`);
+#    without it, npx is used when present and the check is skipped, loudly,
+#    when it is not. A supplied runner is never skipped.
+if [ -n "${JSCPD:-}" ] || command -v npx >/dev/null 2>&1; then
+  # The config is this tree's own when it is a standalone repository and the
+  # workspace root's when it is the sdk's `plugin/` member.
+  jscpd_config=.jscpd.json
+  [ -f "$jscpd_config" ] || jscpd_config=../.jscpd.json
+  if ! ${JSCPD:-npx --yes jscpd@4.3.0} --config "$jscpd_config" crates tests scripts packaging >/tmp/jscpd.out 2>&1; then
+    echo "duplication above the 3% token threshold (see $jscpd_config):" >&2
     grep -E "Clone found|^ - |^   " /tmp/jscpd.out >&2 || tail -20 /tmp/jscpd.out >&2
     fail=1
   fi

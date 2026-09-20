@@ -38,6 +38,7 @@ jobs:
             workers: 32
             artifact: packages-linux
             artifact_path: packages
+            plugin_artifact: plugin-linux
           - lane: eval
             runner: blacksmith-32vcpu-ubuntu-2404
             workers: 32
@@ -58,16 +59,19 @@ jobs:
             workers: 32
             artifact: packages-linux-arm64
             artifact_path: packages
+            plugin_artifact: plugin-linux-arm64
           - lane: windows
             runner: blacksmith-32vcpu-windows-2025
             workers: 32
             artifact: ''
             artifact_path: ''
+            plugin_artifact: plugin-windows
           - lane: macos
             runner: blacksmith-12vcpu-macos-15
             workers: 12
             artifact: packages-macos
             artifact_path: packages
+            plugin_artifact: plugin-macos
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_BUILD_JOBS: ${{ matrix.workers }}
@@ -181,6 +185,20 @@ jobs:
         with:
           name: ${{ matrix.artifact }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/artifacts/${{ matrix.artifact_path }}
+          compression-level: 0
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 7
+
+      # The acyclic CLI plugin's release binaries: the exact bytes its
+      # acceptance suite (or, on Windows, its smoke) ran against, with a
+      # SHA-256 inventory and source commit. publish-plugin.yml ships these.
+      - name: Retain qualified plugin binaries
+        if: matrix.plugin_artifact != '' && success()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ${{ matrix.plugin_artifact }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/artifacts/plugin
           compression-level: 0
           if-no-files-found: error
           include-hidden-files: false

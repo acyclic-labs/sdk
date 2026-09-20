@@ -330,6 +330,24 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The journal's exclusive lock lives in the stream's actor task and is
+    /// released after the last handle drops, so an in-process reopen right
+    /// after `drop` can race it. Nothing outside tests reopens in-process
+    /// (the daemon owns one store for its life); wait the race out here.
+    async fn open_after_drop(paths: StorePaths) -> Result<Store> {
+        let mut last = None;
+        for _ in 0..200 {
+            match Store::open(paths.clone()).await {
+                Err(error) if error.to_string().contains("AlreadyOpen") => {
+                    last = Some(error);
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+                other => return other,
+            }
+        }
+        Err(last.unwrap_or_else(|| EngineError::Store("store lock never released".into())))
+    }
+
     #[tokio::test]
     async fn init_then_open_preserves_volume_identity() {
         let repo = tempfile::tempdir().expect("repo dir");
@@ -341,7 +359,7 @@ mod tests {
         let created_id = created.volume_id;
         drop(created);
 
-        let reopened = Store::open(paths).await.expect("open");
+        let reopened = open_after_drop(paths).await.expect("open");
         assert_eq!(reopened.volume_id, created_id);
         assert_eq!(
             reopened.repo_root,

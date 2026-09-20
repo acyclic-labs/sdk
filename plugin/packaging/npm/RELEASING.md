@@ -6,6 +6,15 @@ launcher `@acyclic-labs/plugin` and one `@acyclic-labs/plugin-<os>-<cpu>`
 platform package per target. Users run `npm i -g @acyclic-labs/plugin`; npm
 installs only the platform package that matches their machine.
 
+> **Qualified bytes.** In the sdk repository the release binaries are the ones
+> the qualification lanes built and drove the acceptance suite against
+> (`plugin-linux`, `plugin-macos`, `plugin-windows` artifacts, each with a
+> `SHA256SUMS` and `SOURCE_COMMIT`). They are never rebuilt at release time.
+> Two are retained without the acceptance suite: `darwin-x64` (no Intel
+> macOS runner exists, so it is a cross-build from the macOS lane smoke-tested
+> under Rosetta) and `linux-arm64` (built and version-checked on the ARM64
+> lane; running the suite there waits on a lane-time measurement).
+
 ## One-time setup
 
 ### 1. npm organisation and token
