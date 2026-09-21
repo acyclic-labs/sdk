@@ -8515,7 +8515,10 @@ async fn send_linux_mailbox_request(
         ControlRequestError::Transport(format!("cannot create Acyclic control exchange: {error}"))
     })?;
     let result = async {
-        fs::write(exchange.join("request"), encoded)
+        let pending_request = exchange.join("request.pending");
+        fs::write(&pending_request, encoded)
+            .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
+        fs::rename(pending_request, exchange.join("request"))
             .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
         let response_path = exchange.join("response");
         for _ in 0..1_000 {
