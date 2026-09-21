@@ -2524,7 +2524,6 @@ impl ControlPlane {
         let selected_path = route.mount_path.join(&selected_route_root.route_name);
         let original =
             normalize_tool_input(input.get("tool_input").cloned().unwrap_or(Value::Null))?;
-        #[cfg(not(target_os = "linux"))]
         for binding in self.state.roots.values() {
             reject_original_root_references(&original, None, &binding.path.to_string_lossy())?;
         }
@@ -4735,7 +4734,6 @@ fn rewrite_tool_input(
 ) -> Result<Value, String> {
     let root_text = root.to_string_lossy();
     let child_text = child.to_string_lossy();
-    #[cfg(not(target_os = "linux"))]
     reject_original_root_references(&input, None, &root_text)?;
     rewrite_strings(&mut input, &root_text, &child_text);
     if tool_name == "Bash" || tool_name == "exec_command" {
@@ -4999,7 +4997,6 @@ fn validate_shell_paths(command: &str, child: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
 fn reject_original_root_references(
     value: &Value,
     key: Option<&str>,
@@ -10719,8 +10716,15 @@ mod tests {
             .await
             .expect("root session");
         control
+            .session_start(json!({"session_id":"session","cwd":root.display().to_string()}))
+            .await
+            .expect("duplicate session start is idempotent");
+        control
             .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
             .expect("root turn");
+        control
+            .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
+            .expect("duplicate root turn is idempotent");
         assert!(control
             .pre_tool(json!({"session_id":"other","turn_id":"root-turn","tool_use_id":"foreign","tool_name":"Read","tool_input":{}}))
             .await
@@ -10756,6 +10760,10 @@ mod tests {
             .subagent_start(json!({"session_id":"session","turn_id":"child-turn","agent_id":"child","agent_type":"explorer"}))
             .await
             .expect("child start");
+        control
+            .subagent_start(json!({"session_id":"session","turn_id":"child-turn","agent_id":"child","agent_type":"explorer"}))
+            .await
+            .expect("duplicate child start is idempotent");
         assert!(control
             .subagent_start(json!({"session_id":"session","turn_id":"root-turn","agent_id":"collision","agent_type":"explorer"}))
             .await
@@ -10805,6 +10813,10 @@ mod tests {
             .post_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"read-one","tool_name":"Read"}))
             .await
             .expect("close first overlapping tool");
+        control
+            .post_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"read-one","tool_name":"Read"}))
+            .await
+            .expect("duplicate post-tool is idempotent");
         assert!(control
             .post_tool(json!({"session_id":"session","turn_id":"unknown-turn","tool_use_id":"unknown-post","tool_name":"Read"}))
             .await
@@ -11864,7 +11876,6 @@ mod tests {
         assert_eq!(tools[0]["inputSchema"]["required"], json!(["argv"]));
     }
 
-    #[cfg(not(target_os = "linux"))]
     #[test]
     fn hard_coded_parent_root_is_rejected_but_tool_workdir_is_redirected() {
         let temporary = tempfile::tempdir().expect("temporary directory");

@@ -1234,6 +1234,10 @@ mod tests {
             registry.authorize_parent(context(2), context(1)).await,
             Err(WorkspaceContextError::Discarded)
         ));
+        assert!(matches!(
+            registry.discard_subtree(context(1), context(2), 8).await,
+            Err(WorkspaceContextError::Discarded)
+        ));
     }
 
     #[tokio::test]

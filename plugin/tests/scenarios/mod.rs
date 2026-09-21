@@ -105,6 +105,10 @@ pub const INVARIANTS: &[Invariant] = &[
         primary_test: "shell_expansion_cannot_escape_the_child",
     },
     Invariant {
+        id: "paths.physical-parent-reference-fails-closed",
+        primary_test: "hard_coded_parent_root_is_rejected_but_tool_workdir_is_redirected",
+    },
+    Invariant {
         id: "state.previous-generation-recovery-is-bounded",
         primary_test: "adapter_state_recovers_only_from_a_valid_bounded_previous_snapshot",
     },
