@@ -45,8 +45,7 @@ cd "$root"
 bun run --filter '@acyclic-labs/inference' build
 bun test typescript/packages/inference/test
 npm_stage="$work/npm-package"
-cp -R typescript/packages/inference "$npm_stage"
-install -m 0644 CHANGELOG.md "$npm_stage/CHANGELOG.md"
+bash scripts/stage-npm-package.sh typescript/packages/inference "$npm_stage"
 cd "$npm_stage"
 bun pm pack --ignore-scripts --filename "$bun_archive" --quiet
 mkdir "$work/consumer"

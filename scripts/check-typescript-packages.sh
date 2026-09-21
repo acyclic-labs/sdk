@@ -48,8 +48,7 @@ while IFS=$'\t' read -r slug directory name version; do
     harness) install -m 0644 "$harness_archive" "$archive" ;;
     *)
       stage="$work/npm-$slug"
-      cp -R "$root/typescript/packages/$directory" "$stage"
-      install -m 0644 "$root/CHANGELOG.md" "$stage/CHANGELOG.md"
+      bash "$root/scripts/stage-npm-package.sh" "$root/typescript/packages/$directory" "$stage"
       (cd "$stage" && bun pm pack --ignore-scripts --filename "$archive" --quiet)
       ;;
   esac
