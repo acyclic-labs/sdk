@@ -249,7 +249,8 @@ jobs:
           export XDG_CONFIG_HOME="$home/.config"
           export XDG_STATE_HOME="$home/.state"
           export PATH="$prefix/bin:$PATH"
-          npm install --global --prefix "$prefix" "$package" @openai/codex@0.154.0
+          codex_version=$(node -p "require('./plugin/tests/hosts/package.json').dependencies['@openai/codex']")
+          npm install --global --prefix "$prefix" "$package" "@openai/codex@$codex_version"
           acyclic install codex
           codex plugin list --marketplace acyclic --json | jq -e '.installed[] | select(.pluginId == "acyclic@acyclic" and .enabled == true)'
           timeout 480 codex exec --ephemeral --json --skip-git-repo-check \

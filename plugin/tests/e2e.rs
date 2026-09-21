@@ -9,7 +9,7 @@
 mod scenarios;
 mod support;
 
-use scenarios::INVARIANTS;
+use scenarios::{AUTHORITATIVE_TEST_SOURCES, INVARIANTS};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
@@ -35,6 +35,14 @@ fn invariant_ledger_has_one_authoritative_test_per_requirement() {
         assert!(
             primary_tests.insert(invariant.primary_test),
             "{} is not an authoritative one-to-one test",
+            invariant.primary_test
+        );
+        let declaration = format!("fn {}", invariant.primary_test);
+        assert!(
+            AUTHORITATIVE_TEST_SOURCES
+                .iter()
+                .any(|source| source.contains(&declaration)),
+            "{} does not name a checked-in test function",
             invariant.primary_test
         );
     }
