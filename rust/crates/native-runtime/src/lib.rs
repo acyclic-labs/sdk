@@ -51,8 +51,11 @@ impl NativeFile {
 mod apple;
 #[cfg(target_os = "linux")]
 mod linux;
+mod process_tree;
 #[cfg(windows)]
 mod windows;
+
+pub use process_tree::ProcessTree;
 
 /// Required durability boundary for one file operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -173,6 +176,16 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<()> {
             .spawn()
             .map(drop)
     }
+}
+
+/// Starts a child in an owned operating-system process tree.
+///
+/// Descendants inherit the tree. Dropping the returned guard, or explicitly
+/// terminating it, kills the entire Windows Job or Unix process group. This is
+/// intended for bounded external-tool execution where grandchildren must not
+/// survive timeout or unwind.
+pub fn spawn_process_tree(command: &mut std::process::Command) -> io::Result<ProcessTree> {
+    ProcessTree::spawn(command)
 }
 
 /// Runtime-independent future for one owned native read batch.
