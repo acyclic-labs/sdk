@@ -68,8 +68,7 @@ impl ServiceGuard {
 
     pub fn drain(mut self) {
         if let Err(error) = self.cleanup() {
-            let fallback = self.force_cleanup();
-            panic!("service drain failed: {error}; forced cleanup: {fallback:?}");
+            panic!("service drain failed: {error}");
         }
     }
 
@@ -79,32 +78,44 @@ impl ServiceGuard {
         let identity = fs::read_to_string(&marker).expect("timed-out host started hook service");
         assert!(!identity.is_empty(), "timed-out hook service identity");
         self.identity = Some(identity);
-        // A timed-out host can still own open handles below its native mount. Terminate that
-        // client tree before asking the service to synchronize and unmount; reversing this order
-        // can make Linux FUSE teardown wait on the very process that cleanup has not stopped yet.
-        self.process_tree
-            .as_mut()
-            .expect("timed-out host process tree")
-            .terminate()
-            .expect("terminate timed-out host process tree before service drain");
         if let Err(error) = self.cleanup() {
-            self.force_cleanup().unwrap_or_else(|fallback| {
-                panic!(
-                    "timed-out host service was not cleaned: graceful drain: {error}; \
-                     forced cleanup: {fallback}"
-                )
-            });
+            panic!("timed-out host service was not cleaned: {error}");
         }
     }
 
     fn cleanup(&mut self) -> Result<(), String> {
-        let identity = self
-            .identity
-            .as_deref()
-            .ok_or_else(|| "service liveness was not positively observed".to_owned())?
-            .to_owned();
+        let authenticated = match self.authenticated_identity() {
+            Ok(authenticated) => authenticated,
+            Err(authentication_error) => {
+                if self.clear_dead_service_marker()? {
+                    if let Some(tree) = self.process_tree.as_mut() {
+                        tree.terminate().map_err(|error| error.to_string())?;
+                    }
+                    self.active = false;
+                    drop(self.process_tree.take());
+                    return Ok(());
+                }
+                return Err(authentication_error);
+            }
+        };
+        let Some(identity) = authenticated else {
+            self.active = false;
+            drop(self.process_tree.take());
+            return Ok(());
+        };
+        // A host can retain open handles below its native mount even after its direct process
+        // exits. After authenticating the independently durable service, end the complete client
+        // containment before asking it to synchronize and unmount; the reverse order can deadlock
+        // Linux FUSE teardown.
+        #[cfg(target_os = "linux")]
+        if let Some(tree) = self.process_tree.as_mut() {
+            tree.terminate().map_err(|error| error.to_string())?;
+        }
         let mut drain = command("node");
-        drain.arg(&self.launcher).arg("__service-drain");
+        drain
+            .arg(&self.launcher)
+            .arg("__service-drain")
+            .arg(&identity);
         isolated_state(&mut drain, &self.home);
         let BoundedOutput {
             output,
@@ -120,9 +131,76 @@ impl ServiceGuard {
             ));
         }
         self.verify_drained(&identity)?;
+        #[cfg(not(target_os = "linux"))]
+        if let Some(tree) = self.process_tree.as_mut() {
+            tree.terminate().map_err(|error| error.to_string())?;
+        }
         self.active = false;
         drop(self.process_tree.take());
         Ok(())
+    }
+
+    fn clear_dead_service_marker(&self) -> Result<bool, String> {
+        let Some(expected) = self.identity.as_deref() else {
+            return Ok(false);
+        };
+        let status = self.status()?;
+        if status.get("markerIdentity").and_then(Value::as_str) != Some(expected)
+            || !status.get("reachableIdentity").is_some_and(Value::is_null)
+            || status.get("lockAcquirable").and_then(Value::as_bool) != Some(true)
+        {
+            return Ok(false);
+        }
+        let mut cleanup = command("node");
+        cleanup
+            .arg(&self.launcher)
+            .arg("__service-drain")
+            .arg(expected);
+        isolated_state(&mut cleanup, &self.home);
+        let BoundedOutput {
+            output,
+            expired,
+            process_tree,
+        } = try_output_with_timeout(&mut cleanup, Duration::from_secs(10))
+            .map_err(|error| error.to_string())?;
+        drop(process_tree);
+        if expired || !output.status.success() {
+            return Err(format!(
+                "dead-service cleanup expired={expired}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let status = self.status()?;
+        Ok(status.get("markerIdentity").is_some_and(Value::is_null)
+            && status.get("reachableIdentity").is_some_and(Value::is_null)
+            && status.get("lockAcquirable").and_then(Value::as_bool) == Some(true))
+    }
+
+    fn authenticated_identity(&mut self) -> Result<Option<String>, String> {
+        let status = self.status()?;
+        let marker = status.get("markerIdentity").and_then(Value::as_str);
+        let reachable = status.get("reachableIdentity").and_then(Value::as_str);
+        let lock_acquirable = status.get("lockAcquirable").and_then(Value::as_bool);
+        match (marker, reachable, lock_acquirable) {
+            (Some(marker), Some(reachable), Some(false)) if marker == reachable => {
+                if self
+                    .identity
+                    .as_deref()
+                    .is_some_and(|expected| expected != marker)
+                {
+                    return Err(format!(
+                        "reachable service identity changed before cleanup: {status}"
+                    ));
+                }
+                let identity = marker.to_owned();
+                self.identity = Some(identity.clone());
+                Ok(Some(identity))
+            }
+            (None, None, Some(true)) => Ok(None),
+            _ => Err(format!(
+                "service identity could not be authenticated for cleanup: {status}"
+            )),
+        }
     }
 
     fn verify_drained(&self, identity: &str) -> Result<(), String> {
@@ -155,39 +233,6 @@ impl ServiceGuard {
         Err(format!("service remained reachable or locked: {last}"))
     }
 
-    fn force_cleanup(&mut self) -> Result<(), String> {
-        let tree = self
-            .process_tree
-            .as_mut()
-            .ok_or_else(|| "host process tree was not attached".to_owned())?;
-        tree.terminate().map_err(|error| error.to_string())?;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let marker = service_data(&self.home).join("service.identity");
-        let mut last = String::new();
-        while Instant::now() < deadline {
-            match self.status() {
-                Ok(status)
-                    if status.get("reachableIdentity").is_some_and(Value::is_null)
-                        && status.get("lockAcquirable").and_then(Value::as_bool) == Some(true) =>
-                {
-                    match fs::remove_file(&marker) {
-                        Ok(()) => {}
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(error) => return Err(error.to_string()),
-                    }
-                    self.active = false;
-                    return assert_service_absent(&self.launcher, &self.home);
-                }
-                Ok(status) => last = status.to_string(),
-                Err(error) => last = error,
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        Err(format!(
-            "forced process-tree cleanup did not release service: {last}"
-        ))
-    }
-
     fn status(&self) -> Result<Value, String> {
         service_status(&self.launcher, &self.home)
     }
@@ -198,13 +243,10 @@ impl Drop for ServiceGuard {
         if self.active {
             let cleanup = self.cleanup();
             if let Err(error) = cleanup {
-                let fallback = self.force_cleanup();
                 if std::thread::panicking() {
-                    eprintln!(
-                        "service cleanup failed during unwind: {error}; fallback: {fallback:?}"
-                    );
+                    eprintln!("service cleanup failed during unwind: {error}");
                 } else {
-                    panic!("service cleanup failed: {error}; fallback: {fallback:?}");
+                    panic!("service cleanup failed: {error}");
                 }
             }
         }

@@ -39,11 +39,12 @@ impl ProcessTree {
 
     /// Terminates every process in the tree and reaps the direct child.
     pub fn terminate(&mut self) -> io::Result<()> {
-        let termination = self.terminate_descendants();
-        if let Some(mut child) = self.child.take() {
-            let _ = child.wait();
+        self.terminate_descendants()?;
+        if let Some(child) = self.child.as_mut() {
+            child.wait()?;
+            self.child.take();
         }
-        termination
+        Ok(())
     }
 
     /// Signals termination to the entire tree while retaining the direct child
@@ -89,14 +90,15 @@ mod platform {
             if !self.active {
                 return Ok(());
             }
-            self.active = false;
             // SAFETY: a negative, nonzero pid addresses exactly this owned
             // process group; SIGKILL requires no shared memory or signal data.
             if unsafe { libc::kill(-self.process_group, libc::SIGKILL) } == 0 {
+                self.active = false;
                 return Ok(());
             }
             let error = io::Error::last_os_error();
             if error.raw_os_error() == Some(libc::ESRCH) {
+                self.active = false;
                 Ok(())
             } else {
                 Err(error)
@@ -253,11 +255,11 @@ mod platform {
             if !self.active {
                 return Ok(());
             }
-            self.active = false;
             // SAFETY: `job` remains owned until Drop closes it.
             if unsafe { TerminateJobObject(self.job, 1) } == 0 {
                 Err(io::Error::last_os_error())
             } else {
+                self.active = false;
                 Ok(())
             }
         }

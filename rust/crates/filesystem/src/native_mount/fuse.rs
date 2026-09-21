@@ -80,6 +80,7 @@ struct FuseProjection {
 /// One background libfuse session.
 pub(super) struct FuseSession {
     session: Option<BackgroundSession>,
+    shutdown_failed: bool,
 }
 
 impl FuseSession {
@@ -153,13 +154,20 @@ impl FuseSession {
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
         Ok(Self {
             session: Some(session),
+            shutdown_failed: false,
         })
     }
 
     pub(super) fn stop(&mut self) -> Result<(), NativeMountError> {
+        if self.shutdown_failed {
+            return Err(NativeMountError::Driver(
+                "FUSE background session previously failed during shutdown".to_owned(),
+            ));
+        }
         if let Some(session) = self.session.take()
             && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.join())).is_err()
         {
+            self.shutdown_failed = true;
             return Err(NativeMountError::Driver(
                 "FUSE background session failed during shutdown".to_owned(),
             ));

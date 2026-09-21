@@ -911,9 +911,33 @@ fn stop_owned_session<D, G, E>(
     Ok(true)
 }
 
+fn drop_owned_session<D, G, E>(
+    driver: &mut Option<D>,
+    destination_guard: &mut Option<G>,
+    stop: impl FnMut(&mut D) -> Result<(), E>,
+    release: impl FnMut(&mut G) -> Result<(), E>,
+) {
+    if stop_owned_session(driver, destination_guard, stop, release).is_err() {
+        // A failed final detach has unknown kernel state. Keep both the driver owner and its
+        // destination fence alive until process exit instead of publishing the destination as
+        // reusable while callbacks or a kernel namespace may still exist.
+        if let Some(active) = driver.take() {
+            std::mem::forget(active);
+        }
+        if let Some(guard) = destination_guard.take() {
+            std::mem::forget(guard);
+        }
+    }
+}
+
 impl Drop for NativeMountSession {
     fn drop(&mut self) {
-        let _ = self.stop();
+        drop_owned_session(
+            &mut self.driver,
+            &mut self.destination_guard,
+            stop_driver,
+            MountDestinationGuard::release,
+        );
     }
 }
 
@@ -1295,15 +1319,26 @@ impl MountDestinationGuard {
 
     fn release(&mut self) -> Result<(), NativeMountError> {
         let registry = acquire_mount_lock(&self.registry_path, true)?;
-        self.file.take();
-        match std::fs::remove_file(&self.lock_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(NativeMountError::Driver(error.to_string())),
-        }
+        release_owned_fence(&mut self.file, || {
+            match std::fs::remove_file(&self.lock_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(NativeMountError::Driver(error.to_string())),
+            }
+            Ok(())
+        })?;
         drop(registry);
         Ok(())
     }
+}
+
+fn release_owned_fence<T, E>(
+    owner: &mut Option<T>,
+    release: impl FnOnce() -> Result<(), E>,
+) -> Result<(), E> {
+    release()?;
+    owner.take();
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -2128,6 +2163,43 @@ mod tests {
             ),
             Ok(false)
         );
+    }
+
+    #[test]
+    fn failed_final_stop_keeps_driver_and_destination_fence_until_process_exit() {
+        struct DropProbe(Arc<std::sync::atomic::AtomicUsize>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut driver = Some(DropProbe(Arc::clone(&drops)));
+        let mut destination_guard = Some(DropProbe(Arc::clone(&drops)));
+        drop_owned_session(
+            &mut driver,
+            &mut destination_guard,
+            |_| Err("kernel detach failed"),
+            |_| Ok(()),
+        );
+        assert!(driver.is_none());
+        assert!(destination_guard.is_none());
+        assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn failed_fence_unlink_retains_the_operating_system_lock() {
+        let mut fence = Some(7_u8);
+        let failure = release_owned_fence(&mut fence, || Err("unlink failed"));
+        assert_eq!(failure, Err("unlink failed"));
+        assert_eq!(fence, Some(7));
+        assert_eq!(
+            release_owned_fence(&mut fence, || Ok::<_, &str>(())),
+            Ok(())
+        );
+        assert_eq!(fence, None);
     }
 
     #[test]

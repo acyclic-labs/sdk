@@ -212,7 +212,7 @@ impl SharedRootRegistry {
             source.inner().invalidate();
         }
         let reference = Arc::new(Mutex::new(source.reference()));
-        let native_identity = source.inner().root_identity().to_bytes();
+        let native_identity = source.inner().root_identity();
         let shared = Arc::new(SharedPhysicalRoot {
             source,
             watcher,
@@ -223,7 +223,7 @@ impl SharedRootRegistry {
             SharedRootRegistration {
                 live: Arc::downgrade(&shared),
                 reference,
-                native_identity,
+                native_identity: native_identity.to_bytes(),
             },
         );
         Ok(shared)
@@ -4696,90 +4696,102 @@ impl ControlPlane {
     }
 
     async fn shutdown(mut self) -> Result<(), String> {
-        let operations = self.distributed.operations();
-        let now = now_millis();
-        let active = self.state.leases.values().cloned().collect::<Vec<_>>();
-        for record in &active {
-            let route = self
-                .state
-                .routes
-                .get(&record.agent_id)
-                .cloned()
-                .ok_or_else(|| "active lease route is missing during shutdown".to_owned())?;
-            let parent_context = self
-                .distributed
-                .contexts()
-                .resolve(self.context_for_agent(&route.parent_agent_id)?)
-                .await
-                .map_err(display)?;
-            for root_record in record.roots.values() {
-                let root_id = WorkspaceRootId::from_bytes(root_record.root_id);
-                let workspace = self.workspace_root(&route, root_id).await?;
-                let parent = self
+        let result = async {
+            let operations = self.distributed.operations();
+            let now = now_millis();
+            let active = self.state.leases.values().cloned().collect::<Vec<_>>();
+            for record in &active {
+                let route = self
+                    .state
+                    .routes
+                    .get(&record.agent_id)
+                    .cloned()
+                    .ok_or_else(|| "active lease route is missing during shutdown".to_owned())?;
+                let parent_context = self
                     .distributed
-                    .workspace(
-                        parent_context
-                            .roots
-                            .get(&root_id)
-                            .ok_or_else(|| "active lease parent root is missing".to_owned())?
-                            .workspace_id,
-                    )
+                    .contexts()
+                    .resolve(self.context_for_agent(&route.parent_agent_id)?)
                     .await
                     .map_err(display)?;
-                operations
-                    .observe_parent(workspace.id(), parent.head().await.map_err(display)?.id())
-                    .await
-                    .map_err(display)?;
-                if let acyclic_fs::OperationWindowFinish::Reconcile(reconcile) = operations
-                    .finish(&root_record.lease(), now)
-                    .await
-                    .map_err(display)?
-                {
-                    operations
-                        .reconcile_workspace(
-                            &workspace,
-                            reconcile,
-                            OperationReconcileLimits::default(),
+                for root_record in record.roots.values() {
+                    let root_id = WorkspaceRootId::from_bytes(root_record.root_id);
+                    let workspace = self.workspace_root(&route, root_id).await?;
+                    let parent = self
+                        .distributed
+                        .workspace(
+                            parent_context
+                                .roots
+                                .get(&root_id)
+                                .ok_or_else(|| "active lease parent root is missing".to_owned())?
+                                .workspace_id,
                         )
                         .await
                         .map_err(display)?;
+                    operations
+                        .observe_parent(workspace.id(), parent.head().await.map_err(display)?.id())
+                        .await
+                        .map_err(display)?;
+                    if let acyclic_fs::OperationWindowFinish::Reconcile(reconcile) = operations
+                        .finish(&root_record.lease(), now)
+                        .await
+                        .map_err(display)?
+                    {
+                        operations
+                            .reconcile_workspace(
+                                &workspace,
+                                reconcile,
+                                OperationReconcileLimits::default(),
+                            )
+                            .await
+                            .map_err(display)?;
+                    }
                 }
             }
-        }
-        self.state.leases.clear();
-        self.persist()?;
-        let mounts = std::mem::take(&mut self.mounts);
-        let mut first_error = None;
-        for (agent_id, mount) in mounts {
-            if active.iter().any(|lease| lease.agent_id == agent_id) {
-                if let Err(error) = mount.abandon() {
+            self.state.leases.clear();
+            self.persist()?;
+            let mounts = std::mem::take(&mut self.mounts);
+            let mut first_error = None;
+            for (agent_id, mount) in mounts {
+                if active.iter().any(|lease| lease.agent_id == agent_id) {
+                    if let Err(error) = mount.abandon() {
+                        first_error.get_or_insert_with(|| {
+                            format!("cannot quarantine agent '{agent_id}' during shutdown: {error}")
+                        });
+                    }
+                    continue;
+                }
+                if let Err(error) = mount.sync().await {
                     first_error.get_or_insert_with(|| {
-                        format!("cannot quarantine agent '{agent_id}' during shutdown: {error}")
+                        format!("cannot synchronize agent '{agent_id}' during shutdown: {error}")
                     });
                 }
-                continue;
+                if let Err(error) = mount.unmount().await {
+                    first_error.get_or_insert_with(|| {
+                        format!("cannot unmount agent '{agent_id}' during shutdown: {error}")
+                    });
+                }
             }
-            if let Err(error) = mount.sync().await {
-                first_error.get_or_insert_with(|| {
-                    format!("cannot synchronize agent '{agent_id}' during shutdown: {error}")
-                });
-            }
-            if let Err(error) = mount.unmount().await {
-                first_error.get_or_insert_with(|| {
-                    format!("cannot unmount agent '{agent_id}' during shutdown: {error}")
-                });
-            }
+            drop(operations);
+            first_error.map_or(Ok(()), Err)
         }
-        let result = first_error.map_or(Ok(()), Err);
-        // `shutdown().await` is the ownership boundary for the durable providers. Drop every
-        // clone before the future becomes ready. The filesystem lifecycle gate serializes
-        // same-process callers, but a replacement service process can only observe the OS lock;
-        // retaining `operations` in the completed future would therefore publish shutdown before
-        // the exclusive journal lock is actually released.
-        drop(operations);
+        .await;
+        // Release and observe every durable provider even when reconciliation or mount teardown
+        // failed. Service shutdown may publish its result only after this physical ownership
+        // boundary, otherwise a replacement can race provider destruction.
         drop(self);
         result
     }
+}
+
+async fn wait_for_root_release(
+    barrier: Option<acyclic_native_runtime::OwnershipReleaseBarrier>,
+) -> Result<(), String> {
+    let Some(barrier) = barrier else {
+        return Ok(());
+    };
+    tokio::task::spawn_blocking(move || barrier.wait())
+        .await
+        .map_err(|error| format!("filesystem release barrier failed: {error}"))
 }
 
 fn rewrite_tool_input(
@@ -6348,7 +6360,8 @@ struct ServiceControl {
     store: LocalCoreStateStore,
     shared_roots: SharedRootRegistry,
     sessions: BTreeMap<String, ControlPlane>,
-    identity: String,
+    binary_identity: String,
+    instance_id: String,
     upgrade: Arc<tokio::sync::Notify>,
     drain_id: Arc<Mutex<Option<String>>>,
 }
@@ -6367,7 +6380,8 @@ impl ServiceControl {
             store,
             shared_roots: shared_roots.clone(),
             sessions: BTreeMap::new(),
-            identity: service_identity()?,
+            binary_identity: service_identity()?,
+            instance_id: uuid::Uuid::new_v4().to_string(),
             upgrade: Arc::new(tokio::sync::Notify::new()),
             drain_id: Arc::new(Mutex::new(None)),
         };
@@ -6586,11 +6600,13 @@ impl ServiceControl {
     }
 
     async fn shutdown(mut self) -> Result<(), String> {
+        let root_released = self.fs.local_root_release_barrier();
         let result = self.shutdown_sessions(false).await;
         // Publish service shutdown only after its final LocalFs handle has released the durable
         // Stream and Objects roots. A completed async future may otherwise retain `self` until the
         // executor drops the future, allowing an immediate replacement service to race the lock.
         drop(self);
+        wait_for_root_release(root_released).await?;
         result
     }
 
@@ -6932,7 +6948,8 @@ impl ControlRequestDispatcher for ServiceControl {
     async fn dispatch_request(&mut self, request: ControlRequest) -> Result<Value, String> {
         if matches!(request.command, ControlCommand::Ping) {
             return Ok(json!({
-                "identity": self.identity,
+                "identity": self.binary_identity,
+                "instanceId": self.instance_id,
                 "sessions": self.sessions.len(),
             }));
         }
@@ -6945,8 +6962,16 @@ impl ControlRequestDispatcher for ServiceControl {
                 .get("identity")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "upgrade request is missing the active identity".to_owned())?;
-            if expected != self.identity {
+            if expected != self.binary_identity {
                 return Err("upgrade request targets a different service binary".to_owned());
+            }
+            let expected_instance = request
+                .arguments
+                .get("instanceId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "upgrade request is missing the service instance".to_owned())?;
+            if expected_instance != self.instance_id {
+                return Err("upgrade request targets a replacement service".to_owned());
             }
             let drain_id = request
                 .arguments
@@ -6998,7 +7023,7 @@ impl ControlRequestDispatcher for ServiceControl {
             });
             return doctor_report(
                 &self.data,
-                &self.identity,
+                &self.binary_identity,
                 self.sessions.len(),
                 routes,
                 leases,
@@ -7488,10 +7513,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .first()
         .is_some_and(|argument| argument == "__service-drain")
     {
-        return drain_service(&default_data_directory())
-            .await
-            .map_err(io::Error::other)
-            .map_err(Into::into);
+        if arguments.len() > 2 {
+            return Err(
+                io::Error::other("usage: acyclic __service-drain [EXPECTED_IDENTITY]").into(),
+            );
+        }
+        let fence = drain_service(
+            &default_data_directory(),
+            arguments.get(1).map(String::as_str),
+        )
+        .await
+        .map_err(io::Error::other)?;
+        drop(fence);
+        return Ok(());
     }
     if arguments
         .first()
@@ -8009,7 +8043,14 @@ fn doctor_report(
 }
 
 struct ServiceLock {
-    _file: fs::File,
+    _lifecycle_file: fs::File,
+    data_file: Option<fs::File>,
+}
+
+impl ServiceLock {
+    fn prepare_purge(&mut self) {
+        self.data_file.take();
+    }
 }
 
 struct ServiceIdentityMarker {
@@ -8094,6 +8135,22 @@ fn verify_service_drain_completion(
 }
 
 fn acquire_service_lock(data: &Path) -> Result<Option<ServiceLock>, String> {
+    let parent = data
+        .parent()
+        .ok_or_else(|| "service data path has no parent".to_owned())?;
+    fs::create_dir_all(parent).map_err(display)?;
+    let lifecycle_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(parent.join(".acyclic-service-lifecycle.lock"))
+        .map_err(display)?;
+    match lifecycle_file.try_lock_exclusive() {
+        Ok(()) => {}
+        Err(error) if service_lock_is_contended(&error) => return Ok(None),
+        Err(error) => return Err(display(error)),
+    }
     fs::create_dir_all(data).map_err(display)?;
     #[cfg(unix)]
     {
@@ -8108,7 +8165,10 @@ fn acquire_service_lock(data: &Path) -> Result<Option<ServiceLock>, String> {
         .open(data.join("service.lock"))
         .map_err(display)?;
     match file.try_lock_exclusive() {
-        Ok(()) => Ok(Some(ServiceLock { _file: file })),
+        Ok(()) => Ok(Some(ServiceLock {
+            _lifecycle_file: lifecycle_file,
+            data_file: Some(file),
+        })),
         Err(error) if service_lock_is_contended(&error) => Ok(None),
         Err(error) => Err(display(error)),
     }
@@ -8122,6 +8182,18 @@ async fn run_service(data: PathBuf) -> Result<(), String> {
     run_service_with_identity(data, None).await
 }
 
+async fn shutdown_service_endpoint(
+    endpoint: ControlEndpoint,
+    control: Arc<AsyncMutex<ServiceControl>>,
+) -> Result<(), String> {
+    let endpoint_result = endpoint.shutdown().await;
+    let control_result = match Arc::try_unwrap(control) {
+        Ok(control) => control.into_inner().shutdown().await,
+        Err(_) => Err("control service retained an active request during shutdown".to_owned()),
+    };
+    endpoint_result.and(control_result)
+}
+
 async fn run_service_with_identity(
     data: PathBuf,
     identity_override: Option<String>,
@@ -8131,30 +8203,50 @@ async fn run_service_with_identity(
     };
     let mut service = ServiceControl::open(data.clone()).await?;
     if let Some(identity) = identity_override {
-        service.identity = identity;
+        service.binary_identity = identity;
     }
     let upgrade = Arc::clone(&service.upgrade);
     let drain_id = Arc::clone(&service.drain_id);
-    let identity = service.identity.clone();
+    let instance_id = service.instance_id.clone();
     let control = Arc::new(AsyncMutex::new(service));
-    let endpoint = start_control_endpoint(Arc::clone(&control), &data).await?;
-    let _identity_marker = ServiceIdentityMarker::create(&data, &identity)?;
-    tokio::select! {
-        signal = tokio::signal::ctrl_c() => signal.map_err(display)?,
-        () = upgrade.notified() => {},
-    }
-    let endpoint_result = endpoint.shutdown().await;
-    let control_result = match Arc::try_unwrap(control) {
-        Ok(control) => control.into_inner().shutdown().await,
-        Err(_) => Err("control service retained an active request during shutdown".to_owned()),
+    let endpoint = match start_control_endpoint(Arc::clone(&control), &data).await {
+        Ok(endpoint) => endpoint,
+        Err(endpoint_error) => {
+            let control_result = match Arc::try_unwrap(control) {
+                Ok(control) => control.into_inner().shutdown().await,
+                Err(_) => Err("failed endpoint retained the control service".to_owned()),
+            };
+            return match control_result {
+                Ok(()) => Err(endpoint_error),
+                Err(shutdown_error) => Err(format!(
+                    "{endpoint_error}; endpoint startup cleanup failed: {shutdown_error}"
+                )),
+            };
+        }
     };
-    let result = endpoint_result.and(control_result);
+    let _identity_marker = match ServiceIdentityMarker::create(&data, &instance_id) {
+        Ok(marker) => marker,
+        Err(marker_error) => {
+            let cleanup = shutdown_service_endpoint(endpoint, control).await;
+            return match cleanup {
+                Ok(()) => Err(marker_error),
+                Err(cleanup_error) => Err(format!(
+                    "{marker_error}; identity publication cleanup failed: {cleanup_error}"
+                )),
+            };
+        }
+    };
+    let service_result = tokio::select! {
+        signal = tokio::signal::ctrl_c() => signal.map_err(display),
+        () = upgrade.notified() => Ok(()),
+    };
+    let result = service_result.and(shutdown_service_endpoint(endpoint, control).await);
     let requested_drain = drain_id
         .lock()
         .map_err(|_| "service drain identity lock is poisoned".to_owned())?
         .clone();
     if let Some(drain_id) = requested_drain {
-        write_service_drain_completion(&data, &identity, &drain_id, &result)?;
+        write_service_drain_completion(&data, &instance_id, &drain_id, &result)?;
     }
     result
 }
@@ -8173,12 +8265,13 @@ async fn service_is_ready_for_identity(data: &Path, identity: &str) -> Result<bo
             if active.get("sessions").and_then(Value::as_u64).unwrap_or(0) > 0 {
                 return Ok(true);
             }
-            drain_service(data).await?;
+            let fence = drain_service(data, None).await?;
             clear_obsolete_runtime_state(data)?;
+            drop(fence);
             Ok(false)
         }
         Err(ControlRequestError::Transport(_)) => {
-            drain_service(data).await?;
+            drop(drain_service(data, None).await?);
             Ok(false)
         }
         Err(error) => Err(format!(
@@ -8238,37 +8331,31 @@ fn ping_request() -> Result<ControlRequest, String> {
 
 async fn send_cli_control_request(data: &Path, request: &ControlRequest) -> Result<Value, String> {
     let identity = service_identity()?;
-    let marker_matches =
-        fs::read_to_string(data.join("service.identity")).is_ok_and(|active| active == identity);
-    if !marker_matches {
-        // Sandboxed hosts may expose the already-running local endpoint while
-        // denying the client's direct view of per-user state. Probe the
-        // authenticated endpoint before attempting a filesystem-backed cold
-        // start. SessionStart owns that start for managed agent hosts.
-        let ping = ping_request()?;
-        for attempt in 0..10 {
-            match send_control_request(data, &ping).await {
-                Ok(active)
-                    if active.get("identity").and_then(Value::as_str)
-                        == Some(identity.as_str())
-                        || active.get("sessions").and_then(Value::as_u64).unwrap_or(0) > 0 =>
-                {
-                    return send_control_request(data, request)
-                        .await
-                        .map_err(|error| error.to_string());
-                }
-                Err(ControlRequestError::Transport(_)) if attempt < 9 => {
-                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                }
-                Ok(_) | Err(ControlRequestError::Transport(_)) => break,
-                Err(error) => return Err(error.to_string()),
+    // Sandboxed hosts may expose the already-running local endpoint while denying the client's
+    // direct view of per-user state. Probe that endpoint before attempting a filesystem-backed
+    // cold start. The published marker is an instance nonce, not a binary compatibility identity.
+    let ping = ping_request()?;
+    for attempt in 0..10 {
+        match send_control_request(data, &ping).await {
+            Ok(active)
+                if active.get("identity").and_then(Value::as_str) == Some(identity.as_str())
+                    || active.get("sessions").and_then(Value::as_u64).unwrap_or(0) > 0 =>
+            {
+                return send_control_request(data, request)
+                    .await
+                    .map_err(|error| error.to_string());
             }
+            Err(ControlRequestError::Transport(_)) if attempt < 9 => {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Ok(_) | Err(ControlRequestError::Transport(_)) => break,
+            Err(error) => return Err(error.to_string()),
         }
-        ensure_service(data).await?;
     }
+    ensure_service(data).await?;
     match send_control_request(data, request).await {
         Ok(response) => Ok(response),
-        Err(ControlRequestError::Transport(_)) if marker_matches => {
+        Err(ControlRequestError::Transport(_)) => {
             ensure_service(data).await?;
             send_control_request(data, request)
                 .await
@@ -8807,7 +8894,7 @@ fn parse_install_arguments(arguments: &[String]) -> Result<(&str, bool), String>
 async fn uninstall_command(arguments: &[String]) -> Result<(), String> {
     let (host, purge) = parse_uninstall_arguments(arguments)?;
     let data = default_data_directory();
-    drain_service(&data).await?;
+    drop(drain_service(&data, None).await?);
     uninstall_host(host)?;
     if purge {
         purge_durable_state(&data).await?;
@@ -8838,14 +8925,18 @@ async fn purge_durable_state(data: &Path) -> Result<(), String> {
     if !data.exists() {
         return Ok(());
     }
-    drain_service(data).await?;
+    let mut drain_fence = drain_service(data, None).await?;
+    drain_fence.prepare_purge();
     let parent = data
         .parent()
         .ok_or_else(|| "durable state path has no parent".to_owned())?;
     remove_tree_checked(parent, data)
 }
 
-async fn drain_service(data: &Path) -> Result<(), String> {
+async fn drain_service(
+    data: &Path,
+    expected_identity: Option<&str>,
+) -> Result<ServiceLock, String> {
     let ping = ControlRequest {
         version: 1,
         command: ControlCommand::Ping,
@@ -8856,19 +8947,44 @@ async fn drain_service(data: &Path) -> Result<(), String> {
     };
     match send_control_request(data, &ping).await {
         Ok(active) => {
-            let identity = active
+            let binary_identity = active
                 .get("identity")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "cannot safely drain an unidentified Acyclic service".to_owned())?
                 .to_owned();
-            let drain_id = format!("{}-{}", std::process::id(), now_millis());
+            let instance_id = active
+                .get("instanceId")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let drain_identity = instance_id
+                .clone()
+                .unwrap_or_else(|| binary_identity.clone());
+            if expected_identity.is_some_and(|expected| expected != drain_identity) {
+                return Err("refusing to drain a replacement Acyclic service".to_owned());
+            }
+            let drain_id = uuid::Uuid::new_v4().to_string();
+            let arguments = instance_id.as_ref().map_or_else(
+                || {
+                    json!({
+                        "identity": binary_identity,
+                        "drainId": drain_id,
+                    })
+                },
+                |instance_id| {
+                    json!({
+                        "identity": binary_identity,
+                        "instanceId": instance_id,
+                        "drainId": drain_id,
+                    })
+                },
+            );
             let request = ControlRequest {
                 version: 1,
                 command: ControlCommand::Shutdown,
                 cwd: env::current_dir().map_err(display)?,
                 argv: Vec::new(),
                 name: String::new(),
-                arguments: json!({"identity": identity, "drainId": drain_id}),
+                arguments,
             };
             send_control_request(data, &request)
                 .await
@@ -8879,8 +8995,8 @@ async fn drain_service(data: &Path) -> Result<(), String> {
                     endpoint_closed = true;
                 }
                 if endpoint_closed && let Some(lock) = acquire_service_lock(data)? {
-                    drop(lock);
-                    return verify_service_drain_completion(data, &identity, &drain_id);
+                    verify_service_drain_completion(data, &drain_identity, &drain_id)?;
+                    return Ok(lock);
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
@@ -8891,8 +9007,19 @@ async fn drain_service(data: &Path) -> Result<(), String> {
         }
         Err(ControlRequestError::Transport(_)) => match acquire_service_lock(data)? {
             Some(lock) => {
-                drop(lock);
-                Ok(())
+                if let Some(expected) = expected_identity {
+                    let marker = fs::read_to_string(data.join("service.identity"))
+                        .map_err(|error| format!("cannot authenticate stale service: {error}"))?;
+                    if marker != expected {
+                        return Err("refusing to clean a replacement Acyclic service".to_owned());
+                    }
+                }
+                match fs::remove_file(data.join("service.identity")) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(display(error)),
+                }
+                Ok(lock)
             }
             None => Err(
                 "Acyclic service lock is held without a reachable endpoint; state was preserved"
@@ -8918,7 +9045,8 @@ async fn service_status(data: &Path) -> Result<Value, String> {
     let reachable_identity = match send_control_request(data, &ping).await {
         Ok(response) => Some(
             response
-                .get("identity")
+                .get("instanceId")
+                .or_else(|| response.get("identity"))
                 .and_then(Value::as_str)
                 .ok_or_else(|| "reachable service omitted its identity".to_owned())?
                 .to_owned(),
@@ -10338,7 +10466,9 @@ async fn run_rpc(
     reader: impl BufRead,
     mut writer: impl Write,
 ) -> Result<(), String> {
-    let control = Arc::new(AsyncMutex::new(ControlPlane::open(data.clone()).await?));
+    let control = ControlPlane::open(data.clone()).await?;
+    let root_released = control.fs.local_root_release_barrier();
+    let control = Arc::new(AsyncMutex::new(control));
     let endpoint = start_control_endpoint(Arc::clone(&control), &data).await?;
     let service = async {
         for line in reader.lines() {
@@ -10364,9 +10494,13 @@ async fn run_rpc(
         .map_err(|_| "control endpoint retained an active request during shutdown".to_owned())?
         .into_inner();
     let control_shutdown = control.shutdown().await;
+    let root_release = wait_for_root_release(root_released).await;
     // LocalFs owns the exclusive Stream journal. Release it before reporting
     // graceful EOF so a replacement host can reopen the same plugin data.
-    service.and(endpoint_shutdown).and(control_shutdown)
+    service
+        .and(endpoint_shutdown)
+        .and(control_shutdown)
+        .and(root_release)
 }
 
 #[cfg(test)]
@@ -11613,7 +11747,18 @@ mod tests {
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
                         assert!(data.join("service.identity").exists());
-                        drain_service(&data).await.expect("durable drain");
+                        let identity = fs::read_to_string(data.join("service.identity"))
+                            .expect("service identity");
+                        let mismatch = drain_service(&data, Some("replacement-service")).await;
+                        assert!(matches!(
+                            mismatch,
+                            Err(error) if error == "refusing to drain a replacement Acyclic service"
+                        ));
+                        assert!(acquire_service_lock(&data).expect("service lock").is_none());
+                        let fence = drain_service(&data, Some(&identity))
+                            .await
+                            .expect("identity-bound durable drain");
+                        drop(fence);
                         tokio::time::timeout(std::time::Duration::from_secs(5), service)
                             .await
                             .expect("service exit deadline")
@@ -11627,6 +11772,153 @@ mod tests {
             .expect("test thread")
             .join()
             .expect("service drain thread");
+    }
+
+    struct LegacyServiceDispatcher {
+        identity: String,
+        upgrade: Arc<tokio::sync::Notify>,
+        drain_id: Arc<Mutex<Option<String>>>,
+    }
+
+    impl ControlRequestDispatcher for LegacyServiceDispatcher {
+        async fn dispatch_request(&mut self, request: ControlRequest) -> Result<Value, String> {
+            match request.command {
+                ControlCommand::Ping => Ok(json!({"identity": self.identity})),
+                ControlCommand::Shutdown => {
+                    let expected = request
+                        .arguments
+                        .get("identity")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "legacy shutdown omitted the binary identity".to_owned())?;
+                    if expected != self.identity {
+                        return Err("legacy shutdown targeted another binary".to_owned());
+                    }
+                    if request.arguments.get("instanceId").is_some() {
+                        return Err("legacy service cannot accept an instance identity".to_owned());
+                    }
+                    let drain_id = request
+                        .arguments
+                        .get("drainId")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "legacy shutdown omitted the drain identity".to_owned())?;
+                    *self
+                        .drain_id
+                        .lock()
+                        .map_err(|_| "legacy drain identity lock is poisoned".to_owned())? =
+                        Some(drain_id.to_owned());
+                    let upgrade = Arc::clone(&self.upgrade);
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        upgrade.notify_waiters();
+                    });
+                    Ok(json!({"draining": true}))
+                }
+                _ => Err("legacy test service only supports lifecycle requests".to_owned()),
+            }
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn service_drain_transitions_a_pre_instance_identity_service() {
+        std::thread::Builder::new()
+            .name("plugin-legacy-service-drain".to_owned())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime")
+                    .block_on(async {
+                        let temporary = tempfile::tempdir().expect("temporary directory");
+                        let data = temporary.path().join("state");
+                        let lock = acquire_service_lock(&data)
+                            .expect("legacy service lock")
+                            .expect("uncontended legacy service lock");
+                        let identity = "legacy-service-binary".to_owned();
+                        let marker = ServiceIdentityMarker::create(&data, &identity)
+                            .expect("legacy identity marker");
+                        let upgrade = Arc::new(tokio::sync::Notify::new());
+                        let drain_id = Arc::new(Mutex::new(None));
+                        let control = Arc::new(AsyncMutex::new(LegacyServiceDispatcher {
+                            identity: identity.clone(),
+                            upgrade: Arc::clone(&upgrade),
+                            drain_id: Arc::clone(&drain_id),
+                        }));
+                        let endpoint = start_control_endpoint(Arc::clone(&control), &data)
+                            .await
+                            .expect("legacy control endpoint");
+                        let service_data = data.clone();
+                        let service_identity = identity.clone();
+                        let service = tokio::spawn(async move {
+                            upgrade.notified().await;
+                            endpoint.shutdown().await.expect("legacy endpoint shutdown");
+                            drop(control);
+                            let requested_drain = drain_id
+                                .lock()
+                                .expect("legacy drain identity lock")
+                                .clone()
+                                .expect("legacy drain request");
+                            write_service_drain_completion(
+                                &service_data,
+                                &service_identity,
+                                &requested_drain,
+                                &Ok(()),
+                            )
+                            .expect("legacy drain completion");
+                            drop(marker);
+                            drop(lock);
+                        });
+
+                        let fence = drain_service(&data, Some(&identity))
+                            .await
+                            .expect("legacy service transition");
+                        service.await.expect("legacy service task");
+                        assert!(!data.join("service.identity").exists());
+                        drop(fence);
+                    });
+            })
+            .expect("test thread")
+            .join()
+            .expect("legacy service drain thread");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn failed_identity_publication_releases_endpoint_service_and_root() {
+        std::thread::Builder::new()
+            .name("plugin-service-marker-failure".to_owned())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime")
+                    .block_on(async {
+                        let temporary = tempfile::tempdir().expect("temporary directory");
+                        let data = temporary.path().join("state");
+                        fs::create_dir_all(data.join("service.identity"))
+                            .expect("identity publication obstruction");
+                        assert!(
+                            run_service_with_identity(data.clone(), Some("service".to_owned()))
+                                .await
+                                .is_err()
+                        );
+                        #[cfg(unix)]
+                        assert!(!data.join("service.sock").exists());
+                        let fence = acquire_service_lock(&data)
+                            .expect("service lifecycle lock")
+                            .expect("failed startup released the service lifecycle");
+                        drop(fence);
+                        let reopened = ServiceControl::open(data)
+                            .await
+                            .expect("reopen root after failed service startup");
+                        reopened.shutdown().await.expect("reopened shutdown");
+                    });
+            })
+            .expect("test thread")
+            .join()
+            .expect("service marker failure thread");
     }
 
     #[test]
@@ -11658,6 +11950,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unreachable_service_cleanup_clears_only_its_stale_marker_under_lock() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime")
+            .block_on(async {
+                let temporary = tempfile::tempdir().expect("temporary directory");
+                let data = temporary.path().join("state");
+                fs::create_dir_all(&data).expect("service data");
+                fs::write(data.join("service.identity"), "dead-service").expect("stale identity");
+                fs::write(data.join("durable-state"), "preserved").expect("durable sentinel");
+                let fence = drain_service(&data, None)
+                    .await
+                    .expect("dead service cleanup fence");
+                assert!(!data.join("service.identity").exists());
+                assert_eq!(
+                    fs::read_to_string(data.join("durable-state")).expect("durable sentinel"),
+                    "preserved"
+                );
+                assert!(
+                    acquire_service_lock(&data)
+                        .expect("contended service lock")
+                        .is_none()
+                );
+                drop(fence);
+                assert!(
+                    acquire_service_lock(&data)
+                        .expect("released service lock")
+                        .is_some()
+                );
+            });
+    }
+
+    #[test]
+    fn parent_lifecycle_fence_survives_removal_of_the_service_data_tree() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("state");
+        let mut fence = acquire_service_lock(&data)
+            .expect("acquire service lock")
+            .expect("uncontended service lock");
+        fence.prepare_purge();
+        fs::remove_dir_all(&data).expect("remove service data while parent fence remains held");
+        assert!(
+            acquire_service_lock(&data)
+                .expect("contended lifecycle check")
+                .is_none(),
+            "a replacement service must not create a new in-tree lock during purge"
+        );
+        drop(fence);
+        assert!(
+            acquire_service_lock(&data)
+                .expect("reacquire after purge")
+                .is_some()
+        );
+    }
+
     #[cfg(any(unix, windows))]
     #[test]
     fn service_handoff_durably_drains_a_mismatched_binary() {
@@ -11686,11 +12035,9 @@ mod tests {
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
-                        assert_eq!(
-                            fs::read_to_string(data.join("service.identity"))
-                                .expect("service identity"),
-                            "older-service-binary"
-                        );
+                        let instance_id = fs::read_to_string(data.join("service.identity"))
+                            .expect("service instance identity");
+                        assert!(uuid::Uuid::parse_str(&instance_id).is_ok());
                         assert!(
                             !service_is_ready_for_identity(&data, "replacement-service-binary")
                                 .await
@@ -11761,9 +12108,11 @@ mod tests {
                         );
                         assert!(!service.is_finished(), "live service was replaced");
 
-                        drain_service(&data)
-                            .await
-                            .expect("explicit drain closes every live session");
+                        drop(
+                            drain_service(&data, None)
+                                .await
+                                .expect("explicit drain closes every live session"),
+                        );
                         tokio::time::timeout(std::time::Duration::from_secs(5), service)
                             .await
                             .expect("service exit deadline")

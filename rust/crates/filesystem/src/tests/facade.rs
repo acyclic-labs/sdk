@@ -8084,7 +8084,7 @@ fn local_root_lifecycle_outlives_provider_destruction() -> Result<(), Box<dyn st
         capabilities: EmbeddedCapabilities::MEMORY,
         workspace_namespace: [0; 16],
         path_index: Arc::new(crate::path_index::MemoryGenerationPathIndex::default()),
-        _local_root_lifecycle: Some(ownership),
+        _local_root_lifecycle: Some(acyclic_native_runtime::OwnershipAnchor::new(ownership)),
     };
     let dropping = std::thread::spawn(move || drop(inner));
 
@@ -8097,6 +8097,36 @@ fn local_root_lifecycle_outlives_provider_destruction() -> Result<(), Box<dyn st
     dropping
         .join()
         .map_err(|_| "provider drop thread panicked")?;
+    Arc::clone(&lifecycle).try_lock_owned()?;
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn detached_provider_handles_retain_local_root_ownership()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+    let ownership = Arc::clone(&lifecycle).lock_owned().await;
+    let fs = Fs::open_local_unshared(
+        LocalOptions::new(directory.path()),
+        Some(acyclic_native_runtime::OwnershipAnchor::new(ownership)),
+    )
+    .await?;
+    let stream = fs.inner.authority.provider();
+    let objects = Arc::clone(fs.inner.objects.inner().provider());
+    drop(fs);
+
+    assert!(
+        Arc::clone(&lifecycle).try_lock_owned().is_err(),
+        "a detached Stream or Objects handle must retain the canonical root gate"
+    );
+    drop(stream);
+    assert!(
+        Arc::clone(&lifecycle).try_lock_owned().is_err(),
+        "the root gate must remain held until every detached provider is gone"
+    );
+    drop(objects);
     Arc::clone(&lifecycle).try_lock_owned()?;
     Ok(())
 }

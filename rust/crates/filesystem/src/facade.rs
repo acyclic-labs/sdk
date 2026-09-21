@@ -65,6 +65,8 @@ use crate::storage::{
     ObjectStoreError, PublicationPermit, ReplayLimit, object_digest,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+use acyclic_native_runtime::OwnershipAnchor;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use acyclic_objects::ObjectsProvider as _;
 use bytes::Bytes;
 use futures::{StreamExt as _, stream};
@@ -362,7 +364,7 @@ struct FsInner<A, O> {
     // This field must remain last: Rust drops fields in declaration order, so every durable
     // provider and index is gone before a replacement local engine may acquire the root.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-    _local_root_lifecycle: Option<tokio::sync::OwnedMutexGuard<()>>,
+    _local_root_lifecycle: Option<OwnershipAnchor>,
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -1457,7 +1459,7 @@ impl<A, O> Fs<A, O> {
         workspace_namespace: [u8; 16],
         path_index: Arc<dyn crate::path_index::GenerationPathIndex>,
         #[cfg(all(feature = "local", not(target_arch = "wasm32")))] local_root_lifecycle: Option<
-            tokio::sync::OwnedMutexGuard<()>,
+            OwnershipAnchor,
         >,
     ) -> Self {
         Self {
@@ -1540,6 +1542,21 @@ impl
         >,
     >
 {
+    /// Observes release of every provider derived from this local root.
+    ///
+    /// This is an explicit service-shutdown boundary. The returned barrier does not retain the
+    /// root; callers must first drop every filesystem, workspace, checkout, and mount handle.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn local_root_release_barrier(
+        &self,
+    ) -> Option<acyclic_native_runtime::OwnershipReleaseBarrier> {
+        self.inner
+            ._local_root_lifecycle
+            .as_ref()
+            .map(OwnershipAnchor::release_barrier)
+    }
+
     /// Opens the infrastructure-free durable local composition.
     ///
     /// # Errors
@@ -1573,6 +1590,7 @@ impl
         let ownership = Arc::clone(&lifecycle).lock_owned().await;
         let open_options = options.clone();
         let fs = run_local_initialization(ownership, move |ownership| async move {
+            let ownership = OwnershipAnchor::new(ownership);
             Self::open_local_unshared(open_options, Some(ownership)).await
         })
         .await??;
@@ -1589,7 +1607,7 @@ impl
 
     async fn open_local_unshared(
         options: LocalOptions,
-        lifecycle: Option<tokio::sync::OwnedMutexGuard<()>>,
+        lifecycle: Option<OwnershipAnchor>,
     ) -> Result<Self, FsError> {
         let LocalOptions {
             root,
@@ -1597,12 +1615,28 @@ impl
             objects,
             object_cache,
         } = options;
-        let stream = std::sync::Arc::new(
-            acyclic_stream::LocalStream::open(root.join("stream"), stream).await?,
-        );
-        let objects = std::sync::Arc::new(
-            acyclic_objects::LocalObjects::open(root.join("objects"), objects).await?,
-        );
+        let stream = std::sync::Arc::new(match &lifecycle {
+            Some(ownership) => {
+                acyclic_stream::LocalStream::open_with_ownership_anchor(
+                    root.join("stream"),
+                    stream,
+                    ownership.clone(),
+                )
+                .await?
+            }
+            None => acyclic_stream::LocalStream::open(root.join("stream"), stream).await?,
+        });
+        let objects = std::sync::Arc::new(match &lifecycle {
+            Some(ownership) => {
+                acyclic_objects::LocalObjects::open_with_ownership_anchor(
+                    root.join("objects"),
+                    objects,
+                    ownership.clone(),
+                )
+                .await?
+            }
+            None => acyclic_objects::LocalObjects::open(root.join("objects"), objects).await?,
+        });
         let bucket = match objects
             .bucket_named("filesystem-objects")
             .await

@@ -7,7 +7,7 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak, mpsc};
 use std::task::{Context, Poll, Waker};
 
 /// One file owned by the native I/O runtime.
@@ -56,6 +56,90 @@ mod process_tree;
 mod windows;
 
 pub use process_tree::ProcessTree;
+
+/// Shared lifetime token for native resources that must not outlive an external owner.
+///
+/// Cloning the token extends the owner's lifetime. The owned value is released only after the
+/// final token is dropped, allowing layered providers to carry a process-local ownership gate
+/// alongside every independently cloned native handle.
+#[derive(Clone)]
+pub struct OwnershipAnchor {
+    // Keep this field before `release`: Rust drops fields in declaration order, so the notifier
+    // observes the owner count after this anchor has released its strong reference.
+    _owner: Arc<dyn Send + Sync>,
+    release: OwnershipReleaseNotifier,
+}
+
+#[derive(Clone)]
+struct OwnershipReleaseNotifier {
+    owner: Weak<dyn Send + Sync>,
+    released: Arc<(Mutex<()>, Condvar)>,
+}
+
+impl Drop for OwnershipReleaseNotifier {
+    fn drop(&mut self) {
+        if self.owner.strong_count() == 0 {
+            let (lock, released) = &*self.released;
+            let _guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            released.notify_all();
+        }
+    }
+}
+
+impl OwnershipAnchor {
+    /// Erases and retains one ownership value behind a cloneable lifetime token.
+    pub fn new(owner: impl Send + Sync + 'static) -> Self {
+        let owner: Arc<dyn Send + Sync> = Arc::new(owner);
+        Self {
+            release: OwnershipReleaseNotifier {
+                owner: Arc::downgrade(&owner),
+                released: Arc::new((Mutex::new(()), Condvar::new())),
+            },
+            _owner: owner,
+        }
+    }
+
+    /// Observes the exact boundary at which every clone has released the owner.
+    #[must_use]
+    pub fn release_barrier(&self) -> OwnershipReleaseBarrier {
+        OwnershipReleaseBarrier {
+            owner: self.release.owner.clone(),
+            released: Arc::clone(&self.release.released),
+        }
+    }
+}
+
+/// A non-owning release condition for an [`OwnershipAnchor`] clone family.
+///
+/// The barrier never extends the protected owner's lifetime. Waiting completes only after the
+/// final anchor clone has dropped the owner, making it suitable for explicit shutdown boundaries.
+pub struct OwnershipReleaseBarrier {
+    owner: Weak<dyn Send + Sync>,
+    released: Arc<(Mutex<()>, Condvar)>,
+}
+
+impl OwnershipReleaseBarrier {
+    /// Returns whether every ownership-anchor clone has released the owner.
+    #[must_use]
+    pub fn is_released(&self) -> bool {
+        self.owner.strong_count() == 0
+    }
+
+    /// Blocks until every ownership-anchor clone has released the owner.
+    pub fn wait(self) {
+        let (lock, released) = &*self.released;
+        let mut guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while self.owner.strong_count() != 0 {
+            guard = released
+                .wait(guard)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
 
 /// Required durability boundary for one file operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -166,7 +250,22 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<()> {
     {
         windows::spawn_service_process(executable)
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+
+        let mut command = std::process::Command::new(executable);
+        command
+            .arg("__service")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // A fresh process group keeps the independently durable service outside the caller's
+        // process-tree containment so client teardown cannot substitute for service drain.
+        command.process_group(0);
+        command.spawn().map(drop)
+    }
+    #[cfg(not(any(windows, unix)))]
     {
         use std::os::unix::process::CommandExt as _;
 
@@ -857,6 +956,17 @@ mod tests {
 
     fn completion_waker() -> Waker {
         Waker::from(Arc::new(ThreadWake(std::thread::current())))
+    }
+
+    #[test]
+    fn ownership_release_barrier_waits_for_the_final_clone() {
+        let anchor = OwnershipAnchor::new(());
+        let clone = anchor.clone();
+        let barrier = anchor.release_barrier();
+        drop(anchor);
+        assert!(!barrier.is_released());
+        drop(clone);
+        barrier.wait();
     }
 
     #[test]

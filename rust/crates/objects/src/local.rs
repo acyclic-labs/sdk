@@ -11,6 +11,7 @@ use std::{
     },
 };
 
+use acyclic_native_runtime::OwnershipAnchor;
 use async_trait::async_trait;
 use fs2::FileExt;
 use prost::Message;
@@ -110,6 +111,7 @@ struct Persistence {
     fault_sync_once: AtomicBool,
     limits: LocalObjectsLimits,
     _ownership: File,
+    _ownership_anchor: Option<OwnershipAnchor>,
 }
 
 /// Crash-safe, exclusive-owner local implementation of the public Objects contract.
@@ -271,17 +273,39 @@ impl LocalObjects {
         root: impl AsRef<Path>,
         limits: LocalObjectsLimits,
     ) -> Result<Self, LocalObjectsError> {
+        Self::open_with_optional_ownership_anchor(root, limits, None).await
+    }
+
+    /// Opens a provider while retaining an external ownership gate through every provider clone.
+    #[doc(hidden)]
+    pub async fn open_with_ownership_anchor(
+        root: impl AsRef<Path>,
+        limits: LocalObjectsLimits,
+        ownership_anchor: OwnershipAnchor,
+    ) -> Result<Self, LocalObjectsError> {
+        Self::open_with_optional_ownership_anchor(root, limits, Some(ownership_anchor)).await
+    }
+
+    async fn open_with_optional_ownership_anchor(
+        root: impl AsRef<Path>,
+        limits: LocalObjectsLimits,
+        ownership_anchor: Option<OwnershipAnchor>,
+    ) -> Result<Self, LocalObjectsError> {
         let root = root.as_ref().to_path_buf();
         // Dropping a JoinHandle detaches its task. Keep the complete initialization sequence in
         // that independently owned task so caller cancellation cannot release owner.lock while a
         // blocking recovery or validation worker is still accessing the durable root.
-        run_owned_initialization(async move { Self::open_owned(root, limits).await }).await?
+        run_owned_initialization(
+            async move { Self::open_owned(root, limits, ownership_anchor).await },
+        )
+        .await?
     }
 
     #[allow(clippy::too_many_lines)]
     async fn open_owned(
         root: PathBuf,
         limits: LocalObjectsLimits,
+        ownership_anchor: Option<OwnershipAnchor>,
     ) -> Result<Self, LocalObjectsError> {
         if limits.maximum_object_bytes == 0
             || limits.maximum_bytes == 0
@@ -361,6 +385,7 @@ impl LocalObjects {
                 fault_sync_once: AtomicBool::new(false),
                 limits,
                 _ownership: ownership,
+                _ownership_anchor: ownership_anchor,
             }),
             mutation: Arc::new(Mutex::new(())),
             body_io: Arc::new(tokio::sync::RwLock::new(())),

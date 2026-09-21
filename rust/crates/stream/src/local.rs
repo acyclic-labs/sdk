@@ -1,11 +1,13 @@
 //! Bounded crash-recoverable local Stream provider.
 
 use std::fs::{File, OpenOptions};
+use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use acyclic_native_runtime::OwnershipAnchor;
 use async_trait::async_trait;
 use bytes::Bytes;
 use fs2::FileExt as _;
@@ -28,6 +30,20 @@ const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
 const HEADER_BYTES: usize = HEADER_MAGIC.len() + 8 * 8;
 const FRAME_CHECKSUM_BYTES: usize = 32;
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
+
+#[cfg(test)]
+static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Sender<()>)>> =
+    Mutex::new(None);
+
+async fn run_owned_initialization<T, F>(initialize: F) -> Result<T, LocalStreamError>
+where
+    T: Send + 'static,
+    F: Future<Output = T> + Send + 'static,
+{
+    tokio::spawn(initialize)
+        .await
+        .map_err(|_| LocalStreamError::Executor)
+}
 
 /// How the journal is made durable before a mutation becomes observable.
 ///
@@ -109,6 +125,7 @@ struct LocalInner {
     visibility: RwLock<()>,
     changed: watch::Sender<u64>,
     poisoned: AtomicBool,
+    _ownership_anchor: Option<OwnershipAnchor>,
 }
 
 impl LocalStream {
@@ -117,7 +134,23 @@ impl LocalStream {
         root: impl AsRef<Path>,
         limits: LocalStreamLimits,
     ) -> Result<Self, LocalStreamError> {
-        Self::open_with_clock(root, limits, Arc::new(SystemUnixMillisClock)).await
+        Self::open_with_clock_and_anchor(root, limits, Arc::new(SystemUnixMillisClock), None).await
+    }
+
+    /// Opens a provider while retaining an external ownership gate through every provider clone.
+    #[doc(hidden)]
+    pub async fn open_with_ownership_anchor(
+        root: impl AsRef<Path>,
+        limits: LocalStreamLimits,
+        ownership_anchor: OwnershipAnchor,
+    ) -> Result<Self, LocalStreamError> {
+        Self::open_with_clock_and_anchor(
+            root,
+            limits,
+            Arc::new(SystemUnixMillisClock),
+            Some(ownership_anchor),
+        )
+        .await
     }
 
     /// Opens a provider with an injected trusted clock.
@@ -126,10 +159,47 @@ impl LocalStream {
         limits: LocalStreamLimits,
         clock: Arc<dyn UnixMillisClock>,
     ) -> Result<Self, LocalStreamError> {
-        validate_limits(limits)?;
+        Self::open_with_clock_and_anchor(root, limits, clock, None).await
+    }
+
+    async fn open_with_clock_and_anchor(
+        root: impl AsRef<Path>,
+        limits: LocalStreamLimits,
+        clock: Arc<dyn UnixMillisClock>,
+        ownership_anchor: Option<OwnershipAnchor>,
+    ) -> Result<Self, LocalStreamError> {
         let root = root.as_ref().to_path_buf();
+        // Dropping the caller must not release an external root gate while journal recovery is
+        // still running on a blocking worker. The independently owned task retains every startup
+        // input until the worker and bounded replay have both completed.
+        run_owned_initialization(async move {
+            Self::open_owned(root, limits, clock, ownership_anchor).await
+        })
+        .await?
+    }
+
+    async fn open_owned(
+        root: PathBuf,
+        limits: LocalStreamLimits,
+        clock: Arc<dyn UnixMillisClock>,
+        ownership_anchor: Option<OwnershipAnchor>,
+    ) -> Result<Self, LocalStreamError> {
+        validate_limits(limits)?;
         let (commands, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
+        #[cfg(test)]
+        let submitted_root = root.clone();
         let open = tokio::task::spawn_blocking(move || Journal::open(&root, limits, &commands));
+        #[cfg(test)]
+        {
+            if let Ok(mut hook) = JOURNAL_OPEN_SUBMITTED.lock()
+                && hook
+                    .as_ref()
+                    .is_some_and(|(expected_root, _)| expected_root == &submitted_root)
+                && let Some((_, submitted)) = hook.take()
+            {
+                let _ = submitted.send(());
+            }
+        }
         let provider = MemoryStream::new_with_clock(limits.memory, clock);
         let mut replay_error = None;
         while let Some(command) = receiver.recv().await {
@@ -151,6 +221,7 @@ impl LocalStream {
                 visibility: RwLock::new(()),
                 changed,
                 poisoned: AtomicBool::new(false),
+                _ownership_anchor: ownership_anchor,
             }),
         })
     }
@@ -832,6 +903,68 @@ fn domain_commit(request: crate::wire::CommitRequest) -> Result<CommitRequest, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_real_open_retains_ownership_until_journal_open_stops()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()?;
+        let (blocking_started_tx, blocking_started_rx) = std::sync::mpsc::sync_channel(0);
+        let (release_blocker_tx, release_blocker_rx) = std::sync::mpsc::sync_channel(0);
+        let blocker = runtime.spawn_blocking(move || {
+            let _ = blocking_started_tx.send(());
+            let _ = release_blocker_rx.recv();
+        });
+        blocking_started_rx.recv()?;
+
+        runtime.block_on(async move {
+            let directory = tempfile::tempdir()?;
+            let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+            let ownership = Arc::clone(&lifecycle).lock_owned().await;
+            let anchor = OwnershipAnchor::new(ownership);
+            let root = directory.path().to_path_buf();
+            let (submitted_tx, submitted_rx) = tokio::sync::oneshot::channel();
+            {
+                let mut hook = JOURNAL_OPEN_SUBMITTED
+                    .lock()
+                    .map_err(|_| "journal-open test hook was poisoned")?;
+                *hook = Some((root.clone(), submitted_tx));
+            }
+            let opening = tokio::spawn(async move {
+                LocalStream::open_with_ownership_anchor(root, LocalStreamLimits::default(), anchor)
+                    .await
+            });
+
+            // The only blocking worker is occupied, so the real Journal::open submitted by the
+            // independently owned initialization cannot have completed when its caller is
+            // cancelled.
+            submitted_rx.await?;
+            opening.abort();
+            let cancelled = opening.await;
+            assert!(
+                cancelled
+                    .as_ref()
+                    .is_err_and(tokio::task::JoinError::is_cancelled)
+            );
+            let ownership_retained = Arc::clone(&lifecycle).try_lock_owned().is_err();
+
+            release_blocker_tx.send(())?;
+            blocker.await?;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                Arc::clone(&lifecycle).lock_owned(),
+            )
+            .await?;
+            assert!(
+                ownership_retained,
+                "caller cancellation must not release ownership from active Journal::open"
+            );
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })
+    }
     use crate::conformance;
     use std::sync::atomic::{AtomicU64, Ordering};
 
