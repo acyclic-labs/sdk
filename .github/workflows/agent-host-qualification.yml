@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - '.github/workflows/agent-host-qualification.yml'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - 'plugin/**'
-      - 'rust/crates/filesystem/**'
-      - 'rust/crates/native-runtime/**'
+      - ".github/workflows/agent-host-qualification.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "plugin/**"
+      - "rust/crates/filesystem/**"
+      - "rust/crates/native-runtime/**"
 
 permissions:
   contents: read
@@ -19,23 +19,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  versions:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    outputs:
-      codex: ${{ steps.resolve.outputs.codex }}
-      claude: ${{ steps.resolve.outputs.claude }}
-    steps:
-      - id: resolve
-        name: Resolve host versions once
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "codex=$(npm view @openai/codex version)" >> "$GITHUB_OUTPUT"
-          echo "claude=$(npm view @anthropic-ai/claude-code version)" >> "$GITHUB_OUTPUT"
-
   qualify:
-    needs: versions
     strategy:
       fail-fast: false
       matrix:
@@ -67,57 +51,27 @@ jobs:
         with:
           toolchain: 1.94.0
 
-      - name: Install resolved host binary
+      - name: Install locked host binary
         id: host
-        if: runner.os != 'Windows'
         shell: ${{ matrix.platform.shell }}
-        env:
-          HOST: ${{ matrix.host }}
-          CODEX_VERSION: ${{ needs.versions.outputs.codex }}
-          CLAUDE_VERSION: ${{ needs.versions.outputs.claude }}
         run: |
-          if [ "$HOST" = codex ]; then
-            package="@openai/codex@$CODEX_VERSION"
-            executable=codex
-          else
-            package="@anthropic-ai/claude-code@$CLAUDE_VERSION"
-            executable=claude
-          fi
-          prefix="$RUNNER_TEMP/agent-host"
-          npm install --prefix "$prefix" --ignore-scripts "$package"
-          binary="$(find "$prefix/node_modules" -type f \( -name "$executable" -o -name "$executable.exe" \) -perm -u+x | head -n 1)"
-          test -n "$binary"
-          echo "binary=$binary" >> "$GITHUB_OUTPUT"
-
-      - name: Install resolved host binary on Windows
-        id: host_windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          HOST: ${{ matrix.host }}
-          CODEX_VERSION: ${{ needs.versions.outputs.codex }}
-          CLAUDE_VERSION: ${{ needs.versions.outputs.claude }}
-        run: |
-          $package = if ($env:HOST -eq 'codex') {
-            "@openai/codex@$env:CODEX_VERSION"
-          } else {
-            "@anthropic-ai/claude-code@$env:CLAUDE_VERSION"
-          }
-          $name = if ($env:HOST -eq 'codex') { 'codex.exe' } else { 'claude.exe' }
-          $prefix = Join-Path $env:RUNNER_TEMP 'agent-host'
-          npm install --prefix $prefix --ignore-scripts $package
-          $binary = Get-ChildItem (Join-Path $prefix 'node_modules') -Recurse -File -Filter $name |
-            Select-Object -First 1 -ExpandProperty FullName
-          if (-not $binary) { throw "could not locate $name" }
-          "binary=$binary" >> $env:GITHUB_OUTPUT
+          npm ci --prefix plugin/tests/hosts --ignore-scripts
+          node plugin/scripts/resolve-qualification-host.mjs ${{ matrix.host }}
 
       - name: Run actual host scenario
         if: runner.os != 'Windows'
         shell: ${{ matrix.platform.shell }}
         env:
-          ACYCLIC_E2E_CODEX: ${{ matrix.host == 'codex' && (steps.host.outputs.binary || steps.host_windows.outputs.binary) || '' }}
-          ACYCLIC_E2E_CLAUDE: ${{ matrix.host == 'claude' && (steps.host.outputs.binary || steps.host_windows.outputs.binary) || '' }}
+          ACYCLIC_E2E_CODEX: ${{ matrix.host == 'codex' && steps.host.outputs.binary || '' }}
+          ACYCLIC_E2E_CLAUDE: ${{ matrix.host == 'claude' && steps.host.outputs.binary || '' }}
           ACYCLIC_E2E_RECEIPT_DIR: ${{ runner.temp }}/agent-host-receipts
+          ACYCLIC_E2E_HOST_PACKAGE: ${{ steps.host.outputs.package }}
+          ACYCLIC_E2E_HOST_PACKAGE_VERSION: ${{ steps.host.outputs.package_version }}
+          ACYCLIC_E2E_HOST_PACKAGE_INTEGRITY: ${{ steps.host.outputs.package_integrity }}
+          ACYCLIC_E2E_HOST_PLATFORM_PACKAGE: ${{ steps.host.outputs.platform_package }}
+          ACYCLIC_E2E_HOST_PLATFORM_VERSION: ${{ steps.host.outputs.platform_version }}
+          ACYCLIC_E2E_HOST_PLATFORM_INTEGRITY: ${{ steps.host.outputs.platform_integrity }}
+          ACYCLIC_E2E_HOST_LOCK_SHA256: ${{ steps.host.outputs.lock_sha256 }}
           CARGO_TARGET_DIR: ${{ runner.temp }}/agent-host-target
           HOST: ${{ matrix.host }}
         run: |
@@ -131,9 +85,16 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          ACYCLIC_E2E_CODEX: ${{ matrix.host == 'codex' && steps.host_windows.outputs.binary || '' }}
-          ACYCLIC_E2E_CLAUDE: ${{ matrix.host == 'claude' && steps.host_windows.outputs.binary || '' }}
+          ACYCLIC_E2E_CODEX: ${{ matrix.host == 'codex' && steps.host.outputs.binary || '' }}
+          ACYCLIC_E2E_CLAUDE: ${{ matrix.host == 'claude' && steps.host.outputs.binary || '' }}
           ACYCLIC_E2E_RECEIPT_DIR: ${{ runner.temp }}\agent-host-receipts
+          ACYCLIC_E2E_HOST_PACKAGE: ${{ steps.host.outputs.package }}
+          ACYCLIC_E2E_HOST_PACKAGE_VERSION: ${{ steps.host.outputs.package_version }}
+          ACYCLIC_E2E_HOST_PACKAGE_INTEGRITY: ${{ steps.host.outputs.package_integrity }}
+          ACYCLIC_E2E_HOST_PLATFORM_PACKAGE: ${{ steps.host.outputs.platform_package }}
+          ACYCLIC_E2E_HOST_PLATFORM_VERSION: ${{ steps.host.outputs.platform_version }}
+          ACYCLIC_E2E_HOST_PLATFORM_INTEGRITY: ${{ steps.host.outputs.platform_integrity }}
+          ACYCLIC_E2E_HOST_LOCK_SHA256: ${{ steps.host.outputs.lock_sha256 }}
           CARGO_TARGET_DIR: ${{ runner.temp }}\agent-host-target
           HOST: ${{ matrix.host }}
         run: |
