@@ -209,7 +209,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$source_sha"
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$source_sha" origin/main
-          test "$GITHUB_REF_NAME" = "acyclic-v$(node -p "require('./plugin/package.json').version")"
+          test "$version" = "$(node -p "require('./plugin/package.json').version")"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24.15.0

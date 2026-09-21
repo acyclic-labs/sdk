@@ -49,11 +49,11 @@ jobs:
             const version = process.argv[1];
             for (const item of JSON.parse(fs.readFileSync("release/npm-packages.json", "utf8"))) {
               const path = item.source === "typescript"
-                ? `typescript/packages/${item.directory}/package.json`
+                ? "typescript/packages/" + item.directory + "/package.json"
                 : "plugin/package.json";
               const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
               if (manifest.name !== item.name || manifest.version !== version || manifest.private !== false) {
-                throw new Error(`release identity mismatch for ${item.directory}`);
+                throw new Error("release identity mismatch for " + item.directory);
               }
             }
           ' "$version"
@@ -156,7 +156,7 @@ jobs:
           node -e '
             const [major, minor] = process.argv[1].split(".").map(Number);
             if (major < 11 || (major === 11 && minor < 5)) {
-              throw new Error(`npm ${process.argv[1]} does not support trusted publishing`);
+              throw new Error("npm " + process.argv[1] + " does not support trusted publishing");
             }
           ' "$npm_version"
       - name: Publish exact qualified packages to npm
