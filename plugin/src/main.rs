@@ -41,13 +41,14 @@ use std::io::{self, BufRead, Read, Write};
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
 #[cfg(target_os = "linux")]
 use notify::Watcher as _;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(any(test, not(target_os = "linux")))]
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 use acyclic_native_runtime::{RenameMode, durable_rename};
 use fs2::FileExt as _;
@@ -6014,7 +6015,7 @@ fn unix_control_socket_path(data: &Path) -> PathBuf {
     ))
 }
 
-#[cfg(all(unix, any(test, not(target_os = "linux"))))]
+#[cfg(unix)]
 #[allow(
     unsafe_code,
     reason = "geteuid has no preconditions and reads no memory"
@@ -6024,7 +6025,7 @@ fn unix_control_runtime_directory() -> PathBuf {
     PathBuf::from("/tmp").join(format!("acyclic-{uid}"))
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, any(test, not(target_os = "linux"))))]
 #[allow(
     unsafe_code,
     reason = "geteuid has no preconditions and reads no memory"
