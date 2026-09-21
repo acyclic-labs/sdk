@@ -8130,6 +8130,44 @@ async fn cancelled_local_open_keeps_the_canonical_lifecycle_gate()
 }
 
 #[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test]
+async fn cancelled_local_initialization_keeps_root_owned_until_startup_stops()
+-> Result<(), Box<dyn std::error::Error>> {
+    let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+    let ownership = Arc::clone(&lifecycle).lock_owned().await;
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let opening = tokio::spawn(run_local_initialization(
+        ownership,
+        move |ownership| async move {
+            let _ownership = ownership;
+            let _ = started_tx.send(());
+            let _ = release_rx.await;
+            drop(_ownership);
+        },
+    ));
+
+    started_rx.await?;
+    opening.abort();
+    let cancelled = opening.await;
+    assert!(
+        cancelled.as_ref().is_err_and(|error| error.is_cancelled()),
+        "opening caller must be cancelled: {cancelled:?}"
+    );
+    assert!(
+        Arc::clone(&lifecycle).try_lock_owned().is_err(),
+        "caller cancellation must not release ownership from an active startup worker"
+    );
+    let _ = release_tx.send(());
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        Arc::clone(&lifecycle).lock_owned(),
+    )
+    .await?;
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_facade_shares_bounded_object_acceleration_across_handles()
 -> Result<(), Box<dyn std::error::Error>> {

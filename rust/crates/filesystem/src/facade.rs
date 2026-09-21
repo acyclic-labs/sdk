@@ -397,6 +397,24 @@ fn prepare_local_root_open(
     lifecycle
 }
 
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+async fn run_local_initialization<T, F, I>(
+    ownership: tokio::sync::OwnedMutexGuard<()>,
+    initialize: I,
+) -> Result<T, FsError>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = T> + Send + 'static,
+    I: FnOnce(tokio::sync::OwnedMutexGuard<()>) -> F + Send + 'static,
+{
+    // Tokio detaches a spawned task when its JoinHandle is dropped. That is intentional here:
+    // cancelling the caller must not release root ownership while provider spawn_blocking workers
+    // can still recover or mutate a journal.
+    tokio::spawn(async move { initialize(ownership).await })
+        .await
+        .map_err(|_| FsError::LocalInitializationWorker)
+}
+
 /// Embedded filesystem composition handle.
 pub struct Fs<A, O> {
     inner: Arc<FsInner<A, O>>,
@@ -1553,7 +1571,11 @@ impl
         }
         let lifecycle = prepare_local_root_open(&mut registry, &root, &options);
         let ownership = Arc::clone(&lifecycle).lock_owned().await;
-        let fs = Self::open_local_unshared(options.clone(), Some(ownership)).await?;
+        let open_options = options.clone();
+        let fs = run_local_initialization(ownership, move |ownership| async move {
+            Self::open_local_unshared(open_options, Some(ownership)).await
+        })
+        .await??;
         registry.insert(
             root,
             LocalRootRegistration {
