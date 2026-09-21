@@ -55,6 +55,13 @@ jobs:
         with:
           toolchain: 1.94.0
           targets: ${{ matrix.rust_target }}
+      - name: Install Windows ARM64 compiler
+        if: matrix.rust_target == 'aarch64-pc-windows-msvc'
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: 20.1.8
+          directory: ${{ runner.temp }}/llvm
+          env: false
       - name: Install musl linker
         if: endsWith(matrix.rust_target, '-musl')
         shell: bash
@@ -62,7 +69,11 @@ jobs:
       - name: Build the unified executable
         env:
           CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
+          CC_aarch64_pc_windows_msvc: ${{ matrix.rust_target == 'aarch64-pc-windows-msvc' && format('{0}/llvm/bin/clang.exe', runner.temp) || '' }}
         run: node scripts/build-product.mjs
+      - name: Verify release architecture and runtime ABI
+        shell: bash
+        run: node scripts/verify-release-binary.mjs '${{ matrix.target }}' 'target/${{ matrix.rust_target }}/release/${{ matrix.executable }}'
       - name: Verify Cargo installation
         if: matrix.target == 'linux-x64-gnu'
         shell: bash
