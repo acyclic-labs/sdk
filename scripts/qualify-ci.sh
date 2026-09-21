@@ -79,6 +79,7 @@ case "$lane" in
   policy)
     bash scripts/test-ensure-rust-target.sh
     bash scripts/test-qualify-gate-rustup.sh
+    node scripts/check-workflow-runners.mjs
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     cargo test -p acyclic-labs-plugin --locked

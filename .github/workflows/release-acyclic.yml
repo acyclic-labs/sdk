@@ -16,23 +16,37 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: linux-x64
-            runner: ubuntu-24.04
+          - target: linux-x64-gnu
+            rust_target: x86_64-unknown-linux-gnu
+            runner: blacksmith-4vcpu-ubuntu-2404
             executable: acyclic
-          - target: linux-arm64
-            runner: ubuntu-24.04-arm
+          - target: linux-x64-musl
+            rust_target: x86_64-unknown-linux-musl
+            runner: blacksmith-4vcpu-ubuntu-2404
+            executable: acyclic
+          - target: linux-arm64-gnu
+            rust_target: aarch64-unknown-linux-gnu
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            executable: acyclic
+          - target: linux-arm64-musl
+            rust_target: aarch64-unknown-linux-musl
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
             executable: acyclic
           - target: darwin-x64
-            runner: macos-15-intel
+            rust_target: x86_64-apple-darwin
+            runner: blacksmith-12vcpu-macos-15
             executable: acyclic
           - target: darwin-arm64
-            runner: macos-15
+            rust_target: aarch64-apple-darwin
+            runner: blacksmith-12vcpu-macos-15
             executable: acyclic
           - target: win32-x64
-            runner: windows-2025
+            rust_target: x86_64-pc-windows-msvc
+            runner: blacksmith-4vcpu-windows-2025
             executable: acyclic.exe
           - target: win32-arm64
-            runner: windows-11-arm
+            rust_target: aarch64-pc-windows-msvc
+            runner: blacksmith-4vcpu-windows-2025
             executable: acyclic.exe
     runs-on: ${{ matrix.runner }}
     steps:
@@ -40,10 +54,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.94.0
+          targets: ${{ matrix.rust_target }}
+      - name: Install musl linker
+        if: endsWith(matrix.rust_target, '-musl')
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
       - name: Build the unified executable
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
         run: node scripts/build-product.mjs
       - name: Verify Cargo installation
-        if: matrix.target == 'linux-x64'
+        if: matrix.target == 'linux-x64-gnu'
         shell: bash
         run: |
           install_root=$(mktemp -d)
@@ -52,16 +73,16 @@ jobs:
           test "$("$install_root/bin/acyclic" --version)" = "$expected"
           "$install_root/bin/acyclic" --help
       - name: Build native qualification executable
-        if: matrix.target == 'linux-x64' || matrix.target == 'darwin-arm64' || matrix.target == 'win32-x64'
-        run: cargo build --locked --release -p acyclic-conformance --features local-runner --bin native-mount-qualify
+        if: matrix.target == 'linux-x64-gnu' || matrix.target == 'darwin-arm64' || matrix.target == 'win32-x64'
+        run: cargo build --locked --release --target '${{ matrix.rust_target }}' -p acyclic-conformance --features local-runner --bin native-mount-qualify
       - name: Stage normalized executable
         shell: bash
         run: |
           mkdir -p "release/${{ matrix.target }}"
-          cp "target/release/${{ matrix.executable }}" "release/${{ matrix.target }}/${{ matrix.executable }}"
+          cp "target/${{ matrix.rust_target }}/release/${{ matrix.executable }}" "release/${{ matrix.target }}/${{ matrix.executable }}"
           case "${{ matrix.target }}" in
-            linux-x64|darwin-arm64) cp target/release/native-mount-qualify "release/${{ matrix.target }}/native-mount-qualify" ;;
-            win32-x64) cp target/release/native-mount-qualify.exe "release/${{ matrix.target }}/native-mount-qualify.exe" ;;
+            linux-x64-gnu|darwin-arm64) cp "target/${{ matrix.rust_target }}/release/native-mount-qualify" "release/${{ matrix.target }}/native-mount-qualify" ;;
+            win32-x64) cp "target/${{ matrix.rust_target }}/release/native-mount-qualify.exe" "release/${{ matrix.target }}/native-mount-qualify.exe" ;;
           esac
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -79,9 +100,9 @@ jobs:
       matrix:
         include:
           - backend: linux-fuse
-            target: linux-x64
-            executable: linux-x64/acyclic
-            qualifier: linux-x64/native-mount-qualify
+            target: linux-x64-gnu
+            executable: linux-x64-gnu/acyclic
+            qualifier: linux-x64-gnu/native-mount-qualify
             runner: '["self-hosted","native-mount","linux-x64","fuse"]'
           - backend: macos-nfs
             target: darwin-arm64
@@ -139,10 +160,9 @@ jobs:
   assemble:
     name: Validate and assemble
     needs: [build, native-mount]
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
-      id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -179,12 +199,12 @@ jobs:
           merge-multiple: true
       - name: Verify native receipts against release artifacts
         run: |
-          qualifier=release/binaries/acyclic-linux-x64/linux-x64/native-mount-qualify
+          qualifier=release/binaries/acyclic-linux-x64-gnu/linux-x64-gnu/native-mount-qualify
           chmod +x "$qualifier"
           version=$(node -p "require('./plugin/package.json').version")
           "$qualifier" --verify-receipt release/native-mount/linux-fuse.json \
             --require-kind linux-fuse --release-version "$version" \
-            --release-executable release/binaries/acyclic-linux-x64/linux-x64/acyclic
+            --release-executable release/binaries/acyclic-linux-x64-gnu/linux-x64-gnu/acyclic
           "$qualifier" --verify-receipt release/native-mount/macos-nfs.json \
             --require-kind macos-nfs --release-version "$version" \
             --release-executable release/binaries/acyclic-darwin-arm64/darwin-arm64/acyclic
@@ -194,8 +214,10 @@ jobs:
       - name: Build and validate the universal plugin
         run: |
           node plugin/scripts/package.mjs \
-            --binary linux-x64=release/binaries/acyclic-linux-x64/linux-x64/acyclic \
-            --binary linux-arm64=release/binaries/acyclic-linux-arm64/linux-arm64/acyclic \
+            --binary linux-x64-gnu=release/binaries/acyclic-linux-x64-gnu/linux-x64-gnu/acyclic \
+            --binary linux-x64-musl=release/binaries/acyclic-linux-x64-musl/linux-x64-musl/acyclic \
+            --binary linux-arm64-gnu=release/binaries/acyclic-linux-arm64-gnu/linux-arm64-gnu/acyclic \
+            --binary linux-arm64-musl=release/binaries/acyclic-linux-arm64-musl/linux-arm64-musl/acyclic \
             --binary darwin-x64=release/binaries/acyclic-darwin-x64/darwin-x64/acyclic \
             --binary darwin-arm64=release/binaries/acyclic-darwin-arm64/darwin-arm64/acyclic \
             --binary win32-x64=release/binaries/acyclic-win32-x64/win32-x64/acyclic.exe \
@@ -203,18 +225,18 @@ jobs:
             --out release/package
           mkdir -p release/package/plugin/certification
           cp release/native-mount/linux-fuse.json \
-            release/package/plugin/certification/native-mount-linux-x86_64.json
+            release/package/plugin/certification/native-mount-linux-x64-gnu.json
           cp release/native-mount/macos-nfs.json \
-            release/package/plugin/certification/native-mount-macos-aarch64.json
+            release/package/plugin/certification/native-mount-darwin-arm64.json
           cp release/native-mount/windows-projfs.json \
-            release/package/plugin/certification/native-mount-windows-x86_64.json
+            release/package/plugin/certification/native-mount-win32-x64.json
           node plugin/scripts/validate-package.mjs release/package --require-universal
       - name: Smoke the launcher and MCP bridge
         working-directory: release/package/plugin
         run: |
-          node bin/verify.js linux-x64
-          bin/linux-x64/acyclic --help
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release-smoke","version":"1"}}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | timeout 20 bin/linux-x64/acyclic __mcp-commandless > /tmp/acyclic-mcp.out
+          node bin/verify.js linux-x64-gnu
+          bin/linux-x64-gnu/acyclic --help
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release-smoke","version":"1"}}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | timeout 20 bin/linux-x64-gnu/acyclic __mcp-commandless > /tmp/acyclic-mcp.out
           grep -q '"name":"acyclic"' /tmp/acyclic-mcp.out
           version=$(node -p "require('./package.json').version")
           grep -q "\"version\":\"$version\"" /tmp/acyclic-mcp.out
@@ -225,6 +247,7 @@ jobs:
           set -eu
           package=$(cd release/package/plugin && npm pack --silent --pack-destination "$RUNNER_TEMP")
           package="$RUNNER_TEMP/$package"
+          cp "$package" release/acyclic-plugin-npm.tgz
           echo "ACYCLIC_NPM_PACKAGE=$package" >> "$GITHUB_ENV"
           prefix=$(mktemp -d)
           state=$(mktemp -d)
@@ -233,7 +256,7 @@ jobs:
           test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/plugin.json"
           test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/.agents/plugins/marketplace.json"
           test ! -e "$prefix/lib/node_modules/@acyclic-labs/plugin/src"
-          test -f "$state/acyclic/state-v2/certification/native-mount-linux-x86_64.json"
+          test -f "$state/acyclic/state-v2/certification/native-mount-linux-x64-gnu.json"
       - name: Run packaged Codex lifecycle end to end
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -267,7 +290,7 @@ jobs:
         run: |
           cp release/package/plugin/bin/platform-binaries.json release/platform-binaries.json
           cp plugin/bin/verify.js release/verify.js
-          for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
+          for target in linux-x64-gnu linux-x64-musl linux-arm64-gnu linux-arm64-musl darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
             name=acyclic
             suffix=
             case "$target" in win32-*) name=acyclic.exe; suffix=.exe ;; esac
@@ -282,10 +305,13 @@ jobs:
           name: acyclic-universal
           path: |
             release/acyclic-plugin.tar.gz
+            release/acyclic-plugin-npm.tgz
             release/platform-binaries.json
             release/verify.js
-            release/acyclic-linux-x64
-            release/acyclic-linux-arm64
+            release/acyclic-linux-x64-gnu
+            release/acyclic-linux-x64-musl
+            release/acyclic-linux-arm64-gnu
+            release/acyclic-linux-arm64-musl
             release/acyclic-darwin-x64
             release/acyclic-darwin-arm64
             release/acyclic-win32-x64.exe
@@ -305,10 +331,13 @@ jobs:
         with:
           files: |
             release/acyclic-plugin.tar.gz
+            release/acyclic-plugin-npm.tgz
             release/platform-binaries.json
             release/verify.js
-            release/acyclic-linux-x64
-            release/acyclic-linux-arm64
+            release/acyclic-linux-x64-gnu
+            release/acyclic-linux-x64-musl
+            release/acyclic-linux-arm64-gnu
+            release/acyclic-linux-arm64-musl
             release/acyclic-darwin-x64
             release/acyclic-darwin-arm64
             release/acyclic-win32-x64.exe
@@ -316,12 +345,30 @@ jobs:
             release/native-mount/linux-fuse.json
             release/native-mount/macos-nfs.json
             release/native-mount/windows-projfs.json
+  publish-npm:
+    name: Publish the qualified npm plugin
+    needs: assemble
+    if: startsWith(github.ref, 'refs/tags/acyclic-v')
+    environment: npmjs
+    # npm trusted publishing currently requires a GitHub-hosted runner.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: acyclic-universal
+          path: release
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.15.0
+          registry-url: https://registry.npmjs.org
       - name: Publish the provenance-attested universal npm plugin
-        if: startsWith(github.ref, 'refs/tags/acyclic-v')
         shell: bash
         run: |
           set -euo pipefail
-          version=$(node -p "require('./release/package/plugin/package.json').version")
+          version=$(tar -xOf release/acyclic-plugin-npm.tgz package/package.json | jq -r .version)
           test "$GITHUB_REF_NAME" = "acyclic-v$version"
           npm install --global npm@12.0.2
-          npm publish ./release/package/plugin --access public --provenance
+          npm publish release/acyclic-plugin-npm.tgz --access public --provenance
