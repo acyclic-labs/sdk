@@ -5865,21 +5865,46 @@ where
             return Ok(());
         }
     }
-    let response = if request.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
-        control_response(Err(
-            "Acyclic control request exceeds the 4 MiB bound".to_owned()
-        ))
-    } else if request.last() != Some(&b'\n') {
-        control_response(Err(
-            "Acyclic control request must end with a newline".to_owned()
-        ))
-    } else {
-        request.pop();
-        match serde_json::from_slice::<ControlRequest>(&request) {
-            Ok(request) => control_response(dispatch_control_request(&control, request).await),
-            Err(error) => {
-                control_response(Err(format!("invalid Acyclic control request: {error}")))
+    let dispatch = async {
+        if request.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
+            control_response(Err(
+                "Acyclic control request exceeds the 4 MiB bound".to_owned()
+            ))
+        } else if request.last() != Some(&b'\n') {
+            control_response(Err(
+                "Acyclic control request must end with a newline".to_owned()
+            ))
+        } else {
+            request.pop();
+            match serde_json::from_slice::<ControlRequest>(&request) {
+                Ok(request) => control_response(dispatch_control_request(&control, request).await),
+                Err(error) => {
+                    control_response(Err(format!("invalid Acyclic control request: {error}")))
+                }
             }
+        }
+    };
+    tokio::pin!(dispatch);
+    let mut peer_byte = [0_u8; 1];
+    let response = tokio::select! {
+        response = &mut dispatch => response,
+        peer = stream.read(&mut peer_byte) => {
+            match peer {
+                Ok(0) => return Ok(()),
+                Ok(_) => return Err("Acyclic control request included trailing bytes".to_owned()),
+                Err(error) if matches!(
+                    error.kind(),
+                    io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::UnexpectedEof
+                ) => return Ok(()),
+                Err(error) => return Err(display(error)),
+            }
+        }
+        changed = shutdown.changed() => {
+            let _ = changed;
+            return Ok(());
         }
     };
     let encoded = encode_control_response(&response)?;
@@ -10208,6 +10233,24 @@ mod tests {
             .expect("plugin endpoint shutdown thread");
     }
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn client_disconnect_cancels_inflight_control_dispatch() {
+        std::thread::Builder::new()
+            .name("plugin-endpoint-disconnect".to_owned())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime")
+                    .block_on(endpoint_disconnect_case());
+            })
+            .expect("test thread")
+            .join()
+            .expect("plugin endpoint disconnect thread");
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_control_endpoint_keeps_the_next_pipe_while_reaping_connections() {
@@ -10641,6 +10684,62 @@ mod tests {
             .await
             .expect("reopen after in-flight request shutdown");
         reopened.shutdown().await.expect("reopened shutdown");
+    }
+
+    struct StalledDispatcher {
+        started: Arc<tokio::sync::Notify>,
+    }
+
+    impl ControlRequestDispatcher for StalledDispatcher {
+        async fn dispatch_request(&mut self, _request: ControlRequest) -> Result<Value, String> {
+            self.started.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    async fn endpoint_disconnect_case() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        let started = Arc::new(tokio::sync::Notify::new());
+        let control = Arc::new(AsyncMutex::new(StalledDispatcher {
+            started: Arc::clone(&started),
+        }));
+        let endpoint = start_control_endpoint(Arc::clone(&control), &data)
+            .await
+            .expect("control endpoint");
+        #[cfg(unix)]
+        let mut client = tokio::net::UnixStream::connect(&endpoint.socket_path)
+            .await
+            .expect("connect control endpoint");
+        #[cfg(windows)]
+        let mut client = connect_test_pipe(&endpoint.pipe_path).await;
+        endpoint.accepted.notified().await;
+        let request = serde_json::to_vec(&ControlRequest {
+            version: 1,
+            command: ControlCommand::Ping,
+            cwd: temporary.path().to_path_buf(),
+            argv: Vec::new(),
+            name: String::new(),
+            arguments: Value::Null,
+        })
+        .expect("encode request");
+        client.write_all(&request).await.expect("write request");
+        client.write_all(b"\n").await.expect("finish request");
+        started.notified().await;
+        drop(client);
+
+        let guard = tokio::time::timeout(std::time::Duration::from_secs(1), control.lock())
+            .await
+            .expect("disconnected client retained the service lock");
+        drop(guard);
+        endpoint.shutdown().await.expect("endpoint shutdown");
+        assert!(
+            Arc::try_unwrap(control).is_ok(),
+            "endpoint retained disconnected dispatch state"
+        );
     }
 
     #[cfg(windows)]

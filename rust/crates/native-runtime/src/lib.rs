@@ -180,10 +180,10 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<()> {
 
 /// Starts a child in an owned operating-system process tree.
 ///
-/// Descendants inherit the tree. Dropping the returned guard, or explicitly
-/// terminating it, kills the entire Windows Job or Unix process group. This is
-/// intended for bounded external-tool execution where grandchildren must not
-/// survive timeout or unwind.
+/// Descendants inherit the Windows Job or Unix process group. Dropping the
+/// returned guard, or explicitly terminating it, kills that containment. Unix
+/// descendants can deliberately escape by creating another group or session,
+/// so independently durable services require their own lifecycle ownership.
 pub fn spawn_process_tree(command: &mut std::process::Command) -> io::Result<ProcessTree> {
     ProcessTree::spawn(command)
 }

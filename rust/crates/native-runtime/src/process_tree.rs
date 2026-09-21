@@ -3,7 +3,10 @@
 use std::io;
 use std::process::{Child, Command, ExitStatus, Output};
 
-/// One child and every process it creates.
+/// One child and descendants that remain in its operating-system containment.
+///
+/// Windows uses a Job object. Unix uses a process group, which cannot contain
+/// a descendant that deliberately creates a new process group or session.
 pub struct ProcessTree {
     child: Option<Child>,
     guard: platform::Guard,

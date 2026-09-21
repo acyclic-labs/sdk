@@ -79,8 +79,12 @@ impl ServiceGuard {
         let identity = fs::read_to_string(&marker).expect("timed-out host started hook service");
         assert!(!identity.is_empty(), "timed-out hook service identity");
         self.identity = Some(identity);
-        if let Err(error) = self.force_cleanup() {
-            panic!("timed-out host process tree was not cleaned: {error}");
+        if let Err(error) = self.cleanup() {
+            let fallback = self.force_cleanup();
+            panic!(
+                "timed-out host service was not drained after process-tree cleanup: {error}; \
+                 forced cleanup: {fallback:?}"
+            );
         }
     }
 
