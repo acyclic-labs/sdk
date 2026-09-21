@@ -4722,6 +4722,7 @@ impl ControlPlane {
         // `shutdown().await` is the ownership boundary for the durable providers. Drop every
         // clone before the future becomes ready so an immediate reopen cannot race a completed
         // shutdown future that still owns the exclusive journal lock.
+        drop(operations);
         drop(self);
         result
     }
