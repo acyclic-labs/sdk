@@ -6120,7 +6120,12 @@ impl ServiceControl {
             }
         }
         self.shared_roots.prune().await;
-        first_error.map_or(Ok(()), Err)
+        let result = first_error.map_or(Ok(()), Err);
+        // Publish service shutdown only after its final LocalFs handle has released the durable
+        // Stream and Objects roots. A completed async future may otherwise retain `self` until the
+        // executor drops the future, allowing an immediate replacement service to race the lock.
+        drop(self);
+        result
     }
 
     async fn dispatch_native_hook(
