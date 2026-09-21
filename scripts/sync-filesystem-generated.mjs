@@ -19,10 +19,6 @@ copyFileSync(nativeWasmVector, packagedNativeWasmVector);
 
 const files = [
   ["acyclic/filesystem/v2/acyclic.filesystem.v2.rs", "acyclic.filesystem.v2.tonic.rs"],
-  [
-    "acyclic/filesystem/daemon/v2/acyclic.filesystem.daemon.v2.rs",
-    "acyclic.filesystem.daemon.v2.tonic.rs",
-  ],
 ];
 
 for (const [file, tonic] of files) {
@@ -76,8 +72,6 @@ for (const generatedFile of [
 for (const file of [
   "filesystem/v2/filesystem_pb.js",
   "filesystem/v2/filesystem_pb.d.ts",
-  "filesystem/daemon/v2/daemon_pb.js",
-  "filesystem/daemon/v2/daemon_pb.d.ts",
   "harness/v1/harness_pb.js",
   "harness/v1/harness_pb.d.ts",
 ]) {
@@ -127,6 +121,9 @@ compatibility.families.harness.conformanceDigest = digest("conformance/vectors/c
 compatibility.families.filesystem.schemaDigest = digest("proto/filesystem/v2/filesystem.proto");
 compatibility.families.filesystem.descriptorDigest = digest(
   "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin",
+);
+compatibility.families.stream.schemaDigest = digest(
+  "rust/crates/stream/proto/stream/v2/stream.proto",
 );
 compatibility.families.objects.schemaDigest = digest("proto/objects/v1/objects.proto");
 compatibility.families.objects.descriptorDigest = digest(

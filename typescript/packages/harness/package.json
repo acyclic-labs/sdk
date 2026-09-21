@@ -1,13 +1,13 @@
 {
   "name": "@acyclic-labs/harness",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0",
   "description": "Generic durable substrate and fully composable agent runtime",
-  "repository": "https://github.com/acyclic-labs/sdk",
+  "repository": { "type": "git", "url": "git+https://github.com/acyclic-labs/sdk.git", "directory": "typescript/packages/harness" },
   "license": "Apache-2.0",
   "private": false,
   "type": "module",
   "sideEffects": false,
-  "files": ["dist", "generated"],
+  "files": ["dist", "generated", "CHANGELOG.md"],
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
     "./proto": { "types": "./dist/proto.d.ts", "default": "./dist/proto.js" }

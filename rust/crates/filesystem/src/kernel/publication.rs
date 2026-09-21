@@ -7,7 +7,7 @@ use super::{
 use crate::cancellation::CancellationToken;
 use crate::foundation::{AuthorityId, Digest, Epoch, Head, OperationId, ProposedCommit, VolumeId};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
-use crate::storage::{AppendOutcome, AuthorityStoreError, ObjectId, ObjectKind};
+use crate::storage::{AppendOutcome, AuthorityStoreError, ObjectId, ObjectKind, PublicationPermit};
 use bytes::Bytes;
 use thiserror::Error;
 
@@ -30,6 +30,31 @@ pub struct PublishGenerationRequest {
     pub operation_id: OperationId,
     /// Immutable generation-root object to authenticate and publish.
     pub generation_root: ObjectId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PublicationIntent {
+    pub(crate) operation_context: Option<Digest>,
+    pub(crate) permit: PublicationPermit,
+}
+
+impl PublicationIntent {
+    pub(crate) const fn unrestricted(operation_context: Option<Digest>) -> Self {
+        Self {
+            operation_context,
+            permit: PublicationPermit::Unrestricted,
+        }
+    }
+
+    pub(crate) const fn guarded(
+        operation_context: Option<Digest>,
+        permit: PublicationPermit,
+    ) -> Self {
+        Self {
+            operation_context,
+            permit,
+        }
+    }
 }
 
 /// Canonical semantic fact stored in one generation-publication authority record.
@@ -199,7 +224,7 @@ pub async fn publish_generation_async<O: crate::AsyncObjectStore, A: crate::Asyn
         objects,
         authority,
         request,
-        None,
+        PublicationIntent::unrestricted(None),
         closure_limits,
         budget,
         cancellation,
@@ -223,7 +248,31 @@ pub(crate) async fn publish_generation_async_with_context<
         objects,
         authority,
         request,
-        Some(operation_context),
+        PublicationIntent::unrestricted(Some(operation_context)),
+        closure_limits,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+pub(crate) async fn publish_generation_async_with_permit<
+    O: crate::AsyncObjectStore,
+    A: crate::AsyncAuthorityStore,
+>(
+    objects: &O,
+    authority: &A,
+    request: PublishGenerationRequest,
+    intent: PublicationIntent,
+    closure_limits: ClosureLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<PublicationReceipt, PublicationFailure> {
+    publish_generation_async_inner(
+        objects,
+        authority,
+        request,
+        intent,
         closure_limits,
         budget,
         cancellation,
@@ -238,7 +287,7 @@ async fn publish_generation_async_inner<
     objects: &O,
     authority: &A,
     request: PublishGenerationRequest,
-    operation_context: Option<Digest>,
+    intent: PublicationIntent,
     closure_limits: ClosureLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -253,17 +302,21 @@ async fn publish_generation_async_inner<
     )
     .await
     .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+    let operation_context = permit_context(intent.operation_context, intent.permit);
     let prepared = prepare_publication(proof, request, operation_context, budget)?;
     let mut work = prepared.work;
     let remaining = work
         .remaining(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let receipt = crate::AsyncAuthorityStore::compare_and_append(
+    let receipt = crate::AsyncAuthorityStore::compare_and_append_guarded(
         authority,
-        request.authority_id,
-        request.epoch,
-        request.expected,
-        prepared.commit,
+        crate::GuardedAppend {
+            authority_id: request.authority_id,
+            epoch: request.epoch,
+            expected: request.expected,
+            commit: prepared.commit,
+            permit: intent.permit,
+        },
         remaining,
         cancellation,
     )
@@ -279,6 +332,58 @@ async fn publish_generation_async_inner<
         outcome: receipt.value,
         work,
     })
+}
+
+fn permit_context(context: Option<Digest>, permit: PublicationPermit) -> Option<Digest> {
+    match permit {
+        PublicationPermit::Unrestricted => context,
+        PublicationPermit::Lease {
+            authority_id,
+            workspace_id,
+            lease_id,
+            expires_at_millis,
+        } => {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"acyclic-fs-publication-lease-v1\0");
+            match context {
+                Some(context) => {
+                    hasher.update(&[1]);
+                    hasher.update(context.as_bytes());
+                }
+                None => {
+                    hasher.update(&[0]);
+                }
+            };
+            hasher.update(&authority_id);
+            hasher.update(&workspace_id);
+            hasher.update(&lease_id);
+            hasher.update(&expires_at_millis.to_be_bytes());
+            Some(Digest::from_bytes(*hasher.finalize().as_bytes()))
+        }
+        PublicationPermit::Reservation {
+            operation_id,
+            gate_tail,
+            expected,
+        } => {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"acyclic-fs-publication-reservation-v1\0");
+            match context {
+                Some(context) => {
+                    hasher.update(&[1]);
+                    hasher.update(context.as_bytes());
+                }
+                None => {
+                    hasher.update(&[0]);
+                }
+            };
+            hasher.update(&operation_id);
+            hasher.update(&gate_tail.to_be_bytes());
+            hasher.update(&expected.epoch.get().to_be_bytes());
+            hasher.update(&expected.sequence.get().to_be_bytes());
+            hasher.update(expected.digest.as_bytes());
+            Some(Digest::from_bytes(*hasher.finalize().as_bytes()))
+        }
+    }
 }
 
 fn prepare_publication(

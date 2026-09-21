@@ -26,6 +26,9 @@ async function bindings(): Promise<WasmBindings> {
     );
     await typed.default({ module_or_path: compiled });
     return typed;
+  }).catch((error: unknown) => {
+    bindingsPromise = undefined;
+    throw error;
   });
   return bindingsPromise;
 }

@@ -17,7 +17,8 @@ use crate::{
     CommittedAppend, CommittedDelete, CommittedEnvelope, CommittedFork, CommittedMutation,
     CommittedTrim, DeleteReceipt, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
     IdempotencyOutcome, MAX_COMMAND_BYTES, MAX_ITEMS, MAX_RECORD_BYTES, ReadRequest, Record,
-    RecordStream, StreamError, StreamPath, StreamProvider, TrimReceipt,
+    RecordStream, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, TrimReceipt,
+    UnixMillisClock,
 };
 
 /// Explicit fail-closed process-memory ceilings.
@@ -56,6 +57,7 @@ impl Default for MemoryLimits {
 pub struct MemoryStream {
     state: Arc<RwLock<State>>,
     limits: MemoryLimits,
+    clock: Arc<dyn UnixMillisClock>,
 }
 
 impl Default for MemoryStream {
@@ -68,10 +70,76 @@ impl MemoryStream {
     /// Constructs one bounded independent provider.
     #[must_use]
     pub fn new(limits: MemoryLimits) -> Self {
+        Self::new_with_clock(limits, Arc::new(SystemUnixMillisClock))
+    }
+
+    /// Constructs a provider with an injected trusted clock.
+    #[must_use]
+    pub fn new_with_clock(limits: MemoryLimits, clock: Arc<dyn UnixMillisClock>) -> Self {
         Self {
             state: Arc::new(RwLock::new(State::default())),
             limits,
+            clock,
         }
+    }
+
+    async fn commit_inner(
+        &self,
+        mut request: CommitRequest,
+        deadline_unix_millis: Option<u64>,
+    ) -> Result<CommitOutcome, StreamError> {
+        normalize_commit(&mut request)?;
+        validate_commit_shape(&request)?;
+        let digest = commit_digest(&request);
+        let mut state = self.state.write().await;
+        if let Some(result) = replay_commit(&state, &request.idempotency_key, digest)? {
+            return Ok(result);
+        }
+        if deadline_unix_millis.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
+            return Err(StreamError::DeadlineElapsed);
+        }
+        admit_replay(&state, Some(&request.idempotency_key), self.limits)?;
+        let conflicts = commit_conflicts(&state, &request.conditions);
+        if !conflicts.is_empty() {
+            let result = CommitOutcome::Conflict(conflicts);
+            retain_replay(
+                &mut state,
+                Some(request.idempotency_key),
+                digest,
+                IdempotencyOutcome::Commit(result.clone()),
+            );
+            return Ok(result);
+        }
+        validate_commit_authority(&state, &request)?;
+        reserve_coordinated(&state, &request, self.limits)?;
+        let commit_id = next_commit_id(&mut state, digest)?;
+        let before = request
+            .mutations
+            .iter()
+            .filter_map(|mutation| match mutation {
+                CommitMutation::Fork { source, .. } => state
+                    .paths
+                    .get(source)
+                    .map(|stream| (source.clone(), (stream.history.clone(), stream.tail))),
+                CommitMutation::Append { .. }
+                | CommitMutation::Trim { .. }
+                | CommitMutation::Delete { .. } => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mutations = apply_coordinated(&mut state, request.mutations, &before, commit_id)?;
+        let envelope = CommittedEnvelope {
+            commit_id,
+            mutations,
+        };
+        state.commits.insert(commit_id, envelope.clone());
+        let result = CommitOutcome::Committed(envelope);
+        retain_replay(
+            &mut state,
+            Some(request.idempotency_key),
+            digest,
+            IdempotencyOutcome::Commit(result.clone()),
+        );
+        Ok(result)
     }
 }
 
@@ -467,56 +535,16 @@ impl StreamProvider for MemoryStream {
         Ok(stream::iter(children.into_iter().map(Ok)).boxed())
     }
 
-    async fn commit(&self, mut request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        normalize_commit(&mut request)?;
-        validate_commit_shape(&request)?;
-        let digest = commit_digest(&request);
-        let mut state = self.state.write().await;
-        if let Some(result) = replay_commit(&state, &request.idempotency_key, digest)? {
-            return Ok(result);
-        }
-        admit_replay(&state, Some(&request.idempotency_key), self.limits)?;
-        let conflicts = commit_conflicts(&state, &request.conditions);
-        if !conflicts.is_empty() {
-            let result = CommitOutcome::Conflict(conflicts);
-            retain_replay(
-                &mut state,
-                Some(request.idempotency_key),
-                digest,
-                IdempotencyOutcome::Commit(result.clone()),
-            );
-            return Ok(result);
-        }
-        validate_commit_authority(&state, &request)?;
-        reserve_coordinated(&state, &request, self.limits)?;
-        let commit_id = next_commit_id(&mut state, digest)?;
-        let before = request
-            .mutations
-            .iter()
-            .filter_map(|mutation| match mutation {
-                CommitMutation::Fork { source, .. } => state
-                    .paths
-                    .get(source)
-                    .map(|stream| (source.clone(), (stream.history.clone(), stream.tail))),
-                CommitMutation::Append { .. }
-                | CommitMutation::Trim { .. }
-                | CommitMutation::Delete { .. } => None,
-            })
-            .collect::<BTreeMap<_, _>>();
-        let mutations = apply_coordinated(&mut state, request.mutations, &before, commit_id)?;
-        let envelope = CommittedEnvelope {
-            commit_id,
-            mutations,
-        };
-        state.commits.insert(commit_id, envelope.clone());
-        let result = CommitOutcome::Committed(envelope);
-        retain_replay(
-            &mut state,
-            Some(request.idempotency_key),
-            digest,
-            IdempotencyOutcome::Commit(result.clone()),
-        );
-        Ok(result)
+    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
+        self.commit_inner(request, None).await
+    }
+
+    async fn commit_before(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: u64,
+    ) -> Result<CommitOutcome, StreamError> {
+        self.commit_inner(request, Some(deadline_unix_millis)).await
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
@@ -1473,6 +1501,16 @@ fn apply_coordinated(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[derive(Default)]
+    struct TestClock(AtomicU64);
+
+    impl UnixMillisClock for TestClock {
+        fn now_unix_millis(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
 
     fn path(value: &str) -> Result<StreamPath, StreamError> {
         StreamPath::new(value)
@@ -1480,6 +1518,55 @@ mod tests {
 
     fn key(value: &'static [u8]) -> Result<crate::IdempotencyKey, StreamError> {
         crate::IdempotencyKey::new(Bytes::from_static(value))
+    }
+
+    #[tokio::test]
+    async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(), StreamError> {
+        let clock = Arc::new(TestClock::default());
+        clock.0.store(100, Ordering::SeqCst);
+        let provider = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
+        let request = CommitRequest {
+            conditions: vec![CommitCondition::Absent {
+                path: path("deadline/accepted")?,
+            }],
+            mutations: vec![CommitMutation::Append {
+                path: path("deadline/accepted")?,
+                records: vec![Bytes::from_static(b"accepted")],
+            }],
+            idempotency_key: key(b"deadline-accepted")?,
+        };
+        assert_eq!(
+            provider.commit_before(request.clone(), 100).await,
+            Err(StreamError::DeadlineElapsed)
+        );
+        assert_eq!(
+            provider.commit_before(request.clone(), 99).await,
+            Err(StreamError::DeadlineElapsed)
+        );
+        let committed = provider.commit_before(request.clone(), 101).await?;
+        assert!(matches!(committed, CommitOutcome::Committed(_)));
+        clock.0.store(1_000, Ordering::SeqCst);
+        assert_eq!(provider.commit_before(request, 101).await?, committed);
+
+        let retryable = CommitRequest {
+            conditions: vec![CommitCondition::Absent {
+                path: path("deadline/retry")?,
+            }],
+            mutations: vec![CommitMutation::Append {
+                path: path("deadline/retry")?,
+                records: vec![Bytes::from_static(b"retry")],
+            }],
+            idempotency_key: key(b"deadline-retry")?,
+        };
+        assert_eq!(
+            provider.commit_before(retryable.clone(), 1_000).await,
+            Err(StreamError::DeadlineElapsed)
+        );
+        assert!(matches!(
+            provider.commit_before(retryable, 1_001).await?,
+            CommitOutcome::Committed(_)
+        ));
+        Ok(())
     }
 
     #[tokio::test]

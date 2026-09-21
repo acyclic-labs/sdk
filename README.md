@@ -9,13 +9,144 @@ wrote. History survives across sessions and is linked to the conversation turn
 that caused it. Forks let several agents try a task in parallel; you keep the
 one that wins.
 
-## Install
+## What works in this release candidate
+
+- One `acyclic-harness` crate owning operation identities, authority, durable
+  reducer semantics, typed interactions, effects, atomic fork manifests,
+  resumable state machines, structured scheduling, and replaceable execution.
+- Direct Stream-backed Agent, Conversation, Session, Turn, and Task histories,
+  with deterministic native/WASM replay and snapshot-assisted restoration.
+- Provider-neutral model, context-stage, tool definition/executor/projection,
+  and custom-executor APIs; Stream-backed memory/retrieval/skills revisions,
+  digest-bound compaction, and a complete coding host-adapter bundle remain
+  ordinary code-defined compositions.
+- A framework-neutral `@acyclic-labs/harness` WASM/client package with reconnect,
+  generation-fenced cursors, an explicit-namespace atomic bounded IndexedDB cursor/outbox store,
+  bounded hydration, and
+  bidirectional pagination; thin React and Svelte bindings remain separate.
+- One transport-neutral Rust server port with separate HTTP/SSE/WebSocket and
+  gRPC adapter crates; embedded, JSONL/stdio, browser/Bun WebSocket, HTTP/SSE,
+  and gRPC clients negotiate the same descriptor and capabilities first. The
+  same owner- and scope-bound operation status and exact-retry cancellation
+  contract is available on every transport, including atomic recursive cancel.
+- Explicit Filesystem and Machines integration crates. Filesystem workspaces
+  support exact-generation reads and atomic idempotent mutation batches;
+  Machines references remain opaque and provider-bound.
+- Native dependency-free OpenAI-compatible streaming in `@acyclic-labs/harness`,
+  plus separately versioned AI SDK, Pi, and OpenCode bridge packages.
+- In-memory Filesystem, Stream, and Objects providers, plus a deterministic
+  process-local Machines simulator.
+- A single canonical Filesystem engine over the public Stream and Objects
+  provider traits, with memory and durable-local compositions, sparse
+  content-addressed generations, source capture, safe rebase and join,
+  S3 workspace views, native watchers and mounts, core-owned journaled
+  materialization, browser WASM persistence, a TypeScript facade, and an N-API
+  embedded engine.
+- A hierarchical Stream v2 Rust contract, bounded structural-sharing memory
+  provider, checksummed crash-recoverable local provider, authenticated gRPC
+  client/server adapter, exact retry semantics, immutable-prefix forks, gapless
+  follow, and atomic optimistic commits. The memory and local providers execute
+  the same semantic state machine; the local feature adds only bounded durable
+  publication and recovery.
+- An Objects v1 Rust gRPC client plus bounded memory and durable-local providers
+  with permanent versions, BLAKE3 validators, delete markers, conditions, exact
+  idempotency, stable listing views, multipart publication, and whole-bucket
+  snapshots/forks. Local bodies use authenticated digest-sharded chunks;
+  range reads touch only intersecting chunks and shared bodies are never copied.
+- An Inference v1 Rust client with immutable item-addressed Context revisions,
+  independent forks, exact edit/compact/transfer, recoverable Runs, inclusive
+  event replay, cancellation, four work meters, and admitted warm commitments.
+- A generated-contract TypeScript Inference client covering the same Context,
+  warm-retention, recoverable Run, watch, and cancellation lifecycle through an
+  authenticated protobuf-JSON transport.
+- A shape-free Machines v1 contract with immutable image qualification, exact
+  idempotency, checkpoints, fork sets, lifecycle recovery, stable endpoints,
+  events, usage receipts, a mutual-TLS/Unix client, and one bounded deterministic
+  simulator.
+- An executable bounded recursive workload and package-bound cross-language
+  conformance runner that retains per-case evidence, an immutable source identity,
+  and a deterministic qualification receipt with the exact release archives.
+- TypeScript contract facades for families whose public contract includes JavaScript.
+- Protobuf package boundaries ready for audited service schemas.
+
+## Open-source boundary
+
+Everything shipped to or executed on a customer's machine belongs in this
+Apache-2.0 repository. That includes embedded and durable-local engines, local
+services and processes, browser implementations, native mounts, language
+bindings, local recovery, model adapters, and customer-hosted providers. Each
+component has one public source of truth; private repositories consume released
+SDK contracts and code instead of keeping copies.
+
+Private repositories contain only Acyclic-operated infrastructure such as
+  multi-tenant regional control planes, distributed replication and consensus,
+  internal administration, billing, and private
+qualification evidence.
+
+Build and test the local Acyclic workspace product without an account:
 
 ```sh
-npm i -g @acyclic-labs/plugin
-cd your-repo
-acyclic init                 # starts the daemon, takes the first snapshot
-acyclic install claude-code  # or: codex, cursor, claude-desktop, agents-md
+cargo test -p acyclic-labs-plugin
+```
+
+The one product binary lives in `plugin`. It auto-starts one per-user
+service, derives workspace routing from canonical cwd, exposes local history as
+`acyclic git`, and packages thin capability-aware adapters for coding agents.
+There is no `init` command and no repository marker.
+
+The Filesystem API keeps the same workspace, generation, and sparse transaction
+shape when its execution boundary moves to the hosted service:
+
+```rust,no_run
+use acyclic_fs::{Fs, HostedFsOptions, IdempotencyKey};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+// Discovers ACYCLIC_FILESYSTEM_ENDPOINT and ACYCLIC_API_KEY.
+let filesystem = Fs::hosted(HostedFsOptions::default()).await?;
+let workspace = filesystem.open_workspace("project").await?;
+let base = workspace.head().await?;
+let mut transaction = workspace.begin_transaction(IdempotencyKey::new());
+transaction.put_file("/README.md", b"canonical\n".to_vec());
+let outcome = transaction.commit(32).await?;
+let exact = workspace.generation(base.id().to_vec()).await?;
+# let _ = (outcome, exact);
+# Ok(())
+# }
+```
+
+TypeScript provides the same discovery contract through
+`openHostedFsFromEnv()`. Explicit options remain available in both SDKs for
+non-standard runtimes. When the deployment advertises source reconciliation,
+hosted workspaces also expose source state, reconcile, rescan, and seal through
+the canonical filesystem protocol; deployments without a source provider report
+that capability as unavailable.
+
+Use the high-level Inference API against an authenticated service. Placement,
+batching, KV movement, and rebalancing remain service internals:
+
+```rust,no_run
+use acyclic_inference::Inference;
+
+# async fn example() -> Result<(), acyclic_inference::Error> {
+let inference = Inference::connect(
+    "https://inference.example",
+    "account-token",
+    include_bytes!("trusted-ca.pem"),
+).await?;
+let base = inference
+    .context("model/revision")
+    .instructions("Answer from the supplied evidence.")
+    .create()
+    .await?;
+let branch = base.fork().send().await?;
+let run = branch.generate("Summarize the findings.", 1_024).send().await?;
+let run_id = run.id();
+let result = run.inspect().await?;
+let recovered = inference.recover_run(run_id);
+let events = recovered.watch(0).await?;
+# let _ = (result, events);
+# Ok(())
+# }
 ```
 
 `curl -fsSL https://raw.githubusercontent.com/acyclic-labs/sdk/main/plugin/scripts/install.sh | sh`

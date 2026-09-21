@@ -16,7 +16,6 @@ use std::collections::HashMap;
 #[cfg(unix)]
 use std::ffi::OsStr;
 use std::ffi::OsString;
-#[cfg(windows)]
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -108,6 +107,9 @@ pub enum MaterializeError {
     /// Supplied operation bounds are zero or exceed native addressability.
     #[error("materialization options are invalid")]
     InvalidOptions,
+    /// Selected paths overlap, so pathwise staging would be order-dependent.
+    #[error("materialization paths must be unique and non-overlapping")]
+    OverlappingPaths,
     /// Canonical engine operation failed.
     #[error("filesystem engine failed: {0}")]
     Engine(String),
@@ -251,37 +253,45 @@ pub async fn materialize_checkout_path<A: AsyncAuthorityStore, O: AsyncObjectSto
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
+    materialize_checkout_paths(
+        checkout,
+        std::slice::from_ref(path),
+        options,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+/// Materializes multiple non-overlapping authenticated paths in one traversal.
+///
+/// All selected paths share one destination capability, cumulative work
+/// receipt, and file-identity table, preserving hard links across siblings.
+#[allow(clippy::too_many_lines)]
+pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    paths: &[NamespacePath],
+    options: &MaterializeOptions,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
     let host_root = validate_options(options).map_err(OperationFailure::before_work)?;
-    if path.components().is_empty() {
+    if paths.is_empty() || paths.iter().any(|path| path.components().is_empty()) {
         return Err(OperationFailure::before_work(
             MaterializeError::InvalidOptions,
         ));
     }
-    let lookup = checkout
-        .lookup_no_follow(path, budget, cancellation)
-        .await
-        .map_err(|failure| map_engine_failure(failure, WorkCounters::default()))?;
-    let record = lookup
-        .value
-        .record
-        .ok_or_else(|| OperationFailure::new(MaterializeError::MissingPath, lookup.work))?;
-    let mut host_path = PathBuf::new();
-    for component in path.components() {
-        host_path
-            .push(host_name(component).map_err(|error| OperationFailure::new(error, lookup.work))?);
+    let mut selected_paths = paths.to_vec();
+    selected_paths.sort_unstable();
+    if selected_paths
+        .windows(2)
+        .any(|pair| matches!(pair, [ancestor, path] if path.is_within(ancestor)))
+    {
+        return Err(OperationFailure::before_work(
+            MaterializeError::OverlappingPaths,
+        ));
     }
-    let mut parent = PathBuf::new();
-    for component in host_path.parent().into_iter().flat_map(Path::components) {
-        parent.push(component.as_os_str());
-        host_root
-            .create_dir(&parent)
-            .map_err(|error| OperationFailure::new(error.into(), lookup.work))?;
-    }
-
-    let mut receipt = MaterializationReceipt {
-        work: lookup.work,
-        ..MaterializationReceipt::default()
-    };
+    let mut receipt = MaterializationReceipt::default();
     let mut known_files = HashMap::<FileId, PathBuf>::new();
     #[cfg(any(target_os = "macos", windows))]
     let mut known_payloads = HashMap::<(u64, ObjectId, ObjectId), PathBuf>::new();
@@ -290,31 +300,63 @@ pub async fn materialize_checkout_path<A: AsyncAuthorityStore, O: AsyncObjectSto
         .is_ok_and(|capabilities| capabilities.block_cloning);
     let mut pending = Vec::new();
     let mut deferred_directory_metadata = Vec::new();
-    if record.kind == FileKind::Directory {
-        deferred_directory_metadata.push((path.clone(), host_path.clone()));
+    for path in &selected_paths {
+        cancellation.check().map_err(|error| {
+            OperationFailure::new(MaterializeError::Engine(error.to_string()), receipt.work)
+        })?;
+        let remaining = receipt
+            .work
+            .remaining(budget)
+            .map_err(|error| OperationFailure::new(MaterializeError::Work(error), receipt.work))?;
+        let lookup = checkout
+            .lookup_no_follow(path, remaining, cancellation)
+            .await
+            .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+        receipt.work = add_work(receipt.work, lookup.work)?;
+        let record = lookup
+            .value
+            .record
+            .ok_or_else(|| OperationFailure::new(MaterializeError::MissingPath, receipt.work))?;
+        let mut host_path = PathBuf::new();
+        for component in path.components() {
+            host_path.push(
+                host_name(component).map_err(|error| OperationFailure::new(error, receipt.work))?,
+            );
+        }
+        if let Some(parent) = host_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            host_root
+                .create_dir_all_held(parent)
+                .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+        }
+        if record.kind == FileKind::Directory {
+            deferred_directory_metadata.push((path.clone(), host_path.clone()));
+        }
+        materialize_entry(
+            checkout,
+            &host_root,
+            path,
+            &host_path,
+            record.file_id,
+            record.kind,
+            record.payload,
+            #[cfg(any(target_os = "macos", windows))]
+            record.metadata,
+            options,
+            budget,
+            cancellation,
+            &mut known_files,
+            #[cfg(any(target_os = "macos", windows))]
+            &mut known_payloads,
+            #[cfg(any(target_os = "macos", windows))]
+            clone_available,
+            &mut pending,
+            &mut receipt,
+        )
+        .await?;
     }
-    materialize_entry(
-        checkout,
-        &host_root,
-        path,
-        &host_path,
-        record.file_id,
-        record.kind,
-        record.payload,
-        #[cfg(any(target_os = "macos", windows))]
-        record.metadata,
-        options,
-        budget,
-        cancellation,
-        &mut known_files,
-        #[cfg(any(target_os = "macos", windows))]
-        &mut known_payloads,
-        #[cfg(any(target_os = "macos", windows))]
-        clone_available,
-        &mut pending,
-        &mut receipt,
-    )
-    .await?;
 
     while let Some((directory, host_directory)) = pending.pop() {
         cancellation.check().map_err(|error| {
@@ -451,7 +493,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
     }
     let destination_root = options.destination.clone();
     let relative = relative.to_path_buf();
-    let (destination, stage_root) = tokio::task::spawn_blocking({
+    let (destination, stage_root, _restore_lock) = tokio::task::spawn_blocking({
         let destination_root = destination_root.clone();
         let relative = relative.clone();
         move || prepare_restore(&destination_root, &relative, replacement)
@@ -485,7 +527,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
                     .file_name()
                     .ok_or_else(|| std::io::Error::other("restore path has no leaf"))?;
                 remove_any(&stage_root)?;
-                parent.remove(Path::new(name))
+                remove_restored_path(&parent, Path::new(name), &destination_root, &relative)
             })
             .await
             .map_err(|error| {
@@ -534,9 +576,24 @@ fn prepare_restore(
     destination_root: &Path,
     relative: &Path,
     replacement: HostPathReplacement,
-) -> Result<(PathBuf, PathBuf), MaterializeError> {
+) -> Result<(PathBuf, PathBuf, File), MaterializeError> {
     let destination = destination_root.join(relative);
-    let _ = held_parent(destination_root, relative)?;
+    let destination_parent = held_parent(destination_root, relative)?;
+    let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
+    let restore_lock = acquire_restore_lock(relative, &destination, true)?;
+    cleanup_removed_restore(&destination_parent, relative, &destination)?;
+    match replacement {
+        HostPathReplacement::Atomic => {
+            crate::native_exchange::recover_native_entry_exchange(&destination)
+                .map_err(|error| MaterializeError::Engine(error.to_string()))?;
+        }
+        HostPathReplacement::LiveMount => recover_live_mount_replacement(
+            &destination_parent,
+            Path::new(destination_name),
+            relative,
+            &destination,
+        )?,
+    }
     let stage_parent = match replacement {
         HostPathReplacement::Atomic => destination_root
             .parent()
@@ -547,7 +604,11 @@ fn prepare_restore(
             .ok_or(MaterializeError::InvalidPath)?
             .to_path_buf(),
     };
-    Ok((destination, create_restore_stage(&stage_parent)?))
+    Ok((
+        destination,
+        create_restore_stage(&stage_parent)?,
+        restore_lock,
+    ))
 }
 
 fn publish_restore(
@@ -571,13 +632,20 @@ fn publish_restore(
                 Path::new(staged_name),
                 &destination_parent,
                 Path::new(destination_name),
+                relative,
+                destination,
+                staged,
             )?,
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => stage_parent.rename_to(
-            Path::new(staged_name),
-            &destination_parent,
-            Path::new(destination_name),
-        )?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            stage_parent.rename_to(
+                Path::new(staged_name),
+                &destination_parent,
+                Path::new(destination_name),
+            )?;
+            sync_restore_parent(destination)?;
+            sync_restore_parent(staged)?;
+        }
         Err(error) => return Err(error.into()),
     }
     stage_parent.close();
@@ -626,6 +694,168 @@ fn create_restore_stage(parent: &Path) -> Result<PathBuf, MaterializeError> {
     )))
 }
 
+fn restore_artifact_name(prefix: &str, relative: &Path) -> PathBuf {
+    let mut hasher = blake3::Hasher::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        hasher.update(relative.as_os_str().as_bytes());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt as _;
+        for unit in relative.as_os_str().encode_wide() {
+            hasher.update(&unit.to_le_bytes());
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    hasher.update(relative.to_string_lossy().as_bytes());
+    PathBuf::from(format!("{prefix}{}", hasher.finalize().to_hex()))
+}
+
+fn acquire_restore_lock(
+    relative: &Path,
+    destination: &Path,
+    blocking: bool,
+) -> Result<File, MaterializeError> {
+    let path = restore_witness_path(".acyclic-restore-lock-", relative, destination);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)?;
+    let metadata = std::fs::symlink_metadata(&path)?;
+    if metadata.file_type().is_symlink() || !file.metadata().is_ok_and(|value| value.is_file()) {
+        return Err(MaterializeError::InvalidDestination);
+    }
+    if blocking {
+        fs2::FileExt::lock_exclusive(&file)?;
+    } else {
+        fs2::FileExt::try_lock_exclusive(&file)?;
+    }
+    Ok(file)
+}
+
+fn sync_restore_parent(destination: &Path) -> Result<(), MaterializeError> {
+    let parent = destination.parent().ok_or(MaterializeError::InvalidPath)?;
+    acyclic_native_runtime::sync_parent(parent, acyclic_native_runtime::Durability::Full)
+        .map_err(Into::into)
+}
+
+const REMOVE_RESTORE_WITNESS: &[u8] = b"acyclic-remove-restore-v1\n";
+const LIVE_RESTORE_WITNESS: &[u8] = b"acyclic-live-restore-v1\n";
+
+fn restore_witness_path(prefix: &str, relative: &Path, destination: &Path) -> PathBuf {
+    destination
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(restore_artifact_name(prefix, relative))
+}
+
+fn create_restore_witness(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    acyclic_native_runtime::sync_parent(
+        path.parent()
+            .ok_or_else(|| std::io::Error::other("restore witness has no parent"))?,
+        acyclic_native_runtime::Durability::Full,
+    )
+}
+
+fn validate_restore_witness(path: &Path, expected: &[u8]) -> std::io::Result<bool> {
+    match std::fs::read(path) {
+        Ok(contents) if contents == expected => Ok(true),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "restore artifact ownership witness is invalid",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn remove_restore_witness(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => acyclic_native_runtime::sync_parent(
+            path.parent()
+                .ok_or_else(|| std::io::Error::other("restore witness has no parent"))?,
+            acyclic_native_runtime::Durability::Full,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn cleanup_removed_restore(
+    destination_parent: &HostDirectory,
+    relative: &Path,
+    destination: &Path,
+) -> Result<(), MaterializeError> {
+    let removed = restore_artifact_name(".acyclic-restore-removed-", relative);
+    let witness = restore_witness_path(".acyclic-restore-remove-witness-", relative, destination);
+    match destination_parent.symlink_metadata(&removed) {
+        Ok(_) => {
+            if !validate_restore_witness(&witness, REMOVE_RESTORE_WITNESS)? {
+                return Err(MaterializeError::Engine(
+                    "unowned restore-removal artifact collision".into(),
+                ));
+            }
+            destination_parent.remove(&removed)?;
+            sync_restore_parent(destination)?;
+            remove_restore_witness(&witness)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if validate_restore_witness(&witness, REMOVE_RESTORE_WITNESS)? {
+                remove_restore_witness(&witness)?;
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+fn remove_restored_path(
+    destination_parent: &HostDirectory,
+    destination_name: &Path,
+    destination_root: &Path,
+    relative: &Path,
+) -> std::io::Result<()> {
+    let destination = destination_root.join(relative);
+    let removed = restore_artifact_name(".acyclic-restore-removed-", relative);
+    let witness = restore_witness_path(".acyclic-restore-remove-witness-", relative, &destination);
+    create_restore_witness(&witness, REMOVE_RESTORE_WITNESS)?;
+    match destination_parent.symlink_metadata(destination_name) {
+        Ok(_) => {
+            destination_parent.rename_to(destination_name, destination_parent, &removed)?;
+            acyclic_native_runtime::sync_parent(
+                destination.parent().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
+                })?,
+                acyclic_native_runtime::Durability::Full,
+            )?;
+            destination_parent.remove(&removed)?;
+            acyclic_native_runtime::sync_parent(
+                destination.parent().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
+                })?,
+                acyclic_native_runtime::Durability::Full,
+            )?;
+            remove_restore_witness(&witness)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            remove_restore_witness(&witness)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn remove_any(path: &Path) -> std::io::Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path),
@@ -640,31 +870,69 @@ fn replace_live_mount(
     staged_name: &Path,
     destination_parent: &HostDirectory,
     destination_name: &Path,
+    relative: &Path,
+    destination: &Path,
+    staged: &Path,
 ) -> Result<(), MaterializeError> {
-    let backup_name = PathBuf::from(format!(
-        ".acyclic-restore-backup-{}-{}",
-        std::process::id(),
-        RESTORE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    let backup = destination_parent.create_dir_held(&backup_name)?;
-    let old = Path::new("old");
-    if let Err(error) = destination_parent.rename_to(destination_name, &backup, old) {
-        let _ = destination_parent.remove_dir(&backup_name);
-        return Err(error.into());
-    }
+    let backup_name = restore_artifact_name(".acyclic-restore-backup-", relative);
+    recover_live_mount_replacement(destination_parent, destination_name, relative, destination)?;
+    let witness = restore_witness_path(".acyclic-restore-live-witness-", relative, destination);
+    create_restore_witness(&witness, LIVE_RESTORE_WITNESS)?;
+    destination_parent.rename_to(destination_name, destination_parent, &backup_name)?;
+    sync_restore_parent(destination)?;
     if let Err(error) = staged_parent.rename_to(staged_name, destination_parent, destination_name) {
-        if let Err(rollback) = backup.rename_to(old, destination_parent, destination_name) {
+        if let Err(rollback) =
+            destination_parent.rename_to(&backup_name, destination_parent, destination_name)
+        {
             return Err(MaterializeError::Engine(format!(
-                "replacement failed: {error}; displaced entry remains in {} after rollback failed: {rollback}",
+                "replacement failed: {error}; displaced entry remains at {} after rollback failed: {rollback}",
                 backup_name.display()
             )));
         }
-        let _ = destination_parent.remove_dir(&backup_name);
+        sync_restore_parent(destination)?;
         return Err(error.into());
     }
-    backup.remove(old)?;
-    backup.close();
-    destination_parent.remove_dir(&backup_name)?;
+    sync_restore_parent(destination)?;
+    sync_restore_parent(staged)?;
+    destination_parent.remove(&backup_name)?;
+    sync_restore_parent(destination)?;
+    remove_restore_witness(&witness)?;
+    Ok(())
+}
+
+fn recover_live_mount_replacement(
+    destination_parent: &HostDirectory,
+    destination_name: &Path,
+    relative: &Path,
+    destination: &Path,
+) -> Result<(), MaterializeError> {
+    let backup_name = restore_artifact_name(".acyclic-restore-backup-", relative);
+    let witness = restore_witness_path(".acyclic-restore-live-witness-", relative, destination);
+    let backup_exists = match destination_parent.symlink_metadata(&backup_name) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    if !backup_exists {
+        if validate_restore_witness(&witness, LIVE_RESTORE_WITNESS)? {
+            remove_restore_witness(&witness)?;
+        }
+        return Ok(());
+    }
+    if !validate_restore_witness(&witness, LIVE_RESTORE_WITNESS)? {
+        return Err(MaterializeError::Engine(
+            "unowned live-restore backup collision".into(),
+        ));
+    }
+    match destination_parent.symlink_metadata(destination_name) {
+        Ok(_) => destination_parent.remove(&backup_name)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            destination_parent.rename_to(&backup_name, destination_parent, destination_name)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    sync_restore_parent(destination)?;
+    remove_restore_witness(&witness)?;
     Ok(())
 }
 
@@ -1460,6 +1728,111 @@ fn metadata_is_unavailable(metadata: FileMetadata) -> bool {
         && matches!(metadata.named_attributes, MetadataField::Unavailable)
         && matches!(metadata.acl, MetadataField::Unavailable)
         && matches!(metadata.security_descriptor, MetadataField::Unavailable)
+}
+
+#[cfg(test)]
+mod restore_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn same_path_restores_are_serialized_by_a_process_crash_safe_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().join("root");
+        std::fs::create_dir(&root)?;
+        let relative = Path::new("entry");
+        let destination = root.join(relative);
+        let first = acquire_restore_lock(relative, &destination, true)?;
+
+        assert!(acquire_restore_lock(relative, &destination, false).is_err());
+        drop(first);
+        let _next = acquire_restore_lock(relative, &destination, false)?;
+        Ok(())
+    }
+
+    #[test]
+    fn live_mount_recovery_restores_a_displaced_entry() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().join("root");
+        std::fs::create_dir(&root)?;
+        let relative = Path::new("entry");
+        let destination = root.join(relative);
+        std::fs::write(&destination, b"before")?;
+        let parent = held_parent(&root, relative)?;
+        let backup = restore_artifact_name(".acyclic-restore-backup-", relative);
+        let witness =
+            restore_witness_path(".acyclic-restore-live-witness-", relative, &destination);
+        create_restore_witness(&witness, LIVE_RESTORE_WITNESS)?;
+        parent.rename_to(relative, &parent, &backup)?;
+
+        recover_live_mount_replacement(&parent, relative, relative, &destination)?;
+
+        assert_eq!(std::fs::read(&destination)?, b"before");
+        assert!(!root.join(backup).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn live_mount_recovery_keeps_a_published_entry() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().join("root");
+        std::fs::create_dir(&root)?;
+        let relative = Path::new("entry");
+        let destination = root.join(relative);
+        std::fs::write(&destination, b"after")?;
+        let backup = restore_artifact_name(".acyclic-restore-backup-", relative);
+        let witness =
+            restore_witness_path(".acyclic-restore-live-witness-", relative, &destination);
+        create_restore_witness(&witness, LIVE_RESTORE_WITNESS)?;
+        std::fs::write(root.join(&backup), b"before")?;
+        let parent = held_parent(&root, relative)?;
+
+        recover_live_mount_replacement(&parent, relative, relative, &destination)?;
+
+        assert_eq!(std::fs::read(&destination)?, b"after");
+        assert!(!root.join(backup).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn live_mount_recovery_preserves_an_unowned_backup_collision()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().join("root");
+        std::fs::create_dir(&root)?;
+        let relative = Path::new("entry");
+        let destination = root.join(relative);
+        std::fs::write(&destination, b"live")?;
+        let backup = restore_artifact_name(".acyclic-restore-backup-", relative);
+        std::fs::write(root.join(&backup), b"unrelated")?;
+        let parent = held_parent(&root, relative)?;
+
+        assert!(recover_live_mount_replacement(&parent, relative, relative, &destination).is_err());
+        assert_eq!(std::fs::read(&destination)?, b"live");
+        assert_eq!(std::fs::read(root.join(backup))?, b"unrelated");
+        Ok(())
+    }
+
+    #[test]
+    fn absent_restore_moves_then_reclaims_the_old_entry() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().join("root");
+        std::fs::create_dir(&root)?;
+        let relative = Path::new("entry");
+        std::fs::write(root.join(relative), b"old")?;
+        let parent = held_parent(&root, relative)?;
+
+        remove_restored_path(&parent, relative, &root, relative)?;
+
+        assert!(!root.join(relative).exists());
+        assert!(
+            !root
+                .join(restore_artifact_name(".acyclic-restore-removed-", relative))
+                .exists()
+        );
+        Ok(())
+    }
 }
 
 #[cfg(all(test, any(target_os = "macos", windows)))]

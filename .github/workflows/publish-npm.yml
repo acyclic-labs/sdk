@@ -1,88 +1,169 @@
-name: Stage npm
+name: Publish npm release
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing annotated stage/npm/<package>/<version> tag to retry
-        required: true
-        type: string
-      tag_oid:
-        description: Immutable annotated tag object SHA
-        required: true
-        type: string
+  push:
+    tags:
+      - "npm-v*"
 
 permissions:
   contents: read
 
 concurrency:
-  group: npm-staging
+  group: npm-publication
   cancel-in-progress: false
 
 jobs:
-  stage:
-    name: Stage qualified npm package
-    environment: npmjs
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+  prepare:
+    name: Prepare qualified npm packages
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
     permissions:
       actions: read
       contents: read
-      id-token: write
+    outputs:
+      source_sha: ${{ steps.release.outputs.source_sha }}
+      version: ${{ steps.release.outputs.version }}
     steps:
-      - name: Check out trusted workflow source
+      - name: Check out exact tagged source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
 
-      - name: Verify and select exact tagged source
-        env:
-          NPM_STAGE_TAG: ${{ inputs.tag }}
-          NPM_STAGE_TAG_OID: ${{ inputs.tag_oid }}
+      - name: Verify release tag and merged source
+        id: release
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$NPM_STAGE_TAG" =~ ^stage/npm/(objects|stream|inference|machines|fs|sdk)/[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]
-          [[ "$NPM_STAGE_TAG_OID" =~ ^[0-9a-f]{40}$ ]]
-          ref="refs/tags/$NPM_STAGE_TAG"
-          git show-ref --verify --quiet "$ref"
-          test "$(git rev-parse "$ref")" = "$NPM_STAGE_TAG_OID"
-          test "$(git cat-file -t "$NPM_STAGE_TAG_OID")" = tag
-          source_sha=$(git rev-parse "$NPM_STAGE_TAG_OID^{commit}")
+          [[ "$GITHUB_REF_NAME" =~ ^npm-v([0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?)$ ]]
+          version=${BASH_REMATCH[1]}
+          tag_oid=$(git rev-parse "$GITHUB_REF")
+          test "$(git cat-file -t "$tag_oid")" = tag
+          source_sha=$(git rev-parse "$tag_oid^{commit}")
+          test "$(git rev-parse HEAD)" = "$source_sha"
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$source_sha" origin/main
-          install -m 0755 scripts/prepare-npm-publication.sh "$RUNNER_TEMP/prepare-npm-publication.sh"
-          git checkout --detach "$source_sha"
-          test "$(git rev-parse HEAD)" = "$source_sha"
+          node -e '
+            const fs = require("node:fs");
+            const version = process.argv[1];
+            for (const item of JSON.parse(fs.readFileSync("release/npm-packages.json", "utf8"))) {
+              const path = item.source === "typescript"
+                ? `typescript/packages/${item.directory}/package.json`
+                : "plugin/package.json";
+              const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+              if (manifest.name !== item.name || manifest.version !== version || manifest.private !== false) {
+                throw new Error(`release identity mismatch for ${item.directory}`);
+              }
+            }
+          ' "$version"
+          printf 'version=%s\nsource_sha=%s\n' "$version" "$source_sha" >> "$GITHUB_OUTPUT"
 
       - name: Install Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.15.0
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
-      - name: Install trusted-publishing npm CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/npm-12.0.2.tgz"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-            https://registry.npmjs.org/npm/-/npm-12.0.2.tgz --output "$archive"
-          echo 'b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943  '"$archive" | sha512sum --check --strict
-          npm install --global --ignore-scripts "$archive"
-
-      - name: Download and verify exact qualified package
+      - name: Download exact successful qualification artifact
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          NPM_STAGE_TAG: ${{ inputs.tag }}
-          NPM_STAGE_TAG_OID: ${{ inputs.tag_oid }}
-        shell: bash
-        run: bash "$RUNNER_TEMP/prepare-npm-publication.sh"
-
-      - name: Stage exact verified package for maintainer review
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
         shell: bash
         run: |
           set -euo pipefail
-          npm stage publish "$NPM_ARCHIVE" --access public --tag next --provenance
+          run=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/qualification.yml/runs" \
+            -f head_sha="$SOURCE_SHA" -f status=success -f event=push -F per_page=20 \
+            --jq '[.workflow_runs[] | select(.head_sha == env.SOURCE_SHA and .conclusion == "success")] | sort_by([.run_number, .run_attempt]) | last | [.id, .run_attempt] | @tsv')
+          read -r run_id run_attempt <<<"$run"
+          test -n "$run_id" && test -n "$run_attempt"
+          artifact="packages-linux-${run_id}-${run_attempt}"
+          mkdir -p "$RUNNER_TEMP/qualified"
+          gh run download "$run_id" --name "$artifact" --dir "$RUNNER_TEMP/qualified"
+          test -f "$RUNNER_TEMP/qualified/typescript/QUALIFICATION.json"
+          stage="$RUNNER_TEMP/npm-publication"
+          mkdir -p "$stage/scripts" "$stage/release"
+          cp -R "$RUNNER_TEMP/qualified/typescript" "$stage/typescript"
+          cp scripts/publish-npm-packages.mjs "$stage/scripts/"
+          cp scripts/plugin-qualification.mjs "$stage/scripts/"
+          cp scripts/typescript-qualification.mjs "$stage/scripts/"
+          cp release/npm-packages.json "$stage/release/"
+          mkdir -p "$stage/plugin"
+          cp plugin/package.json "$stage/plugin/"
+
+      - name: Download exact qualified universal plugin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/release-acyclic.yml/runs" \
+            -f head_sha="$SOURCE_SHA" -f status=success -F per_page=20 \
+            --jq '[.workflow_runs[] | select(.head_sha == env.SOURCE_SHA and .conclusion == "success")] | sort_by([.run_number, .run_attempt]) | last | [.id, .run_attempt] | @tsv')
+          read -r run_id run_attempt <<<"$run"
+          test -n "$run_id" && test -n "$run_attempt"
+          universal="$RUNNER_TEMP/qualified-plugin"
+          mkdir -p "$universal"
+          gh run download "$run_id" --name acyclic-universal --dir "$universal"
+          test -f "$universal/acyclic-plugin-npm.tgz"
+          test -f "$universal/plugin-qualification.json"
+          stage="$RUNNER_TEMP/npm-publication"
+          asset="$stage/typescript/acyclic-labs-plugin-$VERSION.tgz"
+          cp "$universal/acyclic-plugin-npm.tgz" "$asset"
+          cp "$universal/plugin-qualification.json" "$stage/plugin/QUALIFICATION.json"
+          node "$stage/scripts/plugin-qualification.mjs" verify \
+            "$stage/plugin/QUALIFICATION.json" "$SOURCE_SHA" "$asset" "$VERSION"
+
+      - name: Retain exact publication input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-publication-${{ steps.release.outputs.source_sha }}
+          path: ${{ runner.temp }}/npm-publication
+          if-no-files-found: error
+
+  publish:
+    name: Publish qualified npm packages
+    needs: prepare
+    environment: npmjs
+    # npm trusted publishing currently requires a GitHub-hosted runner.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-publication-${{ needs.prepare.outputs.source_sha }}
+          path: ${{ runner.temp }}/npm-publication
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.15.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Verify trusted-publishing npm CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm_version=$(npm --version)
+          node -e '
+            const [major, minor] = process.argv[1].split(".").map(Number);
+            if (major < 11 || (major === 11 && minor < 5)) {
+              throw new Error(`npm ${process.argv[1]} does not support trusted publishing`);
+            }
+          ' "$npm_version"
+      - name: Publish exact qualified packages to npm
+        shell: bash
+        working-directory: ${{ runner.temp }}/npm-publication
+        run: >-
+          node scripts/publish-npm-packages.mjs
+          typescript
+          "${{ needs.prepare.outputs.source_sha }}"
+          "${{ needs.prepare.outputs.version }}"

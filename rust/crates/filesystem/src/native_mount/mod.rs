@@ -21,11 +21,14 @@ use thiserror::Error;
 mod adapter;
 pub use adapter::{CheckoutMountSource, SharedCheckout, SharedCheckoutState};
 
+mod lazy;
+pub use lazy::LazyMountSource;
+
 mod routed;
 pub use routed::RoutedMountSource;
 
 mod customer;
-pub use customer::{Mount, MountLifecycleError, MountOptions, MountPublication};
+pub use customer::{LazyMount, Mount, MountLifecycleError, MountOptions, MountPublication};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod device;
@@ -39,11 +42,11 @@ mod materialize;
 pub use materialize::{
     HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeError,
     MaterializeOptions, materialize_checkout, materialize_checkout_host_path,
-    materialize_checkout_path, restore_checkout_host_path,
+    materialize_checkout_path, materialize_checkout_paths, restore_checkout_host_path,
 };
 
 mod publication;
-pub use publication::seal_checkout;
+pub use publication::{seal_checkout, seal_checkout_with_permit};
 
 mod storage_capabilities;
 pub use storage_capabilities::{
@@ -117,7 +120,7 @@ pub struct NativeMountCapabilities {
     ///
     /// `ProjFS` suppresses provider-process notifications. Embedded callers
     /// must use the SDK mutation surface for their own writes or place the
-    /// provider in `fsd`.
+    /// provider in a dedicated host process.
     pub provider_process_io_observable: bool,
     /// Required process isolation for simultaneous sessions.
     pub session_isolation: NativeMountSessionIsolation,
@@ -447,7 +450,7 @@ pub enum MountAttributeWriteMode {
 /// Components contain raw Unix name bytes on Linux FUSE/macOS NFS and little-endian
 /// UTF-16 code units on `ProjFS`. The checkout adapter converts them into the
 /// volume's declared logical-name representation without lossy text routing.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct MountPath {
     components: Vec<Vec<u8>>,
 }
@@ -1143,7 +1146,7 @@ pub fn recover_native_mount_destination(destination: &Path) -> Result<(), Native
 /// underlying directory and authored host residue for an explicit caller
 /// decision.
 ///
-/// This is the daemon restart boundary: a live owner is rejected before any
+/// This is the host restart boundary: a live owner is rejected before any
 /// detach, while a dead owner's kernel projection and persistent path fence are
 /// removed. Call [`recover_native_mount_destination`] when the destination
 /// itself is an implementation-owned disposable root.

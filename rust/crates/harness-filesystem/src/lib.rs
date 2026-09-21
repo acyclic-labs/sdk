@@ -257,7 +257,9 @@ fn filesystem_key(key: &IdempotencyKey) -> FilesystemKey {
 fn map_error(error: WorkspaceError) -> Error {
     match error {
         WorkspaceError::NotFound => Error::NotFound("workspace path".into()),
-        WorkspaceError::RetentionConflict => Error::Conflict(error.to_string()),
+        WorkspaceError::RetentionConflict
+        | WorkspaceError::StaleGeneration
+        | WorkspaceError::StaleIdentity => Error::Conflict(error.to_string()),
         WorkspaceError::Name(_)
         | WorkspaceError::Path(_)
         | WorkspaceError::ReadLimitExceeded
@@ -273,7 +275,9 @@ fn map_error(error: WorkspaceError) -> Error {
         | WorkspaceError::ChangedPathLimit
         | WorkspaceError::EmptyContentSet
         | WorkspaceError::NotFork
-        | WorkspaceError::ContentLengthOverflow => Error::Invalid(error.to_string()),
+        | WorkspaceError::ContentLengthOverflow
+        | WorkspaceError::Work(_) => Error::Invalid(error.to_string()),
+        WorkspaceError::Cancelled(error) => Error::Storage(error.to_string()),
         WorkspaceError::Engine(value) => Error::Storage(value),
     }
 }

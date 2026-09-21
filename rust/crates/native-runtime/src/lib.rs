@@ -6,163 +6,9 @@ use std::future::Future;
 use std::io::{self, Read};
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::task::{Context, Poll, Waker};
-
-#[derive(Default)]
-struct Cancellation {
-    cancelled: AtomicBool,
-    #[cfg(target_os = "linux")]
-    linux_event: Mutex<Option<Arc<linux::CancellationEvent>>>,
-    #[cfg(windows)]
-    windows_handle: Mutex<Option<isize>>,
-    #[cfg(target_vendor = "apple")]
-    apple_channels: Mutex<Vec<dispatch2::DispatchRetained<dispatch2::DispatchIO>>>,
-}
-
-impl Cancellation {
-    fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
-    }
-
-    fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
-        #[cfg(windows)]
-        self.cancel_windows();
-        #[cfg(target_os = "linux")]
-        self.cancel_linux();
-        #[cfg(target_vendor = "apple")]
-        self.cancel_apple();
-    }
-
-    #[cfg(windows)]
-    fn register_windows(&self, handle: isize) {
-        *self
-            .windows_handle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
-        if self.is_cancelled() {
-            self.cancel_windows();
-        }
-    }
-
-    #[cfg(windows)]
-    fn clear_windows(&self, handle: isize) {
-        let mut active = self
-            .windows_handle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *active == Some(handle) {
-            *active = None;
-        }
-    }
-
-    #[cfg(windows)]
-    fn with_windows_submission<T>(
-        &self,
-        handle: isize,
-        submit: impl FnOnce() -> std::io::Result<T>,
-    ) -> std::io::Result<T> {
-        let active = self
-            .windows_handle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.is_cancelled() || *active != Some(handle) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "native I/O cancelled",
-            ));
-        }
-        submit()
-    }
-
-    #[cfg(windows)]
-    fn cancel_windows(&self) {
-        let active = self
-            .windows_handle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(handle) = *active {
-            windows::cancel(handle);
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn register_linux(&self, event: &Arc<linux::CancellationEvent>) {
-        *self
-            .linux_event
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(event));
-        if self.is_cancelled() {
-            event.signal();
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn clear_linux(&self, event: &Arc<linux::CancellationEvent>) {
-        let mut active = self
-            .linux_event
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if active
-            .as_ref()
-            .is_some_and(|candidate| Arc::ptr_eq(candidate, event))
-        {
-            *active = None;
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn cancel_linux(&self) {
-        let event = self
-            .linux_event
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if let Some(event) = event {
-            event.signal();
-        }
-    }
-
-    #[cfg(target_vendor = "apple")]
-    fn register_apple(&self, channel: &dispatch2::DispatchIO) {
-        use dispatch2::DispatchObject as _;
-
-        {
-            self.apple_channels
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(channel.retain());
-        }
-        if self.is_cancelled() {
-            self.cancel_apple();
-        }
-    }
-
-    #[cfg(target_vendor = "apple")]
-    fn clear_apple(&self, channel: &dispatch2::DispatchIO) {
-        let mut active = self
-            .apple_channels
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        active.retain(|candidate| !std::ptr::eq(candidate.as_ref(), channel));
-    }
-
-    #[cfg(target_vendor = "apple")]
-    fn cancel_apple(&self) {
-        use dispatch2::DispatchIOCloseFlags;
-
-        let active = self
-            .apple_channels
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        for channel in active {
-            channel.close(DispatchIOCloseFlags::DISPATCH_IO_STOP);
-        }
-    }
-}
 
 /// One file owned by the native I/O runtime.
 ///
@@ -205,8 +51,11 @@ impl NativeFile {
 mod apple;
 #[cfg(target_os = "linux")]
 mod linux;
+mod process_tree;
 #[cfg(windows)]
 mod windows;
+
+pub use process_tree::ProcessTree;
 
 /// Required durability boundary for one file operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -265,6 +114,12 @@ pub fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
     write_all_at_impl(file, offset, bytes)
 }
 
+/// Applies the exact native Windows file-attribute bitset.
+#[cfg(windows)]
+pub fn set_file_attributes(path: &Path, attributes: u32) -> io::Result<()> {
+    windows::set_file_attributes(path, attributes)
+}
+
 /// One owned positional write whose buffer remains live through completion.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedWrite {
@@ -284,13 +139,53 @@ pub struct OwnedRead {
 }
 
 /// Submits an owned read batch to the shared native completion worker.
+///
+/// The first poll transfers ownership to the worker if capacity is available.
+/// Dropping before admission discards the job; dropping after admission only
+/// detaches the observer and the worker completes the operation.
 pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> ReadBatch {
     ReadBatch::submit(file, reads)
 }
 
 /// Submits an owned write batch to the shared native completion workers.
+///
+/// Admission is irrevocable: after the first successful submission, dropping
+/// the returned future does not roll back or cancel the write.
 pub fn write_all_batch_async(file: File, writes: Vec<OwnedWrite>) -> WriteBatch {
     WriteBatch::submit(file, writes)
+}
+
+/// Starts the current executable's `__service` mode without inheriting host
+/// standard-I/O handles.
+///
+/// On Windows this uses a detached process group and disables handle
+/// inheritance at process creation, preventing a durable service from keeping
+/// a short-lived hook runner's pipes open.
+pub fn spawn_service_process(executable: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        windows::spawn_service_process(executable)
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new(executable)
+            .arg("__service")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map(drop)
+    }
+}
+
+/// Starts a child in an owned operating-system process tree.
+///
+/// Descendants inherit the Windows Job or Unix process group. Dropping the
+/// returned guard, or explicitly terminating it, kills that containment. Unix
+/// descendants can deliberately escape by creating another group or session,
+/// so independently durable services require their own lifecycle ownership.
+pub fn spawn_process_tree(command: &mut std::process::Command) -> io::Result<ProcessTree> {
+    ProcessTree::spawn(command)
 }
 
 /// Runtime-independent future for one owned native read batch.
@@ -298,7 +193,6 @@ pub struct ReadBatch {
     state: Arc<Mutex<ReadBatchState>>,
     pending: Option<NativeJob>,
     waiter: Option<u64>,
-    cancellation: Arc<Cancellation>,
 }
 
 /// Runtime-independent future for one owned native write batch.
@@ -306,7 +200,6 @@ pub struct WriteBatch {
     state: Arc<Mutex<WriteBatchState>>,
     pending: Option<NativeJob>,
     waiter: Option<u64>,
-    cancellation: Arc<Cancellation>,
 }
 
 struct ReadBatchState {
@@ -324,36 +217,22 @@ enum NativeJob {
         file: File,
         reads: Vec<OwnedRead>,
         state: Arc<Mutex<ReadBatchState>>,
-        cancellation: Arc<Cancellation>,
     },
     Write {
         file: File,
         writes: Vec<OwnedWrite>,
         state: Arc<Mutex<WriteBatchState>>,
-        cancellation: Arc<Cancellation>,
     },
 }
 
 impl NativeJob {
     fn run(self) -> Option<Waker> {
         match self {
-            Self::Read {
-                file,
-                reads,
-                state,
-                cancellation,
-            } => {
-                let result = if cancellation.is_cancelled() {
-                    Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "native read cancelled before execution",
-                    ))
-                } else {
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        read_batch_impl(&file, &reads, &cancellation)
-                    }))
-                    .unwrap_or_else(|_| Err(io::Error::other("native read worker panicked")))
-                };
+            Self::Read { file, reads, state } => {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    read_batch_impl(&file, &reads)
+                }))
+                .unwrap_or_else(|_| Err(io::Error::other("native read worker panicked")));
                 let mut state = state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -364,19 +243,11 @@ impl NativeJob {
                 file,
                 writes,
                 state,
-                cancellation,
             } => {
-                let result = if cancellation.is_cancelled() {
-                    Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "native write cancelled before execution",
-                    ))
-                } else {
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        write_all_batch_owned(&file, writes, &cancellation)
-                    }))
-                    .unwrap_or_else(|_| Err(io::Error::other("native write worker panicked")))
-                };
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    write_all_batch_owned(&file, writes)
+                }))
+                .unwrap_or_else(|_| Err(io::Error::other("native write worker panicked")));
                 let mut state = state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -399,17 +270,14 @@ impl ReadBatch {
             result: None,
             waker: None,
         }));
-        let cancellation = Arc::new(Cancellation::default());
         Self {
             pending: Some(NativeJob::Read {
                 file,
                 reads,
                 state: Arc::clone(&state),
-                cancellation: Arc::clone(&cancellation),
             }),
             state,
             waiter: None,
-            cancellation,
         }
     }
 }
@@ -420,17 +288,14 @@ impl WriteBatch {
             result: None,
             waker: None,
         }));
-        let cancellation = Arc::new(Cancellation::default());
         Self {
             pending: Some(NativeJob::Write {
                 file,
                 writes,
                 state: Arc::clone(&state),
-                cancellation: Arc::clone(&cancellation),
             }),
             state,
             waiter: None,
-            cancellation,
         }
     }
 }
@@ -627,7 +492,6 @@ fn native_workers() -> io::Result<&'static NativeWorkers> {
 
 impl Drop for ReadBatch {
     fn drop(&mut self) {
-        self.cancellation.cancel();
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -648,7 +512,6 @@ impl Drop for ReadBatch {
 
 impl Drop for WriteBatch {
     fn drop(&mut self) {
-        self.cancellation.cancel();
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -760,21 +623,13 @@ fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn write_all_batch_owned(
-    file: &File,
-    writes: Vec<OwnedWrite>,
-    cancellation: &Cancellation,
-) -> io::Result<()> {
-    linux::write_all_batch_owned(file, writes, cancellation)
+fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io::Result<()> {
+    linux::write_all_batch_owned(file, writes)
 }
 
 #[cfg(target_os = "linux")]
-fn read_batch_impl(
-    file: &File,
-    reads: &[OwnedRead],
-    cancellation: &Cancellation,
-) -> io::Result<Vec<Bytes>> {
-    linux::read_batch(file, reads, cancellation)
+fn read_batch_impl(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
+    linux::read_batch(file, reads)
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -790,21 +645,13 @@ fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-fn write_all_batch_owned(
-    file: &File,
-    writes: Vec<OwnedWrite>,
-    cancellation: &Cancellation,
-) -> io::Result<()> {
-    apple::write_all_batch_owned(file, writes, cancellation)
+fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io::Result<()> {
+    apple::write_all_batch_owned(file, writes)
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-fn read_batch_impl(
-    file: &File,
-    reads: &[OwnedRead],
-    cancellation: &Cancellation,
-) -> io::Result<Vec<Bytes>> {
-    apple::read_batch(file, reads, cancellation)
+fn read_batch_impl(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
+    apple::read_batch(file, reads)
 }
 
 #[cfg(windows)]
@@ -840,21 +687,13 @@ fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn write_all_batch_owned(
-    file: &File,
-    writes: Vec<OwnedWrite>,
-    cancellation: &Cancellation,
-) -> io::Result<()> {
-    windows::write_all_batch_owned(file, writes, cancellation)
+fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io::Result<()> {
+    windows::write_all_batch_owned(file, writes)
 }
 
 #[cfg(windows)]
-fn read_batch_impl(
-    file: &File,
-    reads: &[OwnedRead],
-    cancellation: &Cancellation,
-) -> io::Result<Vec<Bytes>> {
-    windows::read_batch(file, reads, cancellation)
+fn read_batch_impl(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
+    windows::read_batch(file, reads)
 }
 
 #[cfg(target_vendor = "apple")]
@@ -1196,13 +1035,13 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn completed_batches_retire_cancellation_polls() -> io::Result<()> {
+    fn completed_batches_preserve_ring_reuse() -> io::Result<()> {
         let temporary = tempfile::tempdir()?;
         let file = OpenOptions::new()
             .create_new(true)
             .read(true)
             .write(true)
-            .open(temporary.path().join("retired-cancellation"))?;
+            .open(temporary.path().join("ring-reuse"))?;
         for value in 0_u16..256 {
             complete_write(write_all_batch_async(
                 file.try_clone()?,
@@ -1400,6 +1239,65 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn io_uring_rejects_cursor_aliases_before_any_submission() -> io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("invalid-io-uring-offset");
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        write_all_at(&file, 0, b"stable")?;
+        file.seek(SeekFrom::Start(3))?;
+
+        let mut byte = [0_u8; 1];
+        assert!(matches!(
+            read_at(&file, u64::MAX, &mut byte),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+        assert!(matches!(
+            write_all_at(&file, u64::MAX, b"x"),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+        assert!(matches!(
+            complete_read(read_batch_async(
+                file.try_clone()?,
+                vec![
+                    OwnedRead {
+                        offset: 0,
+                        length: 1,
+                    },
+                    OwnedRead {
+                        offset: u64::MAX,
+                        length: 1,
+                    },
+                ],
+            )),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+        assert!(matches!(
+            complete_write(write_all_batch_async(
+                file.try_clone()?,
+                vec![
+                    OwnedWrite {
+                        offset: 0,
+                        bytes: Bytes::from_static(b"changed"),
+                    },
+                    OwnedWrite {
+                        offset: u64::MAX,
+                        bytes: Bytes::from_static(b"x"),
+                    },
+                ],
+            )),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+        assert_eq!(file.stream_position()?, 3);
+        assert_eq!(std::fs::read(path)?, b"stable");
+        Ok(())
+    }
+
     #[test]
     fn owned_read_outlives_the_callers_file_and_request() -> io::Result<()> {
         let temporary = tempfile::tempdir()?;
@@ -1423,9 +1321,49 @@ mod tests {
     }
 
     #[test]
-    fn dropped_admission_waiters_do_not_block_later_reads() -> io::Result<()> {
+    fn admitted_write_outlives_dropped_observer() -> io::Result<()> {
         let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("admission-cancellation");
+        let path = temporary.path().join("detached-write");
+        let file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        let mut write = write_all_batch_async(
+            file,
+            vec![OwnedWrite {
+                offset: 0,
+                bytes: Bytes::from_static(b"persisted"),
+            }],
+        );
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let admitted = write
+            .pending
+            .take()
+            .ok_or_else(|| io::Error::other("write was not pending admission"))?;
+        sender
+            .try_send(admitted)
+            .map_err(|_| io::Error::other("write admission failed"))?;
+
+        drop(write);
+        let job = receiver
+            .recv()
+            .map_err(|_| io::Error::other("admitted write disappeared"))?;
+        let _ = job.run();
+
+        assert_eq!(std::fs::read(path)?, b"persisted");
+        Ok(())
+    }
+
+    #[test]
+    fn dropped_admission_waiters_do_not_block_later_reads() -> io::Result<()> {
+        enum FirstPoll {
+            Ready(io::Result<Vec<Bytes>>),
+            Pending(ReadBatch),
+        }
+
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("admission-drop");
         let file = OpenOptions::new()
             .create_new(true)
             .read(true)
@@ -1441,12 +1379,33 @@ mod tests {
                     length: 1,
                 }],
             );
-            let _ = Pin::new(&mut read).poll(&mut Context::from_waker(Waker::noop()));
-            reads.push(read);
+            reads.push(
+                match Pin::new(&mut read).poll(&mut Context::from_waker(Waker::noop())) {
+                    Poll::Ready(result) => FirstPoll::Ready(result),
+                    Poll::Pending => FirstPoll::Pending(read),
+                },
+            );
+        }
+        for read in &reads {
+            if let FirstPoll::Ready(result) = read {
+                match result {
+                    Ok(completed) => assert_eq!(completed, &[Bytes::from_static(b"x")]),
+                    Err(error) => {
+                        return Err(io::Error::new(
+                            error.kind(),
+                            format!("initial native read failed: {error}"),
+                        ));
+                    }
+                }
+            }
         }
         reads.truncate(8);
         for read in reads {
-            assert_eq!(complete_read(read)?, [Bytes::from_static(b"x")]);
+            let completed = match read {
+                FirstPoll::Ready(result) => result?,
+                FirstPoll::Pending(read) => complete_read(read)?,
+            };
+            assert_eq!(completed, [Bytes::from_static(b"x")]);
         }
         let final_read = read_batch_async(
             file,

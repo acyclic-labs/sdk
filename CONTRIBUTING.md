@@ -80,9 +80,8 @@ while Linux and macOS execute native-mount behavior.
 
 The Linux lane reuses a prior result only for an identical source tree and returns
 the exact retained output inventory with that result. It retains the isolated, tested Rust
-crates and the six core Objects, Stream, Inference, Machines, Filesystem, and SDK
-TypeScript archives with a source-bound qualification receipt and SHA-256 inventory
-in `packages-linux`. The filesystem archive runs
+crates and all twelve public TypeScript package archives with a source-bound qualification
+receipt and SHA-256 inventory in `packages-linux`. The filesystem archive runs
 the existing public-export/WASM composition test outside the workspace; a missing
 packaged WASM must fail. Cargo packages and verifies the public Objects, Streams,
 and Filesystem dependency closure together with all features. Registry publication
@@ -90,10 +89,13 @@ must publish the exact Objects and Streams archives before Filesystem.
 Publication consumes these exact successful-run bytes, never a rebuild. An operator
 creates an immutable family or TypeScript GitHub release from the retained artifact
 and points its tag at the matching qualified main commit. The crates.io publisher
-remains a separate, tag-triggered publication boundary. Every CI and package-staging
-job runs on Blacksmith. The npm publisher is stage-only: it submits exact
-qualified archives with `npm stage publish`; a maintainer must review and approve
-each staged package with 2FA before it becomes public. Each executable native lane
+remains a separate, tag-triggered publication boundary. Qualification runs on
+Blacksmith; the small npm publication job uses a GitHub-hosted runner so npm trusted
+publishing can exchange GitHub's OIDC identity without a stored token. After the exact
+main commit qualifies, an operator creates an annotated `npm-v<VERSION>` tag at that
+commit. The publisher downloads the exact retained archives, verifies their source and
+integrity receipt, and publishes them directly to `latest` with provenance. Each
+executable native lane
 also retains the exact filesystem companion copy
 loaded by its successful ABI child, named by package version/host OS/architecture with
 a SHA-256 inventory. An existing output directory is rejected. These are host-qualified

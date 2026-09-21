@@ -8,10 +8,11 @@ repository.workspace = true
 publish.workspace = true
 description = "Acyclic Harness adapter for replaceable Machines providers"
 readme = "README.md"
+documentation = "https://docs.rs/acyclic-harness-machines"
 
 [dependencies]
-acyclic-harness = { version = "0.1.0-rc.1", path = "../harness", default-features = false }
-acyclic-machines = { version = "=1.0.0-rc.7", path = "../machines" }
+acyclic-harness = { version = "0.1.0", path = "../harness", default-features = false }
+acyclic-machines = { version = "=0.1.0", path = "../machines" }
 blake3.workspace = true
 uuid.workspace = true
 

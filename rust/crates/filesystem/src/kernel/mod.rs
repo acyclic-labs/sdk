@@ -103,6 +103,7 @@ pub use file_table::{
     file_table_page_id, lookup_file_record, lookup_file_record_async, lookup_file_records,
     lookup_file_records_async,
 };
+pub(crate) use file_table::{decode_file_record, encode_file_record};
 pub use file_table_mutation::{
     FileTableMutation, FileTableMutationError, FileTableMutationFailure, FileTableMutationReceipt,
     FileTableSemanticError, apply_file_table_mutations, apply_file_table_mutations_async,
@@ -156,10 +157,12 @@ pub use probe::{
 pub(crate) use publication::contextual_publication_fingerprint;
 #[cfg(test)]
 pub(crate) use publication::encode_publication_payload;
-pub(crate) use publication::publish_generation_async_with_context;
 pub use publication::{
     PublicationError, PublicationFailure, PublicationReceipt, PublishGenerationRequest,
     PublishedGeneration, decode_published_generation, publish_generation, publish_generation_async,
+};
+pub(crate) use publication::{
+    PublicationIntent, publish_generation_async_with_context, publish_generation_async_with_permit,
 };
 pub use range::{
     ExtentPlan, ExtentRangeRequest, ExtentReadError, ExtentReadFailure, ExtentSeekRequest,

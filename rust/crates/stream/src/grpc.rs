@@ -672,6 +672,26 @@ impl StreamProvider for Client {
                     conditions: request.conditions.into_iter().map(condition_wire).collect(),
                     mutations: request.mutations.into_iter().map(mutation_wire).collect(),
                     idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
+                    deadline_unix_millis: None,
+                },
+                |mut service, request| Box::pin(async move { service.commit(request).await }),
+            )
+            .await?;
+        commit_outcome_from_wire(response)
+    }
+
+    async fn commit_before(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: u64,
+    ) -> Result<CommitOutcome, StreamError> {
+        let response = self
+            .unary(
+                wire::CommitRequest {
+                    conditions: request.conditions.into_iter().map(condition_wire).collect(),
+                    mutations: request.mutations.into_iter().map(mutation_wire).collect(),
+                    idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
+                    deadline_unix_millis: Some(deadline_unix_millis),
                 },
                 |mut service, request| Box::pin(async move { service.commit(request).await }),
             )
@@ -892,26 +912,29 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         request: Request<wire::CommitRequest>,
     ) -> Result<Response<wire::CommitResponse>, Status> {
         let request = request.into_inner();
-        let outcome = self
-            .provider
-            .commit(CommitRequest {
-                conditions: request
-                    .conditions
-                    .into_iter()
-                    .map(condition_from_wire)
-                    .collect::<Result<_, _>>()
-                    .map_err(|error| error_status(&error))?,
-                mutations: request
-                    .mutations
-                    .into_iter()
-                    .map(mutation_from_wire)
-                    .collect::<Result<_, _>>()
-                    .map_err(|error| error_status(&error))?,
-                idempotency_key: IdempotencyKey::new(request.idempotency_key)
-                    .map_err(|error| error_status(&error))?,
-            })
-            .await
-            .map_err(|error| error_status(&error))?;
+        let deadline_unix_millis = request.deadline_unix_millis;
+        let request = CommitRequest {
+            conditions: request
+                .conditions
+                .into_iter()
+                .map(condition_from_wire)
+                .collect::<Result<_, _>>()
+                .map_err(|error| error_status(&error))?,
+            mutations: request
+                .mutations
+                .into_iter()
+                .map(mutation_from_wire)
+                .collect::<Result<_, _>>()
+                .map_err(|error| error_status(&error))?,
+            idempotency_key: IdempotencyKey::new(request.idempotency_key)
+                .map_err(|error| error_status(&error))?,
+        };
+        let outcome = if let Some(deadline) = deadline_unix_millis {
+            self.provider.commit_before(request, deadline).await
+        } else {
+            self.provider.commit(request).await
+        }
+        .map_err(|error| error_status(&error))?;
         Ok(Response::new(commit_outcome_wire(outcome)))
     }
 
@@ -1081,6 +1104,8 @@ fn error_status(error: &StreamError) -> Status {
         StreamError::Retired => Status::failed_precondition("retired"),
         StreamError::PrefixNotRetained => Status::failed_precondition("prefix_not_retained"),
         StreamError::Unavailable => Status::unavailable(error.to_string()),
+        StreamError::DeadlineElapsed => Status::failed_precondition("deadline_elapsed"),
+        StreamError::Unsupported => Status::unimplemented("unsupported_capability"),
     }
 }
 
@@ -1100,6 +1125,12 @@ fn status(error: &tonic::Status) -> StreamError {
         Code::FailedPrecondition if error.message() == "retired" => StreamError::Retired,
         Code::FailedPrecondition if error.message() == "prefix_not_retained" => {
             StreamError::PrefixNotRetained
+        }
+        Code::FailedPrecondition if error.message() == "deadline_elapsed" => {
+            StreamError::DeadlineElapsed
+        }
+        Code::Unimplemented if error.message() == "unsupported_capability" => {
+            StreamError::Unsupported
         }
         _ => StreamError::Unavailable,
     }

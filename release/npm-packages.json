@@ -1,0 +1,15 @@
+[
+  { "slug": "harness", "directory": "harness", "name": "@acyclic-labs/harness", "source": "typescript" },
+  { "slug": "objects", "directory": "objects", "name": "@acyclic-labs/objects", "source": "typescript" },
+  { "slug": "stream", "directory": "stream", "name": "@acyclic-labs/stream", "source": "typescript" },
+  { "slug": "inference", "directory": "inference", "name": "@acyclic-labs/inference", "source": "typescript" },
+  { "slug": "machines", "directory": "machines", "name": "@acyclic-labs/machines", "source": "typescript" },
+  { "slug": "fs", "directory": "filesystem", "name": "@acyclic-labs/fs", "source": "typescript" },
+  { "slug": "ai-sdk", "directory": "ai-sdk", "name": "@acyclic-labs/ai-sdk", "source": "typescript" },
+  { "slug": "opencode", "directory": "opencode", "name": "@acyclic-labs/opencode", "source": "typescript" },
+  { "slug": "pi", "directory": "pi", "name": "@acyclic-labs/pi", "source": "typescript" },
+  { "slug": "react", "directory": "react", "name": "@acyclic-labs/react", "source": "typescript" },
+  { "slug": "svelte", "directory": "svelte", "name": "@acyclic-labs/svelte", "source": "typescript" },
+  { "slug": "sdk", "directory": "sdk", "name": "@acyclic-labs/sdk", "source": "typescript" },
+  { "slug": "plugin", "directory": "plugin", "name": "@acyclic-labs/plugin", "source": "plugin" }
+]

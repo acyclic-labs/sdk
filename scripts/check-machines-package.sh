@@ -50,7 +50,7 @@ clean_head() {
 }
 
 valid_vcs_info() {
-  python3 -c 'import json,sys; expected={"git":{"sha1":sys.argv[1]},"path_in_vcs":"rust/crates/machines"}; raise SystemExit(json.load(sys.stdin) != expected)' "$1"
+  node -e 'let input=""; process.stdin.on("data", chunk => input += chunk).on("end", () => { const expected={git:{sha1:process.argv[1]},path_in_vcs:"rust/crates/machines"}; if(JSON.stringify(JSON.parse(input)) !== JSON.stringify(expected)) process.exit(1); })' "$1"
 }
 
 cd "$root"
@@ -118,7 +118,7 @@ if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; t
   package_manifest="$(wslpath -w "$package_manifest")"
   package_target_argument="$(wslpath -w "$package_target")"
 fi
-version="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$source_manifest" | python3 -c 'import json,sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "acyclic-machines"))')"
+version="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$source_manifest" | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk).on("end", () => console.log(JSON.parse(input).packages.find(item => item.name === "acyclic-machines").version))')"
 "$cargo_bin" test --locked -p acyclic-machines -p acyclic-harness-machines --manifest-path "$source_manifest" --target-dir "$package_target_argument"
 clean_head "$root" "$head"
 clean_head "$package_root" "$head"

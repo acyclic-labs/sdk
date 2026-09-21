@@ -5,6 +5,7 @@ use crate::foundation::{
 };
 use crate::performance::{MeasuredResult, OperationFailure, WorkBudget, WorkCounters};
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -51,6 +52,79 @@ pub enum AppendOutcome {
         /// Fingerprint already bound to the operation identity.
         committed_fingerprint: Digest,
     },
+}
+
+/// Optional authority-side admission condition for one publication.
+///
+/// Ordinary SDK callers use [`PublicationPermit::Unrestricted`]. Managed
+/// operation windows issue lease permits whose gate is checked in the same
+/// storage transaction as the generation append.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublicationPermit {
+    /// No operation-window admission is required.
+    Unrestricted,
+    /// The exact durable tool lease must still be active.
+    Lease {
+        /// Authority derived from the admitted workspace identity.
+        authority_id: [u8; 16],
+        /// Workspace whose mount admitted the operation.
+        workspace_id: [u8; 16],
+        /// Unique durable lease identity.
+        lease_id: [u8; 16],
+        /// Provider-evaluated exclusive publication deadline.
+        expires_at_millis: u64,
+    },
+    /// The exact durable multi-authority publication reservation is active.
+    Reservation {
+        /// Stable logical publication identity.
+        operation_id: [u8; 16],
+        /// Tail produced when the authority gate was reserved.
+        gate_tail: u64,
+        /// Exact authority head authenticated when the gate was acquired.
+        expected: Head,
+    },
+}
+
+/// Durable exclusive authority reservation used by multi-root publication.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicationReservation {
+    /// Authority protected by the reservation.
+    pub authority_id: AuthorityId,
+    /// Stable logical publication identity.
+    pub operation_id: OperationId,
+    /// Exact authority head validated while acquiring the gate.
+    pub expected: Head,
+    /// Gate tail that authenticates the reservation holder.
+    pub gate_tail: u64,
+}
+
+/// Result of atomically reserving an authority at an exact head.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReservationOutcome {
+    /// This operation owns the exclusive gate.
+    Reserved(PublicationReservation),
+    /// The identical reservation was already acquired.
+    AlreadyReserved(PublicationReservation),
+    /// The authority head or gate changed before acquisition.
+    Conflict {
+        /// Linearizable head observed while acquisition failed.
+        actual: Head,
+    },
+}
+
+/// Complete atomic authority append request, including any admission permit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuardedAppend {
+    /// Authority receiving the operation.
+    pub authority_id: AuthorityId,
+    /// Writer epoch expected by the caller.
+    pub epoch: Epoch,
+    /// Complete expected authority head.
+    pub expected: Head,
+    /// Canonical durable operation.
+    pub commit: ProposedCommit,
+    /// Optional operation-window admission requirement.
+    pub permit: PublicationPermit,
 }
 
 /// Successful or rejected compare-and-fence result.

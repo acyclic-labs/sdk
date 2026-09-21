@@ -1,0 +1,10 @@
+{
+  "name": "acyclic-agent-host-qualification",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Exact external host inputs for Acyclic qualification",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.278",
+    "@openai/codex": "0.155.1"
+  }
+}

@@ -48,14 +48,15 @@ case "$lane" in
     bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
-    cargo run --locked -p acyclic-cli -- harness-demo
-    python3 plugins/acyclic-agent-workspaces/scripts/package.py \
-      --output "$SDK_ARTIFACT_DIR/agent-workspaces-plugin"
-    python3 plugins/acyclic-agent-workspaces/scripts/validate-package.py \
-      "$SDK_ARTIFACT_DIR/agent-workspaces-plugin/marketplace"
+    node scripts/build-product.mjs
+    node plugin/scripts/package.mjs \
+      --binary "${CARGO_TARGET_DIR:-target}/release/acyclic" \
+      --out "$SDK_ARTIFACT_DIR/acyclic-plugin"
+    node plugin/scripts/validate-package.mjs \
+      "$SDK_ARTIFACT_DIR/acyclic-plugin"
     bun run test
-    bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
     bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
+    bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
     bun scripts/run-harness-conformance.mjs \
       "$SDK_ARTIFACT_DIR/packages/harness" \
       "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" \
@@ -71,26 +72,21 @@ case "$lane" in
       bun x buf breaking --against ".git#ref=origin/$base" \
         --exclude-path proto/inference/v1/inference.proto \
         --exclude-path proto/filesystem/v1 \
-        --exclude-path proto/filesystem/daemon/v1
+        --exclude-path proto/filesystem/daemon/v2
     fi
-    python3 scripts/test-crate-publication.py
-    python3 scripts/test-npm-publication.py
-    bash -n scripts/prepare-crate-publication.sh scripts/prepare-npm-publication.sh \
-      scripts/check-typescript-packages.sh
-    ;;
-  eval)
-    python3 evals/agent-workspaces/protocol_check.py \
-      --out "$SDK_ARTIFACT_DIR/agent-workspaces-protocol"
-    python3 -m unittest evals/agent-workspaces/test_harness.py
+    bash -n scripts/check-typescript-packages.sh
     ;;
   policy)
     bash scripts/test-ensure-rust-target.sh
     bash scripts/test-qualify-gate-rustup.sh
+    node scripts/check-workflow-runners.mjs
+    node scripts/publish-cargo-crates.mjs check
+    node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-    cargo test --manifest-path plugins/acyclic-agent-workspaces/control/Cargo.toml --locked
-    cargo clippy --manifest-path plugins/acyclic-agent-workspaces/control/Cargo.toml \
-      --all-targets --all-features --locked -- -D warnings
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+    cargo test -p acyclic-labs-plugin --locked
+    cargo clippy -p acyclic-labs-plugin --all-targets --all-features --locked -- -D warnings
     head="${CI_HEAD_SHA:-$(git rev-parse HEAD)}"
     if [[ -n "${CI_TARGET_BRANCH:-}" ]]; then
       branch="$CI_TARGET_BRANCH"
@@ -100,11 +96,14 @@ case "$lane" in
       base="${head}^"
     fi
     while read -r commit; do
-      git show --quiet --format=%B "$commit" | \
-        grep --quiet --ignore-case '^Signed-off-by: .\+ <.\+>$' || {
-          echo "Commit $commit lacks a Signed-off-by trailer." >&2
-          exit 1
-        }
+      verification=$(git \
+        -c gpg.format=ssh \
+        -c "gpg.ssh.allowedSignersFile=$(pwd)/.github/allowed_signers" \
+        show --quiet --format='%G?' "$commit")
+      [[ "$verification" == "G" ]] || {
+        echo "Commit $commit lacks an authorized cryptographic signature." >&2
+        exit 1
+      }
     done < <(git rev-list --reverse "$base..$head")
 
     archive="$TOOLS_DIR/cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz"
@@ -166,10 +165,12 @@ case "$lane" in
       --ignored --test-threads=1
     cargo build -p acyclic-fs-napi --locked
     bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
-    python3 plugins/acyclic-agent-workspaces/scripts/package.py \
-      --output "$SDK_ARTIFACT_DIR/agent-workspaces-plugin"
-    python3 plugins/acyclic-agent-workspaces/scripts/validate-package.py \
-      "$SDK_ARTIFACT_DIR/agent-workspaces-plugin/marketplace"
+    node scripts/build-product.mjs
+    node plugin/scripts/package.mjs \
+      --binary "${CARGO_TARGET_DIR:-target}/release/acyclic" \
+      --out "$SDK_ARTIFACT_DIR/acyclic-plugin"
+    node plugin/scripts/validate-package.mjs \
+      "$SDK_ARTIFACT_DIR/acyclic-plugin"
     bash scripts/ensure-rust-target.sh x86_64-apple-darwin
     cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
       --target x86_64-apple-darwin --locked

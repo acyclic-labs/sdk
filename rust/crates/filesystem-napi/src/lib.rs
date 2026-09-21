@@ -1,5 +1,6 @@
 //! Generated-language native embedding boundary for the canonical Rust engine.
 
+use acyclic_fs::compat_wire;
 use acyclic_fs::kernel::{
     AttributeClass, AttributeName, DecodeLimits, ExtentKind, ExtentSeekTarget, FileKind,
     FileMetadata, FilePayload, FileRecord, LogicalName, NameEncoding, NamespacePath,
@@ -14,22 +15,24 @@ use acyclic_fs::{
     ApplyOptions, AuthoredMutation, ByteRange, CancellationToken, ChangeSet, CheckoutCommitOutcome,
     ConflictSide, Digest, FileCloneRequest, FileId, ForkOptions, Generation,
     GenerationExportManifest, GenerationId, GitCommand, GitCommitId, GitCompatRepository,
-    GitFilesystemResult, GitTransitionId, IdempotencyKey, JoinHistory, JoinOutcome, JoinPlan,
-    LiveMutationOutcome, LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend,
-    LocalOptions, LocalVolume, MergeConflict, MergePreparation, NamedAttributeWriteMode,
-    NativeWatch as FsNativeWatch, NativeWatchOptions, ObjectCacheOptions, ObjectId, ObjectKind,
-    ObjectReadRequest, ObjectResidency, OperationId, OperationLeaseId, OperationReconcileLimits,
-    OperationWindowCoordinator, OperationWindowFinish, OperationWindowLease, OperationWindowPhase,
-    PromotionAdmission, PromotionDestination, PromotionRejection, PromotionSpeculatorOptions,
-    ResidencyAdmission, ResidencyHint, ResidencyReason, ResidencyRejection,
-    ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
-    StorageLocationId, StorageTier, Transaction, TransactionCommit, TransactionConflict,
-    TransactionConflictRegion, TransactionDependencyUse, TransactionRebase, TransactionSparseSeek,
-    VolumeId, WatchBatch, WatchChange, WatchInvalidationReason, WorkBudget, Workspace,
-    WorkspaceDelete, WorkspaceDirectoryPage, WorkspaceExtentKind, WorkspaceExtentPlan,
-    WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord, WorkspaceMetadata,
-    WorkspaceOperationFinish, WorkspaceRebase, WorkspaceStat, decode_generation_export_manifest,
-    encode_generation_export_manifest, native_watch_capabilities as sdk_native_watch_capabilities,
+    GitFilesystemResult, GitTransitionId, GitTreeRef, IdempotencyKey, JoinHistory, JoinOutcome,
+    JoinPlan, LiveMutationOutcome, LocalAuthorityBackend, LocalCoreStateStore, LocalFs,
+    LocalObjectBackend, LocalOptions, LocalVolume, MergeConflict, MergePreparation,
+    NamedAttributeWriteMode, NativeWatch as FsNativeWatch, NativeWatchOptions, ObjectCacheOptions,
+    ObjectId, ObjectKind, ObjectReadRequest, ObjectResidency, OperationId, OperationLeaseId,
+    OperationReconcileLimits, OperationWindowCoordinator, OperationWindowFinish,
+    OperationWindowLease, OperationWindowPhase, PromotionAdmission, PromotionDestination,
+    PromotionRejection, PromotionSpeculatorOptions, ResidencyAdmission, ResidencyHint,
+    ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions, ResolvedFile,
+    SpeculationController, SpeculationOptions, StorageLocationId, StorageTier, Transaction,
+    TransactionCommit, TransactionConflict, TransactionConflictRegion, TransactionDependencyUse,
+    TransactionRebase, TransactionSparseSeek, VolumeId, WatchBatch, WatchChange,
+    WatchInvalidationReason, WorkBudget, Workspace, WorkspaceContextId, WorkspaceContextRegistry,
+    WorkspaceContextRoot, WorkspaceDelete, WorkspaceDirectoryPage, WorkspaceExtentKind,
+    WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord, WorkspaceMetadata,
+    WorkspaceOperationFinish, WorkspaceRebase, WorkspaceRootId, WorkspaceStat,
+    decode_generation_export_manifest, encode_generation_export_manifest,
+    native_watch_capabilities as sdk_native_watch_capabilities,
 };
 use acyclic_fs::{
     CaptureOptions, CaptureReceipt, CheckoutMountSource, MaterializeOptions, NativeMountRequest,
@@ -45,6 +48,76 @@ use napi_derive::napi;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+#[napi]
+#[allow(clippy::needless_pass_by_value)]
+/// Encodes a merge-plan payload in the versioned compatibility envelope.
+pub fn encode_merge_plan_json(value_json: String) -> Result<String> {
+    compat_wire::encode_merge_plan_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(clippy::needless_pass_by_value)]
+/// Decodes a versioned merge-plan envelope to its canonical payload.
+pub fn decode_merge_plan_json(value_json: String) -> Result<String> {
+    compat_wire::decode_merge_plan_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(clippy::needless_pass_by_value)]
+/// Encodes a merge-candidate payload in the versioned compatibility envelope.
+pub fn encode_merge_candidate_json(value_json: String) -> Result<String> {
+    compat_wire::encode_merge_candidate_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(clippy::needless_pass_by_value)]
+/// Decodes a versioned merge-candidate envelope to its canonical payload.
+pub fn decode_merge_candidate_json(value_json: String) -> Result<String> {
+    compat_wire::decode_merge_candidate_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(clippy::needless_pass_by_value)]
+/// Encodes a multi-root plan payload in the versioned compatibility envelope.
+pub fn encode_multi_root_plan_json(value_json: String) -> Result<String> {
+    compat_wire::encode_multi_root_plan_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(clippy::needless_pass_by_value)]
+/// Decodes a versioned multi-root plan envelope to its canonical payload.
+pub fn decode_multi_root_plan_json(value_json: String) -> Result<String> {
+    compat_wire::decode_multi_root_plan_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(clippy::needless_pass_by_value)]
+/// Encodes a multi-root candidate payload in the compatibility envelope.
+pub fn encode_multi_root_candidate_json(value_json: String) -> Result<String> {
+    compat_wire::encode_multi_root_candidate_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(clippy::needless_pass_by_value)]
+/// Decodes a multi-root candidate envelope to its canonical payload.
+pub fn decode_multi_root_candidate_json(value_json: String) -> Result<String> {
+    compat_wire::decode_multi_root_candidate_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(clippy::needless_pass_by_value)]
+/// Encodes a publication payload in the versioned compatibility envelope.
+pub fn encode_publication_json(value_json: String) -> Result<String> {
+    compat_wire::encode_publication_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(clippy::needless_pass_by_value)]
+/// Decodes a versioned publication envelope to its canonical payload.
+pub fn decode_publication_json(value_json: String) -> Result<String> {
+    compat_wire::decode_publication_payload(&value_json).map_err(napi_wire_error)
+}
 
 /// Exact native companion capabilities returned before any filesystem work.
 #[napi(object)]
@@ -1264,12 +1337,19 @@ pub struct NativeFs {
 #[napi]
 pub struct NativeGitCompatRepository {
     inner: GitCompatRepository<LocalCoreStateStore>,
+    workspace_id: WorkspaceId,
 }
 
 /// Native recursive-workspace graph backed by the shared core-state namespace.
 #[napi]
 pub struct NativeWorkspaceGraph {
     inner: WorkspaceGraph<LocalCoreStateStore>,
+}
+
+/// Durable, recursively forkable multi-root workspace-context registry.
+#[napi]
+pub struct NativeWorkspaceContextRegistry {
+    inner: WorkspaceContextRegistry<LocalCoreStateStore>,
 }
 
 /// Native durable operation-window coordinator backed by shared core state.
@@ -1930,12 +2010,17 @@ impl NativeWorkspace {
     ///
     /// Returns name, generation, authority, or storage failures.
     #[napi]
-    pub async fn fork(&self, destination: String) -> Result<NativeWorkspace> {
+    pub async fn fork(
+        &self,
+        destination: String,
+        idempotency_key: Option<Buffer>,
+    ) -> Result<NativeWorkspace> {
         let generation = self.inner.head().await.map_err(napi_error)?;
+        let idempotency_key = native_idempotency_key(idempotency_key)?;
         self.inner
             .fork(
                 destination,
-                ForkOptions::from_generation(generation, IdempotencyKey::new()),
+                ForkOptions::from_generation(generation, idempotency_key),
             )
             .await
             .map(|inner| NativeWorkspace { inner })
@@ -3014,11 +3099,10 @@ impl NativeGitCompatRepository {
     #[allow(clippy::needless_pass_by_value)]
     #[napi(factory)]
     pub fn open(state_root: String, workspace_id: Buffer) -> Result<Self> {
+        let workspace_id = WorkspaceId::from_bytes(fixed_16(&workspace_id)?);
         Ok(Self {
-            inner: GitCompatRepository::new(
-                WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
-                LocalCoreStateStore::new(state_root),
-            ),
+            inner: GitCompatRepository::new(workspace_id, LocalCoreStateStore::new(state_root)),
+            workspace_id,
         })
     }
 
@@ -3082,12 +3166,10 @@ impl NativeGitCompatRepository {
             .as_ref()
             .map(|value| generation_id(value))
             .transpose()?;
+        let tree = generation.map(|generation| GitTreeRef::exact(self.workspace_id, generation));
         let output = self
             .inner
-            .complete_transition(
-                GitTransitionId::from_bytes(fixed_16(&transition)?),
-                generation,
-            )
+            .complete_transition(GitTransitionId::from_bytes(fixed_16(&transition)?), tree)
             .await
             .map_err(napi_error)?;
         serde_json::to_string(&output).map_err(napi_error)
@@ -3173,6 +3255,132 @@ impl NativeGitCompatRepository {
             .await
             .map_err(napi_error)?;
         serde_json::to_string(&output).map_err(napi_error)
+    }
+}
+
+#[napi]
+impl NativeWorkspaceContextRegistry {
+    /// Opens context state in the shared private namespace.
+    #[napi(factory)]
+    pub fn open(state_root: String) -> Self {
+        Self {
+            inner: WorkspaceContextRegistry::new(LocalCoreStateStore::new(state_root)),
+        }
+    }
+
+    /// Registers a root context without enumerating its physical roots.
+    #[napi]
+    pub async fn register_root_json(
+        &self,
+        context_id: Buffer,
+        roots_json: String,
+    ) -> Result<String> {
+        let roots: Vec<WorkspaceContextRoot> =
+            serde_json::from_str(&roots_json).map_err(napi_error)?;
+        let context = self
+            .inner
+            .register_root(
+                WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
+                roots,
+            )
+            .await
+            .map_err(napi_error)?;
+        workspace_context_json(&context)
+    }
+
+    /// Registers a child whose roots point at its exact direct parent.
+    #[napi]
+    pub async fn register_child_json(
+        &self,
+        context_id: Buffer,
+        parent_context_id: Buffer,
+        roots_json: String,
+    ) -> Result<String> {
+        let roots: Vec<WorkspaceContextRoot> =
+            serde_json::from_str(&roots_json).map_err(napi_error)?;
+        let context = self
+            .inner
+            .register_child(
+                WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
+                WorkspaceContextId::from_bytes(fixed_16(&parent_context_id)?),
+                roots,
+            )
+            .await
+            .map_err(napi_error)?;
+        workspace_context_json(&context)
+    }
+
+    /// Resolves one durable context as stable JSON.
+    #[napi]
+    pub async fn resolve_json(&self, context_id: Buffer) -> Result<String> {
+        let context = self
+            .inner
+            .resolve(WorkspaceContextId::from_bytes(fixed_16(&context_id)?))
+            .await
+            .map_err(napi_error)?;
+        workspace_context_json(&context)
+    }
+
+    /// Freezes or resumes a retained context.
+    #[napi]
+    pub async fn set_active_json(&self, context_id: Buffer, active: bool) -> Result<String> {
+        let context = self
+            .inner
+            .set_active(
+                WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
+                active,
+            )
+            .await
+            .map_err(napi_error)?;
+        workspace_context_json(&context)
+    }
+
+    /// Advances one root binding after a compatibility branch switch.
+    #[napi]
+    pub async fn set_workspace_json(
+        &self,
+        context_id: Buffer,
+        root_id: Buffer,
+        workspace_id: Buffer,
+        workspace_name: String,
+        parent_workspace_id: Option<Buffer>,
+    ) -> Result<String> {
+        let parent = parent_workspace_id
+            .as_ref()
+            .map(|value| fixed_16(value).map(WorkspaceId::from_bytes))
+            .transpose()?;
+        let context = self
+            .inner
+            .set_workspace(
+                WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
+                WorkspaceRootId::from_bytes(fixed_16(&root_id)?),
+                WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
+                workspace_name,
+                parent,
+            )
+            .await
+            .map_err(napi_error)?;
+        workspace_context_json(&context)
+    }
+
+    /// Recursively tombstones a direct-child context subtree.
+    #[napi]
+    pub async fn discard_subtree_json(
+        &self,
+        parent_context_id: Buffer,
+        child_context_id: Buffer,
+        maximum: u32,
+    ) -> Result<String> {
+        let discarded = self
+            .inner
+            .discard_subtree(
+                WorkspaceContextId::from_bytes(fixed_16(&parent_context_id)?),
+                WorkspaceContextId::from_bytes(fixed_16(&child_context_id)?),
+                maximum,
+            )
+            .await
+            .map_err(napi_error)?;
+        serde_json::to_string(&discarded).map_err(napi_error)
     }
 }
 
@@ -3785,10 +3993,6 @@ impl NativeFs {
             acquisition_work: receipt.work,
         })
     }
-
-    /// Releases this JavaScript handle. Store ownership remains reference counted.
-    #[napi]
-    pub fn close(&self) {}
 }
 
 #[napi]
@@ -6158,6 +6362,31 @@ fn napi_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
 }
 
+fn napi_wire_error(error: impl std::fmt::Display) -> Error {
+    Error::new(Status::InvalidArg, error.to_string())
+}
+
+fn workspace_context_json(context: &acyclic_fs::WorkspaceContext) -> Result<String> {
+    let mut value = serde_json::to_value(context).map_err(napi_error)?;
+    let revision = value
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            Error::new(
+                Status::GenericFailure,
+                "workspace context revision is invalid",
+            )
+        })?;
+    value
+        .as_object_mut()
+        .ok_or_else(|| Error::new(Status::GenericFailure, "workspace context is invalid"))?
+        .insert(
+            "revision".to_owned(),
+            serde_json::Value::String(revision.to_string()),
+        );
+    serde_json::to_string(&value).map_err(napi_error)
+}
+
 fn watcher_poisoned() -> Error {
     Error::new(Status::GenericFailure, "native watcher state poisoned")
 }
@@ -7936,7 +8165,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        let fork = workspace.fork("agent".to_owned()).await?;
+        let fork = workspace.fork("agent".to_owned(), None).await?;
         assert_eq!(
             fork.read("/value.bin".to_owned(), bigint(16))
                 .await?
@@ -8042,7 +8271,7 @@ mod tests {
         let main = fs.create_workspace("main".to_owned()).await?;
         main.write("/base".to_owned(), Buffer::from(vec![1_u8]))
             .await?;
-        let agent = main.fork("agent".to_owned()).await?;
+        let agent = main.fork("agent".to_owned(), None).await?;
         let base = agent.sync().await?;
         agent
             .write("/first".to_owned(), Buffer::from(vec![2_u8]))

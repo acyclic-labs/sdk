@@ -69,6 +69,7 @@ struct Runtime {
     writable: bool,
     enumerations: Mutex<HashMap<u128, Arc<Mutex<EnumState>>>>,
     metadata_baselines: Arc<Mutex<HashMap<u128, HostWindowsMetadata>>>,
+    metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
     executor: CallbackExecutor,
 }
 
@@ -146,6 +147,7 @@ impl ProjFsSession {
             writable: request.writable,
             enumerations: Mutex::new(HashMap::new()),
             metadata_baselines: Arc::new(Mutex::new(HashMap::new())),
+            metadata_probes: Arc::new(Mutex::new(HashMap::new())),
             executor: CallbackExecutor::start()?,
         });
         let context_ptr = (&raw mut *runtime).cast::<c_void>();
@@ -426,6 +428,48 @@ fn host_windows_metadata(
             super::MountSourceError::Invalid("Windows write time exceeds i64".to_owned())
         })?,
     })
+}
+
+struct MetadataProbeGuard<'a> {
+    probes: &'a Mutex<HashMap<MountPath, usize>>,
+    path: MountPath,
+}
+
+impl<'a> MetadataProbeGuard<'a> {
+    fn enter(probes: &'a Mutex<HashMap<MountPath, usize>>, path: &MountPath) -> Self {
+        let mut active = lock_recover(probes);
+        *active.entry(path.clone()).or_default() += 1;
+        Self {
+            probes,
+            path: path.clone(),
+        }
+    }
+
+    fn is_active(probes: &Mutex<HashMap<MountPath, usize>>, path: &MountPath) -> bool {
+        lock_recover(probes).contains_key(path)
+    }
+}
+
+impl Drop for MetadataProbeGuard<'_> {
+    fn drop(&mut self) {
+        let mut active = lock_recover(self.probes);
+        let Some(count) = active.get_mut(&self.path) else {
+            return;
+        };
+        *count -= 1;
+        if *count == 0 {
+            active.remove(&self.path);
+        }
+    }
+}
+
+fn probe_host_windows_metadata(
+    root: &Path,
+    path: &MountPath,
+    probes: &Mutex<HashMap<MountPath, usize>>,
+) -> Result<HostWindowsMetadata, super::MountSourceError> {
+    let _guard = MetadataProbeGuard::enter(probes, path);
+    host_windows_metadata(root, path)
 }
 
 fn represented_windows_metadata_differs(
@@ -777,7 +821,11 @@ unsafe extern "system" fn file_data(
     );
     PrjFreeAlignedBuffer(buffer);
     match result {
-        Ok(()) => match host_windows_metadata(&runtime.root, &path) {
+        Ok(()) => match probe_host_windows_metadata(
+            &runtime.root,
+            &path,
+            runtime.metadata_probes.as_ref(),
+        ) {
             Ok(metadata) => {
                 replace_metadata_baseline(
                     runtime.metadata_baselines.as_ref(),
@@ -827,6 +875,14 @@ unsafe extern "system" fn notification(
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
+    if matches!(
+        notification,
+        PRJ_NOTIFICATION_FILE_OPENED | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
+    ) && MetadataProbeGuard::is_active(runtime.metadata_probes.as_ref(), &path)
+    {
+        return HR_OK;
+    }
+    let file_id = file_id(data);
     let source_is_external = unsafe { empty_destination(data.FilePathName) };
     let destination_is_external = unsafe { empty_destination(destination_filename) };
     if notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
@@ -853,10 +909,10 @@ unsafe extern "system" fn notification(
     let source = Arc::clone(&runtime.source);
     let root = runtime.root.clone();
     let metadata_baselines = Arc::clone(&runtime.metadata_baselines);
-    let file_id = file_id(data);
+    let metadata_probes = Arc::clone(&runtime.metadata_probes);
     let result = runtime.executor.call(move || {
         if notification == PRJ_NOTIFICATION_FILE_OPENED {
-            let baseline = host_windows_metadata(&root, &path)?;
+            let baseline = probe_host_windows_metadata(&root, &path, metadata_probes.as_ref())?;
             replace_metadata_baseline(metadata_baselines.as_ref(), file_id, baseline);
             Ok(())
         } else if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED
@@ -873,7 +929,7 @@ unsafe extern "system" fn notification(
             let _ = take_metadata_baseline(metadata_baselines.as_ref(), file_id);
             source.capture_host_path(&root, &path)
         } else if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION {
-            let host = host_windows_metadata(&root, &path)?;
+            let host = probe_host_windows_metadata(&root, &path, metadata_probes.as_ref())?;
             let baseline = take_metadata_baseline(metadata_baselines.as_ref(), file_id);
             let changed_since_open =
                 baseline.is_some_and(|baseline| metadata_changed_since_open(baseline, host));
@@ -1005,8 +1061,12 @@ fn callbacks() -> PRJ_CALLBACKS {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
-    use super::finish_cleanup;
+    use super::{MetadataProbeGuard, finish_cleanup};
+    use crate::native_mount::MountPath;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
 
     #[test]
     fn stopped_runtime_is_retained_until_cleanup_succeeds() {
@@ -1017,5 +1077,23 @@ mod tests {
 
         finish_cleanup(&mut state, |_| Ok::<(), &str>(())).expect("retry cleanup succeeds");
         assert_eq!(state, None);
+    }
+
+    #[test]
+    fn metadata_probe_guard_is_path_scoped_counted_and_raii() {
+        let probes = Mutex::new(HashMap::new());
+        let first = MountPath::root().child(vec![b'a', 0]);
+        let second = MountPath::root().child(vec![b'b', 0]);
+
+        let outer = MetadataProbeGuard::enter(&probes, &first);
+        assert!(MetadataProbeGuard::is_active(&probes, &first));
+        assert!(!MetadataProbeGuard::is_active(&probes, &second));
+        {
+            let _overlap = MetadataProbeGuard::enter(&probes, &first);
+            assert!(MetadataProbeGuard::is_active(&probes, &first));
+        }
+        assert!(MetadataProbeGuard::is_active(&probes, &first));
+        drop(outer);
+        assert!(!MetadataProbeGuard::is_active(&probes, &first));
     }
 }

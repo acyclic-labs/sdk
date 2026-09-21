@@ -411,14 +411,14 @@ mod tests {
             suite_digest: harness_suite_digest(),
             subject: Subject {
                 name: "@acyclic-labs/harness".into(),
-                version: "0.1.0-rc.1".into(),
+                version: "0.1.0".into(),
                 source_revision: "0123456789abcdef0123456789abcdef01234567".into(),
                 artifact_digest: digest(b"artifact"),
             },
             runner: RunnerIdentity {
                 language: "typescript".into(),
                 name: "@acyclic-labs/harness/conformance".into(),
-                version: "0.1.0-rc.1".into(),
+                version: "0.1.0".into(),
             },
             protocol_identity: harness_protocol_identity(),
             capability_profile: vec!["durable-local".into(), "wasm-reducer".into()],

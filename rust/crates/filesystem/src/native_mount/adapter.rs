@@ -37,14 +37,14 @@ pub struct CheckoutMountSource<A, O> {
 }
 
 #[derive(Clone)]
-struct CallbackRuntime {
+pub(super) struct CallbackRuntime {
     handle: tokio::runtime::Handle,
 }
 
 static CALLBACK_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
 
 impl CallbackRuntime {
-    fn create() -> Result<Self, NativeMountError> {
+    pub(super) fn create() -> Result<Self, NativeMountError> {
         let runtime = CALLBACK_RUNTIME.get_or_init(|| {
             tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -74,21 +74,31 @@ impl CallbackRuntime {
                     self.handle.block_on(create())
                 }))
             }
-            Ok(_) => std::thread::scope(|scope| {
-                let worker = std::thread::Builder::new()
-                    .name("acyclic-fs-callback".to_owned())
-                    .spawn_scoped(scope, || self.handle.block_on(create()))
-                    .map_err(|error| MountSourceError::Engine(error.to_string()))?;
-                match worker.join() {
-                    Ok(value) => Ok(value),
-                    Err(payload) => std::panic::resume_unwind(payload),
-                }
-            }),
-            Err(_) => Ok(self.handle.block_on(create())),
+            _ => self.block_on_worker(create),
         }
     }
 
-    fn wait<T: Send, F: Future<Output = Result<T, MountSourceError>>>(
+    fn block_on_worker<F>(
+        &self,
+        create: impl FnOnce() -> F + Send,
+    ) -> Result<F::Output, MountSourceError>
+    where
+        F: Future,
+        F::Output: Send,
+    {
+        std::thread::scope(|scope| {
+            let worker = std::thread::Builder::new()
+                .name("acyclic-fs-callback".to_owned())
+                .spawn_scoped(scope, || self.handle.block_on(create()))
+                .map_err(|error| MountSourceError::Engine(error.to_string()))?;
+            match worker.join() {
+                Ok(value) => Ok(value),
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        })
+    }
+
+    pub(super) fn wait<T: Send, F: Future<Output = Result<T, MountSourceError>>>(
         &self,
         create: impl FnOnce() -> F + Send,
     ) -> Result<T, MountSourceError> {
@@ -171,6 +181,30 @@ impl<A, O> SharedCheckoutState<A, O> {
         let result = seal_checkout(
             &mut self.checkout,
             operation_id,
+            boundary_budget(),
+            cancellation,
+        )
+        .await;
+        if result.is_ok() {
+            self.clear_retained_operation(operation_id);
+        }
+        result
+    }
+
+    async fn seal_with_permit(
+        &mut self,
+        permit: crate::PublicationPermit,
+        cancellation: &CancellationToken,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let operation_id = self.retained_operation_id();
+        let result = super::seal_checkout_with_permit(
+            &mut self.checkout,
+            operation_id,
+            permit,
             boundary_budget(),
             cancellation,
         )
@@ -899,6 +933,20 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let mut checkout = self.checkout.lock().await;
         checkout.seal(&self.cancellation).await
+    }
+
+    /// Publishes pending mutations only while the supplied operation lease is
+    /// still active in the shared authority provider.
+    pub async fn sync_async_with_permit(
+        &self,
+        permit: crate::PublicationPermit,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let mut checkout = self.checkout.lock().await;
+        checkout.seal_with_permit(permit, &self.cancellation).await
     }
 
     /// Safely advances a clean mounted checkout to the workspace head.

@@ -30,6 +30,7 @@ elif [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1; the
 fi
 
 cd "$root"
+source_sha=$(git rev-parse --verify HEAD)
 cargo_bin="cargo"
 rustup_bin="rustup"
 wasm_bindgen_bin="wasm-bindgen"
@@ -91,7 +92,7 @@ for generated in acyclic_harness_wasm.js acyclic_harness_wasm.d.ts \
 done
 npm_stage="$work/npm-package"
 mkdir -p "$npm_stage/generated"
-install -m 0644 typescript/packages/harness/package.json typescript/packages/harness/README.md "$npm_stage/"
+install -m 0644 typescript/packages/harness/package.json typescript/packages/harness/README.md CHANGELOG.md "$npm_stage/"
 cp -R typescript/packages/harness/dist "$npm_stage/dist"
 cp -R typescript/packages/harness/generated/proto "$npm_stage/generated/proto"
 cp -R "$wasm_output" "$npm_stage/generated/wasm"
@@ -141,9 +142,9 @@ mkdir -p "$work/crates/.cargo"
 install -m 0644 "$root/rust-toolchain.toml" "$work/crates/rust-toolchain.toml"
 runtime_patch_path="$work/crates/acyclic-native-runtime-$runtime_version"
 stream_patch_path="$work/crates/acyclic-stream-$stream_version"
-if [[ "$cargo_bin" == "cargo.exe" ]]; then
-  runtime_patch_path="$(wslpath -m "$runtime_patch_path")"
-  stream_patch_path="$(wslpath -m "$stream_patch_path")"
+if [[ "$bun_platform" == "win32" ]]; then
+  runtime_patch_path="$(bash "$root/scripts/native-tool-path.sh" "$runtime_patch_path")"
+  stream_patch_path="$(bash "$root/scripts/native-tool-path.sh" "$stream_patch_path")"
 fi
 cat >"$work/crates/.cargo/config.toml" <<EOF
 [patch.crates-io]
@@ -171,24 +172,21 @@ evidence_artifacts=(
   "$output/acyclic-stream-$stream_version.crate"
   "$output/acyclic-harness-$harness_version.crate"
 )
-if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1; then
-  normalizer="$(wslpath -w "$normalizer")"
-  rust_log="$(wslpath -w "$rust_log")"
-  typescript_log="$(wslpath -w "$typescript_log")"
-  evidence_output="$(wslpath -w "$evidence_output")"
+if [[ "$bun_platform" == "win32" ]]; then
+  normalizer="$(bash "$root/scripts/native-tool-path.sh" "$normalizer")"
+  rust_log="$(bash "$root/scripts/native-tool-path.sh" "$rust_log")"
+  typescript_log="$(bash "$root/scripts/native-tool-path.sh" "$typescript_log")"
+  evidence_output="$(bash "$root/scripts/native-tool-path.sh" "$evidence_output")"
   for index in "${!evidence_artifacts[@]}"; do
-    evidence_artifacts[$index]="$(wslpath -w "${evidence_artifacts[$index]}")"
+    evidence_artifacts[$index]="$(bash "$root/scripts/native-tool-path.sh" "${evidence_artifacts[$index]}")"
   done
 fi
 bun "$normalizer" "$rust_log" "$typescript_log" "$evidence_output" "${evidence_artifacts[@]}"
 repeat_evidence="$work/CONFORMANCE-EVIDENCE.repeat.json"
-if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1; then
-  repeat_evidence="$(wslpath -w "$repeat_evidence")"
-fi
-bun "$normalizer" "$rust_log" "$typescript_log" "$repeat_evidence" "${evidence_artifacts[@]}"
-if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1; then
-  repeat_evidence="$(wslpath -u "$repeat_evidence")"
-fi
+repeat_evidence_arg="$repeat_evidence"
+[[ "$bun_platform" != "win32" ]] || repeat_evidence_arg="$(bash "$root/scripts/native-tool-path.sh" "$repeat_evidence")"
+bun "$normalizer" "$rust_log" "$typescript_log" "$repeat_evidence_arg" "${evidence_artifacts[@]}"
 cmp --silent "$output/CONFORMANCE-EVIDENCE.json" "$repeat_evidence"
 cd "$output"
 sha256sum acyclic-harness.tgz acyclic-*.crate CONFORMANCE-EVIDENCE.json > SHA256SUMS
+printf '%s\n' "$source_sha" > SOURCE_COMMIT

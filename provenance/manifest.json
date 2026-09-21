@@ -31,15 +31,6 @@
     {
       "sourceRepository": "https://github.com/acyclic-labs/fs",
       "sourceCommit": "e45723e9d4cf3c0caa364800060ecd916d5da648",
-      "sourcePath": "crates/daemon",
-      "destinationPath": "rust/crates/filesystem-daemon",
-      "license": "Apache-2.0",
-      "auditResult": "approved",
-      "reviewer": "Acyclic Labs Filesystem canonical ownership migration"
-    },
-    {
-      "sourceRepository": "https://github.com/acyclic-labs/fs",
-      "sourceCommit": "e45723e9d4cf3c0caa364800060ecd916d5da648",
       "sourcePath": "crates/wasm",
       "destinationPath": "rust/crates/filesystem-wasm",
       "license": "Apache-2.0",
@@ -63,87 +54,6 @@
       "license": "MIT",
       "auditResult": "approved",
       "reviewer": "Acyclic Labs self-contained macOS mount transport audit"
-    },
-    {
-      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
-      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
-      "sourcePath": "crates",
-      "destinationPath": "plugin/crates",
-      "license": "Apache-2.0",
-      "auditResult": "approved",
-      "reviewer": "Acyclic Labs plugin consolidation audit"
-    },
-    {
-      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
-      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
-      "sourcePath": "tests",
-      "destinationPath": "plugin/tests",
-      "license": "Apache-2.0",
-      "auditResult": "approved",
-      "reviewer": "Acyclic Labs plugin consolidation audit"
-    },
-    {
-      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
-      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
-      "sourcePath": "scripts",
-      "destinationPath": "plugin/scripts",
-      "license": "Apache-2.0",
-      "auditResult": "approved",
-      "reviewer": "Acyclic Labs plugin consolidation audit"
-    },
-    {
-      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
-      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
-      "sourcePath": "packaging",
-      "destinationPath": "plugin/packaging",
-      "license": "Apache-2.0",
-      "auditResult": "approved",
-      "reviewer": "Acyclic Labs plugin consolidation audit"
-    },
-    {
-      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
-      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
-      "sourcePath": "docs",
-      "destinationPath": "plugin/docs",
-      "license": "Apache-2.0",
-      "auditResult": "approved",
-      "reviewer": "Acyclic Labs plugin consolidation audit"
-    },
-    {
-      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
-      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
-      "sourcePath": "product.toml",
-      "destinationPath": "plugin/product.toml",
-      "license": "Apache-2.0",
-      "auditResult": "approved",
-      "reviewer": "Acyclic Labs plugin consolidation audit"
-    },
-    {
-      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
-      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
-      "sourcePath": "README.md",
-      "destinationPath": "plugin/README.md",
-      "license": "Apache-2.0",
-      "auditResult": "approved",
-      "reviewer": "Acyclic Labs plugin consolidation audit"
-    },
-    {
-      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
-      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
-      "sourcePath": "CHANGELOG.md",
-      "destinationPath": "plugin/CHANGELOG.md",
-      "license": "Apache-2.0",
-      "auditResult": "approved",
-      "reviewer": "Acyclic Labs plugin consolidation audit"
-    },
-    {
-      "sourceRepository": "https://github.com/acyclic-labs/graphcoder-plugin",
-      "sourceCommit": "e82be0be1431ed67819390c8926be88bea59c705",
-      "sourcePath": "LATEST",
-      "destinationPath": "plugin/LATEST",
-      "license": "Apache-2.0",
-      "auditResult": "approved",
-      "reviewer": "Acyclic Labs plugin consolidation audit"
     }
   ],
   "references": [

@@ -1,0 +1,12 @@
+{
+  "name": "@acyclic-labs/plugin",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Acyclic distributed workspaces and Git compatibility for coding agents",
+  "license": "Apache-2.0",
+  "repository": "github:acyclic-labs/sdk",
+  "bin": { "acyclic": "bin/acyclic.js" },
+  "files": ["bin", "certification", "plugin.json", ".agents", ".codex-plugin", ".mcp.json", "hooks", "README.md", "CHANGELOG.md"],
+  "scripts": { "postinstall": "node bin/install.js" },
+  "engines": { "node": ">=18" }
+}

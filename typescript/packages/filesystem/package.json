@@ -1,6 +1,6 @@
 {
   "name": "@acyclic-labs/fs",
-  "version": "0.2.0-rc.5",
+  "version": "0.1.0",
   "license": "Apache-2.0",
   "description": "Versioned workspaces for browser, memory, hosted, and native providers",
   "keywords": ["filesystem", "storage", "workspaces"],
@@ -12,7 +12,7 @@
   },
   "type": "module",
   "sideEffects": false,
-  "files": ["dist", "generated", "examples"],
+  "files": ["dist", "generated", "examples", "CHANGELOG.md"],
   "exports": {
     ".": {
       "types": "./dist/browser.d.ts",
@@ -37,16 +37,15 @@
     }
   },
   "scripts": {
-    "build:proto": "cd ../../.. && bun x buf format --diff --exit-code --path proto/filesystem/v2 --path proto/filesystem/daemon/v2 && bun x buf lint && bun run generate",
+    "build:proto": "cd ../../.. && bun x buf format --diff --exit-code --path proto/filesystem/v2 && bun x buf lint && bun run generate",
     "clean": "bun -e \"import { rmSync } from 'node:fs'; for (const path of ['dist', 'tsconfig.tsbuildinfo']) rmSync(path, { recursive: true, force: true })\"",
     "build": "bun x tsc -p tsconfig.json",
     "build:clean": "bun run clean && bun run build",
     "build:wasm": "cargo build --manifest-path ../../../Cargo.toml -p acyclic-fs-wasm --target wasm32-unknown-unknown --profile wasm-release --locked && wasm-bindgen ../../../target/wasm32-unknown-unknown/wasm-release/acyclic_fs_wasm.wasm --target web --out-dir generated/wasm --out-name acyclic_fs_wasm",
     "check": "bun x tsc -p tsconfig.json --noEmit",
-    "test": "bun run test:composition && bun run test:s3 && bun run test:hosted",
+    "test": "bun run test:composition && bun run test:s3",
     "test:composition": "bun test/node-memory.mjs",
     "test:s3": "bun test test/hosted-s3.test.mjs",
-    "test:hosted": "cargo build --manifest-path ../../../Cargo.toml -p acyclic-fs-daemon --locked && bun test/hosted.mjs",
     "pack:dry": "bun run build:clean && bun pm pack --dry-run"
   },
   "dependencies": {

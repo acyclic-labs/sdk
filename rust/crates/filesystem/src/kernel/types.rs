@@ -107,6 +107,10 @@ impl LogicalName {
         &self.bytes
     }
 
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.bytes.capacity()
+    }
+
     /// Comparison key for `CaseSensitivity::ProfileFolded` lookup and
     /// collision detection.
     ///

@@ -1,14 +1,14 @@
 {
-  "name": "acyclic-sdk",
+  "name": "acyclic",
   "interface": {
-    "displayName": "Acyclic SDK"
+    "displayName": "Acyclic"
   },
   "plugins": [
     {
-      "name": "acyclic-agent-workspaces",
+      "name": "acyclic",
       "source": {
         "source": "local",
-        "path": "./plugins/acyclic-agent-workspaces/dist/marketplace/plugins/acyclic-agent-workspaces"
+        "path": "./plugin"
       },
       "policy": {
         "installation": "AVAILABLE",

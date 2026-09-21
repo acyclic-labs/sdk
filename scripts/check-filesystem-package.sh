@@ -10,7 +10,9 @@ inference_evidence="$(dirname "$output")/inference/acyclic-inference.tgz"
 work="$(mktemp -d -t sdk-fs-package.XXXXXXXX)"
 trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 
-cd "$root/typescript/packages/filesystem"
+npm_stage="$work/npm-package"
+bash "$root/scripts/stage-npm-package.sh" "$root/typescript/packages/filesystem" "$npm_stage"
+cd "$npm_stage"
 # The caller already compiled and tested these JavaScript/WASM files; pack those exact bytes.
 bun pm pack --ignore-scripts --filename "$work/acyclic-fs.tgz" --quiet
 tar -xzf "$work/acyclic-fs.tgz" -C "$work"
@@ -52,6 +54,11 @@ mkdir -p "$work/crates/.cargo"
 runtime_path="$work/crates/acyclic-native-runtime-$runtime_version"
 objects_path="$work/crates/acyclic-objects-$objects_version"
 stream_path="$work/crates/acyclic-stream-$stream_version"
+if [[ "$(bun -e 'process.stdout.write(process.platform)')" == "win32" ]]; then
+  runtime_path="$(bash "$root/scripts/native-tool-path.sh" "$runtime_path")"
+  objects_path="$(bash "$root/scripts/native-tool-path.sh" "$objects_path")"
+  stream_path="$(bash "$root/scripts/native-tool-path.sh" "$stream_path")"
+fi
 cat >"$work/crates/.cargo/config.toml" <<EOF
 [patch.crates-io]
 acyclic-native-runtime = { path = "$runtime_path" }
@@ -75,4 +82,5 @@ package_root="$(dirname "$output")"
 bash "$root/scripts/check-typescript-packages.sh" \
   "$package_root/typescript" \
   "$inference_evidence" \
-  "$output/acyclic-fs.tgz"
+  "$output/acyclic-fs.tgz" \
+  "$package_root/harness/acyclic-harness.tgz"

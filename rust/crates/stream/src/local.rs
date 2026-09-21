@@ -20,7 +20,8 @@ use crate::{
     AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitOutcome, CommitRequest,
     CommittedEnvelope, DeleteReceipt, ForkReceipt, ForkRequest, IdempotencyKey,
     IdempotencyObservation, MAX_COMMAND_BYTES, MAX_ITEMS, MemoryLimits, MemoryStream, ReadRequest,
-    RecordStream, StreamError, StreamPath, StreamProvider, TrimReceipt,
+    RecordStream, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, TrimReceipt,
+    UnixMillisClock,
 };
 
 const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
@@ -116,11 +117,20 @@ impl LocalStream {
         root: impl AsRef<Path>,
         limits: LocalStreamLimits,
     ) -> Result<Self, LocalStreamError> {
+        Self::open_with_clock(root, limits, Arc::new(SystemUnixMillisClock)).await
+    }
+
+    /// Opens a provider with an injected trusted clock.
+    pub async fn open_with_clock(
+        root: impl AsRef<Path>,
+        limits: LocalStreamLimits,
+        clock: Arc<dyn UnixMillisClock>,
+    ) -> Result<Self, LocalStreamError> {
         validate_limits(limits)?;
         let root = root.as_ref().to_path_buf();
         let (commands, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
         let open = tokio::task::spawn_blocking(move || Journal::open(&root, limits, &commands));
-        let provider = MemoryStream::new(limits.memory);
+        let provider = MemoryStream::new_with_clock(limits.memory, clock);
         let mut replay_error = None;
         while let Some(command) = receiver.recv().await {
             if replay_error.is_none()
@@ -354,6 +364,25 @@ impl StreamProvider for LocalStream {
         let command = Command::Commit(request.clone());
         let frame = self.prepare(&command)?;
         let outcome = self.inner.provider.commit(request).await?;
+        self.persist(frame).await?;
+        Ok(outcome)
+    }
+
+    async fn commit_before(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: u64,
+    ) -> Result<CommitOutcome, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.write().await;
+        self.check_available()?;
+        let command = Command::Commit(request.clone());
+        let frame = self.prepare(&command)?;
+        let outcome = self
+            .inner
+            .provider
+            .commit_before(request, deadline_unix_millis)
+            .await?;
         self.persist(frame).await?;
         Ok(outcome)
     }
@@ -777,6 +806,7 @@ fn wire_commit(request: &CommitRequest) -> crate::wire::CommitRequest {
             .map(crate::wire_codec::mutation_wire)
             .collect(),
         idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
+        deadline_unix_millis: None,
     }
 }
 
@@ -803,6 +833,16 @@ fn domain_commit(request: crate::wire::CommitRequest) -> Result<CommitRequest, S
 mod tests {
     use super::*;
     use crate::conformance;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[derive(Default)]
+    struct TestClock(AtomicU64);
+
+    impl UnixMillisClock for TestClock {
+        fn now_unix_millis(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
 
     #[cfg(not(target_vendor = "apple"))]
     #[tokio::test]
@@ -836,6 +876,63 @@ mod tests {
                 .tail(StreamPath::new("conformance/source")?)
                 .await?,
             2
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let clock = Arc::new(TestClock::default());
+        clock.0.store(10, Ordering::SeqCst);
+        let provider = LocalStream::open_with_clock(
+            directory.path(),
+            LocalStreamLimits::default(),
+            clock.clone(),
+        )
+        .await?;
+        let accepted = CommitRequest {
+            conditions: vec![crate::CommitCondition::Absent {
+                path: StreamPath::new("deadline/accepted")?,
+            }],
+            mutations: vec![crate::CommitMutation::Append {
+                path: StreamPath::new("deadline/accepted")?,
+                records: vec![Bytes::from_static(b"accepted")],
+            }],
+            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"accepted"))?,
+        };
+        assert!(matches!(
+            provider.commit_before(accepted, 11).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let expired = CommitRequest {
+            conditions: vec![crate::CommitCondition::Absent {
+                path: StreamPath::new("deadline/expired")?,
+            }],
+            mutations: vec![crate::CommitMutation::Append {
+                path: StreamPath::new("deadline/expired")?,
+                records: vec![Bytes::from_static(b"expired")],
+            }],
+            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"expired"))?,
+        };
+        assert_eq!(
+            provider.commit_before(expired, 10).await,
+            Err(StreamError::DeadlineElapsed)
+        );
+        drop(provider);
+
+        clock.0.store(100, Ordering::SeqCst);
+        let reopened =
+            LocalStream::open_with_clock(directory.path(), LocalStreamLimits::default(), clock)
+                .await?;
+        assert_eq!(
+            reopened.tail(StreamPath::new("deadline/accepted")?).await?,
+            1
+        );
+        assert_eq!(
+            reopened.tail(StreamPath::new("deadline/expired")?).await,
+            Err(StreamError::NotFound)
         );
         Ok(())
     }

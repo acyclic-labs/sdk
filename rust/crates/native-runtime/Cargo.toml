@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish = true
 description = "Native file primitives shared by Acyclic local providers"
+readme = "README.md"
+documentation = "https://docs.rs/acyclic-native-runtime"
+keywords = ["filesystem", "io", "runtime"]
+categories = ["filesystem"]
 
 [dependencies]
 bytes.workspace = true
@@ -25,7 +29,9 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Storage_FileSystem",
+  "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_IO",
+  "Win32_System_JobObjects",
   "Win32_System_Threading",
 ] }
 

@@ -6,14 +6,13 @@
 
 use crate::cancellation::CancellationToken;
 use crate::kernel::{NamespacePath, NamespacePathError};
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-use crate::performance::WorkCounters;
-use crate::performance::{OperationFailure, OperationReceipt};
+use crate::performance::{OperationFailure, OperationReceipt, WorkCounters};
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Opaque identity and invalidation epoch of an attached source.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct SourceReference {
     /// Provider-scoped opaque identity; no local path is encoded here.
     pub identity: [u8; 16],
@@ -22,11 +21,11 @@ pub struct SourceReference {
 }
 
 /// Evidence for the exact node observed by a source request.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct SourceVersion(pub [u8; 32]);
 
 /// The kind of an observed source node.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SourceNodeKind {
     /// Directory, whose children remain unresolved until requested.
     Directory,
@@ -34,13 +33,21 @@ pub enum SourceNodeKind {
     RegularFile,
     /// Symbolic link, never followed by the source provider.
     SymbolicLink,
-    /// Another native node kind.
-    Other,
+    /// POSIX named pipe.
+    Fifo,
+    /// POSIX local socket node.
+    Socket,
+    /// Native character device.
+    CharacterDevice,
+    /// Native block device.
+    BlockDevice,
+    /// Another native node kind which cannot be projected losslessly.
+    Unsupported,
 }
 
 /// Scalar host metadata. `None` means the provider did not make that fact
 /// available; it does not mean a numeric zero.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SourceMetadata {
     /// POSIX permission and kind bits, when available.
     pub posix_mode: Option<u32>,
@@ -48,17 +55,31 @@ pub struct SourceMetadata {
     pub posix_uid: Option<u32>,
     /// POSIX numeric group, when available.
     pub posix_gid: Option<u32>,
+    /// POSIX inode flags, when available.
+    pub posix_flags: Option<u64>,
     /// Windows file attributes, when available.
     pub windows_attributes: Option<u32>,
+    /// Creation/birth time in signed Unix nanoseconds.
+    pub created_ns: Option<i128>,
     /// Last content modification time in signed Unix nanoseconds.
     pub modified_ns: Option<i128>,
+    /// Last access time in signed Unix nanoseconds.
+    pub accessed_ns: Option<i128>,
+    /// Last metadata-change time in signed Unix nanoseconds.
+    pub changed_ns: Option<i128>,
 }
 
 /// Metadata returned by an exact path lookup.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SourceNode {
     /// Source node kind.
     pub kind: SourceNodeKind,
+    /// Stable path-independent source identity. Hard-link aliases share it.
+    pub file_identity: [u8; 32],
+    /// Exact number of source namespace bindings when the provider exposes it.
+    pub link_count: Option<u64>,
+    /// Native device identity for character and block devices.
+    pub device: Option<(u32, u32)>,
     /// Logical length for a regular file; absent for other kinds.
     pub logical_bytes: Option<u64>,
     /// Version that must match a later read of this node.
@@ -194,6 +215,15 @@ pub trait DemandSource: Send + Sync {
         cancellation: &CancellationToken,
     ) -> DemandResult<Bytes>;
 
+    /// Reads one symbolic link's exact opaque target without following it.
+    async fn read_link(
+        &self,
+        source: SourceReference,
+        path: &NamespacePath,
+        expected: SourceVersion,
+        cancellation: &CancellationToken,
+    ) -> DemandResult<Bytes>;
+
     /// Read metadata without reading a file body.
     async fn read_metadata(
         &self,
@@ -218,12 +248,136 @@ pub trait DemandSource: Send + Sync {
     }
 }
 
+/// A composable source view that hides exact subtrees before they enter lazy
+/// observation state. This is the SDK boundary used for host-private entries
+/// such as a physical checkout's `.git` directory.
+#[derive(Clone)]
+pub struct FilteredDemandSource<D> {
+    inner: D,
+    excluded: std::sync::Arc<Vec<NamespacePath>>,
+}
+
+impl<D> FilteredDemandSource<D> {
+    /// Wraps a source with canonical excluded subtree roots.
+    #[must_use]
+    pub fn new(inner: D, excluded: Vec<NamespacePath>) -> Self {
+        Self {
+            inner,
+            excluded: std::sync::Arc::new(excluded),
+        }
+    }
+
+    /// Returns the wrapped source capability.
+    #[must_use]
+    pub const fn inner(&self) -> &D {
+        &self.inner
+    }
+
+    fn excludes(&self, path: &NamespacePath) -> bool {
+        self.excluded.iter().any(|root| path.is_within(root))
+    }
+
+    fn excludes_child(&self, directory: &NamespacePath, name: &crate::kernel::LogicalName) -> bool {
+        self.excluded.iter().any(|root| {
+            root.components().len() == directory.components().len().saturating_add(1)
+                && root.components().starts_with(directory.components())
+                && root.components().last() == Some(name)
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl<D: DemandSource> DemandSource for FilteredDemandSource<D> {
+    fn reference(&self) -> SourceReference {
+        self.inner.reference()
+    }
+
+    async fn lookup(
+        &self,
+        source: SourceReference,
+        path: &NamespacePath,
+        cancellation: &CancellationToken,
+    ) -> DemandResult<Option<SourceNode>> {
+        if self.excludes(path) {
+            return Ok(OperationReceipt {
+                value: None,
+                work: WorkCounters::default(),
+            });
+        }
+        self.inner.lookup(source, path, cancellation).await
+    }
+
+    async fn list_page(
+        &self,
+        source: SourceReference,
+        directory: &NamespacePath,
+        cursor: Option<SourceCursor>,
+        maximum_entries: u32,
+        cancellation: &CancellationToken,
+    ) -> DemandResult<SourceDirectoryPage> {
+        if self.excludes(directory) {
+            return Err(OperationFailure::new(
+                DemandError::Absent,
+                WorkCounters::default(),
+            ));
+        }
+        let mut page = self
+            .inner
+            .list_page(source, directory, cursor, maximum_entries, cancellation)
+            .await?;
+        page.value
+            .entries
+            .retain(|entry| !self.excludes_child(directory, &entry.name));
+        Ok(page)
+    }
+
+    async fn read_range(
+        &self,
+        source: SourceReference,
+        path: &NamespacePath,
+        expected: SourceVersion,
+        offset: u64,
+        length: u64,
+        cancellation: &CancellationToken,
+    ) -> DemandResult<Bytes> {
+        if self.excludes(path) {
+            return Err(OperationFailure::new(
+                DemandError::Absent,
+                WorkCounters::default(),
+            ));
+        }
+        self.inner
+            .read_range(source, path, expected, offset, length, cancellation)
+            .await
+    }
+
+    async fn read_link(
+        &self,
+        source: SourceReference,
+        path: &NamespacePath,
+        expected: SourceVersion,
+        cancellation: &CancellationToken,
+    ) -> DemandResult<Bytes> {
+        if self.excludes(path) {
+            return Err(OperationFailure::new(
+                DemandError::Absent,
+                WorkCounters::default(),
+            ));
+        }
+        self.inner
+            .read_link(source, path, expected, cancellation)
+            .await
+    }
+}
+
 /// Native provider backed by a held, no-follow directory capability.
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native {
     use super::*;
     use crate::model::{FilesystemProfile, VolumeLimits};
     use crate::native_host::HostRoot;
+    #[cfg(unix)]
+    use cap_std::fs::FileTypeExt as _;
     use cap_std::fs::{Metadata, MetadataExt, ReadDir};
     use std::collections::{BTreeMap, VecDeque};
     use std::path::{Path, PathBuf};
@@ -355,6 +509,12 @@ pub mod native {
     }
 
     impl NativeDemandSource {
+        /// Returns the stable identity of the already-open native root.
+        #[must_use]
+        pub fn root_identity(&self) -> crate::NativeRootIdentity {
+            self.inner.root.identity()
+        }
+
         #[cfg(test)]
         pub(super) async fn occupy_all_requests(
             &self,
@@ -432,16 +592,41 @@ pub mod native {
             profile: FilesystemProfile,
             limits: VolumeLimits,
         ) -> Result<Self, DemandError> {
+            Self::open_with_reference(
+                path,
+                profile,
+                limits,
+                SourceReference {
+                    identity: *uuid::Uuid::new_v4().as_bytes(),
+                    epoch: 0,
+                },
+            )
+            .await
+        }
+
+        /// Reopens only the root directory using a durable provider identity.
+        ///
+        /// Adapters persist this opaque reference beside the lazy workspace;
+        /// reopening never enumerates descendants or reads file contents.
+        pub async fn open_with_reference(
+            path: impl AsRef<Path>,
+            profile: FilesystemProfile,
+            limits: VolumeLimits,
+            reference: SourceReference,
+        ) -> Result<Self, DemandError> {
             let path = path.as_ref().to_path_buf();
-            tokio::task::spawn_blocking(move || Self::open_blocking(path, profile, limits))
-                .await
-                .map_err(|_| DemandError::WorkerUnavailable)?
+            tokio::task::spawn_blocking(move || {
+                Self::open_blocking(path, profile, limits, reference)
+            })
+            .await
+            .map_err(|_| DemandError::WorkerUnavailable)?
         }
 
         fn open_blocking(
             path: PathBuf,
             profile: FilesystemProfile,
             limits: VolumeLimits,
+            reference: SourceReference,
         ) -> Result<Self, DemandError> {
             let path = if path.is_absolute() {
                 path
@@ -453,8 +638,8 @@ pub mod native {
                 inner: Arc::new(NativeDemandInner {
                     path,
                     root,
-                    identity: *uuid::Uuid::new_v4().as_bytes(),
-                    epoch: AtomicU64::new(0),
+                    identity: reference.identity,
+                    epoch: AtomicU64::new(reference.epoch),
                     profile,
                     limits,
                     cursors: Mutex::new(BTreeMap::new()),
@@ -626,6 +811,9 @@ pub mod native {
             let kind = node_kind(metadata.file_type());
             SourceNode {
                 kind,
+                file_identity: file_identity(metadata),
+                link_count: link_count(metadata),
+                device: device_identity(metadata, kind),
                 logical_bytes: (kind == SourceNodeKind::RegularFile).then_some(metadata.len()),
                 version: version(metadata),
                 metadata: source_metadata(metadata),
@@ -773,8 +961,28 @@ pub mod native {
         } else if file_type.is_symlink() {
             SourceNodeKind::SymbolicLink
         } else {
-            SourceNodeKind::Other
+            special_node_kind(&file_type)
         }
+    }
+
+    #[cfg(unix)]
+    fn special_node_kind(file_type: &cap_std::fs::FileType) -> SourceNodeKind {
+        if file_type.is_fifo() {
+            SourceNodeKind::Fifo
+        } else if file_type.is_socket() {
+            SourceNodeKind::Socket
+        } else if file_type.is_char_device() {
+            SourceNodeKind::CharacterDevice
+        } else if file_type.is_block_device() {
+            SourceNodeKind::BlockDevice
+        } else {
+            SourceNodeKind::Unsupported
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn special_node_kind(_file_type: &cap_std::fs::FileType) -> SourceNodeKind {
+        SourceNodeKind::Unsupported
     }
 
     #[async_trait::async_trait]
@@ -977,6 +1185,52 @@ pub mod native {
             work.output_bytes = bytes.len() as u64;
             Ok(OperationReceipt { value: bytes, work })
         }
+
+        async fn read_link(
+            &self,
+            source: SourceReference,
+            path: &NamespacePath,
+            expected: SourceVersion,
+            cancellation: &CancellationToken,
+        ) -> DemandResult<Bytes> {
+            let path = path.clone();
+            self.run_blocking(cancellation, move |provider, request_cancellation| {
+                measured(|work| {
+                    provider.check(source, &request_cancellation)?;
+                    work.source_path_components = path.depth() as u64;
+                    let before = provider.metadata(&path)?.ok_or(DemandError::Absent)?;
+                    if !before.file_type().is_symlink() {
+                        return Err(DemandError::InvalidRequest);
+                    }
+                    if version(&before) != expected {
+                        return Err(DemandError::StaleVersion);
+                    }
+                    let target = provider.inner.root.read_link(&provider.relative(&path)?)?;
+                    let bytes = os_string_bytes(target.as_os_str());
+                    work.source_bytes_read = bytes.len() as u64;
+                    work.output_bytes = bytes.len() as u64;
+                    let after = provider.metadata(&path)?.ok_or(DemandError::Absent)?;
+                    if version(&after) != expected {
+                        return Err(DemandError::StaleVersion);
+                    }
+                    provider.check(source, &request_cancellation)?;
+                    Ok(Bytes::from(bytes))
+                })
+            })
+            .await
+        }
+    }
+
+    #[cfg(unix)]
+    fn os_string_bytes(value: &std::ffi::OsStr) -> Vec<u8> {
+        use std::os::unix::ffi::OsStrExt as _;
+        value.as_bytes().to_vec()
+    }
+
+    #[cfg(windows)]
+    fn os_string_bytes(value: &std::ffi::OsStr) -> Vec<u8> {
+        use std::os::windows::ffi::OsStrExt as _;
+        value.encode_wide().flat_map(u16::to_le_bytes).collect()
     }
 
     fn version(metadata: &Metadata) -> SourceVersion {
@@ -1011,15 +1265,73 @@ pub mod native {
         SourceVersion(*hash.finalize().as_bytes())
     }
 
+    fn file_identity(metadata: &Metadata) -> [u8; 32] {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic-fs-native-source-file-v1\0");
+        #[cfg(unix)]
+        {
+            hash.update(&metadata.dev().to_le_bytes());
+            hash.update(&metadata.ino().to_le_bytes());
+        }
+        #[cfg(windows)]
+        {
+            hash.update(
+                &cap_primitives::fs::_WindowsByHandle::volume_serial_number(metadata)
+                    .unwrap_or_default()
+                    .to_le_bytes(),
+            );
+            hash.update(
+                &cap_primitives::fs::_WindowsByHandle::file_index(metadata)
+                    .unwrap_or_default()
+                    .to_le_bytes(),
+            );
+        }
+        *hash.finalize().as_bytes()
+    }
+
+    fn link_count(metadata: &Metadata) -> Option<u64> {
+        #[cfg(unix)]
+        {
+            Some(metadata.nlink())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = metadata;
+            None
+        }
+    }
+
+    #[allow(
+        clippy::useless_conversion,
+        reason = "dev_t and major/minor result widths differ across Unix targets"
+    )]
+    fn device_identity(metadata: &Metadata, kind: SourceNodeKind) -> Option<(u32, u32)> {
+        #[cfg(unix)]
+        {
+            if !matches!(
+                kind,
+                SourceNodeKind::CharacterDevice | SourceNodeKind::BlockDevice
+            ) {
+                return None;
+            }
+            let raw: libc::dev_t = metadata.rdev().try_into().ok()?;
+            Some((
+                libc::major(raw).try_into().ok()?,
+                libc::minor(raw).try_into().ok()?,
+            ))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (metadata, kind);
+            None
+        }
+    }
+
     fn source_metadata(metadata: &Metadata) -> SourceMetadata {
         let mut result = SourceMetadata {
-            modified_ns: metadata.modified().ok().and_then(|time| {
-                let duration = time.into_std().duration_since(std::time::UNIX_EPOCH).ok()?;
-                Some(
-                    i128::from(duration.as_secs()) * 1_000_000_000
-                        + i128::from(duration.subsec_nanos()),
-                )
-            }),
+            created_ns: metadata.created().ok().and_then(system_time_nanos),
+            modified_ns: metadata.modified().ok().and_then(system_time_nanos),
+            accessed_ns: metadata.accessed().ok().and_then(system_time_nanos),
             ..SourceMetadata::default()
         };
         #[cfg(unix)]
@@ -1027,12 +1339,28 @@ pub mod native {
             result.posix_mode = Some(metadata.mode());
             result.posix_uid = Some(metadata.uid());
             result.posix_gid = Some(metadata.gid());
+            result.changed_ns = Some(
+                i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec()),
+            );
         }
         #[cfg(windows)]
         {
             result.windows_attributes = Some(metadata.file_attributes());
         }
         result
+    }
+
+    fn system_time_nanos(time: cap_std::time::SystemTime) -> Option<i128> {
+        match time.into_std().duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => Some(
+                i128::from(duration.as_secs()) * 1_000_000_000
+                    + i128::from(duration.subsec_nanos()),
+            ),
+            Err(error) => Some(
+                -(i128::from(error.duration().as_secs()) * 1_000_000_000
+                    + i128::from(error.duration().subsec_nanos())),
+            ),
+        }
     }
 }
 

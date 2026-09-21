@@ -9,7 +9,6 @@ plugins:
     strategy: all
     types:
       - acyclic.filesystem.v2.FilesystemService
-      - acyclic.filesystem.daemon.v2.FilesystemDaemonService
       - acyclic.objects.v1.BucketsService
       - acyclic.objects.v1.ObjectsService
       - acyclic.objects.v1.MultipartService

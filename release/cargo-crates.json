@@ -1,0 +1,17 @@
+[
+  "acyclic-inference",
+  "acyclic-machines",
+  "acyclic-native-runtime",
+  "acyclic-objects",
+  "acyclic-stream",
+  "acyclic-fs",
+  "acyclic-harness",
+  "acyclic-harness-filesystem",
+  "acyclic-harness-grpc",
+  "acyclic-harness-http",
+  "acyclic-harness-machines",
+  "acyclic-labs-plugin",
+  "acyclic-memory",
+  "acyclic-conformance",
+  "acyclic-sdk"
+]

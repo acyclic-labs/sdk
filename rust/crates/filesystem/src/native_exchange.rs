@@ -220,7 +220,44 @@ pub fn exchange_native_entries(left: &Path, right: &Path) -> Result<(), NativeEx
     if !entry_exists(left)? || !entry_exists(right)? {
         return Err(NativeExchangeError::InvalidLayout);
     }
-    exchange(left, right)
+    exchange(left, right)?;
+    sync_parent(left)?;
+    if left.parent() != right.parent() {
+        sync_parent(right)?;
+    }
+    Ok(())
+}
+
+/// Resolves the two crash windows in the Windows three-rename entry exchange.
+/// Other platforms exchange entries in one kernel operation and need no
+/// scratch recovery.
+pub(crate) fn recover_native_entry_exchange(live: &Path) -> Result<(), NativeExchangeError> {
+    #[cfg(windows)]
+    {
+        let scratch = scratch(live)?;
+        let witness = entry_exchange_witness(live)?;
+        if !entry_exists(&witness)? {
+            if entry_exists(&scratch)? {
+                return Err(NativeExchangeError::IncompatibleJournal);
+            }
+            return Ok(());
+        }
+        validate_entry_exchange_witness(&witness)?;
+        if entry_exists(&scratch)? && entry_exists(live)? {
+            remove_entry(&scratch)?;
+            sync_parent(live)?;
+        } else if entry_exists(&scratch)? {
+            durable_rename(
+                &scratch,
+                live,
+                acyclic_native_runtime::RenameMode::NoReplace,
+            )?;
+        }
+        remove_entry_exchange_witness(&witness)?;
+    }
+    #[cfg(not(windows))]
+    let _ = live;
+    Ok(())
 }
 
 /// Recovers one interrupted whole-tree publication.
@@ -373,11 +410,54 @@ fn scratch(live: &Path) -> Result<PathBuf, NativeExchangeError> {
 }
 
 #[cfg(windows)]
-fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
-    let scratch = scratch(live)?;
-    if entry_exists(&scratch)? {
-        return Err(NativeExchangeError::IncompatibleJournal);
+const ENTRY_EXCHANGE_WITNESS: &[u8] = b"acyclic-native-entry-exchange-v1\n";
+
+#[cfg(windows)]
+fn entry_exchange_witness(live: &Path) -> Result<PathBuf, NativeExchangeError> {
+    let parent = live.parent().ok_or(NativeExchangeError::InvalidLayout)?;
+    let name = live.file_name().ok_or(NativeExchangeError::InvalidLayout)?;
+    Ok(parent.join(format!(
+        ".{}.acyclic-exchange-witness",
+        name.to_string_lossy()
+    )))
+}
+
+#[cfg(windows)]
+fn validate_entry_exchange_witness(path: &Path) -> Result<(), NativeExchangeError> {
+    if std::fs::read(path)? == ENTRY_EXCHANGE_WITNESS {
+        Ok(())
+    } else {
+        Err(NativeExchangeError::IncompatibleJournal)
     }
+}
+
+#[cfg(windows)]
+fn create_entry_exchange_witness(path: &Path) -> Result<(), NativeExchangeError> {
+    use std::io::Write as _;
+
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)?;
+    file.write_all(ENTRY_EXCHANGE_WITNESS)?;
+    file.sync_all()?;
+    sync_parent(path)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn remove_entry_exchange_witness(path: &Path) -> Result<(), NativeExchangeError> {
+    remove_entry(path)?;
+    sync_parent(path)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
+    recover_native_entry_exchange(live)?;
+    let scratch = scratch(live)?;
+    let witness = entry_exchange_witness(live)?;
+    create_entry_exchange_witness(&witness)?;
     durable_rename(
         live,
         &scratch,
@@ -393,6 +473,9 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
             live,
             acyclic_native_runtime::RenameMode::NoReplace,
         );
+        if entry_exists(live)? && !entry_exists(&scratch)? {
+            remove_entry_exchange_witness(&witness)?;
+        }
         return Err(error.into());
     }
     durable_rename(
@@ -400,6 +483,7 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
         prepared,
         acyclic_native_runtime::RenameMode::NoReplace,
     )?;
+    remove_entry_exchange_witness(&witness)?;
     Ok(())
 }
 
@@ -535,6 +619,59 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn entry_exchange_recovery_restores_a_missing_live_entry() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let scratch = scratch(&live).expect("scratch path");
+        let witness = entry_exchange_witness(&live).expect("witness path");
+        create_entry_exchange_witness(&witness).expect("exchange witness");
+        std::fs::write(&scratch, b"before").expect("scratch entry");
+
+        recover_native_entry_exchange(&live).expect("recover exchange");
+
+        assert_eq!(std::fs::read(&live).expect("restored entry"), b"before");
+        assert!(!scratch.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn entry_exchange_recovery_keeps_a_published_live_entry() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let scratch = scratch(&live).expect("scratch path");
+        let witness = entry_exchange_witness(&live).expect("witness path");
+        create_entry_exchange_witness(&witness).expect("exchange witness");
+        std::fs::write(&live, b"after").expect("published entry");
+        std::fs::write(&scratch, b"before").expect("scratch entry");
+
+        recover_native_entry_exchange(&live).expect("recover exchange");
+
+        assert_eq!(std::fs::read(&live).expect("published entry"), b"after");
+        assert!(!scratch.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn entry_exchange_recovery_preserves_an_unowned_scratch_collision() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let live = temporary.path().join("live");
+        let scratch = scratch(&live).expect("scratch path");
+        std::fs::write(&live, b"live").expect("live entry");
+        std::fs::write(&scratch, b"unrelated").expect("scratch collision");
+
+        assert!(matches!(
+            recover_native_entry_exchange(&live),
+            Err(NativeExchangeError::IncompatibleJournal)
+        ));
+        assert_eq!(std::fs::read(&live).expect("live entry"), b"live");
+        assert_eq!(
+            std::fs::read(&scratch).expect("scratch collision"),
+            b"unrelated"
+        );
+    }
 
     #[test]
     fn recovery_recognizes_an_exchange_completed_before_journal_removal() {

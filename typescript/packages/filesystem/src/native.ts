@@ -73,6 +73,7 @@ import type {
   NativeRawOperationWindowLease,
   NativeRawOperationWindowPhase,
   NativeRawWorkspaceGraph,
+  NativeRawWorkspaceContextRegistry,
   NativeRawWorkspaceLineageRecord,
 } from "./contracts.js";
 import type {
@@ -80,16 +81,22 @@ import type {
   GitCommitIdentity,
   GitCompatCommand,
   GitCompatRepository,
+  CompatibilityWire,
   OperationIdentity,
   OperationWindowClose,
   OperationWindowCoordinator,
   OperationWindowLease,
   OperationWindowPhase,
   WorkspaceGraph,
+  WorkspaceContext,
+  WorkspaceContextRegistry,
+  WorkspaceContextRoot,
   WorkspaceIdentity,
   WorkspaceLineageRecord,
 } from "./compat.js";
 import {
+  adaptCompatibilityWire,
+  decodeFixedBytes,
   encodeGitCompatCommand,
   finishGitCompatOutput,
   gitCompatSafeTimestamp,
@@ -107,7 +114,7 @@ export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOpti
 export { CrossVolumeError, MountedView } from "./mounted.js";
 export type { MountedCheckout, MountedSnapshot } from "./mounted.js";
 
-const PACKAGE_VERSION = "0.2.0-rc.5";
+const PACKAGE_VERSION = "0.1.0";
 const TARGETS = new Set([
   "win32-x64",
   "win32-arm64",
@@ -146,6 +153,9 @@ async function bindings(): Promise<NativeBindings> {
       throw new Error("native companion target does not match the current Node.js process");
     }
     return candidate;
+  }).catch((error: unknown) => {
+    bindingPromise = undefined;
+    throw error;
   });
   return bindingPromise;
 }
@@ -180,6 +190,118 @@ export async function openNativeGitCompatRepository(
   requireStateRoot(stateRoot, "Git compatibility");
   const binding = await bindings();
   return adaptGitCompat(binding.NativeGitCompatRepository.open(stateRoot, workspaceId));
+}
+
+/** Opens the canonical Rust merge/publication wire codec. */
+export async function openNativeCompatibilityWire(): Promise<CompatibilityWire> {
+  return adaptCompatibilityWire(await bindings());
+}
+
+/** Opens the durable agent-neutral multi-root context registry. */
+export async function openNativeWorkspaceContextRegistry(
+  stateRoot: string,
+): Promise<WorkspaceContextRegistry> {
+  requireStateRoot(stateRoot, "workspace context");
+  const binding = await bindings();
+  return adaptWorkspaceContextRegistry(
+    binding.NativeWorkspaceContextRegistry.open(stateRoot),
+  );
+}
+
+function encodeWorkspaceContextRoots(roots: readonly WorkspaceContextRoot[]): string {
+  return JSON.stringify(roots.map((root) => ({
+    root_id: Array.from(root.rootId),
+    source_path: root.sourcePath,
+    workspace_id: Array.from(root.workspaceId),
+    workspace_name: root.workspaceName,
+    parent_workspace_id: root.parentWorkspaceId === undefined
+      ? null
+      : Array.from(root.parentWorkspaceId),
+    mount_path: root.mountPath ?? null,
+  })));
+}
+
+function parseWorkspaceContext(json: string): WorkspaceContext {
+  const value = JSON.parse(json) as {
+    version: number;
+    revision: string;
+    context_id: unknown;
+    parent_context_id: unknown | null;
+    roots: Record<string, {
+      root_id: unknown;
+      source_path: string;
+      workspace_id: unknown;
+      workspace_name: string;
+      parent_workspace_id: unknown | null;
+      mount_path: string | null;
+    }>;
+    state: WorkspaceContext["state"];
+  };
+  return {
+    version: value.version,
+    revision: BigInt(value.revision),
+    contextId: decodeFixedBytes(value.context_id, 16, "context identity"),
+    parentContextId: value.parent_context_id === null
+      ? undefined
+      : decodeFixedBytes(value.parent_context_id, 16, "parent context identity"),
+    roots: Object.values(value.roots).map((root) => ({
+      rootId: decodeFixedBytes(root.root_id, 16, "root identity"),
+      sourcePath: root.source_path,
+      workspaceId: decodeFixedBytes(root.workspace_id, 16, "workspace identity"),
+      workspaceName: root.workspace_name,
+      parentWorkspaceId: root.parent_workspace_id === null
+        ? undefined
+        : decodeFixedBytes(root.parent_workspace_id, 16, "parent workspace identity"),
+      mountPath: root.mount_path ?? undefined,
+    })),
+    state: value.state,
+  };
+}
+
+function adaptWorkspaceContextRegistry(
+  raw: NativeRawWorkspaceContextRegistry,
+): WorkspaceContextRegistry {
+  return {
+    async registerRoot(contextId, roots) {
+      return parseWorkspaceContext(
+        await raw.registerRootJson(contextId, encodeWorkspaceContextRoots(roots)),
+      );
+    },
+    async registerChild(contextId, parentContextId, roots) {
+      return parseWorkspaceContext(await raw.registerChildJson(
+        contextId,
+        parentContextId,
+        encodeWorkspaceContextRoots(roots),
+      ));
+    },
+    async resolve(contextId) {
+      return parseWorkspaceContext(await raw.resolveJson(contextId));
+    },
+    async setActive(contextId, active) {
+      return parseWorkspaceContext(await raw.setActiveJson(contextId, active));
+    },
+    async setWorkspace(
+      contextId,
+      rootId,
+      workspaceId,
+      workspaceName,
+      parentWorkspaceId,
+    ) {
+      return parseWorkspaceContext(await raw.setWorkspaceJson(
+        contextId,
+        rootId,
+        workspaceId,
+        workspaceName,
+        parentWorkspaceId,
+      ));
+    },
+    async discardSubtree(parentContextId, childContextId, maximum) {
+      const values = JSON.parse(
+        await raw.discardSubtreeJson(parentContextId, childContextId, maximum),
+      ) as unknown[];
+      return values.map((value) => decodeFixedBytes(value, 16, "discarded context identity"));
+    },
+  };
 }
 
 function requireStateRoot(stateRoot: string, feature: string): void {
@@ -553,9 +675,7 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
     cancel(): void {
       raw.cancel();
     },
-    close(): void {
-      raw.close();
-    },
+    close(): void {},
   };
   return engine;
 }
@@ -977,9 +1097,10 @@ function adaptWorkspace(raw: NativeRawWorkspace): NativeFsWorkspace {
     async remove(path: string): Promise<WorkspaceCommit> {
       return nativeWorkspaceCommit(await raw.remove(path));
     },
-    async fork(destination: string): Promise<FsWorkspace> {
+    async fork(destination: string, idempotencyKey?: Uint8Array): Promise<FsWorkspace> {
       requireWorkspaceName(destination);
-      return adaptWorkspace(await raw.fork(destination));
+      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
+      return adaptWorkspace(await raw.fork(destination, idempotencyKey));
     },
     async forkAt(destination: string, generation: FsGeneration): Promise<NativeFsWorkspace> {
       requireWorkspaceName(destination);

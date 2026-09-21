@@ -1,17 +1,19 @@
 //! `IndexedDB` authority and immutable-object persistence.
 
 use crate::authority_codec::{
-    COMMIT_PREFIX_BYTES, HEAD_BYTES, OPERATION_BYTES, OperationRecord, authority_key, commit_key,
-    decode_commit_owned, decode_head, decode_operation, encode_commit, encode_head,
-    encode_operation, operation_key,
+    COMMIT_PREFIX_BYTES, GATE_BYTES, HEAD_BYTES, OPERATION_BYTES, OperationRecord,
+    PublicationGateRecord, authority_key, commit_key, decode_commit_owned, decode_head,
+    decode_operation, decode_publication_gate, encode_commit, encode_head, encode_operation,
+    encode_publication_gate, free_publication_gate, operation_key,
 };
 use acyclic_fs::storage::FenceOutcome;
 use acyclic_fs::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityFailure, AuthorityId,
     AuthorityReceipt, AuthorityResult, AuthorityStoreError, CancellationToken,
-    CreateAuthorityOutcome, DurableCommit, Epoch, GenerationFork, GenerationForkSource, Head,
-    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectRead, ObjectReadRetention,
-    ObjectReceipt, ObjectResult, ObjectStoreError, OperationId, ProposedCommit, ReplayLimit,
+    CreateAuthorityOutcome, DurableCommit, Epoch, GenerationFork, GenerationForkSource,
+    GuardedAppend, Head, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectRead,
+    ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStoreError, OperationId,
+    ProposedCommit, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
     Sequence, WorkBudget, WorkCounters, authority_commit_digest, object_digest,
 };
 use bytes::Bytes;
@@ -32,12 +34,13 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::Blob;
 
-const DATABASE_VERSION: u32 = 2;
+const DATABASE_VERSION: u32 = 3;
 const OBJECTS: &str = "objects";
 const OBJECT_METADATA: &str = "object_metadata";
 const AUTHORITY_HEADS: &str = "authority_heads";
 const AUTHORITY_COMMITS: &str = "authority_commits";
 const AUTHORITY_OPERATIONS: &str = "authority_operations";
+const AUTHORITY_GATES: &str = "authority_gates";
 const OBJECT_KEY_BYTES: u64 = 66;
 
 #[derive(Clone, Copy)]
@@ -1115,12 +1118,15 @@ async fn open_database(database_name: &str) -> Result<Database, IndexedDbOpenErr
                 database.delete_object_store(OBJECTS)?;
                 database.delete_object_store(OBJECT_METADATA)?;
             }
-            if event.old_version() < f64::from(DATABASE_VERSION) {
+            if event.old_version() < 2.0 {
                 database.create_object_store(OBJECTS).build()?;
                 database.create_object_store(OBJECT_METADATA).build()?;
                 database.create_object_store(AUTHORITY_HEADS).build()?;
                 database.create_object_store(AUTHORITY_COMMITS).build()?;
                 database.create_object_store(AUTHORITY_OPERATIONS).build()?;
+            }
+            if event.old_version() < 3.0 {
+                database.create_object_store(AUTHORITY_GATES).build()?;
             }
             Ok(())
         })
@@ -1165,7 +1171,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         Self::admit(read_admission, budget)?;
         let transaction = self
             .database
-            .transaction(AUTHORITY_HEADS)
+            .transaction([AUTHORITY_HEADS, AUTHORITY_GATES])
             .with_mode(TransactionMode::Readwrite)
             .with_options(strict_transaction_options())
             .build()
@@ -1180,6 +1186,19 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         if let Some(encoded) = existing {
             let head =
                 decode_head(&encoded).map_err(|error| Self::corrupt(error, read_admission))?;
+            let gates = transaction
+                .object_store(AUTHORITY_GATES)
+                .map_err(|error| Self::backend(error, read_admission))?;
+            let gate =
+                Self::get_fixed(&gates, &key, GATE_BYTES, cancellation, read_admission).await?;
+            if gate.is_none() {
+                let encoded_gate = encode_publication_gate(free_publication_gate());
+                Self::add_fixed(&gates, &key, &encoded_gate, cancellation, read_admission).await?;
+                transaction
+                    .commit()
+                    .await
+                    .map_err(|error| Self::backend(error, read_admission))?;
+            }
             return Ok(AuthorityReceipt {
                 value: CreateAuthorityOutcome::Existing(head),
                 work: read_admission,
@@ -1197,6 +1216,11 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                 .object_store(AUTHORITY_HEADS)
                 .map_err(|error| Self::backend(error, read_work))?;
             Self::add_fixed(&heads, &key, &encoded, cancellation, write_work).await?;
+            let gates = transaction
+                .object_store(AUTHORITY_GATES)
+                .map_err(|error| Self::backend(error, write_work))?;
+            let encoded_gate = encode_publication_gate(free_publication_gate());
+            Self::add_fixed(&gates, &key, &encoded_gate, cancellation, write_work).await?;
         }
         transaction
             .commit()
@@ -1246,6 +1270,33 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> AuthorityResult<AppendOutcome> {
+        self.compare_and_append_guarded(
+            GuardedAppend {
+                authority_id,
+                epoch,
+                expected,
+                commit,
+                permit: PublicationPermit::Unrestricted,
+            },
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn compare_and_append_guarded(
+        &self,
+        request: GuardedAppend,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<AppendOutcome> {
+        let GuardedAppend {
+            authority_id,
+            epoch,
+            expected,
+            commit,
+            permit,
+        } = request;
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
@@ -1262,7 +1313,12 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         Self::admit(work, budget)?;
         let transaction = self
             .database
-            .transaction([AUTHORITY_HEADS, AUTHORITY_COMMITS, AUTHORITY_OPERATIONS])
+            .transaction([
+                AUTHORITY_HEADS,
+                AUTHORITY_COMMITS,
+                AUTHORITY_OPERATIONS,
+                AUTHORITY_GATES,
+            ])
             .with_mode(TransactionMode::Readwrite)
             .with_options(strict_transaction_options())
             .build()
@@ -1309,6 +1365,47 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                 work,
             });
         }
+        let gate = {
+            let gates = transaction
+                .object_store(AUTHORITY_GATES)
+                .map_err(|error| Self::backend(error, work))?;
+            let encoded = Self::get_fixed(
+                &gates,
+                &authority_key(authority_id),
+                GATE_BYTES,
+                cancellation,
+                work,
+            )
+            .await?
+            .ok_or_else(|| {
+                Self::failure(
+                    AuthorityStoreError::Corrupt("publication gate is missing".to_owned()),
+                    work,
+                )
+            })?;
+            decode_publication_gate(&encoded).map_err(|error| Self::corrupt(error, work))?
+        };
+        let admitted = match permit {
+            PublicationPermit::Reservation {
+                operation_id,
+                gate_tail,
+                expected: reserved_head,
+            } => {
+                gate.tail == gate_tail
+                    && gate.active == Some(OperationId::from_bytes(operation_id))
+                    && reserved_head == expected
+            }
+            PublicationPermit::Unrestricted => gate.active.is_none(),
+            PublicationPermit::Lease { .. } => false,
+        };
+        if !admitted {
+            return Ok(AuthorityReceipt {
+                value: AppendOutcome::Fenced {
+                    actual_epoch: actual.epoch,
+                },
+                work,
+            });
+        }
         let prepared = Self::prepare_append(
             authority_id,
             epoch,
@@ -1319,6 +1416,177 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             work,
         )?;
         Self::publish_prepared(transaction, authority_id, prepared, cancellation).await
+    }
+
+    async fn reserve_publication(
+        &self,
+        authority_id: AuthorityId,
+        expected: Head,
+        operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<ReservationOutcome> {
+        cancellation
+            .check()
+            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let read_work = authority_fixed_read_work(HEAD_BYTES)
+            .checked_add(authority_fixed_read_work(GATE_BYTES))
+            .map_err(|error| AuthorityFailure::before_work(error.into()))?;
+        Self::admit(read_work, budget)?;
+        let transaction = self
+            .database
+            .transaction([AUTHORITY_HEADS, AUTHORITY_GATES])
+            .with_mode(TransactionMode::Readwrite)
+            .with_options(strict_transaction_options())
+            .build()
+            .map_err(|error| Self::backend(error, read_work))?;
+        let key = authority_key(authority_id);
+        let actual = {
+            let heads = transaction
+                .object_store(AUTHORITY_HEADS)
+                .map_err(|error| Self::backend(error, read_work))?;
+            let encoded = Self::get_fixed(&heads, &key, HEAD_BYTES, cancellation, read_work)
+                .await?
+                .ok_or_else(|| Self::failure(AuthorityStoreError::Missing, read_work))?;
+            decode_head(&encoded).map_err(|error| Self::corrupt(error, read_work))?
+        };
+        let gate = {
+            let gates = transaction
+                .object_store(AUTHORITY_GATES)
+                .map_err(|error| Self::backend(error, read_work))?;
+            let encoded = Self::get_fixed(&gates, &key, GATE_BYTES, cancellation, read_work)
+                .await?
+                .ok_or_else(|| {
+                    Self::failure(
+                        AuthorityStoreError::Corrupt("publication gate is missing".to_owned()),
+                        read_work,
+                    )
+                })?;
+            decode_publication_gate(&encoded).map_err(|error| Self::corrupt(error, read_work))?
+        };
+        if actual != expected || gate.active.is_some_and(|active| active != operation_id) {
+            return Ok(AuthorityReceipt {
+                value: ReservationOutcome::Conflict { actual },
+                work: read_work,
+            });
+        }
+        if gate.active == Some(operation_id) {
+            return Ok(AuthorityReceipt {
+                value: ReservationOutcome::AlreadyReserved(PublicationReservation {
+                    authority_id,
+                    operation_id,
+                    expected,
+                    gate_tail: gate.tail,
+                }),
+                work: read_work,
+            });
+        }
+        let next_tail = gate.tail.checked_add(1).ok_or_else(|| {
+            Self::failure(
+                AuthorityStoreError::Rejected("publication gate tail exhausted".to_owned()),
+                read_work,
+            )
+        })?;
+        let next = PublicationGateRecord {
+            tail: next_tail,
+            active: Some(operation_id),
+            released: None,
+        };
+        let encoded = encode_publication_gate(next);
+        let write_work = read_work
+            .checked_add(authority_fixed_write_work(GATE_BYTES, 1))
+            .map_err(|error| Self::failure(error.into(), read_work))?;
+        Self::admit(write_work, budget)?;
+        let gates = transaction
+            .object_store(AUTHORITY_GATES)
+            .map_err(|error| Self::backend(error, write_work))?;
+        Self::put_fixed(&gates, &key, &encoded, cancellation, write_work).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| Self::backend(error, write_work))?;
+        Ok(AuthorityReceipt {
+            value: ReservationOutcome::Reserved(PublicationReservation {
+                authority_id,
+                operation_id,
+                expected,
+                gate_tail: next_tail,
+            }),
+            work: write_work,
+        })
+    }
+
+    async fn release_publication(
+        &self,
+        reservation: PublicationReservation,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let read_work = authority_fixed_read_work(GATE_BYTES);
+        Self::admit(read_work, budget)?;
+        let transaction = self
+            .database
+            .transaction(AUTHORITY_GATES)
+            .with_mode(TransactionMode::Readwrite)
+            .with_options(strict_transaction_options())
+            .build()
+            .map_err(|error| Self::backend(error, read_work))?;
+        let key = authority_key(reservation.authority_id);
+        let gates = transaction
+            .object_store(AUTHORITY_GATES)
+            .map_err(|error| Self::backend(error, read_work))?;
+        let encoded = Self::get_fixed(&gates, &key, GATE_BYTES, cancellation, read_work)
+            .await?
+            .ok_or_else(|| {
+                Self::failure(
+                    AuthorityStoreError::Corrupt("publication gate is missing".to_owned()),
+                    read_work,
+                )
+            })?;
+        let gate =
+            decode_publication_gate(&encoded).map_err(|error| Self::corrupt(error, read_work))?;
+        if gate.released == Some((reservation.operation_id, reservation.gate_tail)) {
+            return Ok(AuthorityReceipt {
+                value: (),
+                work: read_work,
+            });
+        }
+        if gate.tail != reservation.gate_tail || gate.active != Some(reservation.operation_id) {
+            return Err(Self::failure(
+                AuthorityStoreError::Rejected(
+                    "publication reservation is no longer owned by this operation".to_owned(),
+                ),
+                read_work,
+            ));
+        }
+        let next_tail = gate.tail.checked_add(1).ok_or_else(|| {
+            Self::failure(
+                AuthorityStoreError::Rejected("publication gate tail exhausted".to_owned()),
+                read_work,
+            )
+        })?;
+        let next = PublicationGateRecord {
+            tail: next_tail,
+            active: None,
+            released: Some((reservation.operation_id, reservation.gate_tail)),
+        };
+        let encoded = encode_publication_gate(next);
+        let write_work = read_work
+            .checked_add(authority_fixed_write_work(GATE_BYTES, 1))
+            .map_err(|error| Self::failure(error.into(), read_work))?;
+        Self::admit(write_work, budget)?;
+        Self::put_fixed(&gates, &key, &encoded, cancellation, write_work).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| Self::backend(error, write_work))?;
+        Ok(AuthorityReceipt {
+            value: (),
+            work: write_work,
+        })
     }
 
     async fn replay(
@@ -2099,6 +2367,118 @@ mod tests {
         )
         .await?;
         verify_fencing(&store, authority_id, &cancellation, second_commit).await
+    }
+
+    #[wasm_bindgen_test]
+    async fn indexed_db_publication_reservations_are_atomic_and_idempotent() -> Result<(), JsValue>
+    {
+        const DATABASE_NAME: &str = "acyclic-fs-authority-reservation-v3";
+        let store = open_clean_authority(DATABASE_NAME).await?;
+        let authority_id = AuthorityId::from_bytes([31; 16]);
+        let cancellation = CancellationToken::new();
+        let genesis = Head::genesis(Epoch::GENESIS);
+        AsyncAuthorityStore::create_authority(
+            &store,
+            authority_id,
+            Epoch::GENESIS,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        let operation_id = OperationId::from_bytes([32; 16]);
+        let reserved = AsyncAuthorityStore::reserve_publication(
+            &store,
+            authority_id,
+            genesis,
+            operation_id,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        let ReservationOutcome::Reserved(reservation) = reserved.value else {
+            return Err(JsValue::from_str("publication gate was not reserved"));
+        };
+        let retry = AsyncAuthorityStore::reserve_publication(
+            &store,
+            authority_id,
+            genesis,
+            operation_id,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        assert_eq!(
+            retry.value,
+            ReservationOutcome::AlreadyReserved(reservation)
+        );
+        let proposal = ProposedCommit {
+            operation_id: OperationId::from_bytes([33; 16]),
+            fingerprint: Digest::from_bytes([34; 32]),
+            payload: Bytes::from_static(b"reserved"),
+        };
+        let blocked = AsyncAuthorityStore::compare_and_append(
+            &store,
+            authority_id,
+            Epoch::GENESIS,
+            genesis,
+            proposal.clone(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        assert!(matches!(blocked.value, AppendOutcome::Fenced { .. }));
+        let committed = AsyncAuthorityStore::compare_and_append_guarded(
+            &store,
+            GuardedAppend {
+                authority_id,
+                epoch: Epoch::GENESIS,
+                expected: genesis,
+                commit: proposal,
+                permit: PublicationPermit::Reservation {
+                    operation_id: operation_id.into_bytes(),
+                    gate_tail: reservation.gate_tail,
+                    expected: genesis,
+                },
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        assert!(matches!(committed.value, AppendOutcome::Committed(_)));
+        AsyncAuthorityStore::release_publication(
+            &store,
+            reservation,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        AsyncAuthorityStore::release_publication(
+            &store,
+            reservation,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        let mut forged = reservation;
+        forged.operation_id = OperationId::from_bytes([99; 16]);
+        assert!(
+            AsyncAuthorityStore::release_publication(
+                &store,
+                forged,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .is_err()
+        );
+        Ok(())
     }
 
     #[wasm_bindgen_test]

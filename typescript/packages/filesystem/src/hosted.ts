@@ -47,7 +47,6 @@ import type {
   FsWorkspace,
   GenerationDiff,
   HostedFsEngine,
-  HostedFsEnvironment,
   HostedFsCapabilities,
   HostedFsOptions,
   HostedFsWorkspace,
@@ -206,16 +205,6 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     },
     close() { client.closed = true; },
   };
-}
-
-/** Opens hosted Filesystem using explicit overrides or the standard runtime environment. */
-export async function openHostedFsFromEnv(environment: HostedFsEnvironment = {}): Promise<HostedFsEngine> {
-  const runtime = typeof process === "undefined" ? undefined : process.env;
-  const endpoint = environment.endpoint ?? runtime?.ACYCLIC_FILESYSTEM_ENDPOINT;
-  const bearerToken = environment.token ?? runtime?.ACYCLIC_API_KEY;
-  if (endpoint === undefined || endpoint.length === 0) throw new RangeError("ACYCLIC_FILESYSTEM_ENDPOINT is required");
-  if (bearerToken === undefined || bearerToken.length === 0) throw new RangeError("ACYCLIC_API_KEY is required");
-  return openHostedFs({ endpoint, bearerToken });
 }
 
 type WorkspaceOwner = { readonly client: HostedClient; readonly reference: WireWorkspaceRef };

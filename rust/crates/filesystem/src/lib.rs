@@ -28,14 +28,6 @@ pub mod wire {
         pub mod v2 {
             include!(concat!(env!("OUT_DIR"), "/acyclic.filesystem.v2.rs"));
         }
-
-        /// Process-local daemon lifecycle and native-host operations.
-        pub mod daemon {
-            /// Version 2 of the daemon-only transport.
-            pub mod v2 {
-                include!(concat!(env!("OUT_DIR"), "/acyclic.filesystem.daemon.v2.rs"));
-            }
-        }
     }
 }
 
@@ -75,17 +67,20 @@ mod public_contract_tests {
 pub mod async_storage;
 pub mod cache;
 pub mod cancellation;
+pub mod compat_wire;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub mod core_state;
 pub mod demand;
 #[cfg(feature = "distributed")]
 pub mod distributed;
+mod distributed_fs;
 pub mod facade;
 pub mod foundation;
 pub mod git_compat;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hosted;
 pub mod kernel;
+pub mod lazy_workspace;
 pub mod lineage;
 pub mod materializer;
 #[cfg(test)]
@@ -93,6 +88,7 @@ pub mod memory;
 pub mod merge_driver;
 pub mod model;
 pub mod mount;
+pub mod multi_root;
 #[cfg(feature = "native-watch")]
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native_capture;
@@ -110,6 +106,7 @@ mod native_name;
 pub mod notification;
 pub mod operation_window;
 pub mod path;
+mod path_index;
 pub mod performance;
 pub mod s3;
 #[cfg(all(feature = "s3-http", not(target_arch = "wasm32")))]
@@ -130,6 +127,7 @@ pub mod watch;
 #[cfg(all(feature = "native-watch", target_os = "windows"))]
 mod windows_usn;
 pub mod workspace;
+pub mod workspace_context;
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_native_runtime::{RenameMode, durable_rename};
@@ -147,6 +145,7 @@ pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 pub use core_state::{LocalCoreStateStore, LocalCoreStateStoreError};
 #[cfg(feature = "distributed")]
 pub use distributed::{ProviderObjectStore, StreamAuthorityStore};
+pub use distributed_fs::DistributedFs;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
     CheckoutCommitOutcome, ContentStager, DetachedFile, DirectoryBindingChange,
@@ -171,11 +170,14 @@ pub use foundation::{
 pub use git_compat::{
     GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureError,
     GitCapturedGeneration, GitCommand, GitCommandOutput, GitCommit, GitCommitId, GitCompatError,
-    GitCompatRepository, GitCompatRunError, GitCompatState, GitCompatStore, GitFilesystemAction,
-    GitFilesystemExecutor, GitFilesystemResult, GitGenerationRef, GitGrepMatch, GitGrepResult,
-    GitIgnorePolicy, GitObjectName, GitPatchError, GitPendingMutation, GitPendingTransition,
-    GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, MemoryGitCompatStore, apply_git_patch,
-    blame_git_generations, capture_git_compatible_generation, grep_git_generation, walk_git_tree,
+    GitCompatRepository, GitCompatRunError, GitCompatState, GitCompatStore, GitDirtyState,
+    GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitGenerationRef,
+    GitGrepMatch, GitGrepResult, GitIgnorePolicy, GitObjectName, GitPatchError, GitPendingMutation,
+    GitPendingTransition, GitPublicationRecord, GitResetMode, GitStatus, GitTransitionId,
+    GitTreeEntry, GitTreeRef, IntoGitTreeRef, MemoryGitCompatStore, apply_git_patch,
+    apply_git_patch_with_permit, blame_git_generations, capture_git_compatible_generation,
+    capture_git_compatible_generation_at, capture_git_compatible_generation_incremental,
+    grep_git_generation, walk_git_tree,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use hosted::{
@@ -185,6 +187,12 @@ pub use hosted::{
 pub use kernel::{
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
     encode_generation_export_manifest,
+};
+pub use lazy_workspace::{
+    LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage, LazyLookup, LazyOverlay,
+    LazyOverlayId, LazySeekTarget, LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef,
+    LazyStat, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore,
+    MemoryLazyWorkspaceStore,
 };
 pub use lineage::{
     MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,
@@ -200,6 +208,15 @@ pub use materializer::{
 pub use materializer::{NativeTreeMaterializationBackend, NativeTreeMaterializationError};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use materializer::{NativeTreePublicationError, publish_native_tree};
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
+pub use materializer::{
+    NativeWorkspacePublication, NativeWorkspacePublicationError,
+    publish_native_generation_transition, publish_native_workspace_generation,
+};
 #[cfg(test)]
 pub use memory::{MemoryAuthorityStore, MemoryObjectStore};
 pub use merge_driver::{
@@ -212,6 +229,16 @@ pub use merge_driver::{
 pub use mount::{
     MountError, MountedCheckout, MountedGeneration, MountedView, MountedViewBuilder,
     MountedViewSnapshot, RoutedCheckout,
+};
+pub use multi_root::{
+    LineageMultiRootPublicationAuthorizationError, LineageMultiRootPublicationAuthorizer,
+    MaterializingWorkspaceMultiRootPublisher, MaterializingWorkspaceMultiRootPublisherError,
+    MemoryMultiRootPublicationStore, MemoryMultiRootPublicationStoreError, MultiRootConflictFinish,
+    MultiRootFence, MultiRootMaterializer, MultiRootMergeCandidate, MultiRootMergePlan,
+    MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationAuthorizer,
+    MultiRootPublicationCoordinator, MultiRootPublicationError, MultiRootPublicationPhase,
+    MultiRootPublicationStore, MultiRootPublishRoot, MultiRootPublisher, Publication,
+    WorkspaceMultiRootPublisher, WorkspaceMultiRootPublisherError, WorkspaceResolver,
 };
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub use native_capture::{
@@ -231,7 +258,7 @@ pub use native_exchange::{
 pub use native_identity::NativeRootIdentity;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub use native_mount::{
-    CheckoutMountSource, HostPathReplacement, HostPathRestore, MaterializationReceipt,
+    CheckoutMountSource, HostPathReplacement, HostPathRestore, LazyMount, MaterializationReceipt,
     MaterializeError, MaterializeOptions, Mount, MountAttributePage, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLifecycleError, MountLookup, MountNode,
     MountNodeKind, MountOpenFile, MountOptions, MountPath, MountPublication, MountRangeAllocation,
@@ -241,11 +268,12 @@ pub use native_mount::{
     NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     RoutedMountSource, SharedCheckout, SharedCheckoutState, materialize_checkout,
-    materialize_checkout_host_path, materialize_checkout_path, mount_native,
-    mount_native_over_existing, probe_native_mount, probe_native_storage_accelerations,
-    probe_native_storage_capabilities, reclaim_native_mount_destination_fence,
-    reclaim_stale_native_mount_destination_fences, recover_native_mount_destination,
-    restore_checkout_host_path, seal_checkout,
+    materialize_checkout_host_path, materialize_checkout_path, materialize_checkout_paths,
+    mount_native, mount_native_over_existing, probe_native_mount,
+    probe_native_storage_accelerations, probe_native_storage_capabilities,
+    reclaim_native_mount_destination_fence, reclaim_stale_native_mount_destination_fences,
+    recover_native_mount_destination, restore_checkout_host_path, seal_checkout,
+    seal_checkout_with_permit,
 };
 pub use notification::{
     AsyncNotificationStore, ImmediateNotificationStore, MemoryNotificationStore, NotificationError,
@@ -255,7 +283,7 @@ pub use operation_window::{
     MemoryOperationWindowStore, OperationLease, OperationLeaseId, OperationReconcileLimits,
     OperationWindowCoordinator, OperationWindowError, OperationWindowFinish, OperationWindowLease,
     OperationWindowPhase, OperationWindowReconcile, OperationWindowSnapshot, OperationWindowStore,
-    WorkspaceOperationFinish,
+    StreamOperationWindowStore, StreamOperationWindowStoreError, WorkspaceOperationFinish,
 };
 pub use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
@@ -288,10 +316,11 @@ pub use speculation::{
 };
 pub use storage::{
     AppendOutcome, AuthorityFailure, AuthorityReceipt, AuthorityResult, AuthorityStore,
-    AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome,
+    AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome, GuardedAppend,
     OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectKind, ObjectRead,
     ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStore,
-    ObjectStoreError, ReplayLimit, object_digest,
+    ObjectStoreError, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
+    object_digest,
 };
 pub use streams_record::{
     STREAMS_AUTHORITY_RECORD_HEADER_BYTES, StreamsAuthorityRecord, StreamsAuthorityRecordError,
@@ -317,4 +346,10 @@ pub use workspace::{
     WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName, WorkspaceNameError,
     WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase, WorkspaceRestore, WorkspaceStat,
     WorkspaceSync,
+};
+pub use workspace_context::{
+    MemoryWorkspaceContextStore, MemoryWorkspaceContextStoreError, WorkspaceContext,
+    WorkspaceContextDiscardOutcome, WorkspaceContextError, WorkspaceContextId,
+    WorkspaceContextRegistry, WorkspaceContextRoot, WorkspaceContextState, WorkspaceContextStore,
+    WorkspaceRootId, WorkspaceRoute, WorkspaceRouteKind,
 };
