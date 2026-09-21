@@ -71,7 +71,7 @@ use futures::{StreamExt as _, stream};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::mem::size_of;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use std::sync::{OnceLock, Weak};
@@ -359,6 +359,60 @@ struct FsInner<A, O> {
     capabilities: EmbeddedCapabilities,
     workspace_namespace: [u8; 16],
     path_index: Arc<dyn crate::path_index::GenerationPathIndex>,
+    // This field must remain last: Rust drops fields in declaration order, so every durable
+    // provider and index is gone before a replacement local engine may acquire the root.
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    _local_root_lifecycle: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+struct LocalRootRegistration {
+    options: LocalOptions,
+    live: Weak<FsInner<LocalAuthorityBackend, LocalObjectBackend>>,
+    lifecycle: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+type LocalRootRegistry = std::collections::BTreeMap<PathBuf, LocalRootRegistration>;
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+fn prepare_local_root_open(
+    registry: &mut LocalRootRegistry,
+    root: &Path,
+    options: &LocalOptions,
+) -> Arc<tokio::sync::Mutex<()>> {
+    if let Some(registration) = registry.get_mut(root) {
+        registration.options.clone_from(options);
+        return Arc::clone(&registration.lifecycle);
+    }
+    let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+    registry.insert(
+        root.to_path_buf(),
+        LocalRootRegistration {
+            options: options.clone(),
+            live: Weak::new(),
+            lifecycle: Arc::clone(&lifecycle),
+        },
+    );
+    lifecycle
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+async fn run_local_initialization<T, F, I>(
+    ownership: tokio::sync::OwnedMutexGuard<()>,
+    initialize: I,
+) -> Result<T, FsError>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = T> + Send + 'static,
+    I: FnOnce(tokio::sync::OwnedMutexGuard<()>) -> F + Send + 'static,
+{
+    // Tokio detaches a spawned task when its JoinHandle is dropped. That is intentional here:
+    // cancelling the caller must not release root ownership while provider spawn_blocking workers
+    // can still recover or mutate a journal.
+    tokio::spawn(async move { initialize(ownership).await })
+        .await
+        .map_err(|_| FsError::LocalInitializationWorker)
 }
 
 /// Embedded filesystem composition handle.
@@ -1391,6 +1445,8 @@ impl<A, O> Fs<A, O> {
             capabilities,
             workspace_namespace,
             Arc::new(crate::path_index::MemoryGenerationPathIndex::default()),
+            #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+            None,
         )
     }
 
@@ -1400,6 +1456,9 @@ impl<A, O> Fs<A, O> {
         capabilities: EmbeddedCapabilities,
         workspace_namespace: [u8; 16],
         path_index: Arc<dyn crate::path_index::GenerationPathIndex>,
+        #[cfg(all(feature = "local", not(target_arch = "wasm32")))] local_root_lifecycle: Option<
+            tokio::sync::OwnedMutexGuard<()>,
+        >,
     ) -> Self {
         Self {
             inner: Arc::new(FsInner {
@@ -1408,6 +1467,8 @@ impl<A, O> Fs<A, O> {
                 capabilities,
                 workspace_namespace,
                 path_index,
+                #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+                _local_root_lifecycle: local_root_lifecycle,
             }),
         }
     }
@@ -1485,14 +1546,7 @@ impl
     ///
     /// Fails if limits are invalid or either durable backend cannot initialize.
     pub async fn local(options: LocalOptions) -> Result<Self, FsError> {
-        type Registry = std::collections::BTreeMap<
-            PathBuf,
-            (
-                LocalOptions,
-                Weak<FsInner<LocalAuthorityBackend, LocalObjectBackend>>,
-            ),
-        >;
-        static REGISTRY: OnceLock<tokio::sync::Mutex<Registry>> = OnceLock::new();
+        static REGISTRY: OnceLock<tokio::sync::Mutex<LocalRootRegistry>> = OnceLock::new();
         let requested_root = options.root.clone();
         let root = tokio::task::spawn_blocking(move || {
             std::fs::create_dir_all(&requested_root)?;
@@ -1504,24 +1558,39 @@ impl
         let mut options = options;
         options.root = root.clone();
         let mut registry = REGISTRY
-            .get_or_init(|| tokio::sync::Mutex::new(Registry::new()))
+            .get_or_init(|| tokio::sync::Mutex::new(LocalRootRegistry::new()))
             .lock()
             .await;
-        if let Some((existing_options, existing)) = registry.get(&root)
-            && let Some(inner) = existing.upgrade()
+        if let Some(existing) = registry.get(&root)
+            && let Some(inner) = existing.live.upgrade()
         {
-            if existing_options != &options {
+            if existing.options != options {
                 return Err(FsError::LocalOptionsConflict);
             }
             return Ok(Self { inner });
         }
-        registry.remove(&root);
-        let fs = Self::open_local_unshared(options.clone()).await?;
-        registry.insert(root, (options, Arc::downgrade(&fs.inner)));
+        let lifecycle = prepare_local_root_open(&mut registry, &root, &options);
+        let ownership = Arc::clone(&lifecycle).lock_owned().await;
+        let open_options = options.clone();
+        let fs = run_local_initialization(ownership, move |ownership| async move {
+            Self::open_local_unshared(open_options, Some(ownership)).await
+        })
+        .await??;
+        registry.insert(
+            root,
+            LocalRootRegistration {
+                options,
+                live: Arc::downgrade(&fs.inner),
+                lifecycle,
+            },
+        );
         Ok(fs)
     }
 
-    async fn open_local_unshared(options: LocalOptions) -> Result<Self, FsError> {
+    async fn open_local_unshared(
+        options: LocalOptions,
+        lifecycle: Option<tokio::sync::OwnedMutexGuard<()>>,
+    ) -> Result<Self, FsError> {
         let LocalOptions {
             root,
             stream,
@@ -1566,6 +1635,7 @@ impl
             Arc::new(crate::path_index::NativeGenerationPathIndex::new(
                 root.join("generation-path-index-v1"),
             )),
+            lifecycle,
         ))
     }
 
@@ -1592,7 +1662,7 @@ impl
         cancellation
             .check()
             .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let fs = Self::open_local_unshared(options)
+        let fs = Self::open_local_unshared(options, None)
             .await
             .map_err(OperationFailure::before_work)?;
         fs.collect_local_garbage_exclusive(

@@ -8057,6 +8057,117 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
 }
 
 #[cfg(all(feature = "local", any(unix, windows)))]
+#[test]
+fn local_root_lifecycle_outlives_provider_destruction() -> Result<(), Box<dyn std::error::Error>> {
+    struct BlockingProviderDrop {
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl Drop for BlockingProviderDrop {
+        fn drop(&mut self) {
+            let _ = self.entered.send(());
+            let _ = self.release.recv();
+        }
+    }
+
+    let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+    let ownership = Arc::clone(&lifecycle).try_lock_owned()?;
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(0);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+    let inner = FsInner {
+        authority: BlockingProviderDrop {
+            entered: entered_tx,
+            release: release_rx,
+        },
+        objects: (),
+        capabilities: EmbeddedCapabilities::MEMORY,
+        workspace_namespace: [0; 16],
+        path_index: Arc::new(crate::path_index::MemoryGenerationPathIndex::default()),
+        _local_root_lifecycle: Some(ownership),
+    };
+    let dropping = std::thread::spawn(move || drop(inner));
+
+    entered_rx.recv()?;
+    assert!(
+        Arc::clone(&lifecycle).try_lock_owned().is_err(),
+        "replacement root ownership must remain fenced while providers are dropping"
+    );
+    release_tx.send(())?;
+    dropping
+        .join()
+        .map_err(|_| "provider drop thread panicked")?;
+    Arc::clone(&lifecycle).try_lock_owned()?;
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test]
+async fn cancelled_local_open_keeps_the_canonical_lifecycle_gate()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().to_path_buf();
+    let options = LocalOptions::new(&root);
+    let mut registry = LocalRootRegistry::new();
+    let lifecycle = prepare_local_root_open(&mut registry, &root, &options);
+    let ownership = Arc::clone(&lifecycle).lock_owned().await;
+
+    let waiting_lifecycle = prepare_local_root_open(&mut registry, &root, &options);
+    let mut waiting = Box::pin(Arc::clone(&waiting_lifecycle).lock_owned());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(1), waiting.as_mut())
+            .await
+            .is_err(),
+        "second open must wait for the current owner"
+    );
+    drop(waiting);
+
+    let retry_lifecycle = prepare_local_root_open(&mut registry, &root, &options);
+    assert!(Arc::ptr_eq(&lifecycle, &retry_lifecycle));
+    drop(ownership);
+    Arc::clone(&retry_lifecycle).lock_owned().await;
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test]
+async fn cancelled_local_initialization_keeps_root_owned_until_startup_stops()
+-> Result<(), Box<dyn std::error::Error>> {
+    let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+    let ownership = Arc::clone(&lifecycle).lock_owned().await;
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let opening = tokio::spawn(run_local_initialization(
+        ownership,
+        move |ownership| async move {
+            let _ownership = ownership;
+            let _ = started_tx.send(());
+            let _ = release_rx.await;
+            drop(_ownership);
+        },
+    ));
+
+    started_rx.await?;
+    opening.abort();
+    let cancelled = opening.await;
+    assert!(
+        cancelled.as_ref().is_err_and(|error| error.is_cancelled()),
+        "opening caller must be cancelled: {cancelled:?}"
+    );
+    assert!(
+        Arc::clone(&lifecycle).try_lock_owned().is_err(),
+        "caller cancellation must not release ownership from an active startup worker"
+    );
+    let _ = release_tx.send(());
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        Arc::clone(&lifecycle).lock_owned(),
+    )
+    .await?;
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_facade_shares_bounded_object_acceleration_across_handles()
 -> Result<(), Box<dyn std::error::Error>> {

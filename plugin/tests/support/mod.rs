@@ -79,6 +79,14 @@ impl ServiceGuard {
         let identity = fs::read_to_string(&marker).expect("timed-out host started hook service");
         assert!(!identity.is_empty(), "timed-out hook service identity");
         self.identity = Some(identity);
+        // A timed-out host can still own open handles below its native mount. Terminate that
+        // client tree before asking the service to synchronize and unmount; reversing this order
+        // can make Linux FUSE teardown wait on the very process that cleanup has not stopped yet.
+        self.process_tree
+            .as_mut()
+            .expect("timed-out host process tree")
+            .terminate()
+            .expect("terminate timed-out host process tree before service drain");
         if let Err(error) = self.cleanup() {
             self.force_cleanup().unwrap_or_else(|fallback| {
                 panic!(
@@ -289,6 +297,76 @@ pub struct BoundedOutput {
 
 pub fn output_with_timeout(command: &mut Command, timeout: Duration) -> BoundedOutput {
     try_output_with_timeout(command, timeout).expect("spawn bounded process tree")
+}
+
+pub fn output_after_provider_admission(
+    command: &mut Command,
+    provider: &ScriptedProvider,
+    admission_timeout: Duration,
+    stall_timeout: Duration,
+) -> (BoundedOutput, bool) {
+    let mut process_tree = spawn_process_tree(
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .expect("spawn provider-admission process tree");
+    let admission_deadline = Instant::now() + admission_timeout;
+    let admitted = loop {
+        if !provider.wait_for_requests(1, Duration::ZERO).is_empty() {
+            break true;
+        }
+        if process_tree
+            .try_wait()
+            .expect("poll provider-admission process tree")
+            .is_some()
+            || Instant::now() >= admission_deadline
+        {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let deadline = Instant::now() + stall_timeout;
+    loop {
+        match process_tree
+            .try_wait()
+            .expect("poll admitted provider process tree")
+        {
+            Some(_) => {
+                let output = process_tree
+                    .wait_with_output()
+                    .expect("collect admitted provider process tree");
+                return (
+                    BoundedOutput {
+                        output,
+                        expired: false,
+                        process_tree,
+                    },
+                    admitted,
+                );
+            }
+            None if admitted && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            None => {
+                process_tree
+                    .terminate_descendants()
+                    .expect("terminate admitted provider descendants");
+                let output = process_tree
+                    .wait_with_output()
+                    .expect("collect timed-out provider process tree");
+                return (
+                    BoundedOutput {
+                        output,
+                        expired: admitted,
+                        process_tree,
+                    },
+                    admitted,
+                );
+            }
+        }
+    }
 }
 
 fn try_output_with_timeout(
