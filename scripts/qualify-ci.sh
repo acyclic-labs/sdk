@@ -98,9 +98,7 @@ case "$lane" in
     actionlint_root="$TOOLS_DIR/actionlint-1.7.7"
     mkdir -p "$actionlint_root"
     tar --extract --gzip --file "$actionlint_archive" --directory "$actionlint_root" actionlint
-    "$actionlint_root/actionlint" \
-      -ignore 'label "blacksmith-[^"]+" is unknown' \
-      .github/workflows/*.yml
+    "$actionlint_root/actionlint" .github/workflows/*.yml
     node scripts/publish-cargo-crates.mjs check
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
