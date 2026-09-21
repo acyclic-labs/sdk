@@ -21,6 +21,14 @@ pub struct ScriptedProvider {
 
 impl ScriptedProvider {
     pub fn start(protocol: ProviderProtocol, shell_command: &str) -> Self {
+        Self::start_with_mode(protocol, shell_command, false)
+    }
+
+    pub fn start_stalled(protocol: ProviderProtocol) -> Self {
+        Self::start_with_mode(protocol, "", true)
+    }
+
+    fn start_with_mode(protocol: ProviderProtocol, shell_command: &str, stalled: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind scripted provider");
         listener
             .set_nonblocking(true)
@@ -34,7 +42,14 @@ impl ScriptedProvider {
         let thread = thread::spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
-                    Ok((stream, _)) => handle(stream, protocol, &command, &thread_requests),
+                    Ok((stream, _)) => handle(
+                        stream,
+                        protocol,
+                        &command,
+                        stalled,
+                        &thread_requests,
+                        &thread_stop,
+                    ),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(5));
                     }
@@ -81,7 +96,9 @@ fn handle(
     mut stream: TcpStream,
     protocol: ProviderProtocol,
     command: &str,
+    stalled: bool,
     requests: &Mutex<Vec<Value>>,
+    stop: &AtomicBool,
 ) {
     let Some((method, path, body)) = read_request(&mut stream) else {
         return;
@@ -119,6 +136,12 @@ fn handle(
         .lock()
         .expect("provider request capture")
         .push(request);
+    if stalled {
+        while !stop.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(5));
+        }
+        return;
+    }
     let events = match (protocol, completed_tool) {
         (ProviderProtocol::Responses, false) => responses_tool_events(command),
         (ProviderProtocol::Responses, true) => responses_text_events(),

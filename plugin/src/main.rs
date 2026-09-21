@@ -6830,6 +6830,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     if arguments
         .first()
+        .is_some_and(|argument| argument == "__service-status")
+    {
+        serde_json::to_writer(
+            io::stdout().lock(),
+            &service_status(&default_data_directory())
+                .await
+                .map_err(io::Error::other)?,
+        )?;
+        return Ok(());
+    }
+    if arguments
+        .first()
         .is_some_and(|argument| argument == "__service")
     {
         return run_service(default_data_directory())
@@ -8113,6 +8125,38 @@ async fn drain_service(data: &Path) -> Result<(), String> {
             "cannot safely identify the Acyclic service: {error}"
         )),
     }
+}
+
+async fn service_status(data: &Path) -> Result<Value, String> {
+    let marker_identity = fs::read_to_string(data.join("service.identity")).ok();
+    let ping = ControlRequest {
+        version: 1,
+        command: ControlCommand::Ping,
+        cwd: env::current_dir().map_err(display)?,
+        argv: Vec::new(),
+        name: String::new(),
+        arguments: Value::Null,
+    };
+    let reachable_identity = match send_control_request(data, &ping).await {
+        Ok(response) => Some(
+            response
+                .get("identity")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "reachable service omitted its identity".to_owned())?
+                .to_owned(),
+        ),
+        Err(ControlRequestError::Transport(_)) => None,
+        Err(error) => return Err(format!("cannot inspect the Acyclic service: {error}")),
+    };
+    let lock = acquire_service_lock(data)?;
+    let lock_acquirable = lock.is_some();
+    drop(lock);
+    Ok(json!({
+        "version": 1,
+        "markerIdentity": marker_identity,
+        "reachableIdentity": reachable_identity,
+        "lockAcquirable": lock_acquirable,
+    }))
 }
 
 fn install_host(host: &str, project: bool) -> Result<(), String> {

@@ -2,6 +2,8 @@ mod scripted_provider;
 
 pub use scripted_provider::{ProviderProtocol, ScriptedProvider};
 
+use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
+use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -19,6 +21,8 @@ pub struct PackagedPlugin {
 pub struct ServiceGuard {
     launcher: PathBuf,
     home: PathBuf,
+    identity: Option<String>,
+    process_tree: Option<ProcessTree>,
     active: bool,
 }
 
@@ -27,33 +31,210 @@ impl ServiceGuard {
         Self {
             launcher: launcher.to_path_buf(),
             home: home.to_path_buf(),
+            identity: None,
+            process_tree: None,
             active: true,
         }
     }
 
-    pub fn drain(mut self) {
-        let (output, expired) = self.drain_output();
-        self.active = false;
-        assert!(
-            output.status.success() && !expired,
-            "service drain failed (expired={expired}): {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+    pub fn attach_process_tree(&mut self, process_tree: ProcessTree) {
+        assert!(self.process_tree.replace(process_tree).is_none());
     }
 
-    fn drain_output(&self) -> (Output, bool) {
+    pub fn assert_hook_service_live(&mut self) -> String {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut last = String::new();
+        while Instant::now() < deadline {
+            match self.status() {
+                Ok(status) => {
+                    let marker = status.get("markerIdentity").and_then(Value::as_str);
+                    let reachable = status.get("reachableIdentity").and_then(Value::as_str);
+                    if let Some(marker) = marker
+                        && Some(marker) == reachable
+                        && status.get("lockAcquirable").and_then(Value::as_bool) == Some(false)
+                    {
+                        let identity = marker.to_owned();
+                        self.identity = Some(identity.clone());
+                        return identity;
+                    }
+                    last = status.to_string();
+                }
+                Err(error) => last = error,
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("installed hook did not establish a reachable locked service: {last}");
+    }
+
+    pub fn drain(mut self) {
+        if let Err(error) = self.cleanup() {
+            let fallback = self.force_cleanup();
+            panic!("service drain failed: {error}; forced cleanup: {fallback:?}");
+        }
+    }
+
+    pub fn assert_timeout_cleanup(mut self, process_tree: ProcessTree) {
+        self.attach_process_tree(process_tree);
+        let marker = service_data(&self.home).join("service.identity");
+        let identity = fs::read_to_string(&marker).expect("timed-out host started hook service");
+        assert!(!identity.is_empty(), "timed-out hook service identity");
+        self.identity = Some(identity);
+        if let Err(error) = self.force_cleanup() {
+            panic!("timed-out host process tree was not cleaned: {error}");
+        }
+    }
+
+    fn cleanup(&mut self) -> Result<(), String> {
+        let identity = self
+            .identity
+            .as_deref()
+            .ok_or_else(|| "service liveness was not positively observed".to_owned())?
+            .to_owned();
         let mut drain = command("node");
         drain.arg(&self.launcher).arg("__service-drain");
         isolated_state(&mut drain, &self.home);
-        output_with_timeout(&mut drain, Duration::from_secs(10))
+        let BoundedOutput {
+            output,
+            expired,
+            process_tree,
+        } = try_output_with_timeout(&mut drain, Duration::from_secs(10))
+            .map_err(|error| error.to_string())?;
+        drop(process_tree);
+        if expired || !output.status.success() {
+            return Err(format!(
+                "drain command expired={expired}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        self.verify_drained(&identity)?;
+        self.active = false;
+        drop(self.process_tree.take());
+        Ok(())
+    }
+
+    fn verify_drained(&self, identity: &str) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut last = String::new();
+        while Instant::now() < deadline {
+            match self.status() {
+                Ok(status)
+                    if status.get("markerIdentity").is_some_and(Value::is_null)
+                        && status.get("reachableIdentity").is_some_and(Value::is_null)
+                        && status.get("lockAcquirable").and_then(Value::as_bool) == Some(true) =>
+                {
+                    let drain: Value = serde_json::from_slice(
+                        &fs::read(service_data(&self.home).join("service-drain.json"))
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    if drain.get("identity").and_then(Value::as_str) == Some(identity)
+                        && drain.get("ok").and_then(Value::as_bool) == Some(true)
+                    {
+                        return Ok(());
+                    }
+                    return Err(format!("durable drain evidence is invalid: {drain}"));
+                }
+                Ok(status) => last = status.to_string(),
+                Err(error) => last = error,
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        Err(format!("service remained reachable or locked: {last}"))
+    }
+
+    fn force_cleanup(&mut self) -> Result<(), String> {
+        let tree = self
+            .process_tree
+            .as_mut()
+            .ok_or_else(|| "host process tree was not attached".to_owned())?;
+        tree.terminate().map_err(|error| error.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let marker = service_data(&self.home).join("service.identity");
+        let mut last = String::new();
+        while Instant::now() < deadline {
+            match self.status() {
+                Ok(status)
+                    if status.get("reachableIdentity").is_some_and(Value::is_null)
+                        && status.get("lockAcquirable").and_then(Value::as_bool) == Some(true) =>
+                {
+                    match fs::remove_file(&marker) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.to_string()),
+                    }
+                    self.active = false;
+                    return assert_service_absent(&self.launcher, &self.home);
+                }
+                Ok(status) => last = status.to_string(),
+                Err(error) => last = error,
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        Err(format!(
+            "forced process-tree cleanup did not release service: {last}"
+        ))
+    }
+
+    fn status(&self) -> Result<Value, String> {
+        service_status(&self.launcher, &self.home)
     }
 }
 
 impl Drop for ServiceGuard {
     fn drop(&mut self) {
         if self.active {
-            let _ = self.drain_output();
+            let cleanup = self.cleanup();
+            if let Err(error) = cleanup {
+                let fallback = self.force_cleanup();
+                if std::thread::panicking() {
+                    eprintln!(
+                        "service cleanup failed during unwind: {error}; fallback: {fallback:?}"
+                    );
+                } else {
+                    panic!("service cleanup failed: {error}; fallback: {fallback:?}");
+                }
+            }
         }
+    }
+}
+
+pub fn assert_service_absent(launcher: &Path, home: &Path) -> Result<(), String> {
+    let status = service_status(launcher, home)?;
+    if status.get("markerIdentity").is_some_and(Value::is_null)
+        && status.get("reachableIdentity").is_some_and(Value::is_null)
+        && status.get("lockAcquirable").and_then(Value::as_bool) == Some(true)
+    {
+        Ok(())
+    } else {
+        Err(format!("unexpected hook service state: {status}"))
+    }
+}
+
+fn service_status(launcher: &Path, home: &Path) -> Result<Value, String> {
+    let mut status = command("node");
+    status.arg(launcher).arg("__service-status");
+    isolated_state(&mut status, home);
+    let BoundedOutput {
+        output,
+        expired,
+        process_tree,
+    } = try_output_with_timeout(&mut status, Duration::from_secs(5))
+        .map_err(|error| error.to_string())?;
+    drop(process_tree);
+    if expired || !output.status.success() {
+        return Err(format!(
+            "service status expired={expired}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())
+}
+
+fn service_data(home: &Path) -> PathBuf {
+    if cfg!(windows) {
+        home.join("local").join("Acyclic").join("state-v2")
+    } else {
+        home.join("state").join("acyclic").join("state-v2")
     }
 }
 
@@ -95,33 +276,46 @@ pub fn output_with_stdin(command: &mut Command, input: &[u8]) -> Output {
     child.wait_with_output().expect("wait for child process")
 }
 
-pub fn output_with_timeout(command: &mut Command, timeout: Duration) -> (Output, bool) {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn bounded child process");
+pub struct BoundedOutput {
+    pub output: Output,
+    pub expired: bool,
+    pub process_tree: ProcessTree,
+}
+
+pub fn output_with_timeout(command: &mut Command, timeout: Duration) -> BoundedOutput {
+    try_output_with_timeout(command, timeout).expect("spawn bounded process tree")
+}
+
+fn try_output_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+) -> std::io::Result<BoundedOutput> {
+    let mut process_tree = spawn_process_tree(
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )?;
     let deadline = Instant::now() + timeout;
     loop {
-        match child.try_wait().expect("poll bounded child process") {
+        match process_tree.try_wait()? {
             Some(_) => {
-                return (
-                    child
-                        .wait_with_output()
-                        .expect("collect bounded child output"),
-                    false,
-                );
+                let output = process_tree.wait_with_output()?;
+                return Ok(BoundedOutput {
+                    output,
+                    expired: false,
+                    process_tree,
+                });
             }
             None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             None => {
-                child.kill().expect("kill expired child process");
-                return (
-                    child
-                        .wait_with_output()
-                        .expect("collect expired child output"),
-                    true,
-                );
+                process_tree.terminate_descendants()?;
+                let output = process_tree.wait_with_output()?;
+                return Ok(BoundedOutput {
+                    output,
+                    expired: true,
+                    process_tree,
+                });
             }
         }
     }

@@ -36,11 +36,17 @@ impl ProcessTree {
 
     /// Terminates every process in the tree and reaps the direct child.
     pub fn terminate(&mut self) -> io::Result<()> {
-        let termination = self.guard.terminate();
+        let termination = self.terminate_descendants();
         if let Some(mut child) = self.child.take() {
             let _ = child.wait();
         }
         termination
+    }
+
+    /// Signals termination to the entire tree while retaining the direct child
+    /// so its captured output can still be collected.
+    pub fn terminate_descendants(&mut self) -> io::Result<()> {
+        self.guard.terminate()
     }
 }
 

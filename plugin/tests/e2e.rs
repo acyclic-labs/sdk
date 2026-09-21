@@ -16,9 +16,10 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 use support::{
-    ACYCLIC, ProviderProtocol, ScriptedProvider, ServiceGuard, command, installed_host_binary,
-    isolated_state, make_read_only, make_writable, output_with_stdin, output_with_timeout,
-    package_production_plugin, write_qualification_receipt,
+    ACYCLIC, BoundedOutput, ProviderProtocol, ScriptedProvider, ServiceGuard,
+    assert_service_absent, command, installed_host_binary, isolated_state, make_read_only,
+    make_writable, output_with_stdin, output_with_timeout, package_production_plugin,
+    write_qualification_receipt,
 };
 
 #[test]
@@ -130,15 +131,207 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     let workspace = temporary.path().join("workspace");
     fs::create_dir(&workspace).expect("workspace directory");
     let package = package_production_plugin(temporary.path());
-    let service = install_host(&package.launcher, "codex", &codex, temporary.path());
+    let disabled_workspace = temporary.path().join("disabled-workspace");
+    fs::create_dir(&disabled_workspace).expect("disabled workspace directory");
+    let disabled_provider =
+        ScriptedProvider::start(ProviderProtocol::Responses, shell_write("codex-e2e.txt"));
+    let mut disabled_host = codex_host_command(
+        &codex,
+        temporary.path(),
+        &disabled_workspace,
+        &disabled_provider,
+        false,
+    );
+    let BoundedOutput {
+        output,
+        expired,
+        process_tree,
+    } = output_with_timeout(&mut disabled_host, Duration::from_secs(30));
+    drop(process_tree);
+    assert_host_success("disabled Codex", &output, expired, "");
+    assert_eq!(
+        fs::read_to_string(disabled_workspace.join("codex-e2e.txt"))
+            .expect("disabled Codex sentinel")
+            .trim(),
+        "qualified"
+    );
+    assert_semantic_provider_exchange(&disabled_provider);
+    assert_service_absent(&package.launcher, temporary.path())
+        .expect("disabled Codex must not start Acyclic");
+
+    let mut service = install_host(&package.launcher, "codex", &codex, temporary.path());
     let provider =
         ScriptedProvider::start(ProviderProtocol::Responses, shell_write("codex-e2e.txt"));
-    let mut host = command(&codex);
-    host.current_dir(&workspace).args([
+    let mut host = codex_host_command(&codex, temporary.path(), &workspace, &provider, true);
+    let BoundedOutput {
+        output,
+        expired,
+        process_tree,
+    } = output_with_timeout(&mut host, Duration::from_secs(30));
+    service.attach_process_tree(process_tree);
+    assert_host_success("installed Codex", &output, expired, "");
+    assert_eq!(
+        fs::read_to_string(workspace.join("codex-e2e.txt"))
+            .expect("Codex qualification sentinel")
+            .trim(),
+        "qualified"
+    );
+    assert_semantic_provider_exchange(&provider);
+    service.assert_hook_service_live();
+    service.drain();
+    assert_codex_timeout_cleanup(&package.launcher, &codex, temporary.path(), &workspace);
+    write_qualification_receipt(
+        "codex",
+        &codex,
+        &[
+            "host.codex.actual-binary",
+            "host.codex.hook-service-observed",
+            "routing.root-cwd",
+        ],
+    );
+}
+
+#[test]
+#[ignore = "requires the exact Claude Code binary selected by the qualification workflow"]
+fn actual_claude_binary_executes_the_scripted_scenario() {
+    let Some(claude) = installed_host_binary("claude", "ACYCLIC_E2E_CLAUDE") else {
+        panic!("Claude Code is unavailable; set ACYCLIC_E2E_CLAUDE to the exact binary");
+    };
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let workspace = temporary.path().join("workspace");
+    fs::create_dir(&workspace).expect("workspace directory");
+    let package = package_production_plugin(temporary.path());
+    let disabled_workspace = temporary.path().join("disabled-workspace");
+    fs::create_dir(&disabled_workspace).expect("disabled workspace directory");
+    let disabled_provider = ScriptedProvider::start(
+        ProviderProtocol::AnthropicMessages,
+        disabled_workspace
+            .join("claude-e2e.txt")
+            .to_string_lossy()
+            .as_ref(),
+    );
+    let disabled_debug = temporary.path().join("claude-disabled-debug.log");
+    let mut disabled_host = claude_host_command(
+        &claude,
+        temporary.path(),
+        &disabled_workspace,
+        &disabled_provider,
+        &disabled_debug,
+    );
+    let BoundedOutput {
+        output,
+        expired,
+        process_tree,
+    } = output_with_timeout(&mut disabled_host, Duration::from_secs(30));
+    drop(process_tree);
+    let disabled_debug_output = fs::read_to_string(&disabled_debug).unwrap_or_default();
+    assert_host_success("disabled Claude", &output, expired, &disabled_debug_output);
+    assert_eq!(
+        fs::read_to_string(disabled_workspace.join("claude-e2e.txt"))
+            .expect("disabled Claude sentinel")
+            .trim(),
+        "qualified"
+    );
+    assert_semantic_provider_exchange(&disabled_provider);
+    assert_service_absent(&package.launcher, temporary.path())
+        .expect("disabled Claude must not start Acyclic");
+
+    let mut service = install_host(&package.launcher, "claude-code", &claude, temporary.path());
+    let provider = ScriptedProvider::start(
+        ProviderProtocol::AnthropicMessages,
+        workspace.join("claude-e2e.txt").to_string_lossy().as_ref(),
+    );
+    let debug_log = temporary.path().join("claude-debug.log");
+    let mut host =
+        claude_host_command(&claude, temporary.path(), &workspace, &provider, &debug_log);
+    let BoundedOutput {
+        output,
+        expired,
+        process_tree,
+    } = output_with_timeout(&mut host, Duration::from_secs(30));
+    service.attach_process_tree(process_tree);
+    let debug = fs::read_to_string(&debug_log).unwrap_or_default();
+    assert_host_success("installed Claude", &output, expired, &debug);
+    let sentinel = fs::read_to_string(workspace.join("claude-e2e.txt"));
+    assert!(
+        sentinel
+            .as_deref()
+            .is_ok_and(|value| value.trim() == "qualified"),
+        "sentinel: {sentinel:?}\nrequest count: {}\nstdout:\n{}\nstderr:\n{}\ndebug:\n{}",
+        provider.wait_for_requests(0, Duration::ZERO).len(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+        debug
+    );
+    assert_semantic_provider_exchange(&provider);
+    service.assert_hook_service_live();
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _service = service;
+        panic!("injected host assertion failure");
+    }));
+    assert!(unwind.is_err(), "injected unwind must execute");
+    assert_service_absent(&package.launcher, temporary.path()).expect("Claude unwind cleanup");
+    assert_claude_timeout_cleanup(&package.launcher, &claude, temporary.path(), &workspace);
+    write_qualification_receipt(
+        "claude-code",
+        &claude,
+        &[
+            "host.claude.actual-binary",
+            "host.claude.hook-service-observed",
+            "routing.root-cwd",
+        ],
+    );
+}
+
+fn assert_codex_timeout_cleanup(launcher: &Path, binary: &Path, home: &Path, workspace: &Path) {
+    let service = install_host(launcher, "codex", binary, home);
+    let provider = ScriptedProvider::start_stalled(ProviderProtocol::Responses);
+    let mut host = codex_host_command(binary, home, workspace, &provider, true);
+    let BoundedOutput {
+        output: _,
+        expired,
+        process_tree,
+    } = output_with_timeout(&mut host, Duration::from_secs(15));
+    assert!(expired, "stalled Codex must hit the process-tree deadline");
+    service.assert_timeout_cleanup(process_tree);
+    assert!(
+        !provider.wait_for_requests(1, Duration::ZERO).is_empty(),
+        "Codex timeout must occur after provider admission"
+    );
+    assert_service_absent(launcher, home).expect("Codex timeout cleanup");
+}
+
+fn assert_claude_timeout_cleanup(launcher: &Path, binary: &Path, home: &Path, workspace: &Path) {
+    let service = install_host(launcher, "claude-code", binary, home);
+    let provider = ScriptedProvider::start_stalled(ProviderProtocol::AnthropicMessages);
+    let debug = home.join("claude-timeout-debug.log");
+    let mut host = claude_host_command(binary, home, workspace, &provider, &debug);
+    let BoundedOutput {
+        output: _,
+        expired,
+        process_tree,
+    } = output_with_timeout(&mut host, Duration::from_secs(15));
+    assert!(expired, "stalled Claude must hit the process-tree deadline");
+    service.assert_timeout_cleanup(process_tree);
+    assert!(
+        !provider.wait_for_requests(1, Duration::ZERO).is_empty(),
+        "Claude timeout must occur after provider admission"
+    );
+    assert_service_absent(launcher, home).expect("Claude timeout cleanup");
+}
+
+fn codex_host_command(
+    binary: &Path,
+    home: &Path,
+    workspace: &Path,
+    provider: &ScriptedProvider,
+    integration_enabled: bool,
+) -> std::process::Command {
+    let mut host = command(binary);
+    host.current_dir(workspace).args([
         "exec",
         "--json",
         "--ephemeral",
-        "--ignore-user-config",
         "--ignore-rules",
         "--skip-git-repo-check",
         "--dangerously-bypass-approvals-and-sandbox",
@@ -158,54 +351,25 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
         "model_providers.acyclic_e2e.wire_api=\"responses\"",
         "-c",
         "model_providers.acyclic_e2e.env_key=\"ACYCLIC_E2E_API_KEY\"",
-        "Run the deterministic qualification command.",
     ]);
+    if !integration_enabled {
+        host.arg("--ignore-user-config");
+    }
+    host.arg("Run the deterministic qualification command.");
     host.env("ACYCLIC_E2E_API_KEY", "test");
-    isolated_state(&mut host, temporary.path());
-    let (output, expired) = output_with_timeout(&mut host, Duration::from_secs(30));
-    assert!(
-        output.status.success() && !expired,
-        "expired: {expired}\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        fs::read_to_string(workspace.join("codex-e2e.txt"))
-            .expect("Codex qualification sentinel")
-            .trim(),
-        "qualified"
-    );
-    assert_semantic_provider_exchange(&provider);
-    service.drain();
-    write_qualification_receipt(
-        "codex",
-        &codex,
-        &[
-            "host.codex.actual-binary",
-            "host.codex.hooks",
-            "routing.root-cwd",
-        ],
-    );
+    isolated_state(&mut host, home);
+    host
 }
 
-#[test]
-#[ignore = "requires the exact Claude Code binary selected by the qualification workflow"]
-fn actual_claude_binary_executes_the_scripted_scenario() {
-    let Some(claude) = installed_host_binary("claude", "ACYCLIC_E2E_CLAUDE") else {
-        panic!("Claude Code is unavailable; set ACYCLIC_E2E_CLAUDE to the exact binary");
-    };
-    let temporary = tempfile::tempdir().expect("temporary directory");
-    let workspace = temporary.path().join("workspace");
-    fs::create_dir(&workspace).expect("workspace directory");
-    let package = package_production_plugin(temporary.path());
-    let service = install_host(&package.launcher, "claude-code", &claude, temporary.path());
-    let provider = ScriptedProvider::start(
-        ProviderProtocol::AnthropicMessages,
-        workspace.join("claude-e2e.txt").to_string_lossy().as_ref(),
-    );
-    let debug_log = temporary.path().join("claude-debug.log");
-    let mut host = command(&claude);
-    host.current_dir(&workspace).args([
+fn claude_host_command(
+    binary: &Path,
+    home: &Path,
+    workspace: &Path,
+    provider: &ScriptedProvider,
+    debug_log: &Path,
+) -> std::process::Command {
+    let mut host = command(binary);
+    host.current_dir(workspace).args([
         "-p",
         "Run the deterministic qualification command.",
         "--output-format",
@@ -221,41 +385,19 @@ fn actual_claude_binary_executes_the_scripted_scenario() {
         "none",
         "--debug-file",
     ]);
-    host.arg(&debug_log).args(["--setting-sources", "user"]);
+    host.arg(debug_log).args(["--setting-sources", "user"]);
     host.env("ANTHROPIC_API_KEY", "test");
     host.env("ANTHROPIC_BASE_URL", provider.base_url());
-    isolated_state(&mut host, temporary.path());
-    let (output, expired) = output_with_timeout(&mut host, Duration::from_secs(30));
-    let debug = fs::read_to_string(&debug_log).unwrap_or_default();
+    isolated_state(&mut host, home);
+    host
+}
+
+fn assert_host_success(name: &str, output: &std::process::Output, expired: bool, debug: &str) {
     assert!(
         output.status.success() && !expired,
-        "expired: {expired}\nrequest count: {}\nstdout:\n{}\nstderr:\n{}\ndebug:\n{}",
-        provider.wait_for_requests(0, Duration::ZERO).len(),
+        "{name} expired={expired}\nstdout:\n{}\nstderr:\n{}\ndebug:\n{debug}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
-        debug
-    );
-    let sentinel = fs::read_to_string(workspace.join("claude-e2e.txt"));
-    assert!(
-        sentinel
-            .as_deref()
-            .is_ok_and(|value| value.trim() == "qualified"),
-        "sentinel: {sentinel:?}\nrequest count: {}\nstdout:\n{}\nstderr:\n{}\ndebug:\n{}",
-        provider.wait_for_requests(0, Duration::ZERO).len(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-        debug
-    );
-    assert_semantic_provider_exchange(&provider);
-    service.drain();
-    write_qualification_receipt(
-        "claude-code",
-        &claude,
-        &[
-            "host.claude.actual-binary",
-            "host.claude.hooks",
-            "routing.root-cwd",
-        ],
     );
 }
 
