@@ -79,11 +79,12 @@ function durableStateDirectory() {
 }
 
 function installCertification(packageVersion, helper) {
+  const target = hostTarget();
   const platform = { linux: "linux", darwin: "macos", win32: "windows" }[process.platform];
   const architecture = { x64: "x86_64", arm64: "aarch64" }[process.arch];
   const backend = { linux: "linux-fuse", darwin: "macos-nfs", win32: "windows-projfs" }[process.platform];
   if (!platform || !architecture || !backend) return;
-  const name = `native-mount-${platform}-${architecture}.json`;
+  const name = `native-mount-${target}.json`;
   const source = join(__dirname, "..", "certification", name);
   if (!existsSync(source)) return;
   const receipt = readJson(source);

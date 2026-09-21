@@ -1,8 +1,10 @@
 {
   "version": 1,
   "targets": {
-    "linux-x64": "acyclic",
-    "linux-arm64": "acyclic",
+    "linux-x64-gnu": "acyclic",
+    "linux-x64-musl": "acyclic",
+    "linux-arm64-gnu": "acyclic",
+    "linux-arm64-musl": "acyclic",
     "darwin-x64": "acyclic",
     "darwin-arm64": "acyclic",
     "win32-x64": "acyclic.exe",

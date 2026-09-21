@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import {
   chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
   rmSync, statSync, writeFileSync,
@@ -11,7 +12,9 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const plugin = dirname(dirname(fileURLToPath(import.meta.url)));
-const target = `${{ win32: "win32", darwin: "darwin", linux: "linux" }[process.platform]}-${process.arch}`;
+const require = createRequire(import.meta.url);
+const { hostTarget, linuxLibc } = require("../bin/verify.js");
+const target = hostTarget();
 const executableName = process.platform === "win32" ? "acyclic.exe" : "acyclic";
 
 function digest(path) {
@@ -69,7 +72,7 @@ test("installer publishes the exact release certification receipt", () => {
     const platform = { linux: "linux", darwin: "macos", win32: "windows" }[process.platform];
     const architecture = { x64: "x86_64", arm64: "aarch64" }[process.arch];
     const backend = { linux: "linux-fuse", darwin: "macos-nfs", win32: "windows-projfs" }[process.platform];
-    const name = `native-mount-${platform}-${architecture}.json`;
+    const name = `native-mount-${target}.json`;
     const certification = join(value.root, "certification");
     mkdirSync(certification);
     const receipt = {
@@ -98,6 +101,11 @@ test("installer publishes the exact release certification receipt", () => {
     rmSync(value.root, { recursive: true, force: true });
     rmSync(state, { recursive: true, force: true });
   }
+});
+
+test("Linux libc selection is explicit and fail closed", () => {
+  assert.equal(linuxLibc({ header: { glibcVersionRuntime: "2.39" } }), "gnu");
+  assert.equal(linuxLibc({ header: {} }), "musl");
 });
 
 test("installer recovers cleanup failure after durable identity publication", () => {

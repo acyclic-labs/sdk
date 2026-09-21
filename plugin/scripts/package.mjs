@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import {
   copyFileSync,
@@ -23,12 +24,8 @@ function contains(parent, child) {
   return remainder === "" || (!remainder.startsWith("..") && !isAbsolute(remainder));
 }
 
-function hostTarget() {
-  const system = { win32: "win32", darwin: "darwin", linux: "linux" }[process.platform];
-  const machine = { x64: "x64", arm64: "arm64" }[process.arch];
-  if (!system || !machine) fail("cannot infer npm platform target; use TARGET=PATH");
-  return `${system}-${machine}`;
-}
+const require = createRequire(import.meta.url);
+const { hostTarget } = require("../bin/verify.js");
 
 function targetPath(value) {
   const separator = value.indexOf("=");

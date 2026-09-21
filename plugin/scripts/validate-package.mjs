@@ -63,12 +63,12 @@ if (args.require_universal && (targets.size !== SUPPORTED_TARGETS.size || [...SU
 if (args.require_universal) {
   const version = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8")).version;
   const receipts = [
-    ["linux", "x86_64", "linux-fuse"],
-    ["macos", "aarch64", "macos-nfs"],
-    ["windows", "x86_64", "windows-projfs"],
+    ["linux-x64-gnu", "linux", "x86_64", "linux-fuse"],
+    ["darwin-arm64", "macos", "aarch64", "macos-nfs"],
+    ["win32-x64", "windows", "x86_64", "windows-projfs"],
   ];
-  for (const [os, arch, backend] of receipts) {
-    const path = join(plugin, "certification", `native-mount-${os}-${arch}.json`);
+  for (const [target, os, arch, backend] of receipts) {
+    const path = join(plugin, "certification", `native-mount-${target}.json`);
     if (!existsSync(path) || !statSync(path).isFile()) fail(`missing certification receipt: ${path}`);
     const receipt = JSON.parse(readFileSync(path, "utf8"));
     if (

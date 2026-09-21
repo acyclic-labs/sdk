@@ -323,8 +323,10 @@ fn try_output_with_timeout(
 
 pub fn target_name() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => "linux-x64",
-        ("linux", "aarch64") => "linux-arm64",
+        ("linux", "x86_64") if cfg!(target_env = "musl") => "linux-x64-musl",
+        ("linux", "x86_64") => "linux-x64-gnu",
+        ("linux", "aarch64") if cfg!(target_env = "musl") => "linux-arm64-musl",
+        ("linux", "aarch64") => "linux-arm64-gnu",
         ("macos", "x86_64") => "darwin-x64",
         ("macos", "aarch64") => "darwin-arm64",
         ("windows", "x86_64") => "win32-x64",

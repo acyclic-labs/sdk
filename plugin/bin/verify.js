@@ -5,11 +5,16 @@ const { createHash } = require("node:crypto");
 const { existsSync, readFileSync } = require("node:fs");
 const { join } = require("node:path");
 
+function linuxLibc(report = process.report?.getReport?.()) {
+  return typeof report?.header?.glibcVersionRuntime === "string"
+    && report.header.glibcVersionRuntime.length > 0 ? "gnu" : "musl";
+}
+
 function hostTarget() {
   const arch = { x64: "x64", arm64: "arm64" }[process.arch];
   const os = { win32: "win32", darwin: "darwin", linux: "linux" }[process.platform];
   if (!arch || !os) throw new Error(`unsupported Acyclic platform: ${process.platform}/${process.arch}`);
-  return `${os}-${arch}`;
+  return os === "linux" ? `${os}-${arch}-${linuxLibc()}` : `${os}-${arch}`;
 }
 
 function targetExecutables(directory) {
@@ -42,7 +47,7 @@ function verifyTarget(directory, target = hostTarget()) {
   return { source, manifest };
 }
 
-module.exports = { hostTarget, verifyTarget };
+module.exports = { hostTarget, linuxLibc, verifyTarget };
 
 if (require.main === module) {
   verifyTarget(__dirname, process.argv[2]);
