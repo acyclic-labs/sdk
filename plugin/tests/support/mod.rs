@@ -80,11 +80,12 @@ impl ServiceGuard {
         assert!(!identity.is_empty(), "timed-out hook service identity");
         self.identity = Some(identity);
         if let Err(error) = self.cleanup() {
-            let fallback = self.force_cleanup();
-            panic!(
-                "timed-out host service was not drained after process-tree cleanup: {error}; \
-                 forced cleanup: {fallback:?}"
-            );
+            self.force_cleanup().unwrap_or_else(|fallback| {
+                panic!(
+                    "timed-out host service was not cleaned: graceful drain: {error}; \
+                     forced cleanup: {fallback}"
+                )
+            });
         }
     }
 

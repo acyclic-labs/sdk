@@ -96,6 +96,8 @@ jobs:
           ACYCLIC_E2E_HOST_PLATFORM_INTEGRITY: ${{ steps.host.outputs.platform_integrity }}
           ACYCLIC_E2E_HOST_LOCK_SHA256: ${{ steps.host.outputs.lock_sha256 }}
           CARGO_TARGET_DIR: ${{ runner.temp }}\agent-host-target
+          CARGO_INCREMENTAL: 0
+          CARGO_PROFILE_TEST_DEBUG: 0
           HOST: ${{ matrix.host }}
         run: |
           $test = if ($env:HOST -eq 'codex') {
