@@ -7684,11 +7684,7 @@ fn print_git_output(output: GitCommandOutput) -> Result<i32, String> {
 }
 
 fn install_command(arguments: &[String]) -> Result<(), String> {
-    let project = arguments.iter().any(|argument| argument == "--project");
-    let host = arguments
-        .iter()
-        .find(|argument| argument.as_str() != "--project")
-        .ok_or_else(|| "install requires a host or --detected".to_owned())?;
+    let (host, project) = parse_install_arguments(arguments)?;
     if host == "--detected" {
         let mut installed = 0;
         for (binary, target) in [
@@ -7711,12 +7707,17 @@ fn install_command(arguments: &[String]) -> Result<(), String> {
     install_host(host, project)
 }
 
+fn parse_install_arguments(arguments: &[String]) -> Result<(&str, bool), String> {
+    match arguments {
+        [host] if host == "--detected" => Ok((host, false)),
+        [host] if !host.starts_with('-') => Ok((host, false)),
+        [host, project] if !host.starts_with('-') && project == "--project" => Ok((host, true)),
+        _ => Err("usage: acyclic install HOST [--project] | acyclic install --detected".to_owned()),
+    }
+}
+
 async fn uninstall_command(arguments: &[String]) -> Result<(), String> {
-    let purge = arguments.iter().any(|argument| argument == "--purge");
-    let host = arguments
-        .iter()
-        .find(|argument| argument.as_str() != "--purge")
-        .ok_or_else(|| "uninstall requires a host".to_owned())?;
+    let (host, purge) = parse_uninstall_arguments(arguments)?;
     let data = default_data_directory();
     drain_service(&data).await?;
     uninstall_host(host)?;
@@ -7727,6 +7728,14 @@ async fn uninstall_command(arguments: &[String]) -> Result<(), String> {
         println!("preserved Acyclic durable state; pass --purge to remove it explicitly");
     }
     Ok(())
+}
+
+fn parse_uninstall_arguments(arguments: &[String]) -> Result<(&str, bool), String> {
+    match arguments {
+        [host] if !host.starts_with('-') => Ok((host, false)),
+        [host, purge] if !host.starts_with('-') && purge == "--purge" => Ok((host, true)),
+        _ => Err("usage: acyclic uninstall HOST [--purge]".to_owned()),
+    }
 }
 
 async fn purge_durable_state(data: &Path) -> Result<(), String> {
@@ -11674,6 +11683,44 @@ mod tests {
         tool_override["mcpServers"]["acyclic"]["env"] =
             json!({"NODE_OPTIONS":"--require ./evil.js"});
         assert!(!valid_codex_mcp_manifest(&tool_override));
+    }
+
+    #[test]
+    fn host_lifecycle_arguments_are_exact_before_mutation() {
+        let strings = |values: &[&str]| {
+            values
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        let install = strings(&["codex", "--project"]);
+        assert_eq!(parse_install_arguments(&install), Ok(("codex", true)));
+        let detected = strings(&["--detected"]);
+        assert_eq!(
+            parse_install_arguments(&detected),
+            Ok(("--detected", false))
+        );
+        for invalid in [
+            strings(&[]),
+            strings(&["--project", "codex"]),
+            strings(&["--detected", "--project"]),
+            strings(&["codex", "unexpected"]),
+            strings(&["codex", "--project", "--project"]),
+        ] {
+            assert!(parse_install_arguments(&invalid).is_err());
+        }
+
+        let uninstall = strings(&["codex", "--purge"]);
+        assert_eq!(parse_uninstall_arguments(&uninstall), Ok(("codex", true)));
+        for invalid in [
+            strings(&[]),
+            strings(&["--purge", "codex"]),
+            strings(&["codex", "unexpected"]),
+            strings(&["codex", "--purge", "--purge"]),
+        ] {
+            assert!(parse_uninstall_arguments(&invalid).is_err());
+        }
     }
 
     #[cfg(unix)]
