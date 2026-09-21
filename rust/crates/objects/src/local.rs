@@ -124,6 +124,16 @@ pub struct LocalObjects {
     body_io: Arc<tokio::sync::RwLock<()>>,
 }
 
+async fn run_owned_initialization<T, F>(initialize: F) -> Result<T, LocalObjectsError>
+where
+    T: Send + 'static,
+    F: Future<Output = T> + Send + 'static,
+{
+    tokio::spawn(initialize)
+        .await
+        .map_err(|_| LocalObjectsError::Unavailable)
+}
+
 /// Exact bounded physical-reclamation result for a durable local Objects root.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LocalObjectsGarbageCollection {
@@ -257,9 +267,20 @@ impl LocalObjects {
     ///
     /// A torn final journal frame is discarded. Corruption in a complete frame fails closed.
     /// Immutable bodies are segmented, authenticated, and range-read without whole-body loading.
-    #[allow(clippy::too_many_lines)]
     pub async fn open(
         root: impl AsRef<Path>,
+        limits: LocalObjectsLimits,
+    ) -> Result<Self, LocalObjectsError> {
+        let root = root.as_ref().to_path_buf();
+        // Dropping a JoinHandle detaches its task. Keep the complete initialization sequence in
+        // that independently owned task so caller cancellation cannot release owner.lock while a
+        // blocking recovery or validation worker is still accessing the durable root.
+        run_owned_initialization(async move { Self::open_owned(root, limits).await }).await?
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn open_owned(
+        root: PathBuf,
         limits: LocalObjectsLimits,
     ) -> Result<Self, LocalObjectsError> {
         if limits.maximum_object_bytes == 0
@@ -270,7 +291,6 @@ impl LocalObjects {
         {
             return Err(LocalObjectsError::Invalid("invalid capacity limits"));
         }
-        let root = root.as_ref().to_path_buf();
         fs::create_dir_all(root.join("segments"))?;
         sync_parent(&root, limits.durability)?;
         // A failed earlier write may leave a visible but unsynced prefix.
@@ -2138,6 +2158,52 @@ fn sync_parent(path: &Path, durability: LocalDurability) -> Result<(), LocalObje
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelled_open_caller_keeps_ownership_until_initialization_stops()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let lock_path = root.path().join("owner.lock");
+        let ownership = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)?;
+        ownership.try_lock_exclusive()?;
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let opening = tokio::spawn(run_owned_initialization(async move {
+            let _ownership = ownership;
+            let _ = started_tx.send(());
+            let _ = release_rx.await;
+            drop(_ownership);
+        }));
+
+        started_rx.await?;
+        opening.abort();
+        let cancelled = opening.await;
+        assert!(
+            cancelled.as_ref().is_err_and(|error| error.is_cancelled()),
+            "opening caller must be cancelled: {cancelled:?}"
+        );
+        let contender = OpenOptions::new().read(true).write(true).open(lock_path)?;
+        assert!(
+            contender.try_lock_exclusive().is_err(),
+            "caller cancellation must not release an active initialization's ownership file"
+        );
+        let _ = release_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if contender.try_lock_exclusive().is_ok() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        Ok(())
+    }
 
     #[cfg(not(target_vendor = "apple"))]
     #[tokio::test]

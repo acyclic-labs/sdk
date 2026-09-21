@@ -79,6 +79,14 @@ impl ServiceGuard {
         let identity = fs::read_to_string(&marker).expect("timed-out host started hook service");
         assert!(!identity.is_empty(), "timed-out hook service identity");
         self.identity = Some(identity);
+        // A timed-out host can still own open handles below its native mount. Terminate that
+        // client tree before asking the service to synchronize and unmount; reversing this order
+        // can make Linux FUSE teardown wait on the very process that cleanup has not stopped yet.
+        self.process_tree
+            .as_mut()
+            .expect("timed-out host process tree")
+            .terminate()
+            .expect("terminate timed-out host process tree before service drain");
         if let Err(error) = self.cleanup() {
             self.force_cleanup().unwrap_or_else(|fallback| {
                 panic!(
