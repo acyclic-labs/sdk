@@ -2395,6 +2395,7 @@ mod tests {
         let root = temporary.path().join("checkout");
         let operation = temporary.path().join("operation");
         let target = operation.join("target");
+        std::fs::create_dir_all(&root).expect("checkout directory");
         std::fs::create_dir_all(&target).expect("target directory");
         symlink("missing-target", root.join("link")).expect("dangling symlink");
         let backend =

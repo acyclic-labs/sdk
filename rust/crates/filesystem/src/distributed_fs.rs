@@ -123,8 +123,8 @@ impl<A, O, S> DistributedFs<A, O, S> {
 
 impl<A, O, S> WorkspaceResolver<A, O> for DistributedFs<A, O, S>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + Send + Sync,
+    O: AsyncObjectStore + Send + Sync,
     S: WorkspaceLineageStore + Clone,
 {
     type Error = WorkspaceLineageError<S::Error>;

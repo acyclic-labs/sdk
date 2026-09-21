@@ -92,6 +92,5 @@ async function qualify(bindingPath, engineRoot) {
   if (!Buffer.from(bytes).equals(Buffer.from("napi"))) {
     throw new Error("N-API read did not preserve bytes");
   }
-  fs.close();
   console.log(`acyclic-fs N-API ABI passed on ${process.platform}-${process.arch}`);
 }
