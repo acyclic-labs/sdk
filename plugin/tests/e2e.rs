@@ -18,8 +18,8 @@ use std::time::Duration;
 use support::{
     ACYCLIC, BoundedOutput, ProviderProtocol, ScriptedProvider, ServiceGuard,
     assert_service_absent, command, installed_host_binary, isolated_state, make_read_only,
-    make_writable, output_with_stdin, output_with_timeout, package_production_plugin,
-    write_qualification_receipt,
+    make_writable, output_after_provider_admission, output_with_stdin, output_with_timeout,
+    package_production_plugin, write_qualification_receipt,
 };
 
 #[test]
@@ -295,17 +295,27 @@ fn assert_codex_timeout_cleanup(launcher: &Path, binary: &Path, home: &Path, wor
     let service = install_host(launcher, "codex", binary, home);
     let provider = ScriptedProvider::start_stalled(ProviderProtocol::Responses);
     let mut host = codex_host_command(binary, home, workspace, &provider, true);
-    let BoundedOutput {
-        output: _,
-        expired,
-        process_tree,
-    } = output_with_timeout(&mut host, Duration::from_secs(15));
+    let (
+        BoundedOutput {
+            output,
+            expired,
+            process_tree,
+        },
+        admitted,
+    ) = output_after_provider_admission(
+        &mut host,
+        &provider,
+        Duration::from_secs(30),
+        Duration::from_secs(15),
+    );
+    assert!(
+        admitted,
+        "Codex did not reach the stalled provider\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(expired, "stalled Codex must hit the process-tree deadline");
     service.assert_timeout_cleanup(process_tree);
-    assert!(
-        !provider.wait_for_requests(1, Duration::ZERO).is_empty(),
-        "Codex timeout must occur after provider admission"
-    );
     assert_service_absent(launcher, home).expect("Codex timeout cleanup");
 }
 
@@ -314,17 +324,27 @@ fn assert_claude_timeout_cleanup(launcher: &Path, binary: &Path, home: &Path, wo
     let provider = ScriptedProvider::start_stalled(ProviderProtocol::AnthropicMessages);
     let debug = home.join("claude-timeout-debug.log");
     let mut host = claude_host_command(binary, home, workspace, &provider, &debug);
-    let BoundedOutput {
-        output: _,
-        expired,
-        process_tree,
-    } = output_with_timeout(&mut host, Duration::from_secs(15));
+    let (
+        BoundedOutput {
+            output,
+            expired,
+            process_tree,
+        },
+        admitted,
+    ) = output_after_provider_admission(
+        &mut host,
+        &provider,
+        Duration::from_secs(30),
+        Duration::from_secs(15),
+    );
+    assert!(
+        admitted,
+        "Claude did not reach the stalled provider\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(expired, "stalled Claude must hit the process-tree deadline");
     service.assert_timeout_cleanup(process_tree);
-    assert!(
-        !provider.wait_for_requests(1, Duration::ZERO).is_empty(),
-        "Claude timeout must occur after provider admission"
-    );
     assert_service_absent(launcher, home).expect("Claude timeout cleanup");
 }
 

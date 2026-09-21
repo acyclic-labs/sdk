@@ -291,6 +291,12 @@ impl LocalObjects {
         {
             return Err(LocalObjectsError::Invalid("invalid capacity limits"));
         }
+        // Validate the in-memory replay target before acquiring durable ownership or starting a
+        // blocking recovery worker. No fallible setup may abandon that worker while it owns the
+        // journal.
+        let semantic =
+            MemoryObjects::new_with_limits(limits.maximum_object_bytes, limits.maximum_bytes)
+                .map_err(|_| LocalObjectsError::Invalid("capacity limits are not representable"))?;
         fs::create_dir_all(root.join("segments"))?;
         sync_parent(&root, limits.durability)?;
         // A failed earlier write may leave a visible but unsynced prefix.
@@ -321,9 +327,6 @@ impl LocalObjects {
             let operations = decode_replay(&mut journal, limits, &records)?;
             Ok::<_, LocalObjectsError>((journal, operations))
         });
-        let semantic =
-            MemoryObjects::new_with_limits(limits.maximum_object_bytes, limits.maximum_bytes)
-                .map_err(|_| LocalObjectsError::Invalid("capacity limits are not representable"))?;
         let mut replay_error = None;
         while let Some(record) = receiver.recv().await {
             if replay_error.is_none()
