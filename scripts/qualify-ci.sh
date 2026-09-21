@@ -80,6 +80,27 @@ case "$lane" in
     bash scripts/test-ensure-rust-target.sh
     bash scripts/test-qualify-gate-rustup.sh
     node scripts/check-workflow-runners.mjs
+    actionlint_archive="$TOOLS_DIR/actionlint_1.7.7_linux_amd64.tar.gz"
+    actionlint_checksum="023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
+    if [[ ! -f "$actionlint_archive" ]] ||
+      ! echo "$actionlint_checksum  $actionlint_archive" | sha256sum --check --status; then
+      temporary_archive="$(mktemp "${actionlint_archive}.XXXXXXXX")"
+      if ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+        --max-time 30 \
+        https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
+        --output "$temporary_archive" ||
+        ! echo "$actionlint_checksum  $temporary_archive" | sha256sum --check --status; then
+        rm -f -- "$temporary_archive"
+        exit 1
+      fi
+      mv -- "$temporary_archive" "$actionlint_archive"
+    fi
+    actionlint_root="$TOOLS_DIR/actionlint-1.7.7"
+    mkdir -p "$actionlint_root"
+    tar --extract --gzip --file "$actionlint_archive" --directory "$actionlint_root" actionlint
+    "$actionlint_root/actionlint" \
+      -ignore 'label "blacksmith-[^"]+" is unknown' \
+      .github/workflows/*.yml
     node scripts/publish-cargo-crates.mjs check
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
