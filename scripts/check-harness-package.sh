@@ -30,6 +30,7 @@ elif [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1; the
 fi
 
 cd "$root"
+source_sha=$(git rev-parse --verify HEAD)
 cargo_bin="cargo"
 rustup_bin="rustup"
 wasm_bindgen_bin="wasm-bindgen"
@@ -192,3 +193,4 @@ fi
 cmp --silent "$output/CONFORMANCE-EVIDENCE.json" "$repeat_evidence"
 cd "$output"
 sha256sum acyclic-harness.tgz acyclic-*.crate CONFORMANCE-EVIDENCE.json > SHA256SUMS
+printf '%s\n' "$source_sha" > SOURCE_COMMIT

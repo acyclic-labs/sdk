@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish = true
 description = "Native file primitives shared by Acyclic local providers"
+readme = "README.md"
+documentation = "https://docs.rs/acyclic-native-runtime"
+keywords = ["filesystem", "io", "runtime"]
+categories = ["filesystem"]
 
 [dependencies]
 bytes.workspace = true

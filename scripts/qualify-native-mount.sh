@@ -30,7 +30,7 @@ mkdir -p "$artifact_dir"
 if [[ -n "${ACYCLIC_RELEASE_EXECUTABLE:-}" ]]; then
   release_executable="$ACYCLIC_RELEASE_EXECUTABLE"
 else
-  cargo build --locked -p acyclic --release
+  cargo build --locked -p acyclic-labs-plugin --release
   release_executable="${CARGO_TARGET_DIR:-$repository/target}/release/acyclic"
 fi
 [[ -x "$release_executable" ]] || {

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-[[ $# == 3 && "$1" == /* && "$2" == /* && "$3" == /* ]] || {
-  echo 'usage: check-typescript-packages.sh ABSOLUTE_OUTPUT INFERENCE_ARCHIVE FILESYSTEM_ARCHIVE' >&2
+[[ $# == 4 && "$1" == /* && "$2" == /* && "$3" == /* && "$4" == /* ]] || {
+  echo 'usage: check-typescript-packages.sh ABSOLUTE_OUTPUT INFERENCE_ARCHIVE FILESYSTEM_ARCHIVE HARNESS_ARCHIVE' >&2
   exit 2
 }
 output=$1
 inference_archive=$2
 filesystem_archive=$3
+harness_archive=$4
 [[ ! -e "$output" && ! -L "$output" ]] || { echo 'package output must be absent' >&2; exit 2; }
-[[ -f "$inference_archive" && -f "$filesystem_archive" ]] || { echo 'qualified dependency archives are missing' >&2; exit 2; }
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work="$(mktemp -d -t sdk-typescript-package.XXXXXXXX)"
@@ -37,31 +37,27 @@ verify_staged_input() {
 }
 verify_staged_input "$inference_archive"
 verify_staged_input "$filesystem_archive"
+verify_staged_input "$harness_archive"
 
 mkdir "$output"
-package_version() {
-  node -p "require(process.argv[1]).version" "$root/typescript/packages/$1/package.json"
-}
-objects_version=$(package_version objects)
-stream_version=$(package_version stream)
-inference_version=$(package_version inference)
-machines_version=$(package_version machines)
-filesystem_version=$(package_version filesystem)
-sdk_version=$(package_version sdk)
-pack() {
-  local directory=$1 name=$2 version=$3 archive
-  archive="$output/acyclic-labs-${directory}-${version}.tgz"
-  (cd "$root/typescript/packages/$directory" && bun pm pack --ignore-scripts --filename "$archive" --quiet)
+while IFS=$'\t' read -r slug directory name version; do
+  archive="$output/acyclic-labs-${slug}-${version}.tgz"
+  case "$slug" in
+    inference) install -m 0644 "$inference_archive" "$archive" ;;
+    fs) install -m 0644 "$filesystem_archive" "$archive" ;;
+    harness) install -m 0644 "$harness_archive" "$archive" ;;
+    *) (cd "$root/typescript/packages/$directory" && bun pm pack --ignore-scripts --filename "$archive" --quiet) ;;
+  esac
   node "$root/scripts/validate-npm-package.mjs" "$archive" "$name" "$version" "typescript/packages/$directory"
-}
-pack objects @acyclic-labs/objects "$objects_version"
-pack stream @acyclic-labs/stream "$stream_version"
-pack machines @acyclic-labs/machines "$machines_version"
-pack sdk @acyclic-labs/sdk "$sdk_version"
-install -m 0644 "$inference_archive" "$output/acyclic-labs-inference-${inference_version}.tgz"
-install -m 0644 "$filesystem_archive" "$output/acyclic-labs-fs-${filesystem_version}.tgz"
-node scripts/validate-npm-package.mjs "$output/acyclic-labs-inference-${inference_version}.tgz" @acyclic-labs/inference "$inference_version" typescript/packages/inference
-node scripts/validate-npm-package.mjs "$output/acyclic-labs-fs-${filesystem_version}.tgz" @acyclic-labs/fs "$filesystem_version" typescript/packages/filesystem
+done < <(node -e '
+  const fs = require("node:fs");
+  const path = require("node:path");
+  for (const item of JSON.parse(fs.readFileSync("release/npm-packages.json", "utf8"))) {
+    const manifest = JSON.parse(fs.readFileSync(path.join("typescript/packages", item.directory, "package.json"), "utf8"));
+    if (manifest.name !== item.name) throw new Error(`release identity differs for ${item.directory}`);
+    console.log([item.slug, item.directory, item.name, manifest.version].join("\t"));
+  }
+')
 (cd "$output" && sha256sum ./*.tgz > SHA256SUMS)
 node scripts/typescript-qualification.mjs create "$output" "$source_sha"
 
@@ -71,15 +67,17 @@ file_url() {
   else printf '%s\n' "$1"
   fi
 }
-objects_url=$(file_url "$output/acyclic-labs-objects-${objects_version}.tgz")
-stream_url=$(file_url "$output/acyclic-labs-stream-${stream_version}.tgz")
-inference_url=$(file_url "$output/acyclic-labs-inference-${inference_version}.tgz")
-machines_url=$(file_url "$output/acyclic-labs-machines-${machines_version}.tgz")
-filesystem_url=$(file_url "$output/acyclic-labs-fs-${filesystem_version}.tgz")
-sdk_url=$(file_url "$output/acyclic-labs-sdk-${sdk_version}.tgz")
+version=$(node -p "require('./typescript/packages/sdk/package.json').version")
+harness_url=$(file_url "$output/acyclic-labs-harness-${version}.tgz")
+objects_url=$(file_url "$output/acyclic-labs-objects-${version}.tgz")
+stream_url=$(file_url "$output/acyclic-labs-stream-${version}.tgz")
+inference_url=$(file_url "$output/acyclic-labs-inference-${version}.tgz")
+machines_url=$(file_url "$output/acyclic-labs-machines-${version}.tgz")
+filesystem_url=$(file_url "$output/acyclic-labs-fs-${version}.tgz")
+sdk_url=$(file_url "$output/acyclic-labs-sdk-${version}.tgz")
 mkdir "$work/consumer"
 cat >"$work/consumer/package.json" <<EOF
-{"private":true,"type":"module","dependencies":{"@acyclic-labs/sdk":"file:$sdk_url"},"overrides":{"@acyclic-labs/objects":"file:$objects_url","@acyclic-labs/stream":"file:$stream_url","@acyclic-labs/inference":"file:$inference_url","@acyclic-labs/machines":"file:$machines_url","@acyclic-labs/fs":"file:$filesystem_url"}}
+{"private":true,"type":"module","dependencies":{"@acyclic-labs/sdk":"file:$sdk_url"},"overrides":{"@acyclic-labs/harness":"file:$harness_url","@acyclic-labs/objects":"file:$objects_url","@acyclic-labs/stream":"file:$stream_url","@acyclic-labs/inference":"file:$inference_url","@acyclic-labs/machines":"file:$machines_url","@acyclic-labs/fs":"file:$filesystem_url"}}
 EOF
 cat >"$work/consumer/smoke.mjs" <<'EOF'
 import { filesystem, harness, inference, machines, objects, stream } from "@acyclic-labs/sdk";

@@ -312,6 +312,30 @@ function ensureInstalled() {
   }
 }
 
-module.exports = { ensureInstalled };
+function installedExecutable() {
+  const { manifest } = verifyTarget(__dirname);
+  const packageVersion = readJson(join(__dirname, "..", "package.json")).version;
+  const target = hostTarget();
+  const expectedSha256 = manifest.targets[target].sha256;
+  const installed = join(__dirname, process.platform === "win32" ? "acyclic.exe" : "acyclic");
+  const identityPath = join(__dirname, "installed-binary.json");
+  if (!existsSync(identityPath)) {
+    throw new Error("Acyclic installation identity is missing; reinstall the package");
+  }
+  const identity = readJson(identityPath);
+  if (
+    identity.version !== packageVersion
+    || identity.target !== target
+    || identity.sha256 !== expectedSha256
+  ) {
+    throw new Error("installed Acyclic binary has an invalid durable identity");
+  }
+  if (!existsSync(installed) || sha256(installed) !== expectedSha256) {
+    throw new Error("installed Acyclic binary does not match its durable identity");
+  }
+  return installed;
+}
+
+module.exports = { ensureInstalled, installedExecutable };
 
 if (require.main === module) ensureInstalled();

@@ -52,7 +52,7 @@
       "hooks": [{
         "type": "command",
         "command": "node \"${PLUGIN_ROOT}/bin/acyclic.js\" __hook codex SessionEnd",
-        "timeout": 120
+        "timeout": 3
       }]
     }]
   }

@@ -7,15 +7,8 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const MAX_RECEIPT_BYTES = 1_048_576;
-const PACKAGES = [
-  ["objects", "objects"],
-  ["stream", "stream"],
-  ["inference", "inference"],
-  ["machines", "machines"],
-  ["fs", "filesystem"],
-  ["sdk", "sdk"],
-];
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const PACKAGES = JSON.parse(readFileSync(join(root, "release", "npm-packages.json"), "utf8"));
 
 function fail(message) {
   throw new Error(message);
@@ -27,9 +20,10 @@ function digest(path) {
 }
 
 function expectedAssets() {
-  return PACKAGES.map(([assetSlug, directory]) => {
+  return PACKAGES.map(({ slug: assetSlug, directory, name }) => {
     const manifest = JSON.parse(readFileSync(join(root, "typescript", "packages", directory, "package.json"), "utf8"));
-    return { asset: `acyclic-labs-${assetSlug}-${manifest.version}.tgz`, name: manifest.name, version: manifest.version };
+    if (manifest.name !== name) fail(`release identity differs for ${directory}`);
+    return { asset: `acyclic-labs-${assetSlug}-${manifest.version}.tgz`, name, version: manifest.version };
   });
 }
 
@@ -42,7 +36,7 @@ function create(output, sourceSha) {
   const expectedNames = new Set(packages.map(item => item.asset));
   const observedNames = new Set(readdirSync(output).filter(name => name.endsWith(".tgz")));
   if (expectedNames.size !== observedNames.size || [...expectedNames].some(name => !observedNames.has(name))) {
-    fail("qualification output does not contain exactly the six core archives");
+    fail("qualification output does not contain exactly the public npm archives");
   }
   const target = join(output, "QUALIFICATION.json");
   if (existsSync(target)) fail("qualification receipt already exists");
@@ -56,13 +50,13 @@ function readReceipt(path) {
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt) || Object.keys(receipt).sort().join() !== "packages,revision,source_commit") {
     fail("qualification receipt schema is invalid");
   }
-  if (receipt.revision !== 1 || !Array.isArray(receipt.packages) || receipt.packages.length !== 6) fail("qualification receipt schema is invalid");
+  if (receipt.revision !== 1 || !Array.isArray(receipt.packages) || receipt.packages.length !== PACKAGES.length) fail("qualification receipt schema is invalid");
   const names = new Set();
   for (const item of receipt.packages) {
     if (
       !item || typeof item !== "object" || Array.isArray(item)
       || Object.keys(item).sort().join() !== "asset,name,sha256,size,version"
-      || typeof item.asset !== "string" || !/^acyclic-labs-[a-z]+-[0-9A-Za-z.+-]+\.tgz$/.test(item.asset)
+      || typeof item.asset !== "string" || !/^acyclic-labs-[a-z][a-z-]*-[0-9A-Za-z.+-]+\.tgz$/.test(item.asset)
       || typeof item.name !== "string" || typeof item.version !== "string"
       || typeof item.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(item.sha256)
       || !Number.isInteger(item.size) || item.size <= 0 || names.has(item.asset)
@@ -78,7 +72,7 @@ function verify(receiptPath, sourceSha, assetName, archive) {
   const identity = item => `${item.asset}\0${item.name}\0${item.version}`;
   const observed = new Set(receipt.packages.map(identity));
   const expected = new Set(expectedAssets().map(identity));
-  if (observed.size !== expected.size || [...expected].some(item => !observed.has(item))) fail("qualification receipt does not identify the six core packages");
+  if (observed.size !== expected.size || [...expected].some(item => !observed.has(item))) fail("qualification receipt does not identify the public npm packages");
   const matches = receipt.packages.filter(item => item.asset === assetName);
   if (matches.length !== 1) fail("archive is absent from the qualification receipt");
   const [sha256, size] = digest(archive);

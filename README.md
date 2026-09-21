@@ -84,10 +84,10 @@ qualification evidence.
 Build and test the local Acyclic workspace product without an account:
 
 ```sh
-cargo test -p acyclic
+cargo test -p acyclic-labs-plugin
 ```
 
-The one product binary lives in `plugins/acyclic`. It auto-starts one per-user
+The one product binary lives in `plugin`. It auto-starts one per-user
 service, derives workspace routing from canonical cwd, exposes local history as
 `acyclic git`, and packages thin capability-aware adapters for coding agents.
 There is no `init` command and no repository marker.

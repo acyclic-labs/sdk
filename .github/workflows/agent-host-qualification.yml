@@ -1,0 +1,165 @@
+name: Agent Host Qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/agent-host-qualification.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'plugin/**'
+      - 'rust/crates/filesystem/**'
+      - 'rust/crates/native-runtime/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  versions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      codex: ${{ steps.resolve.outputs.codex }}
+      claude: ${{ steps.resolve.outputs.claude }}
+    steps:
+      - id: resolve
+        name: Resolve host versions once
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "codex=$(npm view @openai/codex version)" >> "$GITHUB_OUTPUT"
+          echo "claude=$(npm view @anthropic-ai/claude-code version)" >> "$GITHUB_OUTPUT"
+
+  qualify:
+    needs: versions
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [codex, claude]
+        platform:
+          - name: linux-fuse
+            runner: '["self-hosted","native-mount","linux-x64","fuse"]'
+            shell: bash
+          - name: macos-nfs
+            runner: '["self-hosted","native-mount","macos-arm64","loopback-nfs"]'
+            shell: bash
+          - name: windows-projfs
+            runner: '["self-hosted","native-mount","windows-x64","projfs"]'
+            shell: pwsh
+    name: ${{ matrix.host }} / ${{ matrix.platform.name }}
+    runs-on: ${{ fromJSON(matrix.platform.runner) }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Install exact Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.94.0
+
+      - name: Install resolved host binary
+        id: host
+        if: runner.os != 'Windows'
+        shell: ${{ matrix.platform.shell }}
+        env:
+          HOST: ${{ matrix.host }}
+          CODEX_VERSION: ${{ needs.versions.outputs.codex }}
+          CLAUDE_VERSION: ${{ needs.versions.outputs.claude }}
+        run: |
+          if [ "$HOST" = codex ]; then
+            package="@openai/codex@$CODEX_VERSION"
+            executable=codex
+          else
+            package="@anthropic-ai/claude-code@$CLAUDE_VERSION"
+            executable=claude
+          fi
+          prefix="$RUNNER_TEMP/agent-host"
+          npm install --prefix "$prefix" --ignore-scripts "$package"
+          binary="$(find "$prefix/node_modules" -type f \( -name "$executable" -o -name "$executable.exe" \) -perm -u+x | head -n 1)"
+          test -n "$binary"
+          echo "binary=$binary" >> "$GITHUB_OUTPUT"
+
+      - name: Install resolved host binary on Windows
+        id: host_windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HOST: ${{ matrix.host }}
+          CODEX_VERSION: ${{ needs.versions.outputs.codex }}
+          CLAUDE_VERSION: ${{ needs.versions.outputs.claude }}
+        run: |
+          $package = if ($env:HOST -eq 'codex') {
+            "@openai/codex@$env:CODEX_VERSION"
+          } else {
+            "@anthropic-ai/claude-code@$env:CLAUDE_VERSION"
+          }
+          $name = if ($env:HOST -eq 'codex') { 'codex.exe' } else { 'claude.exe' }
+          $prefix = Join-Path $env:RUNNER_TEMP 'agent-host'
+          npm install --prefix $prefix --ignore-scripts $package
+          $binary = Get-ChildItem (Join-Path $prefix 'node_modules') -Recurse -File -Filter $name |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $binary) { throw "could not locate $name" }
+          "binary=$binary" >> $env:GITHUB_OUTPUT
+
+      - name: Run actual host scenario
+        if: runner.os != 'Windows'
+        shell: ${{ matrix.platform.shell }}
+        env:
+          ACYCLIC_E2E_CODEX: ${{ matrix.host == 'codex' && (steps.host.outputs.binary || steps.host_windows.outputs.binary) || '' }}
+          ACYCLIC_E2E_CLAUDE: ${{ matrix.host == 'claude' && (steps.host.outputs.binary || steps.host_windows.outputs.binary) || '' }}
+          ACYCLIC_E2E_RECEIPT_DIR: ${{ runner.temp }}/agent-host-receipts
+          CARGO_TARGET_DIR: ${{ runner.temp }}/agent-host-target
+          HOST: ${{ matrix.host }}
+        run: |
+          test_name="actual_${HOST}_binary_executes_the_scripted_scenario"
+          if [ "$HOST" = claude ]; then
+            test_name=actual_claude_binary_executes_the_scripted_scenario
+          fi
+          cargo test -p acyclic-labs-plugin --test e2e "$test_name" -- --ignored --exact --nocapture
+
+      - name: Run actual host scenario on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ACYCLIC_E2E_CODEX: ${{ matrix.host == 'codex' && steps.host_windows.outputs.binary || '' }}
+          ACYCLIC_E2E_CLAUDE: ${{ matrix.host == 'claude' && steps.host_windows.outputs.binary || '' }}
+          ACYCLIC_E2E_RECEIPT_DIR: ${{ runner.temp }}\agent-host-receipts
+          CARGO_TARGET_DIR: ${{ runner.temp }}\agent-host-target
+          HOST: ${{ matrix.host }}
+        run: |
+          $test = if ($env:HOST -eq 'codex') {
+            'actual_codex_binary_executes_the_scripted_scenario'
+          } else {
+            'actual_claude_binary_executes_the_scripted_scenario'
+          }
+          cargo test -p acyclic-labs-plugin --test e2e $test -- --ignored --exact --nocapture
+
+      - name: Retain qualification receipt
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: agent-host-${{ matrix.host }}-${{ matrix.platform.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agent-host-receipts
+          if-no-files-found: error
+          retention-days: 14
+
+  gate:
+    if: always()
+    needs: qualify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require all six host/platform lanes
+        env:
+          RESULT: ${{ needs.qualify.result }}
+        run: test "$RESULT" = success

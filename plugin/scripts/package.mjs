@@ -69,7 +69,7 @@ if (existsSync(out)) {
   try {
     const marketplace = JSON.parse(readFileSync(join(out, "marketplace.json"), "utf8"));
     const packageManifest = JSON.parse(
-      readFileSync(join(out, "plugins", "acyclic", "package.json"), "utf8"),
+      readFileSync(join(out, "plugin", "package.json"), "utf8"),
     );
     if (marketplace.name !== "acyclic" || packageManifest.name !== "@acyclic-labs/plugin") {
       fail(`refusing to replace unowned package output: ${out}`);
@@ -80,7 +80,7 @@ if (existsSync(out)) {
   }
 }
 rmSync(out, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-const plugin = join(out, "plugins", "acyclic");
+const plugin = join(out, "plugin");
 mkdirSync(join(plugin, "bin"), { recursive: true });
 for (const script of ["acyclic.js", "install.js", "verify.js", "targets.json"]) {
   copyFileSync(join(root, "bin", script), join(plugin, "bin", script));
@@ -122,7 +122,7 @@ const marketplace = {
   interface: { displayName: "Acyclic" },
   plugins: [{
     name: "acyclic",
-    source: { source: "local", path: "./plugins/acyclic" },
+    source: { source: "local", path: "./plugin" },
     policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
     category: "Developer Tools",
   }],

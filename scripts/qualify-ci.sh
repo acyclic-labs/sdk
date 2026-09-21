@@ -49,10 +49,10 @@ case "$lane" in
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     node scripts/build-product.mjs
-    node plugins/acyclic/scripts/package.mjs \
+    node plugin/scripts/package.mjs \
       --binary "${CARGO_TARGET_DIR:-target}/release/acyclic" \
       --out "$SDK_ARTIFACT_DIR/acyclic-plugin"
-    node plugins/acyclic/scripts/validate-package.mjs \
+    node plugin/scripts/validate-package.mjs \
       "$SDK_ARTIFACT_DIR/acyclic-plugin"
     bun run test
     bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
@@ -81,8 +81,8 @@ case "$lane" in
     bash scripts/test-qualify-gate-rustup.sh
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-    cargo test -p acyclic --locked
-    cargo clippy -p acyclic --all-targets --all-features --locked -- -D warnings
+    cargo test -p acyclic-labs-plugin --locked
+    cargo clippy -p acyclic-labs-plugin --all-targets --all-features --locked -- -D warnings
     head="${CI_HEAD_SHA:-$(git rev-parse HEAD)}"
     if [[ -n "${CI_TARGET_BRANCH:-}" ]]; then
       branch="$CI_TARGET_BRANCH"
@@ -159,10 +159,10 @@ case "$lane" in
     cargo build -p acyclic-fs-napi --locked
     bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
     node scripts/build-product.mjs
-    node plugins/acyclic/scripts/package.mjs \
+    node plugin/scripts/package.mjs \
       --binary "${CARGO_TARGET_DIR:-target}/release/acyclic" \
       --out "$SDK_ARTIFACT_DIR/acyclic-plugin"
-    node plugins/acyclic/scripts/validate-package.mjs \
+    node plugin/scripts/validate-package.mjs \
       "$SDK_ARTIFACT_DIR/acyclic-plugin"
     bash scripts/ensure-rust-target.sh x86_64-apple-darwin
     cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
-  copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
+  chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+  rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -15,6 +16,18 @@ const executableName = process.platform === "win32" ? "acyclic.exe" : "acyclic";
 
 function digest(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function treeSnapshot(root, prefix = "") {
+  return readdirSync(root, { withFileTypes: true })
+    .flatMap(entry => {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const path = join(root, entry.name);
+      return entry.isDirectory()
+        ? treeSnapshot(path, relative)
+        : [`${relative}:${statSync(path).size}:${digest(path)}`];
+    })
+    .sort();
 }
 
 function fixture() {
@@ -140,6 +153,33 @@ test("installer is idempotent and launcher rejects modified installed bytes", ()
     assert.notEqual(launched.status, 0);
     assert.match(launched.stderr, /durable identity/);
   } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
+test("launcher is read-only after installation", () => {
+  const value = fixture();
+  try {
+    const installed = install(value.bin);
+    assert.equal(installed.status, 0, installed.stderr);
+    const before = treeSnapshot(value.root);
+    if (process.platform !== "win32") {
+      for (const name of readdirSync(value.bin)) {
+        const path = join(value.bin, name);
+        chmodSync(path, statSync(path).isDirectory() ? 0o555 : 0o444);
+      }
+      chmodSync(value.bin, 0o555);
+    }
+    const launched = spawnSync(process.execPath, [join(value.bin, "acyclic.js"), "--version"], {
+      encoding: "utf8",
+    });
+    assert.equal(launched.status, 0, launched.stderr);
+    assert.deepEqual(treeSnapshot(value.root), before);
+  } finally {
+    if (process.platform !== "win32" && existsSync(value.bin)) {
+      chmodSync(value.bin, 0o755);
+      for (const name of readdirSync(value.bin)) chmodSync(join(value.bin, name), 0o755);
+    }
     rmSync(value.root, { recursive: true, force: true });
   }
 });

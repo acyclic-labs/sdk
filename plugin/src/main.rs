@@ -57,7 +57,13 @@ type LocalSingleMount =
 
 #[derive(Clone, Default)]
 struct SharedRootRegistry {
-    roots: Arc<AsyncMutex<BTreeMap<PathBuf, Weak<SharedPhysicalRoot>>>>,
+    roots: Arc<AsyncMutex<BTreeMap<PathBuf, SharedRootRegistration>>>,
+}
+
+struct SharedRootRegistration {
+    live: Weak<SharedPhysicalRoot>,
+    reference: Arc<Mutex<SourceReference>>,
+    native_identity: [u8; 16],
 }
 
 #[derive(Clone, Copy)]
@@ -78,6 +84,7 @@ impl SharedRootAdmission {
 struct SharedPhysicalRoot {
     source: Arc<LocalLazySource>,
     watcher: Mutex<NativeWatch>,
+    reference: Arc<Mutex<SourceReference>>,
 }
 
 struct SharedRootObservation {
@@ -120,6 +127,10 @@ impl SharedPhysicalRoot {
         } else {
             prior_source
         };
+        *self
+            .reference
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = source;
         Ok(SharedRootObservation {
             batch,
             prior_source,
@@ -137,30 +148,61 @@ impl SharedRootRegistry {
     ) -> Result<Arc<SharedPhysicalRoot>, String> {
         let canonical = root.canonicalize().map_err(display)?;
         let mut roots = self.roots.lock().await;
-        if let Some(shared) = roots.get(&canonical).and_then(Weak::upgrade) {
+        if let Some(registration) = roots.get(&canonical) {
+            let observed_identity = HostRoot::open(&canonical)
+                .map_err(display)?
+                .identity()
+                .to_bytes();
+            if observed_identity != registration.native_identity {
+                return Err(format!(
+                    "physical root {} changed identity while it was in use",
+                    canonical.display()
+                ));
+            }
+            let retained = *registration
+                .reference
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if admission
                 .reference()
-                .is_some_and(|expected| expected.identity != shared.source.reference().identity)
+                .is_some_and(|expected| expected.identity != retained.identity)
             {
                 return Err(format!(
                     "physical root {} is already registered with another source identity",
                     canonical.display()
                 ));
             }
-            shared.validate_path_identity(canonical.clone()).await?;
-            return Ok(shared);
+            if let Some(shared) = registration.live.upgrade() {
+                shared.validate_path_identity(canonical.clone()).await?;
+                return Ok(shared);
+            }
         }
-        roots.remove(&canonical);
 
-        let source = open_lazy_source(&canonical, admission.reference()).await?;
+        let retained = roots.get(&canonical).map(|registration| {
+            *registration
+                .reference
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
+        let source = open_lazy_source(&canonical, retained.or(admission.reference())).await?;
         if matches!(admission, SharedRootAdmission::Resume(_)) {
             source.inner().invalidate();
         }
+        let reference = Arc::new(Mutex::new(source.reference()));
+        let native_identity = source.inner().root_identity().to_bytes();
         let shared = Arc::new(SharedPhysicalRoot {
             source,
             watcher: Mutex::new(open_native_watcher(&canonical)?),
+            reference: Arc::clone(&reference),
         });
-        roots.insert(canonical, Arc::downgrade(&shared));
+        roots.insert(
+            canonical,
+            SharedRootRegistration {
+                live: Arc::downgrade(&shared),
+                reference,
+                native_identity,
+            },
+        );
         Ok(shared)
     }
 
@@ -170,16 +212,11 @@ impl SharedRootRegistry {
             .lock()
             .await
             .values()
-            .filter(|root| root.strong_count() > 0)
+            .filter(|root| root.live.strong_count() > 0)
             .count()
     }
 
-    async fn prune(&self) {
-        self.roots
-            .lock()
-            .await
-            .retain(|_, root| root.strong_count() > 0);
-    }
+    async fn prune(&self) {}
 }
 
 struct LocalMount {
@@ -4607,7 +4644,7 @@ impl ControlPlane {
         save_state(&self.data, &self.state)
     }
 
-    async fn shutdown(&mut self) -> Result<(), String> {
+    async fn shutdown(mut self) -> Result<(), String> {
         let operations = self.distributed.operations();
         let now = now_millis();
         let active = self.state.leases.values().cloned().collect::<Vec<_>>();
@@ -6047,10 +6084,10 @@ impl ServiceControl {
         Ok(session_id)
     }
 
-    async fn shutdown(&mut self) -> Result<(), String> {
+    async fn shutdown(mut self) -> Result<(), String> {
         let sessions = std::mem::take(&mut self.sessions);
         let mut first_error = None;
-        for (_, mut control) in sessions {
+        for (_, control) in sessions {
             if let Err(error) = control.shutdown().await {
                 first_error.get_or_insert(error);
             }
@@ -6089,12 +6126,11 @@ impl ServiceControl {
             return Ok(output);
         }
         if matches!(event, "SessionEnd" | "sessionEnd") {
-            let mut control = self
+            let control = self
                 .sessions
                 .remove(&session_id)
                 .ok_or_else(|| "Acyclic native hook session is not registered".to_owned())?;
             let shutdown = control.shutdown().await;
-            drop(control);
             self.shared_roots.prune().await;
             shutdown?;
             return Ok(json!({}));
@@ -6534,7 +6570,30 @@ fn encode_control_response(response: &Value) -> Result<Vec<u8>, String> {
 }
 
 /// Unified Acyclic CLI, local service, Codex hook bridge, and installer.
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() {
+    if let Err(error) = main_result() {
+        eprintln!("{error}");
+        std::process::exit(hook_failure_exit_code());
+    }
+}
+
+fn hook_failure_exit_code() -> i32 {
+    let arguments = env::args().skip(1).collect::<Vec<_>>();
+    let hook = arguments
+        .windows(3)
+        .find(|arguments| arguments.first().is_some_and(|value| value == "__hook"));
+    if hook.is_some_and(|arguments| {
+        arguments
+            .get(2)
+            .is_some_and(|event| matches!(event.as_str(), "PreToolUse" | "preToolUse"))
+    }) {
+        2
+    } else {
+        1
+    }
+}
+
+fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if is_foreground_cli_invocation() {
         let result = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -7405,9 +7464,13 @@ fn acquire_service_lock(data: &Path) -> Result<Option<ServiceLock>, String> {
         .map_err(display)?;
     match file.try_lock_exclusive() {
         Ok(()) => Ok(Some(ServiceLock { _file: file })),
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+        Err(error) if service_lock_is_contended(&error) => Ok(None),
         Err(error) => Err(display(error)),
     }
+}
+
+fn service_lock_is_contended(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::WouldBlock || cfg!(windows) && error.raw_os_error() == Some(33)
 }
 
 async fn run_service(data: PathBuf) -> Result<(), String> {
@@ -7498,18 +7561,7 @@ async fn ensure_service(data: &Path) -> Result<(), String> {
         arguments: Value::Null,
     };
     fs::create_dir_all(data).map_err(display)?;
-    let mut command = std::process::Command::new(env::current_exe().map_err(display)?);
-    command
-        .arg("__service")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        command.creation_flags(0x0800_0000);
-    }
-    command.spawn().map_err(display)?;
+    spawn_service_process(&env::current_exe().map_err(display)?)?;
     let mut last = String::new();
     for _ in 0..100 {
         match send_control_request(data, &ping).await {
@@ -7524,6 +7576,10 @@ async fn ensure_service(data: &Path) -> Result<(), String> {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     Err(format!("Acyclic service did not become ready: {last}"))
+}
+
+fn spawn_service_process(executable: &Path) -> Result<(), String> {
+    acyclic_native_runtime::spawn_service_process(executable).map_err(display)
 }
 
 async fn send_cli_control_request(data: &Path, request: &ControlRequest) -> Result<Value, String> {
@@ -9100,13 +9156,12 @@ async fn run_rpc(
     }
     .await;
     let endpoint_shutdown = endpoint.shutdown().await;
-    let mut control = Arc::try_unwrap(control)
+    let control = Arc::try_unwrap(control)
         .map_err(|_| "control endpoint retained an active request during shutdown".to_owned())?
         .into_inner();
     let control_shutdown = control.shutdown().await;
     // LocalFs owns the exclusive Stream journal. Release it before reporting
     // graceful EOF so a replacement host can reopen the same plugin data.
-    drop(control);
     service.and(endpoint_shutdown).and(control_shutdown)
 }
 
@@ -9469,11 +9524,11 @@ mod tests {
             .await
             .expect("first shared-root session end");
         assert_eq!(service.shared_roots.live_roots().await, 2);
+        let shared_roots = service.shared_roots.clone();
         service.shutdown().await.expect("shutdown");
-        assert_eq!(service.shared_roots.live_roots().await, 0);
-        drop(service);
+        assert_eq!(shared_roots.live_roots().await, 0);
 
-        let mut resumed = ServiceControl::open(state).await.expect("resume service");
+        let resumed = ServiceControl::open(state).await.expect("resume service");
         assert_eq!(resumed.sessions.len(), 3);
         assert_eq!(resumed.shared_roots.live_roots().await, 2);
         let root_a_key = root_key(WorkspaceRootId::from_bytes(
@@ -9486,6 +9541,55 @@ mod tests {
             &resumed.sessions["a"].physical_roots[&root_a_key],
             &resumed.sessions["same-root"].physical_roots[&same_root_key],
         ));
+        resumed.shutdown().await.expect("resumed shutdown");
+    }
+
+    #[test]
+    fn sequential_same_root_sessions_reuse_the_durable_source_identity() {
+        run_large_stack("sequential-same-root", sequential_same_root_case);
+    }
+
+    async fn sequential_same_root_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        let state = temporary.path().join("state");
+        fs::create_dir(&root).expect("root");
+        let mut service = ServiceControl::open(state.clone()).await.expect("service");
+        service
+            .dispatch_native_hook(
+                "codex",
+                "SessionStart",
+                json!({"session_id":"first","cwd":root}),
+                &root,
+            )
+            .await
+            .expect("first session");
+        let first_identity = service.sessions["first"].state.root_source_identity;
+        service
+            .dispatch_native_hook("codex", "SessionEnd", json!({"session_id":"first"}), &root)
+            .await
+            .expect("first session end");
+        assert_eq!(service.shared_roots.live_roots().await, 0);
+
+        service
+            .dispatch_native_hook(
+                "codex",
+                "SessionStart",
+                json!({"session_id":"second","cwd":root}),
+                &root,
+            )
+            .await
+            .expect("second session");
+        assert_eq!(
+            service.sessions["second"].state.root_source_identity,
+            first_identity
+        );
+        service.shutdown().await.expect("shutdown");
+
+        let resumed = ServiceControl::open(state)
+            .await
+            .expect("both durable sessions reopen without an identity collision");
+        assert_eq!(resumed.sessions.len(), 2);
         resumed.shutdown().await.expect("resumed shutdown");
     }
 
@@ -9581,7 +9685,6 @@ mod tests {
             .await
             .expect("session");
         control.shutdown().await.expect("shutdown");
-        drop(control);
         let displaced = temporary.path().join("displaced-root");
         fs::rename(&root, &displaced).expect("displace original root");
         fs::create_dir(&root).expect("replacement root");
@@ -9985,6 +10088,15 @@ mod tests {
             .expect("service drain thread");
     }
 
+    #[test]
+    fn service_lock_contention_uses_platform_error_semantics() {
+        assert!(service_lock_is_contended(&io::Error::from(
+            io::ErrorKind::WouldBlock
+        )));
+        #[cfg(windows)]
+        assert!(service_lock_is_contended(&io::Error::from_raw_os_error(33)));
+    }
+
     #[cfg(any(unix, windows))]
     #[test]
     fn service_handoff_durably_drains_a_mismatched_binary() {
@@ -10214,7 +10326,7 @@ mod tests {
         later_transaction.commit().await.expect("later root commit");
         drop(control);
 
-        let mut reopened = ControlPlane::open(data)
+        let reopened = ControlPlane::open(data)
             .await
             .expect("restart recovers compatibility history");
         let repository = GitCompatRepository::new(
@@ -10439,7 +10551,7 @@ mod tests {
                 .is_some_and(|text| text.contains("speculatively"))
         );
 
-        let mut reopened = ControlPlane::open(temporary.path().join("plugin-data"))
+        let reopened = ControlPlane::open(temporary.path().join("plugin-data"))
             .await
             .expect("reopen after graceful RPC EOF");
         assert!(reopened.mounts.contains_key("child"));
@@ -10479,13 +10591,12 @@ mod tests {
         endpoint.shutdown().await.expect("endpoint shutdown");
         drop(client);
 
-        let mut control = match Arc::try_unwrap(shared) {
+        let control = match Arc::try_unwrap(shared) {
             Ok(control) => control.into_inner(),
             Err(_) => panic!("endpoint retained an in-flight control request"),
         };
         control.shutdown().await.expect("control shutdown");
-        drop(control);
-        let mut reopened = ControlPlane::open(data)
+        let reopened = ControlPlane::open(data)
             .await
             .expect("reopen after in-flight request shutdown");
         reopened.shutdown().await.expect("reopened shutdown");
@@ -10527,7 +10638,7 @@ mod tests {
             );
         }
         endpoint.shutdown().await.expect("endpoint shutdown");
-        let mut control = match Arc::try_unwrap(control) {
+        let control = match Arc::try_unwrap(control) {
             Ok(control) => control.into_inner(),
             Err(_) => panic!("endpoint retained a completed request"),
         };
@@ -10830,7 +10941,7 @@ mod tests {
         );
         assert!(control.state.pending_discards.contains_key("child"));
         drop(control);
-        let mut control = ControlPlane::open(data)
+        let control = ControlPlane::open(data)
             .await
             .expect("recover interrupted durable discard");
         assert!(control.state.pending.is_empty());
@@ -10980,13 +11091,12 @@ mod tests {
         };
         drop(control);
         assert!(dispatch_control_request(&shared, stale).await.is_err());
-        let mut control = match Arc::try_unwrap(shared) {
+        let control = match Arc::try_unwrap(shared) {
             Ok(control) => control.into_inner(),
             Err(_) => panic!("response cancellation retained the control plane"),
         };
         control.shutdown().await.expect("shutdown");
-        drop(control);
-        let mut reopened = ControlPlane::open(data)
+        let reopened = ControlPlane::open(data)
             .await
             .expect("reopen after blocked response shutdown");
         reopened.shutdown().await.expect("reopened shutdown");
@@ -11421,7 +11531,7 @@ mod tests {
         assert!(control.state.pending_discards.contains_key("child"));
         drop(control);
 
-        let mut control = ControlPlane::open(data)
+        let control = ControlPlane::open(data)
             .await
             .expect("recover recursive discard after durable delete");
         assert!(control.state.pending_discards.is_empty());
@@ -11629,7 +11739,7 @@ mod tests {
         assert!(second.join("child.txt").is_file());
         control.shutdown().await.expect("shutdown");
 
-        let mut resumed = ControlPlane::open(data)
+        let resumed = ControlPlane::open(data)
             .await
             .expect("resume control plane");
         assert_eq!(resumed.state.roots.len(), 2);
@@ -11908,7 +12018,7 @@ mod tests {
     fn codex_install_preserves_old_or_disabled_plugin_state() {
         assert!(
             validate_existing_codex_plugin(&json!({
-                "version": "0.1.0-rc.1",
+                "version": "0.0.0",
                 "enabled": true
             }))
             .is_err()

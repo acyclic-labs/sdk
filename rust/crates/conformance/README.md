@@ -8,7 +8,7 @@ cargo add acyclic-conformance --dev
 
 The crate exposes Filesystem workload vectors, a minimal Filesystem smoke check, canonical Objects and Stream provider suites, a Machines lifecycle suite, and machine-readable Harness reports and qualification receipts. Run provider suites against fresh, disposable state; their resources and idempotency identities are deliberately retained for exact replay checks.
 
-Run the maintained workspace checks from the SDK root with `cargo test --workspace --all-features --locked` and `bun test`. The product-specific gate is `cargo test -p acyclic --locked`; platform qualification builds and validates the release package. The committed conformance vectors and Rust/TypeScript suites are the single maintained source of compatibility evidence.
+Run the maintained workspace checks from the SDK root with `cargo test --workspace --all-features --locked` and `bun test`. The product-specific gate is `cargo test -p acyclic-labs-plugin --locked`; platform qualification builds and validates the release package. The committed conformance vectors and Rust/TypeScript suites are the single maintained source of compatibility evidence.
 
 The same `qualify` binary owns the SDK's Filesystem fixture and diagnostic commands: `fixture`, `roundtrip`, `corpus`, `bench`, `restore-gen`, `mount-smoke`, `mount-smoke2`, `mount-hold`, and `source-probe`. They consume public SDK APIs. The plugin control plane consumes the same public APIs and keeps its end-to-end tests in its own crate.
 

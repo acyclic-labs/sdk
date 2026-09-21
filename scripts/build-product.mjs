@@ -20,7 +20,7 @@ if (process.platform === "win32") flags.push("-C", "link-arg=/Brepro");
 
 const result = spawnSync(
   process.env.CARGO ?? "cargo",
-  ["build", "--locked", "--release", "-p", "acyclic"],
+  ["build", "--locked", "--release", "-p", "acyclic-labs-plugin"],
   {
     cwd: root,
     env: {

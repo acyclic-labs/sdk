@@ -1,6 +1,6 @@
 [package]
 name = "acyclic-inference"
-version = "1.0.0-rc.8"
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

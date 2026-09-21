@@ -1,8 +1,8 @@
 {
   "name": "@acyclic-labs/ai-sdk",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0",
   "description": "Official AI SDK bridge for the Acyclic Agent Runtime",
-  "repository": "https://github.com/acyclic-labs/sdk",
+  "repository": { "type": "git", "url": "git+https://github.com/acyclic-labs/sdk.git", "directory": "typescript/packages/ai-sdk" },
   "license": "Apache-2.0",
   "private": false,
   "type": "module",
@@ -11,6 +11,6 @@
   "types": "./dist/index.d.ts",
   "files": ["dist"],
   "scripts": { "build": "tsc -b", "test": "tsc -b --pretty false" },
-  "peerDependencies": { "@acyclic-labs/harness": "0.1.0-rc.1", "ai": ">=5" },
+  "peerDependencies": { "@acyclic-labs/harness": "0.1.0", "ai": ">=5" },
   "devDependencies": { "@acyclic-labs/harness": "workspace:*", "typescript": "7.0.2" }
 }

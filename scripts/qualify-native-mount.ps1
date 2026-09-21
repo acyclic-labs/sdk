@@ -35,7 +35,7 @@ $releaseExecutable = if ($env:ACYCLIC_RELEASE_EXECUTABLE) {
     $env:ACYCLIC_RELEASE_EXECUTABLE
 } else {
     $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $repository 'target' }
-    cargo build --locked -p acyclic --release
+    cargo build --locked -p acyclic-labs-plugin --release
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }

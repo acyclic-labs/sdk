@@ -2,11 +2,13 @@
 "use strict";
 
 const { spawnSync } = require("node:child_process");
-const { join } = require("node:path");
 
-const executable = join(__dirname, process.platform === "win32" ? "acyclic.exe" : "acyclic");
+let executable;
 try {
-  require("./install.js").ensureInstalled();
+  // Installation is the only phase allowed to mutate the package directory.
+  // Runtime verification is deliberately read-only because Codex and other
+  // hosts may expose installed plugins through immutable package stores.
+  executable = require("./install.js").installedExecutable();
 } catch (error) {
   console.error(`Unable to verify the bundled Acyclic binary: ${error.message}`);
   process.exit(1);

@@ -1,20 +1,25 @@
 [package]
-name = "acyclic"
-version = "0.1.0-rc.2"
+name = "acyclic-labs-plugin"
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+publish = true
 description = "One Acyclic CLI, service, hook runner, MCP bridge, and installer"
+homepage = "https://github.com/acyclic-labs/sdk"
+documentation = "https://docs.rs/acyclic-labs-plugin"
+readme = "README.md"
+keywords = ["agents", "filesystem", "mcp", "workspaces"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "acyclic"
 path = "src/main.rs"
 
 [dependencies]
-acyclic-fs = { path = "../../rust/crates/filesystem", features = ["local", "native-watch", "native-mount"] }
-acyclic-native-runtime = { path = "../../rust/crates/native-runtime" }
+acyclic-fs = { path = "../rust/crates/filesystem", version = "=0.1.0", features = ["local", "native-watch", "native-mount"] }
+acyclic-native-runtime = { path = "../rust/crates/native-runtime", version = "=0.1.0" }
 blake3.workspace = true
 fs2.workspace = true
 hex.workspace = true

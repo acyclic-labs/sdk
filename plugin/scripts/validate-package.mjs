@@ -34,7 +34,7 @@ function walk(directory) {
 
 const args = parseArguments(process.argv.slice(2));
 const root = resolve(args.package);
-const plugin = join(root, "plugins", "acyclic");
+const plugin = join(root, "plugin");
 const targetSchema = JSON.parse(readFileSync(join(plugin, "bin", "targets.json"), "utf8"));
 if (targetSchema.version !== 1 || !targetSchema.targets || Array.isArray(targetSchema.targets)) {
   fail("unsupported Acyclic target schema");

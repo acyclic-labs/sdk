@@ -8,9 +8,10 @@ repository.workspace = true
 publish.workspace = true
 description = "HTTP, SSE, and WebSocket server adapter for Acyclic Harness"
 readme = "README.md"
+documentation = "https://docs.rs/acyclic-harness-http"
 
 [dependencies]
-acyclic-harness = { version = "0.1.0-rc.1", path = "../harness" }
+acyclic-harness = { version = "0.1.0", path = "../harness" }
 axum.workspace = true
 bytes.workspace = true
 futures.workspace = true

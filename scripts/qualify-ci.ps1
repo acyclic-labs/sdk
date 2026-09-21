@@ -27,15 +27,15 @@ cargo test --workspace `
 cargo test -p acyclic-fs --no-default-features `
     --features local,memory,native-watch --locked
 cargo test --workspace --all-features --no-run --locked
-cargo test -p acyclic --locked
-cargo clippy -p acyclic --all-targets --all-features --locked -- -D warnings
+cargo test -p acyclic-labs-plugin --locked
+cargo clippy -p acyclic-labs-plugin --all-targets --all-features --locked -- -D warnings
 cargo build -p acyclic-fs-napi --locked
 node scripts/build-product.mjs
 $CargoTargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { 'target' }
-node plugins/acyclic/scripts/package.mjs `
+node plugin/scripts/package.mjs `
     --binary (Join-Path $CargoTargetDir 'release\acyclic.exe') `
     --out (Join-Path $env:SDK_ARTIFACT_DIR 'acyclic-plugin')
-node plugins/acyclic/scripts/validate-package.mjs `
+node plugin/scripts/validate-package.mjs `
     (Join-Path $env:SDK_ARTIFACT_DIR 'acyclic-plugin')
 bun run check
 bun test --parallel=4 typescript/packages

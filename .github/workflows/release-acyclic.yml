@@ -47,8 +47,8 @@ jobs:
         shell: bash
         run: |
           install_root=$(mktemp -d)
-          cargo install --locked --path plugins/acyclic --root "$install_root"
-          expected=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "acyclic") | "acyclic \(.version)"')
+          cargo install --locked --path plugin --root "$install_root"
+          expected=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "acyclic-labs-plugin") | "acyclic \(.version)"')
           test "$("$install_root/bin/acyclic" --version)" = "$expected"
           "$install_root/bin/acyclic" --help
       - name: Build native qualification executable
@@ -163,7 +163,7 @@ jobs:
         run: |
           qualifier=release/binaries/acyclic-linux-x64/linux-x64/native-mount-qualify
           chmod +x "$qualifier"
-          version=$(node -p "require('./plugins/acyclic/package.json').version")
+          version=$(node -p "require('./plugin/package.json').version")
           "$qualifier" --verify-receipt release/native-mount/linux-fuse.json \
             --require-kind linux-fuse --release-version "$version" \
             --release-executable release/binaries/acyclic-linux-x64/linux-x64/acyclic
@@ -175,7 +175,7 @@ jobs:
             --release-executable release/binaries/acyclic-win32-x64/win32-x64/acyclic.exe
       - name: Build and validate the universal plugin
         run: |
-          node plugins/acyclic/scripts/package.mjs \
+          node plugin/scripts/package.mjs \
             --binary linux-x64=release/binaries/acyclic-linux-x64/linux-x64/acyclic \
             --binary linux-arm64=release/binaries/acyclic-linux-arm64/linux-arm64/acyclic \
             --binary darwin-x64=release/binaries/acyclic-darwin-x64/darwin-x64/acyclic \
@@ -183,16 +183,16 @@ jobs:
             --binary win32-x64=release/binaries/acyclic-win32-x64/win32-x64/acyclic.exe \
             --binary win32-arm64=release/binaries/acyclic-win32-arm64/win32-arm64/acyclic.exe \
             --out release/package
-          mkdir -p release/package/plugins/acyclic/certification
+          mkdir -p release/package/plugin/certification
           cp release/native-mount/linux-fuse.json \
-            release/package/plugins/acyclic/certification/native-mount-linux-x86_64.json
+            release/package/plugin/certification/native-mount-linux-x86_64.json
           cp release/native-mount/macos-nfs.json \
-            release/package/plugins/acyclic/certification/native-mount-macos-aarch64.json
+            release/package/plugin/certification/native-mount-macos-aarch64.json
           cp release/native-mount/windows-projfs.json \
-            release/package/plugins/acyclic/certification/native-mount-windows-x86_64.json
-          node plugins/acyclic/scripts/validate-package.mjs release/package --require-universal
+            release/package/plugin/certification/native-mount-windows-x86_64.json
+          node plugin/scripts/validate-package.mjs release/package --require-universal
       - name: Smoke the launcher and MCP bridge
-        working-directory: release/package/plugins/acyclic
+        working-directory: release/package/plugin
         run: |
           node bin/verify.js linux-x64
           bin/linux-x64/acyclic --help
@@ -201,11 +201,11 @@ jobs:
           version=$(node -p "require('./package.json').version")
           grep -q "\"version\":\"$version\"" /tmp/acyclic-mcp.out
       - name: Exercise transactional installer recovery
-        run: node --test plugins/acyclic/scripts/install.test.mjs
+        run: node --test plugin/scripts/install.test.mjs
       - name: Install the npm package into an empty prefix
         run: |
           set -eu
-          package=$(cd release/package/plugins/acyclic && npm pack --silent --pack-destination "$RUNNER_TEMP")
+          package=$(cd release/package/plugin && npm pack --silent --pack-destination "$RUNNER_TEMP")
           package="$RUNNER_TEMP/$package"
           echo "ACYCLIC_NPM_PACKAGE=$package" >> "$GITHUB_ENV"
           prefix=$(mktemp -d)
@@ -246,8 +246,8 @@ jobs:
           test -d "$XDG_STATE_HOME/acyclic/state-v2"
       - name: Assemble release assets
         run: |
-          cp release/package/plugins/acyclic/bin/platform-binaries.json release/platform-binaries.json
-          cp plugins/acyclic/bin/verify.js release/verify.js
+          cp release/package/plugin/bin/platform-binaries.json release/platform-binaries.json
+          cp plugin/bin/verify.js release/verify.js
           for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
             name=acyclic
             suffix=
@@ -278,7 +278,7 @@ jobs:
       - name: Verify release tag matches package version
         if: startsWith(github.ref, 'refs/tags/acyclic-v')
         run: |
-          version=$(node -p "require('./release/package/plugins/acyclic/package.json').version")
+          version=$(node -p "require('./release/package/plugin/package.json').version")
           test "$GITHUB_REF_NAME" = "acyclic-v$version"
       - name: Publish tag assets
         if: startsWith(github.ref, 'refs/tags/acyclic-v')
@@ -302,7 +302,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version=$(node -p "require('./release/package/plugins/acyclic/package.json').version")
+          version=$(node -p "require('./release/package/plugin/package.json').version")
           test "$GITHUB_REF_NAME" = "acyclic-v$version"
           npm install --global npm@12.0.2
-          npm publish ./release/package/plugins/acyclic --access public --provenance
+          npm publish ./release/package/plugin --access public --provenance

@@ -18,7 +18,7 @@ acyclic install codex
 Rust users can install the executable directly from a source checkout:
 
 ```sh
-cargo install --locked --path plugins/acyclic
+cargo install --locked --path plugin
 acyclic --help
 ```
 

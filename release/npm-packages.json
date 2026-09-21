@@ -1,0 +1,14 @@
+[
+  { "slug": "harness", "directory": "harness", "name": "@acyclic-labs/harness" },
+  { "slug": "objects", "directory": "objects", "name": "@acyclic-labs/objects" },
+  { "slug": "stream", "directory": "stream", "name": "@acyclic-labs/stream" },
+  { "slug": "inference", "directory": "inference", "name": "@acyclic-labs/inference" },
+  { "slug": "machines", "directory": "machines", "name": "@acyclic-labs/machines" },
+  { "slug": "fs", "directory": "filesystem", "name": "@acyclic-labs/fs" },
+  { "slug": "ai-sdk", "directory": "ai-sdk", "name": "@acyclic-labs/ai-sdk" },
+  { "slug": "opencode", "directory": "opencode", "name": "@acyclic-labs/opencode" },
+  { "slug": "pi", "directory": "pi", "name": "@acyclic-labs/pi" },
+  { "slug": "react", "directory": "react", "name": "@acyclic-labs/react" },
+  { "slug": "svelte", "directory": "svelte", "name": "@acyclic-labs/svelte" },
+  { "slug": "sdk", "directory": "sdk", "name": "@acyclic-labs/sdk" }
+]

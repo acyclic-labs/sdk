@@ -34,14 +34,14 @@ fn report() -> Result<RunnerReport, Box<dyn std::error::Error>> {
         suite_digest: harness_suite_digest(),
         subject: Subject {
             name: "acyclic-harness".into(),
-            version: "0.1.0-rc.1".into(),
+            version: "0.1.0".into(),
             source_revision: "0123456789abcdef0123456789abcdef01234567".into(),
             artifact_digest: format!("blake3:{}", blake3::hash(b"artifact").to_hex()),
         },
         runner: RunnerIdentity {
             language: "rust".into(),
             name: "acyclic-conformance".into(),
-            version: "0.1.0-rc.1".into(),
+            version: "0.1.0".into(),
         },
         protocol_identity: harness_protocol_identity(),
         capability_profile: vec!["host".into()],

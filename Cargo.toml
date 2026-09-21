@@ -1,11 +1,11 @@
 [workspace]
-# rust/crates/* are the SDK families; plugins/acyclic is the single product
+# rust/crates/* are the SDK families; plugin is the single product
 # binary and portable agent-plugin package built on acyclic-fs.
-members = ["rust/crates/*", "plugins/acyclic"]
+members = ["rust/crates/*", "plugin"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0-rc.1"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.94"
 license = "Apache-2.0"

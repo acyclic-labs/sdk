@@ -75,4 +75,5 @@ package_root="$(dirname "$output")"
 bash "$root/scripts/check-typescript-packages.sh" \
   "$package_root/typescript" \
   "$inference_evidence" \
-  "$output/acyclic-fs.tgz"
+  "$output/acyclic-fs.tgz" \
+  "$package_root/harness/acyclic-harness.tgz"

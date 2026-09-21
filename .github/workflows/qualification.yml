@@ -118,7 +118,7 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/sccache
-          key: sdk-build-v3-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clippy.toml', 'rustfmt.toml', 'deny.toml') }}-${{ hashFiles('rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'Cargo.lock', 'rust/**', 'plugins/**', 'generated/rust/**', 'proto/**', 'compatibility/**', 'scripts/qualify-ci.sh', 'scripts/qualify-ci.ps1', '.github/workflows/qualification.yml') }}
+          key: sdk-build-v3-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clippy.toml', 'rustfmt.toml', 'deny.toml') }}-${{ hashFiles('rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'Cargo.lock', 'rust/**', 'plugin/**', 'generated/rust/**', 'proto/**', 'compatibility/**', 'scripts/qualify-ci.sh', 'scripts/qualify-ci.ps1', '.github/workflows/qualification.yml') }}
           restore-keys: |
             sdk-build-v3-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clippy.toml', 'rustfmt.toml', 'deny.toml') }}-
 
@@ -131,7 +131,7 @@ jobs:
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ runner.temp }}/target
-          key: sdk-target-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clippy.toml') }}-${{ hashFiles('rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'Cargo.lock', 'rust/**', 'plugins/**', 'generated/rust/**', 'proto/**', 'compatibility/**', 'scripts/qualify-ci.ps1', '.github/workflows/qualification.yml') }}
+          key: sdk-target-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clippy.toml') }}-${{ hashFiles('rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'Cargo.lock', 'rust/**', 'plugin/**', 'generated/rust/**', 'proto/**', 'compatibility/**', 'scripts/qualify-ci.ps1', '.github/workflows/qualification.yml') }}
           restore-keys: |
             sdk-target-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clippy.toml') }}-
 
