@@ -29,18 +29,21 @@ use windows_sys::Win32::System::Threading::{
 const MAXIMUM_BATCH: usize = 16;
 
 pub(super) fn spawn_service_process(executable: &Path) -> io::Result<()> {
-    let executable_wide = executable
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
     let executable_argument = executable.as_os_str().encode_wide().collect::<Vec<_>>();
+    if executable_argument.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "service executable path contains NUL",
+        ));
+    }
     if executable_argument.contains(&u16::from(b'"')) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "service executable path contains a quote",
         ));
     }
+    let mut executable_wide = executable_argument.clone();
+    executable_wide.push(0);
     let mut command_line = Vec::with_capacity(executable_argument.len() + 16);
     command_line.push(u16::from(b'"'));
     command_line.extend(executable_argument);
@@ -539,4 +542,28 @@ fn complete_writes(
 enum CompletionError {
     Completed(io::Error),
     Uncertain(io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt as _;
+
+    #[test]
+    fn service_spawn_rejects_embedded_nul_before_process_creation() {
+        let path = OsString::from_wide(&[
+            u16::from(b'C'),
+            u16::from(b':'),
+            u16::from(b'\\'),
+            u16::from(b'x'),
+            0,
+            u16::from(b'y'),
+        ]);
+        let Err(error) = spawn_service_process(Path::new(&path)) else {
+            unreachable!("embedded NUL accepted");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "service executable path contains NUL");
+    }
 }
