@@ -1,11 +1,12 @@
 {
   "name": "acyclic",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0-rc.2",
   "description": "Fast recursively isolated workspaces for coding agents, backed by the Acyclic distributed filesystem.",
   "author": {
     "name": "Acyclic Labs"
   },
   "license": "Apache-2.0",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Acyclic",
     "shortDescription": "Isolate and reconcile recursive subagents.",

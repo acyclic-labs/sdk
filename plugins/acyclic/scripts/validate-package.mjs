@@ -43,6 +43,7 @@ const SUPPORTED_TARGETS = new Set(Object.keys(targetSchema.targets));
 for (const path of [
   join(plugin, "plugin.json"),
   join(plugin, ".codex-plugin", "plugin.json"),
+  join(plugin, ".mcp.json"),
   join(plugin, "hooks", "hooks.json"),
 ]) {
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);

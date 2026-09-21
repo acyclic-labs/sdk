@@ -15,6 +15,12 @@ npm install -g @acyclic-labs/plugin
 acyclic install codex
 ```
 
+The Codex-managed plugin bundles the same dispatcher as an MCP tool named
+`acyclic`, so agents can inspect and operate managed workspaces without a
+separate global PATH entry. Codex plugins do not inject arbitrary shell
+executables into PATH; install the npm package globally only when humans or
+shell commands need the `acyclic` executable.
+
 `acyclic install <host>` changes only per-user host
 configuration. Pass `--project` explicitly before Acyclic may create project
 configuration. No `init` command or repository marker exists.
@@ -36,8 +42,16 @@ acyclic agents
 acyclic discard agents/<ref>
 acyclic install <host> [--project]
 acyclic install --detected
-acyclic uninstall <host>
+acyclic uninstall <host> [--purge]
+acyclic doctor [--json]
 ```
+
+`acyclic doctor` reports the packaged binary identity, plugin/cache version,
+marketplace and hook assets, service and durable recovery state, native mount
+backend, CLI availability, and live platform-certification receipt. Its human
+and JSON forms are rendered from the same stable check result. Uninstall drains
+the service and keeps durable workspace/recovery state by default; `--purge`
+also removes that state explicitly.
 
 Use `acyclic git status`, `diff`, `commit`, `switch`, `merge`, `rebase`, and
 the other documented local porcelain inside a managed workspace. Child refs

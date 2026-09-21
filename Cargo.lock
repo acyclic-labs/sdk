@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "acyclic-fs",
  "acyclic-native-runtime",
@@ -26,6 +26,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "windows-sys 0.61.2",

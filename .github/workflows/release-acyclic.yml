@@ -89,8 +89,12 @@ jobs:
         run: |
           node bin/verify.js linux-x64
           bin/linux-x64/acyclic --help
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release-smoke","version":"1"}}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | timeout 20 bin/linux-x64/acyclic mcp > /tmp/acyclic-mcp.out
-          grep -q '"result"' /tmp/acyclic-mcp.out
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release-smoke","version":"1"}}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | timeout 20 bin/linux-x64/acyclic __mcp-commandless > /tmp/acyclic-mcp.out
+          grep -q '"name":"acyclic"' /tmp/acyclic-mcp.out
+          version=$(node -p "require('./package.json').version")
+          grep -q "\"version\":\"$version\"" /tmp/acyclic-mcp.out
+      - name: Exercise transactional installer recovery
+        run: node --test plugins/acyclic/scripts/install.test.mjs
       - name: Install the npm package into an empty prefix
         run: |
           set -eu
@@ -101,6 +105,33 @@ jobs:
           test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/plugin.json"
           test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/.agents/plugins/marketplace.json"
           test ! -e "$prefix/lib/node_modules/@acyclic-labs/plugin/src"
+      - name: Run packaged Codex lifecycle end to end
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$OPENAI_API_KEY"
+          package=$(find release/package/plugins/acyclic -maxdepth 1 -name '*.tgz' -print -quit)
+          prefix=$(mktemp -d)
+          home=$(mktemp -d)
+          export HOME="$home"
+          export CODEX_HOME="$home/.codex"
+          export XDG_CONFIG_HOME="$home/.config"
+          export XDG_STATE_HOME="$home/.state"
+          export PATH="$prefix/bin:$PATH"
+          npm install --global --prefix "$prefix" "$package" @openai/codex@0.154.0
+          acyclic install codex
+          codex plugin list --marketplace acyclic --json | jq -e '.installed[] | select(.pluginId == "acyclic@acyclic" and .enabled == true)'
+          timeout 480 codex exec --ephemeral --json --skip-git-repo-check \
+            -c 'plugins."acyclic@acyclic".mcp_servers.acyclic.tools.acyclic.approval_mode="approve"' \
+            --dangerously-bypass-hook-trust -C "$GITHUB_WORKSPACE" \
+            'Call the acyclic MCP tool with arguments ["agents","--json"]. Only after it succeeds, reply exactly ACYCLIC_E2E_OK.' \
+            > "$home/fresh-task.jsonl"
+          grep -q 'ACYCLIC_E2E_OK' "$home/fresh-task.jsonl"
+          acyclic agents --json | jq -e '.schemaVersion == 1'
+          test -d "$XDG_STATE_HOME/acyclic/state-v2"
+          acyclic uninstall codex
+          test -d "$XDG_STATE_HOME/acyclic/state-v2"
       - name: Assemble release assets
         run: |
           cp release/package/plugins/acyclic/bin/platform-binaries.json release/platform-binaries.json

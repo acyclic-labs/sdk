@@ -30,6 +30,7 @@ use acyclic_fs::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
@@ -41,6 +42,7 @@ use std::sync::{Arc, Mutex, Weak};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
+use acyclic_native_runtime::{RenameMode, durable_rename};
 use fs2::FileExt as _;
 
 type LocalWorkspace = Workspace<LocalAuthorityBackend, LocalObjectBackend>;
@@ -2377,7 +2379,7 @@ impl ControlPlane {
         if self.state.turns.contains_key(&turn_id) {
             return Err("root turn identity is already bound to a subagent".to_owned());
         }
-        self.state.root_turns.insert(turn_id);
+        self.remember_root_turn(turn_id);
         self.persist()?;
         Ok(json!({"suppressOutput": true}))
     }
@@ -3263,7 +3265,172 @@ impl ControlPlane {
             .ok_or_else(|| "subagent route disappeared during stop".to_owned())?
             .stopped = true;
         self.persist()?;
-        Ok(json!({"suppressOutput": true}))
+        let descendants = self
+            .state
+            .routes
+            .values()
+            .filter(|candidate| candidate.parent_agent_id == agent_id)
+            .map(|candidate| format!("agents/{}", candidate.agent_id))
+            .collect::<Vec<_>>();
+        let changes = self
+            .agent_changes_as(
+                &route.parent_agent_id,
+                json!({"agent": agent_id, "path": "."}),
+            )
+            .await
+            .unwrap_or_else(|error| json!({"unavailable": error}));
+        let reference = format!("agents/{agent_id}");
+        let summary = json!({
+            "agent": reference,
+            "changed": changes,
+            "tests": {"status": "not-reported", "detail": "Acyclic does not infer test execution from process output"},
+            "pendingDescendants": descendants,
+            "actions": {
+                "inspect": format!("acyclic git diff {reference}"),
+                "merge": format!("acyclic git merge {reference}"),
+                "discard": format!("acyclic discard {reference}"),
+            }
+        });
+        Ok(json!({
+            "suppressOutput": false,
+            "systemMessage": format!(
+                "Acyclic stopped {reference}. Inspect with `acyclic git diff {reference}`; merge with `acyclic git merge {reference}`; discard with `acyclic discard {reference}`."
+            ),
+            "acyclicSummary": summary,
+        }))
+    }
+
+    async fn agents_status(&mut self, caller: &str) -> Result<Value, String> {
+        let routes = self
+            .state
+            .routes
+            .values()
+            .filter(|route| {
+                route.parent_agent_id == caller
+                    || caller == self.state.root_agent_id
+                    || route.agent_id == caller
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut agents = Vec::with_capacity(routes.len());
+        for route in routes {
+            let mut depth = 1_usize;
+            let mut parent = route.parent_agent_id.as_str();
+            let mut visited = BTreeSet::new();
+            while parent != self.state.root_agent_id && visited.insert(parent.to_owned()) {
+                let Some(ancestor) = self.state.routes.get(parent) else {
+                    break;
+                };
+                depth += 1;
+                parent = &ancestor.parent_agent_id;
+            }
+            let active_leases = self
+                .state
+                .leases
+                .values()
+                .filter(|lease| lease.agent_id == route.agent_id)
+                .count();
+            let descendants = self
+                .state
+                .routes
+                .values()
+                .filter(|candidate| candidate.parent_agent_id == route.agent_id)
+                .count();
+            let conflict = self
+                .pending_conflict_for_parent(WorkspaceContextId::from_bytes(route.context_id))
+                .await?
+                .is_some();
+            let mut roots = Vec::with_capacity(route.roots.len());
+            let mut pending_publications = 0_usize;
+            for root in route.roots.values() {
+                let current = self
+                    .distributed
+                    .workspace(acyclic_fs::WorkspaceId::from_bytes(root.workspace_id))
+                    .await
+                    .map_err(display)?
+                    .head()
+                    .await
+                    .map_err(display)?
+                    .id();
+                let current = *current.digest().as_bytes();
+                let unpublished = root.published_generation != current;
+                pending_publications += usize::from(unpublished);
+                roots.push(json!({
+                    "id": hex::encode(root.root_id),
+                    "route": root.route_name,
+                    "workspace": hex::encode(root.workspace_id),
+                    "generation": hex::encode(current),
+                    "publishedGeneration": if root.published_generation == [0; 32] {
+                        Value::Null
+                    } else {
+                        Value::String(hex::encode(root.published_generation))
+                    },
+                    "unpublished": unpublished,
+                }));
+            }
+            let changes = if active_leases == 0 {
+                self.agent_changes_as(caller, json!({"agent": route.agent_id, "path": "."}))
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            let file_changes = changes
+                .as_ref()
+                .and_then(|value| value.get("fileChanges"))
+                .and_then(Value::as_u64);
+            let binding_changes = changes
+                .as_ref()
+                .and_then(|value| value.get("bindingChanges"))
+                .and_then(Value::as_u64);
+            let changed_paths = changes
+                .as_ref()
+                .and_then(|value| value.get("roots"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .flat_map(|root| {
+                    root.get("paths")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .take(128)
+                .cloned()
+                .collect::<Vec<_>>();
+            agents.push(json!({
+                "ref": format!("agents/{}", route.agent_id),
+                "agent": route.agent_id,
+                "parent": if route.parent_agent_id == self.state.root_agent_id {
+                    Value::String("root".to_owned())
+                } else {
+                    Value::String(format!("agents/{}", route.parent_agent_id))
+                },
+                "depth": depth,
+                "state": if route.stopped { "frozen" } else { "running" },
+                "activeLeases": active_leases,
+                "conflicts": usize::from(conflict),
+                "descendants": descendants,
+                "fileChanges": file_changes,
+                "bindingChanges": binding_changes,
+                "changedPaths": changed_paths,
+                "workRemaining": file_changes.zip(binding_changes).map(|(files, bindings)| files.saturating_add(bindings)),
+                "pendingPublications": pending_publications,
+                "mount": route.path,
+                "roots": roots,
+            }));
+        }
+        agents.sort_by(|left, right| {
+            left.get("depth")
+                .and_then(Value::as_u64)
+                .cmp(&right.get("depth").and_then(Value::as_u64))
+                .then_with(|| {
+                    left.get("ref")
+                        .and_then(Value::as_str)
+                        .cmp(&right.get("ref").and_then(Value::as_str))
+                })
+        });
+        Ok(json!({"schemaVersion": 1, "root": self.state.root_agent_id, "agents": agents}))
     }
 
     #[cfg(test)]
@@ -4150,6 +4317,13 @@ impl ControlPlane {
             return Ok(self.state.root_agent_id.clone());
         }
         Err("tool call has no stable root or subagent identity".to_owned())
+    }
+
+    fn remember_root_turn(&mut self, turn_id: String) {
+        self.state.root_turns.insert(turn_id);
+        while self.state.root_turns.len() > MAXIMUM_ADAPTER_ROOT_TURNS {
+            self.state.root_turns.pop_first();
+        }
     }
 
     fn authorize_inspection(&self, caller: &str, target: &str) -> Result<(), String> {
@@ -5065,6 +5239,15 @@ fn subagent_context(path: &Path) -> Value {
     })
 }
 
+const MAXIMUM_ADAPTER_STATE_BYTES: u64 = 4 * 1024 * 1024;
+const MAXIMUM_ADAPTER_ROOTS: usize = 256;
+const MAXIMUM_ADAPTER_ROUTES: usize = 4_096;
+const MAXIMUM_ADAPTER_TURNS: usize = 16_384;
+const MAXIMUM_ADAPTER_ROOT_TURNS: usize = 16_384;
+const MAXIMUM_ADAPTER_PENDING: usize = 4_096;
+const MAXIMUM_ADAPTER_LEASES: usize = 16_384;
+const MAXIMUM_ADAPTER_DISCARDS: usize = 4_096;
+
 fn load_state(data: &Path) -> Result<AdapterState, String> {
     let path = data.join("adapter-state.json");
     let previous = data.join("adapter-state.previous.json");
@@ -5079,6 +5262,11 @@ fn load_state(data: &Path) -> Result<AdapterState, String> {
 }
 
 fn save_state(data: &Path, state: &AdapterState) -> Result<(), String> {
+    validate_state_bounds(state)?;
+    let mut serialized = BoundedJsonBuffer::new();
+    serde_json::to_writer(&mut serialized, state).map_err(|_| {
+        format!("adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound")
+    })?;
     let path = data.join("adapter-state.json");
     let previous = data.join("adapter-state.previous.json");
     let next = data.join("adapter-state.next.json");
@@ -5088,8 +5276,7 @@ fn save_state(data: &Path, state: &AdapterState) -> Result<(), String> {
         .write(true)
         .open(&next)
         .map_err(display)?;
-    file.write_all(&serde_json::to_vec(state).map_err(display)?)
-        .map_err(display)?;
+    file.write_all(&serialized.bytes).map_err(display)?;
     file.sync_all().map_err(display)?;
     drop(file);
     remove_file_if_present(&previous)?;
@@ -5106,11 +5293,83 @@ fn save_state(data: &Path, state: &AdapterState) -> Result<(), String> {
 }
 
 fn read_state(path: &Path) -> Result<Option<AdapterState>, String> {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(display),
+    match fs::File::open(path) {
+        Ok(file) => {
+            let length = file.metadata().map_err(display)?.len();
+            if length > MAXIMUM_ADAPTER_STATE_BYTES {
+                return Err(format!(
+                    "adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound"
+                ));
+            }
+            let capacity = usize::try_from(length)
+                .map_err(|_| "adapter state length does not fit this platform".to_owned())?;
+            let mut bytes = Vec::with_capacity(capacity);
+            file.take(MAXIMUM_ADAPTER_STATE_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .map_err(display)?;
+            if bytes.len() as u64 > MAXIMUM_ADAPTER_STATE_BYTES {
+                return Err(format!(
+                    "adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound"
+                ));
+            }
+            let state = serde_json::from_slice(&bytes).map_err(display)?;
+            validate_state_bounds(&state)?;
+            Ok(Some(state))
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(display(error)),
     }
+}
+
+fn validate_state_bounds(state: &AdapterState) -> Result<(), String> {
+    for (name, observed, maximum) in [
+        ("roots", state.roots.len(), MAXIMUM_ADAPTER_ROOTS),
+        ("routes", state.routes.len(), MAXIMUM_ADAPTER_ROUTES),
+        ("turns", state.turns.len(), MAXIMUM_ADAPTER_TURNS),
+        (
+            "root turns",
+            state.root_turns.len(),
+            MAXIMUM_ADAPTER_ROOT_TURNS,
+        ),
+        (
+            "pending spawns",
+            state.pending.len(),
+            MAXIMUM_ADAPTER_PENDING,
+        ),
+        ("leases", state.leases.len(), MAXIMUM_ADAPTER_LEASES),
+        (
+            "pending discards",
+            state.pending_discards.len(),
+            MAXIMUM_ADAPTER_DISCARDS,
+        ),
+    ] {
+        if observed > maximum {
+            return Err(format!(
+                "adapter state has too many {name}: {observed} > {maximum}"
+            ));
+        }
+    }
+    if state
+        .routes
+        .values()
+        .any(|route| route.roots.len() > MAXIMUM_ADAPTER_ROOTS)
+        || state
+            .leases
+            .values()
+            .any(|lease| lease.roots.len() > MAXIMUM_ADAPTER_ROOTS)
+    {
+        return Err("adapter route or lease exceeds the root bound".to_owned());
+    }
+    if state.pending_discards.values().any(|discard| {
+        discard.agents.len() > MAXIMUM_ADAPTER_ROUTES
+            || discard.agents.iter().any(|agent| {
+                agent.repository_workspace_ids.len() > MAXIMUM_ADAPTER_ROOTS
+                    || agent.workspaces.len() > MAXIMUM_ADAPTER_ROOTS
+            })
+    }) {
+        return Err("adapter discard queue exceeds its structural bound".to_owned());
+    }
+    Ok(())
 }
 
 fn remove_file_if_present(path: &Path) -> Result<(), String> {
@@ -5282,6 +5541,7 @@ const CONTROL_RESPONSE_DRAIN_GRACE: std::time::Duration = std::time::Duration::f
 enum ControlCommand {
     Ping,
     Upgrade,
+    Doctor,
     Hook,
     Git,
     Agents,
@@ -5855,7 +6115,7 @@ impl ServiceControl {
             |route| route.turn_id.clone(),
         );
         if caller == control.state.root_agent_id {
-            control.state.root_turns.insert(turn_id.clone());
+            control.remember_root_turn(turn_id.clone());
         }
         match event {
             "UserPromptSubmit" | "userPromptSubmitted" => control.user_prompt(json!({
@@ -6026,6 +6286,29 @@ impl ControlRequestDispatcher for ServiceControl {
             });
             return Ok(json!({ "draining": true }));
         }
+        if matches!(request.command, ControlCommand::Doctor) {
+            let routes = self
+                .sessions
+                .values()
+                .map(|session| session.state.routes.len())
+                .sum();
+            let leases = self
+                .sessions
+                .values()
+                .map(|session| session.state.leases.len())
+                .sum();
+            let pending_recovery = self.sessions.values().any(|session| {
+                !session.state.pending_discards.is_empty() || !session.state.pending.is_empty()
+            });
+            return doctor_report(
+                &self.data,
+                &self.identity,
+                self.sessions.len(),
+                routes,
+                leases,
+                pending_recovery,
+            );
+        }
         if matches!(request.command, ControlCommand::Hook) {
             let (host, event) = request
                 .name
@@ -6056,27 +6339,17 @@ async fn dispatch_plane_request(
 ) -> Result<Value, String> {
     match request.command {
         ControlCommand::Ping => Ok(json!({})),
+        ControlCommand::Doctor => doctor_report(
+            &control.config_root,
+            &service_identity()?,
+            1,
+            control.state.routes.len(),
+            control.state.leases.len(),
+            !control.state.pending_discards.is_empty() || !control.state.pending.is_empty(),
+        ),
         ControlCommand::Agents => {
             let (caller, _) = control.route_from_cwd(&request.cwd)?;
-            let agents = control
-                .state
-                .routes
-                .values()
-                .filter(|route| {
-                    route.parent_agent_id == caller
-                        || caller == control.state.root_agent_id
-                        || route.agent_id == caller
-                })
-                .map(|route| {
-                    json!({
-                        "ref": format!("agents/{}", route.agent_id),
-                        "parent": route.parent_agent_id,
-                        "stopped": route.stopped,
-                        "mount": route.path,
-                    })
-                })
-                .collect::<Vec<_>>();
-            Ok(json!({ "agents": agents }))
+            control.agents_status(&caller).await
         }
         ControlCommand::Discard => {
             let (caller, _) = control.route_from_cwd(&request.cwd)?;
@@ -6286,10 +6559,13 @@ fn is_foreground_cli_invocation() -> bool {
             Some(
                 "git"
                     | "agents"
+                    | "doctor"
                     | "discard"
                     | "__hook"
                     | "install"
                     | "uninstall"
+                    | "__service-drain"
+                    | "__installer-rename"
                     | "--help"
                     | "-h"
                     | "--version"
@@ -6314,7 +6590,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .is_some_and(|argument| matches!(argument.as_str(), "--help" | "-h"))
     {
         println!(
-            "Acyclic {}\n\nUsage: acyclic [COMMAND]\n\nCommands:\n  install HOST       Install host integration\n  uninstall HOST     Remove host integration\n  git ARGS...        Run Git compatibility commands\n  agents             List active agent workspaces\n  discard WORKSPACE  Discard a child workspace\n  mcp                 Serve MCP over standard input/output",
+            "Acyclic {}\n\nUsage: acyclic [COMMAND]\n\nCommands:\n  install HOST       Install host integration\n  uninstall HOST [--purge]\n                       Remove integration; preserve durable state unless purged\n  doctor [--json]    Diagnose the release installation\n  git ARGS...        Run Git compatibility commands\n  agents [--json]    List recursive agent workspace status\n  discard WORKSPACE  Discard a child workspace\n  mcp                 Serve MCP over standard input/output",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -6326,8 +6602,26 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("acyclic {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "__installer-rename")
+    {
+        let [_, from, to, mode] = arguments.as_slice() else {
+            return Err(io::Error::other(
+                "acyclic __installer-rename requires FROM TO replace|no-replace",
+            )
+            .into());
+        };
+        let mode = match mode.as_str() {
+            "replace" => RenameMode::Replace,
+            "no-replace" => RenameMode::NoReplace,
+            _ => return Err(io::Error::other("invalid installer rename mode").into()),
+        };
+        durable_rename(Path::new(from), Path::new(to), mode)?;
+        return Ok(());
+    }
     if let Some(command) = arguments.first().map(String::as_str)
-        && matches!(command, "git" | "agents" | "discard")
+        && matches!(command, "git" | "agents" | "doctor" | "discard")
     {
         let data = default_data_directory();
         let request = ControlRequest {
@@ -6335,6 +6629,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             command: match command {
                 "git" => ControlCommand::Git,
                 "agents" => ControlCommand::Agents,
+                "doctor" => ControlCommand::Doctor,
                 "discard" => ControlCommand::Discard,
                 _ => unreachable!(),
             },
@@ -6346,7 +6641,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let response = send_cli_control_request(&data, &request)
             .await
             .map_err(io::Error::other)?;
-        let exit_code = print_cli_response(response).map_err(io::Error::other)?;
+        let json_output = arguments
+            .get(1)
+            .is_some_and(|argument| argument == "--json");
+        let exit_code = if json_output {
+            println!("{}", serde_json::to_string_pretty(&response)?);
+            if command == "doctor" && response.get("ok").and_then(Value::as_bool) != Some(true) {
+                1
+            } else {
+                0
+            }
+        } else if command == "doctor" {
+            print_doctor_response(&response).map_err(io::Error::other)?
+        } else {
+            print_cli_response(response).map_err(io::Error::other)?
+        };
         if exit_code != 0 {
             std::process::exit(exit_code);
         }
@@ -6404,6 +6713,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .is_some_and(|argument| argument == "uninstall")
     {
         return uninstall_command(arguments.get(1..).unwrap_or_default())
+            .await
+            .map_err(io::Error::other)
+            .map_err(Into::into);
+    }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "__service-drain")
+    {
+        return drain_service(&default_data_directory())
+            .await
             .map_err(io::Error::other)
             .map_err(Into::into);
     }
@@ -6451,20 +6770,381 @@ fn default_data_directory() -> PathBuf {
 
 fn service_identity() -> Result<String, String> {
     let executable = env::current_exe().map_err(display)?;
-    let metadata = fs::metadata(&executable).map_err(display)?;
-    let modified = metadata
-        .modified()
-        .map_err(display)?
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(display)?
-        .as_nanos();
     let value = format!(
-        "{}:{}:{modified}:{}",
+        "{}:{}:{}",
         env!("CARGO_PKG_VERSION"),
-        metadata.len(),
         executable.display(),
+        sha256_file(&executable)?,
     );
     Ok(blake3::hash(value.as_bytes()).to_hex().to_string())
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path).map_err(display)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(display)?;
+        if read == 0 {
+            break;
+        }
+        let chunk = buffer
+            .get(..read)
+            .ok_or_else(|| "binary hash read exceeded its buffer".to_owned())?;
+        hasher.update(chunk);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn doctor_check(name: &str, status: &str, detail: impl Into<String>) -> Value {
+    json!({"name": name, "status": status, "detail": detail.into()})
+}
+
+fn valid_codex_mcp_manifest(document: &Value) -> bool {
+    let Some(root) = document.as_object() else {
+        return false;
+    };
+    let Some(servers) = root.get("mcpServers").and_then(Value::as_object) else {
+        return false;
+    };
+    let Some(server) = servers.get("acyclic").and_then(Value::as_object) else {
+        return false;
+    };
+    root.len() == 1
+        && servers.len() == 1
+        && server.len() == 4
+        && server.get("command").and_then(Value::as_str) == Some("node")
+        && server
+            .get("args")
+            .and_then(Value::as_array)
+            .is_some_and(|arguments| match arguments.as_slice() {
+                [launcher, mode] => {
+                    launcher.as_str() == Some("./bin/acyclic.js")
+                        && mode.as_str() == Some("__mcp-commandless")
+                }
+                _ => false,
+            })
+        && server.get("cwd").and_then(Value::as_str) == Some(".")
+        && server
+            .get("default_tools_approval_mode")
+            .and_then(Value::as_str)
+            == Some("prompt")
+}
+
+fn codex_json(arguments: &[&str]) -> Result<Value, String> {
+    let output = std::process::Command::new("codex")
+        .args(arguments)
+        .output()
+        .map_err(|error| format!("cannot run Codex plugin manager: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Codex plugin manager exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    serde_json::from_slice(&output.stdout).map_err(display)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn doctor_report(
+    data: &Path,
+    identity: &str,
+    sessions: usize,
+    routes: usize,
+    leases: usize,
+    pending_recovery: bool,
+) -> Result<Value, String> {
+    let executable = env::current_exe().map_err(display)?;
+    let executable_sha256 = sha256_file(&executable)?;
+    let mut checks = Vec::new();
+    let binary_identity_path = executable
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("installed-binary.json");
+    let binary_identity = fs::read(&binary_identity_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    match binary_identity {
+        Some(ref installed)
+            if installed.get("version").and_then(Value::as_str)
+                == Some(env!("CARGO_PKG_VERSION"))
+                && installed.get("sha256").and_then(Value::as_str)
+                    == Some(executable_sha256.as_str()) =>
+        {
+            checks.push(doctor_check(
+                "binary",
+                "pass",
+                format!("{} sha256:{executable_sha256}", env!("CARGO_PKG_VERSION")),
+            ));
+        }
+        Some(_) => checks.push(doctor_check(
+            "binary",
+            "fail",
+            "installed binary bytes or version differ from installed-binary.json",
+        )),
+        None => checks.push(doctor_check(
+            "binary",
+            "warn",
+            format!(
+                "no packaged binary identity beside {}; development builds are not release-certified",
+                executable.display()
+            ),
+        )),
+    }
+
+    let root = plugin_root();
+    match &root {
+        Ok(root) => {
+            let package_version = fs::read(root.join("package.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .and_then(|value| {
+                    value
+                        .get("version")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                });
+            let status = if package_version.as_deref() == Some(env!("CARGO_PKG_VERSION")) {
+                "pass"
+            } else {
+                "fail"
+            };
+            checks.push(doctor_check(
+                "package-cache",
+                status,
+                format!(
+                    "plugin={} binary={}",
+                    package_version.unwrap_or_else(|| "unknown".to_owned()),
+                    env!("CARGO_PKG_VERSION")
+                ),
+            ));
+            let marketplace = root.join(".agents/plugins/marketplace.json");
+            let marketplace_owned = fs::read(&marketplace)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .is_some_and(|value| {
+                    value.get("name").and_then(Value::as_str) == Some("acyclic")
+                        && value
+                            .get("plugins")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .any(|plugin| {
+                                plugin.get("name").and_then(Value::as_str) == Some("acyclic")
+                            })
+                });
+            checks.push(doctor_check(
+                "marketplace",
+                if marketplace_owned { "pass" } else { "fail" },
+                marketplace.display().to_string(),
+            ));
+            let configured = codex_json(&["plugin", "marketplace", "list", "--json"])
+                .ok()
+                .and_then(|value| value.get("marketplaces").and_then(Value::as_array).cloned())
+                .into_iter()
+                .flatten()
+                .find(|entry| entry.get("name").and_then(Value::as_str) == Some("acyclic"));
+            let installed = codex_json(&[
+                "plugin",
+                "list",
+                "--marketplace",
+                "acyclic",
+                "--available",
+                "--json",
+            ])
+            .ok()
+            .and_then(|value| value.get("installed").and_then(Value::as_array).cloned())
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.get("pluginId").and_then(Value::as_str) == Some("acyclic@acyclic"));
+            let configured_root = configured
+                .as_ref()
+                .and_then(|entry| entry.get("root"))
+                .and_then(Value::as_str)
+                .unwrap_or("unconfigured");
+            let configured_owned = Path::new(configured_root)
+                .canonicalize()
+                .ok()
+                .zip(root.canonicalize().ok())
+                .is_some_and(|(configured, packaged)| configured == packaged);
+            let installed_version = installed
+                .as_ref()
+                .and_then(|entry| entry.get("version"))
+                .and_then(Value::as_str)
+                .unwrap_or("not-installed");
+            checks.push(doctor_check(
+                "codex-install",
+                if configured_owned
+                    && installed.as_ref().is_some_and(|entry| {
+                        entry.get("installed").and_then(Value::as_bool) == Some(true)
+                            && entry.get("enabled").and_then(Value::as_bool) == Some(true)
+                            && entry.get("version").and_then(Value::as_str)
+                                == Some(env!("CARGO_PKG_VERSION"))
+                    })
+                {
+                    "pass"
+                } else {
+                    "fail"
+                },
+                format!("marketplace={configured_root} plugin-version={installed_version}"),
+            ));
+            let hooks = root.join("hooks/hooks.json");
+            let mcp = root.join(".mcp.json");
+            let hooks_valid = fs::read(&hooks)
+                .ok()
+                .filter(|bytes| bytes.len() <= 1024 * 1024)
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .is_some_and(|document| {
+                    [
+                        "SessionStart",
+                        "UserPromptSubmit",
+                        "PreToolUse",
+                        "PostToolUse",
+                        "SubagentStart",
+                        "SubagentStop",
+                        "SessionEnd",
+                    ]
+                    .iter()
+                    .all(|event| {
+                        document
+                            .pointer(&format!("/hooks/{event}"))
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .flat_map(|entry| {
+                                entry
+                                    .get("hooks")
+                                    .and_then(Value::as_array)
+                                    .into_iter()
+                                    .flatten()
+                            })
+                            .filter_map(|hook| hook.get("command").and_then(Value::as_str))
+                            .any(|command| {
+                                command.contains("${PLUGIN_ROOT}/bin/acyclic.js")
+                                    && command.contains(&format!("__hook codex {event}"))
+                            })
+                    })
+                });
+            let mcp_valid = fs::read(&mcp)
+                .ok()
+                .filter(|bytes| bytes.len() <= 1024 * 1024)
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .is_some_and(|document| valid_codex_mcp_manifest(&document));
+            checks.push(doctor_check(
+                "hooks",
+                if hooks_valid { "pass" } else { "fail" },
+                hooks.display().to_string(),
+            ));
+            checks.push(doctor_check(
+                "agent-command",
+                if mcp_valid { "pass" } else { "fail" },
+                if mcp_valid {
+                    "bundled MCP dispatcher; shell fallback is the npm bin"
+                } else {
+                    "bundled MCP dispatcher is missing"
+                },
+            ));
+        }
+        Err(error) => {
+            checks.push(doctor_check("package-cache", "fail", error.clone()));
+            checks.push(doctor_check("marketplace", "fail", error.clone()));
+            checks.push(doctor_check("codex-install", "fail", error.clone()));
+            checks.push(doctor_check("hooks", "fail", error.clone()));
+            checks.push(doctor_check("agent-command", "fail", error));
+        }
+    }
+
+    checks.push(doctor_check(
+        "service",
+        "pass",
+        format!("identity={identity} sessions={sessions} routes={routes} leases={leases}"),
+    ));
+    let native = acyclic_fs::probe_native_mount();
+    checks.push(doctor_check(
+        "mount-backend",
+        if native.available && native.writable {
+            "pass"
+        } else {
+            "warn"
+        },
+        format!(
+            "kind={:?} available={} writable={} provider-io-observable={}{}",
+            native.kind,
+            native.available,
+            native.writable,
+            native.provider_process_io_observable,
+            native
+                .unavailable_reason
+                .as_deref()
+                .map(|reason| format!(" reason={reason}"))
+                .unwrap_or_default()
+        ),
+    ));
+    checks.push(doctor_check(
+        "persistent-state",
+        if pending_recovery { "warn" } else { "pass" },
+        if pending_recovery {
+            "durable recovery work is pending"
+        } else {
+            "durable state loaded with no pending adapter recovery"
+        },
+    ));
+    let cli_on_path = env::var_os("PATH").is_some_and(|paths| {
+        env::split_paths(&paths).any(|directory| {
+            ["acyclic", "acyclic.exe", "acyclic.cmd", "acyclic.ps1"]
+                .iter()
+                .any(|name| directory.join(name).is_file())
+        })
+    });
+    checks.push(doctor_check(
+        "cli-path",
+        if cli_on_path { "pass" } else { "warn" },
+        if cli_on_path {
+            "acyclic shell launcher is on PATH"
+        } else {
+            "plugin MCP tool is available; install the npm package for shell PATH access"
+        },
+    ));
+    let receipt_path = data.join("certification").join(format!(
+        "native-mount-{}-{}.json",
+        env::consts::OS,
+        env::consts::ARCH
+    ));
+    let certified = fs::read(&receipt_path)
+        .ok()
+        .filter(|bytes| bytes.len() <= 1024 * 1024)
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|receipt| {
+            receipt.get("schema").and_then(Value::as_str)
+                == Some("acyclic-native-mount-qualification-v1")
+                && receipt.get("os").and_then(Value::as_str) == Some(env::consts::OS)
+                && receipt.get("arch").and_then(Value::as_str) == Some(env::consts::ARCH)
+                && receipt.get("passed").and_then(Value::as_bool) == Some(true)
+        });
+    checks.push(doctor_check(
+        "platform-certification",
+        if certified { "pass" } else { "fail" },
+        if certified {
+            receipt_path.display().to_string()
+        } else {
+            format!(
+                "no passing live qualification receipt at {}",
+                receipt_path.display()
+            )
+        },
+    ));
+    let ok = checks
+        .iter()
+        .all(|check| check.get("status").and_then(Value::as_str) != Some("fail"));
+    Ok(json!({
+        "schemaVersion": 1,
+        "ok": ok,
+        "certified": certified,
+        "version": env!("CARGO_PKG_VERSION"),
+        "platform": {"os": env::consts::OS, "arch": env::consts::ARCH},
+        "checks": checks,
+    }))
 }
 
 struct ServiceLock {
@@ -6639,6 +7319,7 @@ fn control_request_from_argv(
     let command = match argv.first().map(String::as_str) {
         Some("git") => ControlCommand::Git,
         Some("agents") => ControlCommand::Agents,
+        Some("doctor") => ControlCommand::Doctor,
         Some("discard") => ControlCommand::Discard,
         _ => return Err("unsupported Acyclic command".to_owned()),
     };
@@ -6670,7 +7351,7 @@ async fn run_rpc_proxy(
         let method = request.get("method").and_then(Value::as_str).unwrap_or("");
         let response = match method {
             "initialize" => {
-                json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"acyclic","version":"0.1.0"}}})
+                json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"acyclic","version":env!("CARGO_PKG_VERSION")}}})
             }
             "ping" => json!({"jsonrpc":"2.0","id":id,"result":{}}),
             "tools/list" => {
@@ -6823,12 +7504,55 @@ fn print_cli_response(response: Value) -> Result<i32, String> {
                 .get("ref")
                 .and_then(Value::as_str)
                 .unwrap_or("agents/?");
-            let state = if agent.get("stopped").and_then(Value::as_bool) == Some(true) {
-                "frozen"
-            } else {
-                "active"
-            };
-            println!("{reference}\t{state}");
+            let state = agent
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let parent = agent.get("parent").and_then(Value::as_str).unwrap_or("?");
+            let depth = agent
+                .get("depth")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let leases = agent
+                .get("activeLeases")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let conflicts = agent
+                .get("conflicts")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let work = agent
+                .get("workRemaining")
+                .and_then(Value::as_u64)
+                .map_or_else(|| "busy".to_owned(), |work| work.to_string());
+            println!(
+                "{reference}\t{state}\tparent={parent}\tdepth={depth}\tleases={leases}\tconflicts={conflicts}\twork={work}"
+            );
+            if let Some(paths) = agent.get("changedPaths").and_then(Value::as_array) {
+                for path in paths.iter().filter_map(Value::as_str) {
+                    println!("  changed={path}");
+                }
+            }
+            if let Some(roots) = agent.get("roots").and_then(Value::as_array) {
+                for root in roots {
+                    println!(
+                        "  root={} route={} generation={} published={}{}",
+                        root.get("id").and_then(Value::as_str).unwrap_or("?"),
+                        root.get("route").and_then(Value::as_str).unwrap_or("?"),
+                        root.get("generation")
+                            .and_then(Value::as_str)
+                            .unwrap_or("?"),
+                        root.get("publishedGeneration")
+                            .and_then(Value::as_str)
+                            .unwrap_or("never"),
+                        if root.get("unpublished").and_then(Value::as_bool) == Some(true) {
+                            " pending"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+            }
         }
         return Ok(0);
     }
@@ -6843,6 +7567,28 @@ fn print_cli_response(response: Value) -> Result<i32, String> {
             Ok(0)
         }
     }
+}
+
+fn print_doctor_response(response: &Value) -> Result<i32, String> {
+    let checks = response
+        .get("checks")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "doctor response has no checks".to_owned())?;
+    for check in checks {
+        let status = check
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("fail");
+        let name = check
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let detail = check.get("detail").and_then(Value::as_str).unwrap_or("");
+        println!("{status:<4} {name:<24} {detail}");
+    }
+    let ok = response.get("ok").and_then(Value::as_bool) == Some(true);
+    println!("{}", if ok { "ready" } else { "not ready" });
+    Ok(i32::from(!ok))
 }
 
 fn print_git_output(output: GitCommandOutput) -> Result<i32, String> {
@@ -6965,11 +7711,77 @@ fn install_command(arguments: &[String]) -> Result<(), String> {
     install_host(host, project)
 }
 
-fn uninstall_command(arguments: &[String]) -> Result<(), String> {
+async fn uninstall_command(arguments: &[String]) -> Result<(), String> {
+    let purge = arguments.iter().any(|argument| argument == "--purge");
     let host = arguments
-        .first()
+        .iter()
+        .find(|argument| argument.as_str() != "--purge")
         .ok_or_else(|| "uninstall requires a host".to_owned())?;
-    uninstall_host(host)
+    let data = default_data_directory();
+    drain_service(&data).await?;
+    uninstall_host(host)?;
+    if purge {
+        purge_durable_state(&data).await?;
+        println!("purged Acyclic durable state");
+    } else {
+        println!("preserved Acyclic durable state; pass --purge to remove it explicitly");
+    }
+    Ok(())
+}
+
+async fn purge_durable_state(data: &Path) -> Result<(), String> {
+    if !data.exists() {
+        return Ok(());
+    }
+    drain_service(data).await?;
+    let parent = data
+        .parent()
+        .ok_or_else(|| "durable state path has no parent".to_owned())?;
+    remove_tree_checked(parent, data)
+}
+
+async fn drain_service(data: &Path) -> Result<(), String> {
+    let ping = ControlRequest {
+        version: 1,
+        command: ControlCommand::Ping,
+        cwd: env::current_dir().map_err(display)?,
+        argv: Vec::new(),
+        name: String::new(),
+        arguments: Value::Null,
+    };
+    match send_control_request(data, &ping).await {
+        Ok(active) => {
+            let identity = active
+                .get("identity")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "cannot safely drain an unidentified Acyclic service".to_owned())?;
+            let request = ControlRequest {
+                version: 1,
+                command: ControlCommand::Upgrade,
+                cwd: env::current_dir().map_err(display)?,
+                argv: Vec::new(),
+                name: String::new(),
+                arguments: json!({"identity": identity}),
+            };
+            send_control_request(data, &request)
+                .await
+                .map_err(|error| error.to_string())?;
+            for _ in 0..250 {
+                if send_control_request(data, &ping).await.is_err() {
+                    return Ok(());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(
+                "Acyclic service did not drain; durable state and executable were preserved"
+                    .to_owned(),
+            )
+        }
+        Err(ControlRequestError::Transport(_)) => Ok(()),
+        Err(error) => Err(format!(
+            "cannot safely identify the Acyclic service: {error}"
+        )),
+    }
 }
 
 fn install_host(host: &str, project: bool) -> Result<(), String> {
@@ -7037,19 +7849,69 @@ fn install_host(host: &str, project: bool) -> Result<(), String> {
 
 fn uninstall_host(host: &str) -> Result<(), String> {
     if host == "codex" {
-        for arguments in [
-            &["plugin", "remove", "acyclic@acyclic"][..],
-            &["plugin", "marketplace", "remove", "acyclic"][..],
-        ] {
-            let status = std::process::Command::new("codex")
-                .args(arguments)
-                .status()
-                .map_err(|error| format!("cannot run Codex plugin manager: {error}"))?;
-            if !status.success() {
-                return Err("Codex plugin manager could not fully remove Acyclic".to_owned());
+        let manifest_root = plugin_root()?;
+        let ownership_path = codex_ownership_path();
+        let ownership = read_codex_ownership(&ownership_path)?;
+        let marketplaces = codex_json(&["plugin", "marketplace", "list", "--json"])?;
+        let configured = marketplaces
+            .get("marketplaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.get("name").and_then(Value::as_str) == Some("acyclic"));
+        if let Some(configured) = configured {
+            let configured_root = configured
+                .get("root")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "configured Acyclic marketplace has no root".to_owned())?;
+            let owned = Path::new(configured_root)
+                .canonicalize()
+                .ok()
+                .zip(manifest_root.canonicalize().ok())
+                .is_some_and(|(configured, package)| configured == package);
+            if !owned {
+                return Err(format!(
+                    "refusing to remove the Acyclic marketplace owned by {configured_root}"
+                ));
             }
         }
-        println!("removed the Acyclic plugin and its marketplace entry");
+        let plugin_was_installed = installed_codex_plugin()?.is_some();
+        let Some(ownership) = ownership else {
+            if configured.is_some() || plugin_was_installed {
+                return Err(
+                    "refusing to remove Codex integration without an Acyclic ownership record"
+                        .to_owned(),
+                );
+            }
+            return Ok(());
+        };
+        let owned_root = ownership
+            .marketplace_root
+            .canonicalize()
+            .ok()
+            .zip(manifest_root.canonicalize().ok())
+            .is_some_and(|(owned, package)| owned == package);
+        if ownership.version != 1 || !owned_root {
+            return Err(
+                "Codex integration ownership does not match this Acyclic package".to_owned(),
+            );
+        }
+        if plugin_was_installed && !ownership.plugin_was_installed {
+            run_codex(&["plugin", "remove", "acyclic@acyclic", "--json"])?;
+        }
+        if ownership.added_marketplace
+            && configured.is_some()
+            && run_codex(&["plugin", "marketplace", "remove", "acyclic"]).is_err()
+        {
+            if plugin_was_installed && !ownership.plugin_was_installed {
+                let _ = run_codex(&["plugin", "add", "acyclic@acyclic", "--json"]);
+            }
+            return Err(
+                "Codex marketplace removal failed; the prior plugin was restored".to_owned(),
+            );
+        }
+        fs::remove_file(&ownership_path).map_err(display)?;
+        println!("removed Acyclic-owned Codex integration and preserved prior state");
         return Ok(());
     }
     if host == "claude-code" {
@@ -7061,14 +7923,11 @@ fn uninstall_host(host: &str) -> Result<(), String> {
     }
     if host == "copilot" {
         let path = home_directory()?.join(".copilot/hooks/acyclic.json");
-        match fs::remove_file(&path) {
-            Ok(()) => println!(
-                "removed Acyclic-owned Copilot CLI hooks from {}",
-                path.display()
-            ),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(display(error)),
-        }
+        remove_copilot_hooks_at(&path)?;
+        println!(
+            "removed Acyclic-owned Copilot CLI hooks from {}",
+            path.display()
+        );
         return Ok(());
     }
     if host == "cursor" {
@@ -7100,6 +7959,42 @@ fn uninstall_host(host: &str) -> Result<(), String> {
         "removed Acyclic-owned {host} configuration from {}",
         path.display()
     );
+    Ok(())
+}
+
+fn remove_copilot_hooks_at(path: &Path) -> Result<(), String> {
+    let ownership_path = mcp_ownership_path(path, "__whole-file__");
+    let Some(ownership) = read_mcp_ownership(&ownership_path)? else {
+        if path.exists() {
+            return Err(format!(
+                "refusing to remove Copilot hooks without an Acyclic ownership record from {}",
+                path.display()
+            ));
+        }
+        return Ok(());
+    };
+    let current = fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    if ownership.version != 1
+        || ownership.config_path != path
+        || ownership.section != "__whole-file__"
+        || current.as_ref() != Some(&ownership.installed)
+    {
+        return Err(format!(
+            "the Acyclic Copilot hooks at {} were modified; leaving them untouched",
+            path.display()
+        ));
+    }
+    match ownership.prior {
+        Some(prior) => write_json_with_backup(path, &prior)?,
+        None => match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(display(error)),
+        },
+    }
+    fs::remove_file(&ownership_path).map_err(display)?;
     Ok(())
 }
 
@@ -7198,6 +8093,11 @@ fn remove_claude_hooks(project: bool) -> Result<(), String> {
 
 fn install_copilot_hooks(executable: &Path) -> Result<PathBuf, String> {
     let path = home_directory()?.join(".copilot/hooks/acyclic.json");
+    install_copilot_hooks_at(executable, &path)?;
+    Ok(path)
+}
+
+fn install_copilot_hooks_at(executable: &Path, path: &Path) -> Result<(), String> {
     let command = executable.to_string_lossy();
     let mut hooks = serde_json::Map::new();
     for event in [
@@ -7218,8 +8118,48 @@ fn install_copilot_hooks(executable: &Path) -> Result<PathBuf, String> {
             }]),
         );
     }
-    write_json_with_backup(&path, &json!({"version":1,"hooks":Value::Object(hooks)}))?;
-    Ok(path)
+    let installed = json!({"version":1,"hooks":Value::Object(hooks)});
+    let ownership_path = mcp_ownership_path(path, "__whole-file__");
+    let current = match fs::read(path) {
+        Ok(bytes) => Some(serde_json::from_slice::<Value>(&bytes).map_err(|error| {
+            format!(
+                "refusing to overwrite invalid Copilot hooks at {}: {error}",
+                path.display()
+            )
+        })?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(display(error)),
+    };
+    let prior = match read_mcp_ownership(&ownership_path)? {
+        Some(ownership)
+            if ownership.version == 1
+                && ownership.config_path == path
+                && ownership.section == "__whole-file__"
+                && ownership.installed == installed
+                && (current == ownership.prior || current == Some(installed.clone())) =>
+        {
+            ownership.prior
+        }
+        Some(_) => {
+            return Err(format!(
+                "Copilot hook ownership at {} is inconsistent; refusing to overwrite it",
+                path.display()
+            ));
+        }
+        None => current,
+    };
+    write_mcp_ownership(
+        &ownership_path,
+        &McpConfigOwnership {
+            version: 1,
+            config_path: path.to_path_buf(),
+            section: "__whole-file__".to_owned(),
+            prior,
+            installed: installed.clone(),
+        },
+    )?;
+    write_json_with_backup(path, &installed)?;
+    Ok(())
 }
 
 fn cursor_hooks_path(project: bool) -> Result<PathBuf, String> {
@@ -7358,6 +8298,44 @@ struct McpConfigOwnership {
     section: String,
     prior: Option<Value>,
     installed: Value,
+}
+
+#[derive(Deserialize, Serialize)]
+struct CodexPluginOwnership {
+    version: u32,
+    marketplace_root: PathBuf,
+    added_marketplace: bool,
+    plugin_was_installed: bool,
+}
+
+fn codex_ownership_path() -> PathBuf {
+    default_data_directory().join("install-ownership/codex-plugin.json")
+}
+
+fn read_codex_ownership(path: &Path) -> Result<Option<CodexPluginOwnership>, String> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(display),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(display(error)),
+    }
+}
+
+fn write_codex_ownership(path: &Path, ownership: &CodexPluginOwnership) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(display)?;
+    }
+    let temporary = path.with_extension("acyclic-next");
+    fs::write(
+        &temporary,
+        serde_json::to_vec_pretty(ownership).map_err(display)?,
+    )
+    .map_err(display)?;
+    acyclic_native_runtime::durable_rename(
+        &temporary,
+        path,
+        acyclic_native_runtime::RenameMode::Replace,
+    )
+    .map_err(display)
 }
 
 fn mcp_ownership_path(path: &Path, section: &str) -> PathBuf {
@@ -7548,25 +8526,160 @@ fn install_codex_plugin() -> Result<(), String> {
             marketplace.display()
         ));
     }
-    for arguments in [
-        vec![
-            "plugin",
-            "marketplace",
-            "add",
-            manifest_root.to_string_lossy().as_ref(),
-        ],
-        vec!["plugin", "add", "acyclic@acyclic"],
-    ] {
-        let status = std::process::Command::new("codex")
-            .args(arguments)
-            .status()
-            .map_err(|error| format!("cannot run Codex plugin manager: {error}"))?;
-        if !status.success() {
-            return Err("Codex plugin manager could not install Acyclic".to_owned());
+    let marketplaces = codex_json(&["plugin", "marketplace", "list", "--json"])?;
+    let configured = marketplaces
+        .get("marketplaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|entry| entry.get("name").and_then(Value::as_str) == Some("acyclic"));
+    if let Some(configured) = configured {
+        let configured_root = configured
+            .get("root")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "configured Acyclic marketplace has no root".to_owned())?;
+        let same = Path::new(configured_root)
+            .canonicalize()
+            .ok()
+            .zip(manifest_root.canonicalize().ok())
+            .is_some_and(|(configured, package)| configured == package);
+        if !same {
+            return Err(format!(
+                "refusing to replace the Acyclic marketplace owned by {configured_root}"
+            ));
         }
+    }
+    let installed_before = installed_codex_plugin()?;
+    let plugin_was_installed = installed_before.is_some();
+    if plugin_was_installed && configured.is_none() {
+        return Err(
+            "Codex reports an installed Acyclic plugin without its marketplace; refusing mutation"
+                .to_owned(),
+        );
+    }
+    if let Some(installed) = installed_before.as_ref() {
+        validate_existing_codex_plugin(installed)?;
+    }
+    let added_marketplace = configured.is_none();
+    let ownership_path = codex_ownership_path();
+    let existing_ownership = read_codex_ownership(&ownership_path)?;
+    let ownership = if let Some(ownership) = existing_ownership.as_ref() {
+        let same = ownership
+            .marketplace_root
+            .canonicalize()
+            .ok()
+            .zip(manifest_root.canonicalize().ok())
+            .is_some_and(|(owned, package)| owned == package);
+        if ownership.version != 1 || !same {
+            return Err("existing Codex integration ownership is inconsistent".to_owned());
+        }
+        CodexPluginOwnership {
+            version: ownership.version,
+            marketplace_root: ownership.marketplace_root.clone(),
+            added_marketplace: ownership.added_marketplace,
+            plugin_was_installed: ownership.plugin_was_installed,
+        }
+    } else {
+        CodexPluginOwnership {
+            version: 1,
+            marketplace_root: manifest_root.clone(),
+            added_marketplace,
+            plugin_was_installed,
+        }
+    };
+    write_codex_ownership(&ownership_path, &ownership)?;
+    let install = (|| {
+        if added_marketplace {
+            run_codex(&[
+                "plugin",
+                "marketplace",
+                "add",
+                manifest_root.to_string_lossy().as_ref(),
+            ])?;
+        }
+        if !plugin_was_installed {
+            run_codex(&["plugin", "add", "acyclic@acyclic", "--json"])?;
+        }
+        let installed = codex_json(&["plugin", "list", "--marketplace", "acyclic", "--json"])?;
+        if !installed
+            .get("installed")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|entry| {
+                entry.get("pluginId").and_then(Value::as_str) == Some("acyclic@acyclic")
+                    && entry.get("version").and_then(Value::as_str)
+                        == Some(env!("CARGO_PKG_VERSION"))
+                    && entry.get("installed").and_then(Value::as_bool) == Some(true)
+                    && entry.get("enabled").and_then(Value::as_bool) == Some(true)
+            })
+        {
+            return Err("Codex did not activate the expected Acyclic release".to_owned());
+        }
+        Ok(())
+    })();
+    if let Err(error) = install {
+        if !plugin_was_installed {
+            let _ = run_codex(&["plugin", "remove", "acyclic@acyclic", "--json"]);
+        }
+        if added_marketplace {
+            let _ = run_codex(&["plugin", "marketplace", "remove", "acyclic"]);
+        }
+        if existing_ownership.is_none() {
+            let _ = fs::remove_file(&ownership_path);
+        }
+        return Err(format!("Codex plugin installation rolled back: {error}"));
     }
     println!("installed Acyclic through the Codex plugin manager");
     Ok(())
+}
+
+fn run_codex(arguments: &[&str]) -> Result<(), String> {
+    let status = std::process::Command::new("codex")
+        .args(arguments)
+        .status()
+        .map_err(|error| format!("cannot run Codex plugin manager: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Codex plugin manager exited with {status}"))
+    }
+}
+
+fn installed_codex_plugin() -> Result<Option<Value>, String> {
+    let plugins = codex_json(&["plugin", "list", "--json"])?;
+    let installed = plugins
+        .get("installed")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Codex plugin list has no installed array".to_owned())?;
+    let matches = installed
+        .iter()
+        .filter(|entry| entry.get("pluginId").and_then(Value::as_str) == Some("acyclic@acyclic"))
+        .cloned()
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Ok(None),
+        [plugin] => Ok(Some(plugin.clone())),
+        _ => Err("Codex reported duplicate installed Acyclic plugins".to_owned()),
+    }
+}
+
+fn validate_existing_codex_plugin(installed: &Value) -> Result<(), String> {
+    let version = installed
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let enabled = installed
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if version == env!("CARGO_PKG_VERSION") && enabled {
+        Ok(())
+    } else {
+        Err(format!(
+            "Codex already has Acyclic {version} (enabled={enabled}); refusing to replace prior plugin state. Update the local package and restart Codex, or explicitly remove the old plugin before retrying"
+        ))
+    }
 }
 
 fn plugin_root() -> Result<PathBuf, String> {
@@ -7761,7 +8874,7 @@ async fn rpc_response(
     let method = request.get("method").and_then(Value::as_str).unwrap_or("");
     let response = match method {
         "initialize" => {
-            json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"acyclic","version":"0.1.0"}}})
+            json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"acyclic","version":env!("CARGO_PKG_VERSION")}}})
         }
         "ping" => json!({"jsonrpc":"2.0","id":id,"result":{}}),
         "tools/list" => json!({"jsonrpc":"2.0","id":id,"result":{"tools":public_tools(false)}}),
@@ -9334,12 +10447,29 @@ mod tests {
             .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"pending-descendant","tool_name":"spawn_agent","tool_input":{}}))
             .await
             .expect("pending descendant before discard");
-        control
+        let stopped = control
             .subagent_stop(
                 json!({"session_id":"session","turn_id":"child-turn","agent_id":"child"}),
             )
             .await
             .expect("seal child");
+        assert_eq!(stopped["suppressOutput"], false);
+        assert_eq!(stopped["acyclicSummary"]["agent"], "agents/child");
+        assert_eq!(stopped["acyclicSummary"]["tests"]["status"], "not-reported");
+        assert!(
+            stopped["acyclicSummary"]["actions"]["merge"]
+                .as_str()
+                .is_some_and(|command| command.contains("agents/child"))
+        );
+        let root_agent = control.state.root_agent_id.clone();
+        let status = control
+            .agents_status(&root_agent)
+            .await
+            .expect("recursive agent status");
+        assert_eq!(status["schemaVersion"], 1);
+        assert_eq!(status["agents"][0]["ref"], "agents/child");
+        assert_eq!(status["agents"][0]["state"], "frozen");
+        assert!(status["agents"][0]["roots"].is_array());
         assert!(control.state.routes["child"].stopped);
         assert!(!control.mounts.contains_key("child"));
         drop(control);
@@ -10356,6 +11486,69 @@ mod tests {
     }
 
     #[test]
+    fn copilot_hooks_restore_prior_content_and_preserve_user_edits() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join(".copilot/hooks/acyclic.json");
+        let executable = temporary.path().join("acyclic");
+        fs::create_dir_all(path.parent().expect("hook parent")).expect("hook parent");
+        let prior = json!({"version":1,"hooks":{"user":[{"exec":"user"}]}});
+        fs::write(&path, serde_json::to_vec(&prior).expect("prior JSON")).expect("prior hooks");
+
+        install_copilot_hooks_at(&executable, &path).expect("install hooks");
+        install_copilot_hooks_at(&executable, &path).expect("idempotent install");
+        let installed = fs::read(&path).expect("installed hooks");
+        let mut edited: Value = serde_json::from_slice(&installed).expect("installed JSON");
+        edited["hooks"]["sessionStart"][0]["timeout"] = json!(1);
+        fs::write(&path, serde_json::to_vec(&edited).expect("edited JSON")).expect("edit hooks");
+        assert!(remove_copilot_hooks_at(&path).is_err());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&path).expect("preserved edit"))
+                .expect("preserved JSON"),
+            edited
+        );
+
+        fs::write(&path, installed).expect("restore installed hooks");
+        remove_copilot_hooks_at(&path).expect("owned uninstall");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&path).expect("restored prior"))
+                .expect("restored JSON"),
+            prior
+        );
+
+        fs::write(&path, b"not JSON").expect("malformed prior hooks");
+        assert!(install_copilot_hooks_at(&executable, &path).is_err());
+        assert_eq!(
+            fs::read(&path).expect("preserved malformed hooks"),
+            b"not JSON"
+        );
+    }
+
+    #[test]
+    fn codex_install_preserves_old_or_disabled_plugin_state() {
+        assert!(
+            validate_existing_codex_plugin(&json!({
+                "version": "0.1.0-rc.1",
+                "enabled": true
+            }))
+            .is_err()
+        );
+        assert!(
+            validate_existing_codex_plugin(&json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "enabled": false
+            }))
+            .is_err()
+        );
+        assert!(
+            validate_existing_codex_plugin(&json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "enabled": true
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn opencode_guidance_markers_preserve_unrelated_instructions() {
         let original = "# Existing\n\nKeep this.\n";
         let installed =
@@ -10368,6 +11561,119 @@ mod tests {
             remove_marked_block(original, OPENCODE_GUIDANCE_START, OPENCODE_GUIDANCE_END),
             original
         );
+    }
+
+    #[test]
+    fn adapter_state_loading_is_byte_and_structure_bounded() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let oversized = temporary.path().join("oversized.json");
+        let file = fs::File::create(&oversized).expect("oversized state");
+        file.set_len(MAXIMUM_ADAPTER_STATE_BYTES + 1)
+            .expect("extend oversized state");
+        assert!(
+            read_state(&oversized)
+                .expect_err("oversized state must fail")
+                .contains("byte bound")
+        );
+
+        let mut state = AdapterState::default();
+        for index in 0..=MAXIMUM_ADAPTER_TURNS {
+            state.turns.insert(index.to_string(), "root".to_owned());
+        }
+        assert!(
+            validate_state_bounds(&state)
+                .expect_err("oversized turn map must fail")
+                .contains("too many turns")
+        );
+        state.turns.clear();
+        for index in 0..=MAXIMUM_ADAPTER_ROOT_TURNS {
+            state.root_turns.insert(index.to_string());
+        }
+        assert!(
+            validate_state_bounds(&state)
+                .expect_err("oversized root turn set must fail")
+                .contains("too many root turns")
+        );
+        state.root_turns.clear();
+        state.root_session_id = "x"
+            .repeat(usize::try_from(MAXIMUM_ADAPTER_STATE_BYTES).expect("state bound fits usize"));
+        assert!(
+            save_state(temporary.path(), &state)
+                .expect_err("oversized state persistence must fail")
+                .contains("byte bound")
+        );
+        assert!(!temporary.path().join("adapter-state.json").exists());
+    }
+
+    #[test]
+    fn adapter_state_recovers_only_from_a_valid_bounded_previous_snapshot() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        fs::write(temporary.path().join("adapter-state.json"), b"not json")
+            .expect("corrupt current state");
+        let previous = AdapterState {
+            version: 7,
+            ..AdapterState::default()
+        };
+        fs::write(
+            temporary.path().join("adapter-state.previous.json"),
+            serde_json::to_vec(&previous).expect("previous state JSON"),
+        )
+        .expect("previous state");
+        assert_eq!(
+            load_state(temporary.path())
+                .expect("recovered state")
+                .version,
+            7
+        );
+    }
+
+    #[test]
+    fn doctor_human_output_requires_the_canonical_check_shape() {
+        assert!(
+            print_doctor_response(&json!({
+                "ok": true,
+                "checks": [{"name":"service","status":"pass","detail":"ready"}]
+            }))
+            .is_ok()
+        );
+        assert!(print_doctor_response(&json!({"ok": false})).is_err());
+    }
+
+    #[test]
+    fn doctor_requires_the_exact_safe_mcp_manifest() {
+        let canonical = json!({"mcpServers":{"acyclic":{
+            "command":"node",
+            "args":["./bin/acyclic.js","__mcp-commandless"],
+            "cwd":".",
+            "default_tools_approval_mode":"prompt"
+        }}});
+        assert!(valid_codex_mcp_manifest(&canonical));
+        let mut injected = canonical.clone();
+        injected["mcpServers"]["acyclic"]["args"] = json!([
+            "--require",
+            "./evil.js",
+            "./bin/acyclic.js",
+            "__mcp-commandless"
+        ]);
+        assert!(!valid_codex_mcp_manifest(&injected));
+        let mut auto_approved = canonical;
+        auto_approved["mcpServers"]["acyclic"]["default_tools_approval_mode"] = json!("approve");
+        assert!(!valid_codex_mcp_manifest(&auto_approved));
+        let mut tool_override = json!({"mcpServers":{"acyclic":{
+            "command":"node",
+            "args":["./bin/acyclic.js","__mcp-commandless"],
+            "cwd":".",
+            "default_tools_approval_mode":"prompt",
+            "tools":{"acyclic":{"approval_mode":"approve"}}
+        }}});
+        assert!(!valid_codex_mcp_manifest(&tool_override));
+        tool_override["mcpServers"]["acyclic"]
+            .as_object_mut()
+            .expect("server")
+            .remove("tools");
+        tool_override["mcpServers"]["acyclic"]["env"] =
+            json!({"NODE_OPTIONS":"--require ./evil.js"});
+        assert!(!valid_codex_mcp_manifest(&tool_override));
     }
 
     #[cfg(unix)]

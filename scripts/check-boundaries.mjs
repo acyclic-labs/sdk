@@ -8,7 +8,7 @@ const forbiddenContent = [
   /acyclic(?:[-_.:/]|\\)(?:internal|private)(?:[-_.:/\\]|$)/i,
   /(?:package|import)\s+["']?[^\s"']*(?:internal|private)[^\s"']*/i,
   /BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY/,
-  /(?:aws_secret_access_key|github_token|authorization:)\s*[=:]\s*[^\s${][^\s]*/i,
+  /(?:aws_secret_access_key|github_token|authorization:(?!:))\s*[=:]\s*[^\s${][^\s]*/i,
 ];
 const forbiddenPath = /(?:^|[\\/])(?:proto|rust|typescript)[\\/](?:.*[\\/])?(?:internal|private)(?:[\\/]|$)/i;
 const machinesPath = /(?:^|[\\/])(?:proto[\\/]machines|rust[\\/]crates[\\/]machines|typescript[\\/]packages[\\/]machines|generated[\\/](?:rust|typescript)[\\/](?:acyclic[\\/])?machines)(?:[\\/]|$)/i;
