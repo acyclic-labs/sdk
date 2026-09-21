@@ -5771,7 +5771,7 @@ struct ControlRequest {
 struct ControlEndpoint {
     shutdown: watch::Sender<bool>,
     task: tokio::task::JoinHandle<Result<(), String>>,
-    #[cfg(test)]
+    #[cfg(all(test, not(target_os = "linux")))]
     accepted: Arc<tokio::sync::Notify>,
     #[cfg(all(unix, not(target_os = "linux")))]
     socket_path: PathBuf,
@@ -5809,7 +5809,7 @@ async fn start_control_endpoint(
     #[cfg(windows)]
     let opaque_id = short_hash(data.as_os_str().to_string_lossy().as_bytes());
     let (shutdown, receiver) = watch::channel(false);
-    #[cfg(test)]
+    #[cfg(all(test, not(target_os = "linux")))]
     let accepted = Arc::new(tokio::sync::Notify::new());
 
     #[cfg(target_os = "linux")]
@@ -5820,14 +5820,10 @@ async fn start_control_endpoint(
             control,
             shutdown.clone(),
             receiver,
-            #[cfg(test)]
-            Arc::clone(&accepted),
         ));
         Ok(ControlEndpoint {
             shutdown,
             task,
-            #[cfg(test)]
-            accepted,
             mailbox_path,
         })
     }
@@ -5916,7 +5912,6 @@ async fn serve_linux_control_mailbox(
     control: Arc<AsyncMutex<impl ControlRequestDispatcher + 'static>>,
     shutdown_sender: watch::Sender<bool>,
     mut shutdown: watch::Receiver<bool>,
-    #[cfg(test)] accepted: Arc<tokio::sync::Notify>,
 ) -> Result<(), String> {
     let (events, mut notifications) = tokio::sync::mpsc::unbounded_channel();
     let mut watcher = notify::recommended_watcher(move |event| {
@@ -5928,15 +5923,7 @@ async fn serve_linux_control_mailbox(
         .map_err(display)?;
 
     let result = loop {
-        if !process_linux_mailbox_requests(
-            &mailbox,
-            &control,
-            &mut shutdown,
-            #[cfg(test)]
-            &accepted,
-        )
-        .await?
-        {
+        if !process_linux_mailbox_requests(&mailbox, &control, &mut shutdown).await? {
             break Ok(());
         }
         tokio::select! {
@@ -5963,7 +5950,6 @@ async fn process_linux_mailbox_requests(
     mailbox: &Path,
     control: &Arc<AsyncMutex<impl ControlRequestDispatcher>>,
     shutdown: &mut watch::Receiver<bool>,
-    #[cfg(test)] accepted: &Arc<tokio::sync::Notify>,
 ) -> Result<bool, String> {
     let mut entries = fs::read_dir(mailbox)
         .map_err(display)?
@@ -6006,8 +5992,6 @@ async fn process_linux_mailbox_requests(
         let pending_response_path = entry.path().join("response.pending");
         fs::write(&pending_response_path, encoded).map_err(display)?;
         fs::rename(pending_response_path, response_path).map_err(display)?;
-        #[cfg(test)]
-        accepted.notify_one();
     }
     Ok(true)
 }
@@ -6034,7 +6018,7 @@ fn unix_control_runtime_directory() -> PathBuf {
     PathBuf::from("/tmp").join(format!("acyclic-{uid}"))
 }
 
-#[cfg(all(unix, any(test, not(target_os = "linux"))))]
+#[cfg(all(unix, not(target_os = "linux")))]
 #[allow(
     unsafe_code,
     reason = "geteuid has no preconditions and reads no memory"
