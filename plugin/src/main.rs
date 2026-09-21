@@ -41,17 +41,15 @@ use std::io::{self, BufRead, Read, Write};
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
+use acyclic_native_runtime::{RenameMode, durable_rename};
+use fs2::FileExt as _;
 #[cfg(target_os = "linux")]
 use notify::Watcher as _;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(any(test, not(target_os = "linux")))]
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-
-use acyclic_native_runtime::{RenameMode, durable_rename};
-use fs2::FileExt as _;
 
 type LocalWorkspace = Workspace<LocalAuthorityBackend, LocalObjectBackend>;
 type LocalGeneration = Generation<LocalAuthorityBackend, LocalObjectBackend>;
@@ -5930,13 +5928,17 @@ async fn serve_linux_control_mailbox(
         .map_err(display)?;
 
     let result = loop {
-        process_linux_mailbox_requests(
+        if !process_linux_mailbox_requests(
             &mailbox,
             &control,
+            &mut shutdown,
             #[cfg(test)]
             &accepted,
         )
-        .await?;
+        .await?
+        {
+            break Ok(());
+        }
         tokio::select! {
             event = notifications.recv() => {
                 match event {
@@ -5960,8 +5962,9 @@ async fn serve_linux_control_mailbox(
 async fn process_linux_mailbox_requests(
     mailbox: &Path,
     control: &Arc<AsyncMutex<impl ControlRequestDispatcher>>,
+    shutdown: &mut watch::Receiver<bool>,
     #[cfg(test)] accepted: &Arc<tokio::sync::Notify>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let mut entries = fs::read_dir(mailbox)
         .map_err(display)?
         .filter_map(Result::ok)
@@ -5979,9 +5982,15 @@ async fn process_linux_mailbox_requests(
         let response = match fs::read(&claimed_path) {
             Ok(request) if request.len() <= MAXIMUM_CONTROL_MESSAGE_BYTES => {
                 match serde_json::from_slice::<ControlRequest>(&request) {
-                    Ok(request) => {
-                        control_response(dispatch_control_request(control, request).await)
-                    }
+                    Ok(request) => tokio::select! {
+                        result = dispatch_control_request(control, request) => {
+                            control_response(result)
+                        }
+                        changed = shutdown.changed() => {
+                            let _ = changed;
+                            return Ok(false);
+                        }
+                    },
                     Err(error) => {
                         control_response(Err(format!("invalid Acyclic control request: {error}")))
                     }
@@ -6000,10 +6009,10 @@ async fn process_linux_mailbox_requests(
         #[cfg(test)]
         accepted.notify_one();
     }
-    Ok(())
+    Ok(true)
 }
 
-#[cfg(all(unix, any(test, not(target_os = "linux"))))]
+#[cfg(unix)]
 #[allow(
     unsafe_code,
     reason = "geteuid has no preconditions and reads no memory"
@@ -7405,15 +7414,25 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             name: format!("{host}:{event}"),
             arguments: input,
         };
-        let response = match send_control_request_once(&data, &request).await {
-            Ok(response) => response,
-            Err(ControlRequestError::Transport(_)) => {
-                ensure_service(&data).await.map_err(io::Error::other)?;
-                send_control_request(&data, &request)
-                    .await
-                    .map_err(|error| io::Error::other(error.to_string()))?
+        let response = if matches!(event.as_str(), "SessionStart" | "sessionStart") {
+            // Session boundaries are the one cheap, deterministic place to advance
+            // an idle service to the installed binary. Tool hooks stay on the direct
+            // single-round-trip path, and a service with live mounts remains intact.
+            ensure_service(&data).await.map_err(io::Error::other)?;
+            send_control_request(&data, &request)
+                .await
+                .map_err(|error| io::Error::other(error.to_string()))?
+        } else {
+            match send_control_request_once(&data, &request).await {
+                Ok(response) => response,
+                Err(ControlRequestError::Transport(_)) => {
+                    ensure_service(&data).await.map_err(io::Error::other)?;
+                    send_control_request(&data, &request)
+                        .await
+                        .map_err(|error| io::Error::other(error.to_string()))?
+                }
+                Err(error) => return Err(io::Error::other(error.to_string()).into()),
             }
-            Err(error) => return Err(io::Error::other(error.to_string()).into()),
         };
         serde_json::to_writer(io::stdout().lock(), &response)?;
         return Ok(());
@@ -8363,7 +8382,28 @@ async fn send_control_request_with_attempts(
         .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
     encoded.push(b'\n');
     #[cfg(target_os = "linux")]
-    return send_linux_mailbox_request(data, &encoded).await;
+    match send_linux_mailbox_request(data, &encoded).await {
+        Ok(response) => return Ok(response),
+        Err(error @ ControlRequestError::Response(_)) => return Err(error),
+        Err(ControlRequestError::Transport(_)) => {
+            // Releases before the mailbox transport served this same authenticated
+            // endpoint over a private Unix socket. During a live binary handoff the
+            // old process must keep its mounts, so a new client falls back until that
+            // process exits. New services expose only the mailbox.
+        }
+    }
+    #[cfg(target_os = "linux")]
+    let socket_path = unix_control_socket_path(data);
+    #[cfg(target_os = "linux")]
+    let stream = tokio::net::UnixStream::connect(socket_path)
+        .await
+        .map_err(|error| {
+            ControlRequestError::Transport(format!(
+                "Acyclic service is not running through either Linux control transport: {error}"
+            ))
+        })?;
+    #[cfg(target_os = "linux")]
+    return exchange_control_stream(stream, &encoded).await;
     #[cfg(not(target_os = "linux"))]
     {
         #[cfg(all(unix, not(target_os = "linux")))]
@@ -8404,29 +8444,35 @@ async fn send_control_request_with_attempts(
                 ))
             })?
         };
-        let mut stream = stream;
-        stream
-            .write_all(&encoded)
-            .await
-            .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
-        stream
-            .flush()
-            .await
-            .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
-        let mut response = Vec::new();
-        let mut reader = BufReader::new(stream).take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64);
-        reader
-            .read_until(b'\n', &mut response)
-            .await
-            .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
-        if response.len() > MAXIMUM_CONTROL_MESSAGE_BYTES || response.last() != Some(&b'\n') {
-            return Err(ControlRequestError::Transport(
-                "invalid response from Acyclic service".to_owned(),
-            ));
-        }
-        response.pop();
-        decode_control_response(&response)
+        exchange_control_stream(stream, &encoded).await
     }
+}
+
+async fn exchange_control_stream(
+    mut stream: impl AsyncRead + AsyncWrite + Unpin,
+    encoded: &[u8],
+) -> Result<Value, ControlRequestError> {
+    stream
+        .write_all(encoded)
+        .await
+        .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
+    stream
+        .flush()
+        .await
+        .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
+    let mut response = Vec::new();
+    let mut reader = BufReader::new(stream).take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64);
+    reader
+        .read_until(b'\n', &mut response)
+        .await
+        .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
+    if response.len() > MAXIMUM_CONTROL_MESSAGE_BYTES || response.last() != Some(&b'\n') {
+        return Err(ControlRequestError::Transport(
+            "invalid response from Acyclic service".to_owned(),
+        ));
+    }
+    response.pop();
+    decode_control_response(&response)
 }
 
 #[cfg(target_os = "linux")]
@@ -11695,7 +11741,7 @@ mod tests {
             .expect("live service handoff thread");
     }
 
-    #[cfg(any(unix, windows))]
+    #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
     #[test]
     fn endpoint_shutdown_cancels_inflight_requests_before_reopen() {
         std::thread::Builder::new()
@@ -11719,7 +11765,7 @@ mod tests {
         run_large_stack("concurrent-hook-endpoint", concurrent_hook_endpoint_case);
     }
 
-    #[cfg(any(unix, windows))]
+    #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
     #[test]
     fn client_disconnect_cancels_inflight_control_dispatch() {
         std::thread::Builder::new()
@@ -11735,6 +11781,15 @@ mod tests {
             .expect("test thread")
             .join()
             .expect("plugin endpoint disconnect thread");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mailbox_shutdown_cancels_inflight_dispatch() {
+        run_large_stack(
+            "plugin-mailbox-shutdown",
+            mailbox_shutdown_cancels_dispatch_case,
+        );
     }
 
     #[cfg(windows)]
@@ -12128,7 +12183,7 @@ mod tests {
         reopened.shutdown().await.expect("second graceful shutdown");
     }
 
-    #[cfg(any(unix, windows))]
+    #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
     async fn endpoint_shutdown_case() {
         use tokio::io::AsyncWriteExt as _;
 
@@ -12290,7 +12345,7 @@ mod tests {
         }
     }
 
-    #[cfg(any(unix, windows))]
+    #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
     async fn endpoint_disconnect_case() {
         use tokio::io::AsyncWriteExt as _;
 
@@ -12332,6 +12387,41 @@ mod tests {
         assert!(
             Arc::try_unwrap(control).is_ok(),
             "endpoint retained disconnected dispatch state"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn mailbox_shutdown_cancels_dispatch_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        let started = Arc::new(tokio::sync::Notify::new());
+        let control = Arc::new(AsyncMutex::new(StalledDispatcher {
+            started: Arc::clone(&started),
+        }));
+        let endpoint = start_control_endpoint(Arc::clone(&control), &data)
+            .await
+            .expect("control endpoint");
+        let request = ControlRequest {
+            version: 1,
+            command: ControlCommand::Ping,
+            cwd: temporary.path().to_path_buf(),
+            argv: Vec::new(),
+            name: String::new(),
+            arguments: Value::Null,
+        };
+        let client_data = data.clone();
+        let client =
+            tokio::spawn(async move { send_control_request_once(&client_data, &request).await });
+        started.notified().await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), endpoint.shutdown())
+            .await
+            .expect("mailbox shutdown deadline")
+            .expect("mailbox shutdown");
+        let _ = client.await;
+        assert!(
+            Arc::try_unwrap(control).is_ok(),
+            "mailbox retained cancelled dispatch state"
         );
     }
 
