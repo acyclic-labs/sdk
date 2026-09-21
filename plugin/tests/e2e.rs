@@ -725,7 +725,6 @@ fn claude_host_command(
         "stream-json",
         "--verbose",
         "--include-hook-events",
-        "--no-session-persistence",
         "--max-turns",
         "3",
         "--permission-mode",

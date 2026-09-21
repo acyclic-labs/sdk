@@ -1664,6 +1664,8 @@ impl RootLeaseRecord {
 struct AdapterState {
     version: u32,
     root_session_id: String,
+    #[serde(default)]
+    active: bool,
     root_agent_id: String,
     #[serde(default)]
     root_turns: BTreeSet<String>,
@@ -2284,6 +2286,7 @@ impl ControlPlane {
             return Err("plugin data is already bound to another root session".to_owned());
         }
         if !self.state.root_session_id.is_empty() {
+            self.state.active = true;
             if self.roots.is_empty() {
                 self.restore_root().await?;
             }
@@ -2402,6 +2405,7 @@ impl ControlPlane {
             .map_err(display)?;
         self.state.version = 1;
         self.state.root_session_id = session_id.clone();
+        self.state.active = true;
         self.state.root_agent_id = format!("root:{session_id}");
         self.state.root_path = canonical;
         self.state.root_workspace_name = workspace_name;
@@ -5748,6 +5752,7 @@ const CONTROL_RESPONSE_DRAIN_GRACE: std::time::Duration = std::time::Duration::f
 enum ControlCommand {
     Ping,
     Upgrade,
+    Shutdown,
     Doctor,
     Hook,
     Git,
@@ -6388,6 +6393,9 @@ impl ServiceControl {
         let mut retained_sources = BTreeMap::<PathBuf, ([u8; 16], [u8; 16])>::new();
         for entry in entries {
             let state = load_state(&entry)?;
+            if !state.active {
+                continue;
+            }
             let mut roots = Vec::with_capacity(state.roots.len());
             let mut stale = false;
             for root in state.roots.values() {
@@ -6591,8 +6599,13 @@ impl ServiceControl {
         if matches!(event, "SessionEnd" | "sessionEnd") {
             let control = self
                 .sessions
-                .remove(&session_id)
+                .get_mut(&session_id)
                 .ok_or_else(|| "Acyclic native hook session is not registered".to_owned())?;
+            control.state.active = false;
+            control.persist()?;
+            let control = self.sessions.remove(&session_id).ok_or_else(|| {
+                "Acyclic native hook session disappeared during shutdown".to_owned()
+            })?;
             let shutdown = control.shutdown().await;
             self.shared_roots.prune().await;
             shutdown?;
@@ -6896,13 +6909,10 @@ impl ControlRequestDispatcher for ServiceControl {
                 "sessions": self.sessions.len(),
             }));
         }
-        if matches!(request.command, ControlCommand::Upgrade) {
-            if !self.sessions.is_empty() {
-                return Err(format!(
-                    "cannot replace the Acyclic service while {} session(s) still own live mounts",
-                    self.sessions.len()
-                ));
-            }
+        if matches!(
+            request.command,
+            ControlCommand::Upgrade | ControlCommand::Shutdown
+        ) {
             let expected = request
                 .arguments
                 .get("identity")
@@ -6923,6 +6933,18 @@ impl ControlRequestDispatcher for ServiceControl {
                             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
                 })
                 .ok_or_else(|| "upgrade request has an invalid drain identity".to_owned())?;
+            if matches!(request.command, ControlCommand::Upgrade) && !self.sessions.is_empty() {
+                return Err(format!(
+                    "cannot replace the Acyclic service while {} session(s) still own live mounts",
+                    self.sessions.len()
+                ));
+            }
+            if matches!(request.command, ControlCommand::Shutdown) {
+                for (_, session) in std::mem::take(&mut self.sessions) {
+                    session.shutdown().await?;
+                }
+                self.shared_roots.prune().await;
+            }
             *self
                 .drain_id
                 .lock()
@@ -7117,7 +7139,7 @@ async fn dispatch_plane_request(
                 None => control.root_git_tool(root_id, request.argv).await,
             }
         }
-        ControlCommand::Upgrade | ControlCommand::Hook => {
+        ControlCommand::Upgrade | ControlCommand::Shutdown | ControlCommand::Hook => {
             Err("control command is invalid for a workspace session".to_owned())
         }
     }
@@ -8812,7 +8834,7 @@ async fn drain_service(data: &Path) -> Result<(), String> {
             let drain_id = format!("{}-{}", std::process::id(), now_millis());
             let request = ControlRequest {
                 version: 1,
-                command: ControlCommand::Upgrade,
+                command: ControlCommand::Shutdown,
                 cwd: env::current_dir().map_err(display)?,
                 argv: Vec::new(),
                 name: String::new(),
@@ -9126,7 +9148,7 @@ fn install_claude_hooks(executable: &Path, project: bool) -> Result<PathBuf, Str
                     json!([{
                         "type": "command",
                         "command": command,
-                        "timeout": 120,
+                        "timeout": claude_hook_timeout(event),
                         "statusMessage": "Acyclic is routing the workspace"
                     }]),
                 );
@@ -9202,9 +9224,12 @@ fn is_acyclic_claude_hook_group(event: &str, group: &Value) -> bool {
     else {
         return false;
     };
+    let timeout = hook.get("timeout").and_then(Value::as_u64);
+    let owned_timeout = timeout == Some(claude_hook_timeout(event))
+        || event == "SessionEnd" && timeout == Some(120);
     if hook.len() != 4
         || hook.get("type").and_then(Value::as_str) != Some("command")
-        || hook.get("timeout").and_then(Value::as_u64) != Some(120)
+        || !owned_timeout
         || hook.get("statusMessage").and_then(Value::as_str)
             != Some("Acyclic is routing the workspace")
     {
@@ -9224,6 +9249,13 @@ fn is_acyclic_claude_hook_group(event: &str, group: &Value) -> bool {
         .is_some_and(|name| {
             name.eq_ignore_ascii_case("acyclic") || name.eq_ignore_ascii_case("acyclic.exe")
         })
+}
+
+fn claude_hook_timeout(event: &str) -> u64 {
+    // Claude bounds SessionEnd separately from ordinary hooks. Keep teardown
+    // within its terminal-hook budget so the process cannot exit while mounts
+    // and service session ownership remain live.
+    if event == "SessionEnd" { 3 } else { 120 }
 }
 
 fn remove_claude_hooks(project: bool) -> Result<(), String> {
@@ -10740,18 +10772,9 @@ mod tests {
         assert_eq!(shared_roots.live_roots().await, 0);
 
         let resumed = ServiceControl::open(state).await.expect("resume service");
-        assert_eq!(resumed.sessions.len(), 3);
+        assert_eq!(resumed.sessions.len(), 2);
+        assert!(!resumed.sessions.contains_key("a"));
         assert_eq!(resumed.shared_roots.live_roots().await, 2);
-        let root_a_key = root_key(WorkspaceRootId::from_bytes(
-            resumed.sessions["a"].state.root_id,
-        ));
-        let same_root_key = root_key(WorkspaceRootId::from_bytes(
-            resumed.sessions["same-root"].state.root_id,
-        ));
-        assert!(Arc::ptr_eq(
-            &resumed.sessions["a"].physical_roots[&root_a_key],
-            &resumed.sessions["same-root"].physical_roots[&same_root_key],
-        ));
         resumed.shutdown().await.expect("resumed shutdown");
     }
 
@@ -10800,7 +10823,7 @@ mod tests {
         let resumed = ServiceControl::open(state)
             .await
             .expect("both durable sessions reopen without an identity collision");
-        assert_eq!(resumed.sessions.len(), 2);
+        assert_eq!(resumed.sessions.keys().collect::<Vec<_>>(), vec!["second"]);
         resumed.shutdown().await.expect("resumed shutdown");
     }
 
@@ -10840,13 +10863,15 @@ mod tests {
         service.shutdown().await.expect("shutdown");
 
         let mut conflicting = load_state(&older).expect("older state");
+        conflicting.active = true;
         conflicting.root_source_identity = [9; 16];
         for binding in conflicting.roots.values_mut() {
             binding.source_identity = [9; 16];
         }
         save_state(&older, &conflicting).expect("conflicting state");
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let current = load_state(&newer).expect("newer state");
+        let mut current = load_state(&newer).expect("newer state");
+        current.active = true;
         save_state(&newer, &current).expect("refresh newer state");
 
         let resumed = ServiceControl::open(state)
@@ -11690,29 +11715,9 @@ mod tests {
                         );
                         assert!(!service.is_finished(), "live service was replaced");
 
-                        let error = drain_service(&data)
+                        drain_service(&data)
                             .await
-                            .expect_err("live service drain must fail closed");
-                        assert!(error.contains("live mounts"), "{error}");
-
-                        send_control_request(
-                            &data,
-                            &ControlRequest {
-                                version: 1,
-                                command: ControlCommand::Hook,
-                                cwd: root,
-                                argv: Vec::new(),
-                                name: "codex:SessionEnd".to_owned(),
-                                arguments: json!({"session_id":"live"}),
-                            },
-                        )
-                        .await
-                        .expect("end live session");
-                        assert!(
-                            !service_is_ready_for_identity(&data, "replacement-service-binary")
-                                .await
-                                .expect("handoff idle service")
-                        );
+                            .expect("explicit drain closes every live session");
                         tokio::time::timeout(std::time::Duration::from_secs(5), service)
                             .await
                             .expect("service exit deadline")
@@ -13939,7 +13944,8 @@ mod tests {
             "theme": "dark",
             "hooks": {
                 "SessionStart": [stale("SessionStart", false), foreign, similar_but_foreign],
-                "PreToolUse": [stale("PreToolUse", true)]
+                "PreToolUse": [stale("PreToolUse", true)],
+                "SessionEnd": [stale("SessionEnd", false)]
             }
         });
         fs::write(&path, serde_json::to_vec(&prior).expect("prior JSON")).expect("prior hooks");
@@ -13965,6 +13971,9 @@ mod tests {
             json!([foreign, similar_but_foreign])
         );
         assert!(installed["hooks"].get("PreToolUse").is_none());
+        assert!(installed["hooks"].get("SessionEnd").is_none());
+        assert_eq!(claude_hook_timeout("SessionEnd"), 3);
+        assert_eq!(claude_hook_timeout("PreToolUse"), 120);
 
         remove_owned_json(&path, "claude-hooks", "Claude Code hooks")
             .expect("uninstall current hooks");
