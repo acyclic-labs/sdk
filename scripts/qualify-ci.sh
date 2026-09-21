@@ -55,8 +55,8 @@ case "$lane" in
     node plugin/scripts/validate-package.mjs \
       "$SDK_ARTIFACT_DIR/acyclic-plugin"
     bun run test
-    bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
     bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
+    bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
     bun scripts/run-harness-conformance.mjs \
       "$SDK_ARTIFACT_DIR/packages/harness" \
       "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" \

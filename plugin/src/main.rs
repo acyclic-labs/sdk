@@ -4718,11 +4718,12 @@ impl ControlPlane {
                 });
             }
         }
-        if let Some(error) = first_error {
-            Err(error)
-        } else {
-            Ok(())
-        }
+        let result = first_error.map_or(Ok(()), Err);
+        // `shutdown().await` is the ownership boundary for the durable providers. Drop every
+        // clone before the future becomes ready so an immediate reopen cannot race a completed
+        // shutdown future that still owns the exclusive journal lock.
+        drop(self);
+        result
     }
 }
 
@@ -5617,6 +5618,7 @@ async fn start_control_endpoint(
     control: Arc<AsyncMutex<impl ControlRequestDispatcher + 'static>>,
     data: &Path,
 ) -> Result<ControlEndpoint, String> {
+    fs::create_dir_all(data).map_err(display)?;
     #[cfg(windows)]
     let opaque_id = short_hash(data.as_os_str().to_string_lossy().as_bytes());
     let (shutdown, receiver) = watch::channel(false);
