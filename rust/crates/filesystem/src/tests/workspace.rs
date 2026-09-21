@@ -69,6 +69,30 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
 }
 
 #[tokio::test]
+async fn conditional_remove_preserves_typed_stale_identity() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("conditional-remove").await?;
+    let mut create = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    create.write_text("/file.txt", "current").await?;
+    assert!(matches!(
+        create.commit().await?,
+        TransactionCommit::Committed(_)
+    ));
+    let actual = workspace.stat("/file.txt").await?.file_id;
+    let mut stale = FileId::new();
+    while stale == actual {
+        stale = FileId::new();
+    }
+    let mut remove = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    assert!(matches!(
+        remove.remove_if("/file.txt", stale).await,
+        Err(WorkspaceError::StaleIdentity)
+    ));
+    assert_eq!(workspace.read("/file.txt", 64).await?.as_ref(), b"current");
+    Ok(())
+}
+
+#[tokio::test]
 async fn exact_generation_restore_is_fenced_and_idempotent() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = fs.create_workspace("restore-exact").await?;
@@ -234,6 +258,47 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
 }
 
 #[tokio::test]
+async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let parent = fs.create_workspace("incremental-parent").await?;
+    let parent_base = parent.head().await?;
+    let child = parent
+        .fork(
+            "incremental-child",
+            ForkOptions::from_generation(
+                parent_base.clone(),
+                IdempotencyKey::from_bytes([0x67; 16]),
+            ),
+        )
+        .await?;
+    child.write_text("/first.txt", "first").await?;
+    let first = child.join_into(&parent).plan().await?;
+    assert!(matches!(
+        first
+            .apply(ApplyOptions {
+                if_target: first.target_head(),
+                idempotency_key: IdempotencyKey::from_bytes([0x68; 16]),
+            })
+            .await?,
+        JoinOutcome::Applied(_)
+    ));
+    child.write_text("/second.txt", "second").await?;
+    let second = child.join_into(&parent).plan().await?;
+    assert!(matches!(
+        second
+            .apply(ApplyOptions {
+                if_target: second.target_head(),
+                idempotency_key: IdempotencyKey::from_bytes([0x69; 16]),
+            })
+            .await?,
+        JoinOutcome::Applied(_)
+    ));
+    assert_eq!(parent.read("/first.txt", 64).await?.as_ref(), b"first");
+    assert_eq!(parent.read("/second.txt", 64).await?.as_ref(), b"second");
+    Ok(())
+}
+
+#[tokio::test]
 async fn existing_volume_adopts_workspace_api_without_changing_identity()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -358,6 +423,46 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
             .mode();
         assert_eq!(mode & 0o777, 0o700);
     }
+    Ok(())
+}
+
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn public_generation_materialize_paths_shares_parents_and_hard_link_identity()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("materialize-paths-consumer").await?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    transaction.create_dir_all("/nested").await?;
+    transaction.write_text("/nested/a", "linked").await?;
+    transaction.hard_link("/nested/a", "/nested/b").await?;
+    transaction.write_text("/nested/c", "sibling").await?;
+    let TransactionCommit::Committed(generation) = transaction.commit().await? else {
+        return Err("materialize fixture did not commit".into());
+    };
+    let destination = tempfile::tempdir()?;
+    let receipt = generation
+        .materialize_paths(
+            &[
+                "/nested/a".to_owned(),
+                "/nested/b".to_owned(),
+                "/nested/c".to_owned(),
+            ],
+            &crate::MaterializeOptions::native(destination.path()),
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?;
+    assert_eq!(receipt.value.files, 3);
+    assert_eq!(
+        std::fs::read(destination.path().join("nested/c"))?,
+        b"sibling"
+    );
+    std::fs::write(destination.path().join("nested/a"), b"changed")?;
+    assert_eq!(
+        std::fs::read(destination.path().join("nested/b"))?,
+        b"changed"
+    );
     Ok(())
 }
 
@@ -1494,6 +1599,51 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
 }
 
 #[tokio::test]
+async fn changed_path_queries_reuse_the_sdk_generation_index() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("changed-path-index").await?;
+    for batch in 0..8 {
+        let mut initial = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        for offset in 0..16 {
+            let index = batch * 16 + offset;
+            initial
+                .write(
+                    &format!("/unrelated-{index:04}"),
+                    Bytes::from_static(b"unchanged"),
+                )
+                .await?;
+        }
+        assert!(matches!(
+            initial.commit().await?,
+            TransactionCommit::Committed(_)
+        ));
+    }
+    let mut initial = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    initial
+        .write("/selected", Bytes::from_static(b"before"))
+        .await?;
+    assert!(matches!(
+        initial.commit().await?,
+        TransactionCommit::Committed(_)
+    ));
+    let before = workspace.head().await?;
+    workspace.write_text("/selected", "after").await?;
+    let after = workspace.head().await?;
+    let changes = workspace.diff(&before, &after, 1_024).await?;
+    let cancellation = crate::CancellationToken::new();
+    let cold = changes
+        .changed_paths_bounded(1_024, crate::WorkBudget::UNBOUNDED, &cancellation)
+        .await?;
+    let warm = changes
+        .changed_paths_bounded(1_024, crate::WorkBudget::UNBOUNDED, &cancellation)
+        .await?;
+    assert_eq!(warm.value, cold.value);
+    assert!(warm.work.page_reads < cold.work.page_reads);
+    assert!(warm.work.items_examined < cold.work.items_examined);
+    Ok(())
+}
+
+#[tokio::test]
 async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -1534,6 +1684,35 @@ async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
         .ok_or_else(|| std::io::Error::other("zero-budget checkout must fail"))?;
     assert_ne!(*budget_failure.work, crate::WorkCounters::default());
     assert!(budget_failure.work.verify(WorkBudget::default()).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn bounded_path_index_hit_never_substitutes_a_false_empty_result()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("bounded-path-index").await?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    transaction.write_text("/a", "body").await?;
+    transaction.hard_link("/a", "/b").await?;
+    assert!(matches!(
+        transaction.commit().await?,
+        TransactionCommit::Committed(_)
+    ));
+    let generation = workspace.head().await?;
+    let file_id = generation.stat("/a").await?.file_id;
+
+    let complete = generation
+        .namespace_records_for_file_ids([file_id], 16)
+        .await?;
+    assert!(complete.complete);
+    assert_eq!(complete.records.get(&file_id).map(Vec::len), Some(2));
+
+    let bounded = generation
+        .namespace_records_for_file_ids([file_id], 1)
+        .await?;
+    assert!(!bounded.complete);
+    assert_eq!(bounded.records.get(&file_id).map(Vec::len), Some(1));
     Ok(())
 }
 

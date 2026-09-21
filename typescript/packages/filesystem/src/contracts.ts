@@ -49,11 +49,6 @@ export interface HostedFsOptions {
   readonly fetch?: typeof globalThis.fetch;
 }
 
-export interface HostedFsEnvironment {
-  readonly endpoint?: string;
-  readonly token?: string;
-}
-
 export interface HostedFsCapabilities extends EngineCapabilities {
   readonly profiles: readonly FsProfile[];
   readonly maximumRequestBytes: bigint;
@@ -164,7 +159,7 @@ export interface FsWorkspace {
   planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<WorkspaceExtentPlan>;
   write(path: string, bytes: Uint8Array): Promise<WorkspaceCommit>;
   remove(path: string): Promise<WorkspaceCommit>;
-  fork(destination: string): Promise<FsWorkspace>;
+  fork(destination: string, idempotencyKey?: Uint8Array): Promise<FsWorkspace>;
   forkAt(destination: string, generation: FsGeneration): Promise<FsWorkspace>;
   beginTransaction(idempotencyKey?: Uint8Array): Promise<FsTransaction>;
   liveRebase(options: WorkspaceRebaseOptions, idempotencyKey?: Uint8Array): Promise<WorkspaceRebaseResult>;
@@ -1205,6 +1200,58 @@ export interface WasmBindings {
   ): Promise<unknown>;
   openBrowserFs(options: BrowserFsOptions): Promise<WasmRawFs>;
   openMemoryFs(options: MemoryFsOptions): Promise<WasmRawFs>;
+  readonly BrowserWorkspaceContextRegistry: {
+    new(): WasmRawWorkspaceContextRegistry;
+  };
+  readonly BrowserOperationWindowCoordinator: {
+    new(): WasmRawOperationWindowCoordinator;
+  };
+  encodeMergePlanJson(valueJson: string): string;
+  decodeMergePlanJson(valueJson: string): string;
+  encodeMergeCandidateJson(valueJson: string): string;
+  decodeMergeCandidateJson(valueJson: string): string;
+  encodeMultiRootPlanJson(valueJson: string): string;
+  decodeMultiRootPlanJson(valueJson: string): string;
+  encodeMultiRootCandidateJson(valueJson: string): string;
+  decodeMultiRootCandidateJson(valueJson: string): string;
+  encodePublicationJson(valueJson: string): string;
+  decodePublicationJson(valueJson: string): string;
+}
+
+export interface WasmRawWorkspaceContextRegistry {
+  registerRootJson(contextId: Uint8Array, rootsJson: string): Promise<string>;
+  registerChildJson(
+    contextId: Uint8Array,
+    parentContextId: Uint8Array,
+    rootsJson: string,
+  ): Promise<string>;
+  resolveJson(contextId: Uint8Array): Promise<string>;
+  setActiveJson(contextId: Uint8Array, active: boolean): Promise<string>;
+  setWorkspaceJson(
+    contextId: Uint8Array,
+    rootId: Uint8Array,
+    workspaceId: Uint8Array,
+    workspaceName: string,
+    parentWorkspaceId?: Uint8Array,
+  ): Promise<string>;
+  discardSubtreeJson(
+    parentContextId: Uint8Array,
+    childContextId: Uint8Array,
+    maximum: number,
+  ): Promise<string>;
+}
+
+export interface WasmRawOperationWindowCoordinator {
+  beginJson(
+    workspaceId: Uint8Array,
+    parent: Uint8Array,
+    owner: string,
+    nowMillis: bigint,
+    expiresAtMillis: bigint,
+  ): Promise<string>;
+  observeParent(workspaceId: Uint8Array, parent: Uint8Array): Promise<boolean>;
+  finishJson(leaseJson: string, nowMillis: bigint): Promise<string>;
+  inspectJson(workspaceId: Uint8Array): Promise<string>;
 }
 
 export interface WasmRawFs {
@@ -1260,7 +1307,7 @@ export interface WasmRawWorkspace {
   planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<WorkspaceExtentPlan>;
   write(path: string, bytes: Uint8Array): Promise<unknown>;
   remove(path: string): Promise<unknown>;
-  fork(destination: string): Promise<WasmRawWorkspace>;
+  fork(destination: string, idempotencyKey?: Uint8Array): Promise<WasmRawWorkspace>;
   forkAt(destination: string, generation: WasmRawGeneration): Promise<WasmRawWorkspace>;
   beginTransaction(idempotencyKey?: Uint8Array): Promise<WasmRawTransaction>;
   liveRebase(
@@ -1597,6 +1644,16 @@ export interface WasmRawResolvedFiles {
 }
 
 export interface NativeBindings {
+  encodeMergePlanJson(valueJson: string): string;
+  decodeMergePlanJson(valueJson: string): string;
+  encodeMergeCandidateJson(valueJson: string): string;
+  decodeMergeCandidateJson(valueJson: string): string;
+  encodeMultiRootPlanJson(valueJson: string): string;
+  decodeMultiRootPlanJson(valueJson: string): string;
+  encodeMultiRootCandidateJson(valueJson: string): string;
+  decodeMultiRootCandidateJson(valueJson: string): string;
+  encodePublicationJson(valueJson: string): string;
+  decodePublicationJson(valueJson: string): string;
   nativeCapabilities(): {
     readonly version: string;
     readonly local: boolean;
@@ -1619,9 +1676,35 @@ export interface NativeBindings {
   readonly NativeWorkspaceGraph: {
     open(stateRoot: string): NativeRawWorkspaceGraph;
   };
+  readonly NativeWorkspaceContextRegistry: {
+    open(stateRoot: string): NativeRawWorkspaceContextRegistry;
+  };
   readonly NativeOperationWindowCoordinator: {
     open(stateRoot: string): NativeRawOperationWindowCoordinator;
   };
+}
+
+export interface NativeRawWorkspaceContextRegistry {
+  registerRootJson(contextId: Uint8Array, rootsJson: string): Promise<string>;
+  registerChildJson(
+    contextId: Uint8Array,
+    parentContextId: Uint8Array,
+    rootsJson: string,
+  ): Promise<string>;
+  resolveJson(contextId: Uint8Array): Promise<string>;
+  setActiveJson(contextId: Uint8Array, active: boolean): Promise<string>;
+  setWorkspaceJson(
+    contextId: Uint8Array,
+    rootId: Uint8Array,
+    workspaceId: Uint8Array,
+    workspaceName: string,
+    parentWorkspaceId?: Uint8Array,
+  ): Promise<string>;
+  discardSubtreeJson(
+    parentContextId: Uint8Array,
+    childContextId: Uint8Array,
+    maximum: number,
+  ): Promise<string>;
 }
 
 export interface NativeRawWorkspaceLineageRecord {
@@ -2174,7 +2257,6 @@ export interface NativeRawFs {
       manifest: NativeRawExportManifest,
       operationId: Uint8Array,
     ): Promise<NativeRawVolume>;
-    close(): void;
 }
 
 export interface NativeRawWorkspaceCommit {
@@ -2202,7 +2284,7 @@ export interface NativeRawWorkspace {
   planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<WorkspaceExtentPlan>;
   write(path: string, bytes: Uint8Array): Promise<NativeRawWorkspaceCommit>;
   remove(path: string): Promise<NativeRawWorkspaceCommit>;
-  fork(destination: string): Promise<NativeRawWorkspace>;
+  fork(destination: string, idempotencyKey?: Uint8Array): Promise<NativeRawWorkspace>;
   forkAt(destination: string, generation: NativeRawGeneration): Promise<NativeRawWorkspace>;
   beginTransaction(idempotencyKey?: Uint8Array): Promise<NativeRawWorkspaceTransaction>;
   liveRebase(

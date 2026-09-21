@@ -6,8 +6,9 @@ use crate::foundation::{
 };
 use crate::performance::WorkBudget;
 use crate::storage::{
-    AppendOutcome, AuthorityResult, AuthorityStore, CreateAuthorityOutcome, FenceOutcome, ObjectId,
-    ObjectRead, ObjectReadRequest, ObjectResult, ObjectStore, ObjectWrite, ReplayLimit,
+    AppendOutcome, AuthorityResult, AuthorityStore, CreateAuthorityOutcome, FenceOutcome,
+    GuardedAppend, ObjectId, ObjectRead, ObjectReadRequest, ObjectResult, ObjectStore, ObjectWrite,
+    PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
 };
 use bytes::Bytes;
 use std::any::{Any, TypeId};
@@ -183,6 +184,71 @@ pub trait AsyncAuthorityStore: StorageProvider {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = AuthorityResult<AppendOutcome>> + StorageFuture;
+
+    /// Asynchronously compares and appends under an optional operation-window
+    /// permit. Backends that cannot atomically evaluate lease gates reject
+    /// managed permits rather than using a read-then-write approximation.
+    fn compare_and_append_guarded(
+        &self,
+        request: GuardedAppend,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<AppendOutcome>> + StorageFuture {
+        async move {
+            if request.permit != PublicationPermit::Unrestricted {
+                return Err(crate::storage::AuthorityFailure::before_work(
+                    crate::storage::AuthorityStoreError::Rejected(
+                        "authority backend cannot atomically evaluate operation leases".to_owned(),
+                    ),
+                ));
+            }
+            self.compare_and_append(
+                request.authority_id,
+                request.epoch,
+                request.expected,
+                request.commit,
+                budget,
+                cancellation,
+            )
+            .await
+        }
+    }
+
+    /// Atomically acquires the exclusive publication gate at an exact head.
+    fn reserve_publication(
+        &self,
+        _authority_id: AuthorityId,
+        _expected: Head,
+        _operation_id: OperationId,
+        _budget: WorkBudget,
+        _cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<ReservationOutcome>> + StorageFuture {
+        async move {
+            Err(crate::storage::AuthorityFailure::before_work(
+                crate::storage::AuthorityStoreError::Rejected(
+                    "authority backend does not support durable publication reservations"
+                        .to_owned(),
+                ),
+            ))
+        }
+    }
+
+    /// Releases an exact publication reservation. Exact retries are idempotent.
+    fn release_publication(
+        &self,
+        _reservation: PublicationReservation,
+        _budget: WorkBudget,
+        _cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<()>> + StorageFuture {
+        async move {
+            Err(crate::storage::AuthorityFailure::before_work(
+                crate::storage::AuthorityStoreError::Rejected(
+                    "authority backend does not support durable publication reservations"
+                        .to_owned(),
+                ),
+            ))
+        }
+    }
 
     /// Asynchronously replays one bounded contiguous page.
     fn replay(

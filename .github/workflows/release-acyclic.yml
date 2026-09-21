@@ -1,0 +1,153 @@
+name: Release Acyclic plugin
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "acyclic-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+            executable: acyclic
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            executable: acyclic
+          - target: darwin-x64
+            runner: macos-15-intel
+            executable: acyclic
+          - target: darwin-arm64
+            runner: macos-15
+            executable: acyclic
+          - target: win32-x64
+            runner: windows-2025
+            executable: acyclic.exe
+          - target: win32-arm64
+            runner: windows-11-arm
+            executable: acyclic.exe
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.94.0
+      - name: Build the unified executable
+        run: node scripts/build-product.mjs
+      - name: Stage normalized executable
+        shell: bash
+        run: |
+          mkdir -p "release/${{ matrix.target }}"
+          cp "target/release/${{ matrix.executable }}" "release/${{ matrix.target }}/${{ matrix.executable }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: acyclic-${{ matrix.target }}
+          # Preserve the target directory: assembly consumes a structural
+          # target/name pair rather than guessing artifact flattening rules.
+          path: release
+          if-no-files-found: error
+
+  assemble:
+    name: Validate and assemble
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.15.0
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: acyclic-*
+          path: release/binaries
+          merge-multiple: false
+      - name: Build and validate the universal plugin
+        run: |
+          node plugins/acyclic/scripts/package.mjs \
+            --binary linux-x64=release/binaries/acyclic-linux-x64/linux-x64/acyclic \
+            --binary linux-arm64=release/binaries/acyclic-linux-arm64/linux-arm64/acyclic \
+            --binary darwin-x64=release/binaries/acyclic-darwin-x64/darwin-x64/acyclic \
+            --binary darwin-arm64=release/binaries/acyclic-darwin-arm64/darwin-arm64/acyclic \
+            --binary win32-x64=release/binaries/acyclic-win32-x64/win32-x64/acyclic.exe \
+            --binary win32-arm64=release/binaries/acyclic-win32-arm64/win32-arm64/acyclic.exe \
+            --out release/package
+          node plugins/acyclic/scripts/validate-package.mjs release/package --require-universal
+      - name: Smoke the launcher and MCP bridge
+        working-directory: release/package/plugins/acyclic
+        run: |
+          node bin/verify.js linux-x64
+          bin/linux-x64/acyclic --help
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release-smoke","version":"1"}}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | timeout 20 bin/linux-x64/acyclic mcp > /tmp/acyclic-mcp.out
+          grep -q '"result"' /tmp/acyclic-mcp.out
+      - name: Install the npm package into an empty prefix
+        run: |
+          set -eu
+          package=$(cd release/package/plugins/acyclic && npm pack --silent)
+          prefix=$(mktemp -d)
+          npm install --global --prefix "$prefix" "./release/package/plugins/acyclic/$package"
+          "$prefix/bin/acyclic" --help
+          test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/plugin.json"
+          test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/.agents/plugins/marketplace.json"
+          test ! -e "$prefix/lib/node_modules/@acyclic-labs/plugin/src"
+      - name: Assemble release assets
+        run: |
+          cp release/package/plugins/acyclic/bin/platform-binaries.json release/platform-binaries.json
+          cp plugins/acyclic/bin/verify.js release/verify.js
+          for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
+            name=acyclic
+            suffix=
+            case "$target" in win32-*) name=acyclic.exe; suffix=.exe ;; esac
+            cp "release/binaries/acyclic-$target/$target/$name" "release/acyclic-$target$suffix"
+          done
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 \
+            --numeric-owner --format=ustar -C release/package \
+            -czf release/acyclic-plugin.tar.gz .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: acyclic-universal
+          path: |
+            release/acyclic-plugin.tar.gz
+            release/platform-binaries.json
+            release/verify.js
+            release/acyclic-linux-x64
+            release/acyclic-linux-arm64
+            release/acyclic-darwin-x64
+            release/acyclic-darwin-arm64
+            release/acyclic-win32-x64.exe
+            release/acyclic-win32-arm64.exe
+          if-no-files-found: error
+      - name: Publish tag assets
+        if: startsWith(github.ref, 'refs/tags/acyclic-v')
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          files: |
+            release/acyclic-plugin.tar.gz
+            release/platform-binaries.json
+            release/verify.js
+            release/acyclic-linux-x64
+            release/acyclic-linux-arm64
+            release/acyclic-darwin-x64
+            release/acyclic-darwin-arm64
+            release/acyclic-win32-x64.exe
+            release/acyclic-win32-arm64.exe
+      - name: Publish the provenance-attested universal npm plugin
+        if: startsWith(github.ref, 'refs/tags/acyclic-v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./release/package/plugins/acyclic/package.json').version")
+          test "$GITHUB_REF_NAME" = "acyclic-v$version"
+          npm install --global npm@12.0.2
+          npm publish ./release/package/plugins/acyclic --access public --provenance

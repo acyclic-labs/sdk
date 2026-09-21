@@ -9,8 +9,134 @@ import type {
 export type WorkspaceIdentity = Uint8Array;
 export type GenerationIdentity = Uint8Array;
 export type OperationIdentity = Uint8Array;
+export type WorkspaceContextIdentity = Uint8Array;
+export type WorkspaceRootIdentity = Uint8Array;
 /** Canonical lowercase BLAKE3 compatibility commit ID. */
 export type GitCommitIdentity = string;
+
+/** JSON values accepted by the versioned Rust compatibility boundary. */
+export type CompatibilityJson =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly CompatibilityJson[]
+  | { readonly [key: string]: CompatibilityJson };
+
+export type CompatibilityWireKind =
+  | "merge-plan"
+  | "merge-candidate"
+  | "multi-root-plan"
+  | "multi-root-candidate"
+  | "publication";
+
+/** Forward-compatible envelope. Rust remains the schema authority. */
+export interface CompatibilityWireEnvelope {
+  readonly version: number;
+  readonly kind: CompatibilityWireKind;
+  readonly payload: CompatibilityJson;
+  readonly [key: string]: CompatibilityJson;
+}
+
+/** Immutable merge/publication codec shared by N-API and WASM. */
+export interface CompatibilityWire {
+  encode(kind: CompatibilityWireKind, value: CompatibilityJson): CompatibilityWireEnvelope;
+  decode(kind: CompatibilityWireKind, envelope: CompatibilityWireEnvelope): CompatibilityJson;
+}
+
+export interface RawCompatibilityWire {
+  encodeMergePlanJson(valueJson: string): string;
+  decodeMergePlanJson(valueJson: string): string;
+  encodeMergeCandidateJson(valueJson: string): string;
+  decodeMergeCandidateJson(valueJson: string): string;
+  encodeMultiRootPlanJson(valueJson: string): string;
+  decodeMultiRootPlanJson(valueJson: string): string;
+  encodeMultiRootCandidateJson(valueJson: string): string;
+  decodeMultiRootCandidateJson(valueJson: string): string;
+  encodePublicationJson(valueJson: string): string;
+  decodePublicationJson(valueJson: string): string;
+}
+
+/** Decodes an exact byte identity without JavaScript's truncating coercions. */
+export function decodeFixedBytes(value: unknown, length: number, name: string): Uint8Array {
+  if (
+    !Array.isArray(value) ||
+    value.length !== length ||
+    value.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)
+  ) {
+    throw new TypeError(`${name} must be a ${length}-byte identity`);
+  }
+  return Uint8Array.from(value as number[]);
+}
+
+function compatibilityJson(value: unknown, name: string): CompatibilityJson {
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    typeof value === "string" ||
+    (typeof value === "number" && Number.isFinite(value))
+  ) return value;
+  if (Array.isArray(value)) {
+    return value.map((entry, index) => compatibilityJson(entry, `${name}[${index}]`));
+  }
+  if (
+    typeof value === "object" &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
+  ) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, compatibilityJson(entry, `${name}.${key}`)]),
+    );
+  }
+  throw new TypeError(`${name} is not finite JSON data`);
+}
+
+function isCompatibilityObject(
+  value: CompatibilityJson,
+): value is { readonly [key: string]: CompatibilityJson } {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function compatibilityEnvelope(value: unknown, kind: CompatibilityWireKind): CompatibilityWireEnvelope {
+  const decoded = compatibilityJson(value, "compatibility envelope");
+  if (
+    !isCompatibilityObject(decoded) ||
+    decoded.kind !== kind ||
+    typeof decoded.version !== "number" ||
+    !Number.isSafeInteger(decoded.version) ||
+    decoded.version <= 0 ||
+    !("payload" in decoded)
+  ) {
+    throw new TypeError("Rust returned an invalid envelope for compatibility data");
+  }
+  return decoded as CompatibilityWireEnvelope;
+}
+
+/** Adapts generated bindings without reimplementing Rust validation semantics. */
+export function adaptCompatibilityWire(raw: RawCompatibilityWire): CompatibilityWire {
+  const functions = {
+    "merge-plan": [raw.encodeMergePlanJson, raw.decodeMergePlanJson],
+    "merge-candidate": [raw.encodeMergeCandidateJson, raw.decodeMergeCandidateJson],
+    "multi-root-plan": [raw.encodeMultiRootPlanJson, raw.decodeMultiRootPlanJson],
+    "multi-root-candidate": [
+      raw.encodeMultiRootCandidateJson,
+      raw.decodeMultiRootCandidateJson,
+    ],
+    publication: [raw.encodePublicationJson, raw.decodePublicationJson],
+  } as const;
+  return {
+    encode(kind, value) {
+      const encoded = functions[kind][0](JSON.stringify(value));
+      return compatibilityEnvelope(JSON.parse(encoded) as unknown, kind);
+    },
+    decode(kind, envelope) {
+      compatibilityEnvelope(envelope, kind);
+      return compatibilityJson(
+        JSON.parse(functions[kind][1](JSON.stringify(envelope))) as unknown,
+        "decoded compatibility value",
+      );
+    },
+  };
+}
 
 export interface WorkspaceLineageRecord {
   readonly version: number;
@@ -36,6 +162,55 @@ export interface WorkspaceGraph {
     parentWorkspaceId: WorkspaceIdentity,
   ): Promise<WorkspaceLineageRecord>;
   ancestors(workspaceId: WorkspaceIdentity, maximum: number): Promise<readonly WorkspaceLineageRecord[]>;
+}
+
+export type WorkspaceContextState = "active" | "frozen" | "discarded";
+
+/** One stable physical-root binding inside a recursively forkable context. */
+export interface WorkspaceContextRoot {
+  readonly rootId: WorkspaceRootIdentity;
+  readonly sourcePath: string;
+  readonly workspaceId: WorkspaceIdentity;
+  readonly workspaceName: string;
+  readonly parentWorkspaceId: WorkspaceIdentity | undefined;
+  readonly mountPath: string | undefined;
+}
+
+/** Agent-neutral set of root workspaces with exactly one publication parent. */
+export interface WorkspaceContext {
+  readonly version: number;
+  readonly revision: bigint;
+  readonly contextId: WorkspaceContextIdentity;
+  readonly parentContextId: WorkspaceContextIdentity | undefined;
+  readonly roots: readonly WorkspaceContextRoot[];
+  readonly state: WorkspaceContextState;
+}
+
+/** Durable recursive context registry. It never enumerates filesystem contents. */
+export interface WorkspaceContextRegistry {
+  registerRoot(
+    contextId: WorkspaceContextIdentity,
+    roots: readonly WorkspaceContextRoot[],
+  ): Promise<WorkspaceContext>;
+  registerChild(
+    contextId: WorkspaceContextIdentity,
+    parentContextId: WorkspaceContextIdentity,
+    roots: readonly WorkspaceContextRoot[],
+  ): Promise<WorkspaceContext>;
+  resolve(contextId: WorkspaceContextIdentity): Promise<WorkspaceContext>;
+  setActive(contextId: WorkspaceContextIdentity, active: boolean): Promise<WorkspaceContext>;
+  setWorkspace(
+    contextId: WorkspaceContextIdentity,
+    rootId: WorkspaceRootIdentity,
+    workspaceId: WorkspaceIdentity,
+    workspaceName: string,
+    parentWorkspaceId?: WorkspaceIdentity,
+  ): Promise<WorkspaceContext>;
+  discardSubtree(
+    parentContextId: WorkspaceContextIdentity,
+    childContextId: WorkspaceContextIdentity,
+    maximum: number,
+  ): Promise<readonly WorkspaceContextIdentity[]>;
 }
 
 export interface OperationWindowLease {
@@ -169,7 +344,12 @@ export type GitCompatCommand =
   | { readonly kind: "clean"; readonly dryRun: boolean }
   | { readonly kind: "archive"; readonly object?: string }
   | { readonly kind: "apply"; readonly patch: Uint8Array }
-  | { readonly kind: "bisect"; readonly arguments: readonly string[] };
+  | { readonly kind: "bisect"; readonly arguments: readonly string[] }
+  | { readonly kind: "rev-parse"; readonly argument: string }
+  | { readonly kind: "symbolic-ref"; readonly short?: boolean }
+  | { readonly kind: "merge-base"; readonly left: string; readonly right: string }
+  | { readonly kind: "ls-files" }
+  | { readonly kind: "check-ignore"; readonly paths: readonly string[] };
 
 export interface GitCompatStatus {
   readonly branch: string;
@@ -203,7 +383,9 @@ export type GitCompatOutput =
         readonly action: GitFilesystemAction;
       };
     }
-  | { readonly Filesystem: GitFilesystemResult };
+  | { readonly Filesystem: GitFilesystemResult }
+  | { readonly Text: string }
+  | { readonly Paths: readonly string[] };
 
 export interface GitGenerationRef {
   readonly workspace_id: WorkspaceIdentity;
@@ -269,7 +451,11 @@ export type GitFilesystemAction =
       readonly workspace_id: WorkspaceIdentity;
       readonly generation: GenerationIdentity;
     } }
-  | { readonly ApplyPatch: { readonly patch: readonly number[] } };
+  | { readonly ApplyPatch: { readonly patch: readonly number[] } }
+  | { readonly CheckIgnore: {
+      readonly paths: readonly string[];
+      readonly generation: GitGenerationRef;
+    } };
 
 export type GitFilesystemResult =
   | {
@@ -399,6 +585,11 @@ export function encodeGitCompatCommand(
     case "archive": return { Archive: { object: command.object ?? null } };
     case "apply": return { Apply: { patch: Array.from(command.patch) } };
     case "bisect": return { Bisect: { arguments: command.arguments } };
+    case "rev-parse": return { RevParse: { argument: command.argument } };
+    case "symbolic-ref": return { SymbolicRef: { short: command.short ?? false } };
+    case "merge-base": return { MergeBase: { left: command.left, right: command.right } };
+    case "ls-files": return "LsFiles";
+    case "check-ignore": return { CheckIgnore: { paths: command.paths } };
   }
 }
 
@@ -484,7 +675,7 @@ function normalizeGitCompatOutput(value: unknown): GitCompatOutput {
   if (value === "NoOp") return value;
   const [kind, body] = tagged(
     value,
-    ["Status", "Commits", "Branches", "Tags", "Committed", "Bisect", "Action", "Prepared", "Filesystem"],
+    ["Status", "Commits", "Branches", "Tags", "Committed", "Bisect", "Action", "Prepared", "Filesystem", "Text", "Paths"],
     "command output",
   );
   switch (kind) {
@@ -523,6 +714,11 @@ function normalizeGitCompatOutput(value: unknown): GitCompatOutput {
     }
     case "Committed": return { Committed: normalizeCommit(body) };
     case "Bisect": return { Bisect: normalizeBisect(body) };
+    case "Text": {
+      if (typeof body !== "string") throw new TypeError("Git Text output must be a string");
+      return { Text: body };
+    }
+    case "Paths": return { Paths: strings(body, "Git Paths output") };
     case "Action": return { Action: normalizeAction(body) };
     case "Prepared": {
       const prepared = object(body, "Prepared output");
@@ -538,7 +734,7 @@ function normalizeGitCompatOutput(value: unknown): GitCompatOutput {
 function normalizeAction(value: unknown): GitFilesystemAction {
   const [kind, body] = tagged(
     value,
-    ["CaptureCommit", "ForkBranch", "SwitchWorkspace", "Diff", "RestoreGeneration", "RestorePaths", "Join", "ApplyCommit", "Blame", "Grep", "Clean", "Archive", "ApplyPatch"],
+    ["CaptureCommit", "ForkBranch", "SwitchWorkspace", "Diff", "RestoreGeneration", "RestorePaths", "Join", "ApplyCommit", "Blame", "Grep", "Clean", "Archive", "ApplyPatch", "CheckIgnore"],
     "filesystem action",
   );
   const data = object(body, `${kind} action`);
@@ -610,6 +806,10 @@ function normalizeAction(value: unknown): GitFilesystemAction {
     } };
     case "ApplyPatch": return { ApplyPatch: {
       patch: bytes(data.patch, undefined, "patch"),
+    } };
+    case "CheckIgnore": return { CheckIgnore: {
+      paths: strings(data.paths, "ignore paths"),
+      generation: generationRef(data.generation, "ignore generation"),
     } };
   }
 }

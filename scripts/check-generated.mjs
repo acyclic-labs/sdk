@@ -107,8 +107,6 @@ try {
   for (const relative of [
     "filesystem/v2/filesystem_pb.js",
     "filesystem/v2/filesystem_pb.d.ts",
-    "filesystem/daemon/v2/daemon_pb.js",
-    "filesystem/daemon/v2/daemon_pb.d.ts",
     "harness/v1/harness_pb.js",
     "harness/v1/harness_pb.d.ts",
   ]) {

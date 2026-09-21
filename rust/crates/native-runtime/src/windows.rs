@@ -14,7 +14,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, ReOpenFile, ReadFile, WriteFile,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, ReOpenFile, ReadFile, SetFileAttributesW, WriteFile,
 };
 use windows_sys::Win32::System::IO::{
     CancelIoEx, CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
@@ -22,6 +22,25 @@ use windows_sys::Win32::System::IO::{
 use windows_sys::Win32::System::Threading::INFINITE;
 
 const MAXIMUM_BATCH: usize = 16;
+
+pub(super) fn set_file_attributes(path: &std::path::Path, attributes: u32) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    let mut encoded: Vec<_> = path.as_os_str().encode_wide().collect();
+    if encoded.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "attribute path contains NUL",
+        ));
+    }
+    encoded.push(0);
+    // SAFETY: `encoded` is a live NUL-terminated UTF-16 path for this call.
+    if unsafe { SetFileAttributesW(encoded.as_ptr(), attributes) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
 
 pub(super) fn cancel(handle: isize) {
     // SAFETY: the worker owns the registered live handle and clears it only

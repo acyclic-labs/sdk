@@ -1,7 +1,7 @@
 # S3 object layout and ETag migration
 
 This is the next consumer-driven change to the Filesystem S3 view. The pinned
-Ceph probes in `scripts/ceph-s3.py --known-gaps` currently fail because a
+Historical Ceph compatibility probes failed because a
 Filesystem file at `/a` excludes a directory at `/a/b`, and because the S3
 ETag is derived from the whole workspace generation rather than the object's
 bytes. The first failure also covers keys containing empty path components.

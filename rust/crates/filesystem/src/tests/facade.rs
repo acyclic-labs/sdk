@@ -88,6 +88,49 @@ fn writable_tracking() -> CheckoutMode {
     }
 }
 
+#[tokio::test]
+async fn workspace_fork_reads_the_verified_source_root_once()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tracked = Arc::new(std::sync::Mutex::new(None));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let fs = Fs::new(
+        crate::memory::MemoryAuthorityStore::default(),
+        CountingObjectStore {
+            inner: crate::memory::MemoryObjectStore::default(),
+            tracked: Arc::clone(&tracked),
+            reads: Arc::clone(&reads),
+        },
+        EmbeddedCapabilities::MEMORY,
+    );
+    let source = fs.create_workspace("fork-read-bound").await?;
+    source
+        .write("/payload", Bytes::from(vec![7_u8; 128 * 1_024]))
+        .await?;
+    let generation = source.head().await?;
+    *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
+        kind: ObjectKind::GenerationRoot,
+        digest: generation.id().digest(),
+    });
+    reads.store(0, Ordering::Relaxed);
+
+    source
+        .fork(
+            "fork-read-bound-child",
+            crate::workspace::ForkOptions::from_generation(
+                generation,
+                crate::IdempotencyKey::from_bytes([0x7a; 16]),
+            ),
+        )
+        .await?;
+
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        1,
+        "fork must read the source root to construct the child, but must not prove its closure twice"
+    );
+    Ok(())
+}
+
 fn writable_live() -> CheckoutMode {
     CheckoutMode {
         access: AccessMode::ReadWrite,
@@ -213,6 +256,24 @@ struct PostPutObjectStore {
 struct PostAppendAuthorityStore {
     inner: Arc<crate::memory::MemoryAuthorityStore>,
     control: Arc<FaultControl>,
+}
+
+struct CountingObjectStore {
+    inner: crate::memory::MemoryObjectStore,
+    tracked: Arc<std::sync::Mutex<Option<ObjectId>>>,
+    reads: Arc<AtomicUsize>,
+}
+
+impl CountingObjectStore {
+    fn record(&self, object_id: ObjectId) {
+        if self
+            .tracked
+            .lock()
+            .is_ok_and(|tracked| tracked.as_ref() == Some(&object_id))
+        {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 impl FaultAuthorityStore {
@@ -448,6 +509,74 @@ impl AsyncObjectStore for FaultObjectStore {
         if self.control.should_fail() {
             return Err(Self::failure(true));
         }
+        ObjectStore::contains(&self.inner, object_id, budget)
+    }
+}
+
+impl AsyncObjectStore for CountingObjectStore {
+    async fn put(
+        &self,
+        object_id: ObjectId,
+        bytes: Bytes,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        ObjectStore::put(&self.inner, object_id, bytes, budget)
+    }
+
+    async fn put_many(
+        &self,
+        writes: &[ObjectWrite],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        ObjectStore::put_many(&self.inner, writes, budget)
+    }
+
+    async fn read(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<ObjectRead> {
+        cancellation
+            .check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        self.record(object_id);
+        ObjectStore::read(&self.inner, object_id, maximum_bytes, budget)
+    }
+
+    async fn read_many(
+        &self,
+        requests: &[ObjectReadRequest],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<Vec<ObjectRead>> {
+        cancellation
+            .check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        for request in requests {
+            self.record(request.object_id);
+        }
+        ObjectStore::read_many(&self.inner, requests, budget)
+    }
+
+    async fn contains(
+        &self,
+        object_id: ObjectId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<bool> {
+        cancellation
+            .check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
         ObjectStore::contains(&self.inner, object_id, budget)
     }
 }

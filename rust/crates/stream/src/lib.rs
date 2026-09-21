@@ -392,6 +392,27 @@ pub struct CommitRequest {
     pub idempotency_key: IdempotencyKey,
 }
 
+/// Trusted clock used by providers to evaluate publication deadlines at the
+/// same linearization point as a coordinated commit.
+pub trait UnixMillisClock: Send + Sync + 'static {
+    /// Current Unix time in milliseconds.
+    fn now_unix_millis(&self) -> u64;
+}
+
+/// Production wall clock for deadline-aware providers.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemUnixMillisClock;
+
+impl UnixMillisClock for SystemUnixMillisClock {
+    fn now_unix_millis(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| {
+                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+            })
+    }
+}
+
 /// Failed exact condition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitConflict {
@@ -491,6 +512,19 @@ pub trait StreamProvider: Send + Sync + 'static {
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError>;
     /// Executes one all-or-nothing optimistic commit.
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError>;
+    /// Executes one coordinated commit only if the provider's trusted clock is
+    /// strictly before `deadline_unix_millis` at the linearization point.
+    ///
+    /// Exact idempotent replay is resolved before the deadline. Providers that
+    /// cannot enforce this atomically fail closed with [`StreamError::Unsupported`].
+    async fn commit_before(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: u64,
+    ) -> Result<CommitOutcome, StreamError> {
+        let _ = (request, deadline_unix_millis);
+        Err(StreamError::Unsupported)
+    }
     /// Reads one complete immutable successful envelope.
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError>;
 }
@@ -548,6 +582,17 @@ impl<P: StreamProvider> StreamClient<P> {
     /// Executes a coordinated commit.
     pub async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.provider.commit(request).await
+    }
+
+    /// Executes one coordinated commit under the provider's trusted deadline.
+    pub async fn commit_before(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: u64,
+    ) -> Result<CommitOutcome, StreamError> {
+        self.provider
+            .commit_before(request, deadline_unix_millis)
+            .await
     }
 
     /// Reads a committed envelope.
@@ -750,4 +795,10 @@ pub enum StreamError {
     /// Required authority is unavailable.
     #[error("stream unavailable")]
     Unavailable,
+    /// A provider-evaluated commit deadline elapsed before linearization.
+    #[error("stream commit deadline elapsed")]
+    DeadlineElapsed,
+    /// The provider cannot supply a required semantic capability.
+    #[error("stream capability unsupported")]
+    Unsupported,
 }

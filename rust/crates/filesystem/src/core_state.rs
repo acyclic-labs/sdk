@@ -6,13 +6,20 @@
 //! Keeping the implementation here prevents adapters from inventing separate
 //! lineage, lease, and Git-compatibility databases.
 
+use crate::workspace_context::{
+    WorkspaceContextChildren, context_children, discard_context_subtree,
+    plan_context_subtree_discard, update_context_children,
+};
 use crate::{
-    GitCompatState, GitCompatStore, MaterializationJournal, MaterializationJournalStore,
-    OperationId, OperationWindowSnapshot, OperationWindowStore, WorkspaceId,
-    WorkspaceLineageRecord, WorkspaceLineageStore,
+    GitCompatState, GitCompatStore, LazyOverlay, LazyOverlayId, LazyWorkspaceState,
+    LazyWorkspaceStore, MaterializationJournal, MaterializationJournalStore, MultiRootPublication,
+    MultiRootPublicationStore, OperationId, OperationWindowSnapshot, OperationWindowStore,
+    WorkspaceContext, WorkspaceContextDiscardOutcome, WorkspaceContextId, WorkspaceContextStore,
+    WorkspaceId, WorkspaceLineageRecord, WorkspaceLineageStore,
 };
 use fs2::FileExt;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -22,6 +29,12 @@ use thiserror::Error;
 #[derive(Clone, Debug)]
 pub struct LocalCoreStateStore {
     root: PathBuf,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct MultiRootParentClaim {
+    revision: u64,
+    operation_id: OperationId,
 }
 
 impl LocalCoreStateStore {
@@ -44,13 +57,27 @@ impl LocalCoreStateStore {
     /// Only canonical journal names are returned. Temporary, previous, and
     /// lock files remain internal recovery details.
     pub fn materialization_operations(&self) -> Result<Vec<OperationId>, LocalCoreStateStoreError> {
-        let directory = self.root.join("materialization");
+        self.operation_records("materialization")
+    }
+
+    /// Lists multi-root publications with durable recovery state.
+    pub fn multi_root_publication_operations(
+        &self,
+    ) -> Result<Vec<OperationId>, LocalCoreStateStoreError> {
+        self.operation_records("multi-root-publications")
+    }
+
+    fn operation_records(
+        &self,
+        family: &str,
+    ) -> Result<Vec<OperationId>, LocalCoreStateStoreError> {
+        let directory = self.root.join(family);
         let entries = match std::fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
         };
-        let mut operations = Vec::new();
+        let mut operations = std::collections::BTreeSet::new();
         for entry in entries {
             let entry = entry?;
             let name = entry.file_name();
@@ -58,7 +85,8 @@ impl LocalCoreStateStore {
             let Some(stem) = name.strip_suffix(".json") else {
                 continue;
             };
-            if stem.ends_with(".previous") || stem.ends_with(".next") {
+            let stem = stem.strip_suffix(".previous").unwrap_or(stem);
+            if stem.ends_with(".next") {
                 continue;
             }
             let Ok(bytes) = hex::decode(stem) else {
@@ -67,10 +95,9 @@ impl LocalCoreStateStore {
             let Ok(bytes) = <[u8; 16]>::try_from(bytes) else {
                 continue;
             };
-            operations.push(OperationId::from_bytes(bytes));
+            operations.insert(OperationId::from_bytes(bytes));
         }
-        operations.sort_unstable_by_key(|operation| operation.into_bytes());
-        Ok(operations)
+        Ok(operations.into_iter().collect())
     }
 
     /// Removes a terminal materialization journal and its recovery copies.
@@ -173,6 +200,27 @@ impl LocalCoreStateStore {
             Ok(true)
         })
     }
+
+    fn compare_and_delete_operation_record<T: DeserializeOwned>(
+        &self,
+        family: &str,
+        operation_id: OperationId,
+        expected_revision: u64,
+        revision: impl Fn(&T) -> u64,
+    ) -> Result<bool, LocalCoreStateStoreError> {
+        let paths = RecordPaths::new_key(&self.root, family, &operation_id.into_bytes());
+        with_lock(&paths, || {
+            let current: Option<T> = read_recoverable(&paths)?;
+            if current.as_ref().map_or(0, &revision) != expected_revision {
+                return Ok(false);
+            }
+            remove_if_present(&paths.temporary)?;
+            remove_if_present(&paths.previous)?;
+            remove_if_present(&paths.current)?;
+            sync_directory(&paths.directory)?;
+            Ok(true)
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -224,15 +272,31 @@ fn read_recoverable<T: DeserializeOwned>(
 ) -> Result<Option<T>, LocalCoreStateStoreError> {
     match read_json(&paths.current) {
         Ok(Some(value)) => Ok(Some(value)),
-        Ok(None) => read_json(&paths.previous),
+        Ok(None) => match read_json(&paths.previous) {
+            Ok(Some(value)) => {
+                promote_previous(paths)?;
+                Ok(Some(value))
+            }
+            other => other,
+        },
         Err(current_error) => match read_json(&paths.previous) {
             Ok(Some(value)) => {
-                std::fs::copy(&paths.previous, &paths.current)?;
+                promote_previous(paths)?;
                 Ok(Some(value))
             }
             _ => Err(current_error),
         },
     }
+}
+
+fn promote_previous(paths: &RecordPaths) -> Result<(), LocalCoreStateStoreError> {
+    std::fs::copy(&paths.previous, &paths.current)?;
+    OpenOptions::new()
+        .write(true)
+        .open(&paths.current)?
+        .sync_all()?;
+    sync_directory(&paths.directory)?;
+    Ok(())
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, LocalCoreStateStoreError> {
@@ -246,6 +310,61 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, LocalCoreSta
     serde_json::from_slice(&bytes)
         .map(Some)
         .map_err(LocalCoreStateStoreError::Json)
+}
+
+fn read_json_bounded<T: DeserializeOwned>(
+    path: &Path,
+    maximum_bytes: u64,
+) -> Result<Option<T>, LocalCoreStateStoreError> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if file.metadata()?.len() > maximum_bytes {
+        return Err(LocalCoreStateStoreError::ContextTransaction(
+            "workspace-context child bucket exceeds its declared bound".to_owned(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(maximum_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    let length = u64::try_from(bytes.len()).map_err(|_| {
+        LocalCoreStateStoreError::ContextTransaction(
+            "workspace-context child bucket length is not representable".to_owned(),
+        )
+    })?;
+    if length > maximum_bytes {
+        return Err(LocalCoreStateStoreError::ContextTransaction(
+            "workspace-context child bucket grew beyond its declared bound".to_owned(),
+        ));
+    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(LocalCoreStateStoreError::Json)
+}
+
+fn read_recoverable_bounded<T: DeserializeOwned>(
+    paths: &RecordPaths,
+    maximum_bytes: u64,
+) -> Result<Option<T>, LocalCoreStateStoreError> {
+    match read_json_bounded(&paths.current, maximum_bytes) {
+        Ok(Some(value)) => Ok(Some(value)),
+        Ok(None) => match read_json_bounded(&paths.previous, maximum_bytes) {
+            Ok(Some(value)) => {
+                promote_previous(paths)?;
+                Ok(Some(value))
+            }
+            other => other,
+        },
+        Err(current_error) => match read_json_bounded(&paths.previous, maximum_bytes) {
+            Ok(Some(value)) => {
+                promote_previous(paths)?;
+                Ok(Some(value))
+            }
+            _ => Err(current_error),
+        },
+    }
 }
 
 fn write_journaled<T: Serialize>(
@@ -262,19 +381,49 @@ fn write_journaled<T: Serialize>(
     temporary.sync_all()?;
     drop(temporary);
 
-    remove_if_present(&paths.previous)?;
-    if paths.current.exists() {
-        std::fs::rename(&paths.current, &paths.previous)?;
-    }
-    if let Err(error) = std::fs::rename(&paths.temporary, &paths.current) {
-        if paths.previous.exists() && !paths.current.exists() {
-            let _ = std::fs::rename(&paths.previous, &paths.current);
+    #[cfg(windows)]
+    {
+        // Windows has no safe, portable directory-fsync API. Preserve a
+        // fully flushed recovery copy before modifying the current file, then
+        // flush the current file itself. A crash can therefore expose either
+        // the prior record or the complete replacement, never only a torn
+        // current record.
+        remove_if_present(&paths.previous)?;
+        if paths.current.exists() {
+            std::fs::copy(&paths.current, &paths.previous)?;
+        } else {
+            std::fs::copy(&paths.temporary, &paths.previous)?;
         }
-        return Err(error.into());
+        OpenOptions::new()
+            .write(true)
+            .open(&paths.previous)?
+            .sync_all()?;
+        std::fs::copy(&paths.temporary, &paths.current)?;
+        OpenOptions::new()
+            .write(true)
+            .open(&paths.current)?
+            .sync_all()?;
+        remove_if_present(&paths.temporary)?;
+        remove_if_present(&paths.previous)?;
+        Ok(())
     }
-    sync_directory(&paths.directory)?;
-    remove_if_present(&paths.previous)?;
-    Ok(())
+
+    #[cfg(not(windows))]
+    {
+        remove_if_present(&paths.previous)?;
+        if paths.current.exists() {
+            std::fs::rename(&paths.current, &paths.previous)?;
+        }
+        if let Err(error) = std::fs::rename(&paths.temporary, &paths.current) {
+            if paths.previous.exists() && !paths.current.exists() {
+                let _ = std::fs::rename(&paths.previous, &paths.current);
+            }
+            return Err(error.into());
+        }
+        sync_directory(&paths.directory)?;
+        remove_if_present(&paths.previous)?;
+        Ok(())
+    }
 }
 
 fn remove_if_present(path: &Path) -> Result<(), std::io::Error> {
@@ -309,6 +458,12 @@ pub enum LocalCoreStateStoreError {
     /// A nonterminal materialization journal cannot be discarded.
     #[error("materialization is still in progress")]
     MaterializationInProgress,
+    /// Content-addressed state did not match its claimed digest.
+    #[error("core state content address does not match its payload")]
+    Integrity,
+    /// A durable workspace-context transaction was malformed or incompatible.
+    #[error("workspace-context transaction is incompatible: {0}")]
+    ContextTransaction(String),
 }
 
 impl WorkspaceLineageStore for LocalCoreStateStore {
@@ -335,6 +490,489 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
             |record| record.revision,
         )
     }
+}
+
+impl WorkspaceContextStore for LocalCoreStateStore {
+    type Error = LocalCoreStateStoreError;
+
+    async fn load(
+        &self,
+        context_id: WorkspaceContextId,
+    ) -> Result<Option<WorkspaceContext>, Self::Error> {
+        let transaction = context_transaction_paths(&self.root);
+        with_lock(&transaction, || {
+            recover_context_transaction(&self.root, &transaction)?;
+            read_recoverable(&context_record_paths(&self.root, context_id))
+        })
+    }
+
+    async fn list(&self) -> Result<Vec<WorkspaceContext>, Self::Error> {
+        let transaction = context_transaction_paths(&self.root);
+        with_lock(&transaction, || {
+            recover_context_transaction(&self.root, &transaction)?;
+            let contexts = load_all_contexts(&self.root)?;
+            if !context_children_index_ready(&self.root)? {
+                install_context_children_index(&self.root, contexts.iter().cloned())?;
+            }
+            Ok(contexts)
+        })
+    }
+
+    async fn compare_and_swap(
+        &self,
+        context_id: WorkspaceContextId,
+        expected_revision: u64,
+        replacement: WorkspaceContext,
+    ) -> Result<bool, Self::Error> {
+        self.compare_and_swap_many(
+            BTreeMap::from([(context_id, expected_revision)]),
+            vec![replacement],
+            false,
+        )
+        .await
+    }
+
+    async fn compare_and_swap_many(
+        &self,
+        expected_revisions: BTreeMap<WorkspaceContextId, u64>,
+        replacements: Vec<WorkspaceContext>,
+        require_exact_set: bool,
+    ) -> Result<bool, Self::Error> {
+        let transaction = context_transaction_paths(&self.root);
+        with_lock(&transaction, || {
+            recover_context_transaction(&self.root, &transaction)?;
+            if require_exact_set
+                && context_record_ids(&self.root)?.len() != expected_revisions.len()
+            {
+                return Ok(false);
+            }
+            let mut before = BTreeMap::new();
+            for (context_id, expected) in &expected_revisions {
+                let current: Option<WorkspaceContext> =
+                    read_recoverable(&context_record_paths(&self.root, *context_id))?;
+                if current.as_ref().map_or(0, |record| record.revision) != *expected {
+                    return Ok(false);
+                }
+                before.insert(*context_id, current);
+            }
+            let after = replacements
+                .into_iter()
+                .map(|replacement| (replacement.context_id, replacement))
+                .collect::<BTreeMap<_, _>>();
+            if after
+                .keys()
+                .any(|context_id| !expected_revisions.contains_key(context_id))
+            {
+                return Ok(false);
+            }
+            ensure_context_children_index(&self.root)?;
+            let affected_parents = before
+                .values()
+                .filter_map(|record| record.as_ref()?.parent_context_id)
+                .chain(after.values().filter_map(|record| record.parent_context_id))
+                .collect::<BTreeSet<_>>();
+            let mut before_children = BTreeMap::new();
+            let mut after_children = WorkspaceContextChildren::new();
+            for parent in affected_parents {
+                let current = read_recoverable(&context_children_paths(&self.root, parent))?;
+                after_children.insert(parent, current.clone().unwrap_or_default());
+                before_children.insert(parent, current);
+            }
+            for (context_id, replacement) in &after {
+                update_context_children(
+                    &mut after_children,
+                    before.get(context_id).and_then(Option::as_ref),
+                    Some(replacement),
+                );
+            }
+            let journal = ContextTransaction {
+                version: 2,
+                phase: ContextTransactionPhase::Prepared,
+                before: before
+                    .into_iter()
+                    .filter(|(context_id, _)| after.contains_key(context_id))
+                    .collect(),
+                after,
+                before_children,
+                after_children,
+            };
+            write_journaled(&transaction, &journal)?;
+            apply_context_transaction(&self.root, &journal)?;
+            write_journaled(
+                &transaction,
+                &ContextTransaction {
+                    phase: ContextTransactionPhase::Committed,
+                    ..journal
+                },
+            )?;
+            recover_context_transaction(&self.root, &transaction)?;
+            Ok(true)
+        })
+    }
+
+    async fn discard_subtree(
+        &self,
+        parent: WorkspaceContextId,
+        child: WorkspaceContextId,
+        maximum: u32,
+    ) -> Result<WorkspaceContextDiscardOutcome, Self::Error> {
+        let transaction = context_transaction_paths(&self.root);
+        with_lock(&transaction, || {
+            recover_context_transaction(&self.root, &transaction)?;
+            if !context_children_index_ready(&self.root)? {
+                return Ok(WorkspaceContextDiscardOutcome::IncompatibleState);
+            }
+            let root: Option<WorkspaceContext> =
+                read_recoverable(&context_record_paths(&self.root, child))?;
+            let discarded = match plan_local_context_subtree_discard(
+                &self.root,
+                root.as_ref(),
+                parent,
+                child,
+                maximum,
+            )? {
+                Ok(discarded) => discarded,
+                Err(outcome) => return Ok(outcome),
+            };
+            let mut records = BTreeMap::from_iter(root.map(|record| (child, record)));
+            for context_id in discarded.iter().copied().filter(|id| *id != child) {
+                let Some(record) = read_recoverable(&context_record_paths(&self.root, context_id))?
+                else {
+                    return Ok(WorkspaceContextDiscardOutcome::IncompatibleState);
+                };
+                records.insert(context_id, record);
+            }
+            let selected_children = context_children(records.values().cloned());
+            let outcome =
+                discard_context_subtree(&mut records, &selected_children, parent, child, maximum);
+            if !matches!(
+                &outcome,
+                WorkspaceContextDiscardOutcome::Discarded(actual) if actual == &discarded
+            ) {
+                return Ok(match outcome {
+                    WorkspaceContextDiscardOutcome::Discarded(_) => {
+                        WorkspaceContextDiscardOutcome::IncompatibleState
+                    }
+                    outcome => outcome,
+                });
+            }
+            let WorkspaceContextDiscardOutcome::Discarded(discarded) = &outcome else {
+                return Ok(outcome);
+            };
+            let mut before = BTreeMap::new();
+            let mut after = BTreeMap::new();
+            for context_id in discarded {
+                let current: Option<WorkspaceContext> =
+                    read_recoverable(&context_record_paths(&self.root, *context_id))?;
+                before.insert(*context_id, current);
+                let replacement = records.get(context_id).cloned().ok_or_else(|| {
+                    LocalCoreStateStoreError::ContextTransaction(
+                        "discarded context replacement is absent".to_owned(),
+                    )
+                })?;
+                after.insert(*context_id, replacement);
+            }
+            let journal = ContextTransaction {
+                version: 1,
+                phase: ContextTransactionPhase::Prepared,
+                before,
+                after,
+                before_children: BTreeMap::new(),
+                after_children: WorkspaceContextChildren::new(),
+            };
+            write_journaled(&transaction, &journal)?;
+            apply_context_records(&self.root, &journal.after)?;
+            write_journaled(
+                &transaction,
+                &ContextTransaction {
+                    phase: ContextTransactionPhase::Committed,
+                    ..journal
+                },
+            )?;
+            recover_context_transaction(&self.root, &transaction)?;
+            Ok(outcome)
+        })
+    }
+}
+
+const WORKSPACE_CONTEXT_FAMILY: &str = "workspace-contexts-v2";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+enum ContextTransactionPhase {
+    Prepared,
+    Committed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ContextTransaction {
+    version: u16,
+    phase: ContextTransactionPhase,
+    before: BTreeMap<WorkspaceContextId, Option<WorkspaceContext>>,
+    after: BTreeMap<WorkspaceContextId, WorkspaceContext>,
+    #[serde(default)]
+    before_children: BTreeMap<WorkspaceContextId, Option<BTreeSet<WorkspaceContextId>>>,
+    #[serde(default)]
+    after_children: WorkspaceContextChildren,
+}
+
+fn context_transaction_paths(root: &Path) -> RecordPaths {
+    RecordPaths::new_key(root, "workspace-context-transactions-v2", &[0; 16])
+}
+
+fn context_record_paths(root: &Path, context_id: WorkspaceContextId) -> RecordPaths {
+    RecordPaths::new_key(root, WORKSPACE_CONTEXT_FAMILY, &context_id.into_bytes())
+}
+
+fn context_children_paths(root: &Path, parent: WorkspaceContextId) -> RecordPaths {
+    RecordPaths::new_key(root, "workspace-context-children-v1", &parent.into_bytes())
+}
+
+fn context_children_marker_paths(root: &Path) -> RecordPaths {
+    RecordPaths::new_key(root, "workspace-context-children-index-v1", &[0; 16])
+}
+
+fn context_children_count_paths(root: &Path, parent: WorkspaceContextId) -> RecordPaths {
+    RecordPaths::new_key(
+        root,
+        "workspace-context-child-counts-v1",
+        &parent.into_bytes(),
+    )
+}
+
+fn context_children_index_ready(root: &Path) -> Result<bool, LocalCoreStateStoreError> {
+    Ok(read_recoverable::<u16>(&context_children_marker_paths(root))?.is_some())
+}
+
+fn write_context_children(
+    root: &Path,
+    parent: WorkspaceContextId,
+    descendants: &BTreeSet<WorkspaceContextId>,
+) -> Result<(), LocalCoreStateStoreError> {
+    let paths = context_children_paths(root, parent);
+    std::fs::create_dir_all(&paths.directory)?;
+    write_journaled(&paths, descendants)?;
+    let count = u64::try_from(descendants.len()).map_err(|_| {
+        LocalCoreStateStoreError::ContextTransaction(
+            "workspace-context child count exceeds durable representation".to_owned(),
+        )
+    })?;
+    let count_paths = context_children_count_paths(root, parent);
+    std::fs::create_dir_all(&count_paths.directory)?;
+    write_journaled(&count_paths, &count)
+}
+
+fn ensure_context_children_index(root: &Path) -> Result<(), LocalCoreStateStoreError> {
+    if context_children_index_ready(root)? {
+        return Ok(());
+    }
+    install_context_children_index(root, load_all_contexts(root)?)
+}
+
+fn install_context_children_index(
+    root: &Path,
+    records: impl IntoIterator<Item = WorkspaceContext>,
+) -> Result<(), LocalCoreStateStoreError> {
+    let marker = context_children_marker_paths(root);
+    let children = context_children(records);
+    for (parent, descendants) in children {
+        write_context_children(root, parent, &descendants)?;
+    }
+    std::fs::create_dir_all(&marker.directory)?;
+    write_journaled(&marker, &1_u16)
+}
+
+fn plan_local_context_subtree_discard(
+    root_path: &Path,
+    root: Option<&WorkspaceContext>,
+    parent: WorkspaceContextId,
+    child: WorkspaceContextId,
+    maximum: u32,
+) -> Result<Result<Vec<WorkspaceContextId>, WorkspaceContextDiscardOutcome>, LocalCoreStateStoreError>
+{
+    let mut selected = match plan_context_subtree_discard(
+        root,
+        &WorkspaceContextChildren::new(),
+        parent,
+        child,
+        maximum,
+    ) {
+        Ok(selected) => selected,
+        Err(outcome) => return Ok(Err(outcome)),
+    };
+    let maximum = maximum as usize;
+    let mut pending = vec![child];
+    let mut seen = BTreeSet::new();
+    while let Some(context_id) = pending.pop() {
+        if !seen.insert(context_id) || seen.len() > maximum {
+            return Ok(Err(WorkspaceContextDiscardOutcome::TraversalLimit));
+        }
+        let count = read_recoverable::<u64>(&context_children_count_paths(root_path, context_id))?
+            .unwrap_or(0);
+        let remaining = maximum.saturating_sub(seen.len() + pending.len());
+        if count > remaining as u64 {
+            return Ok(Err(WorkspaceContextDiscardOutcome::TraversalLimit));
+        }
+        // UUIDs serialize as quoted 36-byte strings. This deliberately leaves
+        // headroom for JSON delimiters while keeping allocation proportional
+        // to the already-checked child count.
+        let maximum_bucket_bytes = count
+            .checked_mul(64)
+            .and_then(|bytes| bytes.checked_add(2))
+            .ok_or_else(|| {
+                LocalCoreStateStoreError::ContextTransaction(
+                    "workspace-context child bucket bound overflowed".to_owned(),
+                )
+            })?;
+        let descendants: BTreeSet<WorkspaceContextId> = read_recoverable_bounded(
+            &context_children_paths(root_path, context_id),
+            maximum_bucket_bytes,
+        )?
+        .unwrap_or_default();
+        if usize::try_from(count) != Ok(descendants.len()) {
+            return Ok(Err(WorkspaceContextDiscardOutcome::IncompatibleState));
+        }
+        pending.extend(descendants);
+    }
+    selected.clear();
+    selected.extend(seen);
+    Ok(Ok(selected))
+}
+
+fn context_record_ids(root: &Path) -> Result<Vec<WorkspaceContextId>, LocalCoreStateStoreError> {
+    let directory = root.join(WORKSPACE_CONTEXT_FAMILY);
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut ids = Vec::new();
+    for entry in entries {
+        let name = entry?.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(stem) = name.strip_suffix(".json") else {
+            continue;
+        };
+        if stem.ends_with(".previous") || stem.ends_with(".next") {
+            continue;
+        }
+        let Ok(bytes) = hex::decode(stem) else {
+            continue;
+        };
+        let Ok(bytes) = <[u8; 16]>::try_from(bytes) else {
+            continue;
+        };
+        ids.push(WorkspaceContextId::from_bytes(bytes));
+    }
+    ids.sort_unstable_by_key(|id| id.into_bytes());
+    Ok(ids)
+}
+
+fn load_all_contexts(root: &Path) -> Result<Vec<WorkspaceContext>, LocalCoreStateStoreError> {
+    context_record_ids(root)?
+        .into_iter()
+        .map(|id| {
+            read_recoverable(&context_record_paths(root, id))?.ok_or_else(|| {
+                LocalCoreStateStoreError::ContextTransaction(
+                    "workspace context disappeared during locked discovery".to_owned(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn apply_context_records(
+    root: &Path,
+    records: &BTreeMap<WorkspaceContextId, WorkspaceContext>,
+) -> Result<(), LocalCoreStateStoreError> {
+    for (context_id, record) in records {
+        let paths = context_record_paths(root, *context_id);
+        std::fs::create_dir_all(&paths.directory)?;
+        write_journaled(&paths, record)?;
+    }
+    Ok(())
+}
+
+fn apply_context_transaction(
+    root: &Path,
+    journal: &ContextTransaction,
+) -> Result<(), LocalCoreStateStoreError> {
+    apply_context_records(root, &journal.after)?;
+    if journal.version >= 2 {
+        for (parent, descendants) in &journal.after_children {
+            write_context_children(root, *parent, descendants)?;
+        }
+    }
+    Ok(())
+}
+
+fn restore_context_transaction(
+    root: &Path,
+    journal: &ContextTransaction,
+) -> Result<(), LocalCoreStateStoreError> {
+    restore_context_records(root, &journal.before)?;
+    if journal.version >= 2 {
+        for (parent, descendants) in &journal.before_children {
+            let paths = context_children_paths(root, *parent);
+            if let Some(descendants) = descendants {
+                write_context_children(root, *parent, descendants)?;
+            } else {
+                std::fs::create_dir_all(&paths.directory)?;
+                remove_if_present(&paths.temporary)?;
+                remove_if_present(&paths.previous)?;
+                remove_if_present(&paths.current)?;
+                sync_directory(&paths.directory)?;
+                let count_paths = context_children_count_paths(root, *parent);
+                std::fs::create_dir_all(&count_paths.directory)?;
+                remove_if_present(&count_paths.temporary)?;
+                remove_if_present(&count_paths.previous)?;
+                remove_if_present(&count_paths.current)?;
+                sync_directory(&count_paths.directory)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn restore_context_records(
+    root: &Path,
+    records: &BTreeMap<WorkspaceContextId, Option<WorkspaceContext>>,
+) -> Result<(), LocalCoreStateStoreError> {
+    for (context_id, record) in records {
+        let paths = context_record_paths(root, *context_id);
+        std::fs::create_dir_all(&paths.directory)?;
+        if let Some(record) = record {
+            write_journaled(&paths, record)?;
+        } else {
+            remove_if_present(&paths.temporary)?;
+            remove_if_present(&paths.previous)?;
+            remove_if_present(&paths.current)?;
+            sync_directory(&paths.directory)?;
+        }
+    }
+    Ok(())
+}
+
+fn recover_context_transaction(
+    root: &Path,
+    paths: &RecordPaths,
+) -> Result<(), LocalCoreStateStoreError> {
+    let Some(journal) = read_recoverable::<ContextTransaction>(paths)? else {
+        return Ok(());
+    };
+    if !matches!(journal.version, 1 | 2) {
+        return Err(LocalCoreStateStoreError::ContextTransaction(
+            "unsupported workspace-context transaction version".to_owned(),
+        ));
+    }
+    match journal.phase {
+        ContextTransactionPhase::Prepared => restore_context_transaction(root, &journal)?,
+        ContextTransactionPhase::Committed => apply_context_transaction(root, &journal)?,
+    }
+    remove_if_present(&paths.temporary)?;
+    remove_if_present(&paths.previous)?;
+    remove_if_present(&paths.current)?;
+    sync_directory(&paths.directory)?;
+    Ok(())
 }
 
 impl OperationWindowStore for LocalCoreStateStore {
@@ -425,17 +1063,246 @@ impl MaterializationJournalStore for LocalCoreStateStore {
     }
 }
 
+impl MultiRootPublicationStore for LocalCoreStateStore {
+    type Error = LocalCoreStateStoreError;
+
+    async fn load(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<Option<MultiRootPublication>, Self::Error> {
+        self.load_operation_record("multi-root-publications", operation_id)
+    }
+
+    async fn compare_and_swap(
+        &self,
+        operation_id: OperationId,
+        expected_revision: u64,
+        replacement: MultiRootPublication,
+    ) -> Result<bool, Self::Error> {
+        self.compare_and_swap_operation_record(
+            "multi-root-publications",
+            operation_id,
+            expected_revision,
+            &replacement,
+            |publication| publication.revision,
+        )
+    }
+
+    async fn list_operations(&self) -> Result<Vec<OperationId>, Self::Error> {
+        self.multi_root_publication_operations()
+    }
+
+    async fn compare_and_delete(
+        &self,
+        operation_id: OperationId,
+        expected_revision: u64,
+    ) -> Result<bool, Self::Error> {
+        self.compare_and_delete_operation_record::<MultiRootPublication>(
+            "multi-root-publications",
+            operation_id,
+            expected_revision,
+            |publication| publication.revision,
+        )
+    }
+
+    async fn claim_parent(
+        &self,
+        parent_context_id: WorkspaceContextId,
+        operation_id: OperationId,
+    ) -> Result<bool, Self::Error> {
+        let key = WorkspaceId::from_bytes(parent_context_id.into_bytes());
+        for _ in 0..2 {
+            if let Some(claim) =
+                self.load_record::<MultiRootParentClaim>("multi-root-parent-claims", key)?
+            {
+                return Ok(claim.operation_id == operation_id);
+            }
+            if self.compare_and_swap_record(
+                "multi-root-parent-claims",
+                key,
+                0,
+                &MultiRootParentClaim {
+                    revision: 1,
+                    operation_id,
+                },
+                |claim| claim.revision,
+            )? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    async fn release_parent(
+        &self,
+        parent_context_id: WorkspaceContextId,
+        operation_id: OperationId,
+    ) -> Result<bool, Self::Error> {
+        let key = WorkspaceId::from_bytes(parent_context_id.into_bytes());
+        let Some(claim) =
+            self.load_record::<MultiRootParentClaim>("multi-root-parent-claims", key)?
+        else {
+            return Ok(true);
+        };
+        if claim.operation_id != operation_id {
+            return Ok(true);
+        }
+        self.compare_and_delete_record::<MultiRootParentClaim>(
+            "multi-root-parent-claims",
+            key,
+            claim.revision,
+            |claim| claim.revision,
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl LazyWorkspaceStore for LocalCoreStateStore {
+    type Error = LocalCoreStateStoreError;
+
+    async fn load_lazy_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Option<LazyWorkspaceState>, Self::Error> {
+        self.load_record("lazy-workspaces", workspace_id)
+    }
+
+    async fn compare_and_swap_lazy_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+        expected_revision: u64,
+        replacement: LazyWorkspaceState,
+    ) -> Result<bool, Self::Error> {
+        self.compare_and_swap_record(
+            "lazy-workspaces",
+            workspace_id,
+            expected_revision,
+            &replacement,
+            |state| state.revision,
+        )
+    }
+
+    async fn load_lazy_overlay(
+        &self,
+        overlay: LazyOverlayId,
+    ) -> Result<Option<LazyOverlay>, Self::Error> {
+        let paths = RecordPaths::new_key(&self.root, "lazy-overlays", &overlay.into_bytes());
+        with_lock(&paths, || {
+            let Some(value) = read_recoverable(&paths)? else {
+                return Ok(None);
+            };
+            let encoded = serde_json::to_vec(&value)?;
+            if blake3::hash(&encoded).as_bytes() != &overlay.into_bytes() {
+                return Err(LocalCoreStateStoreError::Integrity);
+            }
+            Ok(Some(value))
+        })
+    }
+
+    async fn put_lazy_overlay(
+        &self,
+        overlay: LazyOverlayId,
+        value: LazyOverlay,
+    ) -> Result<(), Self::Error> {
+        let encoded = serde_json::to_vec(&value)?;
+        if blake3::hash(&encoded).as_bytes() != &overlay.into_bytes() {
+            return Err(LocalCoreStateStoreError::Integrity);
+        }
+        let paths = RecordPaths::new_key(&self.root, "lazy-overlays", &overlay.into_bytes());
+        with_lock(&paths, || {
+            if let Some(existing) = read_recoverable::<LazyOverlay>(&paths)? {
+                return if existing == value {
+                    Ok(())
+                } else {
+                    Err(LocalCoreStateStoreError::Integrity)
+                };
+            }
+            write_journaled(&paths, &value)
+        })
+    }
+
+    async fn load_lazy_shadow(
+        &self,
+        shadow: crate::LazyShadowId,
+    ) -> Result<Option<crate::LazyShadow>, Self::Error> {
+        let paths = RecordPaths::new_key(&self.root, "lazy-shadows-v1", &shadow.into_bytes());
+        with_lock(&paths, || {
+            let Some(value) = read_recoverable(&paths)? else {
+                return Ok(None);
+            };
+            let encoded = serde_json::to_vec(&value)?;
+            if blake3::hash(&encoded).as_bytes() != &shadow.into_bytes() {
+                return Err(LocalCoreStateStoreError::Integrity);
+            }
+            Ok(Some(value))
+        })
+    }
+
+    async fn put_lazy_shadow(
+        &self,
+        shadow: crate::LazyShadowId,
+        value: crate::LazyShadow,
+    ) -> Result<(), Self::Error> {
+        let encoded = serde_json::to_vec(&value)?;
+        if blake3::hash(&encoded).as_bytes() != &shadow.into_bytes() {
+            return Err(LocalCoreStateStoreError::Integrity);
+        }
+        let paths = RecordPaths::new_key(&self.root, "lazy-shadows-v1", &shadow.into_bytes());
+        with_lock(&paths, || {
+            if let Some(existing) = read_recoverable::<crate::LazyShadow>(&paths)? {
+                return if existing == value {
+                    Ok(())
+                } else {
+                    Err(LocalCoreStateStoreError::Integrity)
+                };
+            }
+            write_journaled(&paths, &value)
+        })
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::{Digest, WorkspaceName};
+    use crate::{
+        Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceName, WorkspaceRootId,
+    };
 
     fn workspace() -> WorkspaceId {
         WorkspaceId::derive(
             [4; 16],
             &WorkspaceName::new("durable").expect("valid workspace"),
         )
+    }
+
+    fn workspace_context(
+        directory: &Path,
+        context_id: WorkspaceContextId,
+        revision: u64,
+        state: WorkspaceContextState,
+    ) -> WorkspaceContext {
+        let root_id = WorkspaceRootId::from_bytes([9; 16]);
+        WorkspaceContext {
+            version: 1,
+            revision,
+            context_id,
+            parent_context_id: None,
+            roots: [(
+                root_id,
+                WorkspaceContextRoot {
+                    root_id,
+                    source_path: directory.to_path_buf(),
+                    workspace_id: workspace(),
+                    workspace_name: "durable".to_owned(),
+                    parent_workspace_id: None,
+                    mount_path: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            state,
+        }
     }
 
     #[tokio::test]
@@ -445,6 +1312,7 @@ mod tests {
         let state = WorkspaceLineageRecord {
             version: 1,
             revision: 1,
+            ready: true,
             workspace_id: workspace(),
             workspace_name: "durable".to_owned(),
             parent_workspace_id: None,
@@ -457,12 +1325,398 @@ mod tests {
                 .await
                 .expect("initial write")
         );
+        let paths = RecordPaths::new_key(directory.path(), "lineage", &workspace().into_bytes());
+        std::fs::copy(&paths.current, &paths.previous).expect("preserve previous record");
+        std::fs::write(&paths.current, b"torn").expect("simulate torn current record");
+        std::fs::write(&paths.temporary, b"uncommitted").expect("simulate temporary record");
         let reopened = LocalCoreStateStore::new(directory.path());
         assert_eq!(
             WorkspaceLineageStore::load(&reopened, workspace())
                 .await
                 .expect("reopen"),
             Some(state)
+        );
+        assert!(
+            read_json::<WorkspaceLineageRecord>(&paths.current)
+                .expect("repaired current")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn lazy_overlay_load_rejects_content_address_mismatch() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let empty = LazyOverlay::default();
+        let encoded = serde_json::to_vec(&empty).expect("serialize overlay");
+        let overlay = LazyOverlayId::from_bytes(*blake3::hash(&encoded).as_bytes());
+        LazyWorkspaceStore::put_lazy_overlay(&store, overlay, empty)
+            .await
+            .expect("persist overlay");
+
+        let paths = RecordPaths::new_key(directory.path(), "lazy-overlays", &overlay.into_bytes());
+        let different = serde_json::json!({
+            "Node": {
+                "path": "/tampered",
+                "priority": 0,
+                "change": "Tombstone",
+                "left": vec![0_u8; 32],
+                "right": vec![0_u8; 32]
+            }
+        });
+        std::fs::write(
+            &paths.current,
+            serde_json::to_vec(&different).expect("serialize tampered overlay"),
+        )
+        .expect("tamper overlay");
+        assert!(matches!(
+            LazyWorkspaceStore::load_lazy_overlay(&store, overlay).await,
+            Err(LocalCoreStateStoreError::Integrity)
+        ));
+    }
+
+    #[tokio::test]
+    async fn workspace_contexts_are_durable_and_discoverable() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let context_id = WorkspaceContextId::from_bytes([8; 16]);
+        let root_id = WorkspaceRootId::from_bytes([9; 16]);
+        let context = WorkspaceContext {
+            version: 1,
+            revision: 1,
+            context_id,
+            parent_context_id: None,
+            roots: [(
+                root_id,
+                WorkspaceContextRoot {
+                    root_id,
+                    source_path: directory.path().to_path_buf(),
+                    workspace_id: workspace(),
+                    workspace_name: "durable".to_owned(),
+                    parent_workspace_id: None,
+                    mount_path: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            state: WorkspaceContextState::Active,
+        };
+        assert!(
+            WorkspaceContextStore::compare_and_swap(&store, context_id, 0, context.clone())
+                .await
+                .expect("write context")
+        );
+        let reopened = LocalCoreStateStore::new(directory.path());
+        assert_eq!(
+            WorkspaceContextStore::list(&reopened)
+                .await
+                .expect("list contexts"),
+            [context]
+        );
+    }
+
+    #[tokio::test]
+    async fn context_discard_reads_only_the_bounded_subtree() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let parent_id = WorkspaceContextId::from_bytes([20; 16]);
+        let child_id = WorkspaceContextId::from_bytes([21; 16]);
+        let unrelated_id = WorkspaceContextId::from_bytes([22; 16]);
+        let parent = workspace_context(
+            directory.path(),
+            parent_id,
+            1,
+            WorkspaceContextState::Active,
+        );
+        let mut child =
+            workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
+        child.parent_context_id = Some(parent_id);
+        let unrelated = workspace_context(
+            directory.path(),
+            unrelated_id,
+            1,
+            WorkspaceContextState::Active,
+        );
+        for context in [parent, child, unrelated] {
+            assert!(
+                WorkspaceContextStore::compare_and_swap(&store, context.context_id, 0, context,)
+                    .await
+                    .expect("register context")
+            );
+        }
+
+        std::fs::write(
+            context_record_paths(directory.path(), unrelated_id).current,
+            b"not-json",
+        )
+        .expect("corrupt unrelated record");
+
+        assert_eq!(
+            WorkspaceContextStore::discard_subtree(&store, parent_id, child_id, 1)
+                .await
+                .expect("discard bounded subtree"),
+            WorkspaceContextDiscardOutcome::Discarded(vec![child_id])
+        );
+        assert_eq!(
+            WorkspaceContextStore::load(&store, child_id)
+                .await
+                .expect("load discarded child")
+                .expect("child remains durable")
+                .state,
+            WorkspaceContextState::Discarded
+        );
+    }
+
+    #[tokio::test]
+    async fn context_discard_checks_child_count_before_reading_bucket() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let parent_id = WorkspaceContextId::from_bytes([25; 16]);
+        let child_id = WorkspaceContextId::from_bytes([26; 16]);
+        let parent = workspace_context(
+            directory.path(),
+            parent_id,
+            1,
+            WorkspaceContextState::Active,
+        );
+        let mut child =
+            workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
+        child.parent_context_id = Some(parent_id);
+        for context in [parent, child] {
+            assert!(
+                WorkspaceContextStore::compare_and_swap(&store, context.context_id, 0, context,)
+                    .await
+                    .expect("register context")
+            );
+        }
+        write_journaled(
+            &context_children_count_paths(directory.path(), child_id),
+            &10_000_u64,
+        )
+        .expect("write oversized child count");
+        let bucket = context_children_paths(directory.path(), child_id);
+        std::fs::create_dir_all(&bucket.directory).expect("child bucket directory");
+        std::fs::write(&bucket.current, b"not-json").expect("corrupt oversized child bucket");
+
+        assert_eq!(
+            WorkspaceContextStore::discard_subtree(&store, parent_id, child_id, 1)
+                .await
+                .expect("reject before child bucket read"),
+            WorkspaceContextDiscardOutcome::TraversalLimit
+        );
+    }
+
+    #[tokio::test]
+    async fn context_discard_bounds_bucket_bytes_before_deserialization() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let parent_id = WorkspaceContextId::from_bytes([30; 16]);
+        let child_id = WorkspaceContextId::from_bytes([31; 16]);
+        let parent = workspace_context(
+            directory.path(),
+            parent_id,
+            1,
+            WorkspaceContextState::Active,
+        );
+        let mut child =
+            workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
+        child.parent_context_id = Some(parent_id);
+        for context in [parent, child] {
+            assert!(
+                WorkspaceContextStore::compare_and_swap(&store, context.context_id, 0, context,)
+                    .await
+                    .expect("register context")
+            );
+        }
+        write_journaled(
+            &context_children_count_paths(directory.path(), child_id),
+            &1_u64,
+        )
+        .expect("write understated child count");
+        let bucket = context_children_paths(directory.path(), child_id);
+        std::fs::create_dir_all(&bucket.directory).expect("child bucket directory");
+        std::fs::write(&bucket.current, vec![b' '; 1_000_000])
+            .expect("write oversized child bucket");
+
+        assert!(matches!(
+            WorkspaceContextStore::discard_subtree(&store, parent_id, child_id, 2).await,
+            Err(LocalCoreStateStoreError::ContextTransaction(message))
+                if message.contains("exceeds its declared bound")
+        ));
+    }
+
+    #[tokio::test]
+    async fn context_discard_never_rebuilds_a_missing_index() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let parent_id = WorkspaceContextId::from_bytes([27; 16]);
+        let child_id = WorkspaceContextId::from_bytes([28; 16]);
+        let unrelated_id = WorkspaceContextId::from_bytes([29; 16]);
+        let mut child =
+            workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
+        child.parent_context_id = Some(parent_id);
+        for context in [
+            workspace_context(
+                directory.path(),
+                parent_id,
+                1,
+                WorkspaceContextState::Active,
+            ),
+            child,
+            workspace_context(
+                directory.path(),
+                unrelated_id,
+                1,
+                WorkspaceContextState::Active,
+            ),
+        ] {
+            let paths = context_record_paths(directory.path(), context.context_id);
+            std::fs::create_dir_all(&paths.directory).expect("context directory");
+            write_journaled(&paths, &context).expect("write legacy context");
+        }
+        std::fs::write(
+            context_record_paths(directory.path(), unrelated_id).current,
+            b"not-json",
+        )
+        .expect("corrupt unrelated legacy record");
+
+        assert_eq!(
+            WorkspaceContextStore::discard_subtree(&store, parent_id, child_id, 1)
+                .await
+                .expect("fail closed without rebuilding index"),
+            WorkspaceContextDiscardOutcome::IncompatibleState
+        );
+    }
+
+    #[tokio::test]
+    async fn prepared_context_transaction_rolls_back_partial_record_application() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let context_id = WorkspaceContextId::from_bytes([10; 16]);
+        let before = workspace_context(
+            directory.path(),
+            context_id,
+            1,
+            WorkspaceContextState::Active,
+        );
+        let after = workspace_context(
+            directory.path(),
+            context_id,
+            2,
+            WorkspaceContextState::Frozen,
+        );
+        std::fs::create_dir_all(directory.path().join(WORKSPACE_CONTEXT_FAMILY))
+            .expect("context directory");
+        std::fs::create_dir_all(directory.path().join("workspace-context-transactions-v2"))
+            .expect("transaction directory");
+        write_journaled(&context_record_paths(directory.path(), context_id), &before)
+            .expect("initial context");
+        write_journaled(
+            &context_transaction_paths(directory.path()),
+            &ContextTransaction {
+                version: 1,
+                phase: ContextTransactionPhase::Prepared,
+                before: [(context_id, Some(before.clone()))].into_iter().collect(),
+                after: [(context_id, after.clone())].into_iter().collect(),
+                before_children: BTreeMap::new(),
+                after_children: WorkspaceContextChildren::new(),
+            },
+        )
+        .expect("prepared transaction");
+        write_journaled(&context_record_paths(directory.path(), context_id), &after)
+            .expect("partial application");
+
+        assert_eq!(
+            WorkspaceContextStore::load(&store, context_id)
+                .await
+                .expect("recover prepared transaction"),
+            Some(before)
+        );
+    }
+
+    #[tokio::test]
+    async fn prepared_context_transaction_rolls_back_child_index_with_record() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let parent_id = WorkspaceContextId::from_bytes([23; 16]);
+        let child_id = WorkspaceContextId::from_bytes([24; 16]);
+        let mut child =
+            workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
+        child.parent_context_id = Some(parent_id);
+        ensure_context_children_index(directory.path()).expect("initialize child index");
+        let journal = ContextTransaction {
+            version: 2,
+            phase: ContextTransactionPhase::Prepared,
+            before: [(child_id, None)].into_iter().collect(),
+            after: [(child_id, child.clone())].into_iter().collect(),
+            before_children: [(parent_id, None)].into_iter().collect(),
+            after_children: [(parent_id, BTreeSet::from([child_id]))]
+                .into_iter()
+                .collect(),
+        };
+        std::fs::create_dir_all(directory.path().join("workspace-context-transactions-v2"))
+            .expect("transaction directory");
+        write_journaled(&context_transaction_paths(directory.path()), &journal)
+            .expect("prepared transaction");
+        apply_context_transaction(directory.path(), &journal).expect("partial application");
+
+        assert_eq!(
+            WorkspaceContextStore::load(&store, child_id)
+                .await
+                .expect("recover prepared transaction"),
+            None
+        );
+        assert_eq!(
+            read_recoverable::<BTreeSet<WorkspaceContextId>>(&context_children_paths(
+                directory.path(),
+                parent_id,
+            ))
+            .expect("read recovered child bucket"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn committed_context_transaction_rolls_forward_missing_record_application() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let context_id = WorkspaceContextId::from_bytes([11; 16]);
+        let before = workspace_context(
+            directory.path(),
+            context_id,
+            1,
+            WorkspaceContextState::Active,
+        );
+        let after = workspace_context(
+            directory.path(),
+            context_id,
+            2,
+            WorkspaceContextState::Frozen,
+        );
+        std::fs::create_dir_all(directory.path().join(WORKSPACE_CONTEXT_FAMILY))
+            .expect("context directory");
+        std::fs::create_dir_all(directory.path().join("workspace-context-transactions-v2"))
+            .expect("transaction directory");
+        write_journaled(&context_record_paths(directory.path(), context_id), &before)
+            .expect("initial context");
+        write_journaled(
+            &context_transaction_paths(directory.path()),
+            &ContextTransaction {
+                version: 1,
+                phase: ContextTransactionPhase::Committed,
+                before: [(context_id, Some(before))].into_iter().collect(),
+                after: [(context_id, after.clone())].into_iter().collect(),
+                before_children: BTreeMap::new(),
+                after_children: WorkspaceContextChildren::new(),
+            },
+        )
+        .expect("committed transaction");
+
+        assert_eq!(
+            WorkspaceContextStore::load(&store, context_id)
+                .await
+                .expect("recover committed transaction"),
+            Some(after)
         );
     }
 
@@ -547,5 +1801,51 @@ mod tests {
                 .expect("list cleaned materializations")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn previous_only_materialization_journal_is_discoverable_and_recovered() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let operation_id = OperationId::from_bytes([0x73; 16]);
+        let journal = MaterializationJournal {
+            version: 1,
+            revision: 1,
+            plan: crate::MaterializationPlan {
+                operation_id,
+                from: crate::GenerationId::new(Digest::from_bytes([1; 32])),
+                to: crate::GenerationId::new(Digest::from_bytes([2; 32])),
+                edits: Vec::new(),
+            },
+            preimages: Vec::new(),
+            phase: crate::MaterializationPhase::Prepared,
+            applied: 0,
+            restored: 0,
+        };
+        let paths = RecordPaths::new_key(
+            directory.path(),
+            "materialization",
+            &operation_id.into_bytes(),
+        );
+        std::fs::create_dir_all(&paths.directory).expect("journal directory");
+        std::fs::write(
+            &paths.previous,
+            serde_json::to_vec(&journal).expect("serialize journal"),
+        )
+        .expect("write previous journal");
+
+        assert_eq!(
+            store
+                .materialization_operations()
+                .expect("discover journal"),
+            [operation_id]
+        );
+        assert_eq!(
+            MaterializationJournalStore::load(&store, operation_id)
+                .await
+                .expect("recover journal"),
+            Some(journal)
+        );
+        assert!(paths.current.exists());
     }
 }

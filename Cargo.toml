@@ -1,7 +1,7 @@
 [workspace]
-# rust/crates/* are the SDK families; plugin/crates/* is the acyclic CLI
-# product built on acyclic-fs (see plugin/README.md).
-members = ["rust/crates/*", "plugin/crates/*"]
+# rust/crates/* are the SDK families; plugins/acyclic is the single product
+# binary and portable agent-plugin package built on acyclic-fs.
+members = ["rust/crates/*", "plugins/acyclic"]
 resolver = "2"
 
 [workspace.package]

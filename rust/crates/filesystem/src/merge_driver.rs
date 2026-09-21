@@ -7,7 +7,7 @@
 
 use crate::{FileId, GenerationId};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -337,6 +337,9 @@ impl MergeResolutionCache for MemoryMergeResolutionCache {
 /// Merge-plan resolution failure.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum MergePlanResolutionError {
+    /// The immutable plan contains the same semantic conflict more than once.
+    #[error("merge plan contains duplicate conflict {0:?}")]
+    DuplicateConflict(ConflictKey),
     /// No registered driver accepts one conflict.
     #[error("no merge driver is registered for conflict {0:?}")]
     MissingDriver(ConflictKey),
@@ -360,7 +363,13 @@ pub fn resolve_merge_plan(
     replanning: bool,
 ) -> Result<UnpublishedMergeCandidate, MergePlanResolutionError> {
     let mut resolutions = BTreeMap::new();
+    let mut conflicts = BTreeSet::new();
     for conflict in &plan.conflicts {
+        if !conflicts.insert(conflict.key.clone()) {
+            return Err(MergePlanResolutionError::DuplicateConflict(
+                conflict.key.clone(),
+            ));
+        }
         let path = conflict.path.as_deref().unwrap_or("");
         let driver = registry
             .select(path)
@@ -429,6 +438,9 @@ pub enum DriverRegistrationError {
     /// An attribute rule references an unknown driver.
     #[error("attribute rule references unknown merge driver '{0}'")]
     UnknownDriver(String),
+    /// One non-comment attribute line is not a supported `pattern merge=driver` rule.
+    #[error("invalid .gitattributes merge rule on line {0}")]
+    InvalidAttributeRule(usize),
 }
 
 /// Typed driver registry with ordered Git-style path rules.
@@ -472,6 +484,31 @@ impl MergeDriverRegistry {
         }
         self.rules = rules;
         Ok(())
+    }
+
+    /// Parses the supported Git-attribute subset and atomically replaces path rules.
+    pub fn set_git_attributes(&mut self, text: &str) -> Result<(), DriverRegistrationError> {
+        let mut rules = Vec::new();
+        for (index, raw) in text.lines().enumerate() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut fields = line.split_whitespace();
+            let pattern = fields.next().unwrap_or_default();
+            let attributes = fields.collect::<Vec<_>>();
+            let driver = attributes
+                .iter()
+                .find_map(|attribute| attribute.strip_prefix("merge="));
+            if pattern.is_empty() || driver.is_none_or(str::is_empty) || attributes.len() != 1 {
+                return Err(DriverRegistrationError::InvalidAttributeRule(index + 1));
+            }
+            rules.push(AttributeRule {
+                pattern: pattern.to_owned(),
+                driver: driver.unwrap_or_default().to_owned(),
+            });
+        }
+        self.set_rules(rules)
     }
 
     /// Selects the fallback driver by registered name.
@@ -649,6 +686,40 @@ mod tests {
         assert_eq!(
             resolve_merge_plan(plan, &registry, &mut cache, true).expect("exact cache reuse"),
             first
+        );
+    }
+
+    #[test]
+    fn duplicate_conflict_keys_are_rejected_before_driver_execution() {
+        let mut registry = MergeDriverRegistry::new();
+        registry
+            .register("text", Arc::new(DefaultTextMergeDriver))
+            .expect("register driver");
+        registry.set_default("text").expect("default driver");
+        let conflict = ConflictView {
+            key: ConflictKey::Metadata(FileId::new()),
+            path: Some("file.txt".to_owned()),
+            kind: ConflictKind::Text,
+            base: ConflictValue::Text("base".to_owned()),
+            ours: ConflictValue::Text("ours".to_owned()),
+            theirs: ConflictValue::Text("theirs".to_owned()),
+        };
+        let plan = MergePlan {
+            base: generation(1),
+            ours: generation(2),
+            theirs: generation(3),
+            conflicts: vec![conflict.clone(), conflict.clone()],
+            truncated: false,
+        };
+
+        assert_eq!(
+            resolve_merge_plan(
+                plan,
+                &registry,
+                &mut MemoryMergeResolutionCache::default(),
+                false,
+            ),
+            Err(MergePlanResolutionError::DuplicateConflict(conflict.key))
         );
     }
 }

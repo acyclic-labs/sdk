@@ -435,6 +435,22 @@ impl NativeWatch {
         })
     }
 
+    /// Admits a demand-backed lazy baseline without enumerating the root.
+    ///
+    /// The paired demand source must hold the same root capability and resolve
+    /// first observations from the live root. Hints arriving after this
+    /// boundary remain queued and must be captured before the corresponding
+    /// operation barrier closes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same admission and root-identity failures as the ordinary
+    /// rescan handshake.
+    pub fn accept_lazy_baseline(&mut self) -> Result<WatchBatch, NativeWatchError> {
+        self.begin_rescan()?;
+        self.finish_rescan()
+    }
+
     /// Returns the exact root identity admitted when the watcher opened.
     #[must_use]
     pub const fn root_identity(&self) -> NativeRootIdentity {

@@ -48,11 +48,12 @@ case "$lane" in
     bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
-    cargo run --locked -p acyclic-cli -- harness-demo
-    python3 plugins/acyclic-agent-workspaces/scripts/package.py \
-      --output "$SDK_ARTIFACT_DIR/agent-workspaces-plugin"
-    python3 plugins/acyclic-agent-workspaces/scripts/validate-package.py \
-      "$SDK_ARTIFACT_DIR/agent-workspaces-plugin/marketplace"
+    node scripts/build-product.mjs
+    node plugins/acyclic/scripts/package.mjs \
+      --binary "${CARGO_TARGET_DIR:-target}/release/acyclic" \
+      --out "$SDK_ARTIFACT_DIR/acyclic-plugin"
+    node plugins/acyclic/scripts/validate-package.mjs \
+      "$SDK_ARTIFACT_DIR/acyclic-plugin"
     bun run test
     bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
     bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
@@ -70,27 +71,17 @@ case "$lane" in
     if [[ -n "$base" ]]; then
       bun x buf breaking --against ".git#ref=origin/$base" \
         --exclude-path proto/inference/v1/inference.proto \
-        --exclude-path proto/filesystem/v1 \
-        --exclude-path proto/filesystem/daemon/v1
+        --exclude-path proto/filesystem/v1
     fi
-    python3 scripts/test-crate-publication.py
-    python3 scripts/test-npm-publication.py
-    bash -n scripts/prepare-crate-publication.sh scripts/prepare-npm-publication.sh \
-      scripts/check-typescript-packages.sh
-    ;;
-  eval)
-    python3 evals/agent-workspaces/protocol_check.py \
-      --out "$SDK_ARTIFACT_DIR/agent-workspaces-protocol"
-    python3 -m unittest evals/agent-workspaces/test_harness.py
+    bash -n scripts/check-typescript-packages.sh
     ;;
   policy)
     bash scripts/test-ensure-rust-target.sh
     bash scripts/test-qualify-gate-rustup.sh
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-    cargo test --manifest-path plugins/acyclic-agent-workspaces/control/Cargo.toml --locked
-    cargo clippy --manifest-path plugins/acyclic-agent-workspaces/control/Cargo.toml \
-      --all-targets --all-features --locked -- -D warnings
+    cargo test -p acyclic --locked
+    cargo clippy -p acyclic --all-targets --all-features --locked -- -D warnings
     head="${CI_HEAD_SHA:-$(git rev-parse HEAD)}"
     if [[ -n "${CI_TARGET_BRANCH:-}" ]]; then
       branch="$CI_TARGET_BRANCH"
@@ -166,10 +157,12 @@ case "$lane" in
       --ignored --test-threads=1
     cargo build -p acyclic-fs-napi --locked
     bun scripts/check-filesystem-napi.mjs "$SDK_ARTIFACT_DIR/packages/native"
-    python3 plugins/acyclic-agent-workspaces/scripts/package.py \
-      --output "$SDK_ARTIFACT_DIR/agent-workspaces-plugin"
-    python3 plugins/acyclic-agent-workspaces/scripts/validate-package.py \
-      "$SDK_ARTIFACT_DIR/agent-workspaces-plugin/marketplace"
+    node scripts/build-product.mjs
+    node plugins/acyclic/scripts/package.mjs \
+      --binary "${CARGO_TARGET_DIR:-target}/release/acyclic" \
+      --out "$SDK_ARTIFACT_DIR/acyclic-plugin"
+    node plugins/acyclic/scripts/validate-package.mjs \
+      "$SDK_ARTIFACT_DIR/acyclic-plugin"
     bash scripts/ensure-rust-target.sh x86_64-apple-darwin
     cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
       --target x86_64-apple-darwin --locked

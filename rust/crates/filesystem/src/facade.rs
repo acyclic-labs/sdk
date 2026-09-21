@@ -23,22 +23,23 @@ use crate::kernel::{
     LiveRetryState, LogicalName, MAXIMUM_GENERATION_ROOT_BYTES, MergeConflictResolution,
     MergeConflictSide, MergeGenerationError, MergeGenerationOutcome, MergeGenerationRequest,
     MetadataField, Mutation, NameEncoding, NamespacePath, PathBatchLookup, PathLookup,
-    PathLookupError, PersistentDiffError, ProbeLimits, PublicationError, PublishGenerationRequest,
-    RebaseConflict, RebaseDecision, RebaseError, RegularMutation, RegularMutationError,
-    RetentionCreated, RetentionCreatedError, RetentionKind, TransferCursor, TreeMutationError,
-    TreePage, VolumeCreated, VolumeCreatedError, apply_attribute_mutations_async,
-    apply_generation_mutations_retaining_async, apply_regular_mutation_async,
-    authenticate_generation_export_manifest_async, build_blob_async, build_checkpoint_async,
-    build_generation_export_manifest_async, classify_rebase_async, decode_file_metadata,
-    decode_published_generation, decode_volume_created, decode_workspace_deleted,
-    diff_file_records_async, diff_tree_entries_async, encode_attribute_page, encode_file_metadata,
-    encode_file_table_page, encode_generation_root, encode_retention_created, encode_tree_page,
-    encode_volume_created, encode_workspace_deleted, export_generation_batch_async,
-    generation_root_parent_count, import_generation_batch_async, list_attributes_async,
-    list_tree_entries_async, list_tree_entries_at_or_after_async, lookup_attribute_async,
-    lookup_file_record_async, lookup_file_records_async, merge_generation_async,
-    plan_extent_range_async, prove_generation_closure_async, publish_generation_async,
-    publish_generation_async_with_context, read_blob_range_async, read_file_range_async,
+    PathLookupError, PersistentDiffError, ProbeLimits, PublicationError, PublicationIntent,
+    PublicationReceipt, PublishGenerationRequest, RebaseConflict, RebaseDecision, RebaseError,
+    RegularMutation, RegularMutationError, RetentionCreated, RetentionCreatedError, RetentionKind,
+    TransferCursor, TreeMutationError, TreePage, VolumeCreated, VolumeCreatedError,
+    apply_attribute_mutations_async, apply_generation_mutations_retaining_async,
+    apply_regular_mutation_async, authenticate_generation_export_manifest_async, build_blob_async,
+    build_checkpoint_async, build_generation_export_manifest_async, classify_rebase_async,
+    decode_file_metadata, decode_published_generation, decode_volume_created,
+    decode_workspace_deleted, diff_file_records_async, diff_tree_entries_async,
+    encode_attribute_page, encode_file_metadata, encode_file_table_page, encode_generation_root,
+    encode_retention_created, encode_tree_page, encode_volume_created, encode_workspace_deleted,
+    export_generation_batch_async, generation_root_parent_count, import_generation_batch_async,
+    list_attributes_async, list_tree_entries_async, list_tree_entries_at_or_after_async,
+    lookup_attribute_async, lookup_file_record_async, lookup_file_records_async,
+    merge_generation_async, plan_extent_range_async, prove_generation_closure_async,
+    publish_generation_async, publish_generation_async_with_context,
+    publish_generation_async_with_permit, read_blob_range_async, read_file_range_async,
     retention_authority_id, seek_extent_async, volume_authority_id,
 };
 #[cfg(test)]
@@ -61,7 +62,7 @@ use crate::performance::{
 use crate::storage::{
     AppendOutcome, AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome,
     OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRequest, ObjectReadRetention,
-    ObjectStoreError, ReplayLimit, object_digest,
+    ObjectStoreError, PublicationPermit, ReplayLimit, object_digest,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use acyclic_objects::ObjectsProvider as _;
@@ -135,6 +136,7 @@ pub(crate) struct WorkspaceJoinRequest<'a, A, O> {
     pub expected_head: Head,
     pub history: crate::workspace::JoinHistory,
     pub operation_id: OperationId,
+    pub permit: PublicationPermit,
     pub maximum_generations: u32,
     pub maximum_changes: u32,
     pub maximum_conflicts: u32,
@@ -356,6 +358,7 @@ struct FsInner<A, O> {
     objects: O,
     capabilities: EmbeddedCapabilities,
     workspace_namespace: [u8; 16],
+    path_index: Arc<dyn crate::path_index::GenerationPathIndex>,
 }
 
 /// Embedded filesystem composition handle.
@@ -398,10 +401,10 @@ impl<A, O> Fs<A, O> {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
-    #[cfg(all(
-        not(target_arch = "wasm32"),
-        any(feature = "native-watch", feature = "s3-http")
-    ))]
+    pub(crate) fn path_index(&self) -> &dyn crate::path_index::GenerationPathIndex {
+        &*self.inner.path_index
+    }
+
     pub(crate) fn authority(&self) -> &A {
         &self.inner.authority
     }
@@ -409,6 +412,16 @@ impl<A, O> Fs<A, O> {
     #[cfg(all(test, feature = "s3-http"))]
     pub(crate) fn objects(&self) -> &O {
         &self.inner.objects
+    }
+}
+
+impl<P, O> Fs<crate::StreamAuthorityStore<P>, O> {
+    /// Opens the SDK operation-window store on the exact Stream provider used
+    /// by generation authority. This co-location is what makes lease fencing
+    /// atomic with publication.
+    #[must_use]
+    pub fn operation_window_store(&self) -> crate::StreamOperationWindowStore<P> {
+        crate::StreamOperationWindowStore::new(self.inner.authority.provider())
     }
 }
 
@@ -595,6 +608,11 @@ struct VolumeCreation {
     operation_id: Option<OperationId>,
 }
 
+#[derive(Clone, Copy)]
+struct VerifiedForkSource {
+    generation_root: ObjectId,
+}
+
 /// Durable local authority backend with nonblocking native storage dispatch.
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub type LocalAuthorityBackend =
@@ -663,6 +681,13 @@ pub struct FileCloneRequest {
 /// atomic checkout transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthoredMutation {
+    /// Rebinds an existing non-directory object to a stable source identity.
+    Reidentify {
+        /// Existing namespace path.
+        path: NamespacePath,
+        /// Stable path-independent identity to retain.
+        file_id: FileId,
+    },
     /// Creates one regular file with exact initial bytes and metadata.
     CreateFile {
         /// New namespace path.
@@ -815,7 +840,8 @@ fn authored_mutation_operation_count(mutation: &AuthoredMutation) -> usize {
         AuthoredMutation::CreateFileFromContent { content, .. } => {
             usize::from(content.logical_bytes != 0) + 1
         }
-        AuthoredMutation::Write { .. }
+        AuthoredMutation::Reidentify { .. }
+        | AuthoredMutation::Write { .. }
         | AuthoredMutation::WriteFromContent { .. }
         | AuthoredMutation::CreateDirectory { .. }
         | AuthoredMutation::CreateSymbolicLink { .. }
@@ -1141,6 +1167,9 @@ pub enum FsError {
     /// even though their exact bytes differ.
     #[error("name collides with an existing entry under the volume's case-folding policy")]
     NameCollision,
+    /// A caller-derived identity already names different authenticated state.
+    #[error("file identity collides with different authenticated content")]
+    FileIdentityCollision,
     /// A new name is not canonical Unicode NFC, required by the volume's
     /// `UnicodePolicy::RequireNfc` policy.
     #[error("name is not normalized to NFC as required by the volume's unicode policy")]
@@ -1356,12 +1385,29 @@ impl<A, O> Fs<A, O> {
         capabilities: EmbeddedCapabilities,
         workspace_namespace: [u8; 16],
     ) -> Self {
+        Self::new_with_path_index(
+            authority,
+            objects,
+            capabilities,
+            workspace_namespace,
+            Arc::new(crate::path_index::MemoryGenerationPathIndex::default()),
+        )
+    }
+
+    fn new_with_path_index(
+        authority: A,
+        objects: O,
+        capabilities: EmbeddedCapabilities,
+        workspace_namespace: [u8; 16],
+        path_index: Arc<dyn crate::path_index::GenerationPathIndex>,
+    ) -> Self {
         Self {
             inner: Arc::new(FsInner {
                 authority,
                 objects,
                 capabilities,
                 workspace_namespace,
+                path_index,
             }),
         }
     }
@@ -1510,12 +1556,16 @@ impl
             crate::distributed::ProviderObjectStore::new(objects, bucket),
             object_cache,
         )?;
-        Ok(Self::new(
+        Ok(Self::new_with_path_index(
             crate::distributed::StreamAuthorityStore::new(stream),
             objects,
             EmbeddedCapabilities {
                 durable: cfg!(any(unix, windows)),
             },
+            [0; 16],
+            Arc::new(crate::path_index::NativeGenerationPathIndex::new(
+                root.join("generation-path-index-v1"),
+            )),
         ))
     }
 
@@ -2196,8 +2246,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         source: &crate::Generation<A, O>,
         destination_id: crate::WorkspaceId,
         config: VolumeConfig,
+        budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> Result<(ObjectId, WorkCounters), crate::workspace::WorkspaceError> {
+    ) -> Result<(ObjectId, VerifiedForkSource, WorkCounters), crate::workspace::WorkspaceError>
+    {
         let source_object = ObjectId {
             kind: ObjectKind::GenerationRoot,
             digest: source.id.digest(),
@@ -2206,7 +2258,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             &self.inner.objects,
             source_object,
             config,
-            WorkBudget::UNBOUNDED,
+            budget,
             cancellation,
         )
         .await
@@ -2228,7 +2280,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 ObjectKind::GenerationRoot,
                 encoded,
                 work,
-                WorkBudget::UNBOUNDED,
+                remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
                 cancellation,
             )
             .await
@@ -2237,13 +2289,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             &self.inner.objects,
             generation_root,
             closure_limits(config),
-            WorkBudget::UNBOUNDED,
+            remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
             cancellation,
         )
         .await
         .map_err(crate::workspace::WorkspaceError::engine)?;
         let work = add(work, proof.work).map_err(crate::workspace::WorkspaceError::engine)?;
-        Ok((generation_root, work))
+        Ok((
+            generation_root,
+            VerifiedForkSource {
+                generation_root: source_object,
+            },
+            work,
+        ))
     }
 
     /// Creates a new workspace at one exact immutable source generation while
@@ -2251,35 +2309,50 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ///
     /// Only one small generation root and one creation fact are new. The source
     /// and destination then publish independently.
-    pub(crate) async fn fork_workspace(
+    pub(crate) async fn fork_workspace_measured(
         &self,
         destination: crate::WorkspaceName,
         source: &crate::Generation<A, O>,
         idempotency_key: crate::IdempotencyKey,
-    ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<OperationReceipt<crate::Workspace<A, O>>, crate::workspace::WorkspaceError> {
         if !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner) {
             return Err(crate::workspace::WorkspaceError::ForeignGeneration);
         }
+        cancellation
+            .check()
+            .map_err(crate::workspace::WorkspaceError::from)?;
         let destination_id =
             crate::WorkspaceId::derive(self.inner.workspace_namespace, &destination);
         let config = source.workspace.volume.config;
-        let cancellation = CancellationToken::new();
-        let (generation_root, mut work) = Box::pin(self.materialize_forked_generation_root(
-            source,
-            destination_id,
-            config,
-            &cancellation,
-        ))
-        .await?;
-        Box::pin(self.retain_workspace_generation(
+        let (generation_root, verified_source, mut work) =
+            Box::pin(self.materialize_forked_generation_root(
+                source,
+                destination_id,
+                config,
+                budget,
+                cancellation,
+            ))
+            .await?;
+        let retained = Box::pin(self.retain_verified_workspace_generation_measured(
             &source.workspace.volume,
-            source.id,
+            verified_source,
             RetentionKind::ForkBase,
             hex::encode(destination_id.into_bytes()),
+            remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
+            cancellation,
         ))
         .await?;
+        work = add(work, retained).map_err(crate::workspace::WorkspaceError::engine)?;
         if self.inner.authority.supports_generation_lineage_prefix() {
-            let lineage = if Box::pin(source.workspace.head()).await?.id == source.id {
+            let head = Box::pin(source.workspace.head_measured(
+                remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
+                cancellation,
+            ))
+            .await?;
+            work = add(work, head.work).map_err(crate::workspace::WorkspaceError::engine)?;
+            let lineage = if head.value.id == source.id {
                 crate::GenerationFork::PublishedPrefix
             } else {
                 crate::GenerationFork::Independent
@@ -2292,8 +2365,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 },
                 volume_authority_id(destination_id.volume_id()),
                 idempotency_key.operation_id(),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
+                remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
+                cancellation,
             ))
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?;
@@ -2307,21 +2380,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 operation_id: Some(idempotency_key.operation_id()),
             },
             work,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
+            budget,
+            cancellation,
         ))
         .await
-        .map_err(crate::workspace::WorkspaceError::engine)?
-        .value;
-        Box::pin(volume.resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation))
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
-        Ok(crate::Workspace {
-            name: destination,
-            id: destination_id,
-            volume,
-            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-            source: None,
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        work = volume.work;
+        let volume = volume.value;
+        let resolved = Box::pin(volume.resolve_head_generation(
+            remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
+            cancellation,
+        ))
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        work = add(work, resolved.2).map_err(crate::workspace::WorkspaceError::engine)?;
+        Ok(OperationReceipt {
+            value: crate::Workspace {
+                name: destination,
+                id: destination_id,
+                volume,
+                #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+                source: None,
+            },
+            work,
         })
     }
 
@@ -2349,18 +2430,54 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if proof.root.volume_id != volume.id {
             return Err(crate::workspace::WorkspaceError::ForeignGeneration);
         }
+        self.retain_verified_workspace_generation(
+            volume,
+            VerifiedForkSource { generation_root },
+            kind,
+            label,
+            &cancellation,
+        )
+        .await
+    }
+
+    async fn retain_verified_workspace_generation(
+        &self,
+        volume: &Volume<A, O>,
+        source: VerifiedForkSource,
+        kind: RetentionKind,
+        label: String,
+        cancellation: &CancellationToken,
+    ) -> Result<(), crate::workspace::WorkspaceError> {
+        self.retain_verified_workspace_generation_measured(
+            volume,
+            source,
+            kind,
+            label,
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn retain_verified_workspace_generation_measured(
+        &self,
+        volume: &Volume<A, O>,
+        source: VerifiedForkSource,
+        kind: RetentionKind,
+        label: String,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkCounters, crate::workspace::WorkspaceError> {
+        let generation_root = source.generation_root;
         let authority_id = retention_authority_id(volume.id, kind, &label);
         let created = self
             .inner
             .authority
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
+            .create_authority(authority_id, Epoch::GENESIS, budget, cancellation)
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?;
+        let mut work = created.work;
         let active_head = match created.value {
             CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
         };
@@ -2382,13 +2499,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 active_head.epoch,
                 Head::genesis(active_head.epoch),
                 commit,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
+                remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
+                cancellation,
             )
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?;
+        work = add(work, appended.work).map_err(crate::workspace::WorkspaceError::engine)?;
         match appended.value {
-            AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_) => Ok(()),
+            AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_) => Ok(work),
             AppendOutcome::Conflict { .. }
             | AppendOutcome::Fenced { .. }
             | AppendOutcome::IdempotencyConflict { .. } => {
@@ -2513,12 +2631,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         source: &crate::Generation<A, O>,
         maximum_changes: u32,
     ) -> Result<FsReceipt<GenerationDiff>, crate::workspace::WorkspaceError> {
+        self.workspace_join_changes_bounded(
+            base,
+            source,
+            maximum_changes,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+    }
+
+    pub(crate) async fn workspace_join_changes_bounded(
+        &self,
+        base: GenerationId,
+        source: &crate::Generation<A, O>,
+        maximum_changes: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<FsReceipt<GenerationDiff>, crate::workspace::WorkspaceError> {
         if maximum_changes == 0 || !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner) {
             return Err(crate::workspace::WorkspaceError::ForeignGeneration);
         }
-        let cancellation = CancellationToken::new();
         let config = source.workspace.volume.config;
-        let budget = WorkBudget::UNBOUNDED;
         let mut work = WorkCounters::default();
         let (base_root, base_work) = read_generation_root(
             &self.inner.objects,
@@ -2528,7 +2662,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             },
             config,
             remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
-            &cancellation,
+            cancellation,
         )
         .await
         .map_err(crate::workspace::WorkspaceError::engine)?;
@@ -2541,7 +2675,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             },
             config,
             remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
-            &cancellation,
+            cancellation,
         )
         .await
         .map_err(crate::workspace::WorkspaceError::engine)?;
@@ -2559,7 +2693,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             source.workspace.volume.config,
             work,
             budget,
-            &cancellation,
+            cancellation,
         )
         .await
         .map_err(crate::workspace::WorkspaceError::engine)?;
@@ -2786,6 +2920,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         generation: GenerationId,
         expected: GenerationId,
         operation_id: OperationId,
+        permit: PublicationPermit,
     ) -> Result<crate::workspace::WorkspaceRestoreOutcome, crate::workspace::WorkspaceError> {
         let cancellation = CancellationToken::new();
         if let Some(recorded) = self
@@ -2825,7 +2960,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if root.volume_id != workspace.id {
             return Err(crate::workspace::WorkspaceError::ForeignGeneration);
         }
-        let publication = publish_generation_async(
+        let publication = publish_generation_async_with_permit(
             &self.inner.objects,
             &self.inner.authority,
             PublishGenerationRequest {
@@ -2836,6 +2971,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 operation_id,
                 generation_root,
             },
+            PublicationIntent::guarded(None, permit),
             closure_limits(workspace.config),
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -3080,6 +3216,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             expected_head,
             history,
             operation_id,
+            permit,
             maximum_generations,
             maximum_changes,
             maximum_conflicts,
@@ -3215,7 +3352,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if merged_root.file_table == target_root.file_table {
             return Ok(WorkspaceJoinOutcome::NoChanges(current_target));
         }
-        let publication = publish_generation_async_with_context(
+        let publication = publish_generation_async_with_permit(
             &self.inner.objects,
             &self.inner.authority,
             PublishGenerationRequest {
@@ -3226,7 +3363,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 operation_id,
                 generation_root: candidate,
             },
-            operation_context,
+            PublicationIntent::guarded(Some(operation_context), permit),
             closure_limits(target.config),
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -6465,6 +6602,51 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<Option<FileId>, OperationFailure<FsError>> {
         match authored {
+            AuthoredMutation::Reidentify { path, file_id } => {
+                let current = crate::kernel::lookup_path_async(
+                    &self.volume.fs.inner.objects,
+                    &self.root,
+                    &path,
+                    self.volume.config,
+                    remaining(*work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(*work, FsError::Path))?;
+                *work = add(*work, current.work)?;
+                let current = current
+                    .record
+                    .ok_or_else(|| OperationFailure::new(FsError::NotFound, *work))?;
+                if current.kind == FileKind::Directory {
+                    return Err(OperationFailure::new(FsError::InvalidSpecialKind, *work));
+                }
+                if current.file_id == file_id {
+                    return Ok(None);
+                }
+                let existing = self
+                    .lookup_file_record_by_id(file_id, remaining(*work, budget)?, cancellation)
+                    .await
+                    .map_err(|failure| {
+                        failure.map_with_prior_work(*work, std::convert::identity)
+                    })?;
+                *work = add(*work, existing.work)?;
+                if existing.value.is_some_and(|existing| {
+                    existing.kind != current.kind
+                        || existing.metadata != current.metadata
+                        || existing.payload != current.payload
+                }) {
+                    return Err(OperationFailure::new(FsError::FileIdentityCollision, *work));
+                }
+                operations.push(Mutation::Restore {
+                    path,
+                    record: FileRecord {
+                        file_id,
+                        link_count: 1,
+                        ..current
+                    },
+                });
+                Ok(None)
+            }
             AuthoredMutation::CreateFile {
                 path,
                 bytes,
@@ -8822,6 +9004,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .await
     }
 
+    /// Publishes this overlay only while the supplied durable operation lease
+    /// remains active at the authority linearization point.
+    pub async fn commit_with_permit(
+        &mut self,
+        operation_id: OperationId,
+        permit: PublicationPermit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<CheckoutCommitOutcome> {
+        if self.mode.access != AccessMode::ReadWrite
+            || self.mode.mutations != MutationMode::PrivateOverlay
+        {
+            return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
+        }
+        self.publish_pending_with_permit(operation_id, None, permit, budget, cancellation)
+            .await
+    }
+
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     pub(crate) async fn commit_with_context(
         &mut self,
@@ -8843,6 +9043,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.publish_pending_against(
             operation_id,
             Some(operation_context),
+            PublicationPermit::Unrestricted,
             expected,
             budget,
             cancellation,
@@ -8857,7 +9058,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<CheckoutCommitOutcome> {
-        if !self.has_pending_mutations() {
+        self.publish_pending_with_permit(
+            operation_id,
+            operation_context,
+            PublicationPermit::Unrestricted,
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn publish_pending_with_permit(
+        &mut self,
+        operation_id: OperationId,
+        operation_context: Option<Digest>,
+        permit: PublicationPermit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<CheckoutCommitOutcome> {
+        if !self.has_pending_mutations() && permit == PublicationPermit::Unrestricted {
             return self
                 .resolve_clean_commit(operation_id, budget, cancellation)
                 .await;
@@ -8868,6 +9087,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.publish_pending_against(
             operation_id,
             operation_context,
+            permit,
             expected,
             budget,
             cancellation,
@@ -8879,6 +9099,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         &mut self,
         operation_id: OperationId,
         operation_context: Option<Digest>,
+        permit: PublicationPermit,
         expected: Head,
         budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -8897,7 +9118,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             operation_id,
             generation_root: checkpoint_root,
         };
-        let publication = if let Some(context) = operation_context {
+        let publication = if permit != PublicationPermit::Unrestricted {
+            publish_generation_async_with_permit(
+                &self.volume.fs.inner.objects,
+                &self.volume.fs.inner.authority,
+                request,
+                PublicationIntent {
+                    operation_context,
+                    permit,
+                },
+                closure_limits(self.volume.config),
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+        } else if let Some(context) = operation_context {
             publish_generation_async_with_context(
                 &self.volume.fs.inner.objects,
                 &self.volume.fs.inner.authority,
@@ -8921,8 +9156,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
         work = add(work, publication.work)?;
+        let outcome = self.apply_publication(checkpoint_root, operation_id, publication);
+        Ok(FsReceipt {
+            value: outcome,
+            work,
+        })
+    }
+
+    fn apply_publication(
+        &mut self,
+        checkpoint_root: ObjectId,
+        operation_id: OperationId,
+        publication: PublicationReceipt,
+    ) -> CheckoutCommitOutcome {
         let generation_id = publication.proof.generation_id;
-        let outcome = match publication.outcome {
+        match publication.outcome {
             AppendOutcome::Committed(commit) => {
                 let head = durable_head(&commit);
                 self.base_generation_root = checkpoint_root;
@@ -8974,16 +9222,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             } => CheckoutCommitOutcome::IdempotencyConflict {
                 committed_fingerprint,
             },
-        };
-        Ok(FsReceipt {
-            value: outcome,
-            work,
-        })
+        }
     }
 
     pub(crate) async fn retry_stale_commit(
         &mut self,
         operation_id: OperationId,
+        permit: PublicationPermit,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Option<CheckoutCommitOutcome>> {
@@ -9023,6 +9268,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .publish_pending_against(
                 operation_id,
                 None,
+                permit,
                 expected,
                 remaining(resolved.work, budget)?,
                 cancellation,
@@ -10410,6 +10656,17 @@ async fn stage_content_for_volume<
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
+    pub(crate) fn from_record(volume: Volume<A, O>, record: FileRecord) -> Self {
+        Self { volume, record }
+    }
+
+    pub(crate) async fn read_symbolic_link(
+        &self,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Bytes> {
+        read_symbolic_link_record(&self.volume, self.record, budget, cancellation).await
+    }
     /// Stable file identity retained across last-link removal.
     #[must_use]
     pub const fn file_id(&self) -> FileId {

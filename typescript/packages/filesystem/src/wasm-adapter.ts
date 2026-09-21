@@ -50,7 +50,19 @@ import type {
   LiveMutationResult,
   LiveTransactionResult,
   ResolvedFile,
+  WasmRawOperationWindowCoordinator,
+  WasmRawWorkspaceContextRegistry,
 } from "./contracts.js";
+import type {
+  OperationWindowClose,
+  OperationWindowCoordinator,
+  OperationWindowLease,
+  OperationWindowPhase,
+  WorkspaceContext,
+  WorkspaceContextRegistry,
+  WorkspaceContextRoot,
+} from "./compat.js";
+import { decodeFixedBytes } from "./compat.js";
 
 const generationHandles = new WeakMap<FsGeneration, WasmRawGeneration>();
 const workspaceHandles = new WeakMap<FsWorkspace, WasmRawWorkspace>();
@@ -89,6 +101,209 @@ export function adaptWasmFs(raw: WasmRawFs): FsVolumeEngine {
     },
   };
   return engine;
+}
+
+function encodeWorkspaceContextRoots(roots: readonly WorkspaceContextRoot[]): string {
+  return JSON.stringify(roots.map((root) => ({
+    root_id: Array.from(root.rootId),
+    source_path: root.sourcePath,
+    workspace_id: Array.from(root.workspaceId),
+    workspace_name: root.workspaceName,
+    parent_workspace_id: root.parentWorkspaceId === undefined
+      ? null
+      : Array.from(root.parentWorkspaceId),
+    mount_path: root.mountPath ?? null,
+  })));
+}
+
+function parseWorkspaceContext(json: string): WorkspaceContext {
+  const value = JSON.parse(json) as {
+    version: number;
+    revision: string;
+    context_id: unknown;
+    parent_context_id: unknown | null;
+    roots: Record<string, {
+      root_id: unknown;
+      source_path: string;
+      workspace_id: unknown;
+      workspace_name: string;
+      parent_workspace_id: unknown | null;
+      mount_path: string | null;
+    }>;
+    state: WorkspaceContext["state"];
+  };
+  return {
+    version: value.version,
+    revision: BigInt(value.revision),
+    contextId: decodeFixedBytes(value.context_id, 16, "context identity"),
+    parentContextId: value.parent_context_id === null
+      ? undefined
+      : decodeFixedBytes(value.parent_context_id, 16, "parent context identity"),
+    roots: Object.values(value.roots).map((root) => ({
+      rootId: decodeFixedBytes(root.root_id, 16, "root identity"),
+      sourcePath: root.source_path,
+      workspaceId: decodeFixedBytes(root.workspace_id, 16, "workspace identity"),
+      workspaceName: root.workspace_name,
+      parentWorkspaceId: root.parent_workspace_id === null
+        ? undefined
+        : decodeFixedBytes(root.parent_workspace_id, 16, "parent workspace identity"),
+      mountPath: root.mount_path ?? undefined,
+    })),
+    state: value.state,
+  };
+}
+
+export function adaptWasmWorkspaceContextRegistry(
+  raw: WasmRawWorkspaceContextRegistry,
+): WorkspaceContextRegistry {
+  return {
+    async registerRoot(contextId, roots) {
+      return parseWorkspaceContext(await raw.registerRootJson(
+        contextId,
+        encodeWorkspaceContextRoots(roots),
+      ));
+    },
+    async registerChild(contextId, parentContextId, roots) {
+      return parseWorkspaceContext(await raw.registerChildJson(
+        contextId,
+        parentContextId,
+        encodeWorkspaceContextRoots(roots),
+      ));
+    },
+    async resolve(contextId) {
+      return parseWorkspaceContext(await raw.resolveJson(contextId));
+    },
+    async setActive(contextId, active) {
+      return parseWorkspaceContext(await raw.setActiveJson(contextId, active));
+    },
+    async setWorkspace(contextId, rootId, workspaceId, workspaceName, parentWorkspaceId) {
+      return parseWorkspaceContext(await raw.setWorkspaceJson(
+        contextId,
+        rootId,
+        workspaceId,
+        workspaceName,
+        parentWorkspaceId,
+      ));
+    },
+    async discardSubtree(parentContextId, childContextId, maximum) {
+      const values = JSON.parse(await raw.discardSubtreeJson(
+        parentContextId,
+        childContextId,
+        maximum,
+      )) as unknown[];
+      return values.map((value) => decodeFixedBytes(value, 16, "discarded context identity"));
+    },
+  };
+}
+
+function parseOperationWindowLease(json: string): OperationWindowLease {
+  const value = JSON.parse(json) as {
+    workspaceId: unknown;
+    leaseId: unknown;
+    pinnedParent: unknown;
+    expiresAtMillis: string;
+  };
+  return {
+    workspaceId: decodeFixedBytes(value.workspaceId, 16, "workspace identity"),
+    leaseId: decodeFixedBytes(value.leaseId, 16, "lease identity"),
+    pinnedParent: decodeFixedBytes(value.pinnedParent, 32, "pinned parent generation"),
+    expiresAtMillis: BigInt(value.expiresAtMillis),
+  };
+}
+
+function encodeOperationWindowLease(lease: OperationWindowLease): string {
+  return JSON.stringify({
+    workspaceId: Array.from(lease.workspaceId),
+    leaseId: Array.from(lease.leaseId),
+    pinnedParent: Array.from(lease.pinnedParent),
+    expiresAtMillis: lease.expiresAtMillis.toString(),
+  });
+}
+
+function parseOperationWindowPhase(json: string): OperationWindowPhase {
+  const value = JSON.parse(json) as {
+    kind: string;
+    ticket?: unknown;
+    pinnedParent?: unknown;
+    pendingParent?: unknown | null;
+    activeLeaseCount?: number;
+  };
+  if (value.kind === "idle") return { kind: "idle" };
+  const pinnedParent = decodeFixedBytes(value.pinnedParent, 32, "pinned parent generation");
+  const pendingParent = value.pendingParent == null
+    ? undefined
+    : decodeFixedBytes(value.pendingParent, 32, "pending parent generation");
+  if (value.kind === "active") {
+    return { kind: "active", pinnedParent, pendingParent, activeLeaseCount: value.activeLeaseCount ?? 0 };
+  }
+  if (value.kind === "reconciling") {
+    return {
+      kind: "reconciling",
+      ticket: decodeFixedBytes(value.ticket, 16, "reconciliation ticket"),
+      pinnedParent,
+      pendingParent,
+    };
+  }
+  throw new TypeError("WASM operation window returned a malformed phase");
+}
+
+function parseOperationWindowClose(json: string): OperationWindowClose {
+  const value = JSON.parse(json) as {
+    kind: string;
+    remaining?: number;
+    ticket?: unknown;
+    pinnedParent?: unknown;
+    pendingParent?: unknown | null;
+  };
+  if (value.kind === "still-active" && value.remaining !== undefined) {
+    return { kind: "still-active", remaining: value.remaining };
+  }
+  if (value.kind === "already-closed") return { kind: "already-closed" };
+  if (value.kind === "reconcile") {
+    return {
+      kind: "reconcile",
+      ticket: decodeFixedBytes(value.ticket, 16, "reconciliation ticket"),
+      pinnedParent: decodeFixedBytes(value.pinnedParent, 32, "pinned parent generation"),
+      pendingParent: value.pendingParent == null
+        ? undefined
+        : decodeFixedBytes(value.pendingParent, 32, "pending parent generation"),
+    };
+  }
+  throw new TypeError("WASM operation window returned a malformed close result");
+}
+
+export function adaptWasmOperationWindowCoordinator(
+  raw: WasmRawOperationWindowCoordinator,
+): OperationWindowCoordinator {
+  return {
+    async begin(workspaceId, parent, owner, nowMillis, expiresAtMillis) {
+      return parseOperationWindowLease(await raw.beginJson(
+        workspaceId,
+        parent,
+        owner,
+        nowMillis,
+        expiresAtMillis,
+      ));
+    },
+    async observeParent(workspaceId, parent) {
+      return raw.observeParent(workspaceId, parent);
+    },
+    async finish(lease, nowMillis) {
+      return parseOperationWindowClose(await raw.finishJson(
+        encodeOperationWindowLease(lease),
+        nowMillis,
+      ));
+    },
+    async inspect(workspaceId) {
+      return parseOperationWindowPhase(await raw.inspectJson(workspaceId));
+    },
+    async finishWorkspace() {
+      throw new Error("browser operation windows require an injected workspace rebase provider");
+    },
+    async recoverWorkspace() {
+      throw new Error("browser operation windows require an injected workspace rebase provider");
+    },
+  };
 }
 
 function adaptVolume(raw: WasmRawVolume): FsVolume {
@@ -296,9 +511,10 @@ function adaptWorkspace(raw: WasmRawWorkspace): FsWorkspace {
     async remove(path: string): Promise<WorkspaceCommit> {
       return parseWorkspaceCommit(await raw.remove(path));
     },
-    async fork(destination: string): Promise<FsWorkspace> {
+    async fork(destination: string, idempotencyKey?: Uint8Array): Promise<FsWorkspace> {
       requireWorkspaceName(destination);
-      return adaptWorkspace(await raw.fork(destination));
+      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
+      return adaptWorkspace(await raw.fork(destination, idempotencyKey));
     },
     async forkAt(destination: string, generation: FsGeneration): Promise<FsWorkspace> {
       requireWorkspaceName(destination);

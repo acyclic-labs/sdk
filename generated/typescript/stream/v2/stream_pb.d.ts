@@ -660,6 +660,11 @@ export declare type CommitRequest = Message<"acyclic.stream.v2.CommitRequest"> &
    * @generated from field: bytes idempotency_key = 3;
    */
   idempotencyKey: Uint8Array;
+
+  /**
+   * @generated from field: optional uint64 deadline_unix_millis = 4;
+   */
+  deadlineUnixMillis?: bigint | undefined;
 };
 
 /**

@@ -1,0 +1,38 @@
+[package]
+name = "acyclic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "One Acyclic CLI, service, hook runner, MCP bridge, and installer"
+
+[[bin]]
+name = "acyclic"
+path = "src/main.rs"
+
+[dependencies]
+acyclic-fs = { path = "../../rust/crates/filesystem", features = ["local", "native-watch", "native-mount"] }
+acyclic-native-runtime = { path = "../../rust/crates/native-runtime" }
+blake3.workspace = true
+fs2.workspace = true
+hex.workspace = true
+libc = "0.2.177"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Memory",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

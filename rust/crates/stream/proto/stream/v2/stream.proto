@@ -155,6 +155,7 @@ message CommitRequest {
   repeated CommitCondition conditions = 1;
   repeated CommitMutation mutations = 2;
   bytes idempotency_key = 3;
+  optional uint64 deadline_unix_millis = 4;
 }
 
 message CommittedAppend {

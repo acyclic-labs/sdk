@@ -1,9 +1,46 @@
 import Ajv2020 from "ajv/dist/2020.js";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const root = new URL("..", import.meta.url);
+const rootPath = resolve(fileURLToPath(root));
 const load = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
+const retiredStem = "p" + "y";
+const retiredSuffixes = ["", "i", "c", "o"].map(suffix => `.${retiredStem}${suffix}`);
+const retiredTerms = ["p" + "ython", "py" + "test", "bo" + "to3", "boto" + "core"];
+const retiredPattern = `${retiredTerms.join("|")}|\\.${retiredStem}(?:i|c|o)?\\b`;
+const hasRetiredSuffix = path => retiredSuffixes.some(suffix => path.toLowerCase().endsWith(suffix));
+if (!retiredSuffixes.every(suffix => hasRetiredSuffix(`fixture${suffix}`)) || hasRetiredSuffix("fixture.mjs")) {
+  throw new Error("retired-runtime suffix gate failed its fixtures");
+}
+const fixturePattern = new RegExp(retiredPattern, "i");
+if (!fixturePattern.test(`${"p" + "ython"} fixture`) || fixturePattern.test("node fixture.mjs")) {
+  throw new Error("retired-runtime content gate failed its fixtures");
+}
+const git = (...args) => spawnSync("git", args, { cwd: rootPath, encoding: "utf8" });
+const tracked = git("ls-files", "-z", "--cached", "--others", "--exclude-standard");
+if (tracked.error || tracked.status !== 0) throw tracked.error ?? new Error(tracked.stderr.trim());
+const presentFiles = tracked.stdout
+  .split("\0")
+  .filter(Boolean)
+  .map(path => ({ path, fullPath: resolve(rootPath, path) }))
+  .filter(({ fullPath }) => {
+    if (fullPath !== rootPath && !fullPath.startsWith(`${rootPath}${sep}`)) {
+      throw new Error(`repository path escapes its root: ${fullPath}`);
+    }
+    return existsSync(fullPath);
+  });
+const retiredFile = presentFiles.find(({ path }) => hasRetiredSuffix(path))?.path;
+if (retiredFile) throw new Error(`retired-runtime source exists: ${retiredFile}`);
+const retiredContent = presentFiles.find(({ fullPath }) => {
+  const content = readFileSync(fullPath);
+  return !content.includes(0) && fixturePattern.test(content.toString("utf8"));
+})?.path;
+if (retiredContent) throw new Error(`retired-runtime reference exists: ${retiredContent}`);
 const ajv = new Ajv2020({ allErrors: true });
 ajv.compile(await load("rust/crates/conformance/schemas/runner-report.schema.json"));
 new Ajv2020({ allErrors: true }).compile(
@@ -149,7 +186,6 @@ for (const path of [
   }
 }
 for (const path of [
-  "rust/crates/filesystem-daemon/Cargo.toml",
   "rust/crates/filesystem-napi/Cargo.toml",
   "rust/crates/filesystem-wasm/Cargo.toml",
 ]) {

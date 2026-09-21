@@ -1,10 +1,7 @@
 /target/
-# acyclic CLI plugin: local release staging and the daemon's own state.
-/plugin/dist/
-/plugin/build/
+# Acyclic's runtime state never belongs to a repository.
 .acyclic/
 /target-*/
-__pycache__/
 /.tools/
 node_modules/
 /typescript/packages/*/dist/

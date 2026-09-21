@@ -265,6 +265,12 @@ pub fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
     write_all_at_impl(file, offset, bytes)
 }
 
+/// Applies the exact native Windows file-attribute bitset.
+#[cfg(windows)]
+pub fn set_file_attributes(path: &Path, attributes: u32) -> io::Result<()> {
+    windows::set_file_attributes(path, attributes)
+}
+
 /// One owned positional write whose buffer remains live through completion.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedWrite {
@@ -1396,6 +1402,65 @@ mod tests {
             ],
         ));
         assert!(matches!(write, Err(error) if error.kind() == io::ErrorKind::InvalidInput));
+        assert_eq!(std::fs::read(path)?, b"stable");
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn io_uring_rejects_cursor_aliases_before_any_submission() -> io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("invalid-io-uring-offset");
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        write_all_at(&file, 0, b"stable")?;
+        file.seek(SeekFrom::Start(3))?;
+
+        let mut byte = [0_u8; 1];
+        assert!(matches!(
+            read_at(&file, u64::MAX, &mut byte),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+        assert!(matches!(
+            write_all_at(&file, u64::MAX, b"x"),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+        assert!(matches!(
+            complete_read(read_batch_async(
+                file.try_clone()?,
+                vec![
+                    OwnedRead {
+                        offset: 0,
+                        length: 1,
+                    },
+                    OwnedRead {
+                        offset: u64::MAX,
+                        length: 1,
+                    },
+                ],
+            )),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+        assert!(matches!(
+            complete_write(write_all_batch_async(
+                file.try_clone()?,
+                vec![
+                    OwnedWrite {
+                        offset: 0,
+                        bytes: Bytes::from_static(b"changed"),
+                    },
+                    OwnedWrite {
+                        offset: u64::MAX,
+                        bytes: Bytes::from_static(b"x"),
+                    },
+                ],
+            )),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+        assert_eq!(file.stream_position()?, 3);
         assert_eq!(std::fs::read(path)?, b"stable");
         Ok(())
     }

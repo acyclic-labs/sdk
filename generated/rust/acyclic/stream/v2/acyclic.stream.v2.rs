@@ -237,6 +237,8 @@ pub struct CommitRequest {
     pub mutations: ::prost::alloc::vec::Vec<CommitMutation>,
     #[prost(bytes = "vec", tag = "3")]
     pub idempotency_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, optional, tag = "4")]
+    pub deadline_unix_millis: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CommittedAppend {

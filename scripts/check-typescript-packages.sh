@@ -40,7 +40,7 @@ verify_staged_input "$filesystem_archive"
 
 mkdir "$output"
 package_version() {
-  python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "$root/typescript/packages/$1/package.json"
+  node -p "require(process.argv[1]).version" "$root/typescript/packages/$1/package.json"
 }
 objects_version=$(package_version objects)
 stream_version=$(package_version stream)
@@ -52,7 +52,7 @@ pack() {
   local directory=$1 name=$2 version=$3 archive
   archive="$output/acyclic-labs-${directory}-${version}.tgz"
   (cd "$root/typescript/packages/$directory" && bun pm pack --ignore-scripts --filename "$archive" --quiet)
-  python3 "$root/scripts/validate-npm-package.py" "$archive" "$name" "$version" "typescript/packages/$directory"
+  node "$root/scripts/validate-npm-package.mjs" "$archive" "$name" "$version" "typescript/packages/$directory"
 }
 pack objects @acyclic-labs/objects "$objects_version"
 pack stream @acyclic-labs/stream "$stream_version"
@@ -60,10 +60,10 @@ pack machines @acyclic-labs/machines "$machines_version"
 pack sdk @acyclic-labs/sdk "$sdk_version"
 install -m 0644 "$inference_archive" "$output/acyclic-labs-inference-${inference_version}.tgz"
 install -m 0644 "$filesystem_archive" "$output/acyclic-labs-fs-${filesystem_version}.tgz"
-python3 scripts/validate-npm-package.py "$output/acyclic-labs-inference-${inference_version}.tgz" @acyclic-labs/inference "$inference_version" typescript/packages/inference
-python3 scripts/validate-npm-package.py "$output/acyclic-labs-fs-${filesystem_version}.tgz" @acyclic-labs/fs "$filesystem_version" typescript/packages/filesystem
+node scripts/validate-npm-package.mjs "$output/acyclic-labs-inference-${inference_version}.tgz" @acyclic-labs/inference "$inference_version" typescript/packages/inference
+node scripts/validate-npm-package.mjs "$output/acyclic-labs-fs-${filesystem_version}.tgz" @acyclic-labs/fs "$filesystem_version" typescript/packages/filesystem
 (cd "$output" && sha256sum ./*.tgz > SHA256SUMS)
-python3 scripts/typescript-qualification.py create "$output" "$source_sha"
+node scripts/typescript-qualification.mjs create "$output" "$source_sha"
 
 file_url() {
   if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"

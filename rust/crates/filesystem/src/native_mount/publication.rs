@@ -3,7 +3,7 @@
 use crate::MountSourceError;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Checkout, CheckoutCommitOutcome,
-    LiveMutationOutcome, OperationId, WorkBudget,
+    LiveMutationOutcome, OperationId, PublicationPermit, WorkBudget,
 };
 
 /// Seals the exact current checkout candidate under one stable operation ID.
@@ -21,12 +21,30 @@ pub async fn seal_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(), MountSourceError> {
+    seal_checkout_with_permit(
+        checkout,
+        operation_id,
+        PublicationPermit::Unrestricted,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+/// Seals a checkout under one authority-evaluated operation permit.
+pub async fn seal_checkout_with_permit<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    operation_id: OperationId,
+    permit: PublicationPermit,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<(), MountSourceError> {
     if !checkout.has_pending_mutations() {
         return Ok(());
     }
     match checkout.mode().mutations {
         crate::model::MutationMode::PrivateOverlay => match checkout
-            .commit(operation_id, budget, cancellation)
+            .commit_with_permit(operation_id, permit, budget, cancellation)
             .await
             .map_err(engine_error)?
             .value
@@ -37,19 +55,24 @@ pub async fn seal_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             | CheckoutCommitOutcome::Fenced { .. }
             | CheckoutCommitOutcome::IdempotencyConflict { .. } => Err(MountSourceError::Stale),
         },
-        crate::model::MutationMode::DirectLive => match checkout
-            .resume_live(operation_id, 8, 256, budget, cancellation)
-            .await
-            .map_err(engine_error)?
-            .value
-        {
-            LiveMutationOutcome::Committed { .. }
-            | LiveMutationOutcome::AlreadyCommitted { .. } => Ok(()),
-            LiveMutationOutcome::Conflicted { .. }
-            | LiveMutationOutcome::RetryLimit { .. }
-            | LiveMutationOutcome::Fenced { .. }
-            | LiveMutationOutcome::IdempotencyConflict { .. } => Err(MountSourceError::Stale),
-        },
+        crate::model::MutationMode::DirectLive if permit == PublicationPermit::Unrestricted => {
+            match checkout
+                .resume_live(operation_id, 8, 256, budget, cancellation)
+                .await
+                .map_err(engine_error)?
+                .value
+            {
+                LiveMutationOutcome::Committed { .. }
+                | LiveMutationOutcome::AlreadyCommitted { .. } => Ok(()),
+                LiveMutationOutcome::Conflicted { .. }
+                | LiveMutationOutcome::RetryLimit { .. }
+                | LiveMutationOutcome::Fenced { .. }
+                | LiveMutationOutcome::IdempotencyConflict { .. } => Err(MountSourceError::Stale),
+            }
+        }
+        crate::model::MutationMode::DirectLive => Err(MountSourceError::Unsupported(
+            "direct-live mounts do not support operation lease permits".to_owned(),
+        )),
         crate::model::MutationMode::None => Err(MountSourceError::Unsupported(
             "checkout does not admit native writes".to_owned(),
         )),

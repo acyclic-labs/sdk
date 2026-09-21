@@ -37,8 +37,9 @@ until their family version is published and tagged.
 - A single canonical Filesystem engine over the public Stream and Objects
   provider traits, with memory and durable-local compositions, sparse
   content-addressed generations, source capture, safe rebase and join,
-  S3 workspace views, native watchers and mounts, an optional local daemon,
-  browser WASM persistence, a TypeScript facade, and an N-API embedded engine.
+  S3 workspace views, native watchers and mounts, core-owned journaled
+  materialization, browser WASM persistence, a TypeScript facade, and an N-API
+  embedded engine.
 - A hierarchical Stream v2 Rust contract, bounded structural-sharing memory
   provider, checksummed crash-recoverable local provider, authenticated gRPC
   client/server adapter, exact retry semantics, immutable-prefix forks, gapless
@@ -70,7 +71,7 @@ until their family version is published and tagged.
 
 Everything shipped to or executed on a customer's machine belongs in this
 Apache-2.0 repository. That includes embedded and durable-local engines, local
-daemons and processes, browser implementations, native mounts, language
+services and processes, browser implementations, native mounts, language
 bindings, local recovery, model adapters, and customer-hosted providers. Each
 component has one public source of truth; private repositories consume released
 SDK contracts and code instead of keeping copies.
@@ -80,11 +81,16 @@ Private repositories contain only Acyclic-operated infrastructure such as
   internal administration, billing, and private
 qualification evidence.
 
-Run the local profile without an Acyclic account:
+Build and test the local Acyclic workspace product without an account:
 
 ```sh
-cargo run -p acyclic-cli
+cargo test -p acyclic
 ```
+
+The one product binary lives in `plugins/acyclic`. It auto-starts one per-user
+service, derives workspace routing from canonical cwd, exposes local history as
+`acyclic git`, and packages thin capability-aware adapters for coding agents.
+There is no `init` command and no repository marker.
 
 The Filesystem API keeps the same workspace, generation, and sparse transaction
 shape when its execution boundary moves to the hosted service:

@@ -77,7 +77,7 @@ if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; t
   source_manifest="$(wslpath -w "$source_manifest")"
   package_target_argument="$(wslpath -w "$package_target")"
 fi
-version="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$source_manifest" | python3 -c 'import json,sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "acyclic-inference"))')"
+version="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$source_manifest" | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk).on("end", () => console.log(JSON.parse(input).packages.find(item => item.name === "acyclic-inference").version))')"
 "$cargo_bin" package --locked --no-verify -p acyclic-inference --manifest-path "$source_manifest" --target-dir "$package_target_argument"
 crate="$package_target/package/acyclic-inference-${version}.crate"
 

@@ -2519,6 +2519,8 @@ fn status(error: &WorkspaceError) -> Status {
         | WorkspaceError::EmptyContentSet
         | WorkspaceError::ContentLengthOverflow => Status::invalid_argument(error.to_string()),
         WorkspaceError::ForeignGeneration
+        | WorkspaceError::StaleGeneration
+        | WorkspaceError::StaleIdentity
         | WorkspaceError::IncompatibleWorkspace
         | WorkspaceError::ChangeSetContinuity
         | WorkspaceError::RetentionConflict
@@ -2527,6 +2529,8 @@ fn status(error: &WorkspaceError) -> Status {
         | WorkspaceError::JoinLimit
         | WorkspaceError::ChangedPathLimit
         | WorkspaceError::NotFork => Status::failed_precondition(error.to_string()),
+        WorkspaceError::Cancelled(_) => Status::cancelled(error.to_string()),
+        WorkspaceError::Work(_) => Status::resource_exhausted(error.to_string()),
         WorkspaceError::Engine(_) => Status::unavailable(error.to_string()),
     }
 }

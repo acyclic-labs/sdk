@@ -18,6 +18,7 @@ pub use opfs::{OpfsAcceleratedObjectStore, OpfsOpenError};
 #[cfg(target_arch = "wasm32")]
 mod bindings {
     use super::{IndexedDbAuthorityStore, IndexedDbObjectStore, OpfsAcceleratedObjectStore};
+    use acyclic_fs::compat_wire;
     use acyclic_fs::kernel::{
         AttributeClass, AttributeName, DecodeLimits, ExtentKind, ExtentSeekTarget, FileKind,
         FileMetadata, FilePayload, FileRecord, LogicalName, NameEncoding, NamespacePath,
@@ -32,18 +33,22 @@ mod bindings {
     use acyclic_fs::{
         ApplyOptions, AuthoredMutation, ByteRange, CachedObjectStore, CancellationToken, ChangeSet,
         Checkout, CheckoutCommitOutcome, Digest, EmbeddedCapabilities, FileCloneRequest, FileId,
-        ForkOptions, Fs, Generation, GenerationExportManifest, IdempotencyKey, JoinHistory,
-        JoinOutcome, JoinPlan, LiveMutationOutcome, MergeConflict, MergePreparation,
-        NamedAttributeWriteMode, ObjectCacheOptions, ObjectId, ObjectKind, ObjectReadRequest,
-        ObjectResidency, OperationId, PromotionAdmission, PromotionDestination, PromotionRejection,
+        ForkOptions, Fs, Generation, GenerationExportManifest, GitCommand, GitCompatRepository,
+        IdempotencyKey, JoinHistory, JoinOutcome, JoinPlan, LiveMutationOutcome,
+        MemoryGitCompatStore, MemoryOperationWindowStore, MemoryWorkspaceContextStore,
+        MergeConflict, MergePreparation, NamedAttributeWriteMode, ObjectCacheOptions, ObjectId,
+        ObjectKind, ObjectReadRequest, ObjectResidency, OperationId, OperationLeaseId,
+        OperationWindowCoordinator, OperationWindowFinish, OperationWindowLease,
+        OperationWindowPhase, PromotionAdmission, PromotionDestination, PromotionRejection,
         PromotionSpeculatorOptions, ProviderObjectStore, ResidencyAdmission, ResidencyHint,
         ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions, ResolvedFile,
         SpeculationController, SpeculationOptions, StorageLocationId, StorageTier,
         StreamAuthorityStore, Transaction, TransactionCommit, TransactionConflict,
         TransactionConflictRegion, TransactionDependencyUse, TransactionRebase,
-        TransactionSparseSeek, Volume, VolumeId, WorkBudget, Workspace, WorkspaceDelete,
-        WorkspaceDirectoryPage, WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceMetadata,
-        WorkspaceRebase, WorkspaceStat, decode_generation_export_manifest,
+        TransactionSparseSeek, Volume, VolumeId, WorkBudget, Workspace, WorkspaceContextId,
+        WorkspaceContextRegistry, WorkspaceContextRoot, WorkspaceDelete, WorkspaceDirectoryPage,
+        WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase,
+        WorkspaceRootId, WorkspaceStat, decode_generation_export_manifest,
         encode_generation_export_manifest,
     };
     use serde::{Deserialize, Serialize};
@@ -55,6 +60,70 @@ mod bindings {
     type OpfsObjects = CachedObjectStore<OpfsAcceleratedObjectStore>;
     type MemoryAuthority = StreamAuthorityStore<acyclic_stream::MemoryStream>;
     type MemoryObjects = CachedObjectStore<ProviderObjectStore<acyclic_objects::MemoryObjects>>;
+
+    fn wire_error(error: impl std::fmt::Display) -> JsValue {
+        browser_error("AcyclicCompatibilityWireError", &error.to_string())
+    }
+
+    /// Encodes a merge-plan payload in the versioned compatibility envelope.
+    #[wasm_bindgen(js_name = encodeMergePlanJson)]
+    pub fn encode_merge_plan_json(value_json: String) -> Result<String, JsValue> {
+        compat_wire::encode_merge_plan_payload(&value_json).map_err(wire_error)
+    }
+
+    /// Decodes a versioned merge-plan envelope to its canonical payload.
+    #[wasm_bindgen(js_name = decodeMergePlanJson)]
+    pub fn decode_merge_plan_json(value_json: String) -> Result<String, JsValue> {
+        compat_wire::decode_merge_plan_payload(&value_json).map_err(wire_error)
+    }
+
+    /// Encodes a merge-candidate payload in the versioned compatibility envelope.
+    #[wasm_bindgen(js_name = encodeMergeCandidateJson)]
+    pub fn encode_merge_candidate_json(value_json: String) -> Result<String, JsValue> {
+        compat_wire::encode_merge_candidate_payload(&value_json).map_err(wire_error)
+    }
+
+    /// Decodes a versioned merge-candidate envelope to its canonical payload.
+    #[wasm_bindgen(js_name = decodeMergeCandidateJson)]
+    pub fn decode_merge_candidate_json(value_json: String) -> Result<String, JsValue> {
+        compat_wire::decode_merge_candidate_payload(&value_json).map_err(wire_error)
+    }
+
+    /// Encodes a multi-root plan payload in the versioned compatibility envelope.
+    #[wasm_bindgen(js_name = encodeMultiRootPlanJson)]
+    pub fn encode_multi_root_plan_json(value_json: String) -> Result<String, JsValue> {
+        compat_wire::encode_multi_root_plan_payload(&value_json).map_err(wire_error)
+    }
+
+    /// Decodes a versioned multi-root plan envelope to its canonical payload.
+    #[wasm_bindgen(js_name = decodeMultiRootPlanJson)]
+    pub fn decode_multi_root_plan_json(value_json: String) -> Result<String, JsValue> {
+        compat_wire::decode_multi_root_plan_payload(&value_json).map_err(wire_error)
+    }
+
+    /// Encodes a multi-root candidate payload in the compatibility envelope.
+    #[wasm_bindgen(js_name = encodeMultiRootCandidateJson)]
+    pub fn encode_multi_root_candidate_json(value_json: String) -> Result<String, JsValue> {
+        compat_wire::encode_multi_root_candidate_payload(&value_json).map_err(wire_error)
+    }
+
+    /// Decodes a multi-root candidate envelope to its canonical payload.
+    #[wasm_bindgen(js_name = decodeMultiRootCandidateJson)]
+    pub fn decode_multi_root_candidate_json(value_json: String) -> Result<String, JsValue> {
+        compat_wire::decode_multi_root_candidate_payload(&value_json).map_err(wire_error)
+    }
+
+    /// Encodes a publication payload in the versioned compatibility envelope.
+    #[wasm_bindgen(js_name = encodePublicationJson)]
+    pub fn encode_publication_json(value_json: String) -> Result<String, JsValue> {
+        compat_wire::encode_publication_payload(&value_json).map_err(wire_error)
+    }
+
+    /// Decodes a versioned publication envelope to its canonical payload.
+    #[wasm_bindgen(js_name = decodePublicationJson)]
+    pub fn decode_publication_json(value_json: String) -> Result<String, JsValue> {
+        compat_wire::decode_publication_payload(&value_json).map_err(wire_error)
+    }
 
     #[derive(Clone)]
     enum BrowserEngine {
@@ -126,6 +195,71 @@ mod bindings {
     pub struct BrowserFs {
         engine: Option<BrowserEngine>,
         capabilities: Capabilities,
+    }
+
+    /// Browser-safe Git-shaped compatibility history over the canonical Rust state machine.
+    #[wasm_bindgen]
+    pub struct BrowserGitCompatRepository {
+        inner: GitCompatRepository<MemoryGitCompatStore>,
+    }
+
+    /// Browser-safe recursive multi-root context registry.
+    #[wasm_bindgen]
+    pub struct BrowserWorkspaceContextRegistry {
+        inner: WorkspaceContextRegistry<MemoryWorkspaceContextStore>,
+    }
+
+    /// Browser-safe overlapping-operation coordinator over process-local state.
+    #[wasm_bindgen]
+    pub struct BrowserOperationWindowCoordinator {
+        inner: OperationWindowCoordinator<MemoryOperationWindowStore>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct BrowserOperationWindowLease {
+        workspace_id: Vec<u8>,
+        lease_id: Vec<u8>,
+        pinned_parent: Vec<u8>,
+        expires_at_millis: String,
+    }
+
+    #[derive(Serialize)]
+    #[serde(
+        tag = "kind",
+        rename_all = "kebab-case",
+        rename_all_fields = "camelCase"
+    )]
+    enum BrowserOperationWindowPhase {
+        Idle,
+        Active {
+            pinned_parent: Vec<u8>,
+            pending_parent: Option<Vec<u8>>,
+            active_lease_count: usize,
+        },
+        Reconciling {
+            ticket: Vec<u8>,
+            pinned_parent: Vec<u8>,
+            pending_parent: Option<Vec<u8>>,
+        },
+    }
+
+    #[derive(Serialize)]
+    #[serde(
+        tag = "kind",
+        rename_all = "kebab-case",
+        rename_all_fields = "camelCase"
+    )]
+    enum BrowserOperationWindowFinish {
+        StillActive {
+            remaining: u32,
+        },
+        Reconcile {
+            ticket: Vec<u8>,
+            pinned_parent: Vec<u8>,
+            pending_parent: Option<Vec<u8>>,
+        },
+        AlreadyClosed,
     }
 
     /// Browser owner of one volume generation's residency and promotion engines.
@@ -2506,6 +2640,277 @@ mod bindings {
     struct GenerationTransferCursorResult {
         next_object: String,
         work: acyclic_fs::WorkCounters,
+    }
+
+    #[wasm_bindgen]
+    impl BrowserWorkspaceContextRegistry {
+        /// Creates an in-process registry. Host persistence can be injected by
+        /// the JavaScript embedding when it is available.
+        #[wasm_bindgen(constructor)]
+        pub fn new() -> BrowserWorkspaceContextRegistry {
+            Self {
+                inner: WorkspaceContextRegistry::new(MemoryWorkspaceContextStore::new()),
+            }
+        }
+
+        /// Registers one root context from the shared serde contract.
+        #[wasm_bindgen(js_name = registerRootJson)]
+        pub async fn register_root_json(
+            &self,
+            context_id: Vec<u8>,
+            roots_json: String,
+        ) -> Result<String, JsValue> {
+            let roots: Vec<WorkspaceContextRoot> =
+                serde_json::from_str(&roots_json).map_err(js_error)?;
+            let context = self
+                .inner
+                .register_root(
+                    WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
+                    roots,
+                )
+                .await
+                .map_err(js_error)?;
+            workspace_context_json(&context)
+        }
+
+        /// Registers an exact direct child from the shared serde contract.
+        #[wasm_bindgen(js_name = registerChildJson)]
+        pub async fn register_child_json(
+            &self,
+            context_id: Vec<u8>,
+            parent_context_id: Vec<u8>,
+            roots_json: String,
+        ) -> Result<String, JsValue> {
+            let roots: Vec<WorkspaceContextRoot> =
+                serde_json::from_str(&roots_json).map_err(js_error)?;
+            let context = self
+                .inner
+                .register_child(
+                    WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
+                    WorkspaceContextId::from_bytes(fixed_16(&parent_context_id)?),
+                    roots,
+                )
+                .await
+                .map_err(js_error)?;
+            workspace_context_json(&context)
+        }
+
+        /// Resolves one context as stable JSON.
+        #[wasm_bindgen(js_name = resolveJson)]
+        pub async fn resolve_json(&self, context_id: Vec<u8>) -> Result<String, JsValue> {
+            let context = self
+                .inner
+                .resolve(WorkspaceContextId::from_bytes(fixed_16(&context_id)?))
+                .await
+                .map_err(js_error)?;
+            workspace_context_json(&context)
+        }
+
+        /// Freezes or resumes one durable context.
+        #[wasm_bindgen(js_name = setActiveJson)]
+        pub async fn set_active_json(
+            &self,
+            context_id: Vec<u8>,
+            active: bool,
+        ) -> Result<String, JsValue> {
+            let context = self
+                .inner
+                .set_active(
+                    WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
+                    active,
+                )
+                .await
+                .map_err(js_error)?;
+            workspace_context_json(&context)
+        }
+
+        /// Advances one root binding after a compatibility branch switch.
+        #[wasm_bindgen(js_name = setWorkspaceJson)]
+        pub async fn set_workspace_json(
+            &self,
+            context_id: Vec<u8>,
+            root_id: Vec<u8>,
+            workspace_id: Vec<u8>,
+            workspace_name: String,
+            parent_workspace_id: Option<Vec<u8>>,
+        ) -> Result<String, JsValue> {
+            let parent = parent_workspace_id
+                .as_ref()
+                .map(|value| fixed_16(value).map(WorkspaceId::from_bytes))
+                .transpose()?;
+            let context = self
+                .inner
+                .set_workspace(
+                    WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
+                    WorkspaceRootId::from_bytes(fixed_16(&root_id)?),
+                    WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
+                    workspace_name,
+                    parent,
+                )
+                .await
+                .map_err(js_error)?;
+            workspace_context_json(&context)
+        }
+
+        /// Recursively tombstones a direct-child subtree.
+        #[wasm_bindgen(js_name = discardSubtreeJson)]
+        pub async fn discard_subtree_json(
+            &self,
+            parent_context_id: Vec<u8>,
+            child_context_id: Vec<u8>,
+            maximum: u32,
+        ) -> Result<String, JsValue> {
+            let discarded = self
+                .inner
+                .discard_subtree(
+                    WorkspaceContextId::from_bytes(fixed_16(&parent_context_id)?),
+                    WorkspaceContextId::from_bytes(fixed_16(&child_context_id)?),
+                    maximum,
+                )
+                .await
+                .map_err(js_error)?;
+            serde_json::to_string(&discarded).map_err(js_error)
+        }
+    }
+
+    #[wasm_bindgen]
+    impl BrowserOperationWindowCoordinator {
+        /// Creates one process-local deterministic coordinator.
+        #[wasm_bindgen(constructor)]
+        pub fn new() -> BrowserOperationWindowCoordinator {
+            Self {
+                inner: OperationWindowCoordinator::new(MemoryOperationWindowStore::new()),
+            }
+        }
+
+        /// Begins an overlapping operation lease.
+        #[wasm_bindgen(js_name = beginJson)]
+        pub async fn begin_json(
+            &self,
+            workspace_id: Vec<u8>,
+            parent: Vec<u8>,
+            owner: String,
+            now_millis: u64,
+            expires_at_millis: u64,
+        ) -> Result<String, JsValue> {
+            let lease = self
+                .inner
+                .begin(
+                    WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
+                    acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+                        &parent,
+                        "parent generation",
+                    )?)),
+                    owner,
+                    now_millis,
+                    expires_at_millis,
+                )
+                .await
+                .map_err(js_error)?;
+            serde_json::to_string(&browser_operation_window_lease(&lease)).map_err(js_error)
+        }
+
+        /// Coalesces a newer parent while operations remain active.
+        #[wasm_bindgen(js_name = observeParent)]
+        pub async fn observe_parent(
+            &self,
+            workspace_id: Vec<u8>,
+            parent: Vec<u8>,
+        ) -> Result<bool, JsValue> {
+            self.inner
+                .observe_parent(
+                    WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
+                    acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+                        &parent,
+                        "parent generation",
+                    )?)),
+                )
+                .await
+                .map_err(js_error)
+        }
+
+        /// Finishes one lease and returns the final-close reconciliation ticket.
+        #[wasm_bindgen(js_name = finishJson)]
+        pub async fn finish_json(
+            &self,
+            lease_json: String,
+            now_millis: u64,
+        ) -> Result<String, JsValue> {
+            let lease: BrowserOperationWindowLease =
+                serde_json::from_str(&lease_json).map_err(js_error)?;
+            let finish = self
+                .inner
+                .finish(&operation_window_lease(lease)?, now_millis)
+                .await
+                .map_err(js_error)?;
+            serde_json::to_string(&browser_operation_window_finish(finish)).map_err(js_error)
+        }
+
+        /// Inspects the current durable phase.
+        #[wasm_bindgen(js_name = inspectJson)]
+        pub async fn inspect_json(&self, workspace_id: Vec<u8>) -> Result<String, JsValue> {
+            let snapshot = self
+                .inner
+                .inspect(WorkspaceId::from_bytes(fixed_16(&workspace_id)?))
+                .await
+                .map_err(js_error)?;
+            serde_json::to_string(&browser_operation_window_phase(snapshot.phase)).map_err(js_error)
+        }
+    }
+
+    #[wasm_bindgen]
+    impl BrowserGitCompatRepository {
+        /// Creates process-local compatibility state for one SDK workspace.
+        #[wasm_bindgen(constructor)]
+        pub fn new(workspace_id: Vec<u8>) -> Result<BrowserGitCompatRepository, JsValue> {
+            Ok(Self {
+                inner: GitCompatRepository::new(
+                    WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
+                    MemoryGitCompatStore::new(),
+                ),
+            })
+        }
+
+        /// Parses and executes a Git-shaped argv command using the Rust source of truth.
+        #[wasm_bindgen(js_name = executeArgvJson)]
+        pub async fn execute_argv_json(
+            &self,
+            argv: Vec<String>,
+            workspace_generation: Vec<u8>,
+            default_author: String,
+            now_seconds: i64,
+        ) -> Result<String, JsValue> {
+            let generation = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+                &workspace_generation,
+                "workspace generation",
+            )?));
+            let output = self
+                .inner
+                .execute_argv(&argv, generation, &default_author, now_seconds)
+                .await
+                .map_err(js_error)?;
+            serde_json::to_string(&output).map_err(js_error)
+        }
+
+        /// Executes one typed command encoded with the public serde contract.
+        #[wasm_bindgen(js_name = executeJson)]
+        pub async fn execute_json(
+            &self,
+            command_json: String,
+            workspace_generation: Vec<u8>,
+        ) -> Result<String, JsValue> {
+            let command: GitCommand = serde_json::from_str(&command_json).map_err(js_error)?;
+            let generation = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+                &workspace_generation,
+                "workspace generation",
+            )?));
+            let output = self
+                .inner
+                .execute(command, generation)
+                .await
+                .map_err(js_error)?;
+            serde_json::to_string(&output).map_err(js_error)
+        }
     }
 
     #[wasm_bindgen]
@@ -5693,11 +6098,20 @@ mod bindings {
     }
 
     fn js_error(error: impl std::fmt::Display) -> JsValue {
-        JsValue::from_str(&error.to_string())
+        browser_error("AcyclicFilesystemError", &error.to_string())
     }
 
     fn speculation_busy() -> JsValue {
-        JsValue::from_str("speculation controller is already executing an operation")
+        browser_error(
+            "AcyclicFilesystemError",
+            "speculation controller is already executing an operation",
+        )
+    }
+
+    fn browser_error(name: &str, message: &str) -> JsValue {
+        let error = js_sys::Error::new(message);
+        error.set_name(name);
+        error.into()
     }
 
     const fn browser_speculation_options(
@@ -6138,6 +6552,94 @@ mod bindings {
                 length,
             }),
         })
+    }
+
+    fn browser_operation_window_lease(lease: &OperationWindowLease) -> BrowserOperationWindowLease {
+        BrowserOperationWindowLease {
+            workspace_id: lease.workspace_id.into_bytes().to_vec(),
+            lease_id: lease.lease_id.into_bytes().to_vec(),
+            pinned_parent: lease.pinned_parent.digest().as_bytes().to_vec(),
+            expires_at_millis: lease.expires_at_millis.to_string(),
+        }
+    }
+
+    fn operation_window_lease(
+        lease: BrowserOperationWindowLease,
+    ) -> Result<OperationWindowLease, JsValue> {
+        Ok(OperationWindowLease {
+            workspace_id: WorkspaceId::from_bytes(fixed_16(&lease.workspace_id)?),
+            lease_id: OperationLeaseId::from_bytes(fixed_16(&lease.lease_id)?),
+            pinned_parent: acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+                &lease.pinned_parent,
+                "pinned parent generation",
+            )?)),
+            expires_at_millis: lease.expires_at_millis.parse().map_err(|_| {
+                JsValue::from_str("lease expiry must be an unsigned decimal integer")
+            })?,
+        })
+    }
+
+    fn workspace_context_json(context: &acyclic_fs::WorkspaceContext) -> Result<String, JsValue> {
+        let mut value = serde_json::to_value(context).map_err(js_error)?;
+        let revision = value
+            .get("revision")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| JsValue::from_str("workspace context revision is invalid"))?;
+        value
+            .as_object_mut()
+            .ok_or_else(|| JsValue::from_str("workspace context is invalid"))?
+            .insert(
+                "revision".to_owned(),
+                serde_json::Value::String(revision.to_string()),
+            );
+        serde_json::to_string(&value).map_err(js_error)
+    }
+
+    fn browser_operation_window_phase(phase: OperationWindowPhase) -> BrowserOperationWindowPhase {
+        match phase {
+            OperationWindowPhase::Idle => BrowserOperationWindowPhase::Idle,
+            OperationWindowPhase::Active {
+                pinned_parent,
+                leases,
+                pending_parent,
+            } => BrowserOperationWindowPhase::Active {
+                pinned_parent: pinned_parent.digest().as_bytes().to_vec(),
+                pending_parent: pending_parent
+                    .map(|generation| generation.digest().as_bytes().to_vec()),
+                active_lease_count: leases.len(),
+            },
+            OperationWindowPhase::Reconciling {
+                ticket,
+                pinned_parent,
+                pending_parent,
+                ..
+            } => BrowserOperationWindowPhase::Reconciling {
+                ticket: ticket.into_bytes().to_vec(),
+                pinned_parent: pinned_parent.digest().as_bytes().to_vec(),
+                pending_parent: pending_parent
+                    .map(|generation| generation.digest().as_bytes().to_vec()),
+            },
+        }
+    }
+
+    fn browser_operation_window_finish(
+        finish: OperationWindowFinish,
+    ) -> BrowserOperationWindowFinish {
+        match finish {
+            OperationWindowFinish::StillActive { remaining } => {
+                BrowserOperationWindowFinish::StillActive { remaining }
+            }
+            OperationWindowFinish::AlreadyClosed => BrowserOperationWindowFinish::AlreadyClosed,
+            OperationWindowFinish::Reconcile(reconcile) => {
+                BrowserOperationWindowFinish::Reconcile {
+                    ticket: reconcile.ticket.into_bytes().to_vec(),
+                    pinned_parent: reconcile.pinned_parent.digest().as_bytes().to_vec(),
+                    pending_parent: reconcile
+                        .pending_parent
+                        .map(|generation| generation.digest().as_bytes().to_vec()),
+                }
+            }
+        }
     }
 
     fn fixed_16(bytes: &[u8]) -> Result<[u8; 16], JsValue> {
@@ -7121,4 +7623,11 @@ mod bindings {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use bindings::{BrowserCheckout, BrowserFs, BrowserVolume, open_browser_fs, open_memory_fs};
+pub use bindings::{
+    BrowserCheckout, BrowserFs, BrowserGitCompatRepository, BrowserOperationWindowCoordinator,
+    BrowserVolume, BrowserWorkspaceContextRegistry, decode_merge_candidate_json,
+    decode_merge_plan_json, decode_multi_root_candidate_json, decode_multi_root_plan_json,
+    decode_publication_json, encode_merge_candidate_json, encode_merge_plan_json,
+    encode_multi_root_candidate_json, encode_multi_root_plan_json, encode_publication_json,
+    open_browser_fs, open_memory_fs,
+};

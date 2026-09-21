@@ -434,6 +434,7 @@ async fn load_path_lookups<S: AsyncObjectStore>(
     Ok((paths, path_bytes))
 }
 
+#[allow(clippy::too_many_lines)]
 async fn load_identity_lookups<S: AsyncObjectStore>(
     context: &FreshnessContext<'_, S>,
     plan: &MutationPlan,
@@ -445,7 +446,7 @@ async fn load_identity_lookups<S: AsyncObjectStore>(
     for operation in plan.operations() {
         maximum_identity_uses = maximum_identity_uses
             .checked_add(match operation {
-                Mutation::File { .. } => 1,
+                Mutation::File { .. } | Mutation::Restore { .. } => 1,
                 Mutation::CloneFileRange { .. } => 2,
                 _ => 0,
             })
@@ -459,6 +460,7 @@ async fn load_identity_lookups<S: AsyncObjectStore>(
     for operation in plan.operations() {
         match operation {
             Mutation::File { file_id, .. } => identity_ids.push(*file_id),
+            Mutation::Restore { record, .. } => identity_ids.push(record.file_id),
             Mutation::CloneFileRange {
                 source_file_id,
                 destination_file_id,
@@ -517,7 +519,20 @@ async fn load_identity_lookups<S: AsyncObjectStore>(
                     candidate.cmp(file_id)
                 });
                 charge_items(work, comparisons.get(), context.budget)?;
-                if created.is_err() {
+                let mut restored = false;
+                let mut restore_examined = 0_u64;
+                for operation in plan.operations() {
+                    restore_examined = restore_examined
+                        .checked_add(1)
+                        .ok_or_else(|| failed(WorkError::Overflow.into(), *work))?;
+                    if matches!(operation, Mutation::Restore { record, .. } if record.file_id == *file_id)
+                    {
+                        restored = true;
+                        break;
+                    }
+                }
+                charge_items(work, restore_examined, context.budget)?;
+                if created.is_err() && !restored {
                     return Err(failed(GenerationMutationError::MissingSource, *work));
                 }
             }

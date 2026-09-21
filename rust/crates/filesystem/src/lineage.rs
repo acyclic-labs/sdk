@@ -17,6 +17,7 @@ use std::sync::Mutex;
 use thiserror::Error;
 
 const LINEAGE_VERSION: u32 = 1;
+const MAXIMUM_LINEAGE_CAS_ATTEMPTS: usize = 16;
 
 /// Durable identity and direct parent of one SDK workspace.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -25,6 +26,8 @@ pub struct WorkspaceLineageRecord {
     pub version: u32,
     /// Monotonic optimistic-concurrency revision.
     pub revision: u64,
+    /// Whether the planned child authority and its initial generation exist.
+    pub ready: bool,
     /// Child workspace described by this record.
     pub workspace_id: WorkspaceId,
     /// Canonical workspace name needed to reopen it after process restart.
@@ -37,6 +40,23 @@ pub struct WorkspaceLineageRecord {
     pub fork_generation: GenerationId,
     /// Exact first generation in the child workspace, used for local diffs.
     pub initial_generation: GenerationId,
+}
+
+fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
+    let parent_shape = match (
+        record.parent_workspace_id,
+        record.parent_workspace_name.as_deref(),
+    ) {
+        (None, None) => record.fork_generation == record.initial_generation,
+        (Some(parent_id), Some(parent_name)) => {
+            parent_id != record.workspace_id && crate::WorkspaceName::new(parent_name).is_ok()
+        }
+        _ => false,
+    };
+    record.version == LINEAGE_VERSION
+        && record.revision > 0
+        && crate::WorkspaceName::new(&record.workspace_name).is_ok()
+        && parent_shape
 }
 
 /// Durable optimistic-concurrency adapter for workspace lineage.
@@ -74,6 +94,9 @@ pub enum WorkspaceLineageError<E: std::error::Error + 'static> {
     /// An existing workspace is already bound to different lineage.
     #[error("workspace lineage conflicts with its durable registration")]
     ConflictingRegistration,
+    /// Optimistic registration contention exceeded the bounded retry policy.
+    #[error("workspace lineage registration remained contended")]
+    Contended,
     /// Publication was requested by a workspace other than the direct parent.
     #[error("only the direct parent may receive workspace publication")]
     UnauthorizedJoin,
@@ -113,7 +136,8 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             .await
             .map_err(WorkspaceLineageError::Store)?
         {
-            if existing.version == LINEAGE_VERSION
+            if lineage_shape_is_valid(&existing)
+                && existing.ready
                 && existing.workspace_id == workspace.id()
                 && existing.workspace_name == workspace.name().as_str()
                 && existing.parent_workspace_id.is_none()
@@ -127,6 +151,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         self.register(WorkspaceLineageRecord {
             version: LINEAGE_VERSION,
             revision: 1,
+            ready: true,
             workspace_id: workspace.id(),
             workspace_name: workspace.name().as_str().to_owned(),
             parent_workspace_id: None,
@@ -144,26 +169,103 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         destination: impl AsRef<str>,
         idempotency_key: IdempotencyKey,
     ) -> Result<Workspace<A, O>, WorkspaceLineageError<S::Error>> {
+        let destination =
+            crate::WorkspaceName::new(destination.as_ref()).map_err(WorkspaceError::from)?;
         let generation = parent.head().await?;
+        let child_id = parent
+            .fork_workspace_id(destination.as_str())
+            .map_err(WorkspaceError::from)?;
+        let planned = WorkspaceLineageRecord {
+            version: LINEAGE_VERSION,
+            revision: 1,
+            ready: false,
+            workspace_id: child_id,
+            workspace_name: destination.as_str().to_owned(),
+            parent_workspace_id: Some(parent.id()),
+            parent_workspace_name: Some(parent.name().as_str().to_owned()),
+            fork_generation: generation.id(),
+            initial_generation: generation.id(),
+        };
+        let planned = self.register(planned).await?;
         let child = parent
             .fork(
-                destination,
+                destination.as_str(),
                 ForkOptions::from_generation(generation.clone(), idempotency_key),
             )
             .await?;
         let initial_generation = child.head().await?;
+        if child.id() != child_id {
+            return Err(WorkspaceLineageError::ConflictingRegistration);
+        }
+        if planned.ready && planned.initial_generation != initial_generation.id() {
+            return Err(WorkspaceLineageError::ConflictingRegistration);
+        }
+        let mut ready = planned;
+        ready.ready = true;
+        ready.initial_generation = initial_generation.id();
+        self.promote_ready(ready).await?;
+        Ok(child)
+    }
+
+    /// Registers a child created by another SDK-owned fork façade.
+    ///
+    /// Lazy workspaces use this after their source-overlay binding and physical
+    /// workspace fork have both become durable. Repeating the exact lineage is
+    /// idempotent; a competing parent or fork point is rejected.
+    pub async fn register_existing_child<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        &self,
+        parent: &Workspace<A, O>,
+        child: &Workspace<A, O>,
+        fork_generation: crate::GenerationId,
+    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
+        let initial_generation = child.head().await?.id();
+        self.register_existing_child_at_generation(
+            parent,
+            child,
+            fork_generation,
+            initial_generation,
+        )
+        .await
+    }
+
+    /// Registers an existing child after it has advanced beyond its initial
+    /// fork generation, while still authenticating that exact fork point.
+    pub async fn register_existing_child_at_generation<
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    >(
+        &self,
+        parent: &Workspace<A, O>,
+        child: &Workspace<A, O>,
+        fork_generation: crate::GenerationId,
+        initial_generation: crate::GenerationId,
+    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
+        // Do not let a metadata adapter manufacture publication authority.
+        // The child's authenticated initial generation must be the generation
+        // root produced by an SDK fork from the claimed parent generation.
+        parent.generation(fork_generation).await?;
+        let initial = child.generation(initial_generation).await?;
+        let expected_child = parent
+            .fork_workspace_id(child.name().as_str())
+            .map_err(WorkspaceError::from)?;
+        if child.id() != expected_child {
+            return Err(WorkspaceLineageError::UnauthorizedJoin);
+        }
+        if initial.parents().await?.as_slice() != [fork_generation] {
+            return Err(WorkspaceLineageError::UnauthorizedJoin);
+        }
         self.register(WorkspaceLineageRecord {
             version: LINEAGE_VERSION,
             revision: 1,
+            ready: true,
             workspace_id: child.id(),
             workspace_name: child.name().as_str().to_owned(),
             parent_workspace_id: Some(parent.id()),
             parent_workspace_name: Some(parent.name().as_str().to_owned()),
-            fork_generation: generation.id(),
-            initial_generation: initial_generation.id(),
+            fork_generation,
+            initial_generation,
         })
-        .await?;
-        Ok(child)
+        .await
     }
 
     /// Verifies that `parent` is the child's exact direct publication target.
@@ -222,7 +324,10 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             .await
             .map_err(WorkspaceLineageError::Store)?
             .ok_or(WorkspaceLineageError::IncompatibleState)?;
-        if record.version != LINEAGE_VERSION || record.workspace_id != workspace_id {
+        if record.workspace_id != workspace_id || !lineage_shape_is_valid(&record) {
+            return Err(WorkspaceLineageError::IncompatibleState);
+        }
+        if !record.ready {
             return Err(WorkspaceLineageError::IncompatibleState);
         }
         Ok(record)
@@ -232,20 +337,19 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         &self,
         record: WorkspaceLineageRecord,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
+        if !lineage_shape_is_valid(&record) {
+            return Err(WorkspaceLineageError::IncompatibleState);
+        }
         if let Some(existing) = self
             .store
             .load(record.workspace_id)
             .await
             .map_err(WorkspaceLineageError::Store)?
         {
-            if existing.version == LINEAGE_VERSION
-                && existing.workspace_id == record.workspace_id
-                && existing.workspace_name == record.workspace_name
-                && existing.parent_workspace_id == record.parent_workspace_id
-                && existing.parent_workspace_name == record.parent_workspace_name
-                && existing.fork_generation == record.fork_generation
-                && existing.initial_generation == record.initial_generation
-            {
+            if lineage_shape_is_valid(&existing) && same_lineage(&existing, &record) {
+                if record.ready && !existing.ready {
+                    return self.promote_ready(record).await;
+                }
                 return Ok(existing);
             }
             return Err(WorkspaceLineageError::ConflictingRegistration);
@@ -258,18 +362,74 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         {
             return Ok(record);
         }
-        let existing = self.required(record.workspace_id).await?;
-        if existing.parent_workspace_id == record.parent_workspace_id
-            && existing.workspace_name == record.workspace_name
-            && existing.parent_workspace_name == record.parent_workspace_name
-            && existing.fork_generation == record.fork_generation
-            && existing.initial_generation == record.initial_generation
+        let existing = self
+            .store
+            .load(record.workspace_id)
+            .await
+            .map_err(WorkspaceLineageError::Store)?
+            .ok_or(WorkspaceLineageError::IncompatibleState)?;
+        if lineage_shape_is_valid(&existing)
+            && same_lineage(&existing, &record)
+            && existing.ready == record.ready
         {
             Ok(existing)
+        } else if lineage_shape_is_valid(&existing)
+            && same_lineage(&existing, &record)
+            && record.ready
+            && !existing.ready
+        {
+            self.promote_ready(record).await
         } else {
             Err(WorkspaceLineageError::ConflictingRegistration)
         }
     }
+
+    async fn promote_ready(
+        &self,
+        ready: WorkspaceLineageRecord,
+    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
+        if !ready.ready || !lineage_shape_is_valid(&ready) {
+            return Err(WorkspaceLineageError::IncompatibleState);
+        }
+        for _ in 0..MAXIMUM_LINEAGE_CAS_ATTEMPTS {
+            let existing = self
+                .store
+                .load(ready.workspace_id)
+                .await
+                .map_err(WorkspaceLineageError::Store)?
+                .ok_or(WorkspaceLineageError::IncompatibleState)?;
+            if !lineage_shape_is_valid(&existing) || !same_lineage(&existing, &ready) {
+                return Err(WorkspaceLineageError::ConflictingRegistration);
+            }
+            if existing.ready {
+                return Ok(existing);
+            }
+            let mut replacement = ready.clone();
+            replacement.revision = existing
+                .revision
+                .checked_add(1)
+                .ok_or(WorkspaceLineageError::IncompatibleState)?;
+            if self
+                .store
+                .compare_and_swap(ready.workspace_id, existing.revision, replacement.clone())
+                .await
+                .map_err(WorkspaceLineageError::Store)?
+            {
+                return Ok(replacement);
+            }
+        }
+        Err(WorkspaceLineageError::Contended)
+    }
+}
+
+fn same_lineage(left: &WorkspaceLineageRecord, right: &WorkspaceLineageRecord) -> bool {
+    left.version == right.version
+        && left.workspace_id == right.workspace_id
+        && left.workspace_name == right.workspace_name
+        && left.parent_workspace_id == right.parent_workspace_id
+        && left.parent_workspace_name == right.parent_workspace_name
+        && left.fork_generation == right.fork_generation
+        && (!left.ready || !right.ready || left.initial_generation == right.initial_generation)
 }
 
 /// Process-local lineage adapter for tests and embedded callers.
@@ -329,7 +489,7 @@ impl WorkspaceLineageStore for MemoryWorkspaceLineageStore {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::{Digest, WorkspaceName};
+    use crate::{Digest, Fs, WorkspaceName};
 
     fn workspace(name: &str) -> WorkspaceId {
         WorkspaceId::derive([9; 16], &WorkspaceName::new(name).expect("valid name"))
@@ -337,6 +497,28 @@ mod tests {
 
     fn generation(byte: u8) -> GenerationId {
         GenerationId::new(Digest::from_bytes([byte; 32]))
+    }
+
+    #[tokio::test]
+    async fn malformed_lineage_shape_never_enters_the_graph() {
+        let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+        let child = workspace("child");
+        let malformed = WorkspaceLineageRecord {
+            version: LINEAGE_VERSION,
+            revision: 1,
+            ready: true,
+            workspace_id: child,
+            workspace_name: "child".to_owned(),
+            parent_workspace_id: Some(child),
+            parent_workspace_name: None,
+            fork_generation: generation(1),
+            initial_generation: generation(2),
+        };
+
+        assert!(matches!(
+            graph.register(malformed).await,
+            Err(WorkspaceLineageError::IncompatibleState)
+        ));
     }
 
     #[tokio::test]
@@ -349,6 +531,7 @@ mod tests {
             .register(WorkspaceLineageRecord {
                 version: LINEAGE_VERSION,
                 revision: 1,
+                ready: true,
                 workspace_id: root,
                 workspace_name: "root".to_owned(),
                 parent_workspace_id: None,
@@ -364,6 +547,7 @@ mod tests {
                 .register(WorkspaceLineageRecord {
                     version: LINEAGE_VERSION,
                     revision: 1,
+                    ready: true,
                     workspace_id,
                     workspace_name: if workspace_id == child {
                         "child".to_owned()
@@ -400,6 +584,47 @@ mod tests {
                 .map(|record| record.workspace_id)
                 .collect::<Vec<_>>(),
             vec![child, root]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_durable_planned_child_is_completed_by_retry_after_a_crash() {
+        let fs = Fs::memory();
+        let parent = fs.create_workspace("root").await.expect("root");
+        let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+        graph.register_root(&parent).await.expect("register root");
+        let parent_head = parent.head().await.expect("parent head");
+        let child_id = parent
+            .fork_workspace_id("child")
+            .expect("derived child identity");
+        let planned = WorkspaceLineageRecord {
+            version: LINEAGE_VERSION,
+            revision: 1,
+            ready: false,
+            workspace_id: child_id,
+            workspace_name: "child".to_owned(),
+            parent_workspace_id: Some(parent.id()),
+            parent_workspace_name: Some(parent.name().as_str().to_owned()),
+            fork_generation: parent_head.id(),
+            initial_generation: parent_head.id(),
+        };
+        graph.register(planned).await.expect("persist fork intent");
+        assert!(matches!(
+            graph.resolve(child_id).await,
+            Err(WorkspaceLineageError::IncompatibleState)
+        ));
+
+        let child = graph
+            .fork(&parent, "child", IdempotencyKey::from_bytes([31; 16]))
+            .await
+            .expect("retry completes child");
+        assert_eq!(child.id(), child_id);
+        let recovered = graph.resolve(child_id).await.expect("ready lineage");
+        assert!(recovered.ready);
+        assert_eq!(recovered.parent_workspace_id, Some(parent.id()));
+        assert_eq!(
+            recovered.initial_generation,
+            child.head().await.expect("head").id()
         );
     }
 }

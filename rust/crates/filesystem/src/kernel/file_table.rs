@@ -18,6 +18,8 @@ use thiserror::Error;
 
 const DOMAIN: &[u8; 8] = b"ACYFSFIL";
 const VERSION: u16 = 2;
+const RECORD_DOMAIN: &[u8; 8] = b"ACYFSREC";
+const RECORD_VERSION: u16 = 1;
 
 /// Maximum regular-file bytes stored directly in a file-table leaf record.
 ///
@@ -504,6 +506,24 @@ fn encode_record(encoder: &mut Encoder, record: FileRecord) {
             encoder.fixed(payload.digest.as_bytes());
         }
     }
+}
+
+pub(crate) fn encode_file_record(record: FileRecord) -> Vec<u8> {
+    let mut encoder = Encoder::new(RECORD_DOMAIN, RECORD_VERSION);
+    encode_record(&mut encoder, record);
+    encoder.finish()
+}
+
+pub(crate) fn decode_file_record(bytes: &[u8]) -> Result<FileRecord, CanonicalDecodeError> {
+    let mut decoder = Decoder::new(
+        bytes,
+        RECORD_DOMAIN,
+        RECORD_VERSION,
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+    )?;
+    let record = decode_record(&mut decoder)?;
+    decoder.finish()?;
+    Ok(record)
 }
 
 /// Decodes one bounded canonical file-table page.
