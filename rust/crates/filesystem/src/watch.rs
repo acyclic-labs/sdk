@@ -15,6 +15,7 @@ use crate::performance::{
 };
 use notify::event::{ModifyKind, RenameMode};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::BTreeSet;
 use std::mem::size_of;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -313,8 +314,10 @@ struct NativeEventContext {
 /// [`Self::finish_rescan`] before polling. The same handshake repairs overflow
 /// without losing changes concurrent with the baseline scan.
 pub struct NativeWatch {
-    _watcher: RecommendedWatcher,
+    watcher: RecommendedWatcher,
     root: PathBuf,
+    recursive: bool,
+    watched_directories: BTreeSet<PathBuf>,
     receiver: Receiver<WatchChange>,
     queued: Arc<AtomicU32>,
     shared: Arc<Mutex<SharedState>>,
@@ -423,8 +426,10 @@ impl NativeWatch {
             )
             .map_err(|error| NativeWatchError::Backend(error.to_string()))?;
         Ok(Self {
-            _watcher: watcher,
+            watcher,
+            watched_directories: BTreeSet::from([root.clone()]),
             root,
+            recursive: options.recursive,
             receiver,
             queued,
             shared,
@@ -433,6 +438,101 @@ impl NativeWatch {
             rescan_in_progress: false,
             root_identity,
         })
+    }
+
+    /// Adds one exact directory to a non-recursive native watcher.
+    ///
+    /// Recursive backends already cover the path and return immediately. A
+    /// non-recursive watcher validates every path prefix without following a
+    /// symbolic link, then installs exactly one additional subscription. No
+    /// descendant enumeration occurs.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an absent/non-directory path, a symbolic-link prefix, a path
+    /// that cannot be represented on this host, or a backend registration
+    /// failure.
+    pub fn watch_directory(&mut self, directory: &NamespacePath) -> Result<(), NativeWatchError> {
+        if self.recursive || directory.is_root() {
+            return Ok(());
+        }
+        let relative = crate::native_capture::namespace_to_host_path(directory)
+            .map_err(|_| NativeWatchError::UnrepresentablePath)?;
+        let mut candidate = self.root.clone();
+        for component in relative.components() {
+            let Component::Normal(component) = component else {
+                return Err(NativeWatchError::UnrepresentablePath);
+            };
+            candidate.push(component);
+            let metadata = candidate
+                .symlink_metadata()
+                .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            if metadata.file_type().is_symlink() {
+                return Err(NativeWatchError::SymbolicLinkDirectory);
+            }
+            if !metadata.is_dir() {
+                return Err(NativeWatchError::ObservedPathNotDirectory);
+            }
+        }
+        if self.watched_directories.contains(&candidate) {
+            return Ok(());
+        }
+        self.watcher
+            .watch(&candidate, RecursiveMode::NonRecursive)
+            .map_err(|error| NativeWatchError::Backend(error.to_string()))?;
+        self.watched_directories.insert(candidate);
+        Ok(())
+    }
+
+    fn forget_removed_directories(&mut self, changes: &[WatchChange]) {
+        if self.recursive {
+            return;
+        }
+        let mut removed = Vec::new();
+        for change in changes {
+            match change {
+                WatchChange::Removed(path) => removed.push(path),
+                WatchChange::Renamed { from, to } => {
+                    removed.push(from);
+                    removed.push(to);
+                }
+                WatchChange::Created(_)
+                | WatchChange::Modified(_)
+                | WatchChange::MetadataChanged(_) => {}
+            }
+        }
+        for path in removed {
+            let Ok(relative) = crate::native_capture::namespace_to_host_path(path) else {
+                continue;
+            };
+            let removed = self.root.join(relative);
+            let stale = self
+                .watched_directories
+                .iter()
+                .filter(|watched| **watched != self.root && watched.starts_with(&removed))
+                .cloned()
+                .collect::<Vec<_>>();
+            for watched in stale {
+                let _ = self.watcher.unwatch(&watched);
+                self.watched_directories.remove(&watched);
+            }
+        }
+    }
+
+    fn reset_demand_watches(&mut self) {
+        if self.recursive {
+            return;
+        }
+        let stale = self
+            .watched_directories
+            .iter()
+            .filter(|path| **path != self.root)
+            .cloned()
+            .collect::<Vec<_>>();
+        for path in stale {
+            let _ = self.watcher.unwatch(&path);
+            self.watched_directories.remove(&path);
+        }
     }
 
     /// Admits a demand-backed lazy baseline without enumerating the root.
@@ -508,6 +608,8 @@ impl NativeWatch {
                 .ok_or(NativeWatchError::SequenceExhausted)?,
         );
         self.next_sequence = WatchSequence(0);
+        drop(shared);
+        self.reset_demand_watches();
         self.rescan_in_progress = true;
         Ok(self.epoch)
     }
@@ -774,6 +876,7 @@ impl NativeWatch {
             .map_err(|error| OperationFailure::new(error.into(), work))?;
         let first_sequence = self.next_sequence;
         self.next_sequence = WatchSequence(next);
+        self.forget_removed_directories(&changes);
         Ok(OperationReceipt {
             value: WatchBatch::Changes {
                 epoch: self.epoch,
@@ -817,6 +920,18 @@ impl NativeWatch {
             .lock()
             .map_err(|_| OperationFailure::before_work(NativeWatchError::StatePoisoned))?;
         shared.invalidation.get_or_insert(reason);
+        Ok(())
+    }
+}
+
+impl crate::demand::DemandDirectoryObserver for Mutex<NativeWatch> {
+    fn observe_directory(
+        &self,
+        directory: &NamespacePath,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?
+            .watch_directory(directory)?;
         Ok(())
     }
 }
@@ -1133,6 +1248,16 @@ pub enum NativeWatchError {
     /// Watch root is not a directory.
     #[error("native watcher root is not a directory")]
     RootIsNotDirectory,
+    /// A demanded directory traverses a symbolic link and cannot be mapped
+    /// back to one exact namespace path.
+    #[error("native watcher directory traverses a symbolic link")]
+    SymbolicLinkDirectory,
+    /// A demanded observer path is not a directory.
+    #[error("native watcher observed path is not a directory")]
+    ObservedPathNotDirectory,
+    /// A demanded namespace path cannot be represented exactly on this host.
+    #[error("native watcher directory is not representable on this host")]
+    UnrepresentablePath,
     /// A separately opened capture root does not match the watched directory.
     #[error("native watcher root changed identity")]
     RootChanged,

@@ -156,6 +156,10 @@ pub enum DemandError {
     /// Native or remote source failed.
     #[error("source failed: {0}")]
     Io(#[from] std::io::Error),
+    /// Demand-driven native observation could not be admitted exactly.
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[error(transparent)]
+    Observation(#[from] crate::watch::NativeWatchError),
 }
 
 impl From<NamespacePathError> for DemandError {
@@ -246,6 +250,23 @@ pub trait DemandSource: Send + Sync {
         }
         Ok(answer)
     }
+}
+
+/// Synchronous admission hook for directories reached by a native lazy source.
+///
+/// Implementations normally install one non-recursive native notification
+/// subscription. The hook runs before the corresponding filesystem read, so a
+/// change cannot race between first observation and watcher admission. It must
+/// inspect only the named directory and its ancestors; recursive enumeration
+/// would violate the lazy-source contract.
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub trait DemandDirectoryObserver: Send + Sync {
+    /// Admits one exact directory for observation.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed when the directory cannot be observed exactly.
+    fn observe_directory(&self, directory: &NamespacePath) -> Result<(), DemandError>;
 }
 
 /// A composable source view that hides exact subtrees before they enter lazy
@@ -498,6 +519,7 @@ pub mod native {
         cursors: Mutex<BTreeMap<u64, CursorState>>,
         next_cursor: AtomicU64,
         requests: Arc<Semaphore>,
+        observer: Option<Arc<dyn DemandDirectoryObserver>>,
     }
 
     struct CancelWorkerOnDrop(CancellationToken);
@@ -592,7 +614,7 @@ pub mod native {
             profile: FilesystemProfile,
             limits: VolumeLimits,
         ) -> Result<Self, DemandError> {
-            Self::open_with_reference(
+            Self::open_configured(
                 path,
                 profile,
                 limits,
@@ -600,6 +622,32 @@ pub mod native {
                     identity: *uuid::Uuid::new_v4().as_bytes(),
                     epoch: 0,
                 },
+                None,
+            )
+            .await
+        }
+
+        /// Opens a lazy native source whose demanded directories are admitted
+        /// to an external observer before any corresponding filesystem read.
+        ///
+        /// # Errors
+        ///
+        /// Returns the same bounded native admission failures as [`Self::open`].
+        pub async fn open_with_observer(
+            path: impl AsRef<Path>,
+            profile: FilesystemProfile,
+            limits: VolumeLimits,
+            observer: Arc<dyn DemandDirectoryObserver>,
+        ) -> Result<Self, DemandError> {
+            Self::open_with_reference_and_observer(
+                path,
+                profile,
+                limits,
+                SourceReference {
+                    identity: *uuid::Uuid::new_v4().as_bytes(),
+                    epoch: 0,
+                },
+                observer,
             )
             .await
         }
@@ -614,9 +662,36 @@ pub mod native {
             limits: VolumeLimits,
             reference: SourceReference,
         ) -> Result<Self, DemandError> {
+            Self::open_configured(path, profile, limits, reference, None).await
+        }
+
+        /// Reopens a durably identified lazy source with demand-driven
+        /// directory observation.
+        ///
+        /// # Errors
+        ///
+        /// Returns the same bounded native admission failures as
+        /// [`Self::open_with_reference`].
+        pub async fn open_with_reference_and_observer(
+            path: impl AsRef<Path>,
+            profile: FilesystemProfile,
+            limits: VolumeLimits,
+            reference: SourceReference,
+            observer: Arc<dyn DemandDirectoryObserver>,
+        ) -> Result<Self, DemandError> {
+            Self::open_configured(path, profile, limits, reference, Some(observer)).await
+        }
+
+        async fn open_configured(
+            path: impl AsRef<Path>,
+            profile: FilesystemProfile,
+            limits: VolumeLimits,
+            reference: SourceReference,
+            observer: Option<Arc<dyn DemandDirectoryObserver>>,
+        ) -> Result<Self, DemandError> {
             let path = path.as_ref().to_path_buf();
             tokio::task::spawn_blocking(move || {
-                Self::open_blocking(path, profile, limits, reference)
+                Self::open_blocking(path, profile, limits, reference, observer)
             })
             .await
             .map_err(|_| DemandError::WorkerUnavailable)?
@@ -627,6 +702,7 @@ pub mod native {
             profile: FilesystemProfile,
             limits: VolumeLimits,
             reference: SourceReference,
+            observer: Option<Arc<dyn DemandDirectoryObserver>>,
         ) -> Result<Self, DemandError> {
             let path = if path.is_absolute() {
                 path
@@ -645,8 +721,21 @@ pub mod native {
                     cursors: Mutex::new(BTreeMap::new()),
                     next_cursor: AtomicU64::new(0),
                     requests: Arc::new(Semaphore::new(MAXIMUM_NATIVE_REQUESTS)),
+                    observer,
                 }),
             })
+        }
+
+        fn observe_directory(&self, directory: &NamespacePath) -> Result<(), DemandError> {
+            self.inner
+                .observer
+                .as_ref()
+                .map_or(Ok(()), |observer| observer.observe_directory(directory))
+        }
+
+        fn observe_parent(&self, path: &NamespacePath) -> Result<(), DemandError> {
+            let parent = path.parent().unwrap_or_else(|| path.clone());
+            self.observe_directory(&parent)
         }
 
         async fn run_blocking<T: Send + 'static>(
@@ -1004,6 +1093,7 @@ pub mod native {
             self.run_blocking(cancellation, move |provider, request_cancellation| {
                 measured(|work| {
                     provider.check(source, &request_cancellation)?;
+                    provider.observe_parent(&path)?;
                     work.source_path_components = path.depth() as u64;
                     let node = provider.metadata(&path)?.as_ref().map(Self::node);
                     provider.check(source, &request_cancellation)?;
@@ -1025,6 +1115,7 @@ pub mod native {
             self.run_blocking(cancellation, move |provider, request_cancellation| {
                 measured(|work| {
                     provider.check(source, &request_cancellation)?;
+                    provider.observe_directory(&directory)?;
                     work.source_path_components = directory.depth() as u64;
                     if maximum_entries == 0 || maximum_entries > 4096 {
                         return Err(DemandError::InvalidRequest);
@@ -1118,6 +1209,9 @@ pub mod native {
                     provider
                         .check(source, &worker_cancellation)
                         .map_err(|error| OperationFailure::new(error, work))?;
+                    provider
+                        .observe_parent(&path)
+                        .map_err(|error| OperationFailure::new(error, work))?;
                     let relative = provider
                         .relative(&path)
                         .map_err(|error| OperationFailure::new(error, work))?;
@@ -1197,6 +1291,7 @@ pub mod native {
             self.run_blocking(cancellation, move |provider, request_cancellation| {
                 measured(|work| {
                     provider.check(source, &request_cancellation)?;
+                    provider.observe_parent(&path)?;
                     work.source_path_components = path.depth() as u64;
                     let before = provider.metadata(&path)?.ok_or(DemandError::Absent)?;
                     if !before.file_type().is_symlink() {
@@ -1370,6 +1465,22 @@ mod tests {
     use super::*;
     use crate::model::{FilesystemProfile, VolumeLimits};
     use std::error::Error;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        directories: Mutex<Vec<NamespacePath>>,
+    }
+
+    impl DemandDirectoryObserver for RecordingObserver {
+        fn observe_directory(&self, directory: &NamespacePath) -> Result<(), DemandError> {
+            self.directories
+                .lock()
+                .map_err(|_| DemandError::SourceUnavailable)?
+                .push(directory.clone());
+            Ok(())
+        }
+    }
 
     fn path(value: &str) -> Result<NamespacePath, Box<dyn Error>> {
         let portable = crate::path::PortablePath::parse(value, VolumeLimits::default())?;
@@ -1377,6 +1488,35 @@ mod tests {
             &portable,
             VolumeLimits::default(),
         )?)
+    }
+
+    #[tokio::test]
+    async fn native_source_observes_only_the_demanded_directory_before_reading()
+    -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("nested"))?;
+        std::fs::write(root.path().join("nested/file"), b"content")?;
+        let observer = Arc::new(RecordingObserver::default());
+        let source = NativeDemandSource::open_with_observer(
+            root.path(),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+            observer.clone(),
+        )
+        .await?;
+        let reference = source.reference();
+        source
+            .lookup(reference, &path("/nested/file")?, &CancellationToken::new())
+            .await?;
+        assert_eq!(
+            observer
+                .directories
+                .lock()
+                .map_err(|_| "observer state poisoned")?
+                .as_slice(),
+            &[path("/nested")?]
+        );
+        Ok(())
     }
 
     #[tokio::test]

@@ -33,6 +33,10 @@ pub const INVARIANTS: &[Invariant] = &[
         primary_test: "shared_service_isolates_multiple_sessions",
     },
     Invariant {
+        id: "routing.nested-root-longest-unambiguous-match",
+        primary_test: "nested_roots_route_to_the_deepest_unambiguous_session",
+    },
+    Invariant {
         id: "service.graceful-drain-releases-lock",
         primary_test: "service_drain_waits_for_shutdown_completion_and_lock_release",
     },
@@ -43,6 +47,10 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "service.endpoint-shutdown-cancels-inflight",
         primary_test: "endpoint_shutdown_cancels_inflight_requests_before_reopen",
+    },
+    Invariant {
+        id: "service.concurrent-hooks-make-progress",
+        primary_test: "concurrent_spawn_and_child_tool_hooks_both_complete",
     },
     Invariant {
         id: "process.timeout-contains-descendants",

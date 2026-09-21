@@ -149,8 +149,13 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     let package = package_production_plugin(temporary.path());
     let disabled_workspace = temporary.path().join("disabled-workspace");
     fs::create_dir(&disabled_workspace).expect("disabled workspace directory");
-    let disabled_provider =
-        ScriptedProvider::start(ProviderProtocol::Responses, shell_write("codex-e2e.txt"));
+    let disabled_provider = ScriptedProvider::start(
+        ProviderProtocol::Responses,
+        disabled_workspace
+            .join("codex-e2e.txt")
+            .to_string_lossy()
+            .as_ref(),
+    );
     let mut disabled_host = codex_host_command(
         &codex,
         temporary.path(),
@@ -171,8 +176,10 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
         .expect("disabled Codex must not start Acyclic");
 
     let mut service = install_host(&package.launcher, "codex", &codex, temporary.path());
-    let provider =
-        ScriptedProvider::start(ProviderProtocol::Responses, shell_write("codex-e2e.txt"));
+    let provider = ScriptedProvider::start(
+        ProviderProtocol::Responses,
+        workspace.join("codex-e2e.txt").to_string_lossy().as_ref(),
+    );
     let mut host = codex_host_command(&codex, temporary.path(), &workspace, &provider, true);
     let BoundedOutput {
         output,
@@ -670,6 +677,7 @@ fn codex_host_command(
         "--ephemeral",
         "--ignore-rules",
         "--skip-git-repo-check",
+        "--dangerously-bypass-approvals-and-sandbox",
         "--dangerously-bypass-hook-trust",
         "--disable",
         "remote_plugin",
@@ -694,7 +702,6 @@ fn codex_host_command(
         "model_providers.acyclic_e2e.env_key=\"ACYCLIC_E2E_API_KEY\"",
     ]);
     if !integration_enabled {
-        host.arg("--dangerously-bypass-approvals-and-sandbox");
         host.arg("--ignore-user-config");
     }
     host.arg("Run the deterministic qualification command.");
@@ -795,14 +802,6 @@ fn prepend_binary_directory(command: &mut std::process::Command, binary: &Path) 
         paths.extend(std::env::split_paths(&existing));
     }
     command.env("PATH", std::env::join_paths(paths).expect("host PATH"));
-}
-
-fn shell_write(path: &str) -> &'static str {
-    match (std::env::consts::OS, path) {
-        ("windows", "codex-e2e.txt") => "Set-Content -LiteralPath codex-e2e.txt -Value qualified",
-        (_, "codex-e2e.txt") => "printf qualified > codex-e2e.txt",
-        _ => panic!("unsupported qualification sentinel"),
-    }
 }
 
 fn assert_semantic_provider_exchange(provider: &ScriptedProvider) {

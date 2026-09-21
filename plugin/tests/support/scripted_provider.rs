@@ -348,13 +348,24 @@ fn sse(events: impl IntoIterator<Item = Value>) -> String {
         .collect()
 }
 
-fn responses_tool_events(_command: &str, _requests: &Mutex<Vec<Value>>) -> String {
+fn responses_tool_events(target: &str, _requests: &Mutex<Vec<Value>>) -> String {
+    let target = target.replace('\\', "/");
+    assert!(
+        !target.contains(['\r', '\n']),
+        "scripted target must remain on one line"
+    );
     let item = json!({
         "id":"ctc_1",
         "type":"custom_tool_call",
         "call_id":"call_1",
         "name":"exec",
-        "input":"const result = await tools.apply_patch(\"*** Begin Patch\\n*** Add File: codex-e2e.txt\\n+qualified\\n*** End Patch\"); text(result);",
+        "input":format!(
+            "const result = await tools.apply_patch({}); text(result);",
+            serde_json::to_string(&format!(
+                "*** Begin Patch\n*** Add File: {target}\n+qualified\n*** End Patch"
+            ))
+            .expect("scripted patch")
+        ),
         "status":"completed"
     });
     sse([

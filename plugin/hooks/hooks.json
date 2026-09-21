@@ -21,8 +21,7 @@
       "hooks": [{
         "type": "command",
         "command": "node \"${PLUGIN_ROOT}/bin/acyclic.js\" __hook codex PreToolUse",
-        "timeout": 120,
-        "statusMessage": "Acyclic is routing the workspace"
+        "timeout": 120
       }]
     }],
     "PostToolUse": [{

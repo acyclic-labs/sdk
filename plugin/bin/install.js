@@ -244,11 +244,6 @@ function ensureInstalledLocked() {
     return installed;
   }
 
-  const skipDrain = process.env.NODE_ENV === "test" && process.env.ACYCLIC_INSTALL_SKIP_DRAIN === "1";
-  const drain = skipDrain ? { status: 0 } : spawnSync(source, ["__service-drain"], { stdio: "inherit" });
-  if (drain.error || drain.status !== 0) {
-    throw new Error(`Acyclic service did not drain before upgrade${drain.error ? `: ${drain.error.message}` : ""}`);
-  }
   const nonce = `${process.pid}-${Date.now()}`;
   const staged = `${installed}.next-${nonce}`;
   const backup = `${installed}.backup-${nonce}`;
