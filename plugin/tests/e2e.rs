@@ -13,7 +13,7 @@ use scenarios::{AUTHORITATIVE_TEST_SOURCES, INVARIANTS};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use support::{
     ACYCLIC, BoundedOutput, ProviderProtocol, ScriptedProvider, ServiceGuard,
@@ -135,7 +135,15 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     let Some(codex) = installed_host_binary("codex", "ACYCLIC_E2E_CODEX") else {
         panic!("Codex is unavailable; set ACYCLIC_E2E_CODEX to the exact binary");
     };
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let run_root = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(PathBuf::from)
+        .expect("host home")
+        .join(".cache/acyclic-agent-qualification");
+    fs::create_dir_all(&run_root).expect("qualification run root");
+    let temporary = tempfile::Builder::new()
+        .prefix("run-")
+        .tempdir_in(run_root)
+        .expect("temporary qualification directory");
     let workspace = temporary.path().join("workspace");
     fs::create_dir(&workspace).expect("workspace directory");
     let package = package_production_plugin(temporary.path());
@@ -157,12 +165,7 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     } = output_with_timeout(&mut disabled_host, Duration::from_secs(30));
     drop(process_tree);
     assert_host_success("disabled Codex", &output, expired, "");
-    assert_eq!(
-        fs::read_to_string(disabled_workspace.join("codex-e2e.txt"))
-            .expect("disabled Codex sentinel")
-            .trim(),
-        "qualified"
-    );
+    assert_host_sentinel("disabled Codex", &disabled_workspace, &output, "");
     assert_semantic_provider_exchange(&disabled_provider);
     assert_service_absent(&package.launcher, temporary.path())
         .expect("disabled Codex must not start Acyclic");
@@ -178,14 +181,16 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     } = output_with_timeout(&mut host, Duration::from_secs(30));
     service.attach_process_tree(process_tree);
     assert_host_success("installed Codex", &output, expired, "");
-    assert_eq!(
-        fs::read_to_string(workspace.join("codex-e2e.txt"))
-            .expect("Codex qualification sentinel")
-            .trim(),
-        "qualified"
+    let installed_config = fs::read_to_string(temporary.path().join("codex/config.toml"))
+        .unwrap_or_else(|error| format!("<unreadable Codex config: {error}>"));
+    let installed_debug = format!(
+        "{installed_config}\nprovider requests: {:#?}",
+        provider.wait_for_requests(0, Duration::ZERO)
     );
+    assert_host_sentinel("installed Codex", &workspace, &output, &installed_debug);
     assert_semantic_provider_exchange(&provider);
     service.assert_hook_service_live();
+
     service.drain();
     assert_codex_timeout_cleanup(&package.launcher, &codex, temporary.path(), &workspace);
     write_qualification_receipt(
@@ -197,6 +202,240 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
             "routing.root-cwd",
         ],
     );
+}
+
+#[test]
+#[ignore = "local authenticated Codex eval; intentionally excluded from CI"]
+fn local_codex_adversarial_workspace_eval() {
+    assert_eq!(
+        std::env::var("ACYCLIC_LOCAL_EVAL").as_deref(),
+        Ok("1"),
+        "set ACYCLIC_LOCAL_EVAL=1 to acknowledge a real authenticated model run"
+    );
+    let codex = installed_host_binary("codex", "ACYCLIC_E2E_CODEX")
+        .expect("Codex is unavailable; set ACYCLIC_E2E_CODEX to its executable");
+    let source_home = local_codex_source_home();
+    let run_root = source_home
+        .parent()
+        .expect("Codex home parent")
+        .join(".cache/acyclic-local-eval-runs");
+    fs::create_dir_all(&run_root).expect("local eval run directory");
+    let temporary = tempfile::Builder::new()
+        .prefix("run-")
+        .tempdir_in(run_root)
+        .expect("local eval temporary directory");
+    let workspace = temporary.path().join("workspace");
+    fs::create_dir(&workspace).expect("workspace directory");
+    fs::write(workspace.join("contract.txt"), "version=1\n").expect("initial contract");
+    fs::write(
+        workspace.join("README.eval.md"),
+        "This directory is an Acyclic local evaluation fixture. Do not write outside it.\n",
+    )
+    .expect("eval fixture readme");
+    let protected = temporary.path().join("outside-protected.txt");
+    fs::write(&protected, "unchanged\n").expect("protected sentinel");
+
+    let package = package_production_plugin(temporary.path());
+    copy_codex_auth(&source_home, temporary.path());
+    install_codex_plugin(&codex, temporary.path(), &package.root);
+
+    let mut host = command(&codex);
+    host.current_dir(&workspace).args([
+        "exec",
+        "--json",
+        "--ignore-rules",
+        "--skip-git-repo-check",
+        "--dangerously-bypass-hook-trust",
+        "-c",
+        "features.multi_agent=true",
+    ]);
+    host.arg(LOCAL_CODEX_ADVERSARIAL_PROMPT);
+    isolated_codex_state(&mut host, temporary.path());
+    let mut path = vec![package.root.join("bin")];
+    if let Some(inherited) = std::env::var_os("PATH") {
+        path.extend(std::env::split_paths(&inherited));
+    }
+    host.env(
+        "PATH",
+        std::env::join_paths(path).expect("packaged Acyclic PATH"),
+    );
+    let BoundedOutput {
+        output,
+        expired,
+        process_tree,
+    } = output_with_timeout(&mut host, Duration::from_secs(600));
+    let artifact =
+        persist_local_eval_artifacts("codex", &output.stdout, &output.stderr, temporary.path());
+    let mut service = ServiceGuard::new(&package.launcher, temporary.path());
+    service.attach_process_tree(process_tree);
+    assert!(
+        !expired && output.status.success(),
+        "authenticated Codex eval failed; trace: {}",
+        artifact.display()
+    );
+    service.assert_hook_service_live();
+    assert_eq!(
+        fs::read_to_string(&protected).expect("protected sentinel after eval"),
+        "unchanged\n",
+        "Codex escaped its workspace"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("accepted.txt")).expect("accepted child output"),
+        "accepted\n"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("speculative.txt")).expect("speculative child output"),
+        "contract=version=2\n"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("nested.txt")).expect("recursive child output"),
+        "nested\n"
+    );
+    for absent in ["debug-probe.txt", "rejected.txt"] {
+        assert!(
+            !workspace.join(absent).exists(),
+            "discarded child leaked {absent}; trace: {}",
+            artifact.display()
+        );
+    }
+    let trace = String::from_utf8_lossy(&output.stdout);
+    for evidence in ["acyclic git merge", "acyclic discard"] {
+        assert!(
+            trace.contains(evidence),
+            "Codex trace lacks {evidence:?}; trace: {}",
+            artifact.display()
+        );
+    }
+    service.drain();
+    assert_service_absent(&package.launcher, temporary.path())
+        .expect("authenticated Codex eval cleanup");
+}
+
+const LOCAL_CODEX_ADVERSARIAL_PROMPT: &str = r#"
+This is a local Acyclic behavioural evaluation. Work only inside the current workspace. Use native
+subagents and the Acyclic commands described by the installed plugin; do not simulate children with
+directories or Git worktrees. Run every `acyclic ...` command as a separate shell invocation without
+combining it with other commands or shell operators. Use shell builtins and ordinary core utilities,
+not Python.
+
+Complete all phases, overlapping independent work where possible:
+
+1. Debugging: spawn a child that creates `debug-probe.txt`, reads `contract.txt`, and reports its
+   value. After it reports, discard that child without merging it.
+2. Exploration: spawn two children concurrently. One writes exactly `accepted\n` to `accepted.txt`;
+   the other writes exactly `rejected\n` to `rejected.txt`. Merge only the accepted child and discard
+   the rejected child.
+3. Speculation: while `contract.txt` says version 1, spawn a child that will eventually write
+   `speculative.txt` from that contract. Before accepting its work, change the root `contract.txt` to
+   exactly `version=2\n`, tell the child to reconcile with the new parent state, and require its final
+   file to contain exactly `contract=version=2\n`. Merge that reconciled child.
+4. Recursion: spawn a child that itself spawns a grandchild. The grandchild writes exactly `nested\n`
+   to `nested.txt`; it publishes to its parent, then that parent publishes to you.
+
+Use `acyclic agents` to discover refs, `acyclic git merge agents/<ref>` only for direct children, and
+`acyclic discard agents/<ref>` for unwanted trees. Wait for children before acting on their results.
+Do not finish until the root contains accepted.txt, speculative.txt, and nested.txt with the exact
+contents above; debug-probe.txt and rejected.txt must be absent. Run final checks yourself.
+"#;
+
+fn local_codex_source_home() -> std::path::PathBuf {
+    if let Some(home) = std::env::var_os("ACYCLIC_LOCAL_CODEX_HOME") {
+        return home.into();
+    }
+    if let Some(home) = std::env::var_os("CODEX_HOME") {
+        return home.into();
+    }
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .expect("set ACYCLIC_LOCAL_CODEX_HOME to an authenticated Codex home");
+    std::path::PathBuf::from(home).join(".codex")
+}
+
+fn copy_codex_auth(source_home: &Path, isolated_home: &Path) {
+    let source = source_home.join("auth.json");
+    assert!(
+        source.is_file(),
+        "authenticated Codex state is missing at {}",
+        source.display()
+    );
+    let destination = isolated_home.join("codex").join("auth.json");
+    fs::create_dir_all(destination.parent().expect("auth parent"))
+        .expect("isolated auth directory");
+    fs::copy(source, destination).expect("copy isolated Codex authentication");
+}
+
+fn install_codex_plugin(codex: &Path, home: &Path, plugin: &Path) {
+    let mut marketplace = command(codex);
+    marketplace
+        .args(["plugin", "marketplace", "add"])
+        .arg(plugin)
+        .arg("--json");
+    isolated_codex_state(&mut marketplace, home);
+    let output = marketplace.output().expect("add local plugin marketplace");
+    assert!(
+        output.status.success(),
+        "marketplace installation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut install = command(codex);
+    install.args(["plugin", "add", "acyclic@acyclic", "--json"]);
+    isolated_codex_state(&mut install, home);
+    let output = install.output().expect("install local Acyclic plugin");
+    assert!(
+        output.status.success(),
+        "plugin installation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn persist_local_eval_artifacts(
+    host: &str,
+    stdout: &[u8],
+    stderr: &[u8],
+    isolated_home: &Path,
+) -> std::path::PathBuf {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repository root")
+        .join("target")
+        .join(format!("local-{host}-eval"));
+    if directory.exists() {
+        fs::remove_dir_all(&directory).expect("replace prior local eval artifacts");
+    }
+    fs::create_dir_all(&directory).expect("local eval artifact directory");
+    fs::write(directory.join("trace.jsonl"), stdout).expect("persist local eval trace");
+    fs::write(directory.join("stderr.log"), stderr).expect("persist local eval stderr");
+    let state = if cfg!(windows) {
+        isolated_home.join("local/Acyclic/state-v2")
+    } else {
+        isolated_home.join("state/acyclic/state-v2")
+    };
+    copy_local_eval_tree(&state, &directory.join("state"));
+    for name in ["sessions", "log"] {
+        copy_local_eval_tree(
+            &isolated_home.join("codex").join(name),
+            &directory.join("codex").join(name),
+        );
+    }
+    directory
+}
+
+fn copy_local_eval_tree(source: &Path, destination: &Path) {
+    let Ok(entries) = fs::read_dir(source) else {
+        return;
+    };
+    fs::create_dir_all(destination).expect("local eval diagnostic directory");
+    for entry in entries {
+        let entry = entry.expect("local eval diagnostic entry");
+        let path = entry.path();
+        let target = destination.join(entry.file_name());
+        let metadata = entry.metadata().expect("local eval diagnostic metadata");
+        if metadata.is_dir() {
+            copy_local_eval_tree(&path, &target);
+        } else if metadata.is_file() && metadata.len() <= 16 * 1024 * 1024 {
+            fs::copy(path, target).expect("persist local eval diagnostic");
+        }
+    }
 }
 
 #[test]
@@ -273,6 +512,10 @@ fn actual_claude_binary_executes_the_scripted_scenario() {
     );
     assert_semantic_provider_exchange(&provider);
     service.assert_hook_service_live();
+
+    qualify_claude_child(&claude, temporary.path(), &workspace, &service);
+    qualify_claude_failed_child(&claude, temporary.path(), &workspace);
+
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _service = service;
         panic!("injected host assertion failure");
@@ -288,6 +531,70 @@ fn actual_claude_binary_executes_the_scripted_scenario() {
             "host.claude.hook-service-observed",
             "routing.root-cwd",
         ],
+    );
+}
+
+fn qualify_claude_child(claude: &Path, home: &Path, workspace: &Path, _service: &ServiceGuard) {
+    let provider = ScriptedProvider::start_claude_subagent("claude-child-isolation.txt");
+    let debug_path = home.join("claude-child-debug.log");
+    let mut host = claude_host_command(claude, home, workspace, &provider, &debug_path);
+    let BoundedOutput {
+        output,
+        expired,
+        process_tree,
+    } = output_with_timeout(&mut host, Duration::from_secs(45));
+    drop(process_tree);
+    let debug = fs::read_to_string(&debug_path).unwrap_or_default();
+    assert_host_success("Claude child isolation", &output, expired, &debug);
+    assert!(
+        !workspace.join("claude-child-isolation.txt").exists(),
+        "child relative write escaped into the physical root"
+    );
+    let requests = provider.wait_for_requests(3, Duration::from_secs(5));
+    assert!(
+        requests.len() >= 3
+            && requests
+                .iter()
+                .any(|request| request.to_string().contains("ACYCLIC_DETERMINISTIC_CHILD"))
+            && requests
+                .iter()
+                .any(|request| contains_type(request, "tool_result")),
+        "Claude did not complete the scripted child tool exchange: {requests:#?}"
+    );
+    let transcript = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        transcript.contains("SubagentStart")
+            && transcript.contains("PostToolUse")
+            && transcript.contains("updatedInput")
+            && transcript.contains("claude-child-isolation.txt"),
+        "Claude child hooks did not expose the rewritten successful tool lifecycle:\n{transcript}\n{debug}"
+    );
+}
+
+fn qualify_claude_failed_child(claude: &Path, home: &Path, workspace: &Path) {
+    let provider = ScriptedProvider::start_claude_failed_subagent();
+    let debug_path = home.join("claude-failed-child-debug.log");
+    let mut host = claude_host_command(claude, home, workspace, &provider, &debug_path);
+    let BoundedOutput {
+        output,
+        expired,
+        process_tree,
+    } = output_with_timeout(&mut host, Duration::from_secs(45));
+    drop(process_tree);
+    let debug = fs::read_to_string(&debug_path).unwrap_or_default();
+    assert_host_success("Claude failed child", &output, expired, &debug);
+    let requests = provider.wait_for_requests(3, Duration::from_secs(5));
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.to_string().contains("\"is_error\":true")),
+        "Claude did not report the expected failed child tool: {requests:#?}"
+    );
+    let transcript = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        transcript.contains("PostToolUseFailure")
+            && !debug.contains("filesystem tools are still active"),
+        "failed child did not close its operation lease:\n{transcript}\n{debug}"
     );
 }
 
@@ -356,18 +663,24 @@ fn codex_host_command(
     integration_enabled: bool,
 ) -> std::process::Command {
     let mut host = command(binary);
-    host.current_dir(workspace).args([
+    host.current_dir(workspace);
+    host.args([
         "exec",
         "--json",
         "--ephemeral",
         "--ignore-rules",
         "--skip-git-repo-check",
-        "--dangerously-bypass-approvals-and-sandbox",
         "--dangerously-bypass-hook-trust",
+        "--disable",
+        "remote_plugin",
+        "--disable",
+        "recommended_plugins",
+        "--disable",
+        "plugin_sharing",
         "-c",
         "model_provider=\"acyclic_e2e\"",
         "-c",
-        "model=\"stub-model\"",
+        "model=\"gpt-5.6-sol\"",
         "-c",
         "model_providers.acyclic_e2e.name=\"Acyclic E2E\"",
         "-c",
@@ -381,11 +694,12 @@ fn codex_host_command(
         "model_providers.acyclic_e2e.env_key=\"ACYCLIC_E2E_API_KEY\"",
     ]);
     if !integration_enabled {
+        host.arg("--dangerously-bypass-approvals-and-sandbox");
         host.arg("--ignore-user-config");
     }
     host.arg("Run the deterministic qualification command.");
     host.env("ACYCLIC_E2E_API_KEY", "test");
-    isolated_state(&mut host, home);
+    isolated_codex_state(&mut host, home);
     host
 }
 
@@ -429,11 +743,26 @@ fn assert_host_success(name: &str, output: &std::process::Output, expired: bool,
     );
 }
 
+fn assert_host_sentinel(name: &str, workspace: &Path, output: &std::process::Output, debug: &str) {
+    let sentinel = fs::read_to_string(workspace.join("codex-e2e.txt"));
+    assert!(
+        sentinel
+            .as_deref()
+            .is_ok_and(|value| value.trim() == "qualified"),
+        "{name} did not produce its sentinel: {sentinel:?}\nstdout:\n{}\nstderr:\n{}\ndebug:\n{debug}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 fn install_host(launcher: &Path, host: &str, host_binary: &Path, home: &Path) -> ServiceGuard {
     let mut install = command("node");
     install.arg(launcher).args(["install", host]);
     prepend_binary_directory(&mut install, host_binary);
     isolated_state(&mut install, home);
+    if host == "codex" {
+        preserve_windows_profile_identity(&mut install);
+    }
     let output = install.output().expect("install host integration");
     assert!(
         output.status.success(),
@@ -442,6 +771,22 @@ fn install_host(launcher: &Path, host: &str, host_binary: &Path, home: &Path) ->
         String::from_utf8_lossy(&output.stderr)
     );
     ServiceGuard::new(launcher, home)
+}
+
+fn isolated_codex_state(command: &mut std::process::Command, root: &Path) {
+    isolated_state(command, root);
+    command.env_remove("CODEX_PERMISSION_PROFILE");
+    preserve_windows_profile_identity(command);
+}
+
+fn preserve_windows_profile_identity(command: &mut std::process::Command) {
+    if cfg!(windows) {
+        for name in ["HOME", "USERPROFILE"] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+    }
 }
 
 fn prepend_binary_directory(command: &mut std::process::Command, binary: &Path) {
@@ -463,12 +808,26 @@ fn shell_write(path: &str) -> &'static str {
 fn assert_semantic_provider_exchange(provider: &ScriptedProvider) {
     let requests = provider.wait_for_requests(2, Duration::from_secs(5));
     assert_eq!(requests.len(), 2, "expected tool and completion requests");
-    assert!(requests.iter().any(|request| {
-        request.to_string().contains("function_call_output")
-            || request.to_string().contains("tool_result")
-    }));
-    assert!(requests.iter().any(|request| {
-        !request.to_string().contains("function_call_output")
-            && !request.to_string().contains("tool_result")
-    }));
+    let is_completion = |request: &Value| {
+        [
+            "function_call_output",
+            "custom_tool_call_output",
+            "tool_result",
+        ]
+        .iter()
+        .any(|kind| contains_type(request, kind))
+    };
+    assert!(requests.iter().any(is_completion));
+    assert!(requests.iter().any(|request| !is_completion(request)));
+}
+
+fn contains_type(value: &Value, expected: &str) -> bool {
+    match value {
+        Value::Object(values) => {
+            values.get("type").and_then(Value::as_str) == Some(expected)
+                || values.values().any(|value| contains_type(value, expected))
+        }
+        Value::Array(values) => values.iter().any(|value| contains_type(value, expected)),
+        _ => false,
+    }
 }

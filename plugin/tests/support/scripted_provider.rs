@@ -6,6 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+const CLAUDE_SUBAGENT_MARKER: &str = "ACYCLIC_DETERMINISTIC_CHILD";
+const CLAUDE_FAILED_CHILD: &str = "__ACYCLIC_FAILED_CHILD__";
+
 #[derive(Clone, Copy)]
 pub enum ProviderProtocol {
     Responses,
@@ -21,14 +24,32 @@ pub struct ScriptedProvider {
 
 impl ScriptedProvider {
     pub fn start(protocol: ProviderProtocol, shell_command: &str) -> Self {
-        Self::start_with_mode(protocol, shell_command, false)
+        Self::start_with_mode(protocol, shell_command, false, false)
     }
 
     pub fn start_stalled(protocol: ProviderProtocol) -> Self {
-        Self::start_with_mode(protocol, "", true)
+        Self::start_with_mode(protocol, "", true, false)
     }
 
-    fn start_with_mode(protocol: ProviderProtocol, shell_command: &str, stalled: bool) -> Self {
+    pub fn start_claude_subagent(relative_target: &str) -> Self {
+        Self::start_with_mode(
+            ProviderProtocol::AnthropicMessages,
+            relative_target,
+            false,
+            true,
+        )
+    }
+
+    pub fn start_claude_failed_subagent() -> Self {
+        Self::start_claude_subagent(CLAUDE_FAILED_CHILD)
+    }
+
+    fn start_with_mode(
+        protocol: ProviderProtocol,
+        shell_command: &str,
+        stalled: bool,
+        claude_subagent: bool,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind scripted provider");
         listener
             .set_nonblocking(true)
@@ -47,6 +68,7 @@ impl ScriptedProvider {
                         protocol,
                         &command,
                         stalled,
+                        claude_subagent,
                         &thread_requests,
                         &thread_stop,
                     ),
@@ -97,6 +119,7 @@ fn handle(
     protocol: ProviderProtocol,
     command: &str,
     stalled: bool,
+    claude_subagent: bool,
     requests: &Mutex<Vec<Value>>,
     stop: &AtomicBool,
 ) {
@@ -130,8 +153,19 @@ fn handle(
         );
         return;
     };
-    let completed_tool =
-        contains_type(&request, "function_call_output") || contains_type(&request, "tool_result");
+    let completed_tool = contains_type(&request, "function_call_output")
+        || contains_type(&request, "apply_patch_call_output")
+        || contains_type(&request, "custom_tool_call_output")
+        || contains_type(&request, "tool_result");
+    let child_request = request.to_string().contains(CLAUDE_SUBAGENT_MARKER);
+    let offered_tools = request
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
     requests
         .lock()
         .expect("provider request capture")
@@ -142,11 +176,50 @@ fn handle(
         }
         return;
     }
-    let events = match (protocol, completed_tool) {
-        (ProviderProtocol::Responses, false) => responses_tool_events(command),
-        (ProviderProtocol::Responses, true) => responses_text_events(),
-        (ProviderProtocol::AnthropicMessages, false) => anthropic_tool_events(command, requests),
-        (ProviderProtocol::AnthropicMessages, true) => anthropic_text_events(),
+    let events = if claude_subagent && !completed_tool && !child_request {
+        anthropic_named_tool_events(
+            "Agent",
+            &json!({
+                "description":"deterministic child isolation",
+                "prompt":format!("{CLAUDE_SUBAGENT_MARKER}: write the requested relative file"),
+                "subagent_type":"general-purpose"
+            })
+            .to_string(),
+        )
+    } else if claude_subagent && !completed_tool && child_request {
+        let failed = command == CLAUDE_FAILED_CHILD;
+        let (tool, input) = if offered_tools.iter().any(|tool| tool == "PowerShell") {
+            (
+                "PowerShell",
+                if failed {
+                    json!({"command":"exit 7"})
+                } else {
+                    json!({"command":format!("Set-Content -NoNewline -LiteralPath '{}' -Value isolated", command.replace('\'', "''"))})
+                },
+            )
+        } else if offered_tools.iter().any(|tool| tool == "Bash") {
+            (
+                "Bash",
+                if failed {
+                    json!({"command":"exit 7"})
+                } else {
+                    json!({"command":format!("printf isolated > '{}'", command.replace('\'', "'\"'\"'"))})
+                },
+            )
+        } else {
+            assert!(!failed, "Claude did not expose a shell tool");
+            ("Write", json!({"file_path":command,"content":"isolated"}))
+        };
+        anthropic_named_tool_events(tool, &input.to_string())
+    } else {
+        match (protocol, completed_tool) {
+            (ProviderProtocol::Responses, false) => responses_tool_events(command, requests),
+            (ProviderProtocol::Responses, true) => responses_text_events(),
+            (ProviderProtocol::AnthropicMessages, false) => {
+                anthropic_tool_events(command, requests)
+            }
+            (ProviderProtocol::AnthropicMessages, true) => anthropic_text_events(),
+        }
     };
     write_response(&mut stream, 200, "text/event-stream", &events);
 }
@@ -275,20 +348,27 @@ fn sse(events: impl IntoIterator<Item = Value>) -> String {
         .collect()
 }
 
-fn responses_tool_events(command: &str) -> String {
-    let arguments = json!({"cmd": command, "yield_time_ms": 1000}).to_string();
+fn responses_tool_events(_command: &str, _requests: &Mutex<Vec<Value>>) -> String {
+    let item = json!({
+        "id":"ctc_1",
+        "type":"custom_tool_call",
+        "call_id":"call_1",
+        "name":"exec",
+        "input":"const result = await tools.apply_patch(\"*** Begin Patch\\n*** Add File: codex-e2e.txt\\n+qualified\\n*** End Patch\"); text(result);",
+        "status":"completed"
+    });
     sse([
-        json!({"type":"response.created","response":{"id":"resp_tool","object":"response","status":"in_progress","model":"stub-model","output":[]}}),
-        json!({"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"exec_command","arguments":arguments,"status":"completed"}}),
-        json!({"type":"response.completed","response":{"id":"resp_tool","object":"response","status":"completed","model":"stub-model","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}),
+        json!({"type":"response.created","response":{"id":"resp_tool","object":"response","status":"in_progress","model":"gpt-5.6-sol","output":[]}}),
+        json!({"type":"response.output_item.done","output_index":0,"item":item}),
+        json!({"type":"response.completed","response":{"id":"resp_tool","object":"response","status":"completed","model":"gpt-5.6-sol","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}),
     ])
 }
 
 fn responses_text_events() -> String {
     sse([
-        json!({"type":"response.created","response":{"id":"resp_done","object":"response","status":"in_progress","model":"stub-model","output":[]}}),
+        json!({"type":"response.created","response":{"id":"resp_done","object":"response","status":"in_progress","model":"gpt-5.6-sol","output":[]}}),
         json!({"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"qualified","annotations":[]}]}}),
-        json!({"type":"response.completed","response":{"id":"resp_done","object":"response","status":"completed","model":"stub-model","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}),
+        json!({"type":"response.completed","response":{"id":"resp_done","object":"response","status":"completed","model":"gpt-5.6-sol","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}),
     ])
 }
 
@@ -319,6 +399,10 @@ fn anthropic_tool_events(target: &str, requests: &Mutex<Vec<Value>>) -> String {
         json!({"command": target, "description": "write qualification sentinel"})
     }
     .to_string();
+    anthropic_named_tool_events(tool, &input)
+}
+
+fn anthropic_named_tool_events(tool: &str, input: &str) -> String {
     sse([
         json!({"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}}),
         json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":tool,"input":{}}}),
