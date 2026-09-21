@@ -63,15 +63,17 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      - name: Install trusted-publishing npm CLI
+      - name: Verify trusted-publishing npm CLI
         shell: bash
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/npm-12.0.2.tgz"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-            https://registry.npmjs.org/npm/-/npm-12.0.2.tgz --output "$archive"
-          echo 'b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943  '"$archive" | sha512sum --check --strict
-          npm install --global --ignore-scripts "$archive"
+          npm_version=$(npm --version)
+          node -e '
+            const [major, minor] = process.argv[1].split(".").map(Number);
+            if (major < 11 || (major === 11 && minor < 5)) {
+              throw new Error(`npm ${process.argv[1]} does not support trusted publishing`);
+            }
+          ' "$npm_version"
 
       - name: Download exact successful qualification artifact
         env:
