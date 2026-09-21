@@ -71,7 +71,8 @@ case "$lane" in
     if [[ -n "$base" ]]; then
       bun x buf breaking --against ".git#ref=origin/$base" \
         --exclude-path proto/inference/v1/inference.proto \
-        --exclude-path proto/filesystem/v1
+        --exclude-path proto/filesystem/v1 \
+        --exclude-path proto/filesystem/daemon/v2
     fi
     bash -n scripts/check-typescript-packages.sh
     ;;
