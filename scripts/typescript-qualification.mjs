@@ -8,7 +8,8 @@ import { spawnSync } from "node:child_process";
 
 const MAX_RECEIPT_BYTES = 1_048_576;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PACKAGES = JSON.parse(readFileSync(join(root, "release", "npm-packages.json"), "utf8"));
+const PACKAGES = JSON.parse(readFileSync(join(root, "release", "npm-packages.json"), "utf8"))
+  .filter(item => item.source === "typescript");
 
 function fail(message) {
   throw new Error(message);

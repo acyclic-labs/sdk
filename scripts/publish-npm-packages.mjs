@@ -39,13 +39,19 @@ const receipt = join(artifactDirectory, "QUALIFICATION.json");
 const packages = JSON.parse(readFileSync(join(root, "release", "npm-packages.json"), "utf8"));
 
 for (const item of packages) {
-  const manifest = JSON.parse(readFileSync(join(root, "typescript", "packages", item.directory, "package.json"), "utf8"));
+  if (!item || !["typescript", "plugin"].includes(item.source)) fail("npm publication source is invalid");
+  const manifestPath = item.source === "typescript"
+    ? join(root, "typescript", "packages", item.directory, "package.json")
+    : join(root, "plugin", "package.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   if (manifest.name !== item.name || manifest.version !== releaseVersion || manifest.private !== false) {
     fail(`release manifest mismatch for ${item.directory}`);
   }
   const asset = `acyclic-labs-${item.slug}-${releaseVersion}.tgz`;
   const archive = join(artifactDirectory, asset);
-  const verification = run("node", ["scripts/typescript-qualification.mjs", "verify", receipt, sourceSha, asset, archive], { stdio: "inherit" });
+  const verification = item.source === "typescript"
+    ? run("node", ["scripts/typescript-qualification.mjs", "verify", receipt, sourceSha, asset, archive], { stdio: "inherit" })
+    : run("node", ["scripts/plugin-qualification.mjs", "verify", "plugin/QUALIFICATION.json", sourceSha, archive, releaseVersion], { stdio: "inherit" });
   if (verification.status !== 0) fail(`qualified archive verification failed for ${item.name}`);
 
   const expectedIntegrity = integrity(archive);

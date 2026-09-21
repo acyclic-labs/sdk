@@ -1,30 +1,53 @@
 # Releasing Acyclic
 
-SDK npm packages are published directly from qualified artifacts; there is no
-staging registry or `next` promotion step.
+All release tags must be annotated tags at the same qualified commit on `main`.
+There is no staging registry or `next` promotion step.
 
-1. Merge the release commit to `main` and wait for **SDK Qualification** to pass.
-2. Create and push an annotated `npm-v<VERSION>` tag at that exact commit.
-3. The **Publish npm release** workflow downloads the successful Linux
-   qualification artifact for the tagged commit, verifies every archive and
-   publishes the packages in the dependency order defined by
-   [`npm-packages.json`](npm-packages.json).
-4. The publisher verifies npm's integrity value after each upload. A rerun skips
-   an already-published package only when its registry bytes are identical.
+1. Merge the release commit and wait for **SDK Qualification** to pass.
+2. Push `acyclic-v<VERSION>`. **Release Acyclic** builds and certifies every
+   platform binary, assembles the universal plugin, and creates the GitHub
+   release.
+3. Push `npm-v<VERSION>` at the same commit. **Publish npm release** downloads
+   the exact successful SDK qualification and universal-plugin artifacts,
+   verifies their source commit and bytes, and publishes all packages in the
+   order defined by [`npm-packages.json`](npm-packages.json).
+4. Push `cargo-v<VERSION>` at the same commit. **Publish Cargo release** imports
+   the exact qualified source bundle and publishes crates in the order defined
+   by [`cargo-crates.json`](cargo-crates.json).
 
-Every package must trust `.github/workflows/publish-npm.yml` in the `npmjs`
-GitHub environment. A package that has never been published must be bootstrapped
-once before npm allows trusted publishing; remove that bootstrap credential as
-soon as its first release exists.
+Both publishers are idempotent: an existing version is accepted only when its
+registry checksum or integrity is identical to the qualified artifact.
 
-The coding-agent plugin is released separately by the `acyclic-v<VERSION>` tag
-through `.github/workflows/release-acyclic.yml` because its universal package is
-assembled from platform binaries and native-mount certification receipts.
+## npm trusted-publisher bootstrap
 
-Cargo crates are published from an annotated `cargo-v<VERSION>` tag at the same
-qualified `main` commit. The workflow validates every publishable workspace
-crate and its dependency order, then publishes idempotently with crates.io
-trusted publishing. Each crate must trust `.github/workflows/publish-cargo.yml`
-and the `crates-io` GitHub environment. The ten crates that have never existed
-on crates.io require a one-time manual first publication before that trusted
-publisher can be configured; remove the bootstrap credential immediately.
+Configure every package in `npm-packages.json` with one GitHub Actions trusted
+publisher:
+
+- organization or user: `acyclic-labs`
+- repository: `sdk`
+- workflow: `publish-npm.yml`
+- environment: `npmjs`
+
+The plugin and SDK packages intentionally share this identity. Do not configure
+`release-acyclic.yml` as a publisher. After trusted publishing works, select the
+npm package setting that requires two-factor authentication and disallows token
+publication.
+
+npm cannot configure a trusted publisher until a package exists. For each new
+package, publish its exact qualified archive once from an interactive maintainer
+session with two-factor authentication, configure the publisher above, and then
+enable token rejection. Do not add a bootstrap token to GitHub Actions.
+
+## crates.io trusted-publisher bootstrap
+
+Configure every crate in `cargo-crates.json` to trust:
+
+- repository: `acyclic-labs/sdk`
+- workflow: `publish-cargo.yml`
+- environment: `crates-io`
+
+For a crate that does not yet exist, create a narrowly scoped, short-lived
+crates.io token, publish the exact qualified crate once, revoke the token
+immediately, configure the trusted publisher, and require trusted publishing for
+future releases. No standing Cargo registry token belongs in repository or
+environment secrets.

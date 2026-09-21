@@ -259,6 +259,9 @@ jobs:
           package=$(cd release/package/plugin && npm pack --silent --pack-destination "$RUNNER_TEMP")
           package="$RUNNER_TEMP/$package"
           cp "$package" release/acyclic-plugin-npm.tgz
+          node scripts/plugin-qualification.mjs create \
+            release/acyclic-plugin-npm.tgz release/plugin-qualification.json \
+            "$(git rev-parse HEAD)"
           echo "ACYCLIC_NPM_PACKAGE=$package" >> "$GITHUB_ENV"
           prefix=$(mktemp -d)
           state=$(mktemp -d)
@@ -317,6 +320,7 @@ jobs:
           path: |
             release/acyclic-plugin.tar.gz
             release/acyclic-plugin-npm.tgz
+            release/plugin-qualification.json
             release/platform-binaries.json
             release/verify.js
             release/acyclic-linux-x64-gnu
@@ -343,6 +347,7 @@ jobs:
           files: |
             release/acyclic-plugin.tar.gz
             release/acyclic-plugin-npm.tgz
+            release/plugin-qualification.json
             release/platform-binaries.json
             release/verify.js
             release/acyclic-linux-x64-gnu
@@ -356,30 +361,3 @@ jobs:
             release/native-mount/linux-fuse.json
             release/native-mount/macos-nfs.json
             release/native-mount/windows-projfs.json
-  publish-npm:
-    name: Publish the qualified npm plugin
-    needs: assemble
-    if: startsWith(github.ref, 'refs/tags/acyclic-v')
-    environment: npmjs
-    # npm trusted publishing currently requires a GitHub-hosted runner.
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: acyclic-universal
-          path: release
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24.15.0
-          registry-url: https://registry.npmjs.org
-      - name: Publish the provenance-attested universal npm plugin
-        shell: bash
-        run: |
-          set -euo pipefail
-          version=$(tar -xOf release/acyclic-plugin-npm.tgz package/package.json | jq -r .version)
-          test "$GITHUB_REF_NAME" = "acyclic-v$version"
-          npm install --global npm@12.0.2
-          npm publish release/acyclic-plugin-npm.tgz --access public --provenance

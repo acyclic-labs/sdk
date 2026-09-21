@@ -52,7 +52,7 @@ while IFS=$'\t' read -r slug directory name version; do
 done < <(node -e '
   const fs = require("node:fs");
   const path = require("node:path");
-  for (const item of JSON.parse(fs.readFileSync("release/npm-packages.json", "utf8"))) {
+  for (const item of JSON.parse(fs.readFileSync("release/npm-packages.json", "utf8")).filter(item => item.source === "typescript")) {
     const manifest = JSON.parse(fs.readFileSync(path.join("typescript/packages", item.directory, "package.json"), "utf8"));
     if (manifest.name !== item.name) throw new Error(`release identity differs for ${item.directory}`);
     console.log([item.slug, item.directory, item.name, manifest.version].join("\t"));
