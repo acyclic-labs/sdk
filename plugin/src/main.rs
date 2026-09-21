@@ -4720,8 +4720,11 @@ impl ControlPlane {
         }
         let result = first_error.map_or(Ok(()), Err);
         // `shutdown().await` is the ownership boundary for the durable providers. Drop every
-        // clone before the future becomes ready so an immediate reopen cannot race a completed
-        // shutdown future that still owns the exclusive journal lock.
+        // clone before the future becomes ready. The filesystem lifecycle gate serializes
+        // same-process callers, but a replacement service process can only observe the OS lock;
+        // retaining `operations` in the completed future would therefore publish shutdown before
+        // the exclusive journal lock is actually released.
+        drop(operations);
         drop(self);
         result
     }
