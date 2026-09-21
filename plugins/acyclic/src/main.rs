@@ -7811,6 +7811,14 @@ mod tests {
 
     #[test]
     fn plugin_install_assets_are_discovered_without_build_paths() {
+        let embedded_marketplace: Value =
+            serde_json::from_str(include_str!("../.agents/plugins/marketplace.json"))
+                .expect("embedded marketplace");
+        assert_eq!(
+            embedded_marketplace["plugins"][0]["source"]["path"], ".",
+            "the embedded marketplace is rooted at the plugin directory"
+        );
+
         let temporary = tempfile::tempdir().expect("temporary directory");
         let packaged = temporary.path().join("package");
         let installed = temporary.path().join("installed");
