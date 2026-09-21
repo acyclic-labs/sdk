@@ -20,3 +20,11 @@ soon as its first release exists.
 The coding-agent plugin is released separately by the `acyclic-v<VERSION>` tag
 through `.github/workflows/release-acyclic.yml` because its universal package is
 assembled from platform binaries and native-mount certification receipts.
+
+Cargo crates are published from an annotated `cargo-v<VERSION>` tag at the same
+qualified `main` commit. The workflow validates every publishable workspace
+crate and its dependency order, then publishes idempotently with crates.io
+trusted publishing. Each crate must trust `.github/workflows/publish-cargo.yml`
+and the `crates-io` GitHub environment. The ten crates that have never existed
+on crates.io require a one-time manual first publication before that trusted
+publisher can be configured; remove the bootstrap credential immediately.

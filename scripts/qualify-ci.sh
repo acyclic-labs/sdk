@@ -80,6 +80,8 @@ case "$lane" in
     bash scripts/test-ensure-rust-target.sh
     bash scripts/test-qualify-gate-rustup.sh
     node scripts/check-workflow-runners.mjs
+    node scripts/publish-cargo-crates.mjs check
+    node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     cargo test -p acyclic-labs-plugin --locked
