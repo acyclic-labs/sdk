@@ -8057,6 +8057,51 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
 }
 
 #[cfg(all(feature = "local", any(unix, windows)))]
+#[test]
+fn local_root_lifecycle_outlives_provider_destruction() -> Result<(), Box<dyn std::error::Error>> {
+    struct BlockingProviderDrop {
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl Drop for BlockingProviderDrop {
+        fn drop(&mut self) {
+            let _ = self.entered.send(());
+            let _ = self.release.recv();
+        }
+    }
+
+    let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+    let ownership = Arc::clone(&lifecycle).try_lock_owned()?;
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(0);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+    let inner = FsInner {
+        authority: BlockingProviderDrop {
+            entered: entered_tx,
+            release: release_rx,
+        },
+        objects: (),
+        capabilities: EmbeddedCapabilities::MEMORY,
+        workspace_namespace: [0; 16],
+        path_index: Arc::new(crate::path_index::MemoryGenerationPathIndex::default()),
+        _local_root_lifecycle: Some(ownership),
+    };
+    let dropping = std::thread::spawn(move || drop(inner));
+
+    entered_rx.recv()?;
+    assert!(
+        Arc::clone(&lifecycle).try_lock_owned().is_err(),
+        "replacement root ownership must remain fenced while providers are dropping"
+    );
+    release_tx.send(())?;
+    dropping
+        .join()
+        .map_err(|_| "provider drop thread panicked")?;
+    Arc::clone(&lifecycle).try_lock_owned()?;
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_facade_shares_bounded_object_acceleration_across_handles()
 -> Result<(), Box<dyn std::error::Error>> {
