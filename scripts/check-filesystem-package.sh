@@ -54,6 +54,11 @@ mkdir -p "$work/crates/.cargo"
 runtime_path="$work/crates/acyclic-native-runtime-$runtime_version"
 objects_path="$work/crates/acyclic-objects-$objects_version"
 stream_path="$work/crates/acyclic-stream-$stream_version"
+if [[ "$(bun -e 'process.stdout.write(process.platform)')" == "win32" ]]; then
+  runtime_path="$(bash "$root/scripts/native-tool-path.sh" "$runtime_path")"
+  objects_path="$(bash "$root/scripts/native-tool-path.sh" "$objects_path")"
+  stream_path="$(bash "$root/scripts/native-tool-path.sh" "$stream_path")"
+fi
 cat >"$work/crates/.cargo/config.toml" <<EOF
 [patch.crates-io]
 acyclic-native-runtime = { path = "$runtime_path" }
