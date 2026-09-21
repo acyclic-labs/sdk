@@ -7,7 +7,7 @@
   "private": false,
   "type": "module",
   "sideEffects": false,
-  "files": ["dist", "generated"],
+  "files": ["dist", "generated", "CHANGELOG.md"],
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
     "./proto": { "types": "./dist/proto.d.ts", "default": "./dist/proto.js" }

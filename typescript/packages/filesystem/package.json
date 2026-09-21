@@ -12,7 +12,7 @@
   },
   "type": "module",
   "sideEffects": false,
-  "files": ["dist", "generated", "examples"],
+  "files": ["dist", "generated", "examples", "CHANGELOG.md"],
   "exports": {
     ".": {
       "types": "./dist/browser.d.ts",

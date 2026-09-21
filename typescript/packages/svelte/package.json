@@ -9,7 +9,7 @@
   "sideEffects": false,
   "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": ["dist", "CHANGELOG.md"],
   "scripts": { "build": "tsc -b", "test": "tsc -b --pretty false && bun test test" },
   "peerDependencies": { "@acyclic-labs/harness": "0.1.0", "svelte": ">=5" },
   "devDependencies": { "@acyclic-labs/harness": "workspace:*", "typescript": "7.0.2" }

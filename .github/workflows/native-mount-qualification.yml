@@ -26,15 +26,15 @@ jobs:
       matrix:
         include:
           - backend: linux-fuse
-            runner: '["self-hosted","native-mount","linux-x64","fuse"]'
+            runner: blacksmith-4vcpu-ubuntu-2404
             shell: bash
           - backend: macos-nfs
-            runner: '["self-hosted","native-mount","macos-arm64","loopback-nfs"]'
+            runner: blacksmith-12vcpu-macos-15
             shell: bash
           - backend: windows-projfs
-            runner: '["self-hosted","native-mount","windows-x64","projfs"]'
+            runner: blacksmith-4vcpu-windows-2025
             shell: pwsh
-    runs-on: ${{ fromJSON(matrix.runner) }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
       - name: Check out exact source
@@ -49,6 +49,22 @@ jobs:
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           toolchain: 1.94.0
+
+      - name: Install Linux native-mount prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends fuse3 libfuse3-dev
+
+      - name: Enable Windows ProjFS
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $feature = Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS
+          if ($feature.State -ne 'Enabled') {
+            Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -All -NoRestart
+          }
+          if ((Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS).State -ne 'Enabled') {
+            throw 'Client-ProjFS could not be enabled without a reboot'
+          }
 
       - name: Qualify Linux or macOS native mount
         if: runner.os != 'Windows'

@@ -114,18 +114,18 @@ jobs:
             target: linux-x64-gnu
             executable: linux-x64-gnu/acyclic
             qualifier: linux-x64-gnu/native-mount-qualify
-            runner: '["self-hosted","native-mount","linux-x64","fuse"]'
+            runner: blacksmith-4vcpu-ubuntu-2404
           - backend: macos-nfs
             target: darwin-arm64
             executable: darwin-arm64/acyclic
             qualifier: darwin-arm64/native-mount-qualify
-            runner: '["self-hosted","native-mount","macos-arm64","loopback-nfs"]'
+            runner: blacksmith-12vcpu-macos-15
           - backend: windows-projfs
             target: win32-x64
             executable: win32-x64/acyclic.exe
             qualifier: win32-x64/native-mount-qualify.exe
-            runner: '["self-hosted","native-mount","windows-x64","projfs"]'
-    runs-on: ${{ fromJSON(matrix.runner) }}
+            runner: blacksmith-4vcpu-windows-2025
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -134,6 +134,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.94.0
+      - name: Install Linux native-mount prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends fuse3 libfuse3-dev
+      - name: Enable Windows ProjFS
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $feature = Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS
+          if ($feature.State -ne 'Enabled') {
+            Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -All -NoRestart
+          }
+          if ((Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS).State -ne 'Enabled') {
+            throw 'Client-ProjFS could not be enabled without a reboot'
+          }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: acyclic-${{ matrix.target }}
@@ -173,7 +187,10 @@ jobs:
     needs: [build, native-mount]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
+      artifact-metadata: write
+      attestations: write
       contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -314,10 +331,36 @@ jobs:
             --numeric-owner --format=ustar -C release/package \
             -czf release/acyclic-plugin.tar.gz .
           ! tar -tzf release/acyclic-plugin.tar.gz | grep -E '\.tgz$'
+      - name: Generate and verify release evidence
+        run: |
+          version=$(node -p "require('./plugin/package.json').version")
+          node scripts/release-evidence.mjs sbom \
+            release/acyclic.spdx.json "$(git rev-parse HEAD)" "$version"
+          node scripts/release-evidence.mjs checksums release/SHA256SUMS \
+            release/acyclic-plugin.tar.gz \
+            release/acyclic-plugin-npm.tgz \
+            release/plugin-qualification.json \
+            release/platform-binaries.json \
+            release/verify.js \
+            release/acyclic-linux-x64-gnu \
+            release/acyclic-linux-x64-musl \
+            release/acyclic-linux-arm64-gnu \
+            release/acyclic-linux-arm64-musl \
+            release/acyclic-darwin-x64 \
+            release/acyclic-darwin-arm64 \
+            release/acyclic-win32-x64.exe \
+            release/acyclic-win32-arm64.exe \
+            release/native-mount/linux-fuse.json \
+            release/native-mount/macos-nfs.json \
+            release/native-mount/windows-projfs.json \
+            release/acyclic.spdx.json
+          node scripts/release-evidence.mjs verify release/SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: acyclic-universal
           path: |
+            release/SHA256SUMS
+            release/acyclic.spdx.json
             release/acyclic-plugin.tar.gz
             release/acyclic-plugin-npm.tgz
             release/plugin-qualification.json
@@ -335,6 +378,17 @@ jobs:
             release/native-mount/macos-nfs.json
             release/native-mount/windows-projfs.json
           if-no-files-found: error
+      - name: Attest release provenance
+        if: startsWith(github.ref, 'refs/tags/acyclic-v')
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-checksums: release/SHA256SUMS
+      - name: Attest release SBOM
+        if: startsWith(github.ref, 'refs/tags/acyclic-v')
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-checksums: release/SHA256SUMS
+          sbom-path: release/acyclic.spdx.json
       - name: Verify release tag matches package version
         if: startsWith(github.ref, 'refs/tags/acyclic-v')
         run: |
@@ -345,6 +399,8 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
+            release/SHA256SUMS
+            release/acyclic.spdx.json
             release/acyclic-plugin.tar.gz
             release/acyclic-plugin-npm.tgz
             release/plugin-qualification.json

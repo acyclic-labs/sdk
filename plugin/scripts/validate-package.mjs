@@ -40,6 +40,11 @@ if (targetSchema.version !== 1 || !targetSchema.targets || Array.isArray(targetS
   fail("unsupported Acyclic target schema");
 }
 const SUPPORTED_TARGETS = new Set(Object.keys(targetSchema.targets));
+const changelog = join(plugin, "CHANGELOG.md");
+if (!existsSync(changelog) || !statSync(changelog).isFile()
+  || readFileSync(changelog, "utf8").split(/\r?\n/, 1)[0].trim() !== "# Changelog") {
+  fail(`missing or invalid package changelog: ${changelog}`);
+}
 for (const path of [
   join(plugin, "plugin.json"),
   join(plugin, ".codex-plugin", "plugin.json"),

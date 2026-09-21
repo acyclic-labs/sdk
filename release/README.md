@@ -18,6 +18,12 @@ There is no staging registry or `next` promotion step.
 Both publishers are idempotent: an existing version is accepted only when its
 registry checksum or integrity is identical to the qualified artifact.
 
+The GitHub release includes `SHA256SUMS` and `acyclic.spdx.json`. The release
+workflow verifies the checksum manifest before upload and creates both SLSA
+build-provenance and SBOM attestations for every subject in that manifest. A
+consumer can verify downloaded files with `sha256sum --check SHA256SUMS` and
+GitHub provenance with `gh attestation verify <file> --repo acyclic-labs/sdk`.
+
 ## npm trusted-publisher bootstrap
 
 Configure every package in `npm-packages.json` with one GitHub Actions trusted

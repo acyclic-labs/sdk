@@ -10,13 +10,7 @@ for (const name of readdirSync(directory).filter(name => /\.ya?ml$/.test(name)).
     const match = line.match(/^\s*(?:runner|runs-on):\s*(["']?)(ubuntu|windows|macos)-([^\s#"']+)\1\s*(?:#.*)?$/);
     if (match) githubHosted.push(`${path}:${match[2]}-${match[3]}`);
   }
-  if (source.includes("self-hosted") && ![
-    "agent-host-qualification.yml",
-    "native-mount-qualification.yml",
-    "release-acyclic.yml",
-  ].includes(name)) {
-    throw new Error(`${path} uses self-hosted runners outside a native boundary workflow`);
-  }
+  if (source.includes("self-hosted")) throw new Error(`${path} uses a self-hosted runner`);
 }
 
 const expected = [

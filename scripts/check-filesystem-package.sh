@@ -10,7 +10,10 @@ inference_evidence="$(dirname "$output")/inference/acyclic-inference.tgz"
 work="$(mktemp -d -t sdk-fs-package.XXXXXXXX)"
 trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 
-cd "$root/typescript/packages/filesystem"
+npm_stage="$work/npm-package"
+cp -R "$root/typescript/packages/filesystem" "$npm_stage"
+install -m 0644 "$root/CHANGELOG.md" "$npm_stage/CHANGELOG.md"
+cd "$npm_stage"
 # The caller already compiled and tested these JavaScript/WASM files; pack those exact bytes.
 bun pm pack --ignore-scripts --filename "$work/acyclic-fs.tgz" --quiet
 tar -xzf "$work/acyclic-fs.tgz" -C "$work"

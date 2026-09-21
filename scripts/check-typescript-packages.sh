@@ -46,7 +46,12 @@ while IFS=$'\t' read -r slug directory name version; do
     inference) install -m 0644 "$inference_archive" "$archive" ;;
     fs) install -m 0644 "$filesystem_archive" "$archive" ;;
     harness) install -m 0644 "$harness_archive" "$archive" ;;
-    *) (cd "$root/typescript/packages/$directory" && bun pm pack --ignore-scripts --filename "$archive" --quiet) ;;
+    *)
+      stage="$work/npm-$slug"
+      cp -R "$root/typescript/packages/$directory" "$stage"
+      install -m 0644 "$root/CHANGELOG.md" "$stage/CHANGELOG.md"
+      (cd "$stage" && bun pm pack --ignore-scripts --filename "$archive" --quiet)
+      ;;
   esac
   node "$root/scripts/validate-npm-package.mjs" "$archive" "$name" "$version" "typescript/packages/$directory"
 done < <(node -e '

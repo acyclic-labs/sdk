@@ -54,7 +54,7 @@ function parseArguments(argv) {
 
 const args = parseArguments(process.argv.slice(2));
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const repository = resolve(root, "../..");
+const repository = resolve(root, "..");
 const out = resolve(args.out);
 const release = join(repository, "release");
 if (
@@ -85,6 +85,7 @@ for (const script of ["acyclic.js", "install.js", "verify.js", "targets.json"]) 
 for (const name of ["plugin.json", "package.json", "README.md"]) {
   copyFileSync(join(root, name), join(plugin, name));
 }
+copyFileSync(join(repository, "CHANGELOG.md"), join(plugin, "CHANGELOG.md"));
 cpSync(join(root, ".codex-plugin"), join(plugin, ".codex-plugin"), { recursive: true });
 copyFileSync(join(root, ".mcp.json"), join(plugin, ".mcp.json"));
 cpSync(join(root, ".agents"), join(plugin, ".agents"), { recursive: true });

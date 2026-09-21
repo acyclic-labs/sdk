@@ -18,6 +18,7 @@ export function validateArchive(archive, name, version, directory) {
   const seen = new Set();
   let manifest;
   let readme;
+  let changelog;
   let hasJs = false;
   let hasTypes = false;
   for (const entry of tarEntries(expanded)) {
@@ -38,13 +39,16 @@ export function validateArchive(archive, name, version, directory) {
     } else if (entry.path === "package/README.md") {
       if (entry.body.length > 262_144) fail("npm README exceeds its size bound");
       readme = entry.body;
+    } else if (entry.path === "package/CHANGELOG.md") {
+      if (entry.body.length > 1_048_576) fail("npm changelog exceeds its size bound");
+      changelog = entry.body;
     } else if (entry.path.startsWith("package/dist/")) {
       hasJs ||= /\.(?:js|mjs|cjs)$/.test(entry.path);
       hasTypes ||= entry.path.endsWith(".d.ts");
     }
   }
-  if (!manifest || !readme || readme.toString("utf8").trim() === "" || !hasJs || !hasTypes) {
-    fail("npm archive lacks its README, manifest, or compiled public output");
+  if (!manifest || !readme || readme.toString("utf8").trim() === "" || !changelog || !hasJs || !hasTypes) {
+    fail("npm archive lacks its README, changelog, manifest, or compiled public output");
   }
   const metadata = JSON.parse(manifest.toString("utf8"));
   const expectedRepository = { type: "git", url: REPOSITORY_URL, directory };
@@ -57,6 +61,9 @@ export function validateArchive(archive, name, version, directory) {
   ) fail("npm manifest does not match the qualified package");
   if (readme.toString("utf8").split(/\r?\n/, 1)[0].trim() !== `# ${name}`) {
     fail("npm README does not match the qualified package");
+  }
+  if (changelog.toString("utf8").split(/\r?\n/, 1)[0].trim() !== "# Changelog") {
+    fail("npm changelog does not match the release history");
   }
   return sha256(compressed);
 }

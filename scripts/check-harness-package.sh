@@ -92,7 +92,7 @@ for generated in acyclic_harness_wasm.js acyclic_harness_wasm.d.ts \
 done
 npm_stage="$work/npm-package"
 mkdir -p "$npm_stage/generated"
-install -m 0644 typescript/packages/harness/package.json typescript/packages/harness/README.md "$npm_stage/"
+install -m 0644 typescript/packages/harness/package.json typescript/packages/harness/README.md CHANGELOG.md "$npm_stage/"
 cp -R typescript/packages/harness/dist "$npm_stage/dist"
 cp -R typescript/packages/harness/generated/proto "$npm_stage/generated/proto"
 cp -R "$wasm_output" "$npm_stage/generated/wasm"

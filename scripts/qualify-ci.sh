@@ -84,6 +84,7 @@ case "$lane" in
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
     cargo test -p acyclic-labs-plugin --locked
     cargo clippy -p acyclic-labs-plugin --all-targets --all-features --locked -- -D warnings
     head="${CI_HEAD_SHA:-$(git rev-parse HEAD)}"
@@ -95,11 +96,14 @@ case "$lane" in
       base="${head}^"
     fi
     while read -r commit; do
-      git show --quiet --format=%B "$commit" | \
-        grep --quiet --ignore-case '^Signed-off-by: .\+ <.\+>$' || {
-          echo "Commit $commit lacks a Signed-off-by trailer." >&2
-          exit 1
-        }
+      verification=$(git \
+        -c gpg.format=ssh \
+        -c "gpg.ssh.allowedSignersFile=$(pwd)/.github/allowed_signers" \
+        show --quiet --format='%G?' "$commit")
+      [[ "$verification" == "G" ]] || {
+        echo "Commit $commit lacks an authorized cryptographic signature." >&2
+        exit 1
+      }
     done < <(git rev-list --reverse "$base..$head")
 
     archive="$TOOLS_DIR/cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz"
