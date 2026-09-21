@@ -42,11 +42,27 @@ jobs:
           toolchain: 1.94.0
       - name: Build the unified executable
         run: node scripts/build-product.mjs
+      - name: Verify Cargo installation
+        if: matrix.target == 'linux-x64'
+        shell: bash
+        run: |
+          install_root=$(mktemp -d)
+          cargo install --locked --path plugins/acyclic --root "$install_root"
+          expected=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "acyclic") | "acyclic \(.version)"')
+          test "$("$install_root/bin/acyclic" --version)" = "$expected"
+          "$install_root/bin/acyclic" --help
+      - name: Build native qualification executable
+        if: matrix.target == 'linux-x64' || matrix.target == 'darwin-arm64' || matrix.target == 'win32-x64'
+        run: cargo build --locked --release -p acyclic-conformance --features local-runner --bin native-mount-qualify
       - name: Stage normalized executable
         shell: bash
         run: |
           mkdir -p "release/${{ matrix.target }}"
           cp "target/release/${{ matrix.executable }}" "release/${{ matrix.target }}/${{ matrix.executable }}"
+          case "${{ matrix.target }}" in
+            linux-x64|darwin-arm64) cp target/release/native-mount-qualify "release/${{ matrix.target }}/native-mount-qualify" ;;
+            win32-x64) cp target/release/native-mount-qualify.exe "release/${{ matrix.target }}/native-mount-qualify.exe" ;;
+          esac
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: acyclic-${{ matrix.target }}
@@ -55,9 +71,74 @@ jobs:
           path: release
           if-no-files-found: error
 
+  native-mount:
+    name: Qualify ${{ matrix.backend }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: linux-fuse
+            target: linux-x64
+            executable: linux-x64/acyclic
+            qualifier: linux-x64/native-mount-qualify
+            runner: '["self-hosted","native-mount","linux-x64","fuse"]'
+          - backend: macos-nfs
+            target: darwin-arm64
+            executable: darwin-arm64/acyclic
+            qualifier: darwin-arm64/native-mount-qualify
+            runner: '["self-hosted","native-mount","macos-arm64","loopback-nfs"]'
+          - backend: windows-projfs
+            target: win32-x64
+            executable: win32-x64/acyclic.exe
+            qualifier: win32-x64/native-mount-qualify.exe
+            runner: '["self-hosted","native-mount","windows-x64","projfs"]'
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.94.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: acyclic-${{ matrix.target }}
+          path: ${{ runner.temp }}/release-binary
+      - name: Restore executable permission
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          chmod +x '${{ runner.temp }}/release-binary/${{ matrix.executable }}'
+          chmod +x '${{ runner.temp }}/release-binary/${{ matrix.qualifier }}'
+      - name: Qualify Linux or macOS native mount
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          ACYCLIC_RELEASE_EXECUTABLE: ${{ runner.temp }}/release-binary/${{ matrix.executable }}
+          ACYCLIC_QUALIFIER_EXECUTABLE: ${{ runner.temp }}/release-binary/${{ matrix.qualifier }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/native-mount-target
+          SDK_ARTIFACT_DIR: ${{ runner.temp }}/native-mount-artifacts
+        run: bash scripts/qualify-native-mount.sh '${{ matrix.backend }}'
+      - name: Qualify Windows native mount
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ACYCLIC_RELEASE_EXECUTABLE: ${{ runner.temp }}/release-binary/${{ matrix.executable }}
+          ACYCLIC_QUALIFIER_EXECUTABLE: ${{ runner.temp }}/release-binary/${{ matrix.qualifier }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}\native-mount-target
+          SDK_ARTIFACT_DIR: ${{ runner.temp }}\native-mount-artifacts
+        run: .\scripts\qualify-native-mount.ps1 -Backend '${{ matrix.backend }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-mount-${{ matrix.backend }}
+          path: ${{ runner.temp }}/native-mount-artifacts/${{ matrix.backend }}.json
+          if-no-files-found: error
+
   assemble:
     name: Validate and assemble
-    needs: build
+    needs: [build, native-mount]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -73,6 +154,25 @@ jobs:
           pattern: acyclic-*
           path: release/binaries
           merge-multiple: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: native-mount-*
+          path: release/native-mount
+          merge-multiple: true
+      - name: Verify native receipts against release artifacts
+        run: |
+          qualifier=release/binaries/acyclic-linux-x64/linux-x64/native-mount-qualify
+          chmod +x "$qualifier"
+          version=$(node -p "require('./plugins/acyclic/package.json').version")
+          "$qualifier" --verify-receipt release/native-mount/linux-fuse.json \
+            --require-kind linux-fuse --release-version "$version" \
+            --release-executable release/binaries/acyclic-linux-x64/linux-x64/acyclic
+          "$qualifier" --verify-receipt release/native-mount/macos-nfs.json \
+            --require-kind macos-nfs --release-version "$version" \
+            --release-executable release/binaries/acyclic-darwin-arm64/darwin-arm64/acyclic
+          "$qualifier" --verify-receipt release/native-mount/windows-projfs.json \
+            --require-kind windows-projfs --release-version "$version" \
+            --release-executable release/binaries/acyclic-win32-x64/win32-x64/acyclic.exe
       - name: Build and validate the universal plugin
         run: |
           node plugins/acyclic/scripts/package.mjs \
@@ -83,6 +183,13 @@ jobs:
             --binary win32-x64=release/binaries/acyclic-win32-x64/win32-x64/acyclic.exe \
             --binary win32-arm64=release/binaries/acyclic-win32-arm64/win32-arm64/acyclic.exe \
             --out release/package
+          mkdir -p release/package/plugins/acyclic/certification
+          cp release/native-mount/linux-fuse.json \
+            release/package/plugins/acyclic/certification/native-mount-linux-x86_64.json
+          cp release/native-mount/macos-nfs.json \
+            release/package/plugins/acyclic/certification/native-mount-macos-aarch64.json
+          cp release/native-mount/windows-projfs.json \
+            release/package/plugins/acyclic/certification/native-mount-windows-x86_64.json
           node plugins/acyclic/scripts/validate-package.mjs release/package --require-universal
       - name: Smoke the launcher and MCP bridge
         working-directory: release/package/plugins/acyclic
@@ -98,20 +205,25 @@ jobs:
       - name: Install the npm package into an empty prefix
         run: |
           set -eu
-          package=$(cd release/package/plugins/acyclic && npm pack --silent)
+          package=$(cd release/package/plugins/acyclic && npm pack --silent --pack-destination "$RUNNER_TEMP")
+          package="$RUNNER_TEMP/$package"
+          echo "ACYCLIC_NPM_PACKAGE=$package" >> "$GITHUB_ENV"
           prefix=$(mktemp -d)
-          npm install --global --prefix "$prefix" "./release/package/plugins/acyclic/$package"
+          state=$(mktemp -d)
+          XDG_STATE_HOME="$state" npm install --global --prefix "$prefix" "$package"
           "$prefix/bin/acyclic" --help
           test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/plugin.json"
           test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/.agents/plugins/marketplace.json"
           test ! -e "$prefix/lib/node_modules/@acyclic-labs/plugin/src"
+          test -f "$state/acyclic/state-v2/certification/native-mount-linux-x86_64.json"
       - name: Run packaged Codex lifecycle end to end
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
           test -n "$OPENAI_API_KEY"
-          package=$(find release/package/plugins/acyclic -maxdepth 1 -name '*.tgz' -print -quit)
+          package="$ACYCLIC_NPM_PACKAGE"
+          test -f "$package"
           prefix=$(mktemp -d)
           home=$(mktemp -d)
           export HOME="$home"
@@ -145,6 +257,7 @@ jobs:
           tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 \
             --numeric-owner --format=ustar -C release/package \
             -czf release/acyclic-plugin.tar.gz .
+          ! tar -tzf release/acyclic-plugin.tar.gz | grep -E '\.tgz$'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: acyclic-universal
@@ -158,7 +271,15 @@ jobs:
             release/acyclic-darwin-arm64
             release/acyclic-win32-x64.exe
             release/acyclic-win32-arm64.exe
+            release/native-mount/linux-fuse.json
+            release/native-mount/macos-nfs.json
+            release/native-mount/windows-projfs.json
           if-no-files-found: error
+      - name: Verify release tag matches package version
+        if: startsWith(github.ref, 'refs/tags/acyclic-v')
+        run: |
+          version=$(node -p "require('./release/package/plugins/acyclic/package.json').version")
+          test "$GITHUB_REF_NAME" = "acyclic-v$version"
       - name: Publish tag assets
         if: startsWith(github.ref, 'refs/tags/acyclic-v')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
@@ -173,6 +294,9 @@ jobs:
             release/acyclic-darwin-arm64
             release/acyclic-win32-x64.exe
             release/acyclic-win32-arm64.exe
+            release/native-mount/linux-fuse.json
+            release/native-mount/macos-nfs.json
+            release/native-mount/windows-projfs.json
       - name: Publish the provenance-attested universal npm plugin
         if: startsWith(github.ref, 'refs/tags/acyclic-v')
         shell: bash

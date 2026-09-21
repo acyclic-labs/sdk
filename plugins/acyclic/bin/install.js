@@ -3,6 +3,7 @@
 
 const { createHash } = require("node:crypto");
 const { spawnSync } = require("node:child_process");
+const { homedir, tmpdir } = require("node:os");
 const {
   chmodSync, copyFileSync, existsSync, openSync, closeSync, fsyncSync, mkdirSync,
   readFileSync, renameSync, rmSync, statSync, writeFileSync,
@@ -61,6 +62,54 @@ function durableJson(path, value, helper) {
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function durableStateDirectory() {
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) {
+    return join(process.env.LOCALAPPDATA, "Acyclic", "state-v2");
+  }
+  if (process.platform !== "win32" && process.env.XDG_STATE_HOME) {
+    return join(process.env.XDG_STATE_HOME, "acyclic", "state-v2");
+  }
+  const home = process.env.HOME || homedir();
+  if (process.platform !== "win32" && home) {
+    return join(home, ".local", "state", "acyclic", "state-v2");
+  }
+  return join(tmpdir(), "acyclic-state-v2");
+}
+
+function installCertification(packageVersion, helper) {
+  const platform = { linux: "linux", darwin: "macos", win32: "windows" }[process.platform];
+  const architecture = { x64: "x86_64", arm64: "aarch64" }[process.arch];
+  const backend = { linux: "linux-fuse", darwin: "macos-nfs", win32: "windows-projfs" }[process.platform];
+  if (!platform || !architecture || !backend) return;
+  const name = `native-mount-${platform}-${architecture}.json`;
+  const source = join(__dirname, "..", "certification", name);
+  if (!existsSync(source)) return;
+  const receipt = readJson(source);
+  if (
+    receipt.schema !== "acyclic-native-mount-qualification-v2"
+    || receipt.os !== platform
+    || receipt.arch !== architecture
+    || receipt.required_kind !== backend
+    || receipt.release_version !== packageVersion
+    || receipt.passed !== true
+    || typeof receipt.executable_blake3 !== "string"
+    || !/^[0-9a-f]{64}$/.test(receipt.executable_blake3)
+  ) {
+    throw new Error(`invalid Acyclic platform certification receipt: ${name}`);
+  }
+  const testBypass = process.env.NODE_ENV === "test"
+    && process.env.ACYCLIC_INSTALL_TEST_CERTIFICATION === "1";
+  if (!testBypass) {
+    const verified = spawnSync(helper, ["__verify-certification", source], { stdio: "inherit" });
+    if (verified.error || verified.status !== 0) {
+      throw new Error(`Acyclic platform certification does not match the installed binary${verified.error ? `: ${verified.error.message}` : ""}`);
+    }
+  }
+  const directory = join(durableStateDirectory(), "certification");
+  mkdirSync(directory, { recursive: true });
+  durableJson(join(directory, name), receipt, helper);
 }
 
 function processExists(pid) {
@@ -254,7 +303,10 @@ function ensureInstalledLocked() {
 function ensureInstalled() {
   const release = acquireInstallLock(__dirname);
   try {
-    return ensureInstalledLocked();
+    const installed = ensureInstalledLocked();
+    const packageVersion = readJson(join(__dirname, "..", "package.json")).version;
+    installCertification(packageVersion, installed);
+    return installed;
   } finally {
     release();
   }

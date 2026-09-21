@@ -5262,6 +5262,14 @@ fn load_state(data: &Path) -> Result<AdapterState, String> {
 }
 
 fn save_state(data: &Path, state: &AdapterState) -> Result<(), String> {
+    save_state_with_rename(data, state, durable_rename)
+}
+
+fn save_state_with_rename(
+    data: &Path,
+    state: &AdapterState,
+    mut rename: impl FnMut(&Path, &Path, RenameMode) -> io::Result<()>,
+) -> Result<(), String> {
     validate_state_bounds(state)?;
     let mut serialized = BoundedJsonBuffer::new();
     serde_json::to_writer(&mut serialized, state).map_err(|_| {
@@ -5279,17 +5287,10 @@ fn save_state(data: &Path, state: &AdapterState) -> Result<(), String> {
     file.write_all(&serialized.bytes).map_err(display)?;
     file.sync_all().map_err(display)?;
     drop(file);
-    remove_file_if_present(&previous)?;
     if path.exists() {
-        fs::rename(&path, &previous).map_err(display)?;
+        rename(&path, &previous, RenameMode::Replace).map_err(display)?;
     }
-    if let Err(error) = fs::rename(&next, &path) {
-        if previous.exists() && !path.exists() {
-            let _ = fs::rename(&previous, &path);
-        }
-        return Err(display(error));
-    }
-    remove_file_if_present(&previous)
+    rename(&next, &path, RenameMode::Replace).map_err(display)
 }
 
 fn read_state(path: &Path) -> Result<Option<AdapterState>, String> {
@@ -5370,14 +5371,6 @@ fn validate_state_bounds(state: &AdapterState) -> Result<(), String> {
         return Err("adapter discard queue exceeds its structural bound".to_owned());
     }
     Ok(())
-}
-
-fn remove_file_if_present(path: &Path) -> Result<(), String> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(display(error)),
-    }
 }
 
 fn remove_tree_checked(root: &Path, target: &Path) -> Result<(), String> {
@@ -5899,6 +5892,7 @@ struct ServiceControl {
     sessions: BTreeMap<String, ControlPlane>,
     identity: String,
     upgrade: Arc<tokio::sync::Notify>,
+    drain_id: Arc<Mutex<Option<String>>>,
 }
 
 impl ServiceControl {
@@ -5917,6 +5911,7 @@ impl ServiceControl {
             sessions: BTreeMap::new(),
             identity: service_identity()?,
             upgrade: Arc::new(tokio::sync::Notify::new()),
+            drain_id: Arc::new(Mutex::new(None)),
         };
         let entries = fs::read_dir(service.data.join("sessions")).map_err(display)?;
         for entry in entries {
@@ -6279,6 +6274,23 @@ impl ControlRequestDispatcher for ServiceControl {
             if expected != self.identity {
                 return Err("upgrade request targets a different service binary".to_owned());
             }
+            let drain_id = request
+                .arguments
+                .get("drainId")
+                .and_then(Value::as_str)
+                .filter(|value| {
+                    !value.is_empty()
+                        && value.len() <= 128
+                        && value
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                })
+                .ok_or_else(|| "upgrade request has an invalid drain identity".to_owned())?;
+            *self
+                .drain_id
+                .lock()
+                .map_err(|_| "service drain identity lock is poisoned".to_owned())? =
+                Some(drain_id.to_owned());
             let notify = Arc::clone(&self.upgrade);
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -6287,6 +6299,7 @@ impl ControlRequestDispatcher for ServiceControl {
             return Ok(json!({ "draining": true }));
         }
         if matches!(request.command, ControlCommand::Doctor) {
+            parse_read_only_arguments(&request.argv)?;
             let routes = self
                 .sessions
                 .values()
@@ -6339,15 +6352,19 @@ async fn dispatch_plane_request(
 ) -> Result<Value, String> {
     match request.command {
         ControlCommand::Ping => Ok(json!({})),
-        ControlCommand::Doctor => doctor_report(
-            &control.config_root,
-            &service_identity()?,
-            1,
-            control.state.routes.len(),
-            control.state.leases.len(),
-            !control.state.pending_discards.is_empty() || !control.state.pending.is_empty(),
-        ),
+        ControlCommand::Doctor => {
+            parse_read_only_arguments(&request.argv)?;
+            doctor_report(
+                &control.config_root,
+                &service_identity()?,
+                1,
+                control.state.routes.len(),
+                control.state.leases.len(),
+                !control.state.pending_discards.is_empty() || !control.state.pending.is_empty(),
+            )
+        }
         ControlCommand::Agents => {
+            parse_read_only_arguments(&request.argv)?;
             let (caller, _) = control.route_from_cwd(&request.cwd)?;
             control.agents_status(&caller).await
         }
@@ -6566,6 +6583,7 @@ fn is_foreground_cli_invocation() -> bool {
                     | "uninstall"
                     | "__service-drain"
                     | "__installer-rename"
+                    | "__verify-certification"
                     | "--help"
                     | "-h"
                     | "--version"
@@ -6620,9 +6638,37 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         durable_rename(Path::new(from), Path::new(to), mode)?;
         return Ok(());
     }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "__verify-certification")
+    {
+        let [_, receipt] = arguments.as_slice() else {
+            return Err(io::Error::other("acyclic __verify-certification requires RECEIPT").into());
+        };
+        let bytes = fs::read(receipt)?;
+        if bytes.len() > 1024 * 1024 {
+            return Err(io::Error::other("certification receipt exceeds 1 MiB").into());
+        }
+        let receipt: Value = serde_json::from_slice(&bytes)?;
+        let digest = blake3_file(&env::current_exe()?).map_err(io::Error::other)?;
+        if !valid_platform_receipt(&receipt, &digest) {
+            return Err(io::Error::other(
+                "certification receipt does not match this Acyclic executable",
+            )
+            .into());
+        }
+        return Ok(());
+    }
     if let Some(command) = arguments.first().map(String::as_str)
         && matches!(command, "git" | "agents" | "doctor" | "discard")
     {
+        let json_output = if matches!(command, "agents" | "doctor") {
+            parse_read_only_arguments(arguments.get(1..).unwrap_or_default())?
+        } else {
+            arguments
+                .get(1)
+                .is_some_and(|argument| argument == "--json")
+        };
         let data = default_data_directory();
         let request = ControlRequest {
             version: 1,
@@ -6641,9 +6687,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let response = send_cli_control_request(&data, &request)
             .await
             .map_err(io::Error::other)?;
-        let json_output = arguments
-            .get(1)
-            .is_some_and(|argument| argument == "--json");
         let exit_code = if json_output {
             println!("{}", serde_json::to_string_pretty(&response)?);
             if command == "doctor" && response.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -6796,8 +6839,121 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+fn blake3_file(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path).map_err(display)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(display)?;
+        if count == 0 {
+            break;
+        }
+        let bytes = buffer
+            .get(..count)
+            .ok_or_else(|| "executable digest read exceeded its buffer".to_owned())?;
+        hasher.update(bytes);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
 fn doctor_check(name: &str, status: &str, detail: impl Into<String>) -> Value {
     json!({"name": name, "status": status, "detail": detail.into()})
+}
+
+fn valid_platform_receipt(receipt: &Value, executable_blake3: &str) -> bool {
+    const COVERAGE: &[&str] = &[
+        "create-read-write",
+        "atomic-save",
+        "rename-delete",
+        "nested-paths",
+        "concurrent-handles",
+        "watchers",
+        "crash-detach-recovery",
+        "mount-restoration",
+        "hard-links",
+        "symbolic-links-reparse-points",
+        "metadata",
+        "case-behavior",
+        "escape-attempts",
+        "root-checkout-untouched",
+        "git-administration-untouched",
+    ];
+    const CASES: &[&str] = &[
+        "real-mount-mutation-matrix",
+        "crash-detach-recovery",
+        "checkout-and-git-untouched",
+    ];
+    let required_kind = match env::consts::OS {
+        "linux" => "linux-fuse",
+        "macos" => "macos-nfs",
+        "windows" => "windows-projfs",
+        _ => return false,
+    };
+    let Some(document) = receipt.as_object() else {
+        return false;
+    };
+    let expected_keys = [
+        "schema",
+        "os",
+        "arch",
+        "coverage",
+        "capability",
+        "required_kind",
+        "release_version",
+        "executable_blake3",
+        "passed",
+        "cases",
+    ];
+    if document.len() != expected_keys.len()
+        || expected_keys.iter().any(|key| !document.contains_key(*key))
+        || receipt.get("schema").and_then(Value::as_str)
+            != Some("acyclic-native-mount-qualification-v2")
+        || receipt.get("os").and_then(Value::as_str) != Some(env::consts::OS)
+        || receipt.get("arch").and_then(Value::as_str) != Some(env::consts::ARCH)
+        || receipt.get("required_kind").and_then(Value::as_str) != Some(required_kind)
+        || receipt.get("release_version").and_then(Value::as_str) != Some(env!("CARGO_PKG_VERSION"))
+        || receipt.get("executable_blake3").and_then(Value::as_str) != Some(executable_blake3)
+        || receipt.get("passed").and_then(Value::as_bool) != Some(true)
+    {
+        return false;
+    }
+    let coverage = receipt.get("coverage").and_then(Value::as_array);
+    if coverage.is_none_or(|values| {
+        values.len() != COVERAGE.len()
+            || values
+                .iter()
+                .zip(COVERAGE)
+                .any(|(value, expected)| value.as_str() != Some(*expected))
+    }) {
+        return false;
+    }
+    let capability = receipt.get("capability");
+    if capability
+        .and_then(|value| value.get("kind"))
+        .and_then(Value::as_str)
+        != Some(required_kind)
+        || capability
+            .and_then(|value| value.get("available"))
+            .and_then(Value::as_bool)
+            != Some(true)
+        || capability
+            .and_then(|value| value.get("writable"))
+            .and_then(Value::as_bool)
+            != Some(true)
+    {
+        return false;
+    }
+    receipt
+        .get("cases")
+        .and_then(Value::as_array)
+        .is_some_and(|cases| {
+            cases.len() == CASES.len()
+                && cases.iter().zip(CASES).all(|(case, expected)| {
+                    case.get("name").and_then(Value::as_str) == Some(*expected)
+                        && case.get("status").and_then(Value::as_str) == Some("passed")
+                        && case.get("reason").is_some_and(Value::is_null)
+                })
+        })
 }
 
 fn valid_codex_mcp_manifest(document: &Value) -> bool {
@@ -7111,16 +7267,17 @@ fn doctor_report(
         env::consts::OS,
         env::consts::ARCH
     ));
+    let executable_blake3 = env::current_exe()
+        .map_err(display)
+        .and_then(|path| blake3_file(&path));
     let certified = fs::read(&receipt_path)
         .ok()
         .filter(|bytes| bytes.len() <= 1024 * 1024)
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .is_some_and(|receipt| {
-            receipt.get("schema").and_then(Value::as_str)
-                == Some("acyclic-native-mount-qualification-v1")
-                && receipt.get("os").and_then(Value::as_str) == Some(env::consts::OS)
-                && receipt.get("arch").and_then(Value::as_str) == Some(env::consts::ARCH)
-                && receipt.get("passed").and_then(Value::as_bool) == Some(true)
+            executable_blake3
+                .as_deref()
+                .is_ok_and(|digest| valid_platform_receipt(&receipt, digest))
         });
     checks.push(doctor_check(
         "platform-certification",
@@ -7169,6 +7326,69 @@ impl Drop for ServiceIdentityMarker {
     }
 }
 
+fn service_drain_completion_path(data: &Path) -> PathBuf {
+    data.join("service-drain.json")
+}
+
+fn write_service_drain_completion(
+    data: &Path,
+    identity: &str,
+    drain_id: &str,
+    result: &Result<(), String>,
+) -> Result<(), String> {
+    let path = service_drain_completion_path(data);
+    let next = data.join("service-drain.next.json");
+    let value = json!({
+        "version": 1,
+        "identity": identity,
+        "drainId": drain_id,
+        "ok": result.is_ok(),
+        "error": result.as_ref().err(),
+    });
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&next)
+        .map_err(display)?;
+    serde_json::to_writer_pretty(&mut file, &value).map_err(display)?;
+    file.write_all(b"\n").map_err(display)?;
+    file.sync_all().map_err(display)?;
+    drop(file);
+    durable_rename(&next, &path, RenameMode::Replace).map_err(display)
+}
+
+fn verify_service_drain_completion(
+    data: &Path,
+    identity: &str,
+    drain_id: &str,
+) -> Result<(), String> {
+    let path = service_drain_completion_path(data);
+    let value: Value = serde_json::from_slice(&fs::read(&path).map_err(|error| {
+        format!(
+            "Acyclic service exited without durable drain confirmation at {}: {error}",
+            path.display()
+        )
+    })?)
+    .map_err(display)?;
+    if value.get("version").and_then(Value::as_u64) != Some(1)
+        || value.get("identity").and_then(Value::as_str) != Some(identity)
+        || value.get("drainId").and_then(Value::as_str) != Some(drain_id)
+    {
+        return Err("Acyclic service drain confirmation does not match this request".to_owned());
+    }
+    if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(format!(
+            "Acyclic service teardown failed: {}",
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown teardown error")
+        ));
+    }
+    Ok(())
+}
+
 fn acquire_service_lock(data: &Path) -> Result<Option<ServiceLock>, String> {
     fs::create_dir_all(data).map_err(display)?;
     #[cfg(unix)]
@@ -7191,6 +7411,13 @@ fn acquire_service_lock(data: &Path) -> Result<Option<ServiceLock>, String> {
 }
 
 async fn run_service(data: PathBuf) -> Result<(), String> {
+    run_service_with_identity(data, None).await
+}
+
+async fn run_service_with_identity(
+    data: PathBuf,
+    identity_override: Option<String>,
+) -> Result<(), String> {
     let Some(_lock) = acquire_service_lock(&data)? else {
         return Ok(());
     };
@@ -7200,23 +7427,37 @@ async fn run_service(data: PathBuf) -> Result<(), String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(display(error)),
     }
-    let service = ServiceControl::open(data.clone()).await?;
+    let mut service = ServiceControl::open(data.clone()).await?;
+    if let Some(identity) = identity_override {
+        service.identity = identity;
+    }
     let upgrade = Arc::clone(&service.upgrade);
+    let drain_id = Arc::clone(&service.drain_id);
+    let identity = service.identity.clone();
     let control = Arc::new(AsyncMutex::new(service));
     let endpoint = start_control_endpoint(Arc::clone(&control), &data).await?;
-    let _identity_marker = ServiceIdentityMarker::create(&data, &service_identity()?)?;
+    let _identity_marker = ServiceIdentityMarker::create(&data, &identity)?;
     tokio::select! {
         signal = tokio::signal::ctrl_c() => signal.map_err(display)?,
         () = upgrade.notified() => {},
     }
-    endpoint.shutdown().await?;
-    let mut control = Arc::try_unwrap(control)
-        .map_err(|_| "control service retained an active request during shutdown".to_owned())?
-        .into_inner();
-    control.shutdown().await
+    let endpoint_result = endpoint.shutdown().await;
+    let control_result = match Arc::try_unwrap(control) {
+        Ok(control) => control.into_inner().shutdown().await,
+        Err(_) => Err("control service retained an active request during shutdown".to_owned()),
+    };
+    let result = endpoint_result.and(control_result);
+    let requested_drain = drain_id
+        .lock()
+        .map_err(|_| "service drain identity lock is poisoned".to_owned())?
+        .clone();
+    if let Some(drain_id) = requested_drain {
+        write_service_drain_completion(&data, &identity, &drain_id, &result)?;
+    }
+    result
 }
 
-async fn ensure_service(data: &Path) -> Result<(), String> {
+async fn service_is_ready_for_identity(data: &Path, identity: &str) -> Result<bool, String> {
     let ping = ControlRequest {
         version: 1,
         command: ControlCommand::Ping,
@@ -7225,36 +7466,37 @@ async fn ensure_service(data: &Path) -> Result<(), String> {
         name: String::new(),
         arguments: Value::Null,
     };
-    let identity = service_identity()?;
-    if let Ok(active) = send_control_request(data, &ping).await {
-        if active.get("identity").and_then(Value::as_str) == Some(identity.as_str()) {
-            return Ok(());
-        }
-        let active_identity = active
-            .get("identity")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                "an older Acyclic service cannot hand off cleanly; stop it once, then retry"
-                    .to_owned()
-            })?;
-        let upgrade = ControlRequest {
-            version: 1,
-            command: ControlCommand::Upgrade,
-            cwd: env::current_dir().map_err(display)?,
-            argv: Vec::new(),
-            name: String::new(),
-            arguments: json!({ "identity": active_identity }),
-        };
-        send_control_request(data, &upgrade)
-            .await
-            .map_err(|error| error.to_string())?;
-        for _ in 0..100 {
-            if send_control_request(data, &ping).await.is_err() {
-                break;
+    match send_control_request(data, &ping).await {
+        Ok(active) => {
+            if active.get("identity").and_then(Value::as_str) == Some(identity) {
+                return Ok(true);
             }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            drain_service(data).await?;
+            Ok(false)
         }
+        Err(ControlRequestError::Transport(_)) => {
+            drain_service(data).await?;
+            Ok(false)
+        }
+        Err(error) => Err(format!(
+            "cannot safely identify the Acyclic service: {error}"
+        )),
     }
+}
+
+async fn ensure_service(data: &Path) -> Result<(), String> {
+    let identity = service_identity()?;
+    if service_is_ready_for_identity(data, &identity).await? {
+        return Ok(());
+    }
+    let ping = ControlRequest {
+        version: 1,
+        command: ControlCommand::Ping,
+        cwd: env::current_dir().map_err(display)?,
+        argv: Vec::new(),
+        name: String::new(),
+        arguments: Value::Null,
+    };
     fs::create_dir_all(data).map_err(display)?;
     let mut command = std::process::Command::new(env::current_exe().map_err(display)?);
     command
@@ -7738,6 +7980,14 @@ fn parse_uninstall_arguments(arguments: &[String]) -> Result<(&str, bool), Strin
     }
 }
 
+fn parse_read_only_arguments(arguments: &[String]) -> Result<bool, String> {
+    match arguments {
+        [] => Ok(false),
+        [json] if json == "--json" => Ok(true),
+        _ => Err("usage: acyclic doctor [--json] | acyclic agents [--json]".to_owned()),
+    }
+}
+
 async fn purge_durable_state(data: &Path) -> Result<(), String> {
     if !data.exists() {
         return Ok(());
@@ -7763,21 +8013,28 @@ async fn drain_service(data: &Path) -> Result<(), String> {
             let identity = active
                 .get("identity")
                 .and_then(Value::as_str)
-                .ok_or_else(|| "cannot safely drain an unidentified Acyclic service".to_owned())?;
+                .ok_or_else(|| "cannot safely drain an unidentified Acyclic service".to_owned())?
+                .to_owned();
+            let drain_id = format!("{}-{}", std::process::id(), now_millis());
             let request = ControlRequest {
                 version: 1,
                 command: ControlCommand::Upgrade,
                 cwd: env::current_dir().map_err(display)?,
                 argv: Vec::new(),
                 name: String::new(),
-                arguments: json!({"identity": identity}),
+                arguments: json!({"identity": identity, "drainId": drain_id}),
             };
             send_control_request(data, &request)
                 .await
                 .map_err(|error| error.to_string())?;
+            let mut endpoint_closed = false;
             for _ in 0..250 {
-                if send_control_request(data, &ping).await.is_err() {
-                    return Ok(());
+                if !endpoint_closed && send_control_request(data, &ping).await.is_err() {
+                    endpoint_closed = true;
+                }
+                if endpoint_closed && let Some(lock) = acquire_service_lock(data)? {
+                    drop(lock);
+                    return verify_service_drain_completion(data, &identity, &drain_id);
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
@@ -7786,7 +8043,16 @@ async fn drain_service(data: &Path) -> Result<(), String> {
                     .to_owned(),
             )
         }
-        Err(ControlRequestError::Transport(_)) => Ok(()),
+        Err(ControlRequestError::Transport(_)) => match acquire_service_lock(data)? {
+            Some(lock) => {
+                drop(lock);
+                Ok(())
+            }
+            None => Err(
+                "Acyclic service lock is held without a reachable endpoint; state was preserved"
+                    .to_owned(),
+            ),
+        },
         Err(error) => Err(format!(
             "cannot safely identify the Acyclic service: {error}"
         )),
@@ -7972,39 +8238,7 @@ fn uninstall_host(host: &str) -> Result<(), String> {
 }
 
 fn remove_copilot_hooks_at(path: &Path) -> Result<(), String> {
-    let ownership_path = mcp_ownership_path(path, "__whole-file__");
-    let Some(ownership) = read_mcp_ownership(&ownership_path)? else {
-        if path.exists() {
-            return Err(format!(
-                "refusing to remove Copilot hooks without an Acyclic ownership record from {}",
-                path.display()
-            ));
-        }
-        return Ok(());
-    };
-    let current = fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
-    if ownership.version != 1
-        || ownership.config_path != path
-        || ownership.section != "__whole-file__"
-        || current.as_ref() != Some(&ownership.installed)
-    {
-        return Err(format!(
-            "the Acyclic Copilot hooks at {} were modified; leaving them untouched",
-            path.display()
-        ));
-    }
-    match ownership.prior {
-        Some(prior) => write_json_with_backup(path, &prior)?,
-        None => match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(display(error)),
-        },
-    }
-    fs::remove_file(&ownership_path).map_err(display)?;
-    Ok(())
+    remove_owned_json(path, "copilot-hooks", "Copilot hooks")
 }
 
 fn install_claude_hooks(executable: &Path, project: bool) -> Result<PathBuf, String> {
@@ -8015,54 +8249,49 @@ fn install_claude_hooks(executable: &Path, project: bool) -> Result<PathBuf, Str
     } else {
         home_directory()?.join(".claude/settings.json")
     };
-    let mut document = read_json_object(&path)?;
-    let hooks = object_entry(&mut document, "hooks")?;
-    for event in [
-        "SessionStart",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "SubagentStart",
-        "SubagentStop",
-        "SessionEnd",
-    ] {
-        let command = format!(
-            "{} __hook claude-code {event}",
-            shell_command_path(executable)
-        );
-        let entries = hooks
-            .entry(event.to_owned())
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .ok_or_else(|| format!("Claude Code hooks.{event} must be an array"))?;
-        entries.retain(|entry| {
-            !entry
-                .get("hooks")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .any(|hook| {
-                    hook.get("command")
-                        .and_then(Value::as_str)
-                        .is_some_and(|command| command.contains("__hook claude-code"))
-                })
-        });
-        let mut group = serde_json::Map::new();
-        if matches!(event, "PreToolUse" | "PostToolUse") {
-            group.insert("matcher".to_owned(), Value::String(".*".to_owned()));
+    install_owned_json(&path, "claude-hooks", "Claude Code hooks", |prior| {
+        let mut document = prior
+            .cloned()
+            .unwrap_or_else(|| json!({}))
+            .as_object()
+            .cloned()
+            .ok_or_else(|| format!("{} must contain a JSON object", path.display()))?;
+        let hooks = object_entry(&mut document, "hooks")?;
+        for event in [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "SubagentStart",
+            "SubagentStop",
+            "SessionEnd",
+        ] {
+            let command = format!(
+                "{} __hook claude-code {event}",
+                shell_command_path(executable)
+            );
+            let entries = hooks
+                .entry(event.to_owned())
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| format!("Claude Code hooks.{event} must be an array"))?;
+            let mut group = serde_json::Map::new();
+            if matches!(event, "PreToolUse" | "PostToolUse") {
+                group.insert("matcher".to_owned(), Value::String(".*".to_owned()));
+            }
+            group.insert(
+                "hooks".to_owned(),
+                json!([{
+                    "type": "command",
+                    "command": command,
+                    "timeout": 120,
+                    "statusMessage": "Acyclic is routing the workspace"
+                }]),
+            );
+            entries.push(Value::Object(group));
         }
-        group.insert(
-            "hooks".to_owned(),
-            json!([{
-                "type": "command",
-                "command": command,
-                "timeout": 120,
-                "statusMessage": "Acyclic is routing the workspace"
-            }]),
-        );
-        entries.push(Value::Object(group));
-    }
-    write_json_with_backup(&path, &Value::Object(document))?;
+        Ok(Value::Object(document))
+    })?;
     Ok(path)
 }
 
@@ -8074,30 +8303,7 @@ fn remove_claude_hooks(project: bool) -> Result<(), String> {
     } else {
         home_directory()?.join(".claude/settings.json")
     };
-    if !path.exists() {
-        return Ok(());
-    }
-    let mut document = read_json_object(&path)?;
-    if let Some(hooks) = document.get_mut("hooks").and_then(Value::as_object_mut) {
-        for entries in hooks.values_mut() {
-            if let Some(entries) = entries.as_array_mut() {
-                entries.retain(|entry| {
-                    !entry
-                        .get("hooks")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .any(|hook| {
-                            hook.get("command")
-                                .and_then(Value::as_str)
-                                .is_some_and(|command| command.contains("__hook claude-code"))
-                        })
-                });
-            }
-        }
-        hooks.retain(|_, entries| entries.as_array().is_none_or(|entries| !entries.is_empty()));
-    }
-    write_json_with_backup(&path, &Value::Object(document))
+    remove_owned_json(&path, "claude-hooks", "Claude Code hooks")
 }
 
 fn install_copilot_hooks(executable: &Path) -> Result<PathBuf, String> {
@@ -8128,47 +8334,7 @@ fn install_copilot_hooks_at(executable: &Path, path: &Path) -> Result<(), String
         );
     }
     let installed = json!({"version":1,"hooks":Value::Object(hooks)});
-    let ownership_path = mcp_ownership_path(path, "__whole-file__");
-    let current = match fs::read(path) {
-        Ok(bytes) => Some(serde_json::from_slice::<Value>(&bytes).map_err(|error| {
-            format!(
-                "refusing to overwrite invalid Copilot hooks at {}: {error}",
-                path.display()
-            )
-        })?),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(display(error)),
-    };
-    let prior = match read_mcp_ownership(&ownership_path)? {
-        Some(ownership)
-            if ownership.version == 1
-                && ownership.config_path == path
-                && ownership.section == "__whole-file__"
-                && ownership.installed == installed
-                && (current == ownership.prior || current == Some(installed.clone())) =>
-        {
-            ownership.prior
-        }
-        Some(_) => {
-            return Err(format!(
-                "Copilot hook ownership at {} is inconsistent; refusing to overwrite it",
-                path.display()
-            ));
-        }
-        None => current,
-    };
-    write_mcp_ownership(
-        &ownership_path,
-        &McpConfigOwnership {
-            version: 1,
-            config_path: path.to_path_buf(),
-            section: "__whole-file__".to_owned(),
-            prior,
-            installed: installed.clone(),
-        },
-    )?;
-    write_json_with_backup(path, &installed)?;
-    Ok(())
+    install_owned_json(path, "copilot-hooks", "Copilot hooks", |_| Ok(installed))
 }
 
 fn cursor_hooks_path(project: bool) -> Result<PathBuf, String> {
@@ -8183,50 +8349,34 @@ fn cursor_hooks_path(project: bool) -> Result<PathBuf, String> {
 
 fn install_cursor_hooks(executable: &Path, project: bool) -> Result<PathBuf, String> {
     let path = cursor_hooks_path(project)?;
-    let mut document = read_json_object(&path)?;
-    document.insert("version".to_owned(), json!(1));
-    let hooks = object_entry(&mut document, "hooks")?;
-    for event in ["sessionStart", "sessionEnd"] {
-        let entries = hooks
-            .entry(event.to_owned())
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .ok_or_else(|| format!("Cursor hooks.{event} must be an array"))?;
-        entries.retain(|entry| {
-            !entry
-                .get("command")
-                .and_then(Value::as_str)
-                .is_some_and(|command| command.contains("__hook cursor"))
-        });
-        entries.push(json!({
-            "command": format!("{} __hook cursor {event}", shell_command_path(executable)),
-            "timeout": 120
-        }));
-    }
-    write_json_with_backup(&path, &Value::Object(document))?;
+    install_owned_json(&path, "cursor-hooks", "Cursor hooks", |prior| {
+        let mut document = prior
+            .cloned()
+            .unwrap_or_else(|| json!({}))
+            .as_object()
+            .cloned()
+            .ok_or_else(|| format!("{} must contain a JSON object", path.display()))?;
+        document.insert("version".to_owned(), json!(1));
+        let hooks = object_entry(&mut document, "hooks")?;
+        for event in ["sessionStart", "sessionEnd"] {
+            let entries = hooks
+                .entry(event.to_owned())
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| format!("Cursor hooks.{event} must be an array"))?;
+            entries.push(json!({
+                "command": format!("{} __hook cursor {event}", shell_command_path(executable)),
+                "timeout": 120
+            }));
+        }
+        Ok(Value::Object(document))
+    })?;
     Ok(path)
 }
 
 fn remove_cursor_hooks(project: bool) -> Result<(), String> {
     let path = cursor_hooks_path(project)?;
-    if !path.exists() {
-        return Ok(());
-    }
-    let mut document = read_json_object(&path)?;
-    if let Some(hooks) = document.get_mut("hooks").and_then(Value::as_object_mut) {
-        for entries in hooks.values_mut() {
-            if let Some(entries) = entries.as_array_mut() {
-                entries.retain(|entry| {
-                    !entry
-                        .get("command")
-                        .and_then(Value::as_str)
-                        .is_some_and(|command| command.contains("__hook cursor"))
-                });
-            }
-        }
-        hooks.retain(|_, entries| entries.as_array().is_none_or(|entries| !entries.is_empty()));
-    }
-    write_json_with_backup(&path, &Value::Object(document))
+    remove_owned_json(&path, "cursor-hooks", "Cursor hooks")
 }
 
 const OPENCODE_GUIDANCE_START: &str = "<!-- acyclic:start -->";
@@ -8401,6 +8551,94 @@ fn write_mcp_ownership(path: &Path, ownership: &McpConfigOwnership) -> Result<()
         acyclic_native_runtime::RenameMode::Replace,
     )
     .map_err(display)
+}
+
+fn read_optional_json(path: &Path, label: &str) -> Result<Option<Value>, String> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+            format!(
+                "refusing to overwrite invalid {label} at {}: {error}",
+                path.display()
+            )
+        }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(display(error)),
+    }
+}
+
+fn install_owned_json(
+    path: &Path,
+    section: &str,
+    label: &str,
+    build: impl FnOnce(Option<&Value>) -> Result<Value, String>,
+) -> Result<(), String> {
+    let ownership_path = mcp_ownership_path(path, section);
+    let current = read_optional_json(path, label)?;
+    let prior = match read_mcp_ownership(&ownership_path)? {
+        Some(ownership)
+            if ownership.version == 1
+                && ownership.config_path == path
+                && ownership.section == section
+                && (current == ownership.prior
+                    || current.as_ref() == Some(&ownership.installed)) =>
+        {
+            ownership.prior
+        }
+        Some(_) => {
+            return Err(format!(
+                "{label} ownership at {} is inconsistent; refusing to overwrite it",
+                path.display()
+            ));
+        }
+        None => current,
+    };
+    let installed = build(prior.as_ref())?;
+    write_mcp_ownership(
+        &ownership_path,
+        &McpConfigOwnership {
+            version: 1,
+            config_path: path.to_path_buf(),
+            section: section.to_owned(),
+            prior,
+            installed: installed.clone(),
+        },
+    )?;
+    write_json_with_backup(path, &installed)
+}
+
+fn remove_owned_json(path: &Path, section: &str, label: &str) -> Result<(), String> {
+    let ownership_path = mcp_ownership_path(path, section);
+    let current = read_optional_json(path, label)?;
+    let Some(ownership) = read_mcp_ownership(&ownership_path)? else {
+        if current.is_some() {
+            return Err(format!(
+                "refusing to remove {label} without an Acyclic ownership record from {}",
+                path.display()
+            ));
+        }
+        return Ok(());
+    };
+    if ownership.version != 1
+        || ownership.config_path != path
+        || ownership.section != section
+        || (current != ownership.prior && current.as_ref() != Some(&ownership.installed))
+    {
+        return Err(format!(
+            "the Acyclic {label} at {} were modified; leaving them untouched",
+            path.display()
+        ));
+    }
+    if current != ownership.prior {
+        match &ownership.prior {
+            Some(prior) => write_json_with_backup(path, prior)?,
+            None => match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(display(error)),
+            },
+        }
+    }
+    fs::remove_file(&ownership_path).map_err(display)
 }
 
 fn host_config(host: &str, project: bool) -> Result<(PathBuf, McpConfigShape), String> {
@@ -9706,6 +9944,97 @@ mod tests {
             .expect("test thread")
             .join()
             .expect("plugin RPC host thread");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn service_drain_waits_for_shutdown_completion_and_lock_release() {
+        std::thread::Builder::new()
+            .name("plugin-service-drain".to_owned())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime")
+                    .block_on(async {
+                        let temporary = tempfile::tempdir().expect("temporary directory");
+                        let data = temporary.path().join("state");
+                        let service_data = data.clone();
+                        let service = tokio::spawn(async move { run_service(service_data).await });
+                        for _ in 0..250 {
+                            if data.join("service.identity").exists() {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                        assert!(data.join("service.identity").exists());
+                        drain_service(&data).await.expect("durable drain");
+                        tokio::time::timeout(std::time::Duration::from_secs(5), service)
+                            .await
+                            .expect("service exit deadline")
+                            .expect("service task")
+                            .expect("clean service shutdown");
+                        assert!(!data.join("service.identity").exists());
+                        assert!(service_drain_completion_path(&data).exists());
+                        assert!(acquire_service_lock(&data).expect("service lock").is_some());
+                    });
+            })
+            .expect("test thread")
+            .join()
+            .expect("service drain thread");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn service_handoff_durably_drains_a_mismatched_binary() {
+        std::thread::Builder::new()
+            .name("plugin-service-handoff".to_owned())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime")
+                    .block_on(async {
+                        let temporary = tempfile::tempdir().expect("temporary directory");
+                        let data = temporary.path().join("state");
+                        let service_data = data.clone();
+                        let service = tokio::spawn(async move {
+                            run_service_with_identity(
+                                service_data,
+                                Some("older-service-binary".to_owned()),
+                            )
+                            .await
+                        });
+                        for _ in 0..250 {
+                            if data.join("service.identity").exists() {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                        assert_eq!(
+                            fs::read_to_string(data.join("service.identity"))
+                                .expect("service identity"),
+                            "older-service-binary"
+                        );
+                        assert!(
+                            !service_is_ready_for_identity(&data, "replacement-service-binary")
+                                .await
+                                .expect("durable handoff")
+                        );
+                        tokio::time::timeout(std::time::Duration::from_secs(5), service)
+                            .await
+                            .expect("service exit deadline")
+                            .expect("service task")
+                            .expect("clean service shutdown");
+                        assert!(service_drain_completion_path(&data).exists());
+                        assert!(acquire_service_lock(&data).expect("service lock").is_some());
+                    });
+            })
+            .expect("test thread")
+            .join()
+            .expect("service handoff thread");
     }
 
     #[cfg(any(unix, windows))]
@@ -11533,6 +11862,49 @@ mod tests {
     }
 
     #[test]
+    fn shared_hook_documents_restore_foreign_entries_and_preserve_edits() {
+        for section in ["claude-hooks", "cursor-hooks"] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let path = temporary.path().join("hooks.json");
+            let prior = json!({
+                "hooks": {
+                    "foreign": [{"command": format!("foreign __hook {section}")}]
+                }
+            });
+            fs::write(&path, serde_json::to_vec(&prior).expect("prior JSON")).expect("prior hooks");
+            install_owned_json(&path, section, "shared hooks", |prior| {
+                let mut installed = prior.cloned().expect("prior hook document");
+                installed["acyclicOwned"] = json!({"command":"acyclic"});
+                Ok(installed)
+            })
+            .expect("install owned hooks");
+            let installed = fs::read(&path).expect("installed hooks");
+            let installed_value: Value =
+                serde_json::from_slice(&installed).expect("installed JSON");
+            assert_eq!(installed_value["hooks"], prior["hooks"]);
+
+            let mut edited = installed_value;
+            edited["acyclicOwned"]["command"] = json!("user-edited");
+            fs::write(&path, serde_json::to_vec(&edited).expect("edited JSON"))
+                .expect("edit hooks");
+            assert!(remove_owned_json(&path, section, "shared hooks").is_err());
+            assert_eq!(
+                serde_json::from_slice::<Value>(&fs::read(&path).expect("preserved edit"))
+                    .expect("preserved JSON"),
+                edited
+            );
+
+            fs::write(&path, installed).expect("restore installed hooks");
+            remove_owned_json(&path, section, "shared hooks").expect("owned uninstall");
+            assert_eq!(
+                serde_json::from_slice::<Value>(&fs::read(&path).expect("restored prior"))
+                    .expect("restored JSON"),
+                prior
+            );
+        }
+    }
+
+    #[test]
     fn codex_install_preserves_old_or_disabled_plugin_state() {
         assert!(
             validate_existing_codex_plugin(&json!({
@@ -11637,6 +12009,55 @@ mod tests {
     }
 
     #[test]
+    fn adapter_state_rename_failures_keep_a_loadable_generation() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut state = AdapterState {
+            version: 1,
+            ..AdapterState::default()
+        };
+        save_state(temporary.path(), &state).expect("initial state");
+
+        state.version = 2;
+        let mut calls = 0;
+        assert!(
+            save_state_with_rename(temporary.path(), &state, |from, to, mode| {
+                calls += 1;
+                if calls == 1 {
+                    Err(io::Error::other("injected first rename failure"))
+                } else {
+                    durable_rename(from, to, mode)
+                }
+            })
+            .is_err()
+        );
+        assert_eq!(
+            load_state(temporary.path()).expect("current state").version,
+            1
+        );
+
+        save_state(temporary.path(), &state).expect("second state");
+        state.version = 3;
+        let mut calls = 0;
+        assert!(
+            save_state_with_rename(temporary.path(), &state, |from, to, mode| {
+                calls += 1;
+                if calls == 2 {
+                    Err(io::Error::other("injected second rename failure"))
+                } else {
+                    durable_rename(from, to, mode)
+                }
+            })
+            .is_err()
+        );
+        assert_eq!(
+            load_state(temporary.path())
+                .expect("previous state after publication failure")
+                .version,
+            2
+        );
+    }
+
+    #[test]
     fn doctor_human_output_requires_the_canonical_check_shape() {
         assert!(
             print_doctor_response(&json!({
@@ -11686,6 +12107,50 @@ mod tests {
     }
 
     #[test]
+    fn doctor_requires_an_exact_binary_bound_platform_receipt() {
+        let kind = match env::consts::OS {
+            "linux" => "linux-fuse",
+            "macos" => "macos-nfs",
+            "windows" => "windows-projfs",
+            _ => return,
+        };
+        let canonical = json!({
+            "schema":"acyclic-native-mount-qualification-v2",
+            "os":env::consts::OS,
+            "arch":env::consts::ARCH,
+            "coverage":[
+                "create-read-write","atomic-save","rename-delete","nested-paths",
+                "concurrent-handles","watchers","crash-detach-recovery",
+                "mount-restoration","hard-links","symbolic-links-reparse-points",
+                "metadata","case-behavior","escape-attempts",
+                "root-checkout-untouched","git-administration-untouched"
+            ],
+            "capability":{
+                "kind":kind,"available":true,"writable":true,
+                "provider_process_io_observable":false,
+                "session_isolation":"SharedProcess","unavailable_reason":null
+            },
+            "required_kind":kind,
+            "release_version":env!("CARGO_PKG_VERSION"),
+            "executable_blake3":"exact-digest",
+            "passed":true,
+            "cases":[
+                {"name":"real-mount-mutation-matrix","status":"passed","elapsed_ms":1,"reason":null},
+                {"name":"crash-detach-recovery","status":"passed","elapsed_ms":1,"reason":null},
+                {"name":"checkout-and-git-untouched","status":"passed","elapsed_ms":1,"reason":null}
+            ]
+        });
+        assert!(valid_platform_receipt(&canonical, "exact-digest"));
+        assert!(!valid_platform_receipt(&canonical, "other-digest"));
+        let mut incomplete = canonical.clone();
+        incomplete["cases"].as_array_mut().expect("cases").pop();
+        assert!(!valid_platform_receipt(&incomplete, "exact-digest"));
+        let mut extended = canonical;
+        extended["untrusted"] = json!(true);
+        assert!(!valid_platform_receipt(&extended, "exact-digest"));
+    }
+
+    #[test]
     fn host_lifecycle_arguments_are_exact_before_mutation() {
         let strings = |values: &[&str]| {
             values
@@ -11720,6 +12185,16 @@ mod tests {
             strings(&["codex", "--purge", "--purge"]),
         ] {
             assert!(parse_uninstall_arguments(&invalid).is_err());
+        }
+
+        assert_eq!(parse_read_only_arguments(&strings(&[])), Ok(false));
+        assert_eq!(parse_read_only_arguments(&strings(&["--json"])), Ok(true));
+        for invalid in [
+            strings(&["unexpected"]),
+            strings(&["--json", "unexpected"]),
+            strings(&["--json", "--json"]),
+        ] {
+            assert!(parse_read_only_arguments(&invalid).is_err());
         }
     }
 

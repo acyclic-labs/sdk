@@ -13,7 +13,12 @@ are compared independently.
 The macOS loopback NFS mount does not emit FSEvents, so that backend exercises
 the supported polling watcher. Linux and Windows exercise their native watcher.
 
-Every run writes an `acyclic-native-mount-qualification-v1` JSON receipt. A
+Every required run qualifies a release executable and writes an
+`acyclic-native-mount-qualification-v2` JSON receipt bound to its exact version
+and BLAKE3 executable digest. Local runs build that executable first; the tagged
+release workflow qualifies the exact downloaded Linux x64, macOS arm64, and
+Windows x64 release artifacts and cannot assemble or publish until all three
+backends pass. A
 developer may use `--allow-unsupported` when invoking the binary directly; that
 produces a successful `skipped` case with the capability probe's exact reason.
 The dedicated CI scripts always pass `--require-kind`, so a missing or different

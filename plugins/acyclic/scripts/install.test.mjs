@@ -35,18 +35,57 @@ function fixture() {
   return { root, bin, source, installed: join(bin, executableName) };
 }
 
-function install(bin, crash, failure) {
+function install(bin, crash, failure, extraEnvironment = {}) {
   return spawnSync(process.execPath, [join(bin, "install.js")], {
     encoding: "utf8",
     env: {
       ...process.env,
       NODE_ENV: "test",
       ACYCLIC_INSTALL_SKIP_DRAIN: "1",
+      ...extraEnvironment,
       ...(crash ? { ACYCLIC_INSTALL_TEST_CRASH: crash } : {}),
       ...(failure ? { ACYCLIC_INSTALL_TEST_FAIL: failure } : {}),
     },
   });
 }
+
+test("installer publishes the exact release certification receipt", () => {
+  const value = fixture();
+  const state = mkdtempSync(join(tmpdir(), "acyclic-state-"));
+  try {
+    const platform = { linux: "linux", darwin: "macos", win32: "windows" }[process.platform];
+    const architecture = { x64: "x86_64", arm64: "aarch64" }[process.arch];
+    const backend = { linux: "linux-fuse", darwin: "macos-nfs", win32: "windows-projfs" }[process.platform];
+    const name = `native-mount-${platform}-${architecture}.json`;
+    const certification = join(value.root, "certification");
+    mkdirSync(certification);
+    const receipt = {
+      schema: "acyclic-native-mount-qualification-v2",
+      os: platform,
+      arch: architecture,
+      required_kind: backend,
+      release_version: "9.8.7-test.1",
+      executable_blake3: "a".repeat(64),
+      passed: true,
+    };
+    writeFileSync(join(certification, name), JSON.stringify(receipt));
+    const environment = {
+      ACYCLIC_INSTALL_TEST_CERTIFICATION: "1",
+      ...(process.platform === "win32"
+        ? { LOCALAPPDATA: state }
+        : { XDG_STATE_HOME: state }),
+    };
+    const installed = install(value.bin, null, null, environment);
+    assert.equal(installed.status, 0, installed.stderr);
+    const destination = process.platform === "win32"
+      ? join(state, "Acyclic", "state-v2", "certification", name)
+      : join(state, "acyclic", "state-v2", "certification", name);
+    assert.deepEqual(JSON.parse(readFileSync(destination, "utf8")), receipt);
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+    rmSync(state, { recursive: true, force: true });
+  }
+});
 
 test("installer recovers cleanup failure after durable identity publication", () => {
   const value = fixture();

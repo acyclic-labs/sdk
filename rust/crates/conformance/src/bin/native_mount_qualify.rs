@@ -15,7 +15,7 @@ use acyclic_fs::{
 };
 use bytes::Bytes;
 use notify::{RecursiveMode, Watcher as _};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 type Failure = Box<dyn std::error::Error + Send + Sync>;
 
@@ -45,8 +45,37 @@ struct Report {
     coverage: &'static [&'static str],
     capability: Capability,
     required_kind: Option<String>,
+    release_version: Option<String>,
+    executable_blake3: Option<String>,
     passed: bool,
     cases: Vec<Case>,
+}
+
+#[derive(Deserialize)]
+struct ReceiptCase {
+    name: String,
+    status: String,
+}
+
+#[derive(Deserialize)]
+struct ReceiptCapability {
+    kind: Option<String>,
+    available: bool,
+    writable: bool,
+}
+
+#[derive(Deserialize)]
+struct ReceiptReport {
+    schema: String,
+    os: String,
+    arch: String,
+    coverage: Vec<String>,
+    capability: ReceiptCapability,
+    required_kind: Option<String>,
+    release_version: Option<String>,
+    executable_blake3: Option<String>,
+    passed: bool,
+    cases: Vec<ReceiptCase>,
 }
 
 const COVERAGE: &[&str] = &[
@@ -107,6 +136,7 @@ fn dispatch() -> Result<(), Failure> {
             required_path(&args, 3, "mount path")?,
             required_path(&args, 4, "ready path")?,
         ),
+        Some("--verify-receipt") => verify_receipt(args.get(1..).unwrap_or_default()),
         _ => std::thread::scope(|scope| {
             let qualification_args = args.get(1..).unwrap_or_default();
             std::thread::Builder::new()
@@ -118,6 +148,56 @@ fn dispatch() -> Result<(), Failure> {
                 .map_err(|_| -> Failure { "qualification worker panicked".into() })?
         }),
     }
+}
+
+fn verify_receipt(args: &[std::ffi::OsString]) -> Result<(), Failure> {
+    let receipt_path = option(args, "--verify-receipt")
+        .map(PathBuf::from)
+        .ok_or("--verify-receipt requires a path")?;
+    let executable = option(args, "--release-executable")
+        .map(PathBuf::from)
+        .ok_or("--verify-receipt requires --release-executable")?;
+    let required_kind =
+        option(args, "--require-kind").ok_or("--verify-receipt requires --require-kind")?;
+    let release_version =
+        option(args, "--release-version").ok_or("--verify-receipt requires --release-version")?;
+    let (expected_os, expected_arch) = match required_kind.as_str() {
+        "linux-fuse" => ("linux", "x86_64"),
+        "macos-nfs" => ("macos", "aarch64"),
+        "windows-projfs" => ("windows", "x86_64"),
+        _ => return Err(format!("unsupported receipt backend: {required_kind}").into()),
+    };
+    let report: ReceiptReport = serde_json::from_slice(&fs::read(receipt_path)?)?;
+    let digest = file_blake3(&executable)?;
+    if report.schema != "acyclic-native-mount-qualification-v2"
+        || report.os != expected_os
+        || report.arch != expected_arch
+        || !report
+            .coverage
+            .iter()
+            .map(String::as_str)
+            .eq(COVERAGE.iter().copied())
+        || report.required_kind.as_deref() != Some(required_kind.as_str())
+        || report.release_version.as_deref() != Some(release_version.as_str())
+        || report.executable_blake3.as_deref() != Some(digest.as_str())
+        || !report.passed
+        || report.capability.kind.as_deref() != Some(required_kind.as_str())
+        || !report.capability.available
+        || !report.capability.writable
+        || report.cases.len() != 3
+        || !report
+            .cases
+            .iter()
+            .zip([
+                "real-mount-mutation-matrix",
+                "crash-detach-recovery",
+                "checkout-and-git-untouched",
+            ])
+            .all(|(case, name)| case.name == name && case.status == "passed")
+    {
+        return Err("native mount receipt does not match the release artifact".into());
+    }
+    Ok(())
 }
 
 fn required_path(
@@ -152,6 +232,17 @@ fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
     let checkout_root = option(args, "--checkout-root").map(PathBuf::from);
     reject_output_inside_checkout(output.as_deref(), checkout_root.as_deref())?;
     let required_kind = option(args, "--require-kind");
+    let release_executable = option(args, "--release-executable").map(PathBuf::from);
+    if required_kind.is_some() && release_executable.is_none() {
+        return Err("--require-kind requires --release-executable".into());
+    }
+    let (release_version, executable_blake3) = release_executable
+        .as_deref()
+        .map(release_identity)
+        .transpose()?
+        .map_or((None, None), |(version, digest)| {
+            (Some(version), Some(digest))
+        });
     let allow_unsupported = args.iter().any(|arg| arg == "--allow-unsupported");
     let native = probe_native_mount();
     let observed_kind = native.kind.map(kind_name);
@@ -164,12 +255,14 @@ fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         unavailable_reason: native.unavailable_reason.clone(),
     };
     let mut report = Report {
-        schema: "acyclic-native-mount-qualification-v1",
+        schema: "acyclic-native-mount-qualification-v2",
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
         coverage: COVERAGE,
         capability,
         required_kind: required_kind.clone(),
+        release_version,
+        executable_blake3,
         passed: true,
         cases: Vec::new(),
     };
@@ -234,6 +327,43 @@ fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
     } else {
         Err("one or more qualification cases failed".into())
     }
+}
+
+fn release_identity(executable: &Path) -> Result<(String, String), Failure> {
+    let output = Command::new(executable).arg("--version").output()?;
+    if !output.status.success() {
+        return Err("release executable did not report its version".into());
+    }
+    let version_output = String::from_utf8(output.stdout)?;
+    let mut fields = version_output.split_whitespace();
+    if fields.next() != Some("acyclic") {
+        return Err("release executable reported an unexpected product name".into());
+    }
+    let version = fields
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or("release executable did not report a version")?;
+    if fields.next().is_some() {
+        return Err("release executable reported an invalid version response".into());
+    }
+    Ok((version.to_owned(), file_blake3(executable)?))
+}
+
+fn file_blake3(path: &Path) -> Result<String, Failure> {
+    let mut file = File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let bytes = buffer
+            .get(..count)
+            .ok_or("release executable digest read exceeded its buffer")?;
+        hasher.update(bytes);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 fn run_case(report: &mut Report, name: &'static str, action: impl FnOnce() -> Result<(), Failure>) {

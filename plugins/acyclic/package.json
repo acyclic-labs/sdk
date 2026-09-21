@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "repository": "github:acyclic-labs/sdk",
   "bin": { "acyclic": "bin/acyclic.js" },
-  "files": ["bin", "plugin.json", ".agents", ".codex-plugin", ".mcp.json", "hooks", "README.md"],
+  "files": ["bin", "certification", "plugin.json", ".agents", ".codex-plugin", ".mcp.json", "hooks", "README.md"],
   "scripts": { "postinstall": "node bin/install.js" },
   "engines": { "node": ">=18" }
 }

@@ -60,6 +60,29 @@ if (args.require_universal && (targets.size !== SUPPORTED_TARGETS.size || [...SU
   const extra = [...targets].filter(target => !SUPPORTED_TARGETS.has(target)).sort();
   fail(`universal target mismatch; missing=${JSON.stringify(missing)}, extra=${JSON.stringify(extra)}`);
 }
+if (args.require_universal) {
+  const version = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8")).version;
+  const receipts = [
+    ["linux", "x86_64", "linux-fuse"],
+    ["macos", "aarch64", "macos-nfs"],
+    ["windows", "x86_64", "windows-projfs"],
+  ];
+  for (const [os, arch, backend] of receipts) {
+    const path = join(plugin, "certification", `native-mount-${os}-${arch}.json`);
+    if (!existsSync(path) || !statSync(path).isFile()) fail(`missing certification receipt: ${path}`);
+    const receipt = JSON.parse(readFileSync(path, "utf8"));
+    if (
+      receipt.schema !== "acyclic-native-mount-qualification-v2"
+      || receipt.os !== os
+      || receipt.arch !== arch
+      || receipt.required_kind !== backend
+      || receipt.release_version !== version
+      || receipt.passed !== true
+      || typeof receipt.executable_blake3 !== "string"
+      || !/^[0-9a-f]{64}$/.test(receipt.executable_blake3)
+    ) fail(`invalid certification receipt: ${path}`);
+  }
+}
 for (const target of args.require_target) {
   if (!targets.has(target)) fail(`release package is missing required target: ${target}`);
 }

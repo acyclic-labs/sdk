@@ -15,6 +15,19 @@ npm install -g @acyclic-labs/plugin
 acyclic install codex
 ```
 
+Rust users can install the executable directly from a source checkout:
+
+```sh
+cargo install --locked --path plugins/acyclic
+acyclic --help
+```
+
+The Cargo installation provides the standalone CLI, service, hook runner, and
+MCP bridge. The npm package remains the distribution that also carries the
+Codex plugin, marketplace assets, and native qualification receipts for tagged
+release binaries. A source-built Cargo binary remains uncertified until that
+exact executable completes the native-mount qualification.
+
 The Codex-managed plugin bundles the same dispatcher as an MCP tool named
 `acyclic`, so agents can inspect and operate managed workspaces without a
 separate global PATH entry. Codex plugins do not inject arbitrary shell
@@ -48,10 +61,11 @@ acyclic doctor [--json]
 
 `acyclic doctor` reports the packaged binary identity, plugin/cache version,
 marketplace and hook assets, service and durable recovery state, native mount
-backend, CLI availability, and live platform-certification receipt. Its human
-and JSON forms are rendered from the same stable check result. Uninstall drains
-the service and keeps durable workspace/recovery state by default; `--purge`
-also removes that state explicitly.
+backend, CLI availability, and an exact-binary-bound live
+platform-certification receipt. Its human and JSON forms are rendered from the
+same stable check result. Uninstall drains the service and keeps durable
+workspace/recovery state by default; `--purge` also removes that state
+explicitly.
 
 Use `acyclic git status`, `diff`, `commit`, `switch`, `merge`, `rebase`, and
 the other documented local porcelain inside a managed workspace. Child refs
