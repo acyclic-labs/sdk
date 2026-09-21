@@ -27,13 +27,10 @@ jobs:
         platform:
           - name: linux-fuse
             runner: blacksmith-4vcpu-ubuntu-2404
-            shell: bash
           - name: macos-nfs
             runner: blacksmith-12vcpu-macos-15
-            shell: bash
           - name: windows-projfs
             runner: blacksmith-4vcpu-windows-2025
-            shell: pwsh
     name: ${{ matrix.host }} / ${{ matrix.platform.name }}
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 20
@@ -69,14 +66,12 @@ jobs:
 
       - name: Install locked host binary
         id: host
-        shell: ${{ matrix.platform.shell }}
         run: |
           npm ci --prefix plugin/tests/hosts --ignore-scripts
           node plugin/scripts/resolve-qualification-host.mjs ${{ matrix.host }}
 
       - name: Run actual host scenario
         if: runner.os != 'Windows'
-        shell: ${{ matrix.platform.shell }}
         env:
           ACYCLIC_E2E_CODEX: ${{ matrix.host == 'codex' && steps.host.outputs.binary || '' }}
           ACYCLIC_E2E_CLAUDE: ${{ matrix.host == 'claude' && steps.host.outputs.binary || '' }}
