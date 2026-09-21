@@ -8102,6 +8102,34 @@ fn local_root_lifecycle_outlives_provider_destruction() -> Result<(), Box<dyn st
 }
 
 #[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test]
+async fn cancelled_local_open_keeps_the_canonical_lifecycle_gate()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().to_path_buf();
+    let options = LocalOptions::new(&root);
+    let mut registry = LocalRootRegistry::new();
+    let lifecycle = prepare_local_root_open(&mut registry, &root, &options);
+    let ownership = Arc::clone(&lifecycle).lock_owned().await;
+
+    let waiting_lifecycle = prepare_local_root_open(&mut registry, &root, &options);
+    let mut waiting = Box::pin(Arc::clone(&waiting_lifecycle).lock_owned());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(1), waiting.as_mut())
+            .await
+            .is_err(),
+        "second open must wait for the current owner"
+    );
+    drop(waiting);
+
+    let retry_lifecycle = prepare_local_root_open(&mut registry, &root, &options);
+    assert!(Arc::ptr_eq(&lifecycle, &retry_lifecycle));
+    drop(ownership);
+    Arc::clone(&retry_lifecycle).lock_owned().await;
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_facade_shares_bounded_object_acceleration_across_handles()
 -> Result<(), Box<dyn std::error::Error>> {

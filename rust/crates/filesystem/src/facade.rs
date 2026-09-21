@@ -71,7 +71,7 @@ use futures::{StreamExt as _, stream};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::mem::size_of;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use std::sync::{OnceLock, Weak};
@@ -363,6 +363,38 @@ struct FsInner<A, O> {
     // provider and index is gone before a replacement local engine may acquire the root.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     _local_root_lifecycle: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+struct LocalRootRegistration {
+    options: LocalOptions,
+    live: Weak<FsInner<LocalAuthorityBackend, LocalObjectBackend>>,
+    lifecycle: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+type LocalRootRegistry = std::collections::BTreeMap<PathBuf, LocalRootRegistration>;
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+fn prepare_local_root_open(
+    registry: &mut LocalRootRegistry,
+    root: &Path,
+    options: &LocalOptions,
+) -> Arc<tokio::sync::Mutex<()>> {
+    if let Some(registration) = registry.get_mut(root) {
+        registration.options.clone_from(options);
+        return Arc::clone(&registration.lifecycle);
+    }
+    let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+    registry.insert(
+        root.to_path_buf(),
+        LocalRootRegistration {
+            options: options.clone(),
+            live: Weak::new(),
+            lifecycle: Arc::clone(&lifecycle),
+        },
+    );
+    lifecycle
 }
 
 /// Embedded filesystem composition handle.
@@ -1496,15 +1528,7 @@ impl
     ///
     /// Fails if limits are invalid or either durable backend cannot initialize.
     pub async fn local(options: LocalOptions) -> Result<Self, FsError> {
-        type Registry = std::collections::BTreeMap<
-            PathBuf,
-            (
-                LocalOptions,
-                Weak<FsInner<LocalAuthorityBackend, LocalObjectBackend>>,
-                Arc<tokio::sync::Mutex<()>>,
-            ),
-        >;
-        static REGISTRY: OnceLock<tokio::sync::Mutex<Registry>> = OnceLock::new();
+        static REGISTRY: OnceLock<tokio::sync::Mutex<LocalRootRegistry>> = OnceLock::new();
         let requested_root = options.root.clone();
         let root = tokio::task::spawn_blocking(move || {
             std::fs::create_dir_all(&requested_root)?;
@@ -1516,24 +1540,28 @@ impl
         let mut options = options;
         options.root = root.clone();
         let mut registry = REGISTRY
-            .get_or_init(|| tokio::sync::Mutex::new(Registry::new()))
+            .get_or_init(|| tokio::sync::Mutex::new(LocalRootRegistry::new()))
             .lock()
             .await;
-        if let Some((existing_options, existing, _)) = registry.get(&root)
-            && let Some(inner) = existing.upgrade()
+        if let Some(existing) = registry.get(&root)
+            && let Some(inner) = existing.live.upgrade()
         {
-            if existing_options != &options {
+            if existing.options != options {
                 return Err(FsError::LocalOptionsConflict);
             }
             return Ok(Self { inner });
         }
-        let lifecycle = registry.remove(&root).map_or_else(
-            || Arc::new(tokio::sync::Mutex::new(())),
-            |(_, _, gate)| gate,
-        );
+        let lifecycle = prepare_local_root_open(&mut registry, &root, &options);
         let ownership = Arc::clone(&lifecycle).lock_owned().await;
         let fs = Self::open_local_unshared(options.clone(), Some(ownership)).await?;
-        registry.insert(root, (options, Arc::downgrade(&fs.inner), lifecycle));
+        registry.insert(
+            root,
+            LocalRootRegistration {
+                options,
+                live: Arc::downgrade(&fs.inner),
+                lifecycle,
+            },
+        );
         Ok(fs)
     }
 
