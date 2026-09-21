@@ -49,7 +49,11 @@ while IFS=$'\t' read -r slug directory name version; do
     *)
       stage="$work/npm-$slug"
       bash "$root/scripts/stage-npm-package.sh" "$root/typescript/packages/$directory" "$stage"
-      (cd "$stage" && bun pm pack --ignore-scripts --filename "$archive" --quiet)
+      packed=$(cd "$stage" && npm pack --ignore-scripts --pack-destination "$output" --silent)
+      [[ "$packed" == "$(basename "$archive")" && -f "$archive" ]] || {
+        echo "npm pack produced an unexpected archive for $name: $packed" >&2
+        exit 1
+      }
       ;;
   esac
   node "$root/scripts/validate-npm-package.mjs" "$archive" "$name" "$version" "typescript/packages/$directory"
