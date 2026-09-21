@@ -229,8 +229,8 @@ fn actual_claude_binary_executes_the_scripted_scenario() {
     let debug = fs::read_to_string(&debug_log).unwrap_or_default();
     assert!(
         output.status.success() && !expired,
-        "expired: {expired}\nrequests: {:?}\nstdout:\n{}\nstderr:\n{}\ndebug:\n{}",
-        provider.wait_for_requests(0, Duration::ZERO),
+        "expired: {expired}\nrequest count: {}\nstdout:\n{}\nstderr:\n{}\ndebug:\n{}",
+        provider.wait_for_requests(0, Duration::ZERO).len(),
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
         debug
@@ -240,8 +240,8 @@ fn actual_claude_binary_executes_the_scripted_scenario() {
         sentinel
             .as_deref()
             .is_ok_and(|value| value.trim() == "qualified"),
-        "sentinel: {sentinel:?}\nrequests: {:?}\nstdout:\n{}\nstderr:\n{}\ndebug:\n{}",
-        provider.wait_for_requests(0, Duration::ZERO),
+        "sentinel: {sentinel:?}\nrequest count: {}\nstdout:\n{}\nstderr:\n{}\ndebug:\n{}",
+        provider.wait_for_requests(0, Duration::ZERO).len(),
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
         debug
@@ -285,9 +285,7 @@ fn prepend_binary_directory(command: &mut std::process::Command, binary: &Path) 
 fn shell_write(path: &str) -> &'static str {
     match (std::env::consts::OS, path) {
         ("windows", "codex-e2e.txt") => "Set-Content -LiteralPath codex-e2e.txt -Value qualified",
-        ("windows", "claude-e2e.txt") => "Set-Content -LiteralPath claude-e2e.txt -Value qualified",
         (_, "codex-e2e.txt") => "printf qualified > codex-e2e.txt",
-        (_, "claude-e2e.txt") => "printf qualified > claude-e2e.txt",
         _ => panic!("unsupported qualification sentinel"),
     }
 }
