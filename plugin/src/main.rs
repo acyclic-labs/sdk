@@ -1664,7 +1664,7 @@ impl RootLeaseRecord {
 struct AdapterState {
     version: u32,
     root_session_id: String,
-    #[serde(default)]
+    #[serde(default = "active_adapter_state")]
     active: bool,
     root_agent_id: String,
     #[serde(default)]
@@ -1689,6 +1689,10 @@ struct AdapterState {
     leases: BTreeMap<String, LeaseRecord>,
     #[serde(default)]
     pending_discards: BTreeMap<String, PendingDiscard>,
+}
+
+const fn active_adapter_state() -> bool {
+    true
 }
 
 struct ControlPlane {
@@ -6940,7 +6944,9 @@ impl ControlRequestDispatcher for ServiceControl {
                 ));
             }
             if matches!(request.command, ControlCommand::Shutdown) {
-                for (_, session) in std::mem::take(&mut self.sessions) {
+                for (_, mut session) in std::mem::take(&mut self.sessions) {
+                    session.state.active = false;
+                    session.persist()?;
                     session.shutdown().await?;
                 }
                 self.shared_roots.prune().await;
@@ -11729,6 +11735,13 @@ mod tests {
                             .expect("service exit deadline")
                             .expect("service task")
                             .expect("clean service shutdown");
+                        let reopened = ServiceControl::open(data.clone())
+                            .await
+                            .expect("reopen drained service state");
+                        assert!(
+                            reopened.sessions.is_empty(),
+                            "explicitly drained sessions must not reopen"
+                        );
                     });
             })
             .expect("test thread")
@@ -14074,6 +14087,25 @@ mod tests {
                 .contains("byte bound")
         );
         assert!(!temporary.path().join("adapter-state.json").exists());
+    }
+
+    #[test]
+    fn adapter_state_without_activity_marker_recovers_as_live() {
+        let state: AdapterState = serde_json::from_value(json!({
+            "version": 1,
+            "root_session_id": "legacy-session",
+            "root_agent_id": "legacy-agent",
+            "root_path": "root",
+            "root_workspace_name": "workspace",
+            "root_context_id": vec![0; 16],
+            "root_id": vec![0; 16],
+            "routes": {},
+            "turns": {},
+            "leases": {},
+            "pending": []
+        }))
+        .expect("legacy adapter state");
+        assert!(state.active);
     }
 
     #[test]
