@@ -25,10 +25,15 @@ export const ROUTER_QUESTIONS = {
   parallel: noul("Several independent attempts at this task would likely produce meaningfully different solutions."),
 };
 
-export function pickTier(complexity: number, risk: number, reasoning: number): Tier {
-  // complexity and risk are expected level indexes: complexity 0..4, risk 0..2
-  if (complexity >= 2.5 || reasoning >= 0.6) return "frontier";
-  if (complexity >= 1.5 || risk >= 1.2) return "mid";
+/** Thresholds are expected level indexes: complexity 0..4, risk 0..2; reasoning and parallel are probabilities.
+ *  ARENA_ROUTE=aggressive raises the bars (the first eval showed the default over-escalates easy renames). */
+export const THRESHOLDS = process.env.ARENA_ROUTE === "aggressive"
+  ? { frontierComplexity: 3.0, frontierReasoning: 0.85, midComplexity: 2.0, midRisk: 1.5 }
+  : { frontierComplexity: 2.5, frontierReasoning: 0.6, midComplexity: 1.5, midRisk: 1.2 };
+
+export function pickTier(complexity: number, risk: number, reasoning: number, t = THRESHOLDS): Tier {
+  if (complexity >= t.frontierComplexity || reasoning >= t.frontierReasoning) return "frontier";
+  if (complexity >= t.midComplexity || risk >= t.midRisk) return "mid";
   return "cheap";
 }
 

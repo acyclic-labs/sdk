@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Fork, Change } from "./acyclic.js";
 import type { Forker } from "./forks.js";
-import { Jev, choice, score, noul, prob, expected, type ChoiceAnswer, type ScoreAnswer, type NoulAnswer } from "./jev.js";
+import { Jev, choice, score, noul, prob, expected, type ChoiceAnswer, type ScoreAnswer, type NoulAnswer, type JevResponse } from "./jev.js";
 import { Log } from "./log.js";
 import { runWorker, type WorkerResult } from "./opencode.js";
 
@@ -89,31 +89,46 @@ export async function race(forker: Forker, jev: Jev, log: Log, opts: RaceOptions
     return { fork: f, model: opts.models[i]!, worker: workers[i]!, changes, probe, probeOk };
   });
 
-  const state = renderState(opts.task, forker.repo, pre, opts.maxFiles ?? 12, opts.maxDiffChars ?? 1500);
-  const labels = forks.map((f) => `fork ${f.label}`);
-  const questions: Record<string, ReturnType<typeof choice> | ReturnType<typeof score> | ReturnType<typeof noul>> = {
-    winner: choice("Which fork best completes the task and should be promoted?", labels),
-  };
-  forks.forEach((f) => {
-    questions[`safe_${f.label}`] = noul(`Fork ${f.label} is safe to land as-is, without breaking existing behaviour.`);
-    questions[`complete_${f.label}`] = score(`How completely does fork ${f.label} accomplish the task?`, ["not at all", "partially", "mostly", "fully"]);
-  });
-  const verdict = await jev.decide(state, questions);
-  const win = verdict.answers.winner as ChoiceAnswer;
+  // Jev favours the fork called "A" (identical forks scored 0.95 / 0.05 in the self-race eval, and still 0.90
+  // when only the order was reversed), so the arena asks twice: once as listed, once reversed, and in each
+  // call the forks are relabelled by position (first listed = "A"). Averaging the two removes the label bias.
+  const orders = n < 2 ? [pre] : [pre, [...pre].reverse()];
+  const verdicts: Array<{ v: JevResponse; byId: Map<string, string> }> = [];
+  let state = "";
+  for (const ordered of orders) {
+    const byId = new Map(ordered.map((r, i) => [r.fork.id, LABELS[i] ?? String(i)]));
+    const relabelled = ordered.map((r) => ({ ...r, fork: { ...r.fork, label: byId.get(r.fork.id)! } }));
+    const st = renderState(opts.task, forker.repo, relabelled, opts.maxFiles ?? 12, opts.maxDiffChars ?? 1500);
+    if (!state) state = st;
+    const labels = relabelled.map((r) => `fork ${r.fork.label}`);
+    const questions: Record<string, ReturnType<typeof choice> | ReturnType<typeof score> | ReturnType<typeof noul>> = {
+      winner: choice("Which fork best completes the task and should be promoted?", labels),
+    };
+    relabelled.forEach((r) => {
+      questions[`safe_${r.fork.label}`] = noul(`Fork ${r.fork.label} is safe to land as-is, without breaking existing behaviour.`);
+      questions[`complete_${r.fork.label}`] = score(`How completely does fork ${r.fork.label} accomplish the task?`, ["not at all", "partially", "mostly", "fully"]);
+    });
+    verdicts.push({ v: await jev.decide(st, questions), byId });
+  }
+  const avg = (fn: (v: JevResponse, label: string) => number, id: string) => verdicts.reduce((s, x) => s + fn(x.v, x.byId.get(id)!), 0) / verdicts.length;
   const reports: ForkReport[] = pre.map((r) => ({
     ...r,
-    pWin: prob(win, `fork ${r.fork.label}`),
-    safe: (verdict.answers[`safe_${r.fork.label}`] as NoulAnswer).noul,
-    complete: expected(verdict.answers[`complete_${r.fork.label}`] as ScoreAnswer) / 3,
+    pWin: avg((v, l) => prob(v.answers.winner as ChoiceAnswer, `fork ${l}`), r.fork.id),
+    safe: avg((v, l) => (v.answers[`safe_${l}`] as NoulAnswer).noul, r.fork.id),
+    complete: avg((v, l) => expected(v.answers[`complete_${l}`] as ScoreAnswer) / 3, r.fork.id),
   }));
+  const judgeUsd = verdicts.reduce((s, x) => s + x.v.usage.cost, 0);
+  const questionsCount = 1 + 2 * n;
+  const winIdx = (() => { let bi = 0; reports.forEach((r, i) => { if (r.pWin > reports[bi]!.pWin) bi = i; }); return bi; })();
+  const labels = forks.map((f) => `fork ${f.label}`);
   reports.forEach((r) => log.append("decision", {
     state_sha: sha(state), agent: "arena", question: "fork verdict", type: "choice", options: labels,
-    probs: labels.map((l) => prob(win, l)), chosen_index: labels.indexOf(win.choice), backend: `jev:${jev.model}`, temperature: 1,
-    meta: { fork: r.fork.id, label: r.fork.label, model: r.model, safe: r.safe, complete: r.complete, probe_ok: r.probeOk, kind },
+    probs: reports.map((x) => x.pWin), chosen_index: winIdx, backend: `jev:${jev.model}`, temperature: 1,
+    meta: { fork: r.fork.id, label: r.fork.label, model: r.model, safe: r.safe, complete: r.complete, probe_ok: r.probeOk, kind, debiased: verdicts.length > 1 },
   }));
   const ranked = [...reports].sort((a, b) => b.pWin - a.pWin);
   const winner = ranked[0] ?? null;
-  say(`judge: ${ranked.map((r) => `${r.fork.label} ${r.pWin.toFixed(2)}`).join("  ")}  | safe ${reports.map((r) => `${r.fork.label}:${r.safe.toFixed(2)}`).join(" ")}  | $${verdict.usage.cost.toFixed(5)}`);
+  say(`judge: ${ranked.map((r) => `${r.fork.label} ${r.pWin.toFixed(2)}`).join("  ")}  | safe ${reports.map((r) => `${r.fork.label}:${r.safe.toFixed(2)}`).join(" ")}  | $${judgeUsd.toFixed(5)}${verdicts.length > 1 ? " (both orders)" : ""}`);
 
   let promoted = false;
   const minC = opts.minConfidence ?? 0.6;
@@ -132,10 +147,10 @@ export async function race(forker: Forker, jev: Jev, log: Log, opts: RaceOptions
 
   const workerCost = workers.reduce((s, w) => s + w.cost, 0);
   const ms = Date.now() - t0;
-  log.append("step", { step: log.kind("step").length, kind, task: opts.task, models: opts.models, n_questions: Object.keys(questions).length, forwards: 1,
-    judge_usd: verdict.usage.cost, worker_usd: workerCost, usd: verdict.usage.cost + workerCost, wall_ms: ms,
+  log.append("step", { step: log.kind("step").length, kind, task: opts.task, models: opts.models, n_questions: questionsCount, forwards: verdicts.length,
+    judge_usd: judgeUsd, worker_usd: workerCost, usd: judgeUsd + workerCost, wall_ms: ms,
     winner: winner ? { label: winner.fork.label, model: winner.model, pWin: winner.pWin, safe: winner.safe, probe_ok: winner.probeOk } : null, promoted });
-  return { task: opts.task, kind, forks: reports, winner, promoted, judgeCost: verdict.usage.cost, workerCost, ms, state };
+  return { task: opts.task, kind, forks: reports, winner, promoted, judgeCost: judgeUsd, workerCost, ms, state };
 }
 
 import { createHash } from "node:crypto";

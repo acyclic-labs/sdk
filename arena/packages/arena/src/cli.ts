@@ -59,6 +59,8 @@ async function main(): Promise<number> {
     const forceModels = str(flags.models)?.split(",");
     let total = 0;
     const budget = Number(str(flags.budget, "0"));
+    const saveStates = str(flags["save-states"]);
+    if (saveStates) { const { mkdirSync } = await import("node:fs"); mkdirSync(saveStates, { recursive: true }); }
     for (const t of tasks) {
       if (!t.task) throw new Error("empty task");
       if (budget > 0 && total >= budget) { say(`budget $${budget} reached after $${total.toFixed(4)}; stopping`); log.note("budget_stop", { budget, spent: total }); break; }
@@ -72,6 +74,10 @@ async function main(): Promise<number> {
       }
       const res = await race(forker, jev, log, { task: t.task, models, kind, testCommand: t.test ?? str(flags.test), promote: flags.promote === true, workerTimeoutMs: Number(str(flags.timeout, "600")) * 1000, onEvent: say });
       total += res.judgeCost + res.workerCost;
+      if (saveStates) {
+        const verdict = res.forks.map((f) => `fork ${f.fork.label} (${f.model}): pWin ${f.pWin.toFixed(2)} safe ${f.safe.toFixed(2)} complete ${f.complete.toFixed(2)} tests ${f.probeOk}`).join("\n");
+        writeFileSync(`${saveStates}/race-${String(log.kind("step").length).padStart(3, "0")}.txt`, `${res.state}\n\n=== verdict\n${verdict}\n`);
+      }
       say(`done in ${(res.ms / 1000).toFixed(1)}s · winner ${res.winner ? `${res.winner.fork.label} (${res.winner.model}) p=${res.winner.pWin.toFixed(2)}` : "none"} · ${res.promoted ? "promoted" : "not promoted"} · $${(res.judgeCost + res.workerCost).toFixed(4)}`);
     }
     log.verify();
@@ -92,7 +98,7 @@ async function main(): Promise<number> {
   arena doctor
   arena route "<task>"
   arena race "<task>" [--models a,b,c] [--promote] [--test "<cmd>"] [--kind <kind>] [--timeout <s>] [--log arena.jsonl] [--forks auto|acyclic|git]
-  arena run tasks.json [--promote] [--test "<cmd>"] [--models a,b] [--budget <usd>]   # per-task "test"/"models" in the file; --models overrides all
+  arena run tasks.json [--promote] [--test "<cmd>"] [--models a,b] [--budget <usd>] [--save-states dir]
   arena board [--log arena.jsonl] [--badge badge.svg] [--json board.json] [--min-races 3]
 
 Needs: opencode on PATH and OPENROUTER_API_KEY (env or ./.env). acyclic is optional: with it forks are O(1) mounts and promote is a three-way merge; without it, git worktrees and a patch.`);

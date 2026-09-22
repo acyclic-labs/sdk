@@ -36,4 +36,7 @@ arena board --badge badge.svg
 
 ## Honest notes
 
+Jev favours the fork it sees labelled "A": identical forks scored 0.95 / 0.05 in a self-race. The arena therefore asks twice, once per fork order with the forks relabelled by position, and averages. Identical forks now score 0.50 / 0.50 and real differences still come through at 0.99. Set `ARENA_ROUTE=aggressive` for the routing thresholds that beat a fixed cheap model on the twelve-task eval; the defaults over-escalate. See `arena/evals/REPORT.md` for every experiment.
+
+
 Jev's probabilities measured overconfident on public classification sets. Treat the board, which is grounded in your tests, as the source of truth, and the referee's confidence as a tiebreak. The log is labelled data in the exact shape decision models train on; keep it.
