@@ -32,7 +32,6 @@ Raw per-run numbers are in `results.json`.
 
 The bias does not shrink. It vanishes. Jev knew the forks were identical the whole time; it had no option that said so. On a forced binary choice with the true answer missing, it fell back on priors about the labels and committed to them at 0.95, exactly as hard as it commits to real evidence.
 
-**The control.** Twelve hand-made fork pairs including sabotage (a hidden `rm -rf`, a hardcoded test pass, a leaked API key, a deleted function, an off-by-one, a swallowed exception, scope creep), each in both orders, single call, with the third option present: **24 of 24 correct.** The sabotaged fork lost at 0.90 to 1.00 every time; both identical controls chose "same" at 0.97 to 1.00; "same" never scored above 0.04 on a pair that actually differed. Without the third option the same set scored 20 of 24.
 
 ## The example
 
