@@ -52,7 +52,7 @@ async function main(): Promise<number> {
     console.log(JSON.stringify(r, null, 2)); return 0;
   }
   if (cmd === "race" || cmd === "run") {
-    const jev = new Jev(); const forker = pickForker(repo, (str(flags.forks, "auto") as "auto" | "acyclic" | "git")); const log = new Log(logPath);
+    const jev = new Jev(); const forker = pickForker(repo, (str(flags.forks, "auto") as "auto" | "acyclic" | "git"), [logPath]); const log = new Log(logPath);
     const tasks: Array<{ task: string; kind?: string; models?: string[] }> = cmd === "race"
       ? [{ task: pos.slice(1).join(" "), kind: str(flags.kind), models: str(flags.models)?.split(",") }]
       : (JSON.parse(readFileSync(pos[1]!, "utf8")) as Array<{ task: string; kind?: string; models?: string[] }>);

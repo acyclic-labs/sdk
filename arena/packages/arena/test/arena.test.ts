@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Log } from "../src/log.js";
@@ -86,8 +86,11 @@ test("git worktree forker: fork, diff, promote, drop, without acyclic", () => {
   writeFileSync(join(repo, "a.txt"), "one\n");
   execSync("git add a.txt && git -c user.email=a@b -c user.name=t commit -q -m a", { cwd: repo });
   writeFileSync(join(repo, "a.txt"), "one\ntwo\n");           // uncommitted change must reach the fork
+  writeFileSync(join(repo, "arena.jsonl"), "{}\n");                 // the log must never enter a fork
   const fk = new GitForker(repo);
   const [A, B] = fk.fork(2);
+  assert.equal(existsSync(join(A!.path, "arena.jsonl")), false);
+  writeFileSync(join(repo, "arena.jsonl"), "{}\n{}\n");             // and base-side growth is never a fork change
   assert.equal(readFileSync(join(A!.path, "a.txt"), "utf8"), "one\ntwo\n");
   writeFileSync(join(A!.path, "b.txt"), "hello\n");
   writeFileSync(join(A!.path, "a.txt"), "one\ntwo\nthree\n");

@@ -11,6 +11,8 @@ import { Acyclic, type Fork, type Change } from "./acyclic.js";
 export interface Forker {
   readonly name: "acyclic" | "git";
   readonly repo: string;
+  /** Paths (relative to the repo) that never enter a fork and never count as fork changes: the arena log, .env. */
+  exclude?: string[];
   fork(n: number): Fork[];
   diff(fork: Fork): Change[];
   /** Land the fork. `paths` limits a patch-based promote to what the worker changed (not what a probe left behind). */
@@ -53,12 +55,14 @@ export class GitForker implements Forker {
   readonly name = "git" as const;
   private root: string | null = null;
   private basePaths = new Set<string>();
-  constructor(readonly repo: string) {}
+  exclude: string[];
+  constructor(readonly repo: string, exclude: string[] = []) { this.exclude = [...new Set([".env", "arena.jsonl", ...exclude])]; }
+  private excluded(path: string): boolean { return this.exclude.some((e) => path === e || path.startsWith(e + "/")); }
 
   fork(n: number): Fork[] {
     const head = git(this.repo, ["rev-parse", "HEAD"]).trim();
     const dirty = git(this.repo, ["diff", "HEAD"]);
-    const untracked = git(this.repo, ["ls-files", "--others", "--exclude-standard"]).trim().split("\n").filter(Boolean);
+    const untracked = git(this.repo, ["ls-files", "--others", "--exclude-standard"]).trim().split("\n").filter(Boolean).filter((f) => !this.excluded(f));
     this.root ??= mkdtempSync(join(tmpdir(), "arena-wt-"));
     this.basePaths = new Set(statusPaths(this.repo));
     const forks: Fork[] = [];
@@ -83,6 +87,7 @@ export class GitForker implements Forker {
     const paths = new Set([...statusPaths(f.path), ...this.basePaths]);
     const out: Change[] = [];
     for (const path of [...paths].sort()) {
+      if (this.excluded(path)) continue;
       const inBase = existsSync(join(this.repo, path)), inFork = existsSync(join(f.path, path));
       if (inBase && inFork) { if (!sameFile(join(this.repo, path), join(f.path, path))) out.push({ status: "M", path }); }
       else if (inFork) out.push({ status: "A", path });
@@ -95,7 +100,7 @@ export class GitForker implements Forker {
    *  would not apply when the base already carries uncommitted edits, so files are copied, not patched;
    *  the change arrives unstaged, like a hand edit. acyclic's promote does a real three-way merge instead. */
   promote(f: Fork, paths?: string[]): string {
-    const changes = paths && paths.length ? paths : this.diff(f).map((c) => c.path);
+    const changes = (paths && paths.length ? paths : this.diff(f).map((c) => c.path)).filter((p) => !this.excluded(p));
     let n = 0;
     for (const rel of changes) {
       const src = join(f.path, rel), dst = join(this.repo, rel);
@@ -113,11 +118,11 @@ export class GitForker implements Forker {
 }
 
 /** acyclic when it is installed and the repo is initialised, otherwise git worktrees. */
-export function pickForker(repo: string, prefer: "auto" | "acyclic" | "git" = "auto"): Forker {
-  if (prefer === "git") return new GitForker(repo);
+export function pickForker(repo: string, prefer: "auto" | "acyclic" | "git" = "auto", exclude: string[] = []): Forker {
+  if (prefer === "git") return new GitForker(repo, exclude);
   const a = new Acyclic(repo);
   const ok = a.available() && (() => { try { a.forks(); return true; } catch { return false; } })();
   if (ok) return new AcyclicForker(a);
   if (prefer === "acyclic") throw new Error("acyclic is not available for this repo (install it and run `acyclic init`)");
-  return new GitForker(repo);
+  return new GitForker(repo, exclude);
 }
