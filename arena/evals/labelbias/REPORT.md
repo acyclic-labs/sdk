@@ -23,12 +23,12 @@ Same two identical diffs every time. Only the option names change. P(first liste
 
 Raw per-run numbers are in `results.json`.
 
-**And the kill shot.** Add a third option, "they are the same":
+**And the kill shot.** Add a third option, "they are the same". Three runs each; every run within 0.01 of the value shown.
 
 | Options | P(first) | P(second) | P(same) |
 |---|---|---|---|
-| fork A / fork B / they are the same | 0.00 | 0.00 | **1.00, 1.00, 1.00** |
-| fork X / fork Y / they are the same | 0.00 | 0.00 | **1.00, 1.00, 0.99** |
+| fork A / fork B / they are the same | 0.00 | 0.00 | **1.00** |
+| fork X / fork Y / they are the same | 0.00 | 0.00 | **1.00** |
 
 The bias does not shrink. It vanishes. Jev knew the forks were identical the whole time; it had no option that said so. On a forced binary choice with the true answer missing, it fell back on priors about the labels and committed to them at 0.95, exactly as hard as it commits to real evidence.
 
