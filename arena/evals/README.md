@@ -17,3 +17,10 @@ ARMS="routed cheap" ./run.sh   # any subset of routed frontier raced cheap fast
 Models default to `deepseek/deepseek-v4-flash` (cheap) and `anthropic/claude-sonnet-5` (frontier); override with `CHEAP=` and `FRONTIER=`.
 
 The point is not that the cheap model always wins. It is that a 300 ms referee lets you send easy work to the cheap model and only pay frontier prices where the referee or the tests say you must, and that the log makes every verdict auditable.
+
+## Reports
+
+- `REPORT.md`: every experiment in one table, with a verdict for the referee on each.
+- `labelbias/REPORT.md`: the fork-A preference, found, replicated under twelve naming schemes, explained as a missing option, and fixed.
+- `variance/REPORT.md`: run-to-run standard deviation, entropy, and accuracy by confidence band for Jev and two open models read through logits.
+- `published/`: the first full four-arm run of the task list.
