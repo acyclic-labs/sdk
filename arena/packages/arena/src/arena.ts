@@ -33,6 +33,7 @@ export interface RaceResult {
 }
 
 const LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const SAME = "no meaningful difference";
 
 function unifiedDiff(base: string, fork: string, rel: string, maxChars: number): string {
   const p = spawnSync("diff", ["-u", "--label", `a/${rel}`, "--label", `b/${rel}`, join(base, rel), join(fork, rel)], { encoding: "utf8" });
@@ -89,9 +90,10 @@ export async function race(forker: Forker, jev: Jev, log: Log, opts: RaceOptions
     return { fork: f, model: opts.models[i]!, worker: workers[i]!, changes, probe, probeOk };
   });
 
-  // Jev favours the fork called "A" (identical forks scored 0.95 / 0.05 in the self-race eval, and still 0.90
-  // when only the order was reversed), so the arena asks twice: once as listed, once reversed, and in each
-  // call the forks are relabelled by position (first listed = "A"). Averaging the two removes the label bias.
+  // Two guards against a forced choice. (1) The option set includes "no meaningful difference": on identical
+  // forks Jev picks it at 1.00 and the tilt toward "fork A" disappears (labelbias experiment, 24/24 in one
+  // call). (2) The arena still asks twice with the forks relabelled by position and averages, which cancels
+  // any residual preference for earlier names or earlier positions.
   const orders = n < 2 ? [pre] : [pre, [...pre].reverse()];
   const verdicts: Array<{ v: JevResponse; byId: Map<string, string> }> = [];
   let state = "";
@@ -102,7 +104,7 @@ export async function race(forker: Forker, jev: Jev, log: Log, opts: RaceOptions
     if (!state) state = st;
     const labels = relabelled.map((r) => `fork ${r.fork.label}`);
     const questions: Record<string, ReturnType<typeof choice> | ReturnType<typeof score> | ReturnType<typeof noul>> = {
-      winner: choice("Which fork best completes the task and should be promoted?", labels),
+      winner: choice("Which fork best completes the task and should be promoted?", n > 1 ? [...labels, SAME] : labels),
     };
     relabelled.forEach((r) => {
       questions[`safe_${r.fork.label}`] = noul(`Fork ${r.fork.label} is safe to land as-is, without breaking existing behaviour.`);
@@ -111,6 +113,7 @@ export async function race(forker: Forker, jev: Jev, log: Log, opts: RaceOptions
     verdicts.push({ v: await jev.decide(st, questions), byId });
   }
   const avg = (fn: (v: JevResponse, label: string) => number, id: string) => verdicts.reduce((s, x) => s + fn(x.v, x.byId.get(id)!), 0) / verdicts.length;
+  const pSame = n > 1 ? verdicts.reduce((s, x) => s + prob(x.v.answers.winner as ChoiceAnswer, SAME), 0) / verdicts.length : 0;
   const reports: ForkReport[] = pre.map((r) => ({
     ...r,
     pWin: avg((v, l) => prob(v.answers.winner as ChoiceAnswer, `fork ${l}`), r.fork.id),
@@ -120,17 +123,18 @@ export async function race(forker: Forker, jev: Jev, log: Log, opts: RaceOptions
   const judgeUsd = verdicts.reduce((s, x) => s + x.v.usage.cost, 0);
   const questionsCount = 1 + 2 * n;
   const winIdx = (() => { let bi = 0; reports.forEach((r, i) => { if (r.pWin > reports[bi]!.pWin) bi = i; }); return bi; })();
+  if (pSame > 0) say(`referee: P(no meaningful difference) = ${pSame.toFixed(2)}`);
   const labels = forks.map((f) => `fork ${f.label}`);
   reports.forEach((r) => log.append("decision", {
     state_sha: sha(state), agent: "arena", question: "fork verdict", type: "choice", options: labels,
     probs: reports.map((x) => x.pWin), chosen_index: winIdx, backend: `jev:${jev.model}`, temperature: 1,
-    meta: { fork: r.fork.id, label: r.fork.label, model: r.model, safe: r.safe, complete: r.complete, probe_ok: r.probeOk, kind, debiased: verdicts.length > 1 },
+    meta: { fork: r.fork.id, label: r.fork.label, model: r.model, safe: r.safe, complete: r.complete, probe_ok: r.probeOk, kind, debiased: verdicts.length > 1, p_same: pSame },
   }));
   const ranked = [...reports].sort((a, b) => b.pWin - a.pWin);
   // Jev's run-to-run jitter is up to 0.06 on identical input (24 inputs x 5 repeats), so two forks within
   // that band are a tie: prefer the one whose tests passed, then the cheaper worker, rather than a coin flip.
   const TIE = 0.06;
-  if (ranked.length > 1 && ranked[0]!.pWin - ranked[1]!.pWin <= TIE) {
+  if (ranked.length > 1 && (ranked[0]!.pWin - ranked[1]!.pWin <= TIE || pSame >= 0.5)) {
     const top = ranked.filter((r) => ranked[0]!.pWin - r.pWin <= TIE);
     top.sort((a, b) => Number(b.probeOk === true) - Number(a.probeOk === true) || a.worker.cost - b.worker.cost);
     ranked.splice(0, top.length, ...top);
