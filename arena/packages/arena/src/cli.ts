@@ -53,13 +53,14 @@ async function main(): Promise<number> {
   }
   if (cmd === "race" || cmd === "run") {
     const jev = new Jev(); const forker = pickForker(repo, (str(flags.forks, "auto") as "auto" | "acyclic" | "git"), [logPath]); const log = new Log(logPath);
-    const tasks: Array<{ task: string; kind?: string; models?: string[] }> = cmd === "race"
+    const tasks: Array<{ task: string; kind?: string; models?: string[]; test?: string }> = cmd === "race"
       ? [{ task: pos.slice(1).join(" "), kind: str(flags.kind), models: str(flags.models)?.split(",") }]
-      : (JSON.parse(readFileSync(pos[1]!, "utf8")) as Array<{ task: string; kind?: string; models?: string[] }>);
+      : (JSON.parse(readFileSync(pos[1]!, "utf8")) as Array<{ task: string; kind?: string; models?: string[]; test?: string }>);
+    const forceModels = str(flags.models)?.split(",");
     let total = 0;
     for (const t of tasks) {
       if (!t.task) throw new Error("empty task");
-      let models = t.models, kind = t.kind;
+      let models = forceModels ?? t.models, kind = t.kind;
       if (!models) {
         const r = await route(jev, t.task);
         models = Array.from({ length: r.fanOut }, (_, i) => r.models[i % r.models.length]!);
@@ -67,7 +68,7 @@ async function main(): Promise<number> {
         say(`route: ${r.tier} × ${r.fanOut}  (complexity ${r.complexity.toFixed(1)}, risk ${r.risk.toFixed(1)}, reasoning ${r.reasoning.toFixed(2)}, kind ${r.kind})  $${r.cost.toFixed(5)}`);
         log.note("route", { task: t.task, ...r });
       }
-      const res = await race(forker, jev, log, { task: t.task, models, kind, testCommand: str(flags.test), promote: flags.promote === true, workerTimeoutMs: Number(str(flags.timeout, "600")) * 1000, onEvent: say });
+      const res = await race(forker, jev, log, { task: t.task, models, kind, testCommand: t.test ?? str(flags.test), promote: flags.promote === true, workerTimeoutMs: Number(str(flags.timeout, "600")) * 1000, onEvent: say });
       total += res.judgeCost + res.workerCost;
       say(`done in ${(res.ms / 1000).toFixed(1)}s · winner ${res.winner ? `${res.winner.fork.label} (${res.winner.model}) p=${res.winner.pWin.toFixed(2)}` : "none"} · ${res.promoted ? "promoted" : "not promoted"} · $${(res.judgeCost + res.workerCost).toFixed(4)}`);
     }
@@ -89,7 +90,7 @@ async function main(): Promise<number> {
   arena doctor
   arena route "<task>"
   arena race "<task>" [--models a,b,c] [--promote] [--test "<cmd>"] [--kind <kind>] [--timeout <s>] [--log arena.jsonl] [--forks auto|acyclic|git]
-  arena run tasks.json [--promote] [--test "<cmd>"]
+  arena run tasks.json [--promote] [--test "<cmd>"] [--models a,b]   # per-task "test" and "models" in the file; --models overrides all
   arena board [--log arena.jsonl] [--badge badge.svg] [--json board.json] [--min-races 3]
 
 Needs: opencode on PATH and OPENROUTER_API_KEY (env or ./.env). acyclic is optional: with it forks are O(1) mounts and promote is a three-way merge; without it, git worktrees and a patch.`);
