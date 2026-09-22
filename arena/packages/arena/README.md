@@ -18,7 +18,7 @@ arena board --badge badge.svg
 2. One headless `opencode run` per fork, on the model you chose, or on the tier Jev routed the task to.
 3. Your test command runs in each fork; its tail is captured.
 4. Every fork's diff and test output go into one state. Jev answers in one request: which fork wins, is each safe to land, how complete is each.
-5. If the winner clears the confidence and safety thresholds and its tests pass, `acyclic promote` lands it. The rest evaporate.
+5. The winner is landed if its tests pass and Jev's confidence clears the threshold. Tests are the ground truth: a passing probe overrides the referee's safety doubt, a failing one overrides its confidence, and the referee decides alone only when no test command was given. The rest evaporate.
 6. Every fork, worker cost, verdict, and promotion is a line in a hash-chained JSONL log.
 
 `arena run tasks.json` without `--models` asks Jev to route each task first: complexity, kind, risk, reasoning, and whether parallel attempts help, mapped to a tier and a fan-out by a policy table you can edit.

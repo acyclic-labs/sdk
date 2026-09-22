@@ -118,7 +118,10 @@ export async function race(forker: Forker, jev: Jev, log: Log, opts: RaceOptions
   let promoted = false;
   const minC = opts.minConfidence ?? 0.6;
   if (winner && opts.promote) {
-    const ok = winner.pWin >= minC && (opts.requireSafe === false || winner.safe >= 0.5) && winner.probeOk !== false;
+    // tests are the ground truth when they ran: a passing probe overrides the referee's safety doubt,
+    // a failing probe overrides its confidence; the referee alone decides only when there is no probe
+    const safeEnough = winner.probeOk === true || opts.requireSafe === false || winner.safe >= 0.5;
+    const ok = winner.pWin >= minC && winner.probeOk !== false && safeEnough;
     if (ok) {
       try { const out = forker.promote(winner.fork, winner.changes.map((c) => c.path)); promoted = true; log.note("promote", { fork: winner.fork.id, label: winner.fork.label, model: winner.model, pWin: winner.pWin, output: out }); say(`promoted fork ${winner.fork.label} (${winner.model}): ${out}`); }
       catch (e) { log.note("promote_failed", { fork: winner.fork.id, error: String(e) }); say(`promote FAILED: ${String(e).slice(0, 200)}`); }
