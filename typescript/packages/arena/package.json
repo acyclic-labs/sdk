@@ -1,0 +1,20 @@
+{
+  "name": "@acyclic-labs/arena",
+  "version": "0.1.0-rc.1",
+  "description": "Repo Arena: race OpenCode workers on your repo in acyclic forks, let Jev referee, keep the winner, get a leaderboard",
+  "repository": "https://github.com/acyclic-labs/sdk",
+  "license": "Apache-2.0",
+  "private": false,
+  "type": "module",
+  "bin": { "arena": "./dist/cli.js" },
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "tsc -b tsconfig.test.json && node --test \"dist-test/test/**/*.test.js\"",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": { "@types/node": "^22.0.0", "typescript": "7.0.2" }
+}
