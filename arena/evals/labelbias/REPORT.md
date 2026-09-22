@@ -6,29 +6,22 @@ Give TypeSafe's Jev two byte-identical code changes and ask which is better. It 
 
 ## The results
 
-Identical diffs, identical question, only the two option strings change. Three repeats per row, one call each. The number is the probability Jev gave the option listed first.
+Same two identical diffs every time. Only the option names change. P(first listed), three runs each, spread never above 0.04.
 
-| Options, first listed / second listed | P(first) | P(second) | Three runs |
+| Earlier name listed first | P(first) | Earlier name listed second | P(first) |
 |---|---|---|---|
-| fork A / fork B | **0.93** | 0.07 | 0.94 0.93 0.93 |
-| fork B / fork A | 0.12 | **0.88** | 0.13 0.11 0.13 |
-| fork X / fork Y | **0.94** | 0.06 | 0.94 0.95 0.94 |
-| fork Y / fork X | 0.21 | **0.79** | 0.21 0.19 0.23 |
-| fork 1 / fork 2 | **0.94** | 0.06 | 0.94 0.94 0.95 |
-| fork 2 / fork 1 | 0.14 | **0.86** | 0.14 0.12 0.15 |
-| left / right | **0.87** | 0.13 | 0.89 0.88 0.84 |
-| right / left | 0.47 | 0.53 | 0.43 0.47 0.52 |
-| alpha / bravo | **0.90** | 0.10 | 0.90 0.89 0.90 |
-| bravo / alpha | 0.28 | **0.72** | 0.26 0.28 0.29 |
-| fork B / fork C | **0.92** | 0.08 | 0.92 0.92 0.92 |
-| fork C / fork B | 0.51 | 0.49 | 0.51 0.50 0.52 |
+| fork A / fork B | **0.93** | fork B / fork A | 0.12 |
+| fork X / fork Y | **0.94** | fork Y / fork X | 0.21 |
+| fork 1 / fork 2 | **0.94** | fork 2 / fork 1 | 0.14 |
+| alpha / bravo | **0.90** | bravo / alpha | 0.28 |
+| fork B / fork C | **0.92** | fork C / fork B | 0.51 |
+| left / right | **0.87** | right / left | 0.47 |
 
-Two priors, and they add:
+- **The earlier name wins.** A, X, 1, alpha, B-over-C. From second place it still wins at 0.72 to 0.88.
+- **The first slot wins.** With order-free names, left takes 0.87; reversed, the two priors cancel to 0.47.
+- **They add.** Together about 0.93. Opposed about 0.50. Each is worth roughly 0.4 on a question the evidence cannot decide.
 
-1. **The earlier name wins.** A over B, X over Y, 1 over 2, alpha over bravo, B over C. Listed second, the earlier name still wins for A, X, 1 and alpha (0.72 to 0.88) and draws for C against B.
-2. **The first position wins.** With names that carry no order, left and right, the first slot takes 0.87. Reverse them and the two priors cancel to 0.47.
-
-Agreeing, they reach 0.93. Opposed, they land near 0.50. Each is worth roughly 0.4 of probability on a question the evidence cannot decide.
+Raw per-run numbers are in `results.json`.
 
 **And the kill shot.** Add a third option, "they are the same":
 
