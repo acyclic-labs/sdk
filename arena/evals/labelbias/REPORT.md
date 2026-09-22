@@ -100,7 +100,9 @@ Swap-averaging is the standard cure for option-order effects in language-model e
 
 ## A note on "calibrated"
 
-TypeSafe markets Jev as returning "calibrated probabilities", with "higher confidence means higher accuracy". Calibrated means a 0.95 should be right about 95% of the time. The identical-diff result is the sharpest test of that claim there is: the model reported 0.95 on a question where the right answer was 0.50, and it did so deterministically.
+TypeSafe's [launch post](https://typesafe.ai/blog/introducing-system-one-models-and-jev) says, verbatim: "All answers are accompanied with calibrated probabilities and confidence scores." "Always communicates confidence and uncertainty with every output." "Calibrated: higher confidence means higher accuracy." And, describing the problem Jev is meant to solve: "Even if prompted for a confidence estimate, models tend to be overconfident and inconsistent. If a model can do a task 95% of the time but doesn't say when it's in the 5%, it can't automate that task."
+
+Calibrated means a 0.95 should be right about 95% of the time. The identical-diff result is the sharpest test of that claim there is: the model reported 0.95 on a question where the right answer was 0.50, did not say it was in the 5%, and did so deterministically.
 
 How this applies:
 
