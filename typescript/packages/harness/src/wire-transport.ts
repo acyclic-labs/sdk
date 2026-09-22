@@ -30,6 +30,7 @@ import {
   type ServerFrame,
 } from "../generated/proto/harness/v1/harness_pb.js";
 import { TerminalAdmissionError } from "./client.js";
+import { errorCodeFromHttpStatus } from "./wire-status.js";
 
 export interface WireConnection extends AsyncIterable<Delivery> {
   send(command: CommandEnvelope): Promise<void>;
@@ -183,7 +184,12 @@ export class HttpSseWireTransport implements WireTransport {
       body: toJsonString(HandshakeRequestSchema, this.negotiation),
       ...(signal === undefined ? {} : { signal }),
     });
-    if (!handshakeResponse.ok) throw new WireError(ErrorCode.UNSUPPORTED, "handshake failed");
+    if (!handshakeResponse.ok) {
+      throw new WireError(
+        errorCodeFromHttpStatus(handshakeResponse.status) ?? ErrorCode.UNSUPPORTED,
+        "handshake failed",
+      );
+    }
     validateHandshake(this.negotiation, fromJson(HandshakeResponseSchema, await handshakeResponse.json()));
     const response = await this.fetcher(new URL("v1/harness/replay", withSlash(this.baseUrl)), {
       method: "POST",
@@ -214,7 +220,10 @@ export class HttpSseWireTransport implements WireTransport {
           } catch (error) {
             if (error instanceof TerminalAdmissionError) throw error;
           }
-          throw new WireError(ErrorCode.INDETERMINATE, `command failed: ${submitted.status}`);
+          throw new WireError(
+            errorCodeFromHttpStatus(submitted.status) ?? ErrorCode.INDETERMINATE,
+            `command failed: ${submitted.status}`,
+          );
         }
         const admission = fromJson(AdmissionSchema, await submitted.json());
         validateAdmissionIdentity(command, admission);
@@ -598,7 +607,7 @@ function validateAdmissionIdentity(command: CommandEnvelope, admission: Admissio
   }
 }
 
-function validateHandshake(request: HandshakeRequest, response: HandshakeResponse): void {
+export function validateHandshake(request: HandshakeRequest, response: HandshakeResponse): void {
   if (!request.protocol || !response.protocol ||
       request.protocol.version !== response.protocol.version ||
       request.protocol.descriptorDigest !== response.protocol.descriptorDigest) {
@@ -644,14 +653,17 @@ function withSlash(value: string): string {
   return value.endsWith("/") ? value : `${value}/`;
 }
 
-async function httpWireError(response: Response, operation: string): Promise<WireError> {
+export async function httpWireError(response: Response, operation: string): Promise<WireError> {
   try {
     const error = fromJson(ErrorSchema, await response.json());
     if (error.code !== ErrorCode.UNSPECIFIED && error.message.length > 0) {
       return new WireError(error.code, error.message);
     }
   } catch {}
-  return new WireError(ErrorCode.INDETERMINATE, `${operation} failed: ${response.status}`);
+  return new WireError(
+    errorCodeFromHttpStatus(response.status) ?? ErrorCode.INDETERMINATE,
+    `${operation} failed: ${response.status}`,
+  );
 }
 
 async function* sseData(stream: ReadableStream<Uint8Array>): AsyncIterable<string> {

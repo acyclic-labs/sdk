@@ -12,6 +12,8 @@ export * from "./cache.js";
 export * from "./client.js";
 export * from "./pagination.js";
 export * from "./wire-transport.js";
+export * from "./wire-status.js";
+export * from "./connect.js";
 export * from "./runtime.js";
 export * from "./openai.js";
 
