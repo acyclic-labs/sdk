@@ -149,7 +149,10 @@ where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        self.authored.advance_to_head_async().await
+        self.authored.advance_to_head_async().await?;
+        self.lazy.rebind_source().await.map_err(lazy_error)?;
+        self.cursors.clear();
+        Ok(())
     }
 
     fn path(&self, path: &MountPath) -> Result<String, MountSourceError> {
@@ -500,6 +503,12 @@ where
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
+        // A create returns an open handle before the operation barrier publishes the authored
+        // generation. Consult the authored checkout first so that the just-created file can be
+        // written through that handle instead of falling through to the still-unaware lazy view.
+        if self.authored.lookup(path)?.is_some() {
+            return self.authored.open_file(path);
+        }
         let path_text = self.path(path)?;
         let lookup_path = path_text.clone();
         let lookup =

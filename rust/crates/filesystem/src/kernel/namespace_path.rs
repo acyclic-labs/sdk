@@ -111,6 +111,28 @@ impl NamespacePath {
             .map(|(name, parent)| (parent, name))
     }
 
+    /// Returns the exact parent path, or `None` for the namespace root.
+    ///
+    /// This preserves the already-validated component representation and does
+    /// not consult a filesystem or allocate beyond cloning the parent prefix.
+    #[must_use]
+    pub fn parent(&self) -> Option<Self> {
+        let (_, name) = self.split_last()?;
+        let encoded_bytes = if self.components.len() == 1 {
+            1
+        } else {
+            self.encoded_bytes
+                .saturating_sub(u32::try_from(name.as_bytes().len()).unwrap_or(u32::MAX))
+                .saturating_sub(1)
+        };
+        let mut components = self.components.clone();
+        components.pop();
+        Some(Self {
+            components,
+            encoded_bytes,
+        })
+    }
+
     /// Returns whether this path is equal to or below `ancestor`.
     #[must_use]
     pub fn is_within(&self, ancestor: &Self) -> bool {

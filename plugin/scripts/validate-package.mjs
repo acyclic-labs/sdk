@@ -48,11 +48,13 @@ if (!existsSync(changelog) || !statSync(changelog).isFile()
 for (const path of [
   join(plugin, "plugin.json"),
   join(plugin, ".codex-plugin", "plugin.json"),
-  join(plugin, ".mcp.json"),
   join(plugin, "hooks", "hooks.json"),
 ]) {
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
   JSON.parse(readFileSync(path, "utf8"));
+}
+if (existsSync(join(plugin, ".mcp.json"))) {
+  fail("shell-capable plugin package must not expose the commandless MCP bridge");
 }
 
 const manifest = JSON.parse(readFileSync(join(plugin, "bin", "platform-binaries.json"), "utf8"));

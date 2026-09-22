@@ -340,6 +340,18 @@ impl FuseProjection {
     }
 
     fn refresh(&mut self, inode: u64) -> Result<MountLookup, i32> {
+        if inode == ROOT_INODE {
+            let lookup = self
+                .source
+                .lookup(&MountPath::root())
+                .map_err(errno)?
+                .ok_or(libc::ENOENT)?;
+            if lookup.node.kind != MountNodeKind::Directory {
+                return Err(libc::EIO);
+            }
+            replace_root_lookup(&mut self.by_inode, &mut self.inode_by_file, lookup)?;
+            return Ok(lookup);
+        }
         let (file_id, bindings) = self
             .by_inode
             .get(&inode)
@@ -454,6 +466,33 @@ impl FuseProjection {
             }
         }
     }
+}
+
+fn replace_root_lookup(
+    by_inode: &mut HashMap<u64, InodeEntry>,
+    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    lookup: MountLookup,
+) -> Result<(), i32> {
+    let previous = by_inode
+        .get(&ROOT_INODE)
+        .ok_or(libc::ESTALE)?
+        .lookup
+        .node
+        .file_id;
+    if previous != lookup.node.file_id {
+        if inode_by_file
+            .get(&lookup.node.file_id)
+            .is_some_and(|inode| *inode != ROOT_INODE)
+        {
+            return Err(libc::EIO);
+        }
+        if inode_by_file.get(&previous) == Some(&ROOT_INODE) {
+            inode_by_file.remove(&previous);
+        }
+        inode_by_file.insert(lookup.node.file_id, ROOT_INODE);
+    }
+    by_inode.get_mut(&ROOT_INODE).ok_or(libc::ESTALE)?.lookup = lookup;
+    Ok(())
 }
 
 fn intern_projected(
@@ -1673,6 +1712,7 @@ fn errno(error: MountSourceError) -> i32 {
 mod tests {
     use super::{
         InodeEntry, MountLookup, MountNode, MountNodeKind, MountPath, ROOT_INODE, intern_projected,
+        replace_root_lookup,
     };
     use crate::kernel::FileMetadata;
     use std::collections::HashMap;
@@ -1680,6 +1720,40 @@ mod tests {
     #[test]
     fn rename_noreplace_matches_linux_libc() {
         assert_eq!(super::RENAME_NOREPLACE, libc::RENAME_NOREPLACE);
+    }
+
+    #[test]
+    fn root_inode_survives_checkout_identity_changes() -> Result<(), i32> {
+        let old_file = crate::FileId::from_bytes([1; 16]);
+        let new_file = crate::FileId::from_bytes([2; 16]);
+        let root = |file_id| MountLookup {
+            node: MountNode {
+                file_id,
+                kind: MountNodeKind::Directory,
+                logical_bytes: 0,
+                link_count: 1,
+                device: None,
+            },
+            metadata: FileMetadata::default(),
+        };
+        let mut by_inode = HashMap::from([(
+            ROOT_INODE,
+            InodeEntry {
+                bindings: vec![MountPath::root()],
+                lookup: root(old_file),
+                lookup_references: 1,
+                open_handles: 0,
+            },
+        )]);
+        let mut inode_by_file = HashMap::from([(old_file, ROOT_INODE)]);
+
+        replace_root_lookup(&mut by_inode, &mut inode_by_file, root(new_file))?;
+
+        assert_eq!(by_inode[&ROOT_INODE].lookup.node.file_id, new_file);
+        assert_eq!(by_inode[&ROOT_INODE].bindings, vec![MountPath::root()]);
+        assert_eq!(inode_by_file.get(&new_file), Some(&ROOT_INODE));
+        assert!(!inode_by_file.contains_key(&old_file));
+        Ok(())
     }
 
     #[test]

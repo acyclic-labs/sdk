@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -331,6 +331,10 @@ impl DarwinMountSession {
         request: &NativeMountRequest,
         source: Arc<dyn MountFilesystem>,
     ) -> Result<Self, NativeMountError> {
+        static STARTUP: OnceLock<Mutex<()>> = OnceLock::new();
+        let _startup = STARTUP.get_or_init(|| Mutex::new(())).lock().map_err(|_| {
+            NativeMountError::Driver("Darwin mount startup lock is poisoned".to_owned())
+        })?;
         let root = source
             .lookup(&MountPath::root())
             .map_err(|error| source_error(&error))?

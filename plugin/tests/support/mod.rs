@@ -436,7 +436,6 @@ pub fn package_production_plugin(temporary: &Path) -> PackagedPlugin {
     let mut install = command("node");
     install.arg(root.join("bin/install.js"));
     install.env("NODE_ENV", "test");
-    install.env("ACYCLIC_INSTALL_SKIP_DRAIN", "1");
     isolated_state(&mut install, temporary);
     let installed = install.output().expect("install packaged binary");
     assert!(

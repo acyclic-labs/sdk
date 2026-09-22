@@ -499,13 +499,20 @@ impl MergeDriverRegistry {
             let attributes = fields.collect::<Vec<_>>();
             let driver = attributes
                 .iter()
+                .rev()
                 .find_map(|attribute| attribute.strip_prefix("merge="));
-            if pattern.is_empty() || driver.is_none_or(str::is_empty) || attributes.len() != 1 {
+            if pattern.is_empty() || driver.is_some_and(str::is_empty) {
                 return Err(DriverRegistrationError::InvalidAttributeRule(index + 1));
             }
+            let Some(driver) = driver else {
+                // Acyclic owns only merge-driver selection. Ordinary Git attributes
+                // such as text, binary, eol, and linguist hints remain valid input
+                // but have no merge-registry effect.
+                continue;
+            };
             rules.push(AttributeRule {
                 pattern: pattern.to_owned(),
-                driver: driver.unwrap_or_default().to_owned(),
+                driver: driver.to_owned(),
             });
         }
         self.set_rules(rules)
@@ -651,6 +658,24 @@ mod tests {
                 .expect("registered driver")
                 .fingerprint(),
             b"original"
+        );
+    }
+
+    #[test]
+    fn git_attributes_ignore_unrelated_attributes_and_accept_merge_among_them() {
+        let mut registry = MergeDriverRegistry::new();
+        registry
+            .register("text", Arc::new(DefaultTextMergeDriver))
+            .expect("register driver");
+        registry
+            .set_git_attributes("*.json text eol=lf\n*.bin binary\n*.rs text merge=text eol=lf\n")
+            .expect("ordinary Git attributes");
+        assert!(registry.select("data.json").is_none());
+        assert!(registry.select("asset.bin").is_none());
+        assert!(registry.select("src/lib.rs").is_some());
+        assert_eq!(
+            registry.set_git_attributes("*.rs merge="),
+            Err(DriverRegistrationError::InvalidAttributeRule(1))
         );
     }
 

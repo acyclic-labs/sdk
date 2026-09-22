@@ -87,7 +87,6 @@ for (const name of ["plugin.json", "package.json", "README.md"]) {
 }
 copyFileSync(join(repository, "CHANGELOG.md"), join(plugin, "CHANGELOG.md"));
 cpSync(join(root, ".codex-plugin"), join(plugin, ".codex-plugin"), { recursive: true });
-copyFileSync(join(root, ".mcp.json"), join(plugin, ".mcp.json"));
 cpSync(join(root, ".agents"), join(plugin, ".agents"), { recursive: true });
 cpSync(join(root, "hooks"), join(plugin, "hooks"), { recursive: true });
 

@@ -168,13 +168,16 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<()> {
     }
     #[cfg(not(windows))]
     {
-        std::process::Command::new(executable)
+        use std::os::unix::process::CommandExt as _;
+
+        let mut command = std::process::Command::new(executable);
+        command
             .arg("__service")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .spawn()
-            .map(drop)
+            .process_group(0);
+        command.spawn().map(drop)
     }
 }
 
