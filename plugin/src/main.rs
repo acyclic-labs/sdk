@@ -10999,7 +10999,21 @@ mod tests {
         let data = temporary.path().join("state");
         let root = temporary.path().join("root");
         fs::create_dir(&root).expect("root");
-        let mut control = ControlPlane::open(data.clone()).await.expect("control");
+        fs::create_dir_all(&data).expect("state directory");
+        let local = LocalFs::local(LocalOptions::new(data.join("filesystem")))
+            .await
+            .expect("local filesystem");
+        let store = LocalCoreStateStore::new(data.join("core-state"));
+        let shared_roots = SharedRootRegistry::default();
+        let mut control = ControlPlane::open_with(
+            data.clone(),
+            data.clone(),
+            local.clone(),
+            store.clone(),
+            shared_roots.clone(),
+        )
+        .await
+        .expect("control");
         control
             .session_start(json!({"session_id":"session","cwd":root}))
             .await
@@ -11008,10 +11022,12 @@ mod tests {
         let displaced = temporary.path().join("displaced-root");
         fs::rename(&root, &displaced).expect("displace original root");
         fs::create_dir(&root).expect("replacement root");
-        let Err(error) = ControlPlane::open(data).await else {
+        let Err(error) =
+            ControlPlane::open_with(data.clone(), data, local, store, shared_roots).await
+        else {
             panic!("replaced root must be rejected");
         };
-        assert!(error.contains("native root identity changed"), "{error}");
+        assert!(error.contains("changed identity"), "{error}");
     }
 
     #[test]
