@@ -97,4 +97,18 @@ Swap-averaging is the standard cure for option-order effects in language-model e
 - **Three or more options.** With forks A, B, C, does the prior concentrate on A or spread down the alphabet? The arena races up to three; the answer decides whether relabelling matters there.
 - **Use it as a feature.** A cheap identical-input control before every batch would detect any drift in the served model's priors over time. It costs a thousandth of a cent.
 
+
+## A note on "calibrated"
+
+TypeSafe markets Jev as returning "calibrated probabilities", with "higher confidence means higher accuracy". Calibrated means a 0.95 should be right about 95% of the time. The identical-diff result is the sharpest test of that claim there is: the model reported 0.95 on a question where the right answer was 0.50, and it did so deterministically.
+
+How this applies:
+
+- **The number is a ranking, not a probability.** Above 0.90 Jev was right 98% of the time on the labelled inputs; between 0.50 and 0.70 it was right 17% of the time. The order of its answers is trustworthy. The magnitude is not. On public classification sets its expected calibration error was 0.17 to 0.20, against 0.02 to 0.12 for the open reimplementation (see `../variance/REPORT.md` and the Jev-vs-open-jev comparison).
+- **Calibration presupposes a complete option set.** A decision model puts all of its probability on the options it is given. When the true answer is missing, the probabilities cannot be calibrated because there is nothing correct to be calibrated against; they measure the model's priors about the labels instead. The 0.95 here is not a miscalibrated belief about the code, it is a confident answer to a question that had no right answer.
+- **So the fix is on the caller's side.** Include "they are the same", "neither", or "not enough information" whenever it can be true, and the reported probabilities become meaningful again: 1.00 on "same" for identical diffs, and 24 of 24 on the sabotage set. Nothing about the model changed.
+- **Never threshold on the raw number.** Treat anything within 0.06 as a tie, use tests as ground truth where they exist, and let outcomes rather than Jev's confidence set routing thresholds. That is how Repo Arena uses it, and under those rules the referee is cheap, fast, and right where it counts.
+
+In fairness, TypeSafe's own docs describe their headline accuracy figure as "not empirical", and the sharpness that produces the overconfidence is the same property that makes the model useful when the evidence is real. The claim to take with care is the word calibrated, not the model.
+
 The wider set of experiments is summarised in `../REPORT.md`; variance and entropy figures are in `../variance`.
