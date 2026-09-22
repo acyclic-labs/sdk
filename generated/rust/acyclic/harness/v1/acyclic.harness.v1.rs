@@ -40,6 +40,16 @@ pub struct HandshakeResponse {
     pub protocol: ::core::option::Option<ProtocolIdentity>,
     #[prost(message, optional, tag = "2")]
     pub supported: ::core::option::Option<CapabilitySet>,
+    #[prost(message, repeated, tag = "3")]
+    pub transports: ::prost::alloc::vec::Vec<TransportBinding>,
+}
+/// One reachable wire adapter. Consumers pick by kind; url is absolute.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TransportBinding {
+    #[prost(enumeration = "TransportKind", tag = "1")]
+    pub kind: i32,
+    #[prost(string, tag = "2")]
+    pub url: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Error {
@@ -315,6 +325,45 @@ pub struct SchedulerEventEnvelope {
     pub canonical_event_json: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "6")]
     pub event_digest: ::prost::alloc::vec::Vec<u8>,
+}
+/// Wire adapter kind reachable for the same HarnessWireApi.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum TransportKind {
+    Unspecified = 0,
+    Grpc = 1,
+    GrpcWeb = 2,
+    HttpSse = 3,
+    Websocket = 4,
+    JsonlStdio = 5,
+}
+impl TransportKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "TRANSPORT_KIND_UNSPECIFIED",
+            Self::Grpc => "TRANSPORT_KIND_GRPC",
+            Self::GrpcWeb => "TRANSPORT_KIND_GRPC_WEB",
+            Self::HttpSse => "TRANSPORT_KIND_HTTP_SSE",
+            Self::Websocket => "TRANSPORT_KIND_WEBSOCKET",
+            Self::JsonlStdio => "TRANSPORT_KIND_JSONL_STDIO",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "TRANSPORT_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "TRANSPORT_KIND_GRPC" => Some(Self::Grpc),
+            "TRANSPORT_KIND_GRPC_WEB" => Some(Self::GrpcWeb),
+            "TRANSPORT_KIND_HTTP_SSE" => Some(Self::HttpSse),
+            "TRANSPORT_KIND_WEBSOCKET" => Some(Self::Websocket),
+            "TRANSPORT_KIND_JSONL_STDIO" => Some(Self::JsonlStdio),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
