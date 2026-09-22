@@ -88,15 +88,106 @@ Rerun of the self-race with these changes: the three identical pairs scored "no 
 
 Swap-averaging is the standard cure for option-order effects in language-model evals and it works here too, but its 0.50 means "I cancelled a bias", not "the model judged these equal". The third option's 1.00 means what it says.
 
+
+## Does it generalise, or is this an edge case?
+
+Identical diffs are the limit of a continuum, not a special case. Five more measurements, all on the arena branch.
+
+### 1. People's names: the slot prior on its own
+
+Names carry no sequence, so any tilt is position. Identical diffs, two repeats averaged (`names.py`, `names.json`).
+
+| first / second | P(first) | P(second) |
+|---|---|---|
+| kevin / greg | 0.84 | 0.16 |
+| greg / kevin | 0.83 | 0.17 |
+| bob / sam | 0.83 | 0.17 |
+| sam / bob | 0.82 | 0.17 |
+| ram / hao | 0.82 | 0.18 |
+| hao / ram | 0.81 | 0.18 |
+
+Net name preference: 0.00 in every pair. Position alone is worth about +0.33. With six names and six identical diffs, whoever sits in slot 1 takes 0.83 to 0.94; mean by slot 0.91 / 0.02 / 0.02 / 0.01 / 0.01 / 0.03. A seventh option, "they are the same": 0.99.
+
+### 2. Three lettered options: the label prior on its own
+
+Identical diffs, names permuted across fixed slots.
+
+| slots 1, 2, 3 | P(slot 1) | P(slot 2) | P(slot 3) |
+|---|---|---|---|
+| A / B / C | 0.97 | 0.01 | 0.02 |
+| A / C / B | 0.95 | 0.02 | 0.03 |
+| B / A / C | 0.07 | 0.90 | 0.03 |
+| B / C / A | 0.02 | 0.01 | 0.97 |
+| C / A / B | 0.07 | 0.91 | 0.02 |
+| C / B / A | 0.04 | 0.01 | 0.95 |
+
+Mean by name: A 0.94, B 0.03, C 0.03. Mean by slot: 0.35 / 0.31 / 0.34. With three lettered options position stops mattering; "fork A" wins from any slot. So the two-option picture decomposes cleanly: a slot prior of about 0.33 that any labels show, plus a sequence-name prior that letters and numbers add on top, and for letters the name prior is the stronger of the two.
+
+### 3. Real, non-identical forks that both passed their tests
+
+The six no-test races, each re-judged in both orders (`../notest/states`).
+
+| race | same diff? | P(fork 1) as A | P(fork 1) as B | swing |
+|---|---|---|---|---|
+| 1 | no | 0.13 | 0.08 | 0.05 |
+| 2 | no | 0.87 | 0.88 | 0.01 |
+| 3 | no | 0.51 | 0.51 | 0.00 |
+| 4 | yes | 0.92 | 0.09 | 0.83 |
+| 5 | no | 0.95 | 0.92 | 0.03 |
+| 6 | no, near-tie | 0.42 | 0.04 | 0.38, verdict flips |
+
+### 4. A quality-gap ladder: when does the label flip a real advantage?
+
+Same base fix in both forks; one fork gets a small extra. Judged with the better fork first and second, as A/B and as kevin/greg. "Evidence" is the mean over the two name orders, the referee's opinion with priors cancelled (`ladder.py`, `ladder.json`).
+
+| the better fork also has... | as A, first | as B, second | as kevin, first | as greg, second | evidence | letter + slot swing | slot-only swing |
+|---|---|---|---|---|---|---|---|
+| nothing (identical) | 0.94 | 0.06 | 0.83 | 0.17 | 0.50 | 0.88 | 0.66 |
+| a trailing comment | 0.27 | 0.20 | 0.26 | 0.45 | 0.35 | 0.07 | -0.20 |
+| the loop variable renamed | 0.53 | 0.34 | 0.57 | 0.55 | 0.56 | **0.18, flips** | 0.02 |
+| a docstring | 0.84 | 0.71 | 0.88 | 0.86 | 0.87 | 0.12 | 0.02 |
+| type hints | 0.88 | 0.68 | 0.90 | 0.88 | 0.89 | 0.20 | 0.02 |
+| an idiomatic `min()` | 0.96 | 0.79 | 0.92 | 0.86 | 0.89 | 0.17 | 0.06 |
+| a test | 0.91 | 0.88 | 0.90 | 0.98 | 0.94 | 0.03 | -0.08 |
+| correctness (other fork is wrong) | 1.00 | 1.00 | 0.99 | 1.00 | 0.99 | 0.00 | -0.01 |
+
+Once there is anything real to judge, the slot prior is gone (0.02 to 0.06). The letter prior survives as a 0.12 to 0.20 discount on whichever fork is called B, and at a genuine toss-up, evidence 0.56, it flips the verdict: 0.53 as A, 0.34 as B. Strong evidence erases both.
+
+### 5. It contaminated one of our own headlines
+
+The original raced arm listed DeepSeek first in every race, so it was always "fork A". Rerun with the fixed judge, relabelled in both orders and with "no meaningful difference" available (`../results/first/raced-fixedjudge.jsonl`):
+
+| task | original verdict, DeepSeek always A | debiased verdict | P(same) |
+|---|---|---|---|
+| bug fix | DeepSeek 1.00 | tie | 0.61 |
+| bug fix | DeepSeek 0.88 | tie | 1.00 |
+| bug fix | DeepSeek 0.88 | Sonnet 0.41 | 0.32 |
+| bug fix | DeepSeek 0.85 | tie | 1.00 |
+| rename | DeepSeek 0.81 | tie | 1.00 |
+| new feature | DeepSeek 0.80 | DeepSeek 0.71 | 0.07 |
+| new feature | DeepSeek 0.88 | tie | 1.00 |
+| new feature | DeepSeek 1.00 | Sonnet 0.59 | 0.09 |
+| docs | Sonnet 0.59 | DeepSeek 0.62 | 0.10 |
+| new feature | Sonnet 0.95 | tie | 0.72 |
+| new feature | DeepSeek 0.63 | Sonnet 0.47 | 0.43 |
+| refactor | DeepSeek 0.67 | DeepSeek 0.35 | 0.32 |
+
+**"DeepSeek won 10 of 12 verdicts" was mostly the label.** Debiased: DeepSeek 3, Sonnet 3, no meaningful difference 6. Both forks passed their tests in every race, so the cost headline, which was decided by tests and cost, stands unchanged: $0.026 routed against $0.78 on Sonnet. The verdict headline does not, and the experiment-6 row of the main report has been corrected.
+
+### The general statement
+
+- The prior is a fixed weight that evidence must outweigh: about 0.33 for the slot, more for a sequence label, both only visible where the evidence is thin.
+- Thin evidence is the common case in real races, not the rare one: 6 of 12 head-to-heads between two passing forks were genuinely equivalent, and the referee's true answer was "same".
+- Position is harmless once anything real distinguishes the options. The letter label is not: it discounts the disfavoured fork by 0.12 to 0.20 and can flip a true toss-up.
+- So: always offer "no meaningful difference", never use sequence labels for a choice question without symmetrising, and keep the two-order relabelled average. The arena now does all three, and the tie is broken by tests then cost.
+
 ## Follow-up experiments
 
-- **How strong is the prior against weak evidence?** Take two forks that differ by one trivial line and shrink the difference until the label prior wins. That measures the prior in units of evidence, not just on identical input.
 - **Does it hold on other question types?** The score and yes/no questions were not tilted here. Test whether "score fork A" and "score fork B" as separate questions drift with the label, and whether noul questions prefer "yes".
 - **Does it hold on TypeSafe's direct API?** Everything here went through OpenRouter's Decisions endpoint. The wire format is the same; the serving stack may not be.
 - **Does the third option ever hurt?** On the twelve pairs it never exceeded 0.04 when the forks differed. Test near-ties on purpose: two correct fixes with different style, where "same" is arguably right and arguably wrong.
 - **Long states.** All of this was on 200-token diffs. The prior may weigh more, or less, when the evidence is 10k tokens of diff.
 - **Other referees.** Run the same twelve schemes against open-jev's scorer and against a chat model read through letter logprobs. The letter-logit method is known to prefer "A"; whether a trained scoring head does too is the interesting comparison.
-- **Three or more options.** All six orderings of forks A, B, C on identical diffs. Does the prior concentrate on A or spread down the alphabet? The arena races up to three; the answer decides whether relabelling matters there.
 - **The same table against open-jev's scorer.** A per-option scorer should return the same number in every order. If it does and Jev does not, the architectural inference in the introduction is proven rather than inferred.
 - **Use it as a feature.** A cheap identical-input control before every batch would detect any drift in the served model's priors over time. It costs a thousandth of a cent.
 
