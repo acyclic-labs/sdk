@@ -109,9 +109,84 @@ struct Persistence {
     fault_after_bytes: AtomicU64,
     #[cfg(test)]
     fault_sync_once: AtomicBool,
+    #[cfg(test)]
+    blocking_work: StdMutex<Option<BlockingWorkHook>>,
     limits: LocalObjectsLimits,
     _ownership: File,
     _ownership_anchor: Option<OwnershipAnchor>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BlockingWork {
+    CollectGarbage,
+    PersistSegment,
+}
+
+#[cfg(test)]
+struct BlockingWorkHook {
+    operation: BlockingWork,
+    started: Option<tokio::sync::oneshot::Sender<()>>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+struct GarbageCollectionWork {
+    _body_io: tokio::sync::OwnedRwLockWriteGuard<()>,
+    _mutation: tokio::sync::OwnedMutexGuard<()>,
+    live_bodies: BTreeSet<LocalBodyReference>,
+    maximum_candidates: u64,
+    // Keep persistence last so root ownership is published only after the operation guards drop.
+    persistence: Arc<Persistence>,
+}
+
+impl GarbageCollectionWork {
+    fn run(&self) -> Result<LocalObjectsGarbageCollection, LocalObjectsError> {
+        self.persistence
+            .collect_garbage(&self.live_bodies, self.maximum_candidates)
+    }
+}
+
+impl Persistence {
+    fn collect_garbage(
+        &self,
+        live_bodies: &BTreeSet<LocalBodyReference>,
+        maximum_candidates: u64,
+    ) -> Result<LocalObjectsGarbageCollection, LocalObjectsError> {
+        #[cfg(test)]
+        self.block_work(BlockingWork::CollectGarbage);
+        collect_physical_garbage(
+            &self.root,
+            live_bodies,
+            maximum_candidates,
+            self.limits.maximum_object_bytes,
+            self.limits.durability,
+        )
+    }
+
+    fn persist_segment(
+        &self,
+        bodies: &[([u8; 32], bytes::Bytes)],
+    ) -> Result<([u8; 32], Vec<u64>), LocalObjectsError> {
+        #[cfg(test)]
+        self.block_work(BlockingWork::PersistSegment);
+        persist_segment(&self.root, bodies, self.limits.durability)
+    }
+
+    #[cfg(test)]
+    fn block_work(&self, operation: BlockingWork) {
+        let hook = self.blocking_work.lock().ok().and_then(|mut hook| {
+            hook.as_ref()
+                .is_some_and(|hook| hook.operation == operation)
+                .then(|| hook.take())
+                .flatten()
+        });
+        if let Some(mut hook) = hook {
+            if let Some(started) = hook.started.take() {
+                let _ = started.send(());
+            }
+            let _ = hook.release.recv();
+        }
+    }
 }
 
 /// Crash-safe, exclusive-owner local implementation of the public Objects contract.
@@ -244,25 +319,21 @@ impl LocalObjects {
                 "garbage-collection candidate bound must be positive",
             ));
         }
-        let _body_io = self.body_io.write().await;
-        let _mutation = self.mutation.lock().await;
+        let body_io = Arc::clone(&self.body_io).write_owned().await;
+        let mutation = Arc::clone(&self.mutation).lock_owned().await;
         self.check_available()
             .map_err(|_| LocalObjectsError::Unavailable)?;
         let live_bodies = self.semantic.local_body_references().await;
-        let root = self.persistence.root.clone();
-        let maximum_object_bytes = self.persistence.limits.maximum_object_bytes;
-        let durability = self.persistence.limits.durability;
-        tokio::task::spawn_blocking(move || {
-            collect_physical_garbage(
-                &root,
-                &live_bodies,
-                maximum_candidates,
-                maximum_object_bytes,
-                durability,
-            )
-        })
-        .await
-        .map_err(|_| LocalObjectsError::Corrupt)?
+        let work = GarbageCollectionWork {
+            _body_io: body_io,
+            _mutation: mutation,
+            live_bodies,
+            maximum_candidates,
+            persistence: Arc::clone(&self.persistence),
+        };
+        tokio::task::spawn_blocking(move || work.run())
+            .await
+            .map_err(|_| LocalObjectsError::Corrupt)?
     }
 
     /// Opens or creates one exclusively owned durable provider and replays its valid prefix.
@@ -383,6 +454,8 @@ impl LocalObjects {
                 fault_after_bytes: AtomicU64::new(u64::MAX),
                 #[cfg(test)]
                 fault_sync_once: AtomicBool::new(false),
+                #[cfg(test)]
+                blocking_work: StdMutex::new(None),
                 limits,
                 _ownership: ownership,
                 _ownership_anchor: ownership_anchor,
@@ -471,13 +544,11 @@ impl LocalObjects {
         &self,
         bodies: Vec<([u8; 32], bytes::Bytes)>,
     ) -> Result<([u8; 32], Vec<u64>), ObjectsError> {
-        let root = self.persistence.root.clone();
-        let durability = self.persistence.limits.durability;
-        let result =
-            tokio::task::spawn_blocking(move || persist_segment(&root, &bodies, durability))
-                .await
-                .map_err(|_| LocalObjectsError::Corrupt)
-                .and_then(std::convert::identity);
+        let persistence = Arc::clone(&self.persistence);
+        let result = tokio::task::spawn_blocking(move || persistence.persist_segment(&bodies))
+            .await
+            .map_err(|_| LocalObjectsError::Corrupt)
+            .and_then(std::convert::identity);
         if result.is_err() {
             self.persistence.poisoned.store(true, Ordering::Release);
         }
@@ -2186,6 +2257,88 @@ fn sync_parent(path: &Path, durability: LocalDurability) -> Result<(), LocalObje
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_background_work_retains_ownership_until_physical_io_stops()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()?;
+
+        runtime.block_on(async move {
+            for operation in [BlockingWork::PersistSegment, BlockingWork::CollectGarbage] {
+                let root = tempfile::tempdir()?;
+                let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+                let ownership = Arc::clone(&lifecycle).lock_owned().await;
+                let provider = LocalObjects::open_with_ownership_anchor(
+                    root.path(),
+                    LocalObjectsLimits::default(),
+                    OwnershipAnchor::new(ownership),
+                )
+                .await?;
+                let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+                let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+                *provider
+                    .persistence
+                    .blocking_work
+                    .lock()
+                    .map_err(|_| "background-work test hook was poisoned")? =
+                    Some(BlockingWorkHook {
+                        operation,
+                        started: Some(started_tx),
+                        release: release_rx,
+                    });
+
+                let work = tokio::spawn({
+                    let provider = provider.clone();
+                    async move {
+                        match operation {
+                            BlockingWork::PersistSegment => {
+                                let _ = provider
+                                    .persist_segment(vec![(
+                                        [7; 32],
+                                        bytes::Bytes::from_static(b"x"),
+                                    )])
+                                    .await;
+                            }
+                            BlockingWork::CollectGarbage => {
+                                let _ = provider.collect_garbage(1).await;
+                            }
+                        }
+                    }
+                });
+
+                started_rx.await?;
+                work.abort();
+                assert!(work.await.is_err_and(|error| error.is_cancelled()));
+                if operation == BlockingWork::CollectGarbage {
+                    assert!(
+                        Arc::clone(&provider.body_io).try_read_owned().is_err(),
+                        "cancelled garbage collection must keep body publication fenced"
+                    );
+                    assert!(
+                        Arc::clone(&provider.mutation).try_lock_owned().is_err(),
+                        "cancelled garbage collection must keep journal mutation fenced"
+                    );
+                }
+                drop(provider);
+                assert!(
+                    Arc::clone(&lifecycle).try_lock_owned().is_err(),
+                    "detached physical I/O must retain local-root ownership"
+                );
+
+                release_tx.send(())?;
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    Arc::clone(&lifecycle).lock_owned(),
+                )
+                .await?;
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })
+    }
 
     #[tokio::test]
     async fn cancelled_open_caller_keeps_ownership_until_initialization_stops()

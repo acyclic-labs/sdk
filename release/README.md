@@ -49,7 +49,7 @@ enable token rejection. Do not add a bootstrap token to GitHub Actions.
 Configure every crate in `cargo-crates.json` to trust:
 
 - repository: `acyclic-labs/sdk`
-- workflow: `publish-cargo.yml`
+- workflow: `publish-crate.yml`
 - environment: `crates-io`
 
 For a crate that does not yet exist, create a narrowly scoped, short-lived

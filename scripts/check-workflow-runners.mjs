@@ -40,7 +40,7 @@ for (const name of readdirSync(directory).filter(name => /\.ya?ml$/.test(name)).
 }
 
 const expected = [
-  ".github\\workflows\\publish-cargo.yml:ubuntu-24.04",
+  ".github\\workflows\\publish-crate.yml:ubuntu-24.04",
   ".github\\workflows\\publish-npm.yml:ubuntu-24.04",
 ];
 if (process.platform !== "win32") {

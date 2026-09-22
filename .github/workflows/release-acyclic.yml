@@ -207,8 +207,9 @@ jobs:
           test "$(git cat-file -t "$tag_oid")" = tag
           source_sha=$(git rev-parse "$tag_oid^{commit}")
           test "$(git rev-parse HEAD)" = "$source_sha"
-          git fetch --no-tags origin main
-          git merge-base --is-ancestor "$source_sha" origin/main
+          git fetch --no-tags --force origin \
+            refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$source_sha" refs/remotes/origin/main
           test "$version" = "$(node -p "require('./plugin/package.json').version")"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

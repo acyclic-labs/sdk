@@ -34,6 +34,14 @@ const REPLAY_PIPELINE_COMMANDS: usize = 32;
 #[cfg(test)]
 static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Sender<()>)>> =
     Mutex::new(None);
+#[cfg(test)]
+type JournalPersistBlocker = (
+    usize,
+    std::sync::mpsc::SyncSender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+#[cfg(test)]
+static JOURNAL_PERSIST_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
 
 async fn run_owned_initialization<T, F>(initialize: F) -> Result<T, LocalStreamError>
 where
@@ -121,11 +129,27 @@ pub struct LocalStream {
 
 struct LocalInner {
     provider: MemoryStream,
-    journal: Arc<Mutex<Journal>>,
+    journal: OwnedJournal,
     visibility: RwLock<()>,
     changed: watch::Sender<u64>,
     poisoned: AtomicBool,
+}
+
+#[derive(Clone)]
+struct OwnedJournal {
+    // Keep the anchor last: the final clone releases the journal lock before publishing release of
+    // the shared local-root lifecycle. A blocking task therefore cannot outlive root ownership.
+    journal: Arc<Mutex<Journal>>,
     _ownership_anchor: Option<OwnershipAnchor>,
+}
+
+impl OwnedJournal {
+    fn append(&self, frame: &PreparedFrame) -> Result<(), LocalStreamError> {
+        self.journal
+            .lock()
+            .map_err(|_| LocalStreamError::Corrupt)?
+            .append(frame)
+    }
 }
 
 impl LocalStream {
@@ -217,11 +241,13 @@ impl LocalStream {
         Ok(Self {
             inner: Arc::new(LocalInner {
                 provider,
-                journal: Arc::new(Mutex::new(journal)),
+                journal: OwnedJournal {
+                    journal: Arc::new(Mutex::new(journal)),
+                    _ownership_anchor: ownership_anchor,
+                },
                 visibility: RwLock::new(()),
                 changed,
                 poisoned: AtomicBool::new(false),
-                _ownership_anchor: ownership_anchor,
             }),
         })
     }
@@ -241,6 +267,7 @@ impl LocalStream {
         })?;
         self.inner
             .journal
+            .journal
             .lock()
             .map_err(|_| StreamError::Unavailable)?
             .admit(&frame)
@@ -252,16 +279,28 @@ impl LocalStream {
     }
 
     async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
-        let journal = Arc::clone(&self.inner.journal);
-        let result = tokio::task::spawn_blocking(move || {
-            journal
-                .lock()
-                .map_err(|_| LocalStreamError::Corrupt)?
-                .append(&frame)
-        })
-        .await
-        .map_err(|_| LocalStreamError::Executor)
-        .and_then(|result| result);
+        let journal = self.inner.journal.clone();
+        #[cfg(test)]
+        let journal_identity = Arc::as_ptr(&journal.journal) as usize;
+        let persist = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            {
+                if let Ok(mut hook) = JOURNAL_PERSIST_BLOCKER.lock()
+                    && hook.as_ref().is_some_and(|(expected_journal, _, _)| {
+                        *expected_journal == journal_identity
+                    })
+                    && let Some((_, started, release)) = hook.take()
+                {
+                    let _ = started.send(());
+                    let _ = release.recv();
+                }
+            }
+            journal.append(&frame)
+        });
+        let result = persist
+            .await
+            .map_err(|_| LocalStreamError::Executor)
+            .and_then(|result| result);
         if result.is_err() {
             self.inner.poisoned.store(true, Ordering::Release);
             return Err(StreamError::Unavailable);
@@ -965,6 +1004,69 @@ mod tests {
             Ok::<_, Box<dyn std::error::Error>>(())
         })
     }
+
+    #[test]
+    fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()?;
+
+        runtime.block_on(async move {
+            let directory = tempfile::tempdir()?;
+            let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+            let ownership = Arc::clone(&lifecycle).lock_owned().await;
+            let provider = LocalStream::open_with_ownership_anchor(
+                directory.path(),
+                LocalStreamLimits::default(),
+                OwnershipAnchor::new(ownership),
+            )
+            .await?;
+
+            let journal_identity = Arc::as_ptr(&provider.inner.journal.journal) as usize;
+            let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+            {
+                let mut hook = JOURNAL_PERSIST_BLOCKER
+                    .lock()
+                    .map_err(|_| "journal-persist test hook was poisoned")?;
+                *hook = Some((journal_identity, started_tx, release_rx));
+            }
+            let appending = tokio::spawn({
+                let provider = provider.clone();
+                async move {
+                    provider
+                        .append(AppendRequest {
+                            path: StreamPath::new("cancelled-persist")?,
+                            records: vec![Bytes::from_static(b"record")],
+                            if_tail: Some(0),
+                            idempotency_key: None,
+                        })
+                        .await
+                }
+            });
+
+            started_rx.recv()?;
+            appending.abort();
+            assert!(appending.await.is_err_and(|error| error.is_cancelled()));
+            drop(provider);
+            assert!(
+                Arc::clone(&lifecycle).try_lock_owned().is_err(),
+                "queued journal persistence must retain local-root ownership after cancellation"
+            );
+
+            release_tx.send(())?;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                Arc::clone(&lifecycle).lock_owned(),
+            )
+            .await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })
+    }
+
     use crate::conformance;
     use std::sync::atomic::{AtomicU64, Ordering};
 
