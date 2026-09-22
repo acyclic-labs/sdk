@@ -7,8 +7,14 @@ import {
   httpStatusForError,
 } from "../src/index.js";
 
+// The repository path is canonical; the packaged-consumer fixture stages the
+// same vector one directory above test/.
+const vectorPath =
+  (await Bun.file(new URL("../../../../conformance/vectors/harness/error-mapping-v1.json", import.meta.url)).exists())
+    ? "../../../../conformance/vectors/harness/error-mapping-v1.json"
+    : "../error-mapping-v1.json";
 const vector = JSON.parse(
-  await Bun.file(new URL("../../../../conformance/vectors/harness/error-mapping-v1.json", import.meta.url)).text(),
+  await Bun.file(new URL(vectorPath, import.meta.url)).text(),
 ) as { version: number; mappings: Array<{ code: string; http_status: number; grpc_code: number }> };
 
 const named: Record<string, ErrorCode> = {
