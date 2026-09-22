@@ -43,33 +43,27 @@ The bias does not shrink. It vanishes. Jev knew the forks were identical the who
 
 ## The example
 
-Six tasks, DeepSeek V4 Flash raced against itself. Race 2's task: *cheapest() in shop.py returns the most expensive item. Fix it so it returns the cheapest, and returns None for an empty iterable.* Both workers made the same one-character fix. What Jev was shown:
+Two snippets of DeepSeek V4 Flash generated code. The only difference is the label.
 
 ```
-=== fork A (deepseek/deepseek-v4-flash)
-Changed paths: 1
-  M shop.py
+=== fork A
 -        if best is None or it.price_cents > best.price_cents:
 +        if best is None or it.price_cents < best.price_cents:
 
-=== fork B (deepseek/deepseek-v4-flash)
-Changed paths: 1
-  M shop.py
+=== fork B
 -        if best is None or it.price_cents > best.price_cents:
 +        if best is None or it.price_cents < best.price_cents:
 ```
 
-Question: *Which fork best completes the task and should be promoted?* Options: `fork A`, `fork B`.
+*Which fork best completes the task and should be promoted?*
 
 | | fork A | fork B |
 |---|---|---|
 | Which wins? | **0.95** | 0.05 |
-| Safe to land as-is? | 0.83 | 0.85 |
-| How complete, 0 to 1? | 1.00 | 1.00 |
+| Safe to land? | 0.83 | 0.85 |
+| How complete? | 1.00 | 1.00 |
 
-Safety and completeness, asked in the same request, came back equal. Only the forced choice tilted. Two other identical pairs in the same run scored 0.95 and 0.87 for A.
-
-Five repeats of this exact input: 0.95, 0.96, 0.95, 0.96, 0.96. Not noise. Listing B first while keeping the names: A still 0.90. Not simply position.
+Five repeats: 0.95, 0.96, 0.95, 0.96, 0.96. B listed first, names kept: A still 0.90.
 
 ## Reproduce it
 
