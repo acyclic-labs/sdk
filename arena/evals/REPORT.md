@@ -14,6 +14,7 @@ Every experiment run on Repo Arena so far, with the verdict for the referee. Cos
 | 7 | Router's task-kind vs labels (from experiment 1 logs) | Classification for the board | 10/12 correct. Misses: a validation feature called a bug fix; an iterable refactor called a feature. | **Useful enough for the board.** |
 | 8 | Calibration on public sets (AG News, Yelp, 64 rows each; see the Jev vs open-jev page) | Are the probabilities probabilities | ECE 0.17 and 0.20, mean confidence 0.95 on AG News; open-jev publishes 0.02 and 0.12 | **Not useful as a probability.** Useful as a ranking. Thresholds must come from outcomes, not from Jev's confidence. |
 | 9 | The docstrings task (experiment 1) | A control | All four arms failed it; the test was verified against a hand-written answer | Not about Jev. Four models missed an easy instruction. Kept as data. |
+| 10 | Determinism: the 12 judge pairs, both orders, 5 repeats each (`judge/determinism.json`) | Does the same input give the same score | Byte-identical probabilities on 13/24 inputs; the rest jitter 0.01 to 0.06; verdict unchanged on 24/24; confident cases return 1.00 / 0.00 every time; $0.002 | **Near-deterministic, not exact.** No seed is documented. Verdicts are stable; second-decimal noise is not. The log replays from stored probabilities, never by re-asking. The arena treats forks within 0.06 as a tie and breaks it on tests, then cost. |
 
 ## What this adds up to
 

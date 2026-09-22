@@ -127,6 +127,14 @@ export async function race(forker: Forker, jev: Jev, log: Log, opts: RaceOptions
     meta: { fork: r.fork.id, label: r.fork.label, model: r.model, safe: r.safe, complete: r.complete, probe_ok: r.probeOk, kind, debiased: verdicts.length > 1 },
   }));
   const ranked = [...reports].sort((a, b) => b.pWin - a.pWin);
+  // Jev's run-to-run jitter is up to 0.06 on identical input (24 inputs x 5 repeats), so two forks within
+  // that band are a tie: prefer the one whose tests passed, then the cheaper worker, rather than a coin flip.
+  const TIE = 0.06;
+  if (ranked.length > 1 && ranked[0]!.pWin - ranked[1]!.pWin <= TIE) {
+    const top = ranked.filter((r) => ranked[0]!.pWin - r.pWin <= TIE);
+    top.sort((a, b) => Number(b.probeOk === true) - Number(a.probeOk === true) || a.worker.cost - b.worker.cost);
+    ranked.splice(0, top.length, ...top);
+  }
   const winner = ranked[0] ?? null;
   say(`judge: ${ranked.map((r) => `${r.fork.label} ${r.pWin.toFixed(2)}`).join("  ")}  | safe ${reports.map((r) => `${r.fork.label}:${r.safe.toFixed(2)}`).join(" ")}  | $${judgeUsd.toFixed(5)}${verdicts.length > 1 ? " (both orders)" : ""}`);
 
