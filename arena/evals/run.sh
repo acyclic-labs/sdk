@@ -18,6 +18,7 @@ for arm in $ARMS; do
     frontier) extra="--models $FRONTIER" ;;
     raced)    extra="--models $CHEAP,$FRONTIER" ;;
     cheap)    extra="--models $CHEAP" ;;
+    fast)     extra="--models ${FAST:-anthropic/claude-haiku-4.5}" ;;
   esac
   echo "== $arm  ($W)"
   (cd "$W" && $ARENA run "$HERE/tasks.json" --promote --forks git --timeout 300 --log "$OUT/$arm.jsonl" $extra 2>&1 | tee "$OUT/$arm.log" | grep -E "route:|judge|done in|race\(s\)")

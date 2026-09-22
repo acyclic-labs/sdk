@@ -58,8 +58,10 @@ async function main(): Promise<number> {
       : (JSON.parse(readFileSync(pos[1]!, "utf8")) as Array<{ task: string; kind?: string; models?: string[]; test?: string }>);
     const forceModels = str(flags.models)?.split(",");
     let total = 0;
+    const budget = Number(str(flags.budget, "0"));
     for (const t of tasks) {
       if (!t.task) throw new Error("empty task");
+      if (budget > 0 && total >= budget) { say(`budget $${budget} reached after $${total.toFixed(4)}; stopping`); log.note("budget_stop", { budget, spent: total }); break; }
       let models = forceModels ?? t.models, kind = t.kind;
       if (!models) {
         const r = await route(jev, t.task);
@@ -90,7 +92,7 @@ async function main(): Promise<number> {
   arena doctor
   arena route "<task>"
   arena race "<task>" [--models a,b,c] [--promote] [--test "<cmd>"] [--kind <kind>] [--timeout <s>] [--log arena.jsonl] [--forks auto|acyclic|git]
-  arena run tasks.json [--promote] [--test "<cmd>"] [--models a,b]   # per-task "test" and "models" in the file; --models overrides all
+  arena run tasks.json [--promote] [--test "<cmd>"] [--models a,b] [--budget <usd>]   # per-task "test"/"models" in the file; --models overrides all
   arena board [--log arena.jsonl] [--badge badge.svg] [--json board.json] [--min-races 3]
 
 Needs: opencode on PATH and OPENROUTER_API_KEY (env or ./.env). acyclic is optional: with it forks are O(1) mounts and promote is a three-way merge; without it, git worktrees and a patch.`);

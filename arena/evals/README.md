@@ -11,7 +11,7 @@ The seed is a small Python shop module with real unit tests. Each task has its o
 ```
 export OPENROUTER_API_KEY=sk-or-...
 ./run.sh                       # writes results/<timestamp>/{routed,frontier,raced}.jsonl and compare.md
-ARMS="routed cheap" ./run.sh   # any subset of routed frontier raced cheap
+ARMS="routed cheap" ./run.sh   # any subset of routed frontier raced cheap fast
 ```
 
 Models default to `deepseek/deepseek-v4-flash` (cheap) and `anthropic/claude-sonnet-5` (frontier); override with `CHEAP=` and `FRONTIER=`.
