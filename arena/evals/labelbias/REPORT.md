@@ -4,6 +4,8 @@
 
 Give TypeSafe's Jev two byte-identical code changes and ask which is better. It picks the one called "A" with probability 0.95. Rename them and it picks the earlier letter, the lower number, or whichever is listed first. The tilt is deterministic, repeatable, and has nothing to do with the code. It also disappears completely the moment you give the model a way to say "they are the same".
 
+Put precisely, Jev's choice output breaks two symmetries a classifier over an unordered option set should have. **Order invariance:** permuting the options should permute the probabilities and nothing else; with the order-free names left and right, listing order alone swings the answer by 0.40. **Label invariance:** renaming the options should change nothing; the earlier name wins at 0.88 to 0.94 and keeps winning from second place. A classical classifier never sees its labels as input, so it has the second property trivially, and a per-option scorer such as open-jev's, which scores each option alone and softmaxes, has the first by construction. Jev has neither, which is only possible if it reads all the options together as one sequence and lets label text and slot position into the score. That is the strongest architectural inference these experiments support about a model whose internals are undisclosed. The violation shows only when the evidence cannot separate the options; on real differences the swapped orders agree to within 0.03.
+
 ## The results
 
 Same two identical diffs every time. Only the option names change. P(first listed), three runs each, spread never above 0.04.
@@ -94,7 +96,8 @@ Swap-averaging is the standard cure for option-order effects in language-model e
 - **Does the third option ever hurt?** On the twelve pairs it never exceeded 0.04 when the forks differed. Test near-ties on purpose: two correct fixes with different style, where "same" is arguably right and arguably wrong.
 - **Long states.** All of this was on 200-token diffs. The prior may weigh more, or less, when the evidence is 10k tokens of diff.
 - **Other referees.** Run the same twelve schemes against open-jev's scorer and against a chat model read through letter logprobs. The letter-logit method is known to prefer "A"; whether a trained scoring head does too is the interesting comparison.
-- **Three or more options.** With forks A, B, C, does the prior concentrate on A or spread down the alphabet? The arena races up to three; the answer decides whether relabelling matters there.
+- **Three or more options.** All six orderings of forks A, B, C on identical diffs. Does the prior concentrate on A or spread down the alphabet? The arena races up to three; the answer decides whether relabelling matters there.
+- **The same table against open-jev's scorer.** A per-option scorer should return the same number in every order. If it does and Jev does not, the architectural inference in the introduction is proven rather than inferred.
 - **Use it as a feature.** A cheap identical-input control before every batch would detect any drift in the served model's priors over time. It costs a thousandth of a cent.
 
 
