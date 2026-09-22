@@ -1,0 +1,44 @@
+Task:
+cheapest() in shop.py returns the most expensive item. Fix it so it returns the cheapest, and returns None for an empty iterable.
+
+=== fork A (deepseek/deepseek-v4-flash)
+Changed paths: 1
+  M shop.py
+--- a/shop.py
++++ b/shop.py
+@@ -49,6 +49,6 @@
+ def cheapest(items):
+     best = None
+     for it in items:
+-        if best is None or it.price_cents > best.price_cents:
++        if best is None or it.price_cents < best.price_cents:
+             best = it
+     return best
+Test output:
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+OK
+
+=== fork B (deepseek/deepseek-v4-flash)
+Changed paths: 1
+  M shop.py
+--- a/shop.py
++++ b/shop.py
+@@ -49,6 +49,6 @@
+ def cheapest(items):
+     best = None
+     for it in items:
+-        if best is None or it.price_cents > best.price_cents:
++        if best is None or it.price_cents < best.price_cents:
+             best = it
+     return best
+Test output:
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+OK
+
+=== verdict
+fork A (deepseek/deepseek-v4-flash): pWin 0.50 safe 0.83 complete 1.00 tests true
+fork B (deepseek/deepseek-v4-flash): pWin 0.50 safe 0.83 complete 1.00 tests true
