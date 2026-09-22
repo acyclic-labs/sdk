@@ -2,7 +2,8 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { Acyclic, type Fork, type Change } from "./acyclic.js";
+import type { Fork, Change } from "./acyclic.js";
+import type { Forker } from "./forks.js";
 import { Jev, choice, score, noul, prob, expected, type ChoiceAnswer, type ScoreAnswer, type NoulAnswer } from "./jev.js";
 import { Log } from "./log.js";
 import { runWorker, type WorkerResult } from "./opencode.js";
@@ -54,15 +55,15 @@ export function renderState(task: string, repo: string, reports: Array<{ fork: F
   return `Task:\n${task.trim()}\n\n${blocks.join("\n\n")}`;
 }
 
-export async function race(acyclic: Acyclic, jev: Jev, log: Log, opts: RaceOptions): Promise<RaceResult> {
+export async function race(forker: Forker, jev: Jev, log: Log, opts: RaceOptions): Promise<RaceResult> {
   const t0 = Date.now();
   const say = opts.onEvent ?? (() => {});
   const kind = opts.kind ?? "unlabelled";
   const n = opts.models.length;
   if (n < 1) throw new Error("need at least one model");
-  const forks = acyclic.fork(n);
-  log.note("fork_open", { task: opts.task, kind, forks: forks.map((f, i) => ({ ...f, model: opts.models[i] })) });
-  say(`forked ${n} way(s): ${forks.map((f, i) => `${f.label}=${opts.models[i]}`).join("  ")}`);
+  const forks = forker.fork(n);
+  log.note("fork_open", { task: opts.task, kind, forker: forker.name, forks: forks.map((f, i) => ({ ...f, model: opts.models[i] })) });
+  say(`forked ${n} way(s) with ${forker.name}: ${forks.map((f, i) => `${f.label}=${opts.models[i]}`).join("  ")}`);
 
   const workers = await Promise.all(forks.map((f, i) => {
     say(`worker ${f.label} started on ${opts.models[i]}`);
@@ -74,7 +75,7 @@ export async function race(acyclic: Acyclic, jev: Jev, log: Log, opts: RaceOptio
   }));
 
   const pre = forks.map((f, i) => {
-    const changes = acyclic.forkDiff(f.id);
+    const changes = forker.diff(f);
     let probe = "", probeOk: boolean | null = null;
     if (opts.testCommand && changes.length === 0) {
       probe = "(no changes in this fork; tests not run)";
@@ -88,7 +89,7 @@ export async function race(acyclic: Acyclic, jev: Jev, log: Log, opts: RaceOptio
     return { fork: f, model: opts.models[i]!, worker: workers[i]!, changes, probe, probeOk };
   });
 
-  const state = renderState(opts.task, acyclic.repo, pre, opts.maxFiles ?? 12, opts.maxDiffChars ?? 1500);
+  const state = renderState(opts.task, forker.repo, pre, opts.maxFiles ?? 12, opts.maxDiffChars ?? 1500);
   const labels = forks.map((f) => `fork ${f.label}`);
   const questions: Record<string, ReturnType<typeof choice> | ReturnType<typeof score> | ReturnType<typeof noul>> = {
     winner: choice("Which fork best completes the task and should be promoted?", labels),
@@ -118,10 +119,13 @@ export async function race(acyclic: Acyclic, jev: Jev, log: Log, opts: RaceOptio
   const minC = opts.minConfidence ?? 0.6;
   if (winner && opts.promote) {
     const ok = winner.pWin >= minC && (opts.requireSafe === false || winner.safe >= 0.5) && winner.probeOk !== false;
-    if (ok) { const out = acyclic.promote(winner.fork.id); promoted = true; log.note("promote", { fork: winner.fork.id, label: winner.fork.label, model: winner.model, pWin: winner.pWin, output: out }); say(`promoted fork ${winner.fork.label} (${winner.model})`); }
+    if (ok) {
+      try { const out = forker.promote(winner.fork, winner.changes.map((c) => c.path)); promoted = true; log.note("promote", { fork: winner.fork.id, label: winner.fork.label, model: winner.model, pWin: winner.pWin, output: out }); say(`promoted fork ${winner.fork.label} (${winner.model}): ${out}`); }
+      catch (e) { log.note("promote_failed", { fork: winner.fork.id, error: String(e) }); say(`promote FAILED: ${String(e).slice(0, 200)}`); }
+    }
     else { log.note("promote_skipped", { fork: winner.fork.id, pWin: winner.pWin, safe: winner.safe, probe_ok: winner.probeOk }); say(`not promoted: winner ${winner.fork.label} pWin ${winner.pWin.toFixed(2)} safe ${winner.safe.toFixed(2)} probe ${winner.probeOk}`); }
   }
-  for (const r of reports) if (!(promoted && r === winner)) { acyclic.drop(r.fork.id); log.note("fork_drop", { fork: r.fork.id, label: r.fork.label }); }
+  for (const r of reports) { forker.drop(r.fork); log.note("fork_drop", { fork: r.fork.id, label: r.fork.label, promoted: promoted && r === winner }); }
 
   const workerCost = workers.reduce((s, w) => s + w.cost, 0);
   const ms = Date.now() - t0;

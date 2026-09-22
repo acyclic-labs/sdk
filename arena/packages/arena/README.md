@@ -14,7 +14,7 @@ arena board --badge badge.svg
 
 ## What happens in a race
 
-1. `acyclic fork -n N` mounts N writable copies of the working tree in O(1).
+1. N forks of the working tree: `acyclic fork -n N` overlay mounts if acyclic is set up, otherwise git worktrees.
 2. One headless `opencode run` per fork, on the model you chose, or on the tier Jev routed the task to.
 3. Your test command runs in each fork; its tail is captured.
 4. Every fork's diff and test output go into one state. Jev answers in one request: which fork wins, is each safe to land, how complete is each.
@@ -29,7 +29,8 @@ arena board --badge badge.svg
 
 ## Requirements
 
-- Node 20+, [OpenCode](https://opencode.ai) on PATH, [acyclic](https://acyclic.dev) on PATH with the repo initialised.
+- Node 20+ and [OpenCode](https://opencode.ai) on PATH.
+- [acyclic](https://acyclic.dev) is optional. With it, forks are O(1) overlay mounts and promote is a three-way merge that lands even if the mainline moved. Without it, `arena` uses git worktrees, carries your uncommitted changes into each fork, and promotes by syncing the winner's changed files back into your tree, unstaged. `--forks acyclic|git` forces one; the default detects.
 - `OPENROUTER_API_KEY` in the environment or a `.env` in the working directory. Jev is `typesafe/jev-1.13` on OpenRouter's Decisions endpoint; workers use `openrouter/<model>` through OpenCode.
 - Headless OpenCode reads piped stdin when it is not a terminal and will wait forever; this package closes stdin for every worker. If you drive OpenCode yourself, pass `< /dev/null`.
 
