@@ -6554,16 +6554,39 @@ impl ServiceControl {
         Ok(Some((session_id.clone(), agent_id.clone())))
     }
 
-    async fn shutdown(mut self) -> Result<(), String> {
+    async fn shutdown_sessions(&mut self, deactivate: bool) -> Result<(), String> {
         let sessions = std::mem::take(&mut self.sessions);
+        let mut failed_sessions = 0_usize;
         let mut first_error = None;
-        for (_, control) in sessions {
-            if let Err(error) = control.shutdown().await {
-                first_error.get_or_insert(error);
+        for (session_id, mut control) in sessions {
+            let mut session_failed = false;
+            if deactivate {
+                control.state.active = false;
+                if let Err(error) = control.persist() {
+                    session_failed = true;
+                    first_error.get_or_insert_with(|| {
+                        format!("cannot persist inactive session '{session_id}': {error}")
+                    });
+                }
             }
+            if let Err(error) = control.shutdown().await {
+                session_failed = true;
+                first_error.get_or_insert_with(|| {
+                    format!("cannot shut down session '{session_id}': {error}")
+                });
+            }
+            failed_sessions += usize::from(session_failed);
         }
         self.shared_roots.prune().await;
-        let result = first_error.map_or(Ok(()), Err);
+        first_error.map_or(Ok(()), |error| {
+            Err(format!(
+                "Acyclic service shutdown failed for {failed_sessions} session(s); first error: {error}"
+            ))
+        })
+    }
+
+    async fn shutdown(mut self) -> Result<(), String> {
+        let result = self.shutdown_sessions(false).await;
         // Publish service shutdown only after its final LocalFs handle has released the durable
         // Stream and Objects roots. A completed async future may otherwise retain `self` until the
         // executor drops the future, allowing an immediate replacement service to race the lock.
@@ -6944,12 +6967,7 @@ impl ControlRequestDispatcher for ServiceControl {
                 ));
             }
             if matches!(request.command, ControlCommand::Shutdown) {
-                for (_, mut session) in std::mem::take(&mut self.sessions) {
-                    session.state.active = false;
-                    session.persist()?;
-                    session.shutdown().await?;
-                }
-                self.shared_roots.prune().await;
+                self.shutdown_sessions(true).await?;
             }
             *self
                 .drain_id
@@ -11747,6 +11765,58 @@ mod tests {
             .expect("test thread")
             .join()
             .expect("live service handoff thread");
+    }
+
+    #[test]
+    fn explicit_shutdown_processes_sessions_after_an_earlier_failure() {
+        run_large_stack("complete-service-shutdown", || async {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let data = temporary.path().join("state");
+            let mut service = ServiceControl::open(data.clone()).await.expect("service");
+
+            {
+                let broken = service
+                    .create_session("a-broken")
+                    .await
+                    .expect("broken session");
+                broken.state.active = true;
+                broken.state.root_session_id = "a-broken".to_owned();
+                broken.state.leases.insert(
+                    "orphaned-lease".to_owned(),
+                    LeaseRecord {
+                        agent_id: "missing-agent".to_owned(),
+                        turn_id: String::new(),
+                        tool_name: "Bash".to_owned(),
+                        roots: BTreeMap::new(),
+                        expires_at_millis: 0,
+                    },
+                );
+                broken.persist().expect("broken session state");
+            }
+            {
+                let healthy = service
+                    .create_session("z-healthy")
+                    .await
+                    .expect("healthy session");
+                healthy.state.active = true;
+                healthy.state.root_session_id = "z-healthy".to_owned();
+                healthy.persist().expect("healthy session state");
+            }
+            let healthy_directory = service.session_directory("z-healthy");
+
+            let error = service
+                .shutdown_sessions(true)
+                .await
+                .expect_err("orphaned lease must fail shutdown");
+            assert!(error.contains("a-broken"));
+            assert!(service.sessions.is_empty());
+            assert!(
+                !load_state(&healthy_directory)
+                    .expect("healthy session state")
+                    .active,
+                "a later session must be durably inactive despite an earlier failure"
+            );
+        });
     }
 
     #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
