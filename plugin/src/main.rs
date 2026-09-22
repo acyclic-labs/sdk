@@ -8178,19 +8178,22 @@ async fn ensure_service(data: &Path) -> Result<(), String> {
     let ping = ping_request()?;
     fs::create_dir_all(data).map_err(display)?;
     spawn_service_process(&env::current_exe().map_err(display)?)?;
-    let mut last = String::new();
-    for _ in 0..100 {
-        match send_control_request_once(data, &ping).await {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let last = loop {
+        let last = match send_control_request_once(data, &ping).await {
             Ok(active)
                 if active.get("identity").and_then(Value::as_str) == Some(identity.as_str()) =>
             {
                 return Ok(());
             }
-            Ok(_) => last = "the previous Acyclic service is still draining".to_owned(),
-            Err(error) => last = error.to_string(),
+            Ok(_) => "the previous Acyclic service is still draining".to_owned(),
+            Err(error) => error.to_string(),
+        };
+        if std::time::Instant::now() >= deadline {
+            break last;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    };
     Err(format!("Acyclic service did not become ready: {last}"))
 }
 
@@ -9528,7 +9531,7 @@ fn codex_profile_matches(profile: &toml_edit::Table, data: &Path, base_profile: 
     #[cfg(unix)]
     {
         let runtime = unix_control_runtime_directory();
-        return profile.len() == 2
+        profile.len() == 2
             && profile.get("extends").and_then(toml_edit::Item::as_str) == Some(base_profile)
             && roots.is_some_and(|roots| {
                 roots.len() == 2
@@ -9540,7 +9543,7 @@ fn codex_profile_matches(profile: &toml_edit::Table, data: &Path, base_profile: 
                         .get(runtime.to_string_lossy().as_ref())
                         .and_then(toml_edit::Item::as_bool)
                         == Some(true)
-            });
+            })
     }
     #[cfg(not(unix))]
     {

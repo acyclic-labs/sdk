@@ -323,7 +323,7 @@ This is a local Acyclic behavioural evaluation. Work only inside the current wor
 subagents and the Acyclic commands described by the installed plugin; do not simulate children with
 directories or Git worktrees. Run every `acyclic ...` command as a separate shell invocation without
 combining it with other commands or shell operators. Use shell builtins and ordinary core utilities,
-not Python.
+Use only the repository's native toolchain.
 
 Complete all phases, overlapping independent work where possible:
 
