@@ -55,8 +55,13 @@ const statusPaths = (cwd: string): string[] => {
   return out;
 };
 
+/** The file's git blob id ("blob <size>\0<bytes>" under SHA-1), so it compares directly with `HEAD:<path>`. */
 const fileSha = (path: string): string | null => {
-  try { const st = statSync(path); if (st.isDirectory()) return "dir"; return createHash("sha1").update(readFileSync(path)).digest("hex"); } catch { return null; }
+  try {
+    const st = statSync(path); if (st.isDirectory()) return "dir";
+    const bytes = readFileSync(path);
+    return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+  } catch { return null; }
 };
 
 function sameFile(a: string, b: string): boolean {

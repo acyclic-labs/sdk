@@ -59,6 +59,8 @@ def make_server(backend: Backend, host: str = "127.0.0.1", port: int = 8788, tok
                 return self._send(401, {"error": "unauthorized"})
             try:
                 n = int(self.headers.get("Content-Length", "0"))
+                if n < 0:
+                    return self._send(400, {"error": "invalid Content-Length"})
                 if n > MAX_BODY:
                     return self._send(413, {"error": f"body exceeds {MAX_BODY} bytes"})
                 req = json.loads(self.rfile.read(n) or b"{}")

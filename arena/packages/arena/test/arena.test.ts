@@ -139,5 +139,9 @@ test("git forker: renames and quoted names are parsed, and promote refuses to cl
   writeFileSync(join(repo, "keep.txt"), "v2 edited locally meanwhile\n");   // base moved after the fork
   assert.throws(() => fk.promote(A!, ["keep.txt"]), /promote conflict.*keep\.txt/);
   assert.equal(readFileSync(join(repo, "keep.txt"), "utf8"), "v2 edited locally meanwhile\n");
+  // a clean tracked file edited only in the fork compares against its HEAD blob and promotes normally
+  writeFileSync(join(A!.path, "sp ace ü.txt"), "changed in fork\n");
+  assert.match(fk.promote(A!, ["sp ace ü.txt"]), /synced 1 file/);
+  assert.equal(readFileSync(join(repo, "sp ace ü.txt"), "utf8"), "changed in fork\n");
   fk.drop(A!);
 });
