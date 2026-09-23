@@ -350,6 +350,26 @@ impl ProjFsSession {
         request: &NativeMountRequest,
         source: Arc<dyn MountFilesystem>,
     ) -> Result<Self, DriverStartFailure> {
+        // An empty directory can still be a crash-left ProjFS root containing
+        // hidden tombstones or metadata. Never mark it again: a failed startup
+        // would otherwise run rollback against the only remaining authored
+        // state. Recovery must explicitly account for that root first.
+        match reparse_tag(&request.destination)?.0 {
+            Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS) => {
+                return Err(NativeMountError::Driver(format!(
+                    "stale ProjFS root at {} may contain unpublished authored state; preserved for recovery",
+                    request.destination.display()
+                ))
+                .into());
+            }
+            Some(tag) => {
+                return Err(NativeMountError::Driver(format!(
+                    "destination has non-ProjFS reparse tag 0x{tag:08x}"
+                ))
+                .into());
+            }
+            None => {}
+        }
         let executor = CallbackExecutor::start()?;
         let metadata_root = Arc::new(
             HostRoot::open(&request.destination)

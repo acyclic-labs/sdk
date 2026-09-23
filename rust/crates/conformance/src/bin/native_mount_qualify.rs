@@ -1376,10 +1376,17 @@ fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> Result<(), F
             .replace([' ', '\n'], "")
             .to_ascii_lowercase();
         if !read.status.success() || encoded != "7265736f757263652d666f726b" {
+            let listed = Command::new("/usr/bin/xattr")
+                .args(["-l"])
+                .arg(metadata)
+                .output()?;
+            let sidecar = metadata.with_file_name("._metadata.txt");
             return Err(format!(
-                "resource fork round trip through NFS was not exact: status={} hex={encoded:?} stderr={}",
+                "resource fork round trip through NFS was not exact: status={} hex={encoded:?} stderr={} listed={} sidecar_bytes={:?}",
                 read.status,
-                String::from_utf8_lossy(&read.stderr)
+                String::from_utf8_lossy(&read.stderr),
+                String::from_utf8_lossy(&listed.stdout),
+                fs::metadata(sidecar).map(|metadata| metadata.len()).ok()
             )
             .into());
         }
