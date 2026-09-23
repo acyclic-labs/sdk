@@ -1371,7 +1371,7 @@ where
             .map(|receipt| receipt.value.lookup)
     }
 
-    #[cfg(not(unix))]
+    #[cfg(all(feature = "native-mount", not(unix)))]
     pub(crate) async fn lookup_resolved(
         &self,
         path: &str,
@@ -1601,6 +1601,7 @@ where
         FileId::from_bytes(bytes)
     }
 
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) async fn stable_file_id_for_lookup(
         &self,
         path: &str,
@@ -4949,22 +4950,25 @@ mod tests {
                 .expect("hot content"),
             Bytes::from_static(b"hot")
         );
-        let staged = tempfile::tempdir().expect("empty native stage");
-        exact
-            .value
-            .materialize_path(
-                "/hot",
-                &crate::MaterializeOptions::native(staged.path()),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .expect("materialize only pinned hot subtree");
-        assert_eq!(
-            std::fs::read(staged.path().join("hot/file.txt")).expect("staged hot file"),
-            b"hot"
-        );
-        assert!(!staged.path().join("cold").exists());
+        #[cfg(feature = "native-mount")]
+        {
+            let staged = tempfile::tempdir().expect("empty native stage");
+            exact
+                .value
+                .materialize_path(
+                    "/hot",
+                    &crate::MaterializeOptions::native(staged.path()),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .expect("materialize only pinned hot subtree");
+            assert_eq!(
+                std::fs::read(staged.path().join("hot/file.txt")).expect("staged hot file"),
+                b"hot"
+            );
+            assert!(!staged.path().join("cold").exists());
+        }
         assert!(matches!(
             exact.value.read("/cold/file.txt", 16).await,
             Err(WorkspaceError::NotFound)

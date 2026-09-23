@@ -691,6 +691,7 @@ pub async fn capture_paths_with_policy<A: AsyncAuthorityStore, O: AsyncObjectSto
 /// checkout candidate. The caller sees either every path or none of them;
 /// hard-link identities are shared across batches. `budget` applies to each
 /// bounded batch rather than to the complete path set.
+#[cfg(feature = "native-mount")]
 pub(crate) async fn capture_paths_batched<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     paths: &[NamespacePath],
