@@ -1381,12 +1381,19 @@ fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> Result<(), F
                 .arg(metadata)
                 .output()?;
             let sidecar = metadata.with_file_name("._metadata.txt");
+            let sidecar_bytes = fs::read(&sidecar).ok();
+            let sidecar_payload_offset = sidecar_bytes.as_ref().and_then(|bytes| {
+                bytes
+                    .windows(b"resource-fork".len())
+                    .position(|window| window == b"resource-fork")
+            });
             return Err(format!(
-                "resource fork round trip through NFS was not exact: status={} hex={encoded:?} stderr={} listed={} sidecar_bytes={:?}",
+                "resource fork round trip through NFS was not exact: status={} hex={encoded:?} stderr={} listed={} sidecar_bytes={:?} sidecar_header={:?} sidecar_payload_offset={sidecar_payload_offset:?}",
                 read.status,
                 String::from_utf8_lossy(&read.stderr),
                 String::from_utf8_lossy(&listed.stdout),
-                fs::metadata(sidecar).map(|metadata| metadata.len()).ok()
+                sidecar_bytes.as_ref().map(Vec::len),
+                sidecar_bytes.as_ref().map(|bytes| &bytes[..bytes.len().min(16)])
             )
             .into());
         }
@@ -1640,6 +1647,20 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
         runtime.block_on(async {
             let engine = Fs::local(LocalOptions::new(crash_root.join("store"))).await?;
             let workspace = engine.open_workspace("crash-owner").await?;
+            if workspace
+                .mount(mount, MountOptions::read_write())
+                .await
+                .is_ok()
+            {
+                return Err::<(), Failure>(
+                    "crash-left ProjFS root was mounted without authenticated recovery".into(),
+                );
+            }
+            if !mount.is_dir() {
+                return Err::<(), Failure>(
+                    "rejected stale ProjFS mount removed the recovery root".into(),
+                );
+            }
             let resumed = workspace
                 .mount(&replacement, MountOptions::read_write())
                 .await?;

@@ -350,26 +350,7 @@ impl ProjFsSession {
         request: &NativeMountRequest,
         source: Arc<dyn MountFilesystem>,
     ) -> Result<Self, DriverStartFailure> {
-        // An empty directory can still be a crash-left ProjFS root containing
-        // hidden tombstones or metadata. Never mark it again: a failed startup
-        // would otherwise run rollback against the only remaining authored
-        // state. Recovery must explicitly account for that root first.
-        match reparse_tag(&request.destination)?.0 {
-            Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS) => {
-                return Err(NativeMountError::Driver(format!(
-                    "stale ProjFS root at {} may contain unpublished authored state; preserved for recovery",
-                    request.destination.display()
-                ))
-                .into());
-            }
-            Some(tag) => {
-                return Err(NativeMountError::Driver(format!(
-                    "destination has non-ProjFS reparse tag 0x{tag:08x}"
-                ))
-                .into());
-            }
-            None => {}
-        }
+        reject_stale_projection(&request.destination)?;
         let executor = CallbackExecutor::start()?;
         let metadata_root = Arc::new(
             HostRoot::open(&request.destination)
@@ -563,6 +544,24 @@ impl ProjFsSession {
     }
 }
 
+fn reject_stale_projection(destination: &std::path::Path) -> Result<(), NativeMountError> {
+    // An empty directory can still be a crash-left ProjFS root containing
+    // hidden tombstones or metadata. Never mark it again: startup rollback
+    // could otherwise delete the only remaining authored state.
+    match reparse_tag(destination)?.0 {
+        Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS) => {
+            Err(NativeMountError::Driver(format!(
+                "stale ProjFS root at {} may contain unpublished authored state; preserved for recovery",
+                destination.display()
+            )))
+        }
+        Some(tag) => Err(NativeMountError::Driver(format!(
+            "destination has non-ProjFS reparse tag 0x{tag:08x}"
+        ))),
+        None => Ok(()),
+    }
+}
+
 fn finish_cleanup<T, E>(
     state: &mut Option<T>,
     cleanup: impl FnOnce(&T) -> Result<(), E>,
@@ -676,7 +675,9 @@ fn reparse_tag(
 ) -> Result<(Option<u32>, crate::NativeRootIdentity), NativeMountError> {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::{ERROR_NOT_A_REPARSE_POINT, HANDLE};
+    use windows::Win32::Foundation::{
+        ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE, ERROR_NOT_A_REPARSE_POINT, HANDLE,
+    };
     use windows::Win32::Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
         FILE_SHARE_READ, FILE_SHARE_WRITE, MAXIMUM_REPARSE_DATA_BUFFER_SIZE,
@@ -714,6 +715,14 @@ fn reparse_tag(
         let code = error.code().0.cast_unsigned();
         if code == 0x8007_0000_u32 | ERROR_NOT_A_REPARSE_POINT.0 {
             return Ok((None, identity));
+        }
+        // A stopped ProjFS provider can leave an authenticated placeholder
+        // root even when the filter declines to return its reparse payload.
+        if code == 0x8007_0000_u32 | ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE.0 {
+            return Ok((
+                Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS),
+                identity,
+            ));
         }
         return Err(NativeMountError::Driver(error.to_string()));
     }
