@@ -43,6 +43,9 @@ pub enum Error {
     /// The transport failed without a valid canonical Objects error detail.
     #[error("Objects transport failed: {0}")]
     Transport(tonic::Status),
+    /// The selected object bytes exceed the caller's allocation bound.
+    #[error("object body exceeds requested bound")]
+    ReadLimitExceeded,
     /// A successful response violated the versioned protocol contract.
     #[error("invalid Objects protocol response: {0}")]
     Protocol(&'static str),
@@ -1115,7 +1118,7 @@ async fn get_from(
         }
     };
     if remaining > options.maximum_bytes {
-        return Err(Error::Protocol("object body exceeds requested bound"));
+        return Err(Error::ReadLimitExceeded);
     }
     Ok(StoredObject {
         version,
@@ -1262,6 +1265,7 @@ fn provider_target(target: crate::ReadTarget) -> wire::ReadTarget {
 
 fn provider_error(error: Error) -> crate::ObjectsError {
     match error {
+        Error::ReadLimitExceeded => crate::ObjectsError::Capacity,
         Error::Rejected { code, .. } => match code {
             wire::ErrorCode::InvalidArgument => {
                 crate::ObjectsError::Invalid("service rejected the request")
@@ -1390,9 +1394,6 @@ impl crate::ObjectsProvider for Client {
         .await
         .map_err(provider_error)?;
         let version = object.version.clone();
-        if object.remaining > request.maximum_bytes {
-            return Err(crate::ObjectsError::Capacity);
-        }
         let capacity =
             usize::try_from(object.remaining).map_err(|_| crate::ObjectsError::Capacity)?;
         let mut body = Vec::with_capacity(capacity);
@@ -1961,8 +1962,27 @@ mod tests {
             bucket
                 .get("object", GetOptions::default().maximum_bytes(2))
                 .await,
-            Err(Error::Protocol("object body exceeds requested bound"))
+            Err(Error::ReadLimitExceeded)
         ));
+        assert_eq!(
+            crate::ObjectsProvider::get(
+                &client,
+                crate::GetRequest {
+                    target: crate::ReadTarget::Bucket(wire::BucketRef {
+                        bucket_id: bucket.id().to_owned(),
+                        name: bucket.name().to_owned(),
+                    }),
+                    object_key: "object".into(),
+                    version_id: None,
+                    range: None,
+                    if_match: None,
+                    if_none_match: None,
+                    maximum_bytes: 2,
+                }
+            )
+            .await,
+            Err(crate::ObjectsError::Capacity),
+        );
         {
             let requests = object_requests
                 .lock()
