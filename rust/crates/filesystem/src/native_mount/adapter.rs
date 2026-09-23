@@ -2479,6 +2479,26 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn native_driver_callback_uses_a_fresh_stack() -> Result<(), Box<dyn std::error::Error>> {
+        let callback = CallbackRuntime::create()?;
+        let observed = std::thread::Builder::new()
+            .name("native-driver".to_owned())
+            .spawn(move || {
+                callback.block_on(|| async {
+                    std::thread::current()
+                        .name()
+                        .unwrap_or("unnamed")
+                        .to_owned()
+                })
+            })?
+            .join()
+            .map_err(|_| "native callback panicked")??;
+        assert_eq!(observed, "acyclic-fs-callback");
+        Ok(())
+    }
+
     #[test]
     fn publication_policies_are_exact_and_subtree_roots_do_not_scan_or_escape()
     -> Result<(), Box<dyn std::error::Error>> {

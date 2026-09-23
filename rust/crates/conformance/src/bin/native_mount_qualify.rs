@@ -1376,7 +1376,12 @@ fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> Result<(), F
             .replace([' ', '\n'], "")
             .to_ascii_lowercase();
         if !read.status.success() || encoded != "7265736f757263652d666f726b" {
-            return Err("resource fork round trip through NFS was not exact".into());
+            return Err(format!(
+                "resource fork round trip through NFS was not exact: status={} hex={encoded:?} stderr={}",
+                read.status,
+                String::from_utf8_lossy(&read.stderr)
+            )
+            .into());
         }
         let source = mount.join("nested/toolchain.c");
         let binary = mount.join("nested/toolchain");
