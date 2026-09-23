@@ -1,14 +1,14 @@
 # Fork/join engine bugs found porting to Pydantic AI
 
-Branch: `pydantic-fork-join` (uncommitted). Platform verified: macOS (darwinfuse NFS mount). Linux: not verified.
+Branch: `hotfix/fork-join-merge-semantics` (PR #124). Verified on macOS (darwinfuse NFS mount) and Linux (FUSE, Docker `rust:1.94.0-bookworm`, privileged).
 
 Test status at time of writing:
 
-| Suite | Result |
-|---|---|
-| `cargo test -p acyclic-fs --features native-mount --lib` | 897 passed, 0 failed |
-| `cargo test -p acyclic-labs-plugin` | 61 + 5 passed |
-| `plugin/packaging/pypi` (`ACYCLIC_LIVE_BIN=target/debug/acyclic pytest`) | 13 passed (10 protocol, 3 live on real mounts) |
+| Suite | macOS | Linux |
+|---|---|---|
+| `cargo test -p acyclic-fs --features native-mount --lib` | 898 passed | 902 passed |
+| `cargo test -p acyclic-labs-plugin` | 61 + 5 passed | 60 + 5 passed |
+| `plugin/packaging/pypi` (`ACYCLIC_LIVE_BIN=target/debug/acyclic pytest`) | 13 passed, 3 consecutive runs | 13 passed, 2 consecutive runs |
 
 ## Fixed
 
@@ -50,7 +50,7 @@ Test status at time of writing:
   - All forks of a root share one physical-root `DemandSource`.
   - `refresh_native_root` observes the root watcher, bumps the source epoch (`invalidate()`), then calls `rebind_source()` on the root's lazy workspace only.
   - Every fork's lazy state stays on the old epoch. `LazyWorkspace::state_measured` then returns `StaleSource` for any path the fork hasn't observed yet, and the mount maps that to ESTALE.
-- **Fix:** `refresh_native_root` also rebinds every route on that root (`plugin/src/main.rs`).
+- **Fix:** `refresh_native_root` rebinds every route on that root (`plugin/src/main.rs`). That only narrowed a race: mount callbacks run concurrently with the refresh. The complete fix is in `LazyWorkspace` (`follow_source_epoch`): a view bound to an older epoch of the same source adopts the current one on access instead of failing.
 - **Tests:** plugin `forks_follow_the_shared_root_source_across_a_refresh` (fails with `StaleSource` without the fix); live end-to-end test.
 
 ### 4b. `merge --abort` after a conflict leaves the parent stuck
@@ -64,6 +64,38 @@ Test status at time of writing:
 - **Fix:** `adjust_link_counts` in `kernel/merge.rs` drops a record only the other side added when it ends up with no bindings.
 - **Test (covers 4b and 4c):** `multi_root::tests::aborting_a_conflict_that_changed_no_target_path_succeeds`. Also verified live: after conflict + abort, the parent is restored, the loser discards, and the next merge applies.
 
+### 4d. Linux: the first command after start fails ("service did not become ready")
+- **Symptom:** in Docker, `SessionStart` failed with `service is not running through either Linux control transport`; the next call worked.
+- **Root cause:** not a crash. Every invocation SHA-256-hashes its own executable to name the service. The Linux debug binary is 335 MB, and unoptimized `sha2` took ~22 s, longer than the client's readiness wait.
+- **Fix:** `sha2` and `blake3` compile with `opt-level = 3` in dev builds (workspace `Cargo.toml`). A cold start takes 2 s.
+
+### 4e. Linux: creating a file in a directory made inside a fork returns EIO
+- **Root cause:** the lazy source observes a path's parent with an inotify watch. A directory that exists only in the fork is absent from the physical root, and `watch_directory` turned that ENOENT into `native watcher I/O failed`.
+- **Fix:** `watch.rs` watches the deepest existing ancestor instead; the directory's later creation is reported there.
+- **Test:** `watch::tests::linux_demand_watch_accepts_directories_absent_from_the_source` (fails with the original ENOENT without the fix).
+
+### 4f. Linux: stopping a fork wedged the whole service
+- **Symptom:** the service stopped answering. Later calls failed with `service lock is held without a reachable endpoint`, and the fork's mount stayed attached.
+- **Root cause:** `FuseSession::stop` relied on `fuser` unmounting on drop. `fuser` swallows unmount failures, and `join` then waits forever for a request loop that ends only on unmount. The mount was busy because the binding sent `SubagentStop` with its cwd inside the fork's own mount.
+- **Fix:**
+  - `fuse.rs` unmounts explicitly before joining: it retries on EBUSY, then detaches lazily (or uses `fusermount3 -u`/`-uz` when unprivileged), then aborts the FUSE connection via `/sys/fs/fuse/connections/<id>/abort`, so a held mount can't block `join`.
+  - The binding sends `SubagentStop` from the parent's directory.
+- **Result:** unmount went from 8.6 s (after a client timeout) to 0 ms.
+
+### 4g. Observability
+- **Service log:** the service's stderr goes to `/dev/null`, so every failure above reached users as a bare errno. The service now writes JSON lines to `<state>/service.log` (`acyclic_fs::diagnostics`, bounded at 16 MiB with one rotation, `ACYCLIC_LOG_LEVEL=error|warn|info|debug`).
+- **What it records:**
+  - every control request (hook or CLI command, cwd, lock wait, duration, outcome)
+  - every mount callback error with its errno, on both drivers
+  - stale-source and checkout-rebase conflicts behind ESTALE
+  - mount and unmount timings
+  - aborted busy mounts
+  - root refreshes (epochs, forks rebound)
+  - inherited paths filtered at merge
+  - removed AppleDouble files
+- **Client errors:** these now name the log file.
+- **Test:** `diagnostics::tests::events_are_json_lines_with_escaped_fields`.
+
 ### 5. `._*` AppleDouble files merged as agent work (macOS)
 - **Symptom:** `._retries.py` lands in the repo. `changedPaths` includes `._*` files, which skews speculation's "fewest changes" choice.
 - **Root cause:** the macOS NFS client stores xattrs it can't send to the server as `._name` files. Adding the `namedattr` mount option (`darwinfuse.c`) didn't change that.
@@ -74,11 +106,6 @@ Test status at time of writing:
 `result.usage` is a property in pydantic-ai 2.48, not a method. A speculation check could merge its own artifacts; checks now run in a throwaway grandchild fork.
 
 ## Open
-
-### B. Linux: `acyclic __service` exits immediately (high)
-- **Environment:** Docker `rust:1.94.0-bookworm`, `--privileged --device /dev/fuse`, as root and as a normal user.
-- **Detail:** the control mailbox is under `/tmp/acyclic-<uid>`. The service's stderr is sent to `Stdio::null()` (`native-runtime/src/lib.rs:262,277`), so there is no diagnostic. None of the fixes above have been run on Linux.
-- **Next step:** run `__service` in the foreground and route its stderr to a log.
 
 ### C. Forks aren't isolated from later root changes (medium, design)
 - A fork reads the live physical root, so files merged into the root after the fork was created show up in it (repro: sibling `c.py` listed in fork `b`).

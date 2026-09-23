@@ -6,6 +6,7 @@ use acyclic_fs::demand::native::NativeDemandSource;
 use acyclic_fs::demand::{
     DemandDirectoryObserver, DemandSource, FilteredDemandSource, SourceReference,
 };
+use acyclic_fs::diagnostics::Level;
 use acyclic_fs::kernel::{FileKind, NameEncoding, NamespacePath};
 use acyclic_fs::model::{CheckoutMode, GenerationSelector, VolumeLimits};
 use acyclic_fs::native_host::HostRoot;
@@ -3816,6 +3817,22 @@ impl ControlPlane {
             }
             inherited.sort();
             inherited.dedup();
+            if !inherited.is_empty() {
+                acyclic_fs::diag!(
+                    Level::Info,
+                    "merge",
+                    "inherited_paths_filtered",
+                    agent = agent,
+                    parent = caller,
+                    count = inherited.len(),
+                    paths = inherited
+                        .iter()
+                        .take(32)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+            }
             for path in inherited {
                 // Source-only: records a tombstone, never an authored removal.
                 match lazy_source.remove_if(&path, None).await {
@@ -4416,7 +4433,13 @@ impl ControlPlane {
             };
             if std::fs::symlink_metadata(path.with_file_name(companion_of)).is_ok() {
                 match std::fs::remove_file(&path) {
-                    Ok(()) => {}
+                    Ok(()) => acyclic_fs::diag!(
+                        Level::Debug,
+                        "mount",
+                        "appledouble_removed",
+                        agent = route.agent_id,
+                        path = relative,
+                    ),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(format!("cannot remove {}: {error}", path.display())),
                 }
@@ -4432,9 +4455,28 @@ impl ControlPlane {
             return Err("injected mount teardown failure".to_owned());
         }
         if let Some(mount) = self.mounts.get(agent_id) {
+            let started = std::time::Instant::now();
             mount.sync().await.map_err(display)?;
-            mount.unmount().await.map_err(display)?;
+            let synced_ms = started.elapsed().as_millis();
+            mount.unmount().await.map_err(|error| {
+                acyclic_fs::diag!(
+                    Level::Error,
+                    "mount",
+                    "unmount_failed",
+                    agent = agent_id,
+                    error = error
+                );
+                display(error)
+            })?;
             self.mounts.remove(agent_id);
+            acyclic_fs::diag!(
+                Level::Info,
+                "mount",
+                "unmounted",
+                agent = agent_id,
+                sync_ms = synced_ms,
+                total_ms = started.elapsed().as_millis(),
+            );
         }
         Ok(())
     }
@@ -4632,7 +4674,27 @@ impl ControlPlane {
                 self.lazy_workspace_root(route, root_id).await?,
             ));
         }
-        LocalMount::mount(roots, &route.mount_path).await
+        let started = std::time::Instant::now();
+        let mounted = LocalMount::mount(roots, &route.mount_path).await;
+        match &mounted {
+            Ok(_) => acyclic_fs::diag!(
+                Level::Info,
+                "mount",
+                "mounted",
+                agent = route.agent_id,
+                path = route.mount_path.display(),
+                elapsed_ms = started.elapsed().as_millis(),
+            ),
+            Err(error) => acyclic_fs::diag!(
+                Level::Error,
+                "mount",
+                "mount_failed",
+                agent = route.agent_id,
+                path = route.mount_path.display(),
+                error = error,
+            ),
+        }
+        mounted
     }
 
     async fn refresh_native_root(&mut self, root_id: WorkspaceRootId) -> Result<(), String> {
@@ -4790,6 +4852,15 @@ impl ControlPlane {
             .filter(|route| route.roots.contains_key(&key))
             .cloned()
             .collect::<Vec<_>>();
+        acyclic_fs::diag!(
+            Level::Info,
+            "root",
+            "source_refreshed",
+            root = binding.path.display(),
+            epoch_before = observation.prior_source.epoch,
+            epoch_after = observation.source.epoch,
+            forks_rebound = forks.len(),
+        );
         for route in forks {
             self.lazy_workspace_root(&route, root_id)
                 .await?
@@ -6497,8 +6568,46 @@ async fn dispatch_control_request(
     if request.version != 1 {
         return Err("unsupported Acyclic control request".to_owned());
     }
+    let command = format!("{:?}", request.command);
+    let name = request.name.clone();
+    let argv = request.argv.join(" ");
+    let cwd = request.cwd.display().to_string();
+    acyclic_fs::diag!(
+        Level::Debug,
+        "control",
+        "request_started",
+        command = command,
+        name = name,
+        cwd = cwd,
+    );
+    let requested = std::time::Instant::now();
     let mut control = control.lock().await;
-    control.dispatch_request(request).await
+    let waited_ms = requested.elapsed().as_millis();
+    let started = std::time::Instant::now();
+    let result = control.dispatch_request(request).await;
+    let elapsed_ms = started.elapsed().as_millis();
+    let level = match (&result, command.as_str()) {
+        (Err(_), _) => Level::Error,
+        (Ok(_), "Ping") => Level::Debug,
+        (Ok(_), _) if elapsed_ms + waited_ms > 2_000 => Level::Warn,
+        (Ok(_), _) => Level::Info,
+    };
+    acyclic_fs::diag!(
+        level,
+        "control",
+        "request",
+        command = command,
+        name = name,
+        argv = argv,
+        cwd = cwd,
+        waited_ms = waited_ms,
+        elapsed_ms = elapsed_ms,
+        outcome = match &result {
+            Ok(_) => "ok".to_owned(),
+            Err(error) => error.clone(),
+        },
+    );
+    result
 }
 
 trait ControlRequestDispatcher: Send {
@@ -8355,6 +8464,17 @@ async fn run_service_with_identity(
     let Some(_lock) = acquire_service_lock(&data)? else {
         return Ok(());
     };
+    if let Err(error) = acyclic_fs::diagnostics::install(&data.join("service.log")) {
+        eprintln!("acyclic: cannot open the service log: {error}");
+    }
+    acyclic_fs::diag!(
+        Level::Info,
+        "service",
+        "started",
+        version = env!("CARGO_PKG_VERSION"),
+        data = data.display(),
+        os = std::env::consts::OS,
+    );
     let mut service = ServiceControl::open(data.clone()).await?;
     if let Some(identity) = identity_override {
         service.binary_identity = identity;
@@ -8798,9 +8918,10 @@ async fn send_linux_mailbox_request(
                 Err(error) => return Err(ControlRequestError::Transport(error.to_string())),
             }
         }
-        Err(ControlRequestError::Transport(
-            "Acyclic service did not answer the filesystem control request".to_owned(),
-        ))
+        Err(ControlRequestError::Transport(format!(
+            "Acyclic service did not answer the filesystem control request within 5s (service log: {})",
+            data.join("service.log").display()
+        )))
     }
     .await;
     let _ = fs::remove_dir_all(exchange);
@@ -9175,10 +9296,10 @@ async fn drain_service(
                 }
                 Ok(lock)
             }
-            None => Err(
-                "Acyclic service lock is held without a reachable endpoint; state was preserved"
-                    .to_owned(),
-            ),
+            None => Err(format!(
+                "Acyclic service lock is held without a reachable endpoint; state was preserved (service log: {})",
+                data.join("service.log").display()
+            )),
         },
         Err(error) => Err(format!(
             "cannot safely identify the Acyclic service: {error}"

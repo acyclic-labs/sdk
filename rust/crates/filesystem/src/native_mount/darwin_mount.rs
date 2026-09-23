@@ -1591,14 +1591,16 @@ fn errno(error: &MountSourceError) -> i32 {
     if std::env::var_os("ACYCLIC_FS_DARWIN_MOUNT_DEBUG").is_some() {
         eprintln!("acyclic-fs Darwin mount callback error: {error}");
     }
-    match error {
+    let code = match error {
         MountSourceError::NotFound => libc::ENOENT,
         MountSourceError::AlreadyExists => libc::EEXIST,
         MountSourceError::Invalid(_) => libc::EINVAL,
         MountSourceError::Unsupported(_) => libc::EOPNOTSUPP,
         MountSourceError::Engine(_) => libc::EIO,
         MountSourceError::Stale => libc::ESTALE,
-    }
+    };
+    super::report_callback_error("darwin-nfs", error, code);
+    code
 }
 
 fn source_error(error: &MountSourceError) -> NativeMountError {

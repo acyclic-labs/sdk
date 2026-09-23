@@ -996,7 +996,15 @@ impl<A, O> CheckoutMountSource<A, O> {
             .map_err(engine_error)?;
         match decision.value {
             RebaseDecision::Safe { .. } => Ok(()),
-            RebaseDecision::Conflicted { .. } => Err(MountSourceError::Stale),
+            RebaseDecision::Conflicted { .. } => {
+                crate::diag!(
+                    crate::diagnostics::Level::Warn,
+                    "mount",
+                    "checkout_rebase_conflicted",
+                    reason = "pending mount writes conflict with the new head; the callback reports ESTALE",
+                );
+                Err(MountSourceError::Stale)
+            }
         }
     }
 
@@ -1038,7 +1046,15 @@ impl<A, O> CheckoutMountSource<A, O> {
             .map_err(engine_error)?;
         match decision.value {
             RebaseDecision::Safe { .. } => Ok(()),
-            RebaseDecision::Conflicted { .. } => Err(MountSourceError::Stale),
+            RebaseDecision::Conflicted { .. } => {
+                crate::diag!(
+                    crate::diagnostics::Level::Warn,
+                    "mount",
+                    "checkout_rebase_conflicted",
+                    reason = "pending mount writes conflict with the new head; the callback reports ESTALE",
+                );
+                Err(MountSourceError::Stale)
+            }
         }
     }
 
@@ -1076,7 +1092,15 @@ impl<A, O> CheckoutMountSource<A, O> {
                     .map_err(engine_error)?;
                 match decision.value {
                     RebaseDecision::Safe { .. } => Ok(()),
-                    RebaseDecision::Conflicted { .. } => Err(MountSourceError::Stale),
+                    RebaseDecision::Conflicted { .. } => {
+                        crate::diag!(
+                            crate::diagnostics::Level::Warn,
+                            "mount",
+                            "checkout_rebase_conflicted",
+                            reason = "pending mount writes conflict with the new head; the callback reports ESTALE",
+                        );
+                        Err(MountSourceError::Stale)
+                    }
                 }
             }
             Err(failure) => Err(engine_error(failure)),

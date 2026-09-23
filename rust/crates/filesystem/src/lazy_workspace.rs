@@ -2846,16 +2846,40 @@ where
             .await
             .map_err(store_error)?
             .ok_or_else(|| LazyWorkspaceError::Store("lazy binding is absent".to_owned()))?;
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source != self.source.reference()
-        {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
+        let state = self.follow_source_epoch(state).await?;
         if state.pending_remove.is_some() {
             return Err(LazyWorkspaceError::Concurrent);
         }
         Ok(state)
+    }
+
+    /// Every view of one physical root shares its source, and a refresh of
+    /// that root advances the source epoch for all of them at once. A view
+    /// still bound to an earlier epoch of the same source adopts the current
+    /// one (as [`Self::rebind_source`] does) instead of failing: otherwise a
+    /// fork racing the refresh sees every unobserved path as stale.
+    async fn follow_source_epoch(
+        &self,
+        state: LazyWorkspaceState,
+    ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
+        if state.schema_version != LAZY_STATE_SCHEMA || state.workspace_id != self.workspace.id() {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        let live = self.source.reference();
+        if state.source == live {
+            return Ok(state);
+        }
+        if state.source.identity != live.identity || state.source.epoch > live.epoch {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        crate::diag!(
+            crate::diagnostics::Level::Debug,
+            "lazy",
+            "source_epoch_followed",
+            from = state.source.epoch,
+            to = live.epoch,
+        );
+        self.rebind_source().await
     }
 
     async fn state_measured(
@@ -2870,12 +2894,7 @@ where
         let state = receipt
             .value
             .ok_or_else(|| LazyWorkspaceError::Store("lazy binding is absent".to_owned()))?;
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source != self.source.reference()
-        {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
+        let state = self.follow_source_epoch(state).await?;
         if state.pending_remove.is_some() {
             return Err(LazyWorkspaceError::Concurrent);
         }
@@ -4449,10 +4468,9 @@ mod tests {
         root.stat("/observed.txt").await.expect("observe");
         let before = root.snapshot().await.expect("snapshot before rebind");
         source.invalidate();
-        assert!(matches!(
-            root.stat("/new.txt").await,
-            Err(LazyWorkspaceError::StaleSource)
-        ));
+        // A view bound to an earlier epoch of the same source follows the
+        // current one on its next access instead of failing as stale.
+        root.stat("/new.txt").await.expect("follows the new epoch");
         let rebound = root.rebind_source().await.expect("rebind");
         assert_eq!(rebound.source, source.reference());
         assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
@@ -4465,7 +4483,8 @@ mod tests {
         );
         let after = root.snapshot().await.expect("snapshot after refresh");
         assert_ne!(after, before);
-        assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 2);
+        // `/observed.txt` twice (once per epoch) and `/new.txt` once.
+        assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 3);
     }
 
     #[tokio::test]

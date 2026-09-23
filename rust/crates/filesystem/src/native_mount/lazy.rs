@@ -1211,6 +1211,14 @@ fn field<T>(value: Option<T>) -> MetadataField<T> {
 
 #[allow(clippy::needless_pass_by_value)]
 fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
+    if matches!(error, LazyWorkspaceError::StaleSource) {
+        crate::diag!(
+            crate::diagnostics::Level::Warn,
+            "mount",
+            "stale_source",
+            reason = "this view's source epoch is behind the shared physical root; it was not rebound after a refresh",
+        );
+    }
     match error {
         LazyWorkspaceError::NotFound => MountSourceError::NotFound,
         LazyWorkspaceError::NotRegularFile | LazyWorkspaceError::InvalidPageBound => {

@@ -224,7 +224,10 @@ class Workspace:
         """Freeze this child. Its parent can then merge or discard it."""
         if self.agent_id is None or self.state != "running":
             return
-        await self.session.engine.hook("SubagentStop", self._base(agent_id=self.agent_id), self.path)
+        # Never from inside the child's own mount: stopping unmounts it, and a
+        # hook process whose cwd is in the mount would hold it busy.
+        where = self.parent.path if self.parent is not None else self.session.repo
+        await self.session.engine.hook("SubagentStop", self._base(agent_id=self.agent_id), where)
         self.state = "stopped"
 
     async def changes(self) -> list[str]:

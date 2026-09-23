@@ -71,6 +71,7 @@ pub mod compat_wire;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub mod core_state;
 pub mod demand;
+pub mod diagnostics;
 #[cfg(feature = "distributed")]
 pub mod distributed;
 mod distributed_fs;

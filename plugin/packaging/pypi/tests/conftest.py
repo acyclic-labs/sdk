@@ -17,11 +17,15 @@ from pathlib import Path
 import pytest
 
 FAKE = r'''#!PYTHON
-import json, os, shutil, sys
+import fcntl, json, os, shutil, sys
 from pathlib import Path
 
 state_dir = Path(os.environ["FAKE_ACYCLIC_STATE"])
 state_file = state_dir / "state.json"
+# Like the real service, one invocation at a time: concurrent tool calls must
+# not read a half-written state or lose each other's updates.
+_serial = open(state_dir / "lock", "w")
+fcntl.flock(_serial, fcntl.LOCK_EX)
 state = json.loads(state_file.read_text()) if state_file.exists() else {"routes": {}, "pending": []}
 argv = sys.argv[1:]
 stdin = sys.stdin.read() if argv[:1] == ["__hook"] else ""
