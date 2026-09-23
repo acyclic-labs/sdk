@@ -2,7 +2,7 @@
 
 Ships Launch 1 (`01-rewind.md`): auto-checkpoint every agent action, `/rewind`, agent self-rollback, blast-radius diff.
 
-The engine is imported, not built: `acyclic-fs` + `acyclic-fs-mount` via path deps on `../fs`. This repo adds the daemon, CLI, metadata index, and the Claude Code adapter. Phase 0 already qualified the engine — verdict in [phase0-verdict.md](phase0-verdict.md).
+The engine is imported, not built: `acyclic-fs` (historically also `acyclic-fs-mount`, via path deps on a sibling `../fs` checkout; today a path dependency on `rust/crates/filesystem` in the same sdk workspace). This repo adds the daemon, CLI, metadata index, and the Claude Code adapter. Phase 0 already qualified the engine — verdict in [phase0-verdict.md](phase0-verdict.md).
 
 ## The three rules Phase 0 established
 
@@ -90,7 +90,7 @@ Single-file restore (`rewind --path`): copy the one file out of the target check
 
 **Exit gate:** the Maya journey from `01-rewind.md` scripted end-to-end on both OSes, and CI asserts warm-daemon `checkpoint` round-trip <100ms p95 on the 1 GiB corpus.
 
-**Status: gate met on macOS** (2026-08-31). `tests/acceptance/`: journey (checkpoints, diff, rewind selectors, cross-session persistence, hook contract), capture-fidelity soak (the test class that caught the FSEvents coalescing bug), crash matrix (kill -9 + mid-swap journal recovery), latency gate (**p95 7.8ms** enqueue-ack round trip on 20k files, budget 100ms). CI workflow runs the suite on macos-14 + ubuntu-24.04; Linux green pending the first CI run (`FS_CHECKOUT_TOKEN` secret required for the sibling fs checkout).
+**Status: gate met on macOS** (2026-08-31). `tests/acceptance/`: journey (checkpoints, diff, rewind selectors, cross-session persistence, hook contract), capture-fidelity soak (the test class that caught the FSEvents coalescing bug), crash matrix (kill -9 + mid-swap journal recovery), latency gate (**p95 7.8ms** enqueue-ack round trip on 20k files, budget 100ms). CI workflow runs the suite on macos-14 + ubuntu-24.04; Linux went green in the first CI run; the sibling-checkout token that note once required is gone with the move into the sdk workspace.
 
 ---
 
@@ -135,7 +135,7 @@ Still open, by decision: the public name (`acyclic` vs graphcoder), and cutting 
 
 # Coordination with `fs` (being fixed upstream)
 
-Two local, uncommitted patches in `../fs/crates/mount` are **release blockers** — fold them in upstream:
+Historical (2026-08): two local, uncommitted patches in the then-sibling `../fs/crates/mount` were release blockers; both were upstreamed. Kept for the record:
 
 | Patch | Where | Why |
 |---|---|---|

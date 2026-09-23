@@ -75,8 +75,9 @@ case "$lane" in
     fi
     python3 scripts/test-crate-publication.py
     python3 scripts/test-npm-publication.py
+    python3 scripts/test-plugin-publication.py
     bash -n scripts/prepare-crate-publication.sh scripts/prepare-npm-publication.sh \
-      scripts/check-typescript-packages.sh
+      scripts/prepare-plugin-publication.sh scripts/check-typescript-packages.sh
 
     # acyclic CLI plugin (plugin/): the release binary the acceptance suite
     # drives is retained as this lane's qualified artifact, so it is built
@@ -158,6 +159,7 @@ case "$lane" in
     (cd plugin && bash scripts/check-product-name.sh)
     (cd plugin && JSCPD="bun x jscpd@4.3.0" bash scripts/check-code-quality.sh)
     bash -n plugin/scripts/*.sh plugin/tests/acceptance/*.sh plugin/packaging/npm/*.sh
+    bash scripts/check-agent-docs.sh
     ;;
   web)
     bash scripts/ensure-rust-target.sh wasm32-unknown-unknown

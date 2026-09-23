@@ -46,7 +46,7 @@ Second load-bearing constraint, from compliance: **purge-through-history and sna
 
 1. **Launch 1 collides with native host features.** Claude Code ships its own checkpoint/rewind. Differentiation must be the headline, not fine print: we capture what Bash did (installs, migrations, generated files), untracked/gitignored state, cross-session persistence, cross-host consistency — and checkpoints become forks. Expect hosts to keep commoditizing the basic rewind; the moat is the Merkle/CoW engine and Launches 3/5.
 2. **Unverified host-API assumptions** — validate before public promises: (a) transparent tool interception for indexed search (hook rewrite limits differ per host); (b) session redirection for dry-run (path display, git status confusion); (c) checkpoint alignment in hosts without lifecycle hooks.
-3. **Naming**: repo is `graphcoder-plugin`, CLI is `acyclic`, and Graphcoder is a different product on the roadmap. Resolve before launch.
+3. **Naming**: resolved. The CLI is `acyclic` and the code lives at `plugin/` in the `acyclic-labs/sdk` repository; Graphcoder is a different product on the roadmap.
 
 ## Settled since this was written
 
@@ -58,8 +58,8 @@ Second load-bearing constraint, from compliance: **purge-through-history and sna
 
 1. **Git relationship**: invisible layer (own store, never touches git state) vs. git-integrated (hidden refs) vs. designed-to-replace-git. Current lean: invisible layer for v1. Note two read-side couplings that already exist and complicate "invisible": `.git` is captured but filtered out of blast-radius diffs, and merge shells out to `git check-ignore`.
 2. **Cloud tether**: zero cloud vs. account+telemetry vs. optional snapshot backup. The code currently has *no* network surface at all, so "zero cloud" is the de facto state rather than a choice that was made.
-3. **Naming**: repo is `graphcoder-plugin`, CLI is `acyclic`, and Graphcoder is a different product on the roadmap. Still unresolved.
-4. **Repo visibility** — this repo is private while its `acyclic-fs` dependency is public, which blocks the curl installer, the attestations, and the open-source claim. Carried in `06-installation.md` and `07-compliance.md`; it belongs at overview level because it gates positioning, not just packaging.
+3. **Naming**: resolved by the move into `acyclic-labs/sdk` (see above).
+4. **Repo visibility** — resolved by the same move: the plugin now ships from the public sdk repository, so the curl installer, the attestations and the open-source claim all hold. `06-installation.md` and `07-compliance.md` keep the historical reasoning.
 5. **The upstream retention dependency.** GC, purge and enforced retention all wait on an `acyclic-fs` retention-release fact that does not exist. This is the single largest gap between the compliance story and the code, and it is not ours to close.
 6. **Degrade or refuse without a mount provider.** Forks silently fall back to full copies; Safe Mode refuses to start. A repo with `dry_run = true` checked in therefore runs against the real tree on a host without mounts. Which of those two behaviours is right has never been decided as a policy.
 7. **What remains unvalidated at scale.** Store performance on a real 10GB tree is still the first thing to validate, as it was when this doc was written. The latency gate runs 20k files / 256 MB, and `init` baseline capture runs ~230 s/GiB.
