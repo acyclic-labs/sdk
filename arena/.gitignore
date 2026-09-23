@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-test/
+*.tsbuildinfo
+.venv/
+.env
+__pycache__/
+*.egg-info/
+.pytest_cache/
+*.jsonl
+!evals/gate/cases.jsonl
+!evals/gate/gate.jsonl

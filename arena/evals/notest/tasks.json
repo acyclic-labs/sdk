@@ -1,0 +1,8 @@
+[
+  {"kind": "error message", "task": "In shop.py, Cart.remove() raises a bare KeyError when the sku is missing. Raise a KeyError with a clear message that names the sku and says it is not in the cart. Change nothing else."},
+  {"kind": "naming",        "task": "In shop.py the loop variable `it` in cheapest() and the parameter `items` are unclear. Rename them to something clearer without changing behaviour. Change nothing else."},
+  {"kind": "docs",          "task": "Write a module-level docstring at the top of shop.py, 3 to 5 lines, explaining what the module is for and its main types. Change nothing else."},
+  {"kind": "readability",   "task": "subtotal_cents() in shop.py uses a manual accumulator loop. Rewrite it in the most readable idiomatic Python you can, with identical behaviour. Change nothing else."},
+  {"kind": "type hints",    "task": "Add precise type hints to every function in shop.py that lacks them (cheapest, and the Cart.lines field). Do not change behaviour."},
+  {"kind": "log message",   "task": "Add a single logging.debug call in apply_discount() in shop.py that records the input cents, the percent, and the result, using the standard logging module with a module-level logger. Change nothing else."}
+]

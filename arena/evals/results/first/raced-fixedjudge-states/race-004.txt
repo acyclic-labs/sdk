@@ -1,0 +1,46 @@
+Task:
+Cart.remove() in shop.py raises KeyError for a sku not in the cart. Make it a no-op in that case.
+
+=== fork A (deepseek/deepseek-v4-flash)
+Changed paths: 1
+  M shop.py
+--- a/shop.py
++++ b/shop.py
+@@ -17,7 +17,7 @@
+         self.lines[item.sku] = self.lines.get(item.sku, 0) + qty
+ 
+     def remove(self, sku: str) -> None:
+-        del self.lines[sku]
++        self.lines.pop(sku, None)
+ 
+     def count(self) -> int:
+         return sum(self.lines.values())
+Test output:
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+OK
+
+=== fork B (anthropic/claude-sonnet-5)
+Changed paths: 1
+  M shop.py
+--- a/shop.py
++++ b/shop.py
+@@ -17,7 +17,7 @@
+         self.lines[item.sku] = self.lines.get(item.sku, 0) + qty
+ 
+     def remove(self, sku: str) -> None:
+-        del self.lines[sku]
++        self.lines.pop(sku, None)
+ 
+     def count(self) -> int:
+         return sum(self.lines.values())
+Test output:
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+OK
+
+=== verdict
+fork A (deepseek/deepseek-v4-flash): pWin 0.00 safe 0.90 complete 1.00 tests true
+fork B (anthropic/claude-sonnet-5): pWin 0.00 safe 0.90 complete 1.00 tests true
