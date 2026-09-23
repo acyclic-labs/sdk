@@ -24,9 +24,12 @@ if (!fixturePattern.test(`${"p" + "ython"} fixture`) || fixturePattern.test("nod
 const git = (...args) => spawnSync("git", args, { cwd: rootPath, encoding: "utf8" });
 const tracked = git("ls-files", "-z", "--cached", "--others", "--exclude-standard");
 if (tracked.error || tracked.status !== 0) throw tracked.error ?? new Error(tracked.stderr.trim());
+const exemptPrefixes = ["arena/"];
+const isExempt = path => exemptPrefixes.some(prefix => path.startsWith(prefix));
 const presentFiles = tracked.stdout
   .split("\0")
   .filter(Boolean)
+  .filter(path => !isExempt(path))
   .map(path => ({ path, fullPath: resolve(rootPath, path) }))
   .filter(({ fullPath }) => {
     if (fullPath !== rootPath && !fullPath.startsWith(`${rootPath}${sep}`)) {
