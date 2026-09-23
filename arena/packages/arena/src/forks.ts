@@ -2,7 +2,6 @@
  *  Without acyclic, plain git worktrees do the same job with a copy per fork and a patch on promote,
  *  so the rest of the acyclic sdk is optional. */
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { tmpdir } from "node:os";
@@ -55,12 +54,12 @@ const statusPaths = (cwd: string): string[] => {
   return out;
 };
 
-/** The file's git blob id ("blob <size>\0<bytes>" under SHA-1), so it compares directly with `HEAD:<path>`. */
-const fileSha = (path: string): string | null => {
+/** The file's blob id in the repository's own object format (SHA-1 or SHA-256), so it compares directly
+ *  with `HEAD:<path>`. "dir" for a directory, null for a missing file. */
+const fileSha = (repo: string, path: string): string | null => {
   try {
-    const st = statSync(path); if (st.isDirectory()) return "dir";
-    const bytes = readFileSync(path);
-    return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+    if (statSync(path).isDirectory()) return "dir";
+    return git(repo, ["hash-object", "--", path]).trim() || null;
   } catch { return null; }
 };
 
@@ -91,7 +90,7 @@ export class GitForker implements Forker {
     this.root ??= mkdtempSync(join(tmpdir(), "arena-wt-"));
     this.basePaths = new Set(statusPaths(this.repo));
     this.baseHead = head;
-    this.baseShas = new Map([...this.basePaths].map((p) => [p, fileSha(join(this.repo, p))]));
+    this.baseShas = new Map([...this.basePaths].map((p) => [p, fileSha(this.repo, join(this.repo, p))]));
     const forks: Fork[] = [];
     for (let i = 0; i < n; i++) {
       const id = `${head.slice(0, 6)}${i}${Date.now().toString(36).slice(-4)}`;
@@ -139,7 +138,7 @@ export class GitForker implements Forker {
   promote(f: Fork, paths?: string[]): string {
     const changes = (paths && paths.length ? paths : this.diff(f).map((c) => c.path)).filter((p) => !this.excluded(p));
     const conflicts = changes.filter((rel) => {
-      const now = fileSha(join(this.repo, rel));
+      const now = fileSha(this.repo, join(this.repo, rel));
       if (now === "dir") return false;
       return now !== this.baseShaAtFork(rel);
     });
