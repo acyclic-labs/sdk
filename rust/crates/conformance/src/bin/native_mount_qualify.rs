@@ -1339,11 +1339,19 @@ fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> Result<(), F
             .into());
         }
         let read = Command::new("/usr/bin/xattr")
-            .args(["-p", "com.acyclic.qualifier"])
+            .args(["-px", "com.acyclic.qualifier"])
             .arg(metadata)
             .output()?;
-        if !read.status.success() || read.stdout != b"xattr-value" {
-            return Err("xattr round trip through NFS was not exact".into());
+        let encoded = String::from_utf8_lossy(&read.stdout)
+            .replace([' ', '\n'], "")
+            .to_ascii_lowercase();
+        if !read.status.success() || encoded != "78617474722d76616c7565" {
+            return Err(format!(
+                "xattr round trip through NFS was not exact: status={} hex={encoded:?} stderr={}",
+                read.status,
+                String::from_utf8_lossy(&read.stderr)
+            )
+            .into());
         }
         let resource = Command::new("/usr/bin/xattr")
             .args([

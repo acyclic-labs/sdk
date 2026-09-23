@@ -19,14 +19,13 @@ use crate::{
     OperationId, VolumeId, WorkBudget,
 };
 use bytes::Bytes;
-use std::cell::Cell;
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -46,43 +45,6 @@ pub(super) struct CallbackRuntime {
 }
 
 static CALLBACK_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
-
-thread_local! {
-    static IN_NATIVE_CALLBACK: Cell<bool> = const { Cell::new(false) };
-    static CALLBACK_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
-}
-
-struct CallbackScope;
-
-impl CallbackScope {
-    fn enter() -> Self {
-        IN_NATIVE_CALLBACK.with(|active| {
-            debug_assert!(!active.get());
-            active.set(true);
-        });
-        Self
-    }
-}
-
-impl Drop for CallbackScope {
-    fn drop(&mut self) {
-        IN_NATIVE_CALLBACK.with(|active| active.set(false));
-    }
-}
-
-struct CallbackDeadlineScope(Option<Instant>);
-
-impl CallbackDeadlineScope {
-    fn enter(deadline: Option<Instant>) -> Self {
-        Self(CALLBACK_DEADLINE.with(|current| current.replace(deadline)))
-    }
-}
-
-impl Drop for CallbackDeadlineScope {
-    fn drop(&mut self) {
-        CALLBACK_DEADLINE.with(|current| current.set(self.0));
-    }
-}
 
 impl CallbackRuntime {
     pub(super) fn create() -> Result<Self, NativeMountError> {
@@ -107,12 +69,6 @@ impl CallbackRuntime {
         F: Future,
         F::Output: Send,
     {
-        // Only a callback that re-enters on the same driver thread needs a
-        // fresh stack. The common path runs on its existing native thread.
-        if IN_NATIVE_CALLBACK.with(Cell::get) {
-            return self.block_on_worker(create);
-        }
-        let _scope = CallbackScope::enter();
         match tokio::runtime::Handle::try_current() {
             Ok(current)
                 if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
@@ -122,9 +78,15 @@ impl CallbackRuntime {
                 }))
             }
             Ok(_) => self.block_on_worker(create),
-            // A native callback thread can enter the shared reactor directly;
-            // re-entry is detected above and moved to a fresh stack.
+            // FUSE callbacks are driver-owned and non-recursive, so Linux can
+            // enter the shared runtime without allocating a helper thread.
+            #[cfg(target_os = "linux")]
             Err(_) => Ok(self.handle.block_on(create())),
+            // ProjFS and loopback NFS may synchronously re-enter while a
+            // callback is being serviced. Keep the scoped boundary there to
+            // prevent callback recursion from exhausting the driver stack.
+            #[cfg(not(target_os = "linux"))]
+            Err(_) => self.block_on_worker(create),
         }
     }
 
@@ -136,15 +98,10 @@ impl CallbackRuntime {
         F: Future,
         F::Output: Send,
     {
-        let deadline = CALLBACK_DEADLINE.with(Cell::get);
         std::thread::scope(|scope| {
             let worker = std::thread::Builder::new()
                 .name("acyclic-fs-callback".to_owned())
-                .spawn_scoped(scope, || {
-                    let _scope = CallbackScope::enter();
-                    let _deadline = CallbackDeadlineScope::enter(deadline);
-                    self.handle.block_on(create())
-                })
+                .spawn_scoped(scope, || self.handle.block_on(create()))
                 .map_err(|error| MountSourceError::Engine(error.to_string()))?;
             match worker.join() {
                 Ok(value) => Ok(value),
@@ -157,23 +114,8 @@ impl CallbackRuntime {
         &self,
         create: impl FnOnce() -> F + Send,
     ) -> Result<T, MountSourceError> {
-        self.wait_with_timeout(CALLBACK_TIMEOUT, create)
-    }
-
-    fn wait_with_timeout<T: Send, F: Future<Output = Result<T, MountSourceError>>>(
-        &self,
-        timeout: Duration,
-        create: impl FnOnce() -> F + Send,
-    ) -> Result<T, MountSourceError> {
-        let requested = Instant::now() + timeout;
-        let deadline = CALLBACK_DEADLINE.with(|current| {
-            current
-                .get()
-                .map_or(requested, |parent| parent.min(requested))
-        });
-        let _deadline = CallbackDeadlineScope::enter(Some(deadline));
         self.block_on(|| async {
-            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), create())
+            tokio::time::timeout(CALLBACK_TIMEOUT, create())
                 .await
                 .map_err(|_| MountSourceError::Stale)?
         })?
@@ -2515,6 +2457,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn callback_runtime_enters_directly_from_native_driver_threads()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2533,42 +2476,6 @@ mod tests {
             .map_err(|_| "native driver callback panicked")??;
 
         assert_eq!(observed, "native-driver");
-        Ok(())
-    }
-
-    #[test]
-    fn reentrant_native_callback_uses_a_fresh_stack() -> Result<(), Box<dyn std::error::Error>> {
-        let callback = CallbackRuntime::create()?;
-        let nested = callback.clone();
-        let observed = std::thread::Builder::new()
-            .name("native-driver".to_owned())
-            .spawn(move || {
-                callback.block_on(|| async {
-                    nested.block_on(|| async {
-                        std::thread::current()
-                            .name()
-                            .unwrap_or("unnamed")
-                            .to_owned()
-                    })
-                })
-            })?
-            .join()
-            .map_err(|_| "reentrant native callback panicked")???;
-        assert_eq!(observed, "acyclic-fs-callback");
-        Ok(())
-    }
-
-    #[test]
-    fn reentrant_callback_inherits_the_outer_deadline() -> Result<(), Box<dyn std::error::Error>> {
-        let callback = CallbackRuntime::create()?;
-        let nested = callback.clone();
-        let started = Instant::now();
-        let timed_out = callback.wait_with_timeout(Duration::from_millis(30), || async {
-            nested.wait(|| std::future::pending::<Result<(), MountSourceError>>())
-        });
-        assert!(matches!(timed_out, Err(MountSourceError::Stale)));
-        assert!(started.elapsed() < Duration::from_secs(1));
-        assert_eq!(callback.wait(|| async { Ok(7) })?, 7);
         Ok(())
     }
 
