@@ -193,6 +193,24 @@ impl CheckoutDependencies {
         self.captured.clear();
     }
 
+    /// Drops pure observations of exactly these regions; a region also
+    /// relied on by a pending mutation keeps that mutation dependency.
+    pub(crate) fn forget_observations(&mut self, regions: &[DependencyRegion]) {
+        for region in regions {
+            match self.captured.get_mut(region).map(|state| state.usage) {
+                Some(DependencyUse::Observation) => {
+                    self.captured.remove(region);
+                }
+                Some(DependencyUse::ObservationAndMutation) => {
+                    if let Some(state) = self.captured.get_mut(region) {
+                        state.usage = DependencyUse::Mutation;
+                    }
+                }
+                Some(DependencyUse::Mutation) | None => {}
+            }
+        }
+    }
+
     pub(crate) fn clear_mutations(&mut self) {
         self.captured.retain(|_, state| match state.usage {
             DependencyUse::Observation => true,

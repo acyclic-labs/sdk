@@ -226,8 +226,14 @@ static int do_mount_nfs(uint16_t port, const char *mount_point,
                          const parsed_args_t *args)
 {
     char opts[512];
+    /*
+     * namedattr: the server implements NFSv4 named attributes (OPENATTR over
+     * the FUSE xattr callbacks). Without it the macOS client falls back to
+     * writing `._name` AppleDouble files into the exported tree, which then
+     * read as ordinary files the application never created.
+     */
     int len = snprintf(opts, sizeof(opts),
-        "vers=4,tcp,noac,noacl,noresvport,"
+        "vers=4,tcp,noac,noacl,noresvport,namedattr,"
         "rsize=65536,wsize=65536,"
         "soft,intr,retrycnt=0,"
         "port=%u",

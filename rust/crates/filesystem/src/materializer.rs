@@ -1599,9 +1599,13 @@ where
         if before_directory || after_directory {
             structural_directories.push(path.clone());
         }
-        paths.push((path, change.after.is_some()));
+        let fresh_regular = change.before.is_none()
+            && change
+                .after
+                .is_some_and(|record| record.kind == crate::kernel::FileKind::Regular);
+        paths.push((path, change.after.is_some(), fresh_regular));
     }
-    paths.retain(|(path, _)| {
+    paths.retain(|(path, _, _)| {
         !structural_directories.iter().any(|directory| {
             path != directory
                 && path
@@ -1609,6 +1613,21 @@ where
                     .is_some_and(|suffix| suffix.starts_with('/'))
         })
     });
+    // A regular file with no earlier record that already sits on the host with
+    // exactly the generation's bytes is a lazily promoted source file, not new
+    // content. Rewriting it would give the host a new file identity, and every
+    // fork's promotion of that file is keyed by the identity it was read from.
+    let mut retained = Vec::with_capacity(paths.len());
+    for (path, install, fresh_regular) in paths {
+        if install
+            && fresh_regular
+            && host_file_holds_generation_bytes(&root, &path, to_generation).await?
+        {
+            continue;
+        }
+        retained.push((path, install));
+    }
+    let mut paths = retained;
     paths.sort_unstable_by(|left, right| left.0.cmp(&right.0));
     std::fs::create_dir_all(&operation_directory)?;
     let target = operation_directory.join("target");
@@ -1645,6 +1664,47 @@ where
         .apply(plan)
         .await
         .map_err(Into::into)
+}
+
+/// Bound on a host file compared byte-for-byte against a generation before
+/// publication skips rewriting it; larger files are always rewritten.
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
+const MAXIMUM_PROMOTION_COMPARISON_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Whether the host already holds `path` as a plain regular file with exactly
+/// the generation's bytes.
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
+async fn host_file_holds_generation_bytes<A, O>(
+    root: &Path,
+    path: &str,
+    generation: &crate::Generation<A, O>,
+) -> Result<bool, NativeWorkspacePublicationError>
+where
+    A: crate::AsyncAuthorityStore,
+    O: crate::AsyncObjectStore,
+{
+    let host_path = root.join(path);
+    let Ok(metadata) = std::fs::symlink_metadata(&host_path) else {
+        return Ok(false);
+    };
+    if !metadata.is_file() || metadata.len() > MAXIMUM_PROMOTION_COMPARISON_BYTES {
+        return Ok(false);
+    }
+    let stat = generation.stat(&format!("/{path}")).await?;
+    if stat.kind != crate::kernel::FileKind::Regular || stat.logical_bytes != Some(metadata.len()) {
+        return Ok(false);
+    }
+    let published = generation.read(&format!("/{path}"), metadata.len()).await?;
+    let host = std::fs::read(&host_path)?;
+    Ok(published.as_ref() == host.as_slice())
 }
 
 /// Core native workspace publication failure.

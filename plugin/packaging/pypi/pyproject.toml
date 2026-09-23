@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "acyclic-pydantic-ai"
+version = "0.1.0"
+description = "Recursive decomposition and speculative execution for Pydantic AI agents, on acyclic forked workspaces."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+# FunctionToolset.tool and RunContext as used here are what pydantic-ai 2.45+
+# ships; exercised against 2.48.
+dependencies = ["pydantic-ai-slim>=2.45.0"]
+keywords = ["pydantic-ai", "agents", "fork-join", "speculative-execution", "subagents"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.urls]
+Homepage = "https://acyclic.dev"
+Source = "https://github.com/acyclic-labs/sdk/tree/main/plugin/packaging/pypi"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/acyclic_pydantic_ai"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

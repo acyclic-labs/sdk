@@ -1745,3 +1745,149 @@ async fn generation_reader_resolves_many_paths_from_one_pinned_root() -> Result<
     assert!(descriptions[1].is_none());
     Ok(())
 }
+
+/// Siblings forked from one head, each adding its own file, join back one
+/// after the other. The second join is a real three-way merge (its base is
+/// the pre-first-join head) and must apply: nothing in it conflicts.
+#[allow(clippy::expect_used, clippy::panic)]
+#[tokio::test]
+async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let main = fs.create_workspace("siblings-main").await?;
+    main.write_text("/README.md", "base\n").await?;
+    let base = main.head().await?;
+    let first = main
+        .fork(
+            "siblings-first",
+            ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+        )
+        .await?;
+    let second = main
+        .fork(
+            "siblings-second",
+            ForkOptions::from_generation(base, IdempotencyKey::new()),
+        )
+        .await?;
+    first.write_text("/a.py", "a\n").await?;
+    second.write_text("/b.py", "b\n").await?;
+
+    for (label, fork) in [("first", &first), ("second", &second)] {
+        let plan = fork.join_into(&main).plan().await?;
+        let outcome = plan
+            .apply(ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: IdempotencyKey::new(),
+            })
+            .await?;
+        let applied = match outcome {
+            JoinOutcome::Applied(_) => true,
+            JoinOutcome::Conflicted { conflicts, .. } => {
+                let described = plan.describe_conflicts(&conflicts, false).await?;
+                panic!("{label} join conflicted: {:?}", described.conflicts);
+            }
+            _ => false,
+        };
+        assert!(applied, "{label} join did not apply");
+    }
+    assert_eq!(main.read("/a.py", 16).await?, Bytes::from_static(b"a\n"));
+    assert_eq!(main.read("/b.py", 16).await?, Bytes::from_static(b"b\n"));
+    assert_eq!(
+        main.read("/README.md", 16).await?,
+        Bytes::from_static(b"base\n")
+    );
+    Ok(())
+}
+
+/// The mount bumps a directory's modification time whenever a child is
+/// added, so two siblings adding files to one directory always diverge on its
+/// metadata. That must reconcile; only authored metadata (the mode) conflicts.
+#[allow(clippy::expect_used, clippy::panic)]
+#[tokio::test]
+async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
+-> Result<(), Box<dyn Error>> {
+    use crate::kernel::MetadataField;
+
+    let fs = Fs::memory();
+    let main = fs.create_workspace("sibling-times-main").await?;
+    main.write_text("/README.md", "base\n").await?;
+    {
+        let mut transaction = main.begin_transaction(IdempotencyKey::new()).await?;
+        transaction.create_dir_all("/pkg").await?;
+        transaction.commit().await?;
+    }
+    let touch = |modified_ns: i64, posix_mode: u32| FileMetadata {
+        modified_ns: MetadataField::Value(modified_ns),
+        posix_mode: MetadataField::Value(posix_mode),
+        ..FileMetadata::default()
+    };
+    {
+        let mut transaction = main.begin_transaction(IdempotencyKey::new()).await?;
+        transaction.set_metadata("/pkg", touch(10, 0o755)).await?;
+        transaction.commit().await?;
+    }
+    let base = main.head().await?;
+    let fork = |name: &'static str, base: &Generation<_, _>| {
+        main.fork(
+            name,
+            ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+        )
+    };
+    let first = fork("sibling-times-first", &base).await?;
+    let second = fork("sibling-times-second", &base).await?;
+    for (workspace, file, modified_ns) in [(&first, "/pkg/a.py", 20), (&second, "/pkg/b.py", 30)] {
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        transaction.write_text(file, "x\n").await?;
+        transaction
+            .set_metadata("/pkg", touch(modified_ns, 0o755))
+            .await?;
+        transaction.commit().await?;
+    }
+    for fork in [&first, &second] {
+        let plan = fork.join_into(&main).plan().await?;
+        let outcome = plan
+            .apply(ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: IdempotencyKey::new(),
+            })
+            .await?;
+        if let JoinOutcome::Conflicted { conflicts, .. } = outcome {
+            let described = plan.describe_conflicts(&conflicts, false).await?;
+            panic!("sibling join conflicted: {:?}", described.conflicts);
+        }
+    }
+    assert_eq!(
+        main.read("/pkg/a.py", 16).await?,
+        Bytes::from_static(b"x\n")
+    );
+    assert_eq!(
+        main.read("/pkg/b.py", 16).await?,
+        Bytes::from_static(b"x\n")
+    );
+    assert_eq!(main.stat("/pkg").await?.metadata.modified_ns, Some(30));
+
+    // Authored metadata changed both ways is a conflict, reported as such.
+    let base = main.head().await?;
+    let third = fork("sibling-times-third", &base).await?;
+    for (workspace, mode) in [(&main, 0o700), (&third, 0o770)] {
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        transaction.set_metadata("/pkg", touch(40, mode)).await?;
+        transaction.commit().await?;
+    }
+    let plan = third.join_into(&main).plan().await?;
+    let JoinOutcome::Conflicted {
+        conflicts,
+        truncated,
+    } = plan
+        .apply(ApplyOptions {
+            if_target: plan.target_head(),
+            idempotency_key: IdempotencyKey::new(),
+        })
+        .await?
+    else {
+        return Err("a mode conflict on the shared directory was not reported".into());
+    };
+    let described = plan.describe_conflicts(&conflicts, truncated).await?;
+    assert_eq!(described.conflicts.len(), 1);
+    assert_eq!(described.conflicts[0].kind, crate::ConflictKind::Metadata);
+    Ok(())
+}

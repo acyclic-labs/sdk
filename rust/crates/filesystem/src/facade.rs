@@ -14,33 +14,34 @@ use crate::kernel::{
     AuthenticatedGenerationProbe, AuthenticatedProbeError, BlobBuildError, BlobBuildOptions,
     BlobReadError, CanonicalDecodeError, CheckoutDependencies, CheckpointError, CheckpointRequest,
     ClosureError, ClosureLimits, DecodeLimits, Dependency, DependencyError, DependencyRegion,
-    DependencyState, DirectoryPage, DirectoryReadError, ExtentPlan, ExtentRangeRequest,
-    ExtentSeekRequest, ExtentSeekTarget, FileKind, FileMetadata, FileMutation, FilePayload,
-    FileRangeRead, FileRangeReadError, FileRangeRequest, FileRecord, FileRecordReadError,
-    FileTableMutationError, FileTablePage, GenerationExportManifest, GenerationMutationError,
-    GenerationRoot, GenerationTransferBatch, GenerationTransferError, InlineFileData,
-    InlineFileDataError, LivePublicationObservation, LiveRetryAction, LiveRetryError,
-    LiveRetryState, LogicalName, MAXIMUM_GENERATION_ROOT_BYTES, MergeConflictResolution,
-    MergeConflictSide, MergeGenerationError, MergeGenerationOutcome, MergeGenerationRequest,
-    MetadataField, Mutation, NameEncoding, NamespacePath, PathBatchLookup, PathLookup,
-    PathLookupError, PersistentDiffError, ProbeLimits, PublicationError, PublicationIntent,
-    PublicationReceipt, PublishGenerationRequest, RebaseConflict, RebaseDecision, RebaseError,
-    RegularMutation, RegularMutationError, RetentionCreated, RetentionCreatedError, RetentionKind,
-    TransferCursor, TreeMutationError, TreePage, VolumeCreated, VolumeCreatedError,
-    apply_attribute_mutations_async, apply_generation_mutations_retaining_async,
-    apply_regular_mutation_async, authenticate_generation_export_manifest_async, build_blob_async,
-    build_checkpoint_async, build_generation_export_manifest_async, classify_rebase_async,
-    decode_file_metadata, decode_published_generation, decode_volume_created,
-    decode_workspace_deleted, diff_file_records_async, diff_tree_entries_async,
-    encode_attribute_page, encode_file_metadata, encode_file_table_page, encode_generation_root,
-    encode_retention_created, encode_tree_page, encode_volume_created, encode_workspace_deleted,
-    export_generation_batch_async, generation_root_parent_count, import_generation_batch_async,
-    list_attributes_async, list_tree_entries_async, list_tree_entries_at_or_after_async,
-    lookup_attribute_async, lookup_file_record_async, lookup_file_records_async,
-    merge_generation_async, plan_extent_range_async, prove_generation_closure_async,
-    publish_generation_async, publish_generation_async_with_context,
-    publish_generation_async_with_permit, read_blob_range_async, read_file_range_async,
-    retention_authority_id, seek_extent_async, volume_authority_id,
+    DependencyState, DependencyUse, DirectoryPage, DirectoryReadError, ExtentPlan,
+    ExtentRangeRequest, ExtentSeekRequest, ExtentSeekTarget, FileKind, FileMetadata, FileMutation,
+    FilePayload, FileRangeRead, FileRangeReadError, FileRangeRequest, FileRecord,
+    FileRecordReadError, FileTableMutationError, FileTablePage, GenerationExportManifest,
+    GenerationMutationError, GenerationRoot, GenerationTransferBatch, GenerationTransferError,
+    InlineFileData, InlineFileDataError, LivePublicationObservation, LiveRetryAction,
+    LiveRetryError, LiveRetryState, LogicalName, MAXIMUM_GENERATION_ROOT_BYTES,
+    MergeConflictResolution, MergeConflictSide, MergeGenerationError, MergeGenerationOutcome,
+    MergeGenerationRequest, MetadataField, Mutation, NameEncoding, NamespacePath, PathBatchLookup,
+    PathLookup, PathLookupError, PersistentDiffError, ProbeLimits, PublicationError,
+    PublicationIntent, PublicationReceipt, PublishGenerationRequest, RebaseConflict,
+    RebaseDecision, RebaseError, RegularMutation, RegularMutationError, RetentionCreated,
+    RetentionCreatedError, RetentionKind, TransferCursor, TreeMutationError, TreePage,
+    VolumeCreated, VolumeCreatedError, apply_attribute_mutations_async,
+    apply_generation_mutations_retaining_async, apply_regular_mutation_async,
+    authenticate_generation_export_manifest_async, build_blob_async, build_checkpoint_async,
+    build_generation_export_manifest_async, classify_rebase_async, decode_file_metadata,
+    decode_published_generation, decode_volume_created, decode_workspace_deleted,
+    diff_file_records_async, diff_tree_entries_async, encode_attribute_page, encode_file_metadata,
+    encode_file_table_page, encode_generation_root, encode_retention_created, encode_tree_page,
+    encode_volume_created, encode_workspace_deleted, export_generation_batch_async,
+    generation_root_parent_count, import_generation_batch_async, list_attributes_async,
+    list_tree_entries_async, list_tree_entries_at_or_after_async, lookup_attribute_async,
+    lookup_file_record_async, lookup_file_records_async, merge_generation_async,
+    plan_extent_range_async, prove_generation_closure_async, publish_generation_async,
+    publish_generation_async_with_context, publish_generation_async_with_permit,
+    read_blob_range_async, read_file_range_async, retention_authority_id, seek_extent_async,
+    volume_authority_id,
 };
 #[cfg(test)]
 use crate::kernel::{
@@ -5488,6 +5489,59 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         self.rebase_head_for_live_retry(maximum_conflicts, budget, cancellation)
             .await
+    }
+
+    /// Rebases onto a head that differs from this checkout's base by a lazy
+    /// materialization the caller's readers had already seen: a source-backed
+    /// node promoted into the workspace. What the checkout observed about the
+    /// pre-materialization representation (a promoted name "absent", say) was
+    /// never what those readers saw, so conflicts that are purely such
+    /// observations are waived. A conflict with any pending mutation's
+    /// dependency still fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::rebase_head`].
+    pub async fn rebase_head_over_materialization(
+        &mut self,
+        maximum_conflicts: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<RebaseDecision> {
+        let first = self
+            .rebase_head(maximum_conflicts, budget, cancellation)
+            .await?;
+        let RebaseDecision::Conflicted {
+            conflicts,
+            truncated,
+        } = &first.value
+        else {
+            return Ok(first);
+        };
+        if *truncated
+            || conflicts
+                .iter()
+                .any(|conflict| conflict.usage != DependencyUse::Observation)
+        {
+            return Ok(first);
+        }
+        let regions = conflicts
+            .iter()
+            .map(|conflict| conflict.region.clone())
+            .collect::<Vec<_>>();
+        self.dependencies.forget_observations(&regions);
+        let second = self
+            .rebase_head(
+                maximum_conflicts,
+                remaining(first.work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(first.work, std::convert::identity))?;
+        Ok(FsReceipt {
+            value: second.value,
+            work: add(first.work, second.work)?,
+        })
     }
 
     async fn rebase_head_for_live_retry(

@@ -13,13 +13,15 @@ use crate::{
     LazySeekTarget, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceStore, WorkspaceMetadata,
 };
 use bytes::Bytes;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 const MAXIMUM_PROMOTION_BYTES: u64 = u64::MAX;
 const MAXIMUM_LAZY_DIRECTORY_CURSORS: usize = 1_024;
+/// Page size used while gathering one listing; bounds each engine round trip.
+const LAZY_LISTING_PAGE: u32 = 512;
 
 struct CursorTable<T> {
     entries: Mutex<BTreeMap<u64, T>>,
@@ -77,12 +79,32 @@ impl<T> CursorTable<T> {
 /// Reads demand only the addressed source facts. Mutations promote the exact
 /// node into the authored checkout before delegating to the ordinary checkout
 /// adapter, keeping all publication semantics in the SDK.
+///
+/// Every read resolves against the live authored checkout first. The lazy
+/// view reflects only published generations and unresolved source nodes, so
+/// consulting it alone would hide a mount's own unpublished creates, writes,
+/// renames and removals from itself until the next publication boundary:
+/// publication policy decides durability, never what the mount shows.
 pub struct LazyMountSource<A, O, D, S> {
     lazy: Arc<LazyWorkspace<A, O, D, S>>,
     authored: Arc<CheckoutMountSource<A, O>>,
     root: String,
     runtime: Arc<CallbackRuntime>,
-    cursors: CursorTable<LazyDirectoryCursor>,
+    cursors: CursorTable<DirectoryCursor>,
+}
+
+/// The unreturned remainder of one merged directory listing.
+enum DirectoryCursor {
+    Buffered(VecDeque<MountDirectoryEntry>),
+}
+
+/// What one path is in the mount's live view.
+enum Resolved {
+    /// The authored checkout holds it, unpublished mutations included.
+    Authored(MountLookup),
+    /// Only the lazy view knows it: an unresolved source node or an alias.
+    Lazy(LazyLookup),
+    Absent,
 }
 
 impl<A, O, D, S> LazyMountSource<A, O, D, S>
@@ -245,13 +267,21 @@ where
         IdempotencyKey::from_bytes(bytes)
     }
 
-    async fn promote(&self, path: &str) -> Result<(), MountSourceError>
+    async fn promote(&self, mount_path: &MountPath) -> Result<(), MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
         D: DemandSource + 'static,
         S: LazyWorkspaceStore,
     {
+        if self.authored.has_unpublished_async().await
+            && self.authored_lookup_async(mount_path).await?.is_some()
+        {
+            // Already in the live checkout, published or not.
+            return Ok(());
+        }
+        let text = self.path(mount_path)?;
+        let path = text.as_str();
         let lookup = self.lazy.lookup(path).await.map_err(lazy_error)?;
         let (expected_source, key, needs_promotion) = match lookup {
             LazyLookup::Source(node) => {
@@ -277,28 +307,22 @@ where
                 .promote_exact(path, expected_source, MAXIMUM_PROMOTION_BYTES, key)
                 .await
                 .map_err(lazy_error)?;
-            self.authored.advance_to_head_async().await?;
+            self.authored.adopt_materialization_async().await?;
         }
         Ok(())
     }
 
-    async fn promote_parents(&self, path: &str) -> Result<(), MountSourceError>
+    async fn promote_parents(&self, path: &MountPath) -> Result<(), MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
         D: DemandSource + 'static,
         S: LazyWorkspaceStore,
     {
-        let mut parents = Vec::new();
-        let mut current = path;
-        while let Some(index) = current.rfind('/') {
-            if index == 0 {
-                break;
-            }
-            current = current.get(..index).ok_or(MountSourceError::Stale)?;
-            parents.push(current.to_owned());
-        }
-        for parent in parents.into_iter().rev() {
+        let components = path.components();
+        let mut parent = MountPath::root();
+        for component in components.iter().take(components.len().saturating_sub(1)) {
+            parent = parent.child(component.clone());
             self.promote(&parent).await?;
         }
         Ok(())
@@ -311,15 +335,78 @@ where
         self.runtime.wait(create)
     }
 
-    fn remember_cursor(&self, cursor: LazyDirectoryCursor) -> Result<Vec<u8>, MountSourceError> {
+    fn remember_cursor(&self, cursor: DirectoryCursor) -> Result<Vec<u8>, MountSourceError> {
         self.cursors.remember(cursor)
     }
 
     fn take_cursor(
         &self,
         cursor: Option<&[u8]>,
-    ) -> Result<Option<LazyDirectoryCursor>, MountSourceError> {
+    ) -> Result<Option<DirectoryCursor>, MountSourceError> {
         self.cursors.take(cursor)
+    }
+
+    /// Whether the authored checkout holds mutations the lazy view cannot see yet.
+    fn unpublished(&self) -> bool {
+        self.wait(|| async {
+            Ok::<_, MountSourceError>(self.authored.has_unpublished_async().await)
+        })
+        .unwrap_or(true)
+    }
+
+    /// The live authored checkout's view of one path; absence of an ancestor is absence.
+    fn authored_lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
+        self.wait(|| self.authored_lookup_async(path))
+    }
+
+    async fn authored_lookup_async(
+        &self,
+        path: &MountPath,
+    ) -> Result<Option<MountLookup>, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        match self.authored.lookup_async(path).await {
+            Err(MountSourceError::NotFound) => Ok(None),
+            other => other,
+        }
+    }
+
+    /// Resolves one path against the live checkout, then the lazy view.
+    fn resolve(&self, path: &MountPath) -> Result<Resolved, MountSourceError> {
+        // A clean checkout equals the published head the lazy view already
+        // reflects; asking it would only record observations a later lazy
+        // promotion must then reconcile.
+        if !self.unpublished() {
+            let text = self.path(path)?;
+            return self.wait(|| async move {
+                match self.lazy.lookup(&text).await {
+                    Ok(lookup) => Ok(Resolved::Lazy(lookup)),
+                    Err(LazyWorkspaceError::NotFound) => Ok(Resolved::Absent),
+                    Err(error) => Err(lazy_error(error)),
+                }
+            });
+        }
+        if let Some(lookup) = self.authored_lookup(path)? {
+            return Ok(Resolved::Authored(lookup));
+        }
+        let text = self.path(path)?;
+        let lookup_text = text.clone();
+        let lookup = self.wait(|| async move {
+            match self.lazy.lookup(&lookup_text).await {
+                Ok(lookup) => Ok(Some(lookup)),
+                Err(LazyWorkspaceError::NotFound) => Ok(None),
+                Err(error) => Err(lazy_error(error)),
+            }
+        })?;
+        Ok(match lookup {
+            // The published head still has this exact authored path but the live checkout,
+            // which includes every unpublished mutation, no longer does: renamed or removed.
+            Some(LazyLookup::Authored { path, .. }) if path == text => Resolved::Absent,
+            Some(lookup) => Resolved::Lazy(lookup),
+            None => Resolved::Absent,
+        })
     }
 }
 
@@ -356,7 +443,7 @@ where
                 )
                 .await
                 .map_err(lazy_error)?;
-            self.authored.advance_to_head_async().await
+            self.authored.adopt_materialization_async().await
         })?;
         let file = self.authored.open_file(&self.mount_path)?;
         *promoted = Some(Arc::clone(&file));
@@ -484,6 +571,116 @@ where
     }
 }
 
+impl<A, O, D, S> LazyMountSource<A, O, D, S>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+    D: DemandSource + 'static,
+    S: LazyWorkspaceStore,
+{
+    /// Every entry of one directory in the mount's live view: the lazy
+    /// (published and source) listing, each entry resolved live, then the
+    /// authored entries the lazy view has never seen.
+    fn merged_listing(
+        &self,
+        path: &MountPath,
+    ) -> Result<VecDeque<MountDirectoryEntry>, MountSourceError> {
+        let text = self.path(path)?;
+        let live = self.unpublished();
+        let mut entries = VecDeque::new();
+        let mut resume: Option<LazyDirectoryCursor> = None;
+        let mut lazy_knows_directory = true;
+        loop {
+            let page_path = text.clone();
+            let cursor = resume.take();
+            let page = self.wait(|| async move {
+                match self
+                    .lazy
+                    .list_directory(&page_path, cursor, LAZY_LISTING_PAGE)
+                    .await
+                {
+                    Ok(page) => Ok(Some(page)),
+                    Err(LazyWorkspaceError::NotFound) => Ok(None),
+                    Err(error) => Err(lazy_error(error)),
+                }
+            })?;
+            let Some(page) = page else {
+                // Created since the last publication: only the authored checkout has it.
+                lazy_knows_directory = false;
+                break;
+            };
+            for entry in page.entries {
+                let name = Self::native_name(&entry.name)?;
+                let child = path.child(name.clone());
+                let child_text = Self::child(&text, &entry.name)?;
+                let authored = if live {
+                    self.authored_lookup(&child)?
+                } else {
+                    None
+                };
+                let lookup = if let Some(lookup) = authored {
+                    lookup
+                } else {
+                    let inspected = self.wait(|| async {
+                        self.lazy.inspect(&child_text).await.map_err(lazy_error)
+                    })?;
+                    if live
+                        && matches!(&inspected, LazyLookup::Authored { path, .. } if *path == child_text)
+                    {
+                        // Published, but renamed or removed since in the live checkout.
+                        continue;
+                    }
+                    mount_lookup(&self.lazy, inspected)
+                };
+                entries.push_back(MountDirectoryEntry {
+                    name,
+                    node: lookup.node,
+                    metadata: lookup.metadata,
+                });
+            }
+            match page.next {
+                Some(next) => resume = Some(next),
+                None => break,
+            }
+        }
+        if !live {
+            return Ok(entries);
+        }
+        let mut after: Option<Vec<u8>> = None;
+        loop {
+            let page = match self
+                .authored
+                .read_directory(path, after.as_deref(), LAZY_LISTING_PAGE)
+            {
+                Ok(page) => page,
+                Err(MountSourceError::NotFound) => break,
+                Err(error) => return Err(error),
+            };
+            for entry in page.entries {
+                let known = lazy_knows_directory && {
+                    let child_text = self.path(&path.child(entry.name.clone()))?;
+                    self.wait(|| async {
+                        match self.lazy.inspect(&child_text).await {
+                            Ok(_) => Ok(true),
+                            Err(LazyWorkspaceError::NotFound) => Ok(false),
+                            Err(error) => Err(lazy_error(error)),
+                        }
+                    })?
+                };
+                // Anything the lazy view knows was listed, and live-resolved, above.
+                if !known {
+                    entries.push_back(entry);
+                }
+            }
+            match page.next_cursor {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+        }
+        Ok(entries)
+    }
+}
+
 impl<A, O, D, S> MountFilesystem for LazyMountSource<A, O, D, S>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -492,13 +689,10 @@ where
     S: LazyWorkspaceStore,
 {
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
-        let path = self.path(path)?;
-        self.wait(|| async move {
-            match self.lazy.lookup(&path).await {
-                Ok(lookup) => Ok(Some(mount_lookup(&self.lazy, lookup))),
-                Err(LazyWorkspaceError::NotFound) => Ok(None),
-                Err(error) => Err(lazy_error(error)),
-            }
+        Ok(match self.resolve(path)? {
+            Resolved::Authored(lookup) => Some(lookup),
+            Resolved::Lazy(lookup) => Some(mount_lookup(&self.lazy, lookup)),
+            Resolved::Absent => None,
         })
     }
 
@@ -543,12 +737,14 @@ where
     }
 
     fn detach_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        let path_text = self.path(path)?;
-        self.wait(|| async move { self.promote(&path_text).await })?;
+        self.wait(|| async move { self.promote(path).await })?;
         self.authored.detach_file(path)
     }
 
     fn read_link(&self, path: &MountPath) -> Result<Bytes, MountSourceError> {
+        if self.unpublished() && self.authored_lookup(path)?.is_some() {
+            return self.authored.read_link(path);
+        }
         let path = self.path(path)?;
         self.wait(|| async move { self.lazy.read_link(&path).await.map_err(lazy_error) })
     }
@@ -559,6 +755,9 @@ where
         offset: u64,
         length: u32,
     ) -> Result<Bytes, MountSourceError> {
+        if self.unpublished() && self.authored_lookup(path)?.is_some() {
+            return self.authored.read_range(path, offset, length);
+        }
         let path = self.path(path)?;
         self.wait(|| async move {
             self.lazy
@@ -574,6 +773,9 @@ where
         offset: u64,
         target: MountSeekTarget,
     ) -> Result<Option<u64>, MountSourceError> {
+        if self.unpublished() && self.authored_lookup(path)?.is_some() {
+            return self.authored.seek(path, offset, target);
+        }
         let path = self.path(path)?;
         self.wait(|| async move {
             self.lazy
@@ -596,37 +798,29 @@ where
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        let path = self.path(path)?;
-        let cursor = self.take_cursor(cursor)?;
-        let page_path = path.clone();
-        let page = self.wait(|| async move {
-            self.lazy
-                .list_directory(&page_path, cursor, maximum_entries)
-                .await
-                .map_err(lazy_error)
-        })?;
-        let mut entries = Vec::with_capacity(page.entries.len());
-        for entry in page.entries {
-            let child = Self::child(&path, &entry.name)?;
-            let lookup = self.wait(|| async {
-                self.lazy
-                    .inspect(&child)
-                    .await
-                    .map(|lookup| mount_lookup(&self.lazy, lookup))
-                    .map_err(lazy_error)
-            })?;
-            entries.push(MountDirectoryEntry {
-                name: Self::native_name(&entry.name)?,
-                node: lookup.node,
-                metadata: lookup.metadata,
-            });
-        }
+        // The whole listing is gathered in one callback and paged from a
+        // buffer. The lazy workspace's own continuation is keyed on its
+        // observation state, and a kernel driver fetches attributes for each
+        // entry between pages, which would invalidate that continuation.
+        let mut entries = match self.take_cursor(cursor)? {
+            Some(DirectoryCursor::Buffered(entries)) => entries,
+            None => self.merged_listing(path)?,
+        };
+        let page = entries
+            .drain(
+                ..entries
+                    .len()
+                    .min(usize::try_from(maximum_entries).unwrap_or(usize::MAX)),
+            )
+            .collect::<Vec<_>>();
+        let next_cursor = if entries.is_empty() {
+            None
+        } else {
+            Some(self.remember_cursor(DirectoryCursor::Buffered(entries))?)
+        };
         Ok(MountDirectoryPage {
-            entries,
-            next_cursor: page
-                .next
-                .map(|cursor| self.remember_cursor(cursor))
-                .transpose()?,
+            entries: page,
+            next_cursor,
         })
     }
 
@@ -635,8 +829,7 @@ where
         path: &MountPath,
         metadata: FileMetadata,
     ) -> Result<MountLookup, MountSourceError> {
-        let text = self.path(path)?;
-        self.wait(|| async move { self.promote_parents(&text).await })?;
+        self.wait(|| async move { self.promote_parents(path).await })?;
         self.authored.create_file(path, metadata)
     }
 
@@ -645,8 +838,7 @@ where
         path: &MountPath,
         metadata: FileMetadata,
     ) -> Result<MountLookup, MountSourceError> {
-        let text = self.path(path)?;
-        self.wait(|| async move { self.promote_parents(&text).await })?;
+        self.wait(|| async move { self.promote_parents(path).await })?;
         self.authored.create_directory(path, metadata)
     }
 
@@ -656,8 +848,7 @@ where
         target: Bytes,
         metadata: FileMetadata,
     ) -> Result<MountLookup, MountSourceError> {
-        let text = self.path(path)?;
-        self.wait(|| async move { self.promote_parents(&text).await })?;
+        self.wait(|| async move { self.promote_parents(path).await })?;
         self.authored.create_symbolic_link(path, target, metadata)
     }
 
@@ -668,8 +859,7 @@ where
         device: Option<(u32, u32)>,
         metadata: FileMetadata,
     ) -> Result<MountLookup, MountSourceError> {
-        let text = self.path(path)?;
-        self.wait(|| async move { self.promote_parents(&text).await })?;
+        self.wait(|| async move { self.promote_parents(path).await })?;
         self.authored.create_special(path, kind, device, metadata)
     }
 
@@ -786,12 +976,25 @@ where
 
     fn remove(&self, path: &MountPath, expected: Option<FileId>) -> Result<(), MountSourceError> {
         let text = self.path(path)?;
+        if self.unpublished() && self.authored_lookup(path)?.is_some() {
+            let published = self.wait(|| async {
+                match self.lazy.lookup(&text).await {
+                    Ok(_) => Ok(true),
+                    Err(LazyWorkspaceError::NotFound) => Ok(false),
+                    Err(error) => Err(lazy_error(error)),
+                }
+            })?;
+            if !published {
+                // Never published and never source-backed: nothing to tombstone.
+                return self.authored.remove(path, expected);
+            }
+        }
         self.wait(|| async move {
             self.lazy
                 .remove_if(&text, expected)
                 .await
                 .map_err(lazy_error)?;
-            self.authored.advance_to_head_async().await
+            self.authored.adopt_materialization_async().await
         })
     }
 
@@ -801,23 +1004,19 @@ where
         destination: &MountPath,
         replace: bool,
     ) -> Result<(), MountSourceError> {
-        let source_text = self.path(source)?;
-        let destination_text = self.path(destination)?;
-        let source_lookup =
-            self.wait(|| async move { self.lazy.lookup(&source_text).await.map_err(lazy_error) })?;
         if matches!(
-            source_lookup,
-            LazyLookup::Source(SourceNode {
+            self.resolve(source)?,
+            Resolved::Lazy(LazyLookup::Source(SourceNode {
                 kind: SourceNodeKind::Directory,
                 ..
-            })
+            }))
         ) {
             return Err(MountSourceError::Unsupported(
                 "renaming an unresolved lazy directory requires a subtree remap".to_owned(),
             ));
         }
         self.promote_blocking(source)?;
-        self.wait(|| async move { self.promote_parents(&destination_text).await })?;
+        self.wait(|| async move { self.promote_parents(destination).await })?;
         self.authored.rename(source, destination, replace)
     }
 
@@ -827,8 +1026,7 @@ where
         destination: &MountPath,
     ) -> Result<(), MountSourceError> {
         self.promote_blocking(source)?;
-        let destination_text = self.path(destination)?;
-        self.wait(|| async move { self.promote_parents(&destination_text).await })?;
+        self.wait(|| async move { self.promote_parents(destination).await })?;
         self.authored.hard_link(source, destination)
     }
 
@@ -865,8 +1063,7 @@ where
     S: LazyWorkspaceStore,
 {
     fn promote_blocking(&self, path: &MountPath) -> Result<(), MountSourceError> {
-        let text = self.path(path)?;
-        self.wait(|| async move { self.promote(&text).await })
+        self.wait(|| async move { self.promote(path).await })
     }
 }
 

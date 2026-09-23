@@ -2306,7 +2306,7 @@ where
         };
         match phase {
             LazyDirectoryPhase::Source(source_cursor) => {
-                let receipt = self
+                let receipt = match self
                     .source
                     .list_page(
                         state.source,
@@ -2316,7 +2316,32 @@ where
                         cancellation,
                     )
                     .await
-                    .map_err(|failure| failure.error)?;
+                {
+                    Ok(receipt) => receipt,
+                    // The directory exists only in the authored generation; the
+                    // source contributes no entries and the authored phase follows.
+                    Err(failure) if matches!(failure.error, DemandError::Absent) => {
+                        work = account_work(work, *failure.work, budget)?;
+                        return Box::pin(self.list_directory_measured(
+                            path,
+                            Some(LazyDirectoryCursor {
+                                source: state.source,
+                                overlay: state.overlay,
+                                directory,
+                                phase: LazyDirectoryPhase::Authored(None),
+                            }),
+                            maximum_entries,
+                            remaining_work(work, budget)?,
+                            cancellation,
+                        ))
+                        .await
+                        .map(|receipt| OperationReceipt {
+                            value: receipt.value,
+                            work: account_work(work, receipt.work, budget).unwrap_or(receipt.work),
+                        });
+                    }
+                    Err(failure) => return Err(failure.error.into()),
+                };
                 work = account_work(work, receipt.work, budget)?;
                 let page = receipt.value;
                 if page.entries.len() > usize::try_from(maximum_entries).unwrap_or(usize::MAX) {

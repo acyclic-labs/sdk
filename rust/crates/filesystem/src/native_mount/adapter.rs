@@ -918,6 +918,31 @@ impl<A, O> CheckoutMountSource<A, O> {
         })
     }
 
+    /// Looks up one path in the live checkout, unpublished mutations included.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed source failure without changing checkout state.
+    pub async fn lookup_async(
+        &self,
+        path: &MountPath,
+    ) -> Result<Option<MountLookup>, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let path = self.path(path)?;
+        let mut checkout = self.checkout.lock().await;
+        let receipt = checkout
+            .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
+            .await
+            .map_err(engine_error)?;
+        Ok(receipt.value.map(|value| MountLookup {
+            node: mount_node(value.record),
+            metadata: value.metadata,
+        }))
+    }
+
     /// Asynchronously publishes every pending mount mutation.
     ///
     /// This is the native customer handle path and does not enter the blocking
@@ -975,8 +1000,59 @@ impl<A, O> CheckoutMountSource<A, O> {
         }
     }
 
-    /// Adopts the workspace head after this checkout's mutations were
-    /// synchronized and a separate fenced operation published that head.
+    /// Whether this checkout holds mutations not yet published to the head.
+    pub async fn has_unpublished_async(&self) -> bool {
+        self.checkout.lock().await.checkout.has_pending_mutations()
+    }
+
+    /// Adopts a head that differs only by a lazy materialization of nodes the
+    /// mount already showed, keeping unpublished mutations on top.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MountSourceError::Stale`] when a pending mutation's own
+    /// dependency conflicts with the new head.
+    pub async fn adopt_materialization_async(&self) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let mut checkout = self.checkout.lock().await;
+        checkout.ensure_publication_resolved()?;
+        if !checkout.checkout.has_pending_mutations() {
+            checkout
+                .checkout
+                .refresh_head(WorkBudget::UNBOUNDED, &self.cancellation)
+                .await
+                .map_err(engine_error)?;
+            return Ok(());
+        }
+        let decision = checkout
+            .checkout
+            .rebase_head_over_materialization(
+                self.limits.maximum_checkout_dependencies,
+                WorkBudget::UNBOUNDED,
+                &self.cancellation,
+            )
+            .await
+            .map_err(engine_error)?;
+        match decision.value {
+            RebaseDecision::Safe { .. } => Ok(()),
+            RebaseDecision::Conflicted { .. } => Err(MountSourceError::Stale),
+        }
+    }
+
+    /// Adopts the workspace head a separate fenced operation published.
+    ///
+    /// A clean checkout simply moves to the head. One holding unpublished
+    /// mutations (a lazy promotion published beside them, say) is rebased
+    /// onto it with its read dependencies checked, so a mount never has to
+    /// publish its own pending work just to take in an unrelated head.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MountSourceError::Stale`] when a pending mutation conflicts
+    /// with the new head; the mounted generation is then unchanged.
     pub async fn advance_to_head_async(&self) -> Result<(), MountSourceError>
     where
         A: AsyncAuthorityStore,
@@ -984,11 +1060,27 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
-        checkout
+        match checkout
             .refresh_head(WorkBudget::UNBOUNDED, &self.cancellation)
             .await
-            .map_err(engine_error)?;
-        Ok(())
+        {
+            Ok(_) => Ok(()),
+            Err(failure) if matches!(failure.error, FsError::PendingMutationsRequireRebase) => {
+                let decision = checkout
+                    .rebase_head(
+                        self.limits.maximum_checkout_dependencies,
+                        WorkBudget::UNBOUNDED,
+                        &self.cancellation,
+                    )
+                    .await
+                    .map_err(engine_error)?;
+                match decision.value {
+                    RebaseDecision::Safe { .. } => Ok(()),
+                    RebaseDecision::Conflicted { .. } => Err(MountSourceError::Stale),
+                }
+            }
+            Err(failure) => Err(engine_error(failure)),
+        }
     }
 
     fn path(&self, path: &MountPath) -> Result<NamespacePath, MountSourceError> {
@@ -1105,18 +1197,7 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
-        let path = self.path(path)?;
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            let receipt = checkout
-                .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
-                .await
-                .map_err(engine_error)?;
-            Ok(receipt.value.map(|value| MountLookup {
-                node: mount_node(value.record),
-                metadata: value.metadata,
-            }))
-        })
+        self.runtime.wait(|| self.lookup_async(path))
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
@@ -1261,7 +1342,7 @@ where
                     &self.cancellation,
                 )
                 .await
-                .map_err(engine_error)?;
+                .map_err(attribute_error)?;
             let has_more = receipt.value.has_more;
             let entries = receipt
                 .value
