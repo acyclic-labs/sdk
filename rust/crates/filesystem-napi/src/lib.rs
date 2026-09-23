@@ -7837,16 +7837,17 @@ mod tests {
     }
 
     #[test]
-    fn string_paths_and_directory_cursors_use_native_profile() {
+    fn string_paths_and_directory_cursors_use_native_profile() -> Result<()> {
         let mut config = test_config();
         config.profile = FilesystemProfile::Windows;
-        let path = native_path("/é.txt", config).expect("Windows path");
-        let cursor = native_name("é.txt", config).expect("Windows cursor");
+        let path = native_path("/é.txt", config)?;
+        let cursor = native_name("é.txt", config)?;
         assert_eq!(path.components(), &[cursor]);
         assert_eq!(
-            path.components()[0].encoding(),
-            NameEncoding::WindowsUtf16Le
+            path.components().first().map(LogicalName::encoding),
+            Some(NameEncoding::WindowsUtf16Le)
         );
+        Ok(())
     }
 
     #[test]

@@ -49,6 +49,8 @@ struct MultiRootEntry {
     target_workspace_id: WorkspaceId,
     target_generation: GenerationId,
     base_generation: GenerationId,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    child_wins_bindings: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -216,6 +218,7 @@ fn multi_root_plan_payload(value: &MultiRootMergePlan) -> MultiRootPlanPayload {
                 target_workspace_id: root.target_workspace_id,
                 target_generation: root.target_generation,
                 base_generation: root.base_generation,
+                child_wins_bindings: root.child_wins_bindings.clone(),
             })
             .collect(),
     }
@@ -238,6 +241,7 @@ fn multi_root_plan_from_payload(
                     target_workspace_id: entry.target_workspace_id,
                     target_generation: entry.target_generation,
                     base_generation: entry.base_generation,
+                    child_wins_bindings: entry.child_wins_bindings,
                 },
             )
         })
@@ -659,6 +663,7 @@ mod tests {
                     target_workspace_id: WorkspaceId::from_bytes([7; 16]),
                     target_generation: generation(8),
                     base_generation: generation(9),
+                    child_wins_bindings: BTreeSet::new(),
                 },
             )]
             .into_iter()

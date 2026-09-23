@@ -3409,6 +3409,95 @@ fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_boundaries()
 }
 
 #[test]
+fn clipped_identity_read_at_eof_tracks_file_length() -> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([190; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let file = path("file")?;
+    let mut seed = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed checkout blocked")??
+    .value;
+    let file_id = poll_ready(seed.create_file(
+        file.clone(),
+        Bytes::from_static(b"abc"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed create blocked")??
+    .value;
+    poll_ready(seed.commit(
+        OperationId::from_bytes([190; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed commit blocked")??;
+
+    let mut reader = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        tracking(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("reader checkout blocked")??
+    .value;
+    let at_eof = poll_ready(reader.read_file_up_to_by_id(
+        file_id,
+        3,
+        16,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("EOF read blocked")??;
+    assert!(at_eof.value.bytes.is_empty());
+
+    let mut writer = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("writer checkout blocked")??
+    .value;
+    poll_ready(writer.write_file(
+        file,
+        3,
+        Bytes::from_static(b"d"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("append blocked")??;
+    poll_ready(writer.commit(
+        OperationId::from_bytes([191; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("append commit blocked")??;
+    let rebase = poll_ready(reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("reader rebase blocked")??;
+    assert!(matches!(
+        rebase.value,
+        RebaseDecision::Conflicted { ref conflicts, .. }
+            if conflicts.iter().any(|conflict| matches!(
+                conflict.region,
+                DependencyRegion::FileLength(actual) if actual == file_id
+            ))
+    ));
+    Ok(())
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn sparse_local_writes_rebase_across_disjoint_remote_ranges_and_conflict_on_overlap()
 -> Result<(), Box<dyn std::error::Error>> {

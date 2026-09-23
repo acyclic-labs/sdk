@@ -13,6 +13,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 const TOOL_TIMEOUT: Duration = Duration::from_secs(90);
+const WARM_REPETITIONS: usize = 9;
 
 #[tokio::test]
 #[ignore = "local-only real mount, Cargo, and Lean/Lake performance qualification"]
@@ -85,9 +86,12 @@ async fn native_and_mounted_cargo_and_lake_workloads() {
         "cargo_cold_order": if native_first { "native-first" } else { "mounted-first" },
         "lake_cold_order": if native_first { "mounted-first" } else { "native-first" },
         "cargo_test_ms": timings.cargo,
+        "cargo_warm_samples_ms": timings.cargo_warm_samples,
         "cargo_external_target_ms": timings.cargo_external_target,
         "lake_build_ms": timings.lake,
+        "lake_warm_samples_ms": timings.lake_warm_samples,
         "lean_check_ms": timings.lean_check,
+        "lean_check_samples_ms": timings.lean_samples,
     });
     if let Ok(path) = std::env::var("ACYCLIC_WORKLOAD_RECEIPT") {
         fs::write(
@@ -109,23 +113,24 @@ async fn native_and_mounted_cargo_and_lake_workloads() {
         ("Lake warm", timings.lake[2], timings.lake[3]),
         ("Lean check", timings.lean_check[0], timings.lean_check[1]),
     ] {
-        // A small scheduling allowance is needed for sub-second commands;
-        // 500 ms hid fivefold warm-build regressions in this fixture.
-        let allowed_ms = native_ms.saturating_mul(105) / 100 + 25;
+        let allowed_ms = native_ms.saturating_mul(105) / 100;
         assert!(
             mounted_ms <= allowed_ms,
-            "{name} mount exceeded the 5% native limit plus 25ms scheduling allowance: native={native_ms}ms mounted={mounted_ms}ms allowed={allowed_ms}ms"
+            "{name} mount exceeded the 5% native limit: native={native_ms}ms mounted={mounted_ms}ms allowed={allowed_ms}ms"
         );
     }
 }
 
 struct Timings {
-    // Native cold, mounted cold, native warm, mounted warm.
+    // Native cold, mounted cold, native warm median, mounted warm median.
     cargo: [u128; 4],
+    cargo_warm_samples: Vec<[u128; 2]>,
     // Native and mounted cold builds with output placed outside either checkout.
     cargo_external_target: [u128; 2],
     lake: [u128; 4],
+    lake_warm_samples: Vec<[u128; 2]>,
     lean_check: [u128; 2],
+    lean_samples: Vec<[u128; 2]>,
 }
 
 async fn run_workloads(
@@ -141,14 +146,16 @@ async fn run_workloads(
         native_first,
     )
     .await?;
-    let cargo_warm = run_pair(
+    let cargo_warm_samples = run_repeated_pairs(
         native,
         mounted,
         "cargo",
         &["test", "--offline"],
         !native_first,
+        WARM_REPETITIONS,
     )
     .await?;
+    let cargo_warm = median_pair(&cargo_warm_samples);
     let cargo = [cargo_cold[0], cargo_cold[1], cargo_warm[0], cargo_warm[1]];
     let targets = native.parent().ok_or("workload parent directory")?;
     let native_target = targets.join("native-target");
@@ -166,22 +173,79 @@ async fn run_workloads(
         ]
     };
     let lake_cold = run_pair(native, mounted, "lake", &["build"], !native_first).await?;
-    let lake_warm = run_pair(native, mounted, "lake", &["build"], native_first).await?;
+    let lake_warm_samples = run_repeated_pairs(
+        native,
+        mounted,
+        "lake",
+        &["build"],
+        native_first,
+        WARM_REPETITIONS,
+    )
+    .await?;
+    let lake_warm = median_pair(&lake_warm_samples);
     let lake = [lake_cold[0], lake_cold[1], lake_warm[0], lake_warm[1]];
-    let lean_check = run_pair(
+    let lean_samples = run_repeated_pairs(
         native,
         mounted,
         "lake",
         &["env", "lean", "AcyclicPerf.lean"],
         native_first,
+        WARM_REPETITIONS,
     )
     .await?;
+    let lean_check = median_pair(&lean_samples);
     Ok(Timings {
         cargo,
+        cargo_warm_samples,
         cargo_external_target,
         lake,
+        lake_warm_samples,
         lean_check,
+        lean_samples,
     })
+}
+
+async fn run_repeated_pairs(
+    native: &Path,
+    mounted: &Path,
+    program: &'static str,
+    args: &'static [&'static str],
+    native_first: bool,
+    count: usize,
+) -> Result<Vec<[u128; 2]>, String> {
+    let mut samples = Vec::with_capacity(count);
+    for index in 0..count {
+        samples.push(
+            run_pair(
+                native,
+                mounted,
+                program,
+                args,
+                native_first == index.is_multiple_of(2),
+            )
+            .await?,
+        );
+    }
+    Ok(samples)
+}
+
+fn median_pair(samples: &[[u128; 2]]) -> [u128; 2] {
+    assert!(
+        !samples.is_empty(),
+        "at least one timing sample is required"
+    );
+    let mut native = samples.iter().map(|sample| sample[0]).collect::<Vec<_>>();
+    let mut mounted = samples.iter().map(|sample| sample[1]).collect::<Vec<_>>();
+    native.sort_unstable();
+    mounted.sort_unstable();
+    [
+        *native
+            .get(native.len() / 2)
+            .expect("nonempty native samples"),
+        *mounted
+            .get(mounted.len() / 2)
+            .expect("nonempty mounted samples"),
+    ]
 }
 
 async fn run_pair(

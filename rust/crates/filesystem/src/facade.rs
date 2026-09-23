@@ -8077,6 +8077,46 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<FileRangeRead> {
+        self.read_file_by_id_range(file_id, range, false, budget, cancellation)
+            .await
+    }
+
+    /// Reads at most `maximum_bytes`, clipping to the current logical EOF in
+    /// the same checkout view used to read content.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same typed failures as [`Self::read_file_range_by_id`].
+    pub async fn read_file_up_to_by_id(
+        &mut self,
+        file_id: FileId,
+        offset: u64,
+        maximum_bytes: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<FileRangeRead> {
+        self.read_file_by_id_range(
+            file_id,
+            ByteRange {
+                offset,
+                length: u64::from(maximum_bytes),
+            },
+            true,
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn read_file_by_id_range(
+        &mut self,
+        file_id: FileId,
+        mut range: ByteRange,
+        clip_to_eof: bool,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<FileRangeRead> {
+        let requested_range = range;
         if range.length > self.volume.config.limits.maximum_read_bytes {
             return Err(OperationFailure::before_work(FsError::FileRead(
                 FileRangeReadError::InvalidRange,
@@ -8089,6 +8129,47 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let record = lookup
             .value
             .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
+        if clip_to_eof {
+            if record.kind != FileKind::Regular {
+                return Err(OperationFailure::new(
+                    FsError::FileRead(FileRangeReadError::NotRegular),
+                    work,
+                ));
+            }
+            let logical_bytes = match record.payload {
+                FilePayload::InlineRegular(data) => {
+                    u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX)
+                }
+                FilePayload::Regular { logical_bytes, .. } => logical_bytes,
+                _ => {
+                    return Err(OperationFailure::new(
+                        FsError::FileRead(FileRangeReadError::NotRegular),
+                        work,
+                    ));
+                }
+            };
+            range.length = range.length.min(logical_bytes.saturating_sub(range.offset));
+            if range.length == 0 {
+                if self.mode.consistency != ConsistencyMode::Pinned && requested_range.length != 0 {
+                    work = self
+                        .observe_base_regular_range(
+                            file_id,
+                            requested_range,
+                            work,
+                            budget,
+                            cancellation,
+                        )
+                        .await?;
+                }
+                return Ok(FsReceipt {
+                    value: FileRangeRead {
+                        bytes: Bytes::new(),
+                        work,
+                    },
+                    work,
+                });
+            }
+        }
         let mut read = read_file_range_async(
             &self.volume.fs.inner.objects,
             FileRangeRequest {
@@ -8103,9 +8184,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .await
         .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRead))?;
         work = add(work, read.work)?;
-        if self.mode.consistency != ConsistencyMode::Pinned && range.length != 0 {
+        if self.mode.consistency != ConsistencyMode::Pinned && requested_range.length != 0 {
             work = self
-                .observe_base_regular_range(file_id, range, work, budget, cancellation)
+                .observe_base_regular_range(file_id, requested_range, work, budget, cancellation)
                 .await?;
         }
         read.work = work;
@@ -9748,39 +9829,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let prior = candidate
                 .as_ref()
                 .map_or(WorkCounters::default(), |value| value.work);
-            let observed = if capture_terminal {
-                crate::kernel::observe_path_async(
-                    &self.volume.fs.inner.objects,
-                    &self.base_root,
+            let observed = self
+                .observe_base_for_candidate(
                     path,
-                    self.volume.config,
-                    remaining(prior, budget)?,
+                    prior,
+                    candidate.is_some(),
+                    capture_terminal,
+                    budget,
                     cancellation,
                 )
-                .await
-            } else {
-                crate::kernel::observe_path_edges_async(
-                    &self.volume.fs.inner.objects,
-                    &self.base_root,
-                    path,
-                    self.volume.config,
-                    remaining(prior, budget)?,
-                    cancellation,
-                )
-                .await
-            }
-            .map_err(|failure| failure.map_with_prior_work(prior, FsError::Path))?;
-            let combined = add(prior, observed.lookup.work)?;
+                .await?;
+            let combined = observed.work;
             self.dependencies
                 .extend_observations(
-                    observed.dependencies,
+                    observed.value.dependencies,
                     self.volume.config.limits.maximum_checkout_dependencies,
                 )
                 .map_err(|error| OperationFailure::new(error.into(), combined))?;
             candidate.map_or(
                 PathLookup {
                     work: combined,
-                    ..observed.lookup
+                    ..observed.value.lookup
                 },
                 |value| PathLookup {
                     work: combined,
@@ -9791,6 +9860,64 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(FsReceipt {
             work: lookup.work,
             value: lookup,
+        })
+    }
+
+    async fn observe_base_for_candidate(
+        &self,
+        path: &NamespacePath,
+        prior: WorkCounters,
+        has_candidate: bool,
+        capture_terminal: bool,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<crate::kernel::ObservedPathLookup> {
+        let observed = if capture_terminal {
+            crate::kernel::observe_path_async(
+                &self.volume.fs.inner.objects,
+                &self.base_root,
+                path,
+                self.volume.config,
+                remaining(prior, budget)?,
+                cancellation,
+            )
+            .await
+        } else {
+            crate::kernel::observe_path_edges_async(
+                &self.volume.fs.inner.objects,
+                &self.base_root,
+                path,
+                self.volume.config,
+                remaining(prior, budget)?,
+                cancellation,
+            )
+            .await
+        };
+        let (observed, observation_prior) = match observed {
+            Ok(observed) => (observed, prior),
+            Err(failure)
+                if has_candidate && matches!(failure.error, PathLookupError::NotDirectory) =>
+            {
+                // The candidate can replace a base file with a directory.
+                // The positive base edge to that file is the full dependency.
+                let consumed = add(prior, *failure.work)?;
+                let observed = crate::kernel::observe_path_edges_async(
+                    &self.volume.fs.inner.objects,
+                    &self.base_root,
+                    path,
+                    self.volume.config,
+                    remaining(consumed, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(consumed, FsError::Path))?;
+                (observed, consumed)
+            }
+            Err(failure) => return Err(failure.map_with_prior_work(prior, FsError::Path)),
+        };
+        Ok(FsReceipt {
+            work: add(observation_prior, observed.lookup.work)?,
+            value: observed,
         })
     }
 

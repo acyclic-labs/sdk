@@ -30,7 +30,9 @@ mod routed;
 pub use routed::RoutedMountSource;
 
 mod customer;
-pub use customer::{LazyMount, Mount, MountLifecycleError, MountOptions, MountPublication};
+pub use customer::{
+    LazyMount, LazyWorkingSet, Mount, MountLifecycleError, MountOptions, MountPublication,
+};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod device;
@@ -251,6 +253,12 @@ pub trait MountOpenFile: Send + Sync + 'static {
     ///
     /// Returns range, storage, authentication, cancellation, or work failures.
     fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError>;
+    /// Reads at most `maximum_bytes`, clipping to EOF in the same coherent view.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same typed failures as [`Self::read_range`].
+    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError>;
     /// Finds the next sparse data or hole boundary.
     ///
     /// # Errors
@@ -2660,7 +2668,6 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     async fn explicit_materialization_and_capture_round_trip_sparse_checkout_inner()
     -> Result<(), Box<dyn std::error::Error>> {
-        eprintln!("sparse test: begin");
         let limits = VolumeLimits::default();
         let config = VolumeConfig {
             profile: FilesystemProfile::Portable,
@@ -2730,7 +2737,6 @@ mod tests {
                 &cancellation,
             )
             .await?;
-        eprintln!("sparse test: checkout populated");
 
         let temporary = tempfile::tempdir()?;
         let destination = temporary.path().join("view");
@@ -2748,7 +2754,6 @@ mod tests {
         ))
         .await
         .map_err(|error| std::io::Error::other(format!("sparse materialization: {error}")))?;
-        eprintln!("sparse test: materialized");
         assert_eq!(materialized.value.files, 1);
         let host_file = destination.join("sparse.bin");
         assert_eq!(
@@ -2761,7 +2766,6 @@ mod tests {
             .map_err(|error| std::io::Error::other(format!("materialized read: {error}")))?;
         assert_eq!(&body[..4], b"head");
         assert_eq!(&body[body.len() - 4..], b"tail");
-        eprintln!("sparse test: physical read");
 
         let sparse_capture = capture_paths(
             &mut checkout,
@@ -2777,7 +2781,6 @@ mod tests {
         )
         .await
         .map_err(|error| std::io::Error::other(format!("sparse recapture: {error}")))?;
-        eprintln!("sparse test: recaptured");
         assert!(sparse_capture.value.staged_file_bytes < 1024 * 1024);
         let sparse_plan = checkout
             .plan_file_extents(

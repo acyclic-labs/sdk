@@ -1296,15 +1296,23 @@ fn parallel_io_child(mount: &Path, index: usize, count: usize) -> Result<(), Fai
         return Err("invalid parallel client identity".into());
     }
     let directory = mount.join("parallel-clients");
-    fs::create_dir_all(&directory)?;
+    let staging = mount.join("parallel-staging");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("parallel client {index} create directory: {error}"))?;
+    fs::create_dir_all(&staging)
+        .map_err(|error| format!("parallel client {index} create staging: {error}"))?;
     let body = format!("client-{index}");
-    fs::write(
-        directory.join(format!("client-{index}.txt")),
-        body.as_bytes(),
-    )?;
+    let staged = staging.join(format!("client-{index}.tmp"));
+    fs::write(&staged, body.as_bytes())
+        .map_err(|error| format!("parallel client {index} write own file: {error}"))?;
+    fs::rename(&staged, directory.join(format!("client-{index}.txt")))
+        .map_err(|error| format!("parallel client {index} publish own file: {error}"))?;
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+        let entries = fs::read_dir(&directory)
+            .map_err(|error| format!("parallel client {index} open directory: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("parallel client {index} list directory: {error}"))?;
         if entries.len() == count {
             break;
         }
@@ -1320,8 +1328,13 @@ fn parallel_io_child(mount: &Path, index: usize, count: usize) -> Result<(), Fai
     for peer in 0..count {
         let path = directory.join(format!("client-{peer}.txt"));
         let expected = format!("client-{peer}");
-        if fs::metadata(&path)?.len() != u64::try_from(expected.len())?
-            || fs::read(path)? != expected.as_bytes()
+        if fs::metadata(&path)
+            .map_err(|error| format!("parallel client {index} stat peer {peer}: {error}"))?
+            .len()
+            != u64::try_from(expected.len())?
+            || fs::read(&path)
+                .map_err(|error| format!("parallel client {index} read peer {peer}: {error}"))?
+                != expected.as_bytes()
         {
             return Err(format!("parallel client {index} saw incoherent peer {peer}").into());
         }
@@ -1684,7 +1697,7 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
             Ok::<(), Failure>(())
         })?;
         eprintln!("qualification phase: preserved stale root and resumed on replacement");
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(windows))]
     {

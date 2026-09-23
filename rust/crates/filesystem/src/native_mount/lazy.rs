@@ -9,14 +9,16 @@ use super::{
     CheckoutMountSource, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
     MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError, MountViewLease,
+    capture_root_identity,
 };
-#[cfg(target_os = "linux")]
+use crate::LazySeekTarget;
+#[cfg(unix)]
 use crate::demand::SourceReference;
 use crate::demand::{DemandSource, SourceNode, SourceNodeKind};
 use crate::kernel::{FileKind, FileMetadata, FilePayload, MetadataField};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, FileId, IdempotencyKey, LazyDirectoryCursor, LazyLookup,
-    LazySeekTarget, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceStore, WorkspaceMetadata,
+    LazyWorkspace, LazyWorkspaceError, LazyWorkspaceStore, NativeRootIdentity, WorkspaceMetadata,
 };
 use bytes::Bytes;
 use std::collections::BTreeMap;
@@ -364,9 +366,9 @@ struct LazyOpenFile<A, O, D, S> {
     mount_path: MountPath,
     promotion_key: IdempotencyKey,
     expected_source: FileId,
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     source: SourceReference,
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     source_node: SourceNode,
     source_generation: u64,
     source_view: Arc<SourceViewGate>,
@@ -414,6 +416,10 @@ impl MountOpenFile for ViewBoundOpenFile {
 
     fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
         self.with_view(|file| file.read_range(offset, length))
+    }
+
+    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
+        self.with_view(|file| file.read_up_to(offset, maximum_bytes))
     }
 
     fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
@@ -537,12 +543,12 @@ where
         {
             return file.lookup();
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             let file_id = self.lazy.source_file_id(&self.source_node);
             Ok(mount_lookup(LazyLookup::Source(self.source_node), file_id))
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         self.runtime.wait(|| async {
             let lookup = self.lazy.lookup(&self.path).await.map_err(lazy_error)?;
             let file_id = self
@@ -565,7 +571,7 @@ where
         {
             return file.read_range(offset, length);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             self.runtime.wait(|| async {
                 self.lazy
@@ -580,10 +586,67 @@ where
                     .map_err(lazy_error)
             })
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         self.runtime.wait(|| async {
             self.lazy
                 .read_range(&self.path, offset, u64::from(length))
+                .await
+                .map_err(lazy_error)
+        })
+    }
+
+    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
+        let _lease = self.source_lease()?;
+        if let Some(file) = self
+            .promoted
+            .lock()
+            .map_err(|_| MountSourceError::Stale)?
+            .as_ref()
+            .cloned()
+        {
+            return file.read_up_to(offset, maximum_bytes);
+        }
+        #[cfg(unix)]
+        {
+            let length = self
+                .source_node
+                .logical_bytes
+                .ok_or_else(|| MountSourceError::Invalid("source is not regular".to_owned()))?
+                .saturating_sub(offset)
+                .min(u64::from(maximum_bytes));
+            if length == 0 {
+                return Ok(Bytes::new());
+            }
+            self.runtime.wait(|| async {
+                self.lazy
+                    .read_source_range(&self.path, self.source, self.source_node, offset, length)
+                    .await
+                    .map_err(lazy_error)
+            })
+        }
+        #[cfg(not(unix))]
+        self.runtime.wait(|| async {
+            let lookup = self.lazy.lookup(&self.path).await.map_err(lazy_error)?;
+            let logical_bytes = match lookup {
+                LazyLookup::Authored { stat, .. } => stat.logical_bytes,
+                LazyLookup::Shadow { record, .. } => match record.payload {
+                    FilePayload::InlineRegular(data) => {
+                        Some(u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX))
+                    }
+                    FilePayload::Regular { logical_bytes, .. } => Some(logical_bytes),
+                    _ => None,
+                },
+                LazyLookup::Source(node) => node.logical_bytes,
+            }
+            .ok_or_else(|| MountSourceError::Invalid("source is not regular".to_owned()))?;
+            let length = logical_bytes
+                .saturating_sub(offset)
+                .min(u64::from(maximum_bytes));
+            if length == 0 {
+                return Ok(Bytes::new());
+            }
+            self.lazy
+                .read_range(&self.path, offset, length)
                 .await
                 .map_err(lazy_error)
         })
@@ -600,7 +663,7 @@ where
         {
             return file.seek(offset, target);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             let length = self.source_node.logical_bytes.ok_or_else(|| {
                 MountSourceError::Invalid("seek requires a regular file".to_owned())
@@ -613,7 +676,7 @@ where
                 MountSeekTarget::Hole => length,
             }))
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         self.runtime.wait(|| async {
             self.lazy
                 .seek(
@@ -736,9 +799,9 @@ where
         }
         let path = self.path(path)?;
         self.wait(|| async move {
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             let lookup = self.lazy.inspect(&path).await;
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(unix))]
             let lookup = self.lazy.lookup(&path).await;
             match lookup {
                 Ok(lookup) => {
@@ -768,14 +831,14 @@ where
         }
         let path_text = self.path(path)?;
         let lookup_path = path_text.clone();
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         let (lookup, source) = self.wait(|| async move {
             self.lazy
                 .inspect_resolved(&lookup_path)
                 .await
                 .map_err(lazy_error)
         })?;
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         let (lookup, source) = self.wait(|| async move {
             self.lazy
                 .lookup_resolved(&lookup_path)
@@ -811,9 +874,9 @@ where
                     mount_path: path.clone(),
                     promotion_key,
                     expected_source,
-                    #[cfg(target_os = "linux")]
+                    #[cfg(unix)]
                     source: _source,
-                    #[cfg(target_os = "linux")]
+                    #[cfg(unix)]
                     source_node: node,
                     source_generation,
                     source_view: Arc::clone(&self.source_view),
@@ -1154,15 +1217,12 @@ where
         source_root: &Path,
         paths: &[MountPath],
     ) -> Result<(), MountSourceError> {
-        let _mutation = self.mutation_lease(None)?;
-        for path in paths {
-            self.promote_parents_locked(path)?;
-            match self.promote_locked(path) {
-                Ok(()) | Err(MountSourceError::NotFound) => {}
-                Err(error) => return Err(error),
-            }
+        if paths.is_empty() {
+            return Ok(());
         }
-        self.authored.capture_host_paths(source_root, paths)
+        let expected_root_identity = capture_root_identity(source_root)
+            .map_err(|error| MountSourceError::Engine(error.to_string()))?;
+        self.capture_host_paths_with_identity(source_root, paths, expected_root_identity)
     }
 
     fn capture_host_subtree(
@@ -1187,6 +1247,43 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    pub(crate) fn capture_host_paths_with_identity(
+        &self,
+        source_root: &Path,
+        paths: &[MountPath],
+        expected_root_identity: NativeRootIdentity,
+    ) -> Result<(), MountSourceError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let _mutation = self.mutation_lease(None)?;
+        for path in paths {
+            self.promote_parents_locked(path)?;
+            match self.promote_locked(path) {
+                Ok(()) | Err(MountSourceError::NotFound) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        self.authored
+            .capture_host_paths_with_identity(source_root, paths, expected_root_identity)
+    }
+
+    pub(crate) fn capture_host_subtree_with_identity(
+        &self,
+        source_root: &Path,
+        root: &MountPath,
+        expected_root_identity: NativeRootIdentity,
+    ) -> Result<(), MountSourceError> {
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_parents_locked(root)?;
+        match self.promote_locked(root) {
+            Ok(()) | Err(MountSourceError::NotFound) => {}
+            Err(error) => return Err(error),
+        }
+        self.authored
+            .capture_host_subtree_with_identity(source_root, root, expected_root_identity)
+    }
+
     fn bind_open_file(
         &self,
         file: Arc<dyn MountOpenFile>,

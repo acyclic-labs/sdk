@@ -18,7 +18,7 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, mpsc};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
     FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -38,15 +38,18 @@ use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NOTIFY_FILE_OPENED, PRJ_NOTIFY_FILE_OVERWRITTEN, PRJ_NOTIFY_FILE_RENAMED,
     PRJ_NOTIFY_HARDLINK_CREATED, PRJ_NOTIFY_NEW_FILE_CREATED, PRJ_NOTIFY_PRE_DELETE,
     PRJ_NOTIFY_PRE_RENAME, PRJ_NOTIFY_PRE_SET_HARDLINK, PRJ_PLACEHOLDER_INFO,
-    PRJ_STARTVIRTUALIZING_OPTIONS, PrjAllocateAlignedBuffer, PrjFileNameCompare, PrjFileNameMatch,
-    PrjFillDirEntryBuffer, PrjFillDirEntryBuffer2, PrjFreeAlignedBuffer,
-    PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing, PrjWriteFileData,
+    PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_ALLOW_DIRTY_DATA, PRJ_UPDATE_ALLOW_DIRTY_METADATA,
+    PRJ_UPDATE_ALLOW_READ_ONLY, PRJ_UPDATE_ALLOW_TOMBSTONE, PrjAllocateAlignedBuffer,
+    PrjDeleteFile, PrjFileNameCompare, PrjFileNameMatch, PrjFillDirEntryBuffer,
+    PrjFillDirEntryBuffer2, PrjFreeAlignedBuffer, PrjMarkDirectoryAsPlaceholder,
+    PrjStartVirtualizing, PrjStopVirtualizing, PrjUpdateFileIfNeeded, PrjWriteFileData,
     PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
 };
 use windows::core::{GUID, HRESULT, HSTRING, PCWSTR};
 
 const HR_OK: HRESULT = HRESULT(0);
 const HR_FILE_NOT_FOUND: HRESULT = HRESULT(0x8007_0002_u32.cast_signed());
+const HR_PATH_NOT_FOUND: HRESULT = HRESULT(0x8007_0003_u32.cast_signed());
 const HR_ALREADY_EXISTS: HRESULT = HRESULT(0x8007_00b7_u32.cast_signed());
 const HR_NOT_SAME_DEVICE: HRESULT = HRESULT(0x8007_0011_u32.cast_signed());
 const HR_INVALID_DATA: HRESULT = HRESULT(0x8007_000d_u32.cast_signed());
@@ -91,14 +94,26 @@ struct Runtime {
     metadata_baselines: Arc<Mutex<HashMap<u128, OpenMetadataState>>>,
     metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
     post_operation_failure: Arc<Mutex<PostOperationFailures>>,
-    executor: CallbackExecutor,
+    callbacks: CallbackGate,
 }
 
-struct CallbackExecutor {
-    senders: Vec<mpsc::SyncSender<Job>>,
+struct CallbackGate {
+    shards: Box<[Mutex<()>]>,
+    active: Mutex<usize>,
+    idle: Condvar,
 }
 
-type Job = Box<dyn FnOnce() + Send>;
+struct ActiveCallback<'a>(&'a CallbackGate);
+
+impl Drop for ActiveCallback<'_> {
+    fn drop(&mut self) {
+        let mut active = lock_recover(&self.0.active);
+        *active = active.saturating_sub(1);
+        if *active == 0 {
+            self.0.idle.notify_all();
+        }
+    }
+}
 
 #[derive(Default)]
 struct PostOperationFailures {
@@ -195,76 +210,66 @@ fn compare_projfs_name(left: &[u8], right: &[u8]) -> Option<i32> {
     })
 }
 
-impl CallbackExecutor {
+impl CallbackGate {
     fn start() -> Result<Self, NativeMountError> {
-        let workers = std::thread::available_parallelism().map_or(1, |count| count.get().min(16));
-        let mut senders = Vec::with_capacity(workers);
-        for index in 0..workers {
-            let (sender, receiver) = mpsc::sync_channel::<Job>(256);
-            std::thread::Builder::new()
-                .name(format!("acyclic-projfs-{index}"))
-                .stack_size(32 * 1024 * 1024)
-                .spawn(move || {
-                    while let Ok(job) = receiver.recv() {
-                        job();
-                    }
-                })
-                .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-            senders.push(sender);
+        const SHARDS: usize = 64;
+        let mut shards = Vec::new();
+        shards
+            .try_reserve_exact(SHARDS)
+            .map_err(|error| NativeMountError::Driver(error.to_string()))?;
+        for _ in 0..SHARDS {
+            shards.push(Mutex::new(()));
         }
-        Ok(Self { senders })
+        Ok(Self {
+            shards: shards.into_boxed_slice(),
+            active: Mutex::new(0),
+            idle: Condvar::new(),
+        })
     }
 
-    fn call<T: Send + 'static>(&self, operation: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    fn call<T>(&self, operation: impl FnOnce() -> T) -> Option<T> {
         self.drain()?;
-        self.call_observed(0, operation, |_| {})
+        Some(operation())
     }
 
     fn drain(&self) -> Option<()> {
-        let mut completions = Vec::with_capacity(self.senders.len());
-        for sender in &self.senders {
-            let (complete, received) = mpsc::sync_channel(1);
-            sender
-                .send(Box::new(move || {
-                    let _ = complete.send(());
-                }))
-                .ok()?;
-            completions.push(received);
-        }
-        for received in completions {
-            received.recv().ok()?;
+        let mut active = lock_recover(&self.active);
+        while *active != 0 {
+            active = self
+                .idle
+                .wait(active)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         Some(())
     }
 
-    fn call_observed<T: Send + 'static>(
+    fn call_observed<T>(
         &self,
         key: u128,
-        operation: impl FnOnce() -> T + Send + 'static,
-        observe: impl FnOnce(&T) + Send + 'static,
+        operation: impl FnOnce() -> T,
+        observe: impl FnOnce(&T),
     ) -> Option<T> {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let count = u128::try_from(self.senders.len()).ok()?;
+        let count = u128::try_from(self.shards.len()).ok()?;
         let shard = usize::try_from(key % count).ok()?;
-        self.senders
-            .get(shard)?
-            .send(Box::new(move || {
-                let result = operation();
-                observe(&result);
-                let _ = sender.send(result);
-            }))
-            .ok()?;
-        receiver.recv().ok()
+        {
+            let mut active = lock_recover(&self.active);
+            *active = active.checked_add(1)?;
+        }
+        let _active = ActiveCallback(self);
+        let _serial = lock_recover(self.shards.get(shard)?);
+        let result = operation();
+        observe(&result);
+        Some(result)
     }
 }
 
-fn flush_callback_executor(
-    executor: &CallbackExecutor,
+fn flush_callback_gate(
+    callbacks: &CallbackGate,
     failure: Arc<Mutex<PostOperationFailures>>,
-    capture: impl Fn(&[(MountPath, bool)]) -> Result<(), super::MountSourceError> + Send + 'static,
+    capture: impl Fn(&[(MountPath, bool)]) -> Result<(), super::MountSourceError>,
 ) -> Result<(), NativeMountError> {
     let pending_failure = Arc::clone(&failure);
-    let pending = executor
+    let pending = callbacks
         .call(move || {
             lock_recover(pending_failure.as_ref())
                 .pending_captures
@@ -281,7 +286,7 @@ fn flush_callback_executor(
             .then_with(|| left.components().cmp(right.components()))
     });
     // Host capture opens paths inside the virtualization root. Run one batch
-    // outside the serialized callback executor so nested notifications can run.
+    // outside the callback gate so nested notifications can run.
     let paths = pending
         .iter()
         .map(|(path, _, subtree)| (path.clone(), *subtree))
@@ -310,7 +315,7 @@ fn flush_callback_executor(
             }
         }
     }
-    let failure = executor
+    let failure = callbacks
         .call(move || {
             let failure = lock_recover(failure.as_ref());
             failure.unreplayable.clone().or_else(|| {
@@ -351,7 +356,7 @@ impl ProjFsSession {
         source: Arc<dyn MountFilesystem>,
     ) -> Result<Self, DriverStartFailure> {
         reject_stale_projection(&request.destination)?;
-        let executor = CallbackExecutor::start()?;
+        let callback_gate = CallbackGate::start()?;
         let metadata_root = Arc::new(
             HostRoot::open(&request.destination)
                 .map_err(|error| NativeMountError::Driver(error.to_string()))?,
@@ -390,16 +395,16 @@ impl ProjFsSession {
             metadata_baselines: Arc::new(Mutex::new(HashMap::new())),
             metadata_probes: Arc::new(Mutex::new(HashMap::new())),
             post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
-            executor,
+            callbacks: callback_gate,
         });
         let context_ptr = (&raw mut *runtime).cast::<c_void>();
         let callbacks = callbacks();
         let mut notification_mapping = PRJ_NOTIFICATION_MAPPING {
             NotificationBitMask: PRJ_NOTIFY_NEW_FILE_CREATED
                 | PRJ_NOTIFY_FILE_OVERWRITTEN
-                | PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION
                 | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED
                 | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED
+                | PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION
                 | PRJ_NOTIFY_FILE_OPENED
                 | PRJ_NOTIFY_PRE_DELETE
                 | PRJ_NOTIFY_PRE_RENAME
@@ -490,18 +495,24 @@ impl ProjFsSession {
         let root = runtime.root.clone();
         let host_root = Arc::clone(&runtime.metadata_root);
         let probes = Arc::clone(&runtime.metadata_probes);
-        flush_callback_executor(
-            &runtime.executor,
+        let context = self.context;
+        runtime
+            .callbacks
+            .drain()
+            .ok_or_else(|| NativeMountError::Driver("ProjFS callback worker stopped".to_owned()))?;
+        flush_callback_gate(
+            &runtime.callbacks,
             Arc::clone(&runtime.post_operation_failure),
             move |paths| {
-                // Captures read through this projection. Suppress their own
-                // read-only notifications while the source mutation lease is
-                // held, and authenticate exact paths together so hard links
-                // share one identity and one checkout transaction.
+                // Host capture reads through this projection. Suppress only
+                // those provider-owned metadata probes; external opens retain
+                // their per-handle baselines.
                 let _guards = paths
                     .iter()
                     .map(|(path, _)| MetadataProbeGuard::enter(probes.as_ref(), path))
                     .collect::<Vec<_>>();
+                // Authenticate exact paths together so hard links share one
+                // identity and one checkout transaction.
                 let mut exact = Vec::new();
                 let mut subtrees = Vec::new();
                 for (path, subtree) in paths {
@@ -538,9 +549,88 @@ impl ProjFsSession {
                 for subtree in subtrees {
                     source.capture_host_subtree(&root, &subtree)?;
                 }
-                source.capture_host_paths(&root, &exact)
+                source.capture_host_paths(&root, &exact)?;
+                if let Some(context) = context {
+                    for (path, _) in paths {
+                        normalize_cache_path(context, source.as_ref(), path)?;
+                    }
+                }
+                Ok(())
             },
         )
+    }
+}
+
+fn normalize_cache_path(
+    context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+    source: &dyn MountFilesystem,
+    path: &MountPath,
+) -> Result<(), super::MountSourceError> {
+    let relative = host_relative_path(path)?;
+    let relative = HSTRING::from(relative.as_os_str());
+    let update_flags = PRJ_UPDATE_ALLOW_DIRTY_METADATA
+        | PRJ_UPDATE_ALLOW_DIRTY_DATA
+        | PRJ_UPDATE_ALLOW_TOMBSTONE
+        | PRJ_UPDATE_ALLOW_READ_ONLY;
+    let Some(node) = source.lookup(path)? else {
+        // SAFETY: the relative UTF-16 name remains live for this synchronous
+        // call and the context belongs to this mounted runtime.
+        let result = unsafe {
+            PrjDeleteFile(
+                context,
+                PCWSTR::from_raw(relative.as_ptr()),
+                Some(update_flags),
+                None,
+            )
+        };
+        return match result {
+            Ok(()) => Ok(()),
+            Err(error)
+                if error.code() == HR_FILE_NOT_FOUND || error.code() == HR_PATH_NOT_FOUND =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(super::MountSourceError::Engine(
+                driver_error(&error).to_string(),
+            )),
+        };
+    };
+    if matches!(
+        node.node.kind,
+        MountNodeKind::Directory | MountNodeKind::SymbolicLink
+    ) {
+        // ProjFS cannot normalize a non-empty directory, and its update API
+        // cannot carry extended symlink information. Their exact state is
+        // already captured; retaining the cache entry is harmless.
+        return Ok(());
+    }
+    let info = basic(node.node, Some(node.metadata)).ok_or_else(|| {
+        super::MountSourceError::Unsupported("node cannot be represented by ProjFS".to_owned())
+    })?;
+    let placeholder = PRJ_PLACEHOLDER_INFO {
+        FileBasicInfo: info,
+        ..PRJ_PLACEHOLDER_INFO::default()
+    };
+    // SAFETY: every pointer refers to stack/owned data that remains live for
+    // this synchronous call and the context belongs to this mounted runtime.
+    let result = unsafe {
+        PrjUpdateFileIfNeeded(
+            context,
+            PCWSTR::from_raw(relative.as_ptr()),
+            &raw const placeholder,
+            u32::try_from(size_of::<PRJ_PLACEHOLDER_INFO>()).unwrap_or(u32::MAX),
+            Some(update_flags),
+            None,
+        )
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == HR_FILE_NOT_FOUND || error.code() == HR_PATH_NOT_FOUND => {
+            Ok(())
+        }
+        Err(error) => Err(super::MountSourceError::Engine(
+            driver_error(&error).to_string(),
+        )),
     }
 }
 
@@ -971,8 +1061,6 @@ fn metadata_changed_since_open(
     baseline: HostWindowsMetadata,
     current: HostWindowsMetadata,
 ) -> bool {
-    // Hydration replaces RECALL_ON_DATA_ACCESS with ARCHIVE, while a read may
-    // also advance last-access time. Neither transition is an authored edit.
     let hydration_mask = FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 | FILE_ATTRIBUTE_ARCHIVE.0;
     let attributes_changed = if baseline.attributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 != 0 {
         baseline.attributes & !hydration_mask != current.attributes & !hydration_mask
@@ -1075,6 +1163,24 @@ fn basic(node: MountNode, metadata: Option<FileMetadata>) -> Option<PRJ_FILE_BAS
     })
 }
 
+fn unix_nanoseconds(windows_ticks: i64) -> Result<i64, super::MountSourceError> {
+    const WINDOWS_EPOCH_OFFSET_SECONDS: i128 = 11_644_473_600;
+    const HUNDRED_NANOSECONDS_PER_SECOND: i128 = 10_000_000;
+    i128::from(windows_ticks)
+        .checked_sub(
+            WINDOWS_EPOCH_OFFSET_SECONDS
+                .checked_mul(HUNDRED_NANOSECONDS_PER_SECOND)
+                .ok_or_else(|| {
+                    super::MountSourceError::Invalid("Windows epoch conversion overflow".to_owned())
+                })?,
+        )
+        .and_then(|ticks| ticks.checked_mul(100))
+        .and_then(|nanoseconds| i64::try_from(nanoseconds).ok())
+        .ok_or_else(|| {
+            super::MountSourceError::Invalid("Windows timestamp exceeds i64 nanoseconds".to_owned())
+        })
+}
+
 fn symlink_extended(target: &[u8]) -> Option<(HSTRING, PRJ_EXTENDED_INFO)> {
     let target = HSTRING::from_wide(&decode_utf16_name(target)?);
     let extended = PRJ_EXTENDED_INFO {
@@ -1099,24 +1205,6 @@ fn windows_time(field: MetadataField<i64>) -> Option<i64> {
         .checked_mul(HUNDRED_NANOSECONDS_PER_SECOND)?
         .checked_add(i128::from(unix_nanoseconds).div_euclid(100))?;
     i64::try_from(ticks).ok()
-}
-
-fn unix_nanoseconds(windows_ticks: i64) -> Result<i64, super::MountSourceError> {
-    const WINDOWS_EPOCH_OFFSET_SECONDS: i128 = 11_644_473_600;
-    const HUNDRED_NANOSECONDS_PER_SECOND: i128 = 10_000_000;
-    i128::from(windows_ticks)
-        .checked_sub(
-            WINDOWS_EPOCH_OFFSET_SECONDS
-                .checked_mul(HUNDRED_NANOSECONDS_PER_SECOND)
-                .ok_or_else(|| {
-                    super::MountSourceError::Invalid("Windows epoch conversion overflow".to_owned())
-                })?,
-        )
-        .and_then(|ticks| ticks.checked_mul(100))
-        .and_then(|nanoseconds| i64::try_from(nanoseconds).ok())
-        .ok_or_else(|| {
-            super::MountSourceError::Invalid("Windows timestamp exceeds i64 nanoseconds".to_owned())
-        })
 }
 
 unsafe extern "system" fn start_directory(
@@ -1402,10 +1490,6 @@ unsafe extern "system" fn file_data(
     let renamed_file = lock_recover(&runtime.renamed_hydration_files)
         .get(&file_id(data))
         .cloned();
-    let metadata_path = renamed_file.as_ref().map_or_else(
-        || source_path.clone(),
-        |renamed| renamed.destination.clone(),
-    );
     // Immutable hydration reads take the source's own read gate. Keeping them
     // off the mutation callback queue lets concurrent compiler reads proceed.
     let bytes = match renamed_file.map_or_else(
@@ -1432,24 +1516,7 @@ unsafe extern "system" fn file_data(
         length,
     );
     PrjFreeAlignedBuffer(buffer);
-    match result {
-        Ok(()) => match probe_host_windows_metadata(
-            runtime.metadata_root.as_ref(),
-            &metadata_path,
-            runtime.metadata_probes.as_ref(),
-        ) {
-            Ok(metadata) => {
-                refresh_metadata_baseline(
-                    runtime.metadata_baselines.as_ref(),
-                    file_id(data),
-                    metadata,
-                );
-                HR_OK
-            }
-            Err(_) => HR_UNEXPECTED,
-        },
-        Err(error) => error.code(),
-    }
+    result.map_or_else(|error| error.code(), |()| HR_OK)
 }
 
 unsafe extern "system" fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
@@ -1479,7 +1546,6 @@ fn record_post_operation_failure(
             | PRJ_NOTIFICATION_FILE_OVERWRITTEN
             | PRJ_NOTIFICATION_FILE_RENAMED
             | PRJ_NOTIFICATION_HARDLINK_CREATED
-            | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
             | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
             | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
     ) {
@@ -1558,11 +1624,16 @@ unsafe extern "system" fn notification(
     {
         return HR_OK;
     }
-    if !is_directory && notification == PRJ_NOTIFICATION_NEW_FILE_CREATED {
+    if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED {
         // The physical file is already present. One final-state capture at
         // the operation boundary covers every later write and metadata edit;
         // only topology changes need further per-file notifications.
-        defer_host_capture(runtime.post_operation_failure.as_ref(), path);
+        if is_directory {
+            lock_recover(runtime.post_operation_failure.as_ref())
+                .queue_subtree(&path, "new directory awaiting capture".to_owned());
+        } else {
+            defer_host_capture(runtime.post_operation_failure.as_ref(), path);
+        }
         set_post_create_notification_mask(operation_parameters, true);
         return HR_OK;
     }
@@ -1573,6 +1644,23 @@ unsafe extern "system" fn notification(
     let destination = (!destination_is_external)
         .then(|| path_from(destination_filename))
         .flatten();
+    if path.components().is_empty() && notification == PRJ_NOTIFICATION_FILE_OPENED {
+        return HR_OK;
+    }
+    if notification == PRJ_NOTIFICATION_HARDLINK_CREATED {
+        let Some(destination) = destination else {
+            lock_recover(runtime.post_operation_failure.as_ref()).unreplayable = Some(format!(
+                "{path:?}: hard-link destination is invalid after host completion"
+            ));
+            return HR_INVALID_DATA;
+        };
+        // The link already exists physically. Both names must be captured in
+        // one later batch to recover their shared identity, but enqueueing the
+        // two paths cannot fail and does not touch checkout state.
+        defer_host_capture(runtime.post_operation_failure.as_ref(), path);
+        defer_host_capture(runtime.post_operation_failure.as_ref(), destination);
+        return HR_OK;
+    }
     let source = Arc::clone(&runtime.source);
     let metadata_baselines = Arc::clone(&runtime.metadata_baselines);
     let metadata_probes = Arc::clone(&runtime.metadata_probes);
@@ -1672,16 +1760,9 @@ unsafe extern "system" fn notification(
                 MetadataClose::Pending => return Ok(()),
                 MetadataClose::Final(baseline) => baseline,
             };
-            // This is the final close. Retire every per-handle record before
-            // doing fallible host I/O so an error cannot poison a later
-            // ProjFS FileId reuse with stale rename or hydration state.
             let capture_path = lock_recover(renamed_paths.as_ref())
                 .remove(&file_id)
                 .unwrap_or_else(|| Some(path.clone()));
-            // ProjFS may close a renamed placeholder before requesting its
-            // contents. Its later data callback still names the original path,
-            // so retain the immutable source until the placeholder is replaced
-            // or this virtualization instance ends.
             let Some(capture_path) = capture_path else {
                 return Ok(());
             };
@@ -1694,11 +1775,6 @@ unsafe extern "system" fn notification(
             match source.lookup(&capture_path) {
                 Ok(Some(lookup)) => match baseline {
                     Some(baseline) if metadata_changed_since_open(baseline, host) => {
-                        // ProjFS classifies FileBasicInfo-only changes as a
-                        // close without data modification. Apply only the
-                        // fields that changed since open so metadata capture
-                        // never re-reads a projected file while this callback
-                        // owns the checkout worker.
                         capture_changed_windows_metadata(
                             source.as_ref(),
                             &capture_path,
@@ -1740,19 +1816,6 @@ unsafe extern "system" fn notification(
                 lock_recover(renamed_paths.as_ref()).insert(file_id, renamed_path);
             }
             result
-        } else if notification == PRJ_NOTIFICATION_HARDLINK_CREATED {
-            destination
-                .ok_or_else(|| {
-                    super::MountSourceError::Invalid("hard-link destination is invalid".to_owned())
-                })
-                .map(|destination| {
-                    // ProjFS has completed the physical link. Capture both
-                    // names together at the operation boundary: per-link SDK
-                    // transactions serialize compiler output and can flatten
-                    // a new source's identity before its close notification.
-                    defer_host_capture(operation_failures.as_ref(), path);
-                    defer_host_capture(operation_failures.as_ref(), destination);
-                })
         } else if notification == PRJ_NOTIFICATION_PRE_DELETE
             || notification == PRJ_NOTIFICATION_PRE_RENAME
             || notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
@@ -1765,7 +1828,7 @@ unsafe extern "system" fn notification(
         }
     };
     let result = runtime
-        .executor
+        .callbacks
         .call_observed(file_id, operation, move |result| {
             let retry_path = lock_recover(retry_path.as_ref());
             record_post_operation_failure(
@@ -1779,7 +1842,12 @@ unsafe extern "system" fn notification(
     if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED
         || notification == PRJ_NOTIFICATION_FILE_OVERWRITTEN
     {
-        set_post_create_notification_mask(operation_parameters, false);
+        set_post_create_notification_mask(
+            operation_parameters,
+            notification == PRJ_NOTIFICATION_NEW_FILE_CREATED,
+        );
+    } else if notification == PRJ_NOTIFICATION_FILE_RENAMED && matches!(&result, Some(Ok(()))) {
+        set_post_rename_notification_mask(operation_parameters);
     }
     match result {
         Some(Ok(())) => HR_OK,
@@ -1817,6 +1885,22 @@ fn set_post_create_notification_mask(
                 | PRJ_NOTIFY_PRE_DELETE
                 | topology_mask
         };
+    }
+}
+
+fn set_post_rename_notification_mask(operation_parameters: *mut PRJ_NOTIFICATION_PARAMETERS) {
+    if operation_parameters.is_null() {
+        return;
+    }
+    // SAFETY: ProjFS supplies the writable renamed-file union member for the
+    // FILE_RENAMED callback. Only renamed placeholders need open callbacks to
+    // bridge a possible FileId change during deferred hydration.
+    unsafe {
+        (*operation_parameters).FileRenamed.NotificationMask = PRJ_NOTIFY_FILE_OPENED
+            | PRJ_NOTIFY_PRE_RENAME
+            | PRJ_NOTIFY_FILE_RENAMED
+            | PRJ_NOTIFY_PRE_SET_HARDLINK
+            | PRJ_NOTIFY_HARDLINK_CREATED;
     }
 }
 
@@ -1928,19 +2012,25 @@ fn callbacks() -> PRJ_CALLBACKS {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::{
-        CallbackExecutor, HostWindowsMetadata, MetadataClose, MetadataProbeGuard,
-        PostOperationFailures, close_metadata_handle, finish_cleanup, flush_callback_executor,
-        record_metadata_open, record_post_operation_failure, recover_cache_only_destination,
-        refresh_metadata_baseline, remove_authenticated_destination,
+        CallbackGate, PostOperationFailures, finish_cleanup, flush_callback_gate,
+        record_post_operation_failure, recover_cache_only_destination,
+        remove_authenticated_destination,
     };
-    use crate::native_mount::{MountPath, MountSourceError};
-    use crate::{Fs, IdempotencyKey, LocalOptions, MountOptions, MountPublication};
+    use crate::model::{
+        AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
+        VolumeConfig,
+    };
+    use crate::native_mount::adapter::{CheckoutMountSource, SharedCheckout};
+    use crate::native_mount::{MountFilesystem, MountPath, MountSourceError};
+    use crate::{
+        CancellationToken, Fs, IdempotencyKey, LocalOptions, MountOptions, MountPublication,
+        WorkBudget,
+    };
     use bytes::Bytes;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
     use std::sync::{Arc, Barrier, Mutex};
     use windows::Win32::Storage::ProjectedFileSystem::{
-        PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
-        PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION, PRJ_NOTIFICATION_PRE_DELETE,
+        PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED, PRJ_NOTIFICATION_PRE_DELETE,
         PRJ_VIRTUALIZATION_INSTANCE_INFO, PrjGetVirtualizationInstanceInfo,
         PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
     };
@@ -1973,6 +2063,93 @@ mod tests {
             projected,
             "SDK cursor order differs from the ProjFS merge order"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn stopped_projection_cannot_publish_a_late_open_writer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::{Seek as _, Write as _};
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
+        config.profile = crate::model::FilesystemProfile::Windows;
+        let fs = Fs::memory();
+        let cancellation = CancellationToken::new();
+        let volume = fs
+            .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value;
+        let checkout = volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode {
+                    access: AccessMode::ReadWrite,
+                    consistency: ConsistencyMode::Pinned,
+                    mutations: MutationMode::PrivateOverlay,
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        let source = Arc::new(CheckoutMountSource::new(
+            Arc::new(SharedCheckout::new(checkout)),
+            config,
+        )?);
+        let seed = MountPath::root().child(
+            "seed.txt"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect(),
+        );
+        source.create_file(&seed, crate::kernel::FileMetadata::default())?;
+        source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
+
+        let root = tempfile::tempdir()?;
+        let destination = root.path().join("projection");
+        std::fs::create_dir(&destination)?;
+        let mut session = crate::mount_native(
+            crate::NativeMountRequest {
+                mount_id: crate::MountId::new(),
+                volume_id: source.volume_id()?,
+                destination: destination.clone(),
+                writable: true,
+            },
+            Arc::clone(&source) as Arc<dyn MountFilesystem>,
+        )?;
+        let projected = destination.join("seed.txt");
+        assert_eq!(std::fs::read(&projected)?, b"seed");
+
+        // Excluding FILE_SHARE_DELETE models a background compiler or language
+        // server that outlives the host tool boundary. ProjFS can stop, but the
+        // authenticated projection cannot be reclaimed while this handle is
+        // alive, so an in-place native-view transition must not be published.
+        let mut late = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0)
+            .open(&projected)?;
+        let stop = session
+            .stop()
+            .expect_err("an open non-delete-sharing handle must fence cleanup");
+        assert!(
+            stop.to_string().contains("removal failed"),
+            "unexpected cleanup fence: {stop}"
+        );
+
+        late.rewind()?;
+        late.write_all(b"late")?;
+        late.flush()?;
+        drop(late);
+
+        // The provider is already stopped, so no callback can authenticate or
+        // publish this write. A later physical view must quarantine the old
+        // epoch rather than pretending that the late write joined the SDK.
+        assert_eq!(source.read_range(&seed, 0, 4)?, b"seed"[..]);
+        session.stop()?;
+        Ok(())
     }
 
     #[test]
@@ -2080,6 +2257,62 @@ mod tests {
         assert!(execution.status.success());
         assert_eq!(execution.stdout, b"ok\n");
         mount.unmount().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn external_metadata_only_change_survives_remount()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
+        let workspace = engine.create_workspace("metadata-projfs").await?;
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        transaction
+            .create_file(
+                "/metadata.txt",
+                Bytes::from_static(b"unchanged contents"),
+                crate::kernel::FileMetadata::default(),
+            )
+            .await?;
+        transaction.commit().await?;
+
+        let first = root.path().join("first-mount");
+        std::fs::create_dir(&first)?;
+        let mount = workspace
+            .mount(
+                &first,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        let projected = first.join("metadata.txt");
+        assert_eq!(std::fs::read(&projected)?, b"unchanged contents");
+        let status = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("attrib")
+                .arg("+R")
+                .arg(projected)
+                .status()
+        })
+        .await??;
+        assert!(status.success(), "attrib failed with {status}");
+        mount.sync().await?;
+        mount.unmount().await?;
+
+        let second = root.path().join("second-mount");
+        std::fs::create_dir(&second)?;
+        let remount = workspace
+            .mount(
+                &second,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        assert!(
+            std::fs::metadata(second.join("metadata.txt"))?
+                .permissions()
+                .readonly(),
+            "metadata-only edits must survive synchronization and remount"
+        );
+        remount.unmount().await?;
         Ok(())
     }
 
@@ -2259,7 +2492,7 @@ mod tests {
 
     #[test]
     fn failed_post_operation_capture_retries_at_sync() {
-        let executor = CallbackExecutor::start().expect("callback executor");
+        let executor = CallbackGate::start().expect("callback gate");
         let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
         let path = MountPath::root().child(b"changed".to_vec());
         let capture_error = Err(MountSourceError::Invalid("capture failed".to_owned()));
@@ -2284,12 +2517,12 @@ mod tests {
             Some(&path),
             &capture_error,
         );
-        let error = flush_callback_executor(&executor, Arc::clone(&failure), |_| {
+        let error = flush_callback_gate(&executor, Arc::clone(&failure), |_| {
             Err(MountSourceError::Invalid("transient failure".to_owned()))
         })
         .expect_err("failed retry must fence publication");
         assert!(error.to_string().contains("transient failure"));
-        flush_callback_executor(&executor, Arc::clone(&failure), |_| Ok(()))
+        flush_callback_gate(&executor, Arc::clone(&failure), |_| Ok(()))
             .expect("successful retry clears failure");
         assert!(
             failure
@@ -2302,7 +2535,7 @@ mod tests {
 
     #[test]
     fn newer_capture_is_not_cleared_by_an_older_flush() {
-        let executor = CallbackExecutor::start().expect("callback executor");
+        let executor = CallbackGate::start().expect("callback gate");
         let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
         let path = MountPath::root().child(b"changed".to_vec());
         failure
@@ -2310,7 +2543,7 @@ mod tests {
             .expect("failure state")
             .queue_capture(path.clone(), "first write".to_owned());
         let during_capture = Arc::clone(&failure);
-        let error = flush_callback_executor(&executor, Arc::clone(&failure), move |paths| {
+        let error = flush_callback_gate(&executor, Arc::clone(&failure), move |paths| {
             during_capture
                 .lock()
                 .expect("failure state")
@@ -2319,7 +2552,7 @@ mod tests {
         })
         .expect_err("the newer write remains pending");
         assert!(error.to_string().contains("second write"));
-        flush_callback_executor(&executor, Arc::clone(&failure), |_| Ok(()))
+        flush_callback_gate(&executor, Arc::clone(&failure), |_| Ok(()))
             .expect("a later flush captures the newer write");
     }
 
@@ -2335,7 +2568,7 @@ mod tests {
         }
         record_post_operation_failure(
             &failure,
-            PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION,
+            PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
             &source,
             Some(&destination),
             &Ok(()),
@@ -2351,7 +2584,7 @@ mod tests {
 
     #[test]
     fn rename_retries_failed_capture_at_destination() {
-        let executor = CallbackExecutor::start().expect("callback executor");
+        let executor = CallbackGate::start().expect("callback gate");
         let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
         let source = MountPath::root().child(b"old".to_vec());
         let destination = MountPath::root().child(b"new".to_vec());
@@ -2370,7 +2603,7 @@ mod tests {
         }
         let captured = Arc::new(Mutex::new(Vec::new()));
         let observed = Arc::clone(&captured);
-        flush_callback_executor(&executor, Arc::clone(&failure), move |paths| {
+        flush_callback_gate(&executor, Arc::clone(&failure), move |paths| {
             observed
                 .lock()
                 .expect("captured paths")
@@ -2396,7 +2629,7 @@ mod tests {
 
     #[test]
     fn renamed_directory_capture_precedes_its_children() {
-        let executor = CallbackExecutor::start().expect("callback executor");
+        let executor = CallbackGate::start().expect("callback gate");
         let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
         let parent = MountPath::root().child(b"renamed".to_vec());
         let child = parent.child(b"child".to_vec());
@@ -2407,7 +2640,7 @@ mod tests {
         }
         let observed = Arc::new(Mutex::new(Vec::new()));
         let captures = Arc::clone(&observed);
-        flush_callback_executor(&executor, Arc::clone(&failure), move |paths| {
+        flush_callback_gate(&executor, Arc::clone(&failure), move |paths| {
             captures
                 .lock()
                 .expect("capture order")
@@ -2440,10 +2673,9 @@ mod tests {
 
     #[test]
     fn callback_admitted_after_first_stop_barrier_prevents_cleanup() {
-        let executor = CallbackExecutor::start().expect("callback executor");
+        let executor = CallbackGate::start().expect("callback gate");
         let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
-        flush_callback_executor(&executor, Arc::clone(&failure), |_| Ok(()))
-            .expect("first barrier");
+        flush_callback_gate(&executor, Arc::clone(&failure), |_| Ok(())).expect("first barrier");
         let observed = Arc::clone(&failure);
         let path = MountPath::root().child(b"late-object".to_vec());
         let result = executor
@@ -2463,7 +2695,7 @@ mod tests {
             .expect("callback worker");
         assert!(result.is_err());
         assert!(
-            flush_callback_executor(&executor, Arc::clone(&failure), |_| {
+            flush_callback_gate(&executor, Arc::clone(&failure), |_| {
                 Err(MountSourceError::Invalid("late capture failed".to_owned()))
             })
             .expect_err("second barrier must prevent cleanup")
@@ -2481,72 +2713,5 @@ mod tests {
 
         finish_cleanup(&mut state, |_| Ok::<(), &str>(())).expect("retry cleanup succeeds");
         assert_eq!(state, None);
-    }
-
-    #[test]
-    fn metadata_probe_guard_is_path_scoped_counted_and_raii() {
-        let probes = Mutex::new(HashMap::new());
-        let first = MountPath::root().child(vec![b'a', 0]);
-        let same_casefolded = MountPath::root().child(vec![b'A', 0]);
-        let second = MountPath::root().child(vec![b'b', 0]);
-
-        let outer = MetadataProbeGuard::enter(&probes, &first);
-        assert!(MetadataProbeGuard::is_active(&probes, &first));
-        assert!(MetadataProbeGuard::is_active(&probes, &same_casefolded));
-        assert!(!MetadataProbeGuard::is_active(&probes, &second));
-        {
-            let _overlap = MetadataProbeGuard::enter(&probes, &first);
-            assert!(MetadataProbeGuard::is_active(&probes, &first));
-        }
-        assert!(MetadataProbeGuard::is_active(&probes, &first));
-        drop(outer);
-        assert!(!MetadataProbeGuard::is_active(&probes, &first));
-    }
-
-    #[test]
-    fn metadata_baseline_closes_only_after_the_final_handle() {
-        let baselines = Mutex::new(HashMap::new());
-        let baseline = HostWindowsMetadata {
-            attributes: 1,
-            created: 2,
-            modified: 3,
-        };
-        record_metadata_open(&baselines, 7, baseline).expect("first open is recorded");
-        record_metadata_open(&baselines, 7, baseline).expect("overlapping open is recorded");
-        assert!(matches!(
-            close_metadata_handle(&baselines, 7),
-            MetadataClose::Pending
-        ));
-        assert!(matches!(
-            close_metadata_handle(&baselines, 7),
-            MetadataClose::Final(Some(value)) if value == baseline
-        ));
-        assert!(matches!(
-            close_metadata_handle(&baselines, 7),
-            MetadataClose::Final(None)
-        ));
-
-        refresh_metadata_baseline(&baselines, 8, baseline);
-        record_metadata_open(&baselines, 8, baseline)
-            .expect("open after hydration baseline is idempotent");
-        assert!(matches!(
-            close_metadata_handle(&baselines, 8),
-            MetadataClose::Final(Some(value)) if value == baseline
-        ));
-    }
-
-    #[test]
-    fn hydration_attributes_are_not_authored_metadata_changes() {
-        let recalled = HostWindowsMetadata {
-            attributes: windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0,
-            created: 2,
-            modified: 3,
-        };
-        let hydrated = HostWindowsMetadata {
-            attributes: windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_ARCHIVE.0,
-            ..recalled
-        };
-        assert!(!super::metadata_changed_since_open(recalled, recalled));
-        assert!(!super::metadata_changed_since_open(recalled, hydrated));
     }
 }

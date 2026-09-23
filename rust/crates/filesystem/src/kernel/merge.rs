@@ -697,64 +697,109 @@ async fn adjust_link_counts<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
     work: &mut WorkCounters,
 ) -> Result<(), OperationFailure<MergeGenerationError>> {
-    let mut deltas = BTreeMap::<FileId, i64>::new();
-    for (before, after) in resolutions.values() {
-        let before_entries = directory_entries(*before);
-        let after_entries = directory_entries(*after);
-        if before_entries == after_entries {
-            continue;
-        }
-        if *remaining_changes == 0 {
-            return Err(OperationFailure::new(
-                MergeGenerationError::ChangeLimit,
-                *work,
-            ));
-        }
-        let entries = diff_tree_entries_async(
-            store,
-            before_entries,
-            after_entries,
-            *remaining_changes,
-            limits,
-            remaining(*work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| map_diff_failure(failure, *work))?;
-        *work = add(*work, entries.work)?;
-        if entries.truncated {
-            return Err(OperationFailure::new(
-                MergeGenerationError::ChangeLimit,
-                *work,
-            ));
-        }
-        *remaining_changes = remaining_changes
-            .checked_sub(u32::try_from(entries.changes.len()).unwrap_or(u32::MAX))
-            .ok_or_else(|| OperationFailure::new(MergeGenerationError::ChangeLimit, *work))?;
-        for binding in entries.changes {
-            if let Some(before) = binding.before {
-                *deltas.entry(before.file_id).or_default() -= 1;
+    // A selected parent binding can leave an introduced directory unbound.
+    // Its children must not contribute links to the candidate. Cache each
+    // exact directory transition so pruning a nested orphan only pays for the
+    // transitions that actually change, not for every prior sibling.
+    let mut transitions =
+        BTreeMap::<FileId, (Option<ObjectId>, Option<ObjectId>, BTreeMap<FileId, i64>)>::new();
+    loop {
+        cancellation.check().map_err(|error| {
+            OperationFailure::new(MergeGenerationError::Cancelled(error), *work)
+        })?;
+        let mut deltas = BTreeMap::<FileId, i64>::new();
+        for (directory_id, (before, after)) in resolutions.iter() {
+            let before_entries = directory_entries(*before);
+            let after_entries = directory_entries(*after);
+            if before_entries == after_entries {
+                // Pruning an unbound directory removes its earlier contribution.
+                // Retaining that cached transition would keep its children alive
+                // without a binding from the root.
+                transitions.remove(directory_id);
+                continue;
             }
-            if let Some(after) = binding.after {
-                *deltas.entry(after.file_id).or_default() += 1;
+            if transitions
+                .get(directory_id)
+                .is_none_or(|(cached_before, cached_after, _)| {
+                    *cached_before != before_entries || *cached_after != after_entries
+                })
+            {
+                if *remaining_changes == 0 {
+                    return Err(OperationFailure::new(
+                        MergeGenerationError::ChangeLimit,
+                        *work,
+                    ));
+                }
+                let entries = diff_tree_entries_async(
+                    store,
+                    before_entries,
+                    after_entries,
+                    *remaining_changes,
+                    limits,
+                    remaining(*work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| map_diff_failure(failure, *work))?;
+                *work = add(*work, entries.work)?;
+                if entries.truncated {
+                    return Err(OperationFailure::new(
+                        MergeGenerationError::ChangeLimit,
+                        *work,
+                    ));
+                }
+                *remaining_changes = remaining_changes
+                    .checked_sub(u32::try_from(entries.changes.len()).unwrap_or(u32::MAX))
+                    .ok_or_else(|| {
+                        OperationFailure::new(MergeGenerationError::ChangeLimit, *work)
+                    })?;
+                let mut contribution = BTreeMap::<FileId, i64>::new();
+                for binding in entries.changes {
+                    if let Some(before) = binding.before {
+                        *contribution.entry(before.file_id).or_default() -= 1;
+                    }
+                    if let Some(after) = binding.after {
+                        *contribution.entry(after.file_id).or_default() += 1;
+                    }
+                }
+                transitions.insert(*directory_id, (before_entries, after_entries, contribution));
             }
+            if let Some((_, _, contribution)) = transitions.get(directory_id) {
+                for (file_id, delta) in contribution {
+                    *deltas.entry(*file_id).or_default() += delta;
+                }
+            }
+        }
+        if deltas
+            .iter()
+            .any(|(file_id, delta)| *delta != 0 && !resolutions.contains_key(file_id))
+        {
+            return Err(invalid(*work));
+        }
+        let mut pruned_directory = false;
+        for (file_id, (ours, resolved)) in resolutions.iter_mut() {
+            let delta = deltas.get(file_id).copied().unwrap_or(0);
+            let links = i128::from(ours.map_or(0, |record| record.link_count))
+                .checked_add(i128::from(delta))
+                .and_then(|value| u64::try_from(value).ok())
+                .ok_or_else(|| invalid(*work))?;
+            if resolved.is_none() {
+                if links != 0 {
+                    return Err(invalid(*work));
+                }
+                continue;
+            }
+            if links == 0 {
+                pruned_directory |= is_directory(*resolved);
+                *resolved = None;
+            } else if !pruned_directory && let Some(record) = resolved {
+                record.link_count = links;
+            }
+        }
+        if !pruned_directory {
+            return Ok(());
         }
     }
-    for (file_id, delta) in deltas {
-        if delta == 0 {
-            continue;
-        }
-        let (ours, resolved) = resolutions
-            .get_mut(&file_id)
-            .ok_or_else(|| invalid(*work))?;
-        let record = resolved.as_mut().ok_or_else(|| invalid(*work))?;
-        record.link_count = i128::from(ours.map_or(0, |record| record.link_count))
-            .checked_add(i128::from(delta))
-            .and_then(|value| u64::try_from(value).ok())
-            .filter(|value| *value != 0)
-            .ok_or_else(|| invalid(*work))?;
-    }
-    Ok(())
 }
 
 pub(crate) struct DirectoryMergeResult {

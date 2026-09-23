@@ -6,7 +6,7 @@
 //! inspect the filesystem return a typed action so the same state machine can
 //! drive embedded, hosted, mounted, and language-bound executors.
 
-use crate::kernel::{FileKind, NameEncoding, NamespacePath};
+use crate::kernel::{FileKind, NamespacePath};
 use crate::model::{CheckoutMode, GenerationSelector, VolumeLimits};
 use crate::storage::ByteRange;
 use crate::workspace::customer_path;
@@ -16,7 +16,6 @@ use crate::{
     WorkBudget, Workspace, WorkspaceError, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Mutex;
@@ -28,26 +27,6 @@ const ACTION_DOMAIN: &[u8] = b"acyclic-fs-git-compat-action-v1\0";
 const MAXIMUM_CAS_ATTEMPTS: u8 = 32;
 const GREP_READ_CONCURRENCY: usize = 32;
 const MAXIMUM_PATCH_FILE_BYTES: u64 = 64 * 1024 * 1024;
-
-fn portable_git_name(name: &crate::kernel::LogicalName) -> Option<Cow<'_, str>> {
-    match name.encoding() {
-        NameEncoding::Utf8 | NameEncoding::PosixBytes => {
-            std::str::from_utf8(name.as_bytes()).ok().map(Cow::Borrowed)
-        }
-        NameEncoding::WindowsUtf16Le => {
-            let units = name.as_bytes().chunks_exact(2).map(|pair| {
-                let [low, high] = pair else {
-                    unreachable!("chunks_exact(2) always yields a length-2 slice")
-                };
-                u16::from_le_bytes([*low, *high])
-            });
-            char::decode_utf16(units)
-                .collect::<Result<String, _>>()
-                .ok()
-                .map(Cow::Owned)
-        }
-    }
-}
 
 async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &crate::PinnedReader<A, O>,
@@ -83,7 +62,9 @@ async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncObjectStore>
                     break 'walk;
                 }
                 visited = visited.saturating_add(1);
-                let name = portable_git_name(&entry.name)
+                let name = entry
+                    .name
+                    .unicode_text()
                     .ok_or_else(|| WorkspaceError::path("non-portable Git path"))?;
                 let path = if directory_display.is_empty() {
                     name.to_string()
@@ -3927,7 +3908,9 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .list_directory(&directory, after.as_ref(), 1_024)
                 .await?;
             for entry in &page.entries {
-                let name = portable_git_name(&entry.name)
+                let name = entry
+                    .name
+                    .unicode_text()
                     .ok_or_else(|| WorkspaceError::path("non-portable Git path"))?;
                 let parent = directory.trim_start_matches('/');
                 let path = if parent.is_empty() {
@@ -4562,8 +4545,10 @@ where
                 .list_directory(&directory, after.as_ref(), 1_024)
                 .await?;
             for entry in &page.entries {
-                let name =
-                    portable_git_name(&entry.name).ok_or(GitCaptureError::NonPortableName)?;
+                let name = entry
+                    .name
+                    .unicode_text()
+                    .ok_or(GitCaptureError::NonPortableName)?;
                 let path = if directory == "/" {
                     name.to_string()
                 } else {
@@ -4867,7 +4852,11 @@ fn portable_changed_path(path: &crate::kernel::NamespacePath) -> Result<String, 
         if !portable.is_empty() {
             portable.push('/');
         }
-        portable.push_str(&portable_git_name(component).ok_or(GitCaptureError::NonPortableName)?);
+        portable.push_str(
+            &component
+                .unicode_text()
+                .ok_or(GitCaptureError::NonPortableName)?,
+        );
     }
     Ok(portable)
 }
@@ -4891,6 +4880,49 @@ struct GitIgnoreRule {
 }
 
 impl GitIgnorePolicy {
+    /// Identifies changed, newly ignored paths whose child-side binding wins
+    /// during compatibility publication. Already tracked paths retain normal
+    /// filesystem merge behavior.
+    pub async fn newly_ignored_paths_at<A, O>(
+        &self,
+        generation: &Generation<A, O>,
+        changes: &[crate::ChangedPath],
+        already_tracked: &BTreeSet<String>,
+    ) -> Result<BTreeSet<String>, GitCaptureError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let mut paths = BTreeSet::new();
+        let mut nested_policies = BTreeMap::new();
+        for change in changes {
+            let path = portable_changed_path(&change.path)?;
+            let is_directory = change
+                .after
+                .or(change.before)
+                .is_some_and(|record| record.kind == FileKind::Directory);
+            // A directory binding can contain tracked or independently changed
+            // descendants. Child-wins publication is pathwise for newly ignored
+            // files, never a replacement of the enclosing subtree.
+            if is_directory {
+                continue;
+            }
+            if !git_path_eligible_with_root_at(
+                generation,
+                &mut nested_policies,
+                self,
+                &path,
+                is_directory,
+                already_tracked,
+            )
+            .await?
+            {
+                paths.insert(format!("/{path}"));
+            }
+        }
+        Ok(paths)
+    }
+
     /// Parses Gitignore-shaped UTF-8 lines.
     #[must_use]
     pub fn parse(contents: &str) -> Self {
@@ -6086,6 +6118,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn newly_ignored_merge_paths_exclude_tracked_changes() {
+        let fs = Fs::memory();
+        let workspace = fs
+            .create_workspace("git-ignored-merge-paths")
+            .await
+            .expect("workspace");
+        let mut initial = workspace
+            .begin_transaction(IdempotencyKey::from_bytes([0x70; 16]))
+            .await
+            .expect("initial transaction");
+        initial.create_dir_all("/sub").await.expect("subdirectory");
+        initial
+            .write_text("/sub/.gitignore", "*.tmp\n")
+            .await
+            .expect("nested ignore");
+        initial.commit().await.expect("initial commit");
+        let before = workspace.head().await.expect("before");
+        workspace
+            .write_text("/scratch.tmp", "child")
+            .await
+            .expect("child change");
+        workspace
+            .write_text("/sub/cache.tmp", "child")
+            .await
+            .expect("nested child change");
+        let mut build = workspace
+            .begin_transaction(IdempotencyKey::from_bytes([0x71; 16]))
+            .await
+            .expect("build transaction");
+        build
+            .create_dir_all("/build")
+            .await
+            .expect("build directory");
+        build
+            .write_text("/build/output.bin", "generated")
+            .await
+            .expect("generated file");
+        build.commit().await.expect("build commit");
+        let after = workspace.head().await.expect("after");
+        let changes = before
+            .diff_to(&after, 16)
+            .await
+            .expect("diff")
+            .changed_paths(16)
+            .await
+            .expect("changed paths");
+        let policy = GitIgnorePolicy::parse("*.tmp\nbuild/\n");
+        assert_eq!(
+            policy
+                .newly_ignored_paths_at(&after, &changes, &BTreeSet::new())
+                .await
+                .expect("untracked policy"),
+            BTreeSet::from([
+                "/scratch.tmp".to_owned(),
+                "/sub/cache.tmp".to_owned(),
+                "/build/output.bin".to_owned(),
+            ])
+        );
+        assert!(
+            policy
+                .newly_ignored_paths_at(
+                    &after,
+                    &changes,
+                    &BTreeSet::from([
+                        "scratch.tmp".to_owned(),
+                        "sub/cache.tmp".to_owned(),
+                        "build/output.bin".to_owned(),
+                    ]),
+                )
+                .await
+                .expect("tracked policy")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn filtered_capture_retry_keeps_original_fork_generation() {
         let fs = Fs::memory();
         let workspace = fs
@@ -7243,8 +7351,12 @@ mod tests {
             .encode_utf16()
             .flat_map(u16::to_le_bytes)
             .collect();
-        let name = crate::kernel::LogicalName::new(NameEncoding::WindowsUtf16Le, bytes, 255)
-            .expect("valid Windows name");
-        assert_eq!(portable_git_name(&name).as_deref(), Some("source-λ.rs"));
+        let name = crate::kernel::LogicalName::new(
+            crate::kernel::NameEncoding::WindowsUtf16Le,
+            bytes,
+            255,
+        )
+        .expect("valid Windows name");
+        assert_eq!(name.unicode_text().as_deref(), Some("source-λ.rs"));
     }
 }

@@ -9,14 +9,14 @@ use super::{
 };
 use crate::kernel::{
     AttributeClass, AttributeName, ExtentSeekTarget, FileKind, FileMetadata, FilePayload,
-    FileRecord, LogicalName, NameEncoding, NamespacePath, RebaseDecision,
+    FileRecord, GenerationMutationError, LogicalName, NameEncoding, NamespacePath, RebaseDecision,
 };
 use crate::model::{FilesystemProfile, VolumeConfig, VolumeLimits};
 use crate::native_capture::capture_paths_batched;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
-    Checkout, DetachedFile, FileId, FsError, NamedAttributeWriteMode, OperationFailure,
-    OperationId, VolumeId, WorkBudget,
+    Checkout, DetachedFile, FileId, FsError, NamedAttributeWriteMode, NativeRootIdentity,
+    OperationFailure, OperationId, VolumeId, WorkBudget,
 };
 use bytes::Bytes;
 use std::future::Future;
@@ -28,6 +28,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Copy)]
+enum HostCaptureScope {
+    ExactPaths,
+    Subtree,
+}
 
 /// Blocking native callback adapter over one async canonical checkout.
 pub struct CheckoutMountSource<A, O> {
@@ -78,14 +84,14 @@ impl CallbackRuntime {
                 }))
             }
             Ok(_) => self.block_on_worker(create),
-            // FUSE callbacks are driver-owned and non-recursive, so Linux can
-            // enter the shared runtime without allocating a helper thread.
-            #[cfg(target_os = "linux")]
+            // Linux FUSE and macOS NFS callbacks enter from driver-owned
+            // threads; concurrent callbacks can use the shared runtime
+            // directly without allocating a helper thread per request.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Err(_) => Ok(self.handle.block_on(create())),
-            // ProjFS and loopback NFS may synchronously re-enter while a
-            // callback is being serviced. Keep the scoped boundary there to
-            // prevent callback recursion from exhausting the driver stack.
-            #[cfg(not(target_os = "linux"))]
+            // ProjFS can synchronously re-enter while a callback is being
+            // serviced. Preserve the scoped boundary to bound that recursion.
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             Err(_) => self.block_on_worker(create),
         }
     }
@@ -437,6 +443,30 @@ where
         })
     }
 
+    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
+        self.runtime.wait(|| async {
+            let state = self.state.lock().await;
+            let length = state
+                .file
+                .logical_bytes()
+                .saturating_sub(offset)
+                .min(u64::from(maximum_bytes));
+            if length == 0 {
+                return Ok(Bytes::new());
+            }
+            state
+                .file
+                .read_range(
+                    ByteRange { offset, length },
+                    boundary_budget(),
+                    &self.cancellation,
+                )
+                .await
+                .map(|receipt| receipt.value.bytes)
+                .map_err(engine_error)
+        })
+    }
+
     fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
         self.runtime.wait(|| async {
             let state = self.state.lock().await;
@@ -605,7 +635,7 @@ where
                 .file
                 .write_named_attribute(name, value, mode, boundary_budget(), &self.cancellation)
                 .await
-                .map_err(attribute_error)?;
+                .map_err(facade_error)?;
             state.metadata = receipt.value;
             Ok(())
         })
@@ -619,7 +649,7 @@ where
                 .file
                 .remove_named_attribute(name, boundary_budget(), &self.cancellation)
                 .await
-                .map_err(attribute_error)?;
+                .map_err(facade_error)?;
             state.metadata = receipt.value;
             Ok(())
         })
@@ -679,6 +709,24 @@ where
                         offset,
                         length: u64::from(length),
                     },
+                    boundary_budget(),
+                    &self.cancellation,
+                )
+                .await
+                .map(|receipt| receipt.value.bytes)
+                .map_err(engine_error)
+        })
+    }
+
+    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
+        let owner = ViewGate::callback_owner();
+        self.runtime.wait(|| async {
+            let mut checkout = self.checkout.read_lock(owner).await?;
+            checkout
+                .read_file_up_to_by_id(
+                    self.file_id,
+                    offset,
+                    maximum_bytes,
                     boundary_budget(),
                     &self.cancellation,
                 )
@@ -899,7 +947,7 @@ where
                     &self.cancellation,
                 )
                 .await
-                .map_err(attribute_error)?;
+                .map_err(facade_error)?;
             checkout.publish_after_mutation(&self.cancellation).await
         })
     }
@@ -917,7 +965,7 @@ where
                     &self.cancellation,
                 )
                 .await
-                .map_err(attribute_error)?;
+                .map_err(facade_error)?;
             checkout.publish_after_mutation(&self.cancellation).await
         })
     }
@@ -1170,6 +1218,126 @@ impl<A, O> CheckoutMountSource<A, O> {
                 "authenticated name encoding is incompatible with this native mount".to_owned(),
             )),
         }
+    }
+
+    pub(crate) fn capture_host_paths_with_identity(
+        &self,
+        source_root: &Path,
+        paths: &[MountPath],
+        expected_root_identity: NativeRootIdentity,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        self.capture_host_with_identity(
+            source_root,
+            paths,
+            expected_root_identity,
+            HostCaptureScope::ExactPaths,
+        )
+    }
+
+    pub(crate) fn capture_host_subtree_with_identity(
+        &self,
+        source_root: &Path,
+        root: &MountPath,
+        expected_root_identity: NativeRootIdentity,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        self.capture_host_with_identity(
+            source_root,
+            std::slice::from_ref(root),
+            expected_root_identity,
+            HostCaptureScope::Subtree,
+        )
+    }
+
+    fn capture_host_with_identity(
+        &self,
+        source_root: &Path,
+        paths: &[MountPath],
+        expected_root_identity: NativeRootIdentity,
+        scope: HostCaptureScope,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let paths = paths
+            .iter()
+            .map(|path| self.path(path))
+            .collect::<Result<Vec<_>, _>>()?;
+        let maximum_paths = match scope {
+            HostCaptureScope::ExactPaths => u32::try_from(paths.len())
+                .map_err(|_| MountSourceError::Invalid("too many capture paths".to_owned()))?,
+            HostCaptureScope::Subtree => 262_144,
+        };
+        self.runtime.wait(|| async {
+            let options = CaptureOptions {
+                source_root: source_root.to_path_buf(),
+                expected_root_identity,
+                maximum_paths,
+                maximum_extent_spans: 65_536,
+            };
+            for _ in 0..3 {
+                let (mut candidate, epoch) = {
+                    let checkout = self.checkout.lock().await;
+                    checkout.ensure_publication_resolved()?;
+                    (
+                        checkout.private_candidate(),
+                        checkout.view_epoch.load(Ordering::Acquire),
+                    )
+                };
+                // Projected host reads may call back into this checkout. Never
+                // hold its view gate while observing the virtualization root.
+                match scope {
+                    HostCaptureScope::ExactPaths => {
+                        capture_paths_batched(
+                            &mut candidate,
+                            &paths,
+                            &options,
+                            64,
+                            boundary_budget(),
+                            &self.cancellation,
+                        )
+                        .await
+                        .map_err(engine_error)?;
+                    }
+                    HostCaptureScope::Subtree => {
+                        let root = paths.first().cloned().ok_or_else(|| {
+                            MountSourceError::Invalid("missing capture subtree".to_owned())
+                        })?;
+                        capture_subtree(
+                            &mut candidate,
+                            root,
+                            &options,
+                            boundary_budget(),
+                            &self.cancellation,
+                        )
+                        .await
+                        .map_err(engine_error)?;
+                    }
+                }
+                let mut checkout = self.checkout.lock().await;
+                checkout.ensure_publication_resolved()?;
+                if checkout.view_epoch.load(Ordering::Acquire) != epoch {
+                    continue;
+                }
+                checkout.checkout = candidate;
+                checkout.view_epoch.fetch_add(1, Ordering::AcqRel);
+                return checkout
+                    .publish_at_native_boundary(&self.cancellation)
+                    .await;
+            }
+            Err(MountSourceError::Stale)
+        })
     }
 }
 
@@ -1446,7 +1614,7 @@ where
                     &self.cancellation,
                 )
                 .await
-                .map_err(engine_error)?;
+                .map_err(facade_error)?;
             let file_id = receipt
                 .value
                 .created_file_ids
@@ -1486,7 +1654,7 @@ where
                     &self.cancellation,
                 )
                 .await
-                .map_err(engine_error)?;
+                .map_err(facade_error)?;
             let file_id = receipt
                 .value
                 .created_file_ids
@@ -1534,7 +1702,7 @@ where
                     &self.cancellation,
                 )
                 .await
-                .map_err(engine_error)?;
+                .map_err(facade_error)?;
             let file_id = receipt
                 .value
                 .created_file_ids
@@ -1615,7 +1783,7 @@ where
             let receipt = checkout
                 .apply_authored_transaction(vec![mutation], boundary_budget(), &self.cancellation)
                 .await
-                .map_err(engine_error)?;
+                .map_err(facade_error)?;
             let file_id = receipt
                 .value
                 .created_file_ids
@@ -1665,7 +1833,7 @@ where
             checkout
                 .apply_authored_transaction(authored, boundary_budget(), &self.cancellation)
                 .await
-                .map_err(engine_error)?;
+                .map_err(facade_error)?;
             checkout.publish_after_mutation(&self.cancellation).await
         })
     }
@@ -1757,7 +1925,7 @@ where
                     &self.cancellation,
                 )
                 .await
-                .map_err(attribute_error)?;
+                .map_err(facade_error)?;
             checkout.publish_after_mutation(&self.cancellation).await
         })
     }
@@ -1771,7 +1939,7 @@ where
             checkout
                 .remove_named_attribute(path, name, boundary_budget(), &self.cancellation)
                 .await
-                .map_err(attribute_error)?;
+                .map_err(facade_error)?;
             checkout.publish_after_mutation(&self.cancellation).await
         })
     }
@@ -1999,55 +2167,8 @@ where
         if paths.is_empty() {
             return Ok(());
         }
-        let paths = paths
-            .iter()
-            .map(|path| self.path(path))
-            .collect::<Result<Vec<_>, _>>()?;
-        let maximum_paths = u32::try_from(paths.len())
-            .map_err(|_| MountSourceError::Invalid("too many capture paths".to_owned()))?;
-        self.runtime.wait(|| async {
-            let expected_root_identity =
-                capture_root_identity(source_root).map_err(engine_error)?;
-            let options = CaptureOptions {
-                source_root: source_root.to_path_buf(),
-                expected_root_identity,
-                maximum_paths,
-                maximum_extent_spans: 65_536,
-            };
-            for _ in 0..3 {
-                let (mut candidate, epoch) = {
-                    let checkout = self.checkout.lock().await;
-                    checkout.ensure_publication_resolved()?;
-                    (
-                        checkout.private_candidate(),
-                        checkout.view_epoch.load(Ordering::Acquire),
-                    )
-                };
-                // Projected host reads may call back into this checkout. Never
-                // hold its view gate while observing the virtualization root.
-                capture_paths_batched(
-                    &mut candidate,
-                    &paths,
-                    &options,
-                    64,
-                    boundary_budget(),
-                    &self.cancellation,
-                )
-                .await
-                .map_err(engine_error)?;
-                let mut checkout = self.checkout.lock().await;
-                checkout.ensure_publication_resolved()?;
-                if checkout.view_epoch.load(Ordering::Acquire) != epoch {
-                    continue;
-                }
-                checkout.checkout = candidate;
-                checkout.view_epoch.fetch_add(1, Ordering::AcqRel);
-                return checkout
-                    .publish_at_native_boundary(&self.cancellation)
-                    .await;
-            }
-            Err(MountSourceError::Stale)
-        })
+        let expected_root_identity = capture_root_identity(source_root).map_err(engine_error)?;
+        self.capture_host_paths_with_identity(source_root, paths, expected_root_identity)
     }
 
     fn capture_host_subtree(
@@ -2138,10 +2259,15 @@ fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
     MountSourceError::Engine(error.to_string())
 }
 
-fn attribute_error(error: OperationFailure<FsError>) -> MountSourceError {
+fn facade_error(error: OperationFailure<FsError>) -> MountSourceError {
     match error.error {
-        FsError::CreationRejected => MountSourceError::AlreadyExists,
-        FsError::NotFound => MountSourceError::NotFound,
+        FsError::CreationRejected | FsError::Mutation(GenerationMutationError::AlreadyExists) => {
+            MountSourceError::AlreadyExists
+        }
+        FsError::NotFound
+        | FsError::Mutation(
+            GenerationMutationError::MissingParent | GenerationMutationError::MissingSource,
+        ) => MountSourceError::NotFound,
         other => MountSourceError::Engine(other.to_string()),
     }
 }
@@ -2329,6 +2455,21 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn open_handle_read_up_to_clips_at_eof_without_a_separate_lookup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = source(FilesystemProfile::Portable)?;
+        let path = native_test_path("clipped-read");
+        source.create_file(&path, metadata())?;
+        source.write_range(&path, 0, Bytes::from_static(b"abc"))?;
+        let open = source.open_file(&path)?;
+        assert_eq!(open.read_up_to(0, 128)?.as_ref(), b"abc");
+        assert_eq!(open.read_up_to(1, 1)?.as_ref(), b"b");
+        assert!(open.read_up_to(3, 128)?.is_empty());
+        assert!(open.read_up_to(u64::MAX, 128)?.is_empty());
+        Ok(())
+    }
+
     fn shared_sources_with_publication(
         profile: FilesystemProfile,
         publication: MountPublication,
@@ -2457,7 +2598,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn callback_runtime_enters_directly_from_native_driver_threads()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2479,7 +2620,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[test]
     fn native_driver_callback_uses_a_fresh_stack() -> Result<(), Box<dyn std::error::Error>> {
         let callback = CallbackRuntime::create()?;
@@ -3156,6 +3297,70 @@ mod tests {
             file.sync_all()?;
             assert_eq!(std::fs::read_to_string(&path)?, format!("new-{iteration}"));
         }
+        assert!(mount.stop()?);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a live Linux FUSE mount"]
+    fn linux_fsync_waits_for_an_admitted_write() -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+
+        let source = Arc::new(source(FilesystemProfile::Posix)?);
+        let temporary = tempfile::tempdir()?;
+        let mut mount = crate::mount_native(
+            crate::NativeMountRequest {
+                mount_id: crate::MountId::new(),
+                volume_id: source.volume_id()?,
+                destination: temporary.path().to_path_buf(),
+                writable: true,
+            },
+            Arc::clone(&source) as Arc<dyn MountFilesystem>,
+        )?;
+        let path = temporary.path().join("ordered-write");
+        std::fs::write(&path, b"old")?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        let mut writer = file.try_clone()?;
+        let syncer = file.try_clone()?;
+        let gate = super::super::fuse::pause_next_write_after_admission();
+        let writer_thread = std::thread::spawn(move || writer.write_all(b"new"));
+        assert!(
+            gate.wait_until_admitted(Duration::from_secs(5)),
+            "write must reach the per-handle gate"
+        );
+
+        let (started, started_rx) = std::sync::mpsc::sync_channel(1);
+        let (finished, finished_rx) = std::sync::mpsc::sync_channel(1);
+        let sync_thread = std::thread::spawn(move || {
+            let _ = started.send(());
+            let result = syncer.sync_all();
+            let _ = finished.send(result);
+        });
+        started_rx.recv_timeout(Duration::from_secs(5))?;
+        assert!(
+            finished_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "fsync must not overtake a write admitted on the same handle"
+        );
+        assert!(gate.release(), "release paused write");
+        writer_thread
+            .join()
+            .map_err(|_| std::io::Error::other("mounted writer panicked"))??;
+        sync_thread
+            .join()
+            .map_err(|_| std::io::Error::other("mounted fsync panicked"))?;
+        finished_rx.recv_timeout(Duration::from_secs(5))??;
+        drop(file);
+        assert_eq!(std::fs::read(&path)?, b"new");
+        assert!(
+            !checkout_state(&source)?.1,
+            "fsync published the admitted write"
+        );
         assert!(mount.stop()?);
         Ok(())
     }

@@ -207,8 +207,6 @@ pub use materializer::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use materializer::{NativeTreeMaterializationBackend, NativeTreeMaterializationError};
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub use materializer::{NativeTreePublicationError, publish_native_tree};
 #[cfg(all(
     feature = "local",
     feature = "native-mount",
@@ -259,14 +257,14 @@ pub use native_exchange::{
 pub use native_identity::NativeRootIdentity;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub use native_mount::{
-    CheckoutMountSource, HostPathReplacement, HostPathRestore, LazyMount, MaterializationReceipt,
-    MaterializeError, MaterializeOptions, Mount, MountAttributePage, MountDirectoryEntry,
-    MountDirectoryPage, MountFilesystem, MountLifecycleError, MountLookup, MountNode,
-    MountNodeKind, MountOpenFile, MountOptions, MountPath, MountPublication, MountRangeAllocation,
-    MountSeekTarget, MountSourceError, MountSparseRange, MountSparseSpan, MountViewLease,
-    NativeBlockCloneAccelerationEvidence, NativeMountCapabilities, NativeMountError,
-    NativeMountKind, NativeMountRequest, NativeMountSession, NativeMountSessionIsolation,
-    NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
+    CheckoutMountSource, HostPathReplacement, HostPathRestore, LazyMount, LazyWorkingSet,
+    MaterializationReceipt, MaterializeError, MaterializeOptions, Mount, MountAttributePage,
+    MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLifecycleError, MountLookup,
+    MountNode, MountNodeKind, MountOpenFile, MountOptions, MountPath, MountPublication,
+    MountRangeAllocation, MountSeekTarget, MountSourceError, MountSparseRange, MountSparseSpan,
+    MountViewLease, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
+    NativeMountError, NativeMountKind, NativeMountRequest, NativeMountSession,
+    NativeMountSessionIsolation, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     RoutedMountSource, SharedCheckout, SharedCheckoutState,
     detach_native_mount_destination_after_crash, materialize_checkout,

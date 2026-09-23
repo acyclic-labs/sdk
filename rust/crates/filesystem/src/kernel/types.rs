@@ -3,6 +3,7 @@
 use crate::foundation::{Digest, FileId};
 use crate::model::FilesystemProfile;
 use crate::storage::{ObjectId, ObjectKind};
+use std::borrow::Cow;
 use thiserror::Error;
 
 /// Canonical host-name representation.
@@ -105,6 +106,29 @@ impl LogicalName {
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// Presents this exact name as Unicode when its host encoding permits it.
+    /// Raw POSIX names outside UTF-8 remain unrepresentable as strings.
+    #[must_use]
+    pub fn unicode_text(&self) -> Option<Cow<'_, str>> {
+        match self.encoding {
+            NameEncoding::Utf8 | NameEncoding::PosixBytes => {
+                std::str::from_utf8(&self.bytes).ok().map(Cow::Borrowed)
+            }
+            NameEncoding::WindowsUtf16Le => {
+                let units = self.bytes.chunks_exact(2).map(|pair| {
+                    let [low, high] = pair else {
+                        unreachable!("chunks_exact(2) yields pairs")
+                    };
+                    u16::from_le_bytes([*low, *high])
+                });
+                char::decode_utf16(units)
+                    .collect::<Result<String, _>>()
+                    .ok()
+                    .map(Cow::Owned)
+            }
+        }
     }
 
     pub(crate) fn retained_bytes(&self) -> usize {

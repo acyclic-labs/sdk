@@ -834,6 +834,21 @@ async fn observe_descendants<S: AsyncObjectStore>(
         work = copied.work;
         parent = Some(current);
         let FilePayload::Directory { entries } = current.payload else {
+            if !context.capture_terminal {
+                // Mutation dependency observation may traverse a path that
+                // exists only after earlier private mutations replaced this
+                // base file with a directory. The positive edge to the old
+                // file is the exact base dependency; no descendant existed.
+                return Ok(ObservedPathLookup {
+                    lookup: PathLookup {
+                        record: None,
+                        parent,
+                        resolved_components: u16::try_from(index).unwrap_or(u16::MAX),
+                        work,
+                    },
+                    dependencies,
+                });
+            }
             return Err(OperationFailure::new(PathLookupError::NotDirectory, work));
         };
         if current.kind != FileKind::Directory {

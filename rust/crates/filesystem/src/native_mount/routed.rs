@@ -480,6 +480,10 @@ impl MountOpenFile for RemappedOpenFile {
         self.inner.read_range(offset, length)
     }
 
+    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
+        self.inner.read_up_to(offset, maximum_bytes)
+    }
+
     fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
         self.inner.seek(offset, target)
     }

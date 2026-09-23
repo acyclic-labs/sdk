@@ -622,6 +622,62 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         Err(OperationWindowError::Contended)
     }
 
+    /// Reconciles an idle child after its parent advances, or coalesces the
+    /// advance into an active/reconciling operation window. An idle claim is
+    /// durable and fences a new tool window until reconciliation completes.
+    ///
+    /// This also covers a parent tool that finishes after the child's last
+    /// overlapping tool: the child need not open another tool to catch up.
+    pub async fn parent_advanced_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        &self,
+        workspace: &Workspace<A, O>,
+        parent: GenerationId,
+        limits: OperationReconcileLimits,
+    ) -> Result<Option<WorkspaceRebase<A, O>>, OperationWindowError<S::Error>> {
+        let workspace_id = workspace.id();
+        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+            let mut current = self.snapshot(workspace_id).await?;
+            let reconcile = match &mut current.phase {
+                OperationWindowPhase::Idle => {
+                    let ticket = OperationId::new();
+                    current.phase = OperationWindowPhase::Reconciling {
+                        ticket,
+                        pinned_parent: parent,
+                        pending_parent: Some(parent),
+                        subsequent_parent: None,
+                    };
+                    Some(OperationWindowReconcile {
+                        ticket,
+                        pinned_parent: parent,
+                        pending_parent: Some(parent),
+                    })
+                }
+                OperationWindowPhase::Active { pending_parent, .. } => {
+                    *pending_parent = Some(parent);
+                    None
+                }
+                OperationWindowPhase::Reconciling {
+                    subsequent_parent, ..
+                } => {
+                    *subsequent_parent = Some(parent);
+                    None
+                }
+            };
+            let expected = current.revision;
+            current.revision = expected.saturating_add(1);
+            if self.cas(workspace_id, expected, current).await? {
+                return match reconcile {
+                    Some(reconcile) => self
+                        .reconcile_workspace(workspace, reconcile, limits)
+                        .await
+                        .map(Some),
+                    None => Ok(None),
+                };
+            }
+        }
+        Err(OperationWindowError::Contended)
+    }
+
     /// Extends one still-active exact lease without changing the pinned mount.
     /// The returned lease replaces the caller's old publication permit; using
     /// the old expiry after renewal is fenced by durable state.
@@ -1091,8 +1147,8 @@ impl OperationWindowStore for MemoryOperationWindowStore {
 mod tests {
     use super::*;
     use crate::{
-        AsyncAuthorityStore, AuthorityId, CancellationToken, Digest, Epoch, OperationId,
-        ProposedCommit, StreamAuthorityStore, WorkBudget,
+        AsyncAuthorityStore, AuthorityId, CancellationToken, Digest, Epoch, ForkOptions, Fs,
+        IdempotencyKey, OperationId, ProposedCommit, StreamAuthorityStore, WorkBudget,
     };
     use bytes::Bytes;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1181,6 +1237,124 @@ mod tests {
             .begin(workspace, generation(2), "tool-3", 23, 100)
             .await
             .expect("next window");
+    }
+
+    #[tokio::test]
+    async fn parent_advance_after_child_close_rebases_without_another_tool() {
+        let fs = Fs::memory();
+        let parent = fs.create_workspace("late-parent").await.expect("parent");
+        let child = parent
+            .fork(
+                "late-child",
+                ForkOptions::from_generation(
+                    parent.head().await.expect("base"),
+                    IdempotencyKey::new(),
+                ),
+            )
+            .await
+            .expect("child");
+        child
+            .write_text("/child", "local")
+            .await
+            .expect("child write");
+        let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
+        let lease = coordinator
+            .begin(
+                child.id(),
+                parent.head().await.expect("parent head").id(),
+                "tool",
+                1,
+                100,
+            )
+            .await
+            .expect("lease");
+        assert!(matches!(
+            coordinator
+                .finish_workspace(&child, &lease, 2, OperationReconcileLimits::default())
+                .await
+                .expect("child close"),
+            WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Current(_))
+        ));
+        parent
+            .write_text("/parent", "upstream")
+            .await
+            .expect("parent write");
+        assert!(matches!(
+            coordinator
+                .parent_advanced_workspace(
+                    &child,
+                    parent.head().await.expect("new parent head").id(),
+                    OperationReconcileLimits::default(),
+                )
+                .await
+                .expect("parent advance"),
+            Some(WorkspaceRebase::Rebased(_))
+        ));
+        assert_eq!(
+            child.read("/parent", 16).await.expect("upstream"),
+            Bytes::from_static(b"upstream")
+        );
+        assert_eq!(
+            child.read("/child", 16).await.expect("local"),
+            Bytes::from_static(b"local")
+        );
+        assert!(matches!(
+            coordinator.inspect(child.id()).await.expect("window").phase,
+            OperationWindowPhase::Idle
+        ));
+    }
+
+    #[tokio::test]
+    async fn parent_advance_during_child_tool_rebases_at_final_close() {
+        let fs = Fs::memory();
+        let parent = fs.create_workspace("active-parent").await.expect("parent");
+        let child = parent
+            .fork(
+                "active-child",
+                ForkOptions::from_generation(
+                    parent.head().await.expect("base"),
+                    IdempotencyKey::new(),
+                ),
+            )
+            .await
+            .expect("child");
+        let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
+        let lease = coordinator
+            .begin(
+                child.id(),
+                parent.head().await.expect("parent head").id(),
+                "tool",
+                1,
+                100,
+            )
+            .await
+            .expect("lease");
+        parent
+            .write_text("/parent", "new")
+            .await
+            .expect("parent write");
+        assert!(
+            coordinator
+                .parent_advanced_workspace(
+                    &child,
+                    parent.head().await.expect("new parent head").id(),
+                    OperationReconcileLimits::default(),
+                )
+                .await
+                .expect("coalesce")
+                .is_none()
+        );
+        assert!(matches!(
+            coordinator
+                .finish_workspace(&child, &lease, 2, OperationReconcileLimits::default())
+                .await
+                .expect("final close"),
+            WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Rebased(_))
+        ));
+        assert_eq!(
+            child.read("/parent", 16).await.expect("upstream").as_ref(),
+            b"new"
+        );
     }
 
     #[tokio::test]

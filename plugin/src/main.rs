@@ -8,7 +8,7 @@ use acyclic_fs::demand::native::NativeDemandSource;
 use acyclic_fs::demand::{
     DemandDirectoryObserver, DemandSource, FilteredDemandSource, SourceReference,
 };
-use acyclic_fs::kernel::{FileKind, NameEncoding, NamespacePath};
+use acyclic_fs::kernel::{FileKind, NamespacePath};
 use acyclic_fs::model::{
     CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle, VolumeConfig, VolumeLimits,
 };
@@ -29,11 +29,11 @@ use acyclic_fs::{
     OperationId, OperationReconcileLimits, OperationWindowLease, Publication, PublicationPermit,
     TransactionCommit, WatchBatch, WorkBudget, Workspace, WorkspaceContextId, WorkspaceContextRoot,
     WorkspaceContextState, WorkspaceDelete, WorkspaceError, WorkspaceMultiRootPublisherError,
-    WorkspacePathApply, WorkspaceRestore, WorkspaceRootId, apply_git_patch_with_permit,
-    blame_git_generations, capture_baseline_with_policy, capture_git_compatible_generation,
-    capture_git_compatible_generation_at, capture_git_compatible_generation_incremental,
-    capture_watch_batch_with_policy, git_compatible_diff_counts, grep_git_generation,
-    resolve_merge_plan, walk_git_tree,
+    WorkspaceOperationFinish, WorkspacePathApply, WorkspaceRestore, WorkspaceRootId,
+    apply_git_patch_with_permit, blame_git_generations, capture_baseline_with_policy,
+    capture_git_compatible_generation, capture_git_compatible_generation_at,
+    capture_git_compatible_generation_incremental, capture_watch_batch_with_policy,
+    git_compatible_diff_counts, grep_git_generation, resolve_merge_plan, walk_git_tree,
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -1573,15 +1573,21 @@ async fn git_workspace_tree(
 async fn git_policy(
     workspace: &LocalLazyWorkspace,
 ) -> Result<(GitIgnorePolicy, Arc<MergeDriverRegistry>), String> {
+    Ok((
+        git_ignore_policy(workspace).await?,
+        merge_drivers_for(workspace).await?,
+    ))
+}
+
+async fn git_ignore_policy(workspace: &LocalLazyWorkspace) -> Result<GitIgnorePolicy, String> {
     let ignore_text = match workspace.read("/.gitignore", 1024 * 1024).await {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(acyclic_fs::LazyWorkspaceError::NotFound) => String::new(),
         Err(error) => return Err(display(error)),
     };
-    Ok((
-        GitIgnorePolicy::parse(&format!("{ignore_text}\n.git/\n.acyclic-sdk/\n")),
-        merge_drivers_for(workspace).await?,
-    ))
+    Ok(GitIgnorePolicy::parse(&format!(
+        "{ignore_text}\n.git/\n.acyclic-sdk/\n"
+    )))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2076,13 +2082,40 @@ impl ControlPlane {
         Ok(found)
     }
 
+    fn parent_repository_id(
+        &self,
+        parent_agent: &str,
+        root_id: WorkspaceRootId,
+        workspace_id: acyclic_fs::WorkspaceId,
+    ) -> Result<acyclic_fs::WorkspaceId, String> {
+        let repository_workspace_id = if parent_agent == self.state.root_agent_id {
+            self.state
+                .roots
+                .get(&root_key(root_id))
+                .ok_or_else(|| "published root binding is unavailable".to_owned())?
+                .repository_workspace_id
+        } else {
+            self.state
+                .routes
+                .get(parent_agent)
+                .ok_or_else(|| "published parent route is unavailable".to_owned())?
+                .roots
+                .get(&root_key(root_id))
+                .ok_or_else(|| "published parent root is unavailable".to_owned())?
+                .repository_workspace_id
+        };
+        Ok(repository_id(
+            workspace_id.into_bytes(),
+            repository_workspace_id,
+        ))
+    }
+
     async fn record_publication_history(
         &self,
         parent_agent: &str,
         child_agent: &str,
         publication: &MultiRootPublication,
     ) -> Result<(), String> {
-        let parent_route = self.state.routes.get(parent_agent).cloned();
         let child_route = self
             .state
             .routes
@@ -2090,29 +2123,8 @@ impl ControlPlane {
             .cloned()
             .ok_or_else(|| "published child route is unavailable".to_owned())?;
         for (root_id, root) in &publication.candidate.plan.roots {
-            let parent_repository_id = if parent_agent == self.state.root_agent_id {
-                let binding = self
-                    .state
-                    .roots
-                    .get(&root_key(*root_id))
-                    .ok_or_else(|| "published root binding is unavailable".to_owned())?;
-                repository_id(
-                    root.target_workspace_id.into_bytes(),
-                    binding.repository_workspace_id,
-                )
-            } else {
-                let route = parent_route
-                    .as_ref()
-                    .ok_or_else(|| "published parent route is unavailable".to_owned())?;
-                let binding = route
-                    .roots
-                    .get(&root_key(*root_id))
-                    .ok_or_else(|| "published parent root is unavailable".to_owned())?;
-                repository_id(
-                    root.target_workspace_id.into_bytes(),
-                    binding.repository_workspace_id,
-                )
-            };
+            let parent_repository_id =
+                self.parent_repository_id(parent_agent, *root_id, root.target_workspace_id)?;
             let published_generation = publication
                 .published_generations
                 .get(root_id)
@@ -3559,46 +3571,68 @@ impl ControlPlane {
             .get(&record.agent_id)
             .cloned()
             .ok_or_else(|| "post-tool route is missing".to_owned())?;
-        self.sync_agent(&route.parent_agent_id)
-            .await
-            .map_err(|error| format!("cannot synchronize the parent workspace: {error}"))?;
+        let now = now_millis();
+        // A single live lease captures the shared mount once. Earlier closes
+        // only release their fences; an expired peer cannot remain the capture
+        // owner. The core still decides whether this close owns reconciliation.
+        let last_live_child_lease = !self.state.leases.iter().any(|(id, lease)| {
+            id != &tool_use_id && lease.agent_id == record.agent_id && lease.expires_at_millis > now
+        });
+        // An active parent tool has no newer stable generation yet; the child
+        // catches up in a later operation window or explicit join.
+        if last_live_child_lease && self.ensure_agent_idle(&route.parent_agent_id).is_ok() {
+            self.sync_agent(&route.parent_agent_id)
+                .await
+                .map_err(|error| format!("cannot synchronize the parent workspace: {error}"))?;
+        }
         let operations = self.distributed.operations();
-        let parent_context = self
-            .distributed
-            .contexts()
-            .resolve(self.context_for_agent(&route.parent_agent_id)?)
-            .await
-            .map_err(|error| format!("cannot resolve the parent workspace context: {error}"))?;
+        let parent_context = if last_live_child_lease {
+            Some(
+                self.distributed
+                    .contexts()
+                    .resolve(self.context_for_agent(&route.parent_agent_id)?)
+                    .await
+                    .map_err(|error| {
+                        format!("cannot resolve the parent workspace context: {error}")
+                    })?,
+            )
+        } else {
+            None
+        };
         let mut sync_error = None;
         let mut expired = false;
         let mut conflicts = Vec::new();
         let mut truncated = false;
-        let now = now_millis();
+        let mut finished_roots = Vec::new();
         for root_record in record.roots.values() {
             let root_id = WorkspaceRootId::from_bytes(root_record.root_id);
             let workspace = self
                 .workspace_root(&route, root_id)
                 .await
                 .map_err(|error| format!("cannot resolve the child workspace root: {error}"))?;
-            let parent_root = parent_context
-                .roots
-                .get(&root_id)
-                .ok_or_else(|| "direct parent root is missing".to_owned())?;
-            let parent = self
-                .distributed
-                .workspace(parent_root.workspace_id)
-                .await
-                .map_err(|error| format!("cannot open the parent workspace root: {error}"))?;
-            let parent_head = parent
-                .head()
-                .await
-                .map_err(|error| format!("cannot read the parent workspace head: {error}"))?;
-            operations
-                .observe_parent(workspace.id(), parent_head.id())
-                .await
-                .map_err(|error| format!("cannot observe the latest parent generation: {error}"))?;
+            if let Some(parent_context) = parent_context.as_ref() {
+                let parent_root = parent_context
+                    .roots
+                    .get(&root_id)
+                    .ok_or_else(|| "direct parent root is missing".to_owned())?;
+                let parent = self
+                    .distributed
+                    .workspace(parent_root.workspace_id)
+                    .await
+                    .map_err(|error| format!("cannot open the parent workspace root: {error}"))?;
+                let parent_head = parent
+                    .head()
+                    .await
+                    .map_err(|error| format!("cannot read the parent workspace head: {error}"))?;
+                operations
+                    .observe_parent(workspace.id(), parent_head.id())
+                    .await
+                    .map_err(|error| {
+                        format!("cannot observe the latest parent generation: {error}")
+                    })?;
+            }
             let lease = root_record.lease();
-            if sync_error.is_none() {
+            if last_live_child_lease && sync_error.is_none() {
                 let sync = match self.mounts.get(&record.agent_id) {
                     Some(mount) => mount
                         .sync_route_with_permit(
@@ -3614,31 +3648,23 @@ impl ControlPlane {
                 }
             }
             match operations
-                .finish(&lease, now)
+                .finish_workspace(&workspace, &lease, now, OperationReconcileLimits::default())
                 .await
                 .map_err(|error| format!("cannot close the filesystem operation lease: {error}"))?
             {
-                acyclic_fs::OperationWindowFinish::StillActive { .. } => {}
-                acyclic_fs::OperationWindowFinish::Reconcile(reconcile) => {
+                WorkspaceOperationFinish::StillActive { .. } => {}
+                WorkspaceOperationFinish::Reconciled(rebase) => {
+                    finished_roots.push(root_id);
                     if let acyclic_fs::WorkspaceRebase::Conflicted {
                         conflicts: root_conflicts,
                         truncated: root_truncated,
-                    } = operations
-                        .reconcile_workspace(
-                            &workspace,
-                            reconcile,
-                            OperationReconcileLimits::default(),
-                        )
-                        .await
-                        .map_err(|error| {
-                            format!("cannot reconcile the closed filesystem operation: {error}")
-                        })?
+                    } = rebase
                     {
                         conflicts.extend(root_conflicts);
                         truncated |= root_truncated;
                     }
                 }
-                acyclic_fs::OperationWindowFinish::AlreadyClosed => expired = true,
+                WorkspaceOperationFinish::AlreadyClosed => expired = true,
             }
         }
         self.state.leases.remove(&tool_use_id);
@@ -3657,6 +3683,10 @@ impl ControlPlane {
         }
         if expired {
             return Err("filesystem tool lease expired; late writes were fenced".to_owned());
+        }
+        for root_id in finished_roots {
+            self.propagate_parent_advance(&record.agent_id, root_id)
+                .await?;
         }
         if conflicts.is_empty() {
             Ok(json!({}))
@@ -4476,6 +4506,33 @@ impl ControlPlane {
                 .map_err(display)?;
             let plan = source.join_into(&target).plan().await.map_err(display)?;
             let target_head = plan.target_head();
+            let parent_repository_id = self.parent_repository_id(caller, *root_id, target.id())?;
+            let tracked = self
+                .distributed
+                .git(parent_repository_id)
+                .tracked_paths()
+                .await
+                .map_err(display)?;
+            let base = target
+                .generation(plan.common_ancestor())
+                .await
+                .map_err(display)?;
+            let source_head = source
+                .generation(plan.source_head())
+                .await
+                .map_err(display)?;
+            let changed = base
+                .diff_to(&source_head, u32::MAX)
+                .await
+                .map_err(display)?
+                .changed_paths(u32::MAX)
+                .await
+                .map_err(display)?;
+            let child_wins_bindings = git_ignore_policy(&lazy_source)
+                .await?
+                .newly_ignored_paths_at(&source_head, &changed, &tracked)
+                .await
+                .map_err(display)?;
             roots.insert(
                 *root_id,
                 MultiRootMergeRoot {
@@ -4485,6 +4542,7 @@ impl ControlPlane {
                     target_workspace_id: target.id(),
                     target_generation: target_head,
                     base_generation: plan.common_ancestor(),
+                    child_wins_bindings,
                 },
             );
             resolutions.insert(*root_id, BTreeMap::new());
@@ -4501,6 +4559,10 @@ impl ControlPlane {
             operation_hasher.update(&root_id.into_bytes());
             operation_hasher.update(root.source_generation.digest().as_bytes());
             operation_hasher.update(root.target_generation.digest().as_bytes());
+            for path in &root.child_wins_bindings {
+                operation_hasher.update(&(path.len() as u64).to_le_bytes());
+                operation_hasher.update(path.as_bytes());
+            }
         }
         let mut operation_bytes = [0_u8; 16];
         operation_bytes.copy_from_slice(&operation_hasher.finalize().as_bytes()[..16]);
@@ -5320,6 +5382,63 @@ impl ControlPlane {
             .map_err(display)
     }
 
+    async fn propagate_parent_advance(
+        &self,
+        parent_agent_id: &str,
+        root_id: WorkspaceRootId,
+    ) -> Result<(), String> {
+        let parent_route = self
+            .state
+            .routes
+            .get(parent_agent_id)
+            .ok_or_else(|| "finished parent route is missing".to_owned())?;
+        let parent = self.workspace_root(parent_route, root_id).await?;
+        let mut pending = VecDeque::from([(
+            parent_agent_id.to_owned(),
+            parent.head().await.map_err(display)?.id(),
+        )]);
+        let root_key = root_key(root_id);
+        let mut children = BTreeMap::<String, Vec<Route>>::new();
+        for route in self.state.routes.values() {
+            if route.roots.contains_key(&root_key) {
+                children
+                    .entry(route.parent_agent_id.clone())
+                    .or_default()
+                    .push(route.clone());
+            }
+        }
+        let operations = self.distributed.operations();
+        while let Some((parent_id, parent_head)) = pending.pop_front() {
+            for route in children.remove(&parent_id).unwrap_or_default() {
+                let child = self.workspace_root(&route, root_id).await?;
+                let outcome = operations
+                    .parent_advanced_workspace(
+                        &child,
+                        parent_head,
+                        OperationReconcileLimits::default(),
+                    )
+                    .await
+                    .map_err(display)?;
+                match outcome {
+                    Some(
+                        acyclic_fs::WorkspaceRebase::Rebased(generation)
+                        | acyclic_fs::WorkspaceRebase::AlreadyRebased(generation)
+                        | acyclic_fs::WorkspaceRebase::Current(generation),
+                    ) => pending.push_back((route.agent_id, generation.id())),
+                    Some(acyclic_fs::WorkspaceRebase::Conflicted { .. }) | None => {}
+                    Some(
+                        acyclic_fs::WorkspaceRebase::Stale(_)
+                        | acyclic_fs::WorkspaceRebase::Fenced
+                        | acyclic_fs::WorkspaceRebase::IdempotencyConflict,
+                    ) => {
+                        return Err("descendant parent reconciliation requires recovery".to_owned());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn ensure_agent_idle(&self, agent_id: &str) -> Result<(), String> {
         if self
             .state
@@ -6001,20 +6120,10 @@ fn namespace_path_text(path: &NamespacePath) -> Result<String, String> {
     let components = path
         .components()
         .iter()
-        .map(|name| match name.encoding() {
-            NameEncoding::Utf8 | NameEncoding::PosixBytes => std::str::from_utf8(name.as_bytes())
-                .map(str::to_owned)
-                .map_err(|_| "non-UTF-8 path cannot be presented to an agent".to_owned()),
-            NameEncoding::WindowsUtf16Le => {
-                let units = name
-                    .as_bytes()
-                    .chunks_exact(2)
-                    .filter_map(|bytes| bytes.first().copied().zip(bytes.get(1).copied()))
-                    .map(|(low, high)| u16::from_le_bytes([low, high]));
-                char::decode_utf16(units)
-                    .collect::<Result<String, _>>()
-                    .map_err(display)
-            }
+        .map(|name| {
+            name.unicode_text()
+                .map(|value| value.into_owned())
+                .ok_or_else(|| "non-Unicode path cannot be presented to an agent".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(format!("/{}", components.join("/")))
@@ -13059,6 +13168,7 @@ fn claude_desktop_config() -> Result<PathBuf, String> {
 mod tests {
     use super::*;
     use acyclic_fs::GitCommand;
+    use acyclic_fs::kernel::NameEncoding;
 
     fn root_repository_workspace_id(control: &ControlPlane) -> [u8; 16] {
         control.state.roots[&root_key(WorkspaceRootId::from_bytes(control.state.root_id))]
@@ -13149,6 +13259,15 @@ mod tests {
 
     fn route_path(route: &Route) -> PathBuf {
         route.active_path().expect("route active path")
+    }
+
+    #[test]
+    #[ignore = "invoked as a separate process by mount lifecycle tests"]
+    fn projected_mount_writer_child() {
+        let Some(path) = std::env::var_os("ACYCLIC_TEST_PROJECTED_WRITE_PATH") else {
+            return;
+        };
+        fs::write(PathBuf::from(path), b"late parent").expect("external writer completes");
     }
 
     #[allow(
@@ -15480,6 +15599,72 @@ mod tests {
     }
 
     #[test]
+    fn unobserved_parent_directory_reports_a_typed_merge_conflict() {
+        std::thread::Builder::new()
+            .name("plugin-unobserved-directory-merge".to_owned())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime")
+                    .block_on(async {
+                        let temporary = tempfile::tempdir().expect("temporary directory");
+                        let root = temporary.path().join("root");
+                        fs::create_dir_all(root.join("sub")).expect("unobserved directory");
+                        let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
+                            .await
+                            .expect("control plane");
+                        control
+                            .session_start(json!({"session_id":"session","cwd":root.display().to_string()}))
+                            .await
+                            .expect("root session");
+                        control
+                            .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
+                            .expect("root turn");
+                        control
+                            .pre_tool(json!({
+                                "session_id":"session","turn_id":"root-turn",
+                                "tool_use_id":"spawn-child","tool_name":"spawn_agent","tool_input":{}
+                            }))
+                            .await
+                            .expect("spawn child");
+                        control
+                            .subagent_start(json!({
+                                "session_id":"session","turn_id":"child-turn",
+                                "agent_id":"child","agent_type":"explorer"
+                            }))
+                            .await
+                            .expect("child start");
+                        let child_root = route_path(&control.state.routes["child"]);
+                        fs::create_dir_all(child_root.join("sub"))
+                            .expect("child mounted directory");
+                        fs::write(child_root.join("sub/cache.tmp"), b"child")
+                            .expect("child mounted file");
+                        fs::write(root.join("sub/cache.tmp"), b"parent")
+                            .expect("parent file");
+                        let result = control
+                            .agent_merge(json!({"agent":"child","_caller_turn_id":"root-turn"}))
+                            .await
+                            .expect("typed conflict, not an invalid candidate");
+                        assert_eq!(result["status"], "conflicted");
+                        assert!(result["conflicts"].as_array().is_some_and(|conflicts| {
+                            conflicts.iter().any(|conflict| {
+                                conflict["path"] == "/sub" && conflict["kind"] == "Binding"
+                            })
+                        }));
+                        assert_eq!(
+                            fs::read(root.join("sub/cache.tmp")).expect("parent file remains"),
+                            b"parent"
+                        );
+                    });
+            })
+            .expect("test thread")
+            .join()
+            .expect("unobserved directory merge thread");
+    }
+
+    #[test]
     fn publication_history_recovers_after_a_crash_boundary() {
         std::thread::Builder::new()
             .name("plugin-publication-history-recovery".to_owned())
@@ -15501,6 +15686,7 @@ mod tests {
         let data = temporary.path().join("plugin-data");
         let root = temporary.path().join("root");
         fs::create_dir_all(&root).expect("root directory");
+        fs::create_dir_all(root.join("sub")).expect("baseline nested directory");
         let mut control = ControlPlane::open(data.clone())
             .await
             .expect("control plane");
@@ -15508,6 +15694,13 @@ mod tests {
             .session_start(json!({"session_id":"session","cwd":root.display().to_string()}))
             .await
             .expect("root session");
+        control
+            .root_git_tool(
+                WorkspaceRootId::from_bytes(control.state.root_id),
+                vec!["status".to_owned()],
+            )
+            .await
+            .expect("observe baseline nested directory");
         control
             .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
             .expect("root turn");
@@ -15545,9 +15738,23 @@ mod tests {
             .write_text("/scratch.tmp", "publish without tracking")
             .await
             .expect("ignored child file");
+        transaction
+            .create_dir_all("/sub")
+            .await
+            .expect("nested ignore directory");
+        transaction
+            .write_text("/sub/.gitignore", "*.tmp\n")
+            .await
+            .expect("nested ignore policy");
+        transaction
+            .write_text("/sub/cache.tmp", "nested child cache")
+            .await
+            .expect("nested ignored child file");
         transaction.commit().await.expect("child commit");
         fs::write(root.join("scratch.tmp"), b"competing parent cache")
             .expect("parent cache update");
+        fs::write(root.join("sub/cache.tmp"), b"competing nested parent cache")
+            .expect("parent nested cache update");
         control.fail_before_publication_history = true;
         let failure = control
             .agent_merge(json!({"agent":"child","_caller_turn_id":"root-turn"}))
@@ -15561,6 +15768,10 @@ mod tests {
         assert_eq!(
             fs::read(root.join("scratch.tmp")).expect("ignored file reaches parent worktree"),
             b"publish without tracking"
+        );
+        assert_eq!(
+            fs::read(root.join("sub/cache.tmp")).expect("nested ignored file reaches parent"),
+            b"nested child cache"
         );
         assert_eq!(
             <LocalCoreStateStore as acyclic_fs::MultiRootPublicationStore>::list_operations(
@@ -15661,6 +15872,13 @@ mod tests {
                 Err(WorkspaceError::NotFound)
             ),
             "newly ignored file must remain outside compatibility history"
+        );
+        assert!(
+            matches!(
+                published_generation.read("/sub/cache.tmp", 1024).await,
+                Err(WorkspaceError::NotFound)
+            ),
+            "nested newly ignored file must remain outside compatibility history"
         );
         assert!(
             matches!(
@@ -17715,10 +17933,81 @@ mod tests {
             fs::read(root.join("base.txt")).expect("base after grandchild fork"),
             b"base"
         );
+        // A descendant can finish against the parent's last stable generation
+        // while the parent still has an active tool. The parent's later close
+        // supplies the next generation, rather than blocking the descendant.
+        control
+            .pre_tool(json!({
+                "session_id":"session","turn_id":"child-turn",
+                "tool_use_id":"parent-active-read","tool_name":"Read",
+                "tool_input":{"path":child_path.join("base.txt").display().to_string()}
+            }))
+            .await
+            .expect("parent starts overlapping read");
+        assert_eq!(
+            fs::read(child_path.join("base.txt")).expect("parent reads through its mount"),
+            b"base"
+        );
+        let grandchild_path = route_path(&control.state.routes["grandchild"]);
+        control
+            .pre_tool(json!({
+                "session_id":"session","turn_id":"grandchild-turn",
+                "tool_use_id":"descendant-read","tool_name":"Read",
+                "tool_input":{"path":grandchild_path.join("base.txt").display().to_string()}
+            }))
+            .await
+            .expect("descendant starts while parent is active");
+        control
+            .post_tool(json!({
+                "session_id":"session","turn_id":"grandchild-turn",
+                "tool_use_id":"descendant-read","tool_name":"Read"
+            }))
+            .await
+            .expect("descendant closes against stable parent generation");
+        let writer = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "tests::projected_mount_writer_child",
+                "--ignored",
+            ])
+            .env(
+                "ACYCLIC_TEST_PROJECTED_WRITE_PATH",
+                child_path.join("base.txt"),
+            )
+            .output()
+            .expect("external writer process");
+        assert!(
+            writer.status.success(),
+            "external writer failed: {}",
+            String::from_utf8_lossy(&writer.stderr)
+        );
+        control
+            .post_tool(json!({
+                "session_id":"session","turn_id":"child-turn",
+                "tool_use_id":"parent-active-read","tool_name":"Read"
+            }))
+            .await
+            .expect("parent later closes");
+        assert_eq!(
+            control
+                .workspace(&control.state.routes["child"])
+                .await
+                .expect("parent workspace")
+                .read("/base.txt", 32)
+                .await
+                .expect("parent captured late write")
+                .as_ref(),
+            b"late parent"
+        );
         let grandchild = control
             .workspace(&control.state.routes["grandchild"])
             .await
             .expect("grandchild workspace");
+        let observed = grandchild
+            .read("/base.txt", 32)
+            .await
+            .expect("descendant immediately observes completed parent");
+        assert_eq!(observed.as_ref(), b"late parent");
         let mut transaction = grandchild
             .begin_transaction(IdempotencyKey::new())
             .await
@@ -17767,8 +18056,8 @@ mod tests {
             b"nested"
         );
         assert_eq!(
-            fs::read(root.join("base.txt")).expect("unobserved root file survives publication"),
-            b"base"
+            fs::read(root.join("base.txt")).expect("external child write reaches root"),
+            b"late parent"
         );
 
         control.fail_next_unmount.insert("grandchild".to_owned());

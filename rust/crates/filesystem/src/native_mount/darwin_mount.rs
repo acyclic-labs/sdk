@@ -29,6 +29,7 @@ use std::time::{Duration, Instant, SystemTime};
 const ROOT_INODE: u64 = 1;
 const DIRECTORY_PAGE_SIZE: u32 = 256;
 const ATTRIBUTE_PAGE_SIZE: u32 = 256;
+const MAXIMUM_LOOKUP_CACHE_ENTRIES: usize = 65_536;
 const MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES: usize = 1024 * 1024;
 const MAXIMUM_CALLBACK_BYTES: usize = i32::MAX as usize;
 const RENAME_NOREPLACE: u32 = 1;
@@ -50,6 +51,7 @@ mod mode {
     pub(super) const IFREG: u32 = libc::S_IFREG as u32;
 }
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct NativeStat {
     inode: u64,
@@ -112,12 +114,24 @@ unsafe extern "C" {
 struct FileHandle {
     file_id: FileId,
     file: Arc<dyn MountOpenFile>,
+    observation: Arc<Mutex<FileObservation>>,
+}
+
+struct FileObservation {
+    epochs: Option<CacheEpochs>,
+    lookup: MountLookup,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct CacheEpochs {
+    view: u64,
+    binding: u64,
 }
 
 #[derive(Clone)]
 struct DirectoryHandle {
     path: MountPath,
-    view_epoch: Option<u64>,
+    binding_epoch: Option<u64>,
     cursor: Option<Vec<u8>>,
     entries: VecDeque<MountDirectoryEntry>,
     exhausted: bool,
@@ -131,10 +145,10 @@ struct DirectoryCheckpoint {
 }
 
 impl DirectoryHandle {
-    fn new(path: MountPath, view_epoch: Option<u64>) -> Self {
+    fn new(path: MountPath, binding_epoch: Option<u64>) -> Self {
         Self {
             path,
-            view_epoch,
+            binding_epoch,
             cursor: None,
             entries: VecDeque::new(),
             exhausted: false,
@@ -160,10 +174,26 @@ struct DarwinMountContext {
     next_handle: AtomicU64,
     next_inode: AtomicU64,
     inodes: Mutex<HashMap<FileId, u64>>,
+    lookups: Mutex<LookupCache>,
     files: RwLock<HashMap<u64, FileHandle>>,
     directories: Mutex<HashMap<u64, Arc<Mutex<DirectoryHandle>>>>,
     directory_checkpoints: Mutex<HashMap<MountPath, DirectoryCheckpoint>>,
     namespace_revision: AtomicU64,
+}
+
+struct LookupCache {
+    epochs: Option<CacheEpochs>,
+    entries: HashMap<MountPath, Option<MountLookup>>,
+}
+
+fn cache_epochs(source: &dyn MountFilesystem) -> Option<CacheEpochs> {
+    if !source.view_is_stable() {
+        return None;
+    }
+    Some(CacheEpochs {
+        view: source.view_epoch()?,
+        binding: source.binding_epoch()?,
+    })
 }
 
 impl DarwinMountContext {
@@ -173,6 +203,7 @@ impl DarwinMountContext {
         metadata: &Metadata,
         root_file_id: FileId,
     ) -> Self {
+        let epochs = cache_epochs(source.as_ref());
         Self {
             source,
             writable,
@@ -181,6 +212,10 @@ impl DarwinMountContext {
             next_handle: AtomicU64::new(1),
             next_inode: AtomicU64::new(ROOT_INODE + 1),
             inodes: Mutex::new(HashMap::from([(root_file_id, ROOT_INODE)])),
+            lookups: Mutex::new(LookupCache {
+                epochs,
+                entries: HashMap::new(),
+            }),
             files: RwLock::new(HashMap::new()),
             directories: Mutex::new(HashMap::new()),
             directory_checkpoints: Mutex::new(HashMap::new()),
@@ -215,19 +250,81 @@ impl DarwinMountContext {
     }
 
     fn lookup(&self, path: &MountPath) -> Result<MountLookup, i32> {
-        self.source
-            .lookup(path)
-            .map_err(|error| errno(&error))?
-            .ok_or(libc::ENOENT)
+        let epochs = cache_epochs(self.source.as_ref());
+        if let Some(epochs) = epochs {
+            let mut cache = self.lookups.lock().map_err(|_| libc::EIO)?;
+            if cache.epochs != Some(epochs) {
+                cache.entries.clear();
+                cache.epochs = Some(epochs);
+            }
+            if let Some(cached) = cache.entries.get(path).copied()
+                && cache_epochs(self.source.as_ref()) == Some(epochs)
+            {
+                return cached.ok_or(libc::ENOENT);
+            }
+        }
+        let lookup = self.source.lookup(path).map_err(|error| errno(&error))?;
+        if let Some(epochs) = epochs
+            && cache_epochs(self.source.as_ref()) == Some(epochs)
+        {
+            self.remember_lookup(path, lookup, epochs)?;
+        }
+        lookup.ok_or(libc::ENOENT)
+    }
+
+    fn remember_current_lookup(
+        &self,
+        path: &MountPath,
+        lookup: Option<MountLookup>,
+    ) -> Result<(), i32> {
+        let Some(epochs) = cache_epochs(self.source.as_ref()) else {
+            return Ok(());
+        };
+        self.remember_lookup(path, lookup, epochs)?;
+        Ok(())
+    }
+
+    fn remember_lookup(
+        &self,
+        path: &MountPath,
+        lookup: Option<MountLookup>,
+        epochs: CacheEpochs,
+    ) -> Result<(), i32> {
+        let mut lookups = self.lookups.lock().map_err(|_| libc::EIO)?;
+        if lookups.epochs != Some(epochs) {
+            lookups.entries.clear();
+            lookups.epochs = Some(epochs);
+        }
+        if lookups.entries.len() >= MAXIMUM_LOOKUP_CACHE_ENTRIES {
+            lookups.entries.clear();
+        }
+        lookups.entries.try_reserve(1).map_err(|_| libc::ENOMEM)?;
+        lookups.entries.insert(path.clone(), lookup);
+        Ok(())
     }
 
     fn open(&self, path: &MountPath) -> Result<u64, i32> {
         let file = self.source.open_file(path).map_err(|error| errno(&error))?;
-        let file_id = file.lookup().map_err(|error| errno(&error))?.node.file_id;
+        let before = cache_epochs(self.source.as_ref());
+        let lookup = file.lookup().map_err(|error| errno(&error))?;
+        let after = cache_epochs(self.source.as_ref());
+        let observed_epochs = (before.is_some() && before == after)
+            .then_some(after)
+            .flatten();
         let handle = self.allocate_handle()?;
         let mut files = self.files.write().map_err(|_| libc::EIO)?;
         files.try_reserve(1).map_err(|_| libc::ENOMEM)?;
-        files.insert(handle, FileHandle { file_id, file });
+        files.insert(
+            handle,
+            FileHandle {
+                file_id: lookup.node.file_id,
+                file,
+                observation: Arc::new(Mutex::new(FileObservation {
+                    epochs: observed_epochs,
+                    lookup,
+                })),
+            },
+        );
         Ok(handle)
     }
 
@@ -248,15 +345,53 @@ impl DarwinMountContext {
         }
     }
 
+    fn file_with_lookup(
+        &self,
+        path: &MountPath,
+        handle: u64,
+    ) -> Result<(Arc<dyn MountOpenFile>, MountLookup), i32> {
+        if handle == 0 {
+            let file = self.source.open_file(path).map_err(|error| errno(&error))?;
+            let lookup = file.lookup().map_err(|error| errno(&error))?;
+            return Ok((file, lookup));
+        }
+        let (file, observation) = {
+            let files = self.files.read().map_err(|_| libc::EIO)?;
+            let entry = files.get(&handle).ok_or(libc::ESTALE)?;
+            (Arc::clone(&entry.file), Arc::clone(&entry.observation))
+        };
+        let epochs = cache_epochs(self.source.as_ref());
+        if let Some(epochs) = epochs {
+            let observation = observation.lock().map_err(|_| libc::EIO)?;
+            if observation.epochs == Some(epochs) {
+                return Ok((file, observation.lookup));
+            }
+        }
+        let lookup = file.lookup().map_err(|error| errno(&error))?;
+        if let Some(epochs) = epochs
+            && cache_epochs(self.source.as_ref()) == Some(epochs)
+        {
+            let mut observation = observation.lock().map_err(|_| libc::EIO)?;
+            observation.epochs = Some(epochs);
+            observation.lookup = lookup;
+        }
+        Ok((file, lookup))
+    }
+
     fn lookup_handle(&self, path: &MountPath, handle: u64) -> Result<MountLookup, i32> {
         if handle == 0 {
             return self.lookup(path);
         }
-        self.file(handle)?.lookup().map_err(|error| errno(&error))
+        self.file_with_lookup(path, handle)
+            .map(|(_, lookup)| lookup)
     }
 
     fn attributes(&self, path: &MountPath, handle: u64) -> Result<NativeStat, i32> {
         let lookup = self.lookup_handle(path, handle)?;
+        self.attributes_from_lookup(lookup)
+    }
+
+    fn attributes_from_lookup(&self, lookup: MountLookup) -> Result<NativeStat, i32> {
         let node = lookup.node;
         let file_kind = match node.kind {
             MountNodeKind::Regular => mode::IFREG,
@@ -893,10 +1028,11 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_create(
         let context = context(address)?;
         context.admit_write()?;
         let path = mount_path(path)?;
-        context
+        let lookup = context
             .source
             .create_file(&path, create_metadata(mode, mode::IFREG, uid, gid))
             .map_err(|error| errno(&error))?;
+        context.remember_current_lookup(&path, Some(lookup))?;
         context.namespace_changed();
         unsafe { handle.write(context.open(&path)?) };
         Ok(0)
@@ -936,23 +1072,11 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_read(
         let requested_length = bounded_length(length)?;
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         let context = context(address)?;
-        let file = context.file_or_open(&mount_path(path)?, handle)?;
-        let logical_bytes = file
-            .lookup()
-            .map_err(|error| errno(&error))?
-            .node
-            .logical_bytes;
-        let length = logical_bytes
-            .saturating_sub(offset)
-            .min(u64::from(requested_length));
-        if length == 0 {
-            return Ok(0);
-        }
-        let length = u32::try_from(length).map_err(|_| libc::EOVERFLOW)?;
-        let bytes = file
-            .read_range(offset, length)
+        let bytes = context
+            .file_or_open(&mount_path(path)?, handle)?
+            .read_up_to(offset, requested_length)
             .map_err(|error| errno(&error))?;
-        if bytes.len() > usize::try_from(length).unwrap_or(usize::MAX) {
+        if bytes.len() > usize::try_from(requested_length).unwrap_or(usize::MAX) {
             return Err(libc::EIO);
         }
         unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast(), bytes.len()) };
@@ -1029,10 +1153,10 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
     ffi_status(|| {
         let context = context(address)?;
         let path = mount_path(path)?;
-        let view_epoch = context.source.view_epoch();
-        let _view_lease = context
+        let binding_epoch = context.source.binding_epoch();
+        let _binding_lease = context
             .source
-            .acquire_view_lease(view_epoch)
+            .acquire_binding_lease(binding_epoch)
             .map_err(|error| errno(&error))?;
         if context.lookup(&path)?.node.kind != MountNodeKind::Directory {
             return Err(libc::ENOTDIR);
@@ -1042,7 +1166,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
         directories.try_reserve(1).map_err(|_| libc::ENOMEM)?;
         directories.insert(
             allocated,
-            Arc::new(Mutex::new(DirectoryHandle::new(path, view_epoch))),
+            Arc::new(Mutex::new(DirectoryHandle::new(path, binding_epoch))),
         );
         unsafe { handle.write(allocated) };
         Ok(0)
@@ -1068,9 +1192,9 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
             .cloned()
             .ok_or(libc::ESTALE)?;
         let mut directory = directory.lock().map_err(|_| libc::EIO)?;
-        let _view_lease = context
+        let _binding_lease = context
             .source
-            .acquire_view_lease(directory.view_epoch)
+            .acquire_binding_lease(directory.binding_epoch)
             .map_err(|error| errno(&error))?;
         if offset < 0 {
             return Err(libc::EINVAL);
@@ -1120,8 +1244,10 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
                 return Ok(0);
             };
             let name = CString::new(entry.name.as_slice()).map_err(|_| libc::EIO)?;
-            let child = directory.path.child(entry.name.clone());
-            let attributes = context.attributes(&child, 0)?;
+            let attributes = context.attributes_from_lookup(MountLookup {
+                node: entry.node,
+                metadata: entry.metadata,
+            })?;
             let next = directory.emitted.checked_add(1).ok_or(libc::EOVERFLOW)?;
             let buffer_full = unsafe {
                 acyclic_fs_darwin_mount_fill_directory(

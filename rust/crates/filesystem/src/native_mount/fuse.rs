@@ -23,6 +23,66 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
+#[cfg(test)]
+struct TestWriteGate {
+    admitted: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+static TEST_WRITE_GATE: std::sync::OnceLock<std::sync::Mutex<Option<TestWriteGate>>> =
+    std::sync::OnceLock::new();
+
+/// One-shot control for a real FUSE write paused after handle admission and
+/// dirty tracking but before the authenticated mutation begins.
+#[cfg(test)]
+pub(super) struct TestWriteControl {
+    admitted: std::sync::mpsc::Receiver<()>,
+    release: std::sync::mpsc::SyncSender<()>,
+}
+
+#[cfg(test)]
+impl TestWriteControl {
+    pub(super) fn wait_until_admitted(&self, timeout: Duration) -> bool {
+        self.admitted.recv_timeout(timeout).is_ok()
+    }
+
+    pub(super) fn release(self) -> bool {
+        self.release.send(()).is_ok()
+    }
+}
+
+#[cfg(test)]
+pub(super) fn pause_next_write_after_admission() -> TestWriteControl {
+    let (admitted_send, admitted_receive) = std::sync::mpsc::sync_channel(0);
+    let (release_send, release_receive) = std::sync::mpsc::sync_channel(0);
+    let gate = TEST_WRITE_GATE.get_or_init(|| std::sync::Mutex::new(None));
+    *gate
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(TestWriteGate {
+        admitted: admitted_send,
+        release: release_receive,
+    });
+    TestWriteControl {
+        admitted: admitted_receive,
+        release: release_send,
+    }
+}
+
+#[cfg(test)]
+fn pause_test_write() {
+    let Some(gate) = TEST_WRITE_GATE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    else {
+        return;
+    };
+    let _ = gate.admitted.send(());
+    let _ = gate.release.recv_timeout(Duration::from_secs(10));
+}
+
 const ROOT_INODE: u64 = 1;
 const TTL: Duration = Duration::from_secs(1);
 /// FUSE RENAME2 wire flag; equals Linux renameat2's `RENAME_NOREPLACE`.
@@ -67,7 +127,14 @@ struct InodeEntry {
 struct FileHandle {
     inode: u64,
     open_file: Arc<dyn MountOpenFile>,
+    operation: Arc<std::sync::Mutex<()>>,
     dirty: bool,
+}
+
+#[derive(Clone, Copy)]
+enum InitialHandleState {
+    Clean,
+    Dirty,
 }
 
 struct FuseProjectionState {
@@ -252,7 +319,11 @@ impl FuseProjectionState {
         self.stopping.load(Ordering::Acquire)
     }
 
-    fn allocate_file_handle(&mut self, inode: u64) -> Result<u64, i32> {
+    fn allocate_file_handle(
+        &mut self,
+        inode: u64,
+        initial_state: InitialHandleState,
+    ) -> Result<u64, i32> {
         let path = self.path(inode)?.to_owned();
         let open_file = self.source.open_file(&path).map_err(errno)?;
         let handle = self.next_handle;
@@ -267,7 +338,8 @@ impl FuseProjectionState {
             FileHandle {
                 inode,
                 open_file,
-                dirty: true,
+                operation: Arc::new(std::sync::Mutex::new(())),
+                dirty: matches!(initial_state, InitialHandleState::Dirty),
             },
         );
         entry.open_handles = entry.open_handles.saturating_add(1);
@@ -313,6 +385,18 @@ impl FuseProjectionState {
             return Err(libc::ESTALE);
         }
         Ok(Arc::clone(&file.open_file))
+    }
+
+    fn open_handle_operation(
+        &self,
+        inode: u64,
+        handle: u64,
+    ) -> Result<Arc<std::sync::Mutex<()>>, i32> {
+        let file = self.files.get(&handle).ok_or(libc::ESTALE)?;
+        if file.inode != inode {
+            return Err(libc::ESTALE);
+        }
+        Ok(Arc::clone(&file.operation))
     }
 
     fn mark_handle_dirty(&mut self, inode: u64, handle: u64) -> Result<(), i32> {
@@ -1038,6 +1122,9 @@ impl FuseProjection {
             if state.reject_stopping() {
                 return reply.error(Errno::ENODEV);
             }
+            if let Err(error) = admit_open(state.writable, flags) {
+                return reply.error(Errno::from_i32(error));
+            }
             let file_id = match state.node(inode) {
                 Ok(node) if node.kind == MountNodeKind::Regular => node.file_id,
                 Ok(_) => return reply.error(Errno::EISDIR),
@@ -1122,6 +1209,7 @@ impl FuseProjection {
             FileHandle {
                 inode,
                 open_file,
+                operation: Arc::new(std::sync::Mutex::new(())),
                 dirty: truncated,
             },
         );
@@ -1143,20 +1231,7 @@ impl FuseProjection {
             };
             (open_file, Arc::clone(&state.stopping))
         };
-        let lookup = match open_file.lookup() {
-            Ok(lookup) => lookup,
-            Err(error) => return reply.error(Errno::from_i32(errno(error))),
-        };
-        let length = lookup
-            .node
-            .logical_bytes
-            .saturating_sub(offset)
-            .min(u64::from(size));
-        let length = u32::try_from(length).unwrap_or(size);
-        if length == 0 {
-            return reply.data(&[]);
-        }
-        let bytes = match open_file.read_range(offset, length) {
+        let bytes = match open_file.read_up_to(offset, size) {
             Ok(bytes) => bytes,
             Err(error) => return reply.error(Errno::from_i32(errno(error))),
         };
@@ -1164,6 +1239,129 @@ impl FuseProjection {
             reply.error(Errno::ENODEV);
         } else {
             reply.data(&bytes);
+        }
+    }
+
+    fn write_parallel(&self, inode: u64, handle: u64, offset: u64, data: &[u8], reply: ReplyWrite) {
+        let operation = {
+            let state = match self.state.lock() {
+                Ok(state) => state,
+                Err(_) => return reply.error(Errno::EIO),
+            };
+            if state.reject_stopping() {
+                return reply.error(Errno::ENODEV);
+            }
+            if let Err(error) = state.admit_write() {
+                return reply.error(Errno::from_i32(error));
+            }
+            match state.open_handle_operation(inode, handle) {
+                Ok(operation) => operation,
+                Err(error) => return reply.error(Errno::from_i32(error)),
+            }
+        };
+        let _operation = match operation.lock() {
+            Ok(operation) => operation,
+            Err(_) => return reply.error(Errno::EIO),
+        };
+        let open_file = {
+            let mut state = match self.state.lock() {
+                Ok(state) => state,
+                Err(_) => return reply.error(Errno::EIO),
+            };
+            if state.reject_stopping() {
+                return reply.error(Errno::ENODEV);
+            }
+            let Some(file) = state
+                .files
+                .get_mut(&handle)
+                .filter(|file| file.inode == inode && Arc::ptr_eq(&file.operation, &operation))
+            else {
+                return reply.error(Errno::ESTALE);
+            };
+            file.dirty = true;
+            let open_file = Arc::clone(&file.open_file);
+            if let Some(entry) = state.by_inode.get_mut(&inode) {
+                // The write advances the source view. Until the handle-relative
+                // refresh below completes, no namespace lookup may reuse this
+                // cached record.
+                entry.view_epoch = None;
+            }
+            open_file
+        };
+
+        #[cfg(test)]
+        pause_test_write();
+
+        let length = u32::try_from(data.len()).unwrap_or(u32::MAX);
+        if let Err(error) = open_file.write_range(offset, Bytes::copy_from_slice(data)) {
+            return reply.error(Errno::from_i32(errno(error)));
+        }
+        let refreshed = open_file.lookup().ok();
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => return reply.error(Errno::EIO),
+        };
+        let current = state.files.get(&handle).is_some_and(|file| {
+            file.inode == inode
+                && Arc::ptr_eq(&file.operation, &operation)
+                && Arc::ptr_eq(&file.open_file, &open_file)
+        });
+        if current
+            && let Some(lookup) = refreshed
+            && let Some(entry) = state.by_inode.get_mut(&inode)
+            && entry.lookup.node.file_id == lookup.node.file_id
+        {
+            entry.lookup = lookup;
+        }
+        reply.written(length);
+    }
+
+    fn flush_parallel(
+        &self,
+        inode: u64,
+        handle: u64,
+        force: bool,
+        release: bool,
+        reply: ReplyEmpty,
+    ) {
+        let operation = {
+            let state = match self.state.lock() {
+                Ok(state) => state,
+                Err(_) => return reply.error(Errno::EIO),
+            };
+            match state.open_handle_operation(inode, handle) {
+                Ok(operation) => operation,
+                Err(error) => return reply.error(Errno::from_i32(error)),
+            }
+        };
+        let _operation = match operation.lock() {
+            Ok(operation) => operation,
+            Err(_) => return reply.error(Errno::EIO),
+        };
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => return reply.error(Errno::EIO),
+        };
+        if state.reject_stopping() {
+            return reply.error(Errno::ENODEV);
+        }
+        let current = state
+            .files
+            .get(&handle)
+            .is_some_and(|file| file.inode == inode && Arc::ptr_eq(&file.operation, &operation));
+        if !current {
+            return reply.error(Errno::ESTALE);
+        }
+        let flushed = state.flush_handle(inode, handle, force);
+        let result = if release {
+            let discarded = state.discard_file_handle(inode, handle);
+            flushed.and(discarded)
+        } else {
+            flushed
+        };
+        match result {
+            Ok(()) => reply.ok(),
+            Err(error) => reply.error(Errno::from_i32(error)),
         }
     }
 }
@@ -1352,20 +1550,8 @@ impl Filesystem for FuseProjection {
         lock_owner: Option<LockOwner>,
         reply: ReplyWrite,
     ) {
-        with_fuse_state!(
-            self,
-            reply,
-            write(
-                request,
-                inode.0,
-                fh.0,
-                offset,
-                data,
-                write_flags.bits(),
-                flags.0,
-                lock_owner.map(|owner| owner.0)
-            )
-        );
+        let _ = (request, write_flags, flags, lock_owner);
+        self.write_parallel(inode.0, fh.0, offset, data, reply);
     }
 
     fn fsync(
@@ -1376,7 +1562,8 @@ impl Filesystem for FuseProjection {
         datasync: bool,
         reply: ReplyEmpty,
     ) {
-        with_fuse_state!(self, reply, fsync(request, inode.0, fh.0, datasync));
+        let _ = (request, datasync);
+        self.flush_parallel(inode.0, fh.0, true, false, reply);
     }
 
     fn flush(
@@ -1387,7 +1574,8 @@ impl Filesystem for FuseProjection {
         lock_owner: LockOwner,
         reply: ReplyEmpty,
     ) {
-        with_fuse_state!(self, reply, flush(request, inode.0, fh.0, lock_owner.0));
+        let _ = (request, lock_owner);
+        self.flush_parallel(inode.0, fh.0, false, false, reply);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1401,18 +1589,8 @@ impl Filesystem for FuseProjection {
         flush: bool,
         reply: ReplyEmpty,
     ) {
-        with_fuse_state!(
-            self,
-            reply,
-            release(
-                request,
-                inode.0,
-                fh.0,
-                flags.0,
-                lock_owner.map(|owner| owner.0),
-                flush
-            )
-        );
+        let _ = (request, flags, lock_owner, flush);
+        self.flush_parallel(inode.0, fh.0, false, true, reply);
     }
 
     fn opendir(&self, request: &Request, inode: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
@@ -1916,9 +2094,9 @@ impl FuseProjectionState {
             Ok(path) => path,
             Err(error) => return reply.error(Errno::from_i32(error)),
         };
-        let mut projected = match self.by_inode.get(&inode) {
-            Some(entry) => entry.lookup,
-            None => return reply.error(Errno::from_i32(libc::ESTALE)),
+        let mut projected = match self.refresh_handle(inode, None) {
+            Ok(lookup) => lookup,
+            Err(error) => return reply.error(Errno::from_i32(error)),
         };
         projected.node.link_count = match projected.node.link_count.checked_add(1) {
             Some(count) => count,
@@ -1945,88 +2123,6 @@ impl FuseProjectionState {
                 reply.entry(&TTL, &attr, Generation(0));
             }
             Err(error) => reply.error(Errno::from_i32(errno(error))),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn write(
-        &mut self,
-        _request: &Request,
-        inode: u64,
-        fh: u64,
-        offset: u64,
-        data: &[u8],
-        _write_flags: u32,
-        _flags: i32,
-        _lock_owner: Option<u64>,
-        reply: ReplyWrite,
-    ) {
-        reject_stopping!(self, reply);
-        if let Err(error) = self.admit_write() {
-            return reply.error(Errno::from_i32(error));
-        }
-        let open_file = match self.open_handle(inode, fh) {
-            Ok(open_file) => open_file,
-            Err(error) => return reply.error(Errno::from_i32(error)),
-        };
-        let bytes = Bytes::copy_from_slice(data);
-        let write = open_file.write_range(offset, bytes);
-        match write {
-            Ok(()) => {
-                let _ = self.mark_handle_dirty(inode, fh);
-                let _ = self.refresh_handle(inode, Some(fh));
-                reply.written(u32::try_from(data.len()).unwrap_or(u32::MAX));
-            }
-            Err(error) => reply.error(Errno::from_i32(errno(error))),
-        }
-    }
-
-    fn fsync(
-        &mut self,
-        _request: &Request,
-        inode: u64,
-        fh: u64,
-        _datasync: bool,
-        reply: ReplyEmpty,
-    ) {
-        reject_stopping!(self, reply);
-        match self.flush_handle(inode, fh, true) {
-            Ok(()) => reply.ok(),
-            Err(error) => reply.error(Errno::from_i32(error)),
-        }
-    }
-
-    fn flush(
-        &mut self,
-        _request: &Request,
-        inode: u64,
-        fh: u64,
-        _lock_owner: u64,
-        reply: ReplyEmpty,
-    ) {
-        reject_stopping!(self, reply);
-        match self.flush_handle(inode, fh, false) {
-            Ok(()) => reply.ok(),
-            Err(error) => reply.error(Errno::from_i32(error)),
-        }
-    }
-
-    fn release(
-        &mut self,
-        _request: &Request,
-        inode: u64,
-        handle: u64,
-        _flags: i32,
-        _lock_owner: Option<u64>,
-        _flush: bool,
-        reply: ReplyEmpty,
-    ) {
-        reject_stopping!(self, reply);
-        let flush = self.flush_handle(inode, handle, false);
-        let discard = self.discard_file_handle(inode, handle);
-        match flush.and(discard) {
-            Ok(()) => reply.ok(),
-            Err(error) => reply.error(Errno::from_i32(error)),
         }
     }
 
@@ -2516,7 +2612,7 @@ impl FuseProjectionState {
                     Ok(inode) => inode,
                     Err(error) => return reply.error(Errno::from_i32(error)),
                 };
-                let handle = match self.allocate_file_handle(inode) {
+                let handle = match self.allocate_file_handle(inode, InitialHandleState::Clean) {
                     Ok(handle) => handle,
                     Err(error) => {
                         self.release_lookup_reference(inode, 1);
@@ -2565,7 +2661,7 @@ impl FuseProjectionState {
                     Ok(inode) => inode,
                     Err(error) => return reply.error(Errno::from_i32(error)),
                 };
-                let handle = match self.allocate_file_handle(inode) {
+                let handle = match self.allocate_file_handle(inode, InitialHandleState::Dirty) {
                     Ok(handle) => handle,
                     Err(error) => {
                         self.release_lookup_reference(inode, 1);
@@ -2773,10 +2869,18 @@ fn stable_cache_epoch(stable: bool, epoch: Option<u64>) -> Option<u64> {
     stable.then_some(epoch).flatten()
 }
 
+fn admit_open(writable: bool, flags: i32) -> Result<(), i32> {
+    if flags & libc::O_TRUNC != 0 && !writable {
+        Err(libc::EROFS)
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::{
-        InodeEntry, MountLookup, MountNode, MountNodeKind, MountPath, ROOT_INODE,
+        InodeEntry, MountLookup, MountNode, MountNodeKind, MountPath, ROOT_INODE, admit_open,
         cached_projected_lookup, coherent_view, intern_projected, replace_root_lookup,
         stable_cache_epoch,
     };
@@ -2786,6 +2890,13 @@ mod tests {
     #[test]
     fn rename_noreplace_matches_linux_libc() {
         assert_eq!(super::RENAME_NOREPLACE, libc::RENAME_NOREPLACE);
+    }
+
+    #[test]
+    fn read_only_mount_rejects_truncating_open_before_source_mutation() {
+        assert_eq!(admit_open(false, libc::O_TRUNC), Err(libc::EROFS));
+        assert_eq!(admit_open(false, libc::O_RDONLY), Ok(()));
+        assert_eq!(admit_open(true, libc::O_TRUNC), Ok(()));
     }
 
     #[test]

@@ -228,6 +228,338 @@ mod capture_policy_tests {
         assert_eq!(paths.len(), 1);
         Ok(())
     }
+
+    #[tokio::test]
+    async fn watch_hint_observes_only_missing_ancestors_of_a_nested_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::create_dir(temporary.path().join("sub"))?;
+        std::fs::write(temporary.path().join("sub/changed.txt"), b"changed")?;
+        std::fs::write(temporary.path().join("sub/unrelated.txt"), b"unrelated")?;
+        let workspace = crate::Fs::memory()
+            .create_workspace("watch-ancestor")
+            .await?;
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        let changed = path("/sub/changed.txt")?;
+        capture_watch_batch(
+            &mut checkout,
+            WatchBatch::Changes {
+                epoch: WatchEpoch::from_u64(1),
+                first_sequence: WatchSequence::from_u64(1),
+                next_sequence: WatchSequence::from_u64(2),
+                changes: vec![WatchChange::Modified(changed.clone())],
+            },
+            &CaptureOptions {
+                source_root: temporary.path().to_path_buf(),
+                expected_root_identity: capture_root_identity(temporary.path())?,
+                maximum_paths: 2,
+                maximum_extent_spans: 8,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let token = CancellationToken::new();
+        let parent = checkout
+            .lookup_no_follow(&path("/sub")?, WorkBudget::UNBOUNDED, &token)
+            .await?;
+        assert_eq!(
+            parent.value.record.map(|record| record.kind),
+            Some(FileKind::Directory)
+        );
+        let file = checkout
+            .lookup_no_follow(&changed, WorkBudget::UNBOUNDED, &token)
+            .await?;
+        assert_eq!(
+            file.value.record.map(|record| record.kind),
+            Some(FileKind::Regular)
+        );
+        let unrelated = checkout
+            .lookup_no_follow(&path("/sub/unrelated.txt")?, WorkBudget::UNBOUNDED, &token)
+            .await?;
+        assert!(unrelated.value.record.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn watch_rename_creates_an_unobserved_destination_parent_first()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::create_dir(temporary.path().join("sub"))?;
+        std::fs::write(temporary.path().join("old.txt"), b"old")?;
+        let workspace = crate::Fs::memory()
+            .create_workspace("watch-rename-parent")
+            .await?;
+        workspace.write_text("/old.txt", "old").await?;
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        std::fs::rename(
+            temporary.path().join("old.txt"),
+            temporary.path().join("sub/new.txt"),
+        )?;
+        let old = path("/old.txt")?;
+        let new = path("/sub/new.txt")?;
+        capture_watch_batch(
+            &mut checkout,
+            WatchBatch::Changes {
+                epoch: WatchEpoch::from_u64(1),
+                first_sequence: WatchSequence::from_u64(1),
+                next_sequence: WatchSequence::from_u64(2),
+                changes: vec![WatchChange::Renamed {
+                    from: old.clone(),
+                    to: new.clone(),
+                }],
+            },
+            &CaptureOptions {
+                source_root: temporary.path().to_path_buf(),
+                expected_root_identity: capture_root_identity(temporary.path())?,
+                maximum_paths: 2,
+                maximum_extent_spans: 8,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let token = CancellationToken::new();
+        assert!(
+            checkout
+                .lookup_no_follow(&old, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .is_none()
+        );
+        assert!(
+            checkout
+                .lookup_no_follow(&new, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .is_some()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn watch_directory_rename_then_child_change_keeps_the_renamed_directory()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::create_dir(temporary.path().join("old"))?;
+        std::fs::write(temporary.path().join("old/file.txt"), b"old")?;
+        let workspace = crate::Fs::memory()
+            .create_workspace("watch-renamed-directory")
+            .await?;
+        let mut transaction = workspace
+            .begin_transaction(crate::IdempotencyKey::new())
+            .await?;
+        transaction.create_dir_all("/old").await?;
+        transaction.write_text("/old/file.txt", "old").await?;
+        transaction.commit().await?;
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        assert!(
+            checkout
+                .lookup_no_follow(
+                    &path("/old")?,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new()
+                )
+                .await?
+                .value
+                .record
+                .is_some()
+        );
+        std::fs::rename(temporary.path().join("old"), temporary.path().join("new"))?;
+        std::fs::write(temporary.path().join("new/file.txt"), b"new")?;
+        let old = path("/old")?;
+        let new = path("/new")?;
+        let child = path("/new/file.txt")?;
+        capture_watch_batch(
+            &mut checkout,
+            WatchBatch::Changes {
+                epoch: WatchEpoch::from_u64(1),
+                first_sequence: WatchSequence::from_u64(1),
+                next_sequence: WatchSequence::from_u64(3),
+                changes: vec![
+                    WatchChange::Renamed {
+                        from: old.clone(),
+                        to: new.clone(),
+                    },
+                    WatchChange::Modified(child.clone()),
+                ],
+            },
+            &CaptureOptions {
+                source_root: temporary.path().to_path_buf(),
+                expected_root_identity: capture_root_identity(temporary.path())?,
+                maximum_paths: 3,
+                maximum_extent_spans: 8,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let token = CancellationToken::new();
+        assert!(
+            checkout
+                .lookup_no_follow(&old, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .is_none()
+        );
+        assert_eq!(
+            checkout
+                .lookup_no_follow(&new, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .map(|record| record.kind),
+            Some(FileKind::Directory)
+        );
+        assert_eq!(
+            checkout
+                .lookup_no_follow(&child, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .map(|record| record.kind),
+            Some(FileKind::Regular)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn watch_nested_file_replaces_a_stale_non_directory_ancestor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::create_dir(temporary.path().join("sub"))?;
+        std::fs::write(temporary.path().join("sub/new.txt"), b"new")?;
+        let workspace = crate::Fs::memory()
+            .create_workspace("watch-stale-ancestor")
+            .await?;
+        workspace.write_text("/sub", "old").await?;
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        let child = path("/sub/new.txt")?;
+        capture_watch_batch_with_policy(
+            &mut checkout,
+            WatchBatch::Changes {
+                epoch: WatchEpoch::from_u64(1),
+                first_sequence: WatchSequence::from_u64(1),
+                next_sequence: WatchSequence::from_u64(2),
+                changes: vec![WatchChange::Created(child.clone())],
+            },
+            &CaptureOptions {
+                source_root: temporary.path().to_path_buf(),
+                expected_root_identity: capture_root_identity(temporary.path())?,
+                maximum_paths: 2,
+                maximum_extent_spans: 8,
+            },
+            &CapturePolicy::allow_all(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let token = CancellationToken::new();
+        assert_eq!(
+            checkout
+                .lookup_no_follow(&path("/sub")?, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .map(|record| record.kind),
+            Some(FileKind::Directory)
+        );
+        assert!(
+            checkout
+                .lookup_no_follow(&child, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .is_some()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn watch_rename_chain_observes_intermediate_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::create_dir(temporary.path().join("sub"))?;
+        std::fs::write(temporary.path().join("final.txt"), b"old")?;
+        let workspace = crate::Fs::memory()
+            .create_workspace("watch-rename-chain")
+            .await?;
+        workspace.write_text("/old.txt", "old").await?;
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        capture_watch_batch(
+            &mut checkout,
+            WatchBatch::Changes {
+                epoch: WatchEpoch::from_u64(1),
+                first_sequence: WatchSequence::from_u64(1),
+                next_sequence: WatchSequence::from_u64(3),
+                changes: vec![
+                    WatchChange::Renamed {
+                        from: path("/old.txt")?,
+                        to: path("/sub/intermediate.txt")?,
+                    },
+                    WatchChange::Renamed {
+                        from: path("/sub/intermediate.txt")?,
+                        to: path("/final.txt")?,
+                    },
+                ],
+            },
+            &CaptureOptions {
+                source_root: temporary.path().to_path_buf(),
+                expected_root_identity: capture_root_identity(temporary.path())?,
+                maximum_paths: 3,
+                maximum_extent_spans: 8,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let token = CancellationToken::new();
+        assert!(
+            checkout
+                .lookup_no_follow(&path("/old.txt")?, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .is_none()
+        );
+        assert!(
+            checkout
+                .lookup_no_follow(&path("/final.txt")?, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .is_some()
+        );
+        Ok(())
+    }
 }
 
 /// Successful authored host-state capture.
@@ -833,9 +1165,9 @@ fn order_capture_states(
         .zip(current)
         .map(|((observation, path), current)| (observation, path, current))
         .collect::<Vec<_>>();
-    // Existing bindings lead newly observed hard-link aliases so importing an
-    // earlier-sorting alias never replaces a stable SDK FileId. Directories
-    // still precede children, and absent paths still remove deepest first.
+    // Remove checkout-only descendants first, before an observed ancestor
+    // changes kind. Existing bindings then lead newly observed hard-link
+    // aliases so an earlier-sorting alias cannot replace a stable SDK FileId.
     sort_capture_states(&mut states);
     states
 }
@@ -845,16 +1177,16 @@ fn sort_capture_states(states: &mut [CapturePathState]) {
         |(left, left_path, left_current), (right, right_path, right_current)| {
             let rank = |observation: &Option<HostObservation>, current: &Option<FileRecord>| {
                 match observation {
-                    Some(observation) if observation.metadata.is_dir() => 0,
-                    Some(_) if current.is_some() => 1,
-                    Some(_) => 2,
-                    None => 3,
+                    None => 0,
+                    Some(observation) if observation.metadata.is_dir() => 1,
+                    Some(_) if current.is_some() => 2,
+                    Some(_) => 3,
                 }
             };
             let left_rank = rank(left, left_current);
             let right_rank = rank(right, right_current);
             left_rank.cmp(&right_rank).then_with(|| {
-                if left_rank == 3 {
+                if left_rank == 0 {
                     right_path
                         .depth()
                         .cmp(&left_path.depth())
@@ -1444,7 +1776,6 @@ pub fn host_path_to_namespace(
 /// batch. Other failures are the union of exact rename,
 /// host-state capture, cancellation, engine, allocation, and bounded-work
 /// failures from [`capture_paths`].
-#[allow(clippy::too_many_lines)]
 pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     batch: WatchBatch,
@@ -1464,8 +1795,27 @@ pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 /// Captures one watcher batch while omitting excluded paths symmetrically.
-#[allow(clippy::too_many_lines)]
 pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    batch: WatchBatch,
+    options: &CaptureOptions,
+    policy: &CapturePolicy,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<WatchCaptureReceipt>, OperationFailure<CaptureError>> {
+    Box::pin(capture_watch_batch_with_policy_inner(
+        checkout,
+        batch,
+        options,
+        policy,
+        budget,
+        cancellation,
+    ))
+    .await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn capture_watch_batch_with_policy_inner<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     batch: WatchBatch,
     options: &CaptureOptions,
@@ -1505,6 +1855,8 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
         .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
     let mut ordinary = BTreeMap::new();
     let mut rename_records = BTreeMap::<NamespacePath, FileRecord>::new();
+    let mut renamed_directories = Vec::new();
+    let mut rename_destinations = Vec::new();
     let mut moved_away = BTreeSet::new();
 
     for change in changes.into_iter().filter_map(|change| match &change {
@@ -1591,6 +1943,10 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
                     }
                 };
                 if let Some(record) = record {
+                    if record.kind == FileKind::Directory {
+                        renamed_directories.push((from.clone(), to.clone()));
+                    }
+                    rename_destinations.push(to.clone());
                     mutations.push(AuthoredMutation::Rename {
                         source: from.clone(),
                         destination: to.clone(),
@@ -1618,6 +1974,37 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
     ))
     .await?;
 
+    // A watcher may report a nested file before any ancestor has been
+    // observed in this lazy checkout. Capture only the missing ancestors,
+    // rather than expanding their entire host subtrees as event roots.
+    let maximum_paths = usize::try_from(options.maximum_paths).unwrap_or(usize::MAX);
+    let ancestors = watch_ancestor_candidates(
+        ordinary
+            .keys()
+            .chain(rename_records.keys())
+            .chain(rename_destinations.iter()),
+        &ordinary,
+        &rename_records,
+        policy,
+        maximum_paths,
+        receipt.work,
+        cancellation,
+    )?;
+    let mut missing_ancestors = hydrate_watch_ancestors(
+        checkout,
+        &mut ordinary,
+        ancestors,
+        WatchAncestorScope {
+            source_root: &source_root,
+            epoch,
+            maximum_paths: maximum_paths.saturating_sub(rename_records.len()),
+            budget,
+            cancellation,
+        },
+        &mut receipt,
+    )
+    .await?;
+
     let lookup_paths = ordinary
         .iter()
         .filter(|(_, (current, _))| matches!(current, CurrentRecord::Lookup))
@@ -1634,13 +2021,32 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
             .map_err(|failure| map_engine_failure(failure, receipt.work))?;
         receipt.work = add_work(receipt.work, lookup.work)?;
         for (path, entry) in lookup_paths.into_iter().zip(lookup.value.entries) {
+            let mut record = entry.record;
+            if record.is_none()
+                && let Some(prior_path) = remap_renamed_directory_path(
+                    &path,
+                    &renamed_directories,
+                    checkout.volume_config().limits,
+                )
+                .map_err(|error| OperationFailure::new(error, receipt.work))?
+            {
+                let remaining = receipt.work.remaining(budget).map_err(|error| {
+                    OperationFailure::new(CaptureError::Work(error), receipt.work)
+                })?;
+                let prior = checkout
+                    .lookup_no_follow(&prior_path, remaining, cancellation)
+                    .await
+                    .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+                receipt.work = add_work(receipt.work, prior.work)?;
+                record = prior.value.record;
+            }
             let Some((current, _)) = ordinary.get_mut(&path) else {
                 return Err(OperationFailure::new(
                     CaptureError::Engine("capture lookup path disappeared".into()),
                     receipt.work,
                 ));
             };
-            *current = CurrentRecord::Known(entry.record);
+            *current = CurrentRecord::Known(record);
         }
     }
 
@@ -1649,6 +2055,43 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
     prepared
         .try_reserve(rename_records.len().saturating_add(ordinary.len()))
         .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, receipt.work))?;
+    // A rename can target a directory that has never been observed in this
+    // lazy checkout. Materialize only those host ancestors before the rename,
+    // preserving the event order for all remaining mutations.
+    missing_ancestors.sort_by(|left, right| {
+        left.depth()
+            .cmp(&right.depth())
+            .then_with(|| left.cmp(right))
+    });
+    let rename_mutations = std::mem::take(&mut mutations);
+    for path in missing_ancestors {
+        let Some((current, intent)) = ordinary.remove(&path) else {
+            return Err(OperationFailure::new(
+                CaptureError::Engine("capture ancestor path disappeared".into()),
+                receipt.work,
+            ));
+        };
+        let plan = prepare_final_path(
+            checkout,
+            path,
+            current,
+            intent,
+            &source_root,
+            None,
+            &mut host_links,
+            Some(epoch.get()),
+            &mut mutations,
+            &mut receipt,
+            budget,
+            cancellation,
+        )
+        .await?;
+        if let Some(plan) = plan {
+            prepared.push(plan);
+        }
+    }
+    mutations.extend(rename_mutations);
+    let namespace_boundary = mutations.len();
     for (path, record) in rename_records {
         if ordinary.contains_key(&path) {
             continue;
@@ -1730,7 +2173,33 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
         cancellation,
     )
     .await?;
-    apply_capture_transaction(checkout, mutations, &mut receipt, budget, cancellation).await?;
+    if namespace_boundary == 0 || namespace_boundary == mutations.len() {
+        apply_capture_transaction(checkout, mutations, &mut receipt, budget, cancellation).await?;
+    } else {
+        // Keep the watch batch atomic to callers, but compile the path-shape
+        // changes before mutations that address their resulting bindings.
+        // The authored compiler resolves those bindings against its input
+        // checkout, even though the kernel executes each batch in order.
+        let mut candidate = checkout.private_candidate();
+        let final_state = mutations.split_off(namespace_boundary);
+        apply_capture_transaction(
+            &mut candidate,
+            mutations,
+            &mut receipt,
+            budget,
+            cancellation,
+        )
+        .await?;
+        apply_capture_transaction(
+            &mut candidate,
+            final_state,
+            &mut receipt,
+            budget,
+            cancellation,
+        )
+        .await?;
+        *checkout = candidate;
+    }
     Ok(OperationReceipt {
         value: WatchCaptureReceipt {
             epoch,
@@ -1746,6 +2215,150 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
 enum CurrentRecord {
     Lookup,
     Known(Option<FileRecord>),
+}
+
+fn watch_ancestor_candidates<'a>(
+    paths: impl Iterator<Item = &'a NamespacePath>,
+    ordinary: &BTreeMap<NamespacePath, (CurrentRecord, CaptureIntent)>,
+    rename_records: &BTreeMap<NamespacePath, FileRecord>,
+    policy: &CapturePolicy,
+    maximum_paths: usize,
+    work: WorkCounters,
+    cancellation: &CancellationToken,
+) -> Result<Vec<NamespacePath>, OperationFailure<CaptureError>> {
+    let mut ancestors = BTreeSet::new();
+    for path in paths {
+        let mut parent = path.parent();
+        while let Some(path) = parent {
+            cancellation.check().map_err(|error| {
+                OperationFailure::new(CaptureError::Engine(error.to_string()), work)
+            })?;
+            if path.is_root() {
+                break;
+            }
+            if !ordinary.contains_key(&path)
+                && !rename_records.contains_key(&path)
+                && !policy.excludes(&path)
+            {
+                ancestors.insert(path.clone());
+                if ancestors
+                    .len()
+                    .saturating_add(ordinary.len())
+                    .saturating_add(rename_records.len())
+                    > maximum_paths
+                {
+                    return Err(OperationFailure::new(CaptureError::InvalidOptions, work));
+                }
+            }
+            parent = path.parent();
+        }
+    }
+    let mut ancestors = ancestors.into_iter().collect::<Vec<_>>();
+    ancestors.sort_by(|left, right| {
+        left.depth()
+            .cmp(&right.depth())
+            .then_with(|| left.cmp(right))
+    });
+    Ok(ancestors)
+}
+
+struct WatchAncestorScope<'a> {
+    source_root: &'a HostRoot,
+    epoch: WatchEpoch,
+    maximum_paths: usize,
+    budget: WorkBudget,
+    cancellation: &'a CancellationToken,
+}
+
+async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    ordinary: &mut BTreeMap<NamespacePath, (CurrentRecord, CaptureIntent)>,
+    ancestors: Vec<NamespacePath>,
+    scope: WatchAncestorScope<'_>,
+    receipt: &mut CaptureReceipt,
+) -> Result<Vec<NamespacePath>, OperationFailure<CaptureError>> {
+    let mut missing = Vec::new();
+    let mut replaced = Vec::new();
+    for path in ancestors {
+        let current = if replaced.iter().any(|ancestor| path.is_within(ancestor)) {
+            None
+        } else {
+            let remaining = receipt
+                .work
+                .remaining(scope.budget)
+                .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
+            let lookup = checkout
+                .lookup_no_follow(&path, remaining, scope.cancellation)
+                .await
+                .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+            receipt.work = add_work(receipt.work, lookup.work)?;
+            lookup.value.record
+        };
+        let host_path = namespace_to_host_path(&path)
+            .map_err(|error| OperationFailure::new(error, receipt.work))?;
+        match scope.source_root.symlink_metadata_held(&host_path) {
+            Ok(metadata) if metadata.is_dir() => {
+                if current.is_none_or(|record| record.kind != FileKind::Directory) {
+                    if current.is_some() {
+                        replaced.push(path.clone());
+                    }
+                    missing.push(path.clone());
+                    ordinary.insert(
+                        path,
+                        (CurrentRecord::Known(current), CaptureIntent::Replace),
+                    );
+                }
+            }
+            Ok(_) | Err(_) => {
+                return Err(OperationFailure::new(
+                    CaptureError::RescanRequired {
+                        epoch: scope.epoch.get(),
+                        reason: WatchInvalidationReason::NativeRescanRequired,
+                    },
+                    receipt.work,
+                ));
+            }
+        }
+    }
+    if ordinary.len() > scope.maximum_paths {
+        return Err(OperationFailure::new(
+            CaptureError::InvalidOptions,
+            receipt.work,
+        ));
+    }
+
+    // Descendants of a replaced file or symlink were absent in the old view.
+    for (path, (current, _)) in ordinary {
+        if matches!(current, CurrentRecord::Lookup)
+            && replaced
+                .iter()
+                .any(|ancestor| path != ancestor && path.is_within(ancestor))
+        {
+            *current = CurrentRecord::Known(None);
+        }
+    }
+    Ok(missing)
+}
+
+fn remap_renamed_directory_path(
+    path: &NamespacePath,
+    renames: &[(NamespacePath, NamespacePath)],
+    limits: crate::model::VolumeLimits,
+) -> Result<Option<NamespacePath>, CaptureError> {
+    let mut prior = path.clone();
+    for (from, to) in renames.iter().rev() {
+        if prior == *to || !prior.is_within(to) {
+            continue;
+        }
+        let mut components = from.components().to_vec();
+        let suffix = prior
+            .components()
+            .get(to.depth()..)
+            .ok_or(CaptureError::InvalidOptions)?;
+        components.extend_from_slice(suffix);
+        prior = NamespacePath::new(components, limits).map_err(|_| CaptureError::InvalidOptions)?;
+    }
+    Ok((prior != *path).then_some(prior))
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -1963,6 +2576,17 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             if let Some(record) = current
                 && (record.kind != host_kind || replace)
             {
+                if record.kind == FileKind::Directory {
+                    push_subtree_removals(
+                        checkout,
+                        &path,
+                        mutations,
+                        receipt,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 mutations.push(AuthoredMutation::Remove {
                     path: path.clone(),
                     expected_file_id: Some(record.file_id),
@@ -2047,7 +2671,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             receipt.examined_paths = checked_increment(receipt.examined_paths, receipt.work)?;
             return Ok(prepared);
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error) if host_path_is_absent(&error) => {
             if let Some(record) = current {
                 // A directory that vanished takes its descendants with it.
                 // A watcher may say so with one hint on the directory alone
@@ -2077,6 +2701,13 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     receipt.examined_paths = checked_increment(receipt.examined_paths, receipt.work)?;
     Ok(None)
+}
+
+fn host_path_is_absent(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    ) || cfg!(windows) && error.raw_os_error() == Some(267)
 }
 
 /// Queues a remove for every descendant of `root` that the checkout holds,

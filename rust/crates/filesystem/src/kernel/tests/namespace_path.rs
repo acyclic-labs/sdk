@@ -44,20 +44,30 @@ fn string_paths_use_the_volume_name_encoding() -> Result<(), Box<dyn std::error:
         (FilesystemProfile::Windows, NameEncoding::WindowsUtf16Le),
     ] {
         let path = NamespacePath::from_portable_in_profile(&portable, profile, limits)?;
+        assert_eq!(
+            path.components()
+                .first()
+                .and_then(LogicalName::unicode_text)
+                .as_deref(),
+            Some("é")
+        );
         assert!(
             path.components()
                 .iter()
                 .all(|name| name.encoding() == encoding)
         );
         assert_eq!(
-            path.components()[0].as_bytes(),
-            match profile {
+            path.components().first().map(LogicalName::as_bytes),
+            Some(match profile {
                 FilesystemProfile::Windows => &[0xe9, 0x00][..],
                 _ => "é".as_bytes(),
-            }
+            })
         );
         if profile == FilesystemProfile::Windows {
-            assert_eq!(path.components()[1].as_bytes(), &[0x34, 0xd8, 0x1e, 0xdd]);
+            assert_eq!(
+                path.components().get(1).map(LogicalName::as_bytes),
+                Some(&[0x34, 0xd8, 0x1e, 0xdd][..])
+            );
         }
     }
     Ok(())

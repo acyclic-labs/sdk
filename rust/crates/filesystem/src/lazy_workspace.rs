@@ -870,6 +870,9 @@ pub enum LazyWorkspaceError {
     /// Requested path is absent after applying authored tombstones.
     #[error("path is absent")]
     NotFound,
+    /// Requested subtree root is not a directory.
+    #[error("path is not a directory")]
+    NotDirectory,
     /// Requested operation requires a regular file.
     #[error("path is not a regular file")]
     NotRegularFile,
@@ -1368,7 +1371,7 @@ where
             .map(|receipt| receipt.value.lookup)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(unix))]
     pub(crate) async fn lookup_resolved(
         &self,
         path: &str,
@@ -1456,7 +1459,7 @@ where
             .map(|receipt| receipt.value.lookup)
     }
 
-    #[cfg(any(target_os = "linux", test))]
+    #[cfg(any(unix, test))]
     pub(crate) async fn inspect_resolved(
         &self,
         path: &str,
@@ -1710,7 +1713,7 @@ where
             .map(|receipt| receipt.value)
     }
 
-    #[cfg(any(target_os = "linux", test))]
+    #[cfg(any(unix, test))]
     pub(crate) async fn read_source_range(
         &self,
         path: &str,
@@ -2584,6 +2587,73 @@ where
         cancellation: &CancellationToken,
         permit: crate::PublicationPermit,
     ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError> {
+        self.exactify_selected_with_permit("/", budget, cancellation, permit)
+            .await
+    }
+
+    /// Captures one visible subtree into authored state without visiting its
+    /// siblings. The selected directory and every descendant become exact;
+    /// unresolved paths outside it retain their normal lazy semantics.
+    pub async fn exactify_subtree(
+        &self,
+        path: &str,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError> {
+        self.exactify_subtree_with_permit(
+            path,
+            budget,
+            cancellation,
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await
+    }
+
+    /// Captures one visible subtree into authored state without visiting its
+    /// siblings. The selected directory and every descendant become exact;
+    /// unresolved paths outside it retain their normal lazy semantics.
+    pub async fn exactify_subtree_with_permit(
+        &self,
+        path: &str,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+        permit: crate::PublicationPermit,
+    ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError> {
+        let root = self.canonical_path(path)?;
+        let selected = self.lookup(&root).await?;
+        if !matches!(
+            selected,
+            LazyLookup::Authored {
+                stat: crate::WorkspaceStat {
+                    kind: FileKind::Directory,
+                    ..
+                },
+                ..
+            } | LazyLookup::Source(SourceNode {
+                kind: SourceNodeKind::Directory,
+                ..
+            }) | LazyLookup::Shadow {
+                record: FileRecord {
+                    kind: FileKind::Directory,
+                    ..
+                },
+                ..
+            }
+        ) {
+            return Err(LazyWorkspaceError::NotDirectory);
+        }
+        self.exactify_selected_with_permit(&root, budget, cancellation, permit)
+            .await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn exactify_selected_with_permit(
+        &self,
+        root: &str,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+        permit: crate::PublicationPermit,
+    ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError> {
         cancellation
             .check()
             .map_err(|_| LazyWorkspaceError::Cancelled)?;
@@ -2607,9 +2677,14 @@ where
         let mut directories = Vec::new();
         let mut paths = Vec::new();
         reserve_exactify_path_slot(&mut directories, &mut retained_bytes, &mut work, budget)?;
-        let root = "/".to_owned();
+        let root = root.to_owned();
         retain_exactify_string(&root, &mut retained_bytes, &mut work, budget)?;
-        directories.push(root);
+        directories.push(root.clone());
+        if root != "/" {
+            reserve_exactify_path_slot(&mut paths, &mut retained_bytes, &mut work, budget)?;
+            retain_exactify_string(&root, &mut retained_bytes, &mut work, budget)?;
+            paths.push(root);
+        }
         let mut next_directory = 0_usize;
         while next_directory < directories.len() {
             cancellation
@@ -4826,6 +4901,90 @@ mod tests {
             exact.work.source_bytes_read, 18,
             "source demand and authored ingestion are both accounted"
         );
+    }
+
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn exactify_subtree_keeps_siblings_lazy() {
+        use crate::demand::native::NativeDemandSource;
+        use crate::model::{FilesystemProfile, VolumeLimits};
+
+        let directory = tempfile::tempdir().expect("temporary source");
+        std::fs::create_dir(directory.path().join("hot")).expect("hot directory");
+        std::fs::create_dir(directory.path().join("cold")).expect("cold directory");
+        std::fs::write(directory.path().join("hot/file.txt"), b"hot").expect("hot file");
+        std::fs::write(directory.path().join("cold/file.txt"), b"cold").expect("cold file");
+        let source = Arc::new(
+            NativeDemandSource::open(
+                directory.path(),
+                FilesystemProfile::Portable,
+                VolumeLimits::default(),
+            )
+            .await
+            .expect("source"),
+        );
+        let root = LazyWorkspace::attach(
+            &Fs::memory(),
+            "subtree-exactify",
+            source,
+            MemoryLazyWorkspaceStore::default(),
+        )
+        .await
+        .expect("attach");
+
+        let exact = root
+            .exactify_subtree_with_permit(
+                "/hot",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await
+            .expect("capture hot subtree");
+        assert_eq!(
+            exact
+                .value
+                .read("/hot/file.txt", 16)
+                .await
+                .expect("hot content"),
+            Bytes::from_static(b"hot")
+        );
+        let staged = tempfile::tempdir().expect("empty native stage");
+        exact
+            .value
+            .materialize_path(
+                "/hot",
+                &crate::MaterializeOptions::native(staged.path()),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("materialize only pinned hot subtree");
+        assert_eq!(
+            std::fs::read(staged.path().join("hot/file.txt")).expect("staged hot file"),
+            b"hot"
+        );
+        assert!(!staged.path().join("cold").exists());
+        assert!(matches!(
+            exact.value.read("/cold/file.txt", 16).await,
+            Err(WorkspaceError::NotFound)
+        ));
+        assert!(matches!(
+            root.lookup("/cold/file.txt")
+                .await
+                .expect("cold remains lazy"),
+            LazyLookup::Source(_)
+        ));
+        assert!(matches!(
+            root.exactify_subtree_with_permit(
+                "/hot/file.txt",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await,
+            Err(LazyWorkspaceError::NotDirectory)
+        ));
     }
 
     #[tokio::test]

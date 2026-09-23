@@ -4113,17 +4113,10 @@ fn canonical_name_key(name: &LogicalName) -> Vec<u8> {
     key
 }
 
-fn logical_name_text(name: &LogicalName) -> Result<&str, WorkspaceError> {
-    match name.encoding() {
-        crate::kernel::NameEncoding::Utf8 => {
-            std::str::from_utf8(name.as_bytes()).map_err(WorkspaceError::path)
-        }
-        crate::kernel::NameEncoding::PosixBytes | crate::kernel::NameEncoding::WindowsUtf16Le => {
-            Err(WorkspaceError::path(
-                "non-UTF-8 path cannot be projected as a portable string",
-            ))
-        }
-    }
+fn logical_name_text(name: &LogicalName) -> Result<std::borrow::Cow<'_, str>, WorkspaceError> {
+    name.unicode_text().ok_or_else(|| {
+        WorkspaceError::path("non-Unicode path cannot be projected as a portable string")
+    })
 }
 
 fn namespace_path_text(path: &NamespacePath) -> Result<String, WorkspaceError> {
