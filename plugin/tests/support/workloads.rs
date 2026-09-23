@@ -234,6 +234,12 @@ fn run_tool_blocking(
     process.current_dir(root).args(args);
     if let Some(target) = target {
         process.env("CARGO_TARGET_DIR", target);
+    } else if program == "cargo" {
+        // The test executable may itself live under an external target dir.
+        // Cargo's child builds must instead use each checkout's own target
+        // directory, or the two measurements share artifacts and cease to be
+        // independent cold/warm workloads.
+        process.env_remove("CARGO_TARGET_DIR");
     }
     let bounded = try_output_with_timeout(&mut process, TOOL_TIMEOUT)
         .map_err(|error| format!("{program} could not start in {}: {error}", root.display()))?;

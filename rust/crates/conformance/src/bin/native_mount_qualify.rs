@@ -8,6 +8,8 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use acyclic_fs::detach_native_mount_destination_after_crash;
 use acyclic_fs::kernel::FileMetadata;
 use acyclic_fs::{
     Fs, LocalOptions, MountOptions, NativeMountKind, TransactionCommit, probe_native_mount,
@@ -361,7 +363,9 @@ fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         .is_none_or(|case| case == "real-mount-mutation-matrix")
     {
         run_case(&mut report, "real-mount-mutation-matrix", || {
-            run_supervised_case("real-mount-mutation-matrix", Duration::from_secs(30))
+            // The matrix includes a 10-second I/O-child deadline followed by
+            // a 30-second parallel-client deadline and mount teardown.
+            run_supervised_case("real-mount-mutation-matrix", Duration::from_secs(45))
         });
     }
     if only_case
@@ -369,7 +373,9 @@ fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         .is_none_or(|case| case == "crash-detach-recovery")
     {
         run_case(&mut report, "crash-detach-recovery", || {
-            run_supervised_case("crash-detach-recovery", Duration::from_secs(15))
+            // The recovery path itself permits a 30-second detach; the outer
+            // supervisor must not kill it before that bound can report why.
+            run_supervised_case("crash-detach-recovery", Duration::from_secs(35))
         });
     }
     if only_case
@@ -546,8 +552,15 @@ fn wait_for_child(
         }
         if Instant::now() >= deadline {
             child.process.terminate_descendants()?;
-            let _ = child.process.wait();
-            return Err(format!("child process exceeded {} ms", timeout.as_millis()).into());
+            let status = child.process.wait()?;
+            let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
+            return Err(format!(
+                "child process exceeded {} ms: stdout={} stderr={}",
+                timeout.as_millis(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -879,13 +892,17 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
         &mount_path.join("nested/watch-sentinel.txt"),
         &child_result,
     );
+    eprintln!("qualification phase: I/O child finished; parallel clients starting");
     let parallel = if kind == "macos-nfs" {
         run_parallel_io_children(&mount_path, MACOS_NFS_PARALLEL_CLIENTS)
     } else {
         Ok(())
     };
+    eprintln!("qualification phase: parallel clients finished; mount sync starting");
     let synced = mount.sync().await.map_err(Failure::from);
+    eprintln!("qualification phase: mount sync finished; unmount starting");
     let detached = mount.unmount().await.map_err(Failure::from);
+    eprintln!("qualification phase: unmount finished");
     finish_mounted_child(
         "I/O child",
         child_result,
@@ -1535,6 +1552,11 @@ fn crash_recovery() -> Result<(), Failure> {
     let ready = root.path().join("ready");
     fs::create_dir(&mount)?;
     let qualification = crash_recovery_inner(&crash_root, &mount, &ready);
+    #[cfg(windows)]
+    // The Windows crash child leaves an empty test-owned reparse root. Remove
+    // that root itself without enumerating through a dead ProjFS provider.
+    let cleanup = fs::remove_dir(&mount).map_err(Failure::from);
+    #[cfg(not(windows))]
     let cleanup = recover_with_retry(&mount);
     match (qualification, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
@@ -1578,17 +1600,54 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
         child.process.terminate()?;
         return Err("crash child did not mount within 30 seconds".into());
     }
+    eprintln!("qualification phase: crash child ready; termination starting");
     child.process.terminate()?;
-    recover_with_retry(mount)?;
-    if mount.exists() && (!mount.is_dir() || fs::read_dir(mount)?.next().is_some()) {
-        return Err("crash recovery did not restore an empty ordinary directory".into());
+    eprintln!("qualification phase: crash child terminated; recovery starting");
+    #[cfg(windows)]
+    {
+        // Generic recovery must preserve a crashed writable ProjFS root: it
+        // cannot prove the cache contains no unpublished authored changes.
+        if recover_native_mount_destination(mount).is_ok() {
+            return Err("generic recovery discarded a stale ProjFS root".into());
+        }
+        detach_native_mount_destination_after_crash(mount)?;
+        if !mount.is_dir() {
+            return Err("crash detach discarded the stale ProjFS root".into());
+        }
+        let replacement = mount.with_file_name("replacement");
+        fs::create_dir(&replacement)?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async {
+            let engine = Fs::local(LocalOptions::new(crash_root.join("store"))).await?;
+            let workspace = engine.open_workspace("crash-owner").await?;
+            let resumed = workspace
+                .mount(&replacement, MountOptions::read_write())
+                .await?;
+            let contents = fs::read(replacement.join("alive.txt"))?;
+            resumed.unmount().await?;
+            if contents != b"alive" {
+                return Err::<(), Failure>("replacement mount lost the durable workspace".into());
+            }
+            Ok::<(), Failure>(())
+        })?;
+        eprintln!("qualification phase: preserved stale root and resumed on replacement");
+        return Ok(());
     }
-    fs::create_dir_all(mount)?;
-    fs::write(mount.join("restored.txt"), b"ordinary")?;
-    fs::remove_file(mount.join("restored.txt"))?;
-    Ok(())
+    #[cfg(not(windows))]
+    {
+        recover_with_retry(mount)?;
+        eprintln!("qualification phase: crash recovery finished");
+        if mount.exists() && (!mount.is_dir() || fs::read_dir(mount)?.next().is_some()) {
+            return Err("crash recovery did not restore an empty ordinary directory".into());
+        }
+        fs::create_dir_all(mount)?;
+        fs::write(mount.join("restored.txt"), b"ordinary")?;
+        fs::remove_file(mount.join("restored.txt"))?;
+        Ok(())
+    }
 }
 
+#[cfg(not(windows))]
 fn recover_with_retry(mount: &Path) -> Result<(), Failure> {
     let mut recovery_error = None;
     for attempt in 0..2 {
@@ -1613,10 +1672,13 @@ fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Result<(), Fail
         let workspace = engine.create_workspace("crash-owner").await?;
         workspace.write_text("/alive.txt", "alive").await?;
         let _mount = workspace.mount(&mount, MountOptions::read_write()).await?;
-        if fs::read(mount.join("alive.txt"))? != b"alive" {
-            return Err("crash fixture did not hydrate projected content".into());
+        #[cfg(not(windows))]
+        {
+            if fs::read(mount.join("alive.txt"))? != b"alive" {
+                return Err("crash fixture did not hydrate projected content".into());
+            }
+            let _open_hydrated_file = File::open(mount.join("alive.txt"))?;
         }
-        let _open_hydrated_file = File::open(mount.join("alive.txt"))?;
         fs::write(ready, b"ready")?;
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;

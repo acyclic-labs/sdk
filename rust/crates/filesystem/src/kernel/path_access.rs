@@ -1060,7 +1060,13 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
                 .ok_or(PathLookupError::Work(WorkError::Overflow))
         })
         .map_err(OperationFailure::before_work)?;
-    let cache_entries = maximum_cache_entries_for_components(total_components, config)?;
+    // This cache is only an optimization. A worst-case page-height estimate
+    // multiplied by every requested component can reserve hundreds of MiB for
+    // a batch whose actual shared working set is tiny (for example Cargo's
+    // files under one target directory). Bound the cache, not the lookup.
+    const MAXIMUM_BATCH_CACHE_ENTRIES: usize = 4_096;
+    let cache_entries = maximum_cache_entries_for_components(total_components, config)?
+        .min(MAXIMUM_BATCH_CACHE_ENTRIES);
     let (cache, mut work) = OperationReadCache::new(store, cache_entries, budget)?;
     let mut allocations = AllocationLedger::default();
     allocations
