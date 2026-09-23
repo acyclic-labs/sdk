@@ -478,6 +478,15 @@ where
         .await
         .map_err(|error| MountSourceError::Engine(error.to_string()))?
         .map_err(|error| MountSourceError::Engine(error.to_string()))?;
+        // Directory validation may wait for host I/O while another writer
+        // advances the workspace. Do not return an already-stale preparation.
+        if let Some(expected) = expected_generation
+            && self.workspace().head().await?.id() != expected
+        {
+            return Err(MountLifecycleError::Workspace(
+                WorkspaceError::StaleGeneration,
+            ));
+        }
         Ok(LazyWorkingSet {
             source,
             source_root,

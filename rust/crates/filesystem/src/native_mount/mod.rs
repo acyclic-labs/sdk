@@ -2065,28 +2065,6 @@ mod tests {
     }
 
     #[test]
-    fn supervisor_reclaims_crash_left_fence_but_never_a_live_owner()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        let destination = temporary.path().join("mount");
-        std::fs::create_dir(&destination)?;
-        let mut crashed = MountDestinationGuard::acquire(&destination)?;
-        assert!(matches!(
-            reclaim_native_mount_destination_fence(&destination),
-            Err(NativeMountError::DestinationBusy)
-        ));
-        let crash_left_path = crashed.lock_path.clone();
-        crashed.file.take();
-        std::mem::forget(crashed);
-        assert!(crash_left_path.is_file());
-
-        reclaim_native_mount_destination_fence(&destination)?;
-        assert!(!crash_left_path.exists());
-        reclaim_native_mount_destination_fence(&destination)?;
-        Ok(())
-    }
-
-    #[test]
     fn bounded_parent_sweep_reclaims_stale_fences_and_preserves_live_owners()
     -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
@@ -2270,12 +2248,18 @@ mod tests {
             MountDestinationGuard::acquire(&destination),
             Err(NativeMountError::DestinationBusy)
         ));
+        assert!(matches!(
+            reclaim_native_mount_destination_fence(&destination),
+            Err(NativeMountError::DestinationBusy)
+        ));
         child.0.kill()?;
         let status = child.0.wait()?;
         assert!(
             !status.success(),
             "killed lock child unexpectedly succeeded"
         );
+        reclaim_native_mount_destination_fence(&destination)?;
+        reclaim_native_mount_destination_fence(&destination)?;
         let _reclaimed = MountDestinationGuard::acquire(&destination)?;
         Ok(())
     }
