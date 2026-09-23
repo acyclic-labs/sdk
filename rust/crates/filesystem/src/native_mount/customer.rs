@@ -101,7 +101,7 @@ pub struct LazyWorkingSet<A, O, D, S> {
     source_root: PathBuf,
     source_identity: NativeRootIdentity,
     selected_root: PathBuf,
-    expected_generation: Option<GenerationId>,
+    expected_generation: GenerationId,
 }
 
 impl<A, O, D, S> LazyWorkingSet<A, O, D, S>
@@ -116,11 +116,7 @@ where
     /// workspace head: publication remains fenced by the operation permit.
     /// It reads only the selected directory metadata and the current head.
     pub async fn validate_for_presentation(&self) -> Result<(), MountLifecycleError> {
-        let expected = self.expected_generation.ok_or_else(|| {
-            MountLifecycleError::Source(MountSourceError::Invalid(
-                "working set was not prepared at an exact generation".to_owned(),
-            ))
-        })?;
+        let expected = self.expected_generation;
         if self.workspace.head().await?.id() != expected {
             return Err(MountLifecycleError::Workspace(
                 WorkspaceError::StaleGeneration,
@@ -442,42 +438,18 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    /// Opens a manual-publication working set without starting a mount driver.
-    ///
-    /// Admission observes only the selected root frontier. The caller may use
-    /// native `CoW` backing where the platform proves equivalent semantics, then
-    /// capture changed paths and publish through the SDK operation permit. The
-    /// source root is the volume root: a selected `/hot` subtree must be at
-    /// `source_root/hot`, as produced by `Generation::materialize_path`.
-    pub async fn working_set(
-        &self,
-        subdirectory: impl Into<String>,
-        source_root: impl AsRef<Path>,
-    ) -> Result<LazyWorkingSet<A, O, D, S>, MountLifecycleError> {
-        self.open_working_set(subdirectory.into(), source_root.as_ref(), None)
-            .await
-    }
-
     /// Opens a native working set only if the prepared generation remains the
-    /// current workspace head. A stale preparation cannot silently attach to
-    /// a newer checkout; callers still revalidate before presentation.
+    /// current workspace head. Admission observes only the selected root
+    /// frontier and starts no mount driver. The source root is the volume root:
+    /// a selected `/hot` subtree must be at `source_root/hot`, as produced by
+    /// `Generation::materialize_path`. Callers revalidate before presentation.
     pub async fn working_set_at_generation(
         &self,
         subdirectory: impl Into<String>,
         source_root: impl AsRef<Path>,
-        generation: GenerationId,
+        expected_generation: GenerationId,
     ) -> Result<LazyWorkingSet<A, O, D, S>, MountLifecycleError> {
-        self.open_working_set(subdirectory.into(), source_root.as_ref(), Some(generation))
-            .await
-    }
-
-    async fn open_working_set(
-        &self,
-        subdirectory: String,
-        source_root: &Path,
-        expected_generation: Option<GenerationId>,
-    ) -> Result<LazyWorkingSet<A, O, D, S>, MountLifecycleError> {
-        let source_root = source_root.to_path_buf();
+        let source_root = source_root.as_ref().to_path_buf();
         if !source_root.is_absolute() {
             return Err(MountLifecycleError::Source(MountSourceError::Invalid(
                 "native working-set root must be absolute".to_owned(),
@@ -490,10 +462,10 @@ where
                 .map_err(|error| MountSourceError::Engine(error.to_string()))?
                 .map_err(|error| MountSourceError::Engine(error.to_string()))?;
         let options = MountOptions::read_write()
-            .subdirectory(subdirectory)
+            .subdirectory(subdirectory.into())
             .publication(MountPublication::Manual);
         let (source, _, root) = self
-            .prepare_mount_source(&options, expected_generation)
+            .prepare_mount_source(&options, Some(expected_generation))
             .await?;
         let relative = crate::namespace_to_host_path(&root)
             .map_err(|error| MountSourceError::Engine(error.to_string()))?;
@@ -507,9 +479,7 @@ where
         .map_err(MountLifecycleError::Source)?;
         // Directory validation may wait for host I/O while another writer
         // advances the workspace. Do not return an already-stale preparation.
-        if let Some(expected) = expected_generation
-            && self.workspace().head().await?.id() != expected
-        {
+        if self.workspace().head().await?.id() != expected_generation {
             return Err(MountLifecycleError::Workspace(
                 WorkspaceError::StaleGeneration,
             ));
@@ -759,67 +729,6 @@ mod tests {
     use crate::demand::native::NativeDemandSource;
     use crate::model::{FilesystemProfile, VolumeLimits};
     use crate::{Fs, MemoryLazyWorkspaceStore, PublicationPermit};
-
-    #[tokio::test]
-    async fn working_set_captures_a_native_directory_without_a_mount_driver()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = tempfile::tempdir()?;
-        std::fs::write(source.path().join("file.txt"), b"base")?;
-        let physical_parent = tempfile::tempdir()?;
-        let working = physical_parent.path().join("working");
-        std::fs::create_dir(&working)?;
-        std::fs::write(working.join("file.txt"), b"changed")?;
-        let fs = Fs::memory();
-        let demand = Arc::new(
-            NativeDemandSource::open(
-                source.path(),
-                FilesystemProfile::Portable,
-                VolumeLimits::default(),
-            )
-            .await?,
-        );
-        let lazy = LazyWorkspace::attach(
-            &fs,
-            "native-working-set",
-            demand,
-            MemoryLazyWorkspaceStore::default(),
-        )
-        .await?;
-        let working_set = lazy.working_set("/", &working).await?;
-        let name = if cfg!(windows) {
-            "file.txt"
-                .encode_utf16()
-                .flat_map(u16::to_le_bytes)
-                .collect()
-        } else {
-            b"file.txt".to_vec()
-        };
-        working_set
-            .capture_host_paths(&[MountPath::root().child(name.clone())])
-            .await?;
-        working_set
-            .sync_with_permit(PublicationPermit::Unrestricted)
-            .await?;
-        assert_eq!(
-            lazy.workspace().read("/file.txt", 16).await?.as_ref(),
-            b"changed"
-        );
-        let prior = physical_parent.path().join("prior");
-        std::fs::rename(&working, &prior)?;
-        std::fs::create_dir(&working)?;
-        std::fs::write(working.join("file.txt"), b"wrong-root")?;
-        assert!(
-            working_set
-                .capture_host_paths(&[MountPath::root().child(name)])
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            lazy.workspace().read("/file.txt", 16).await?.as_ref(),
-            b"changed"
-        );
-        Ok(())
-    }
 
     #[tokio::test]
     async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
