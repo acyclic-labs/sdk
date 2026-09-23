@@ -64,20 +64,22 @@ function archiveChecksum(name, version) {
   return createHash("sha256").update(readFileSync(archive)).digest("hex");
 }
 
-function registryArchiveMatches(name, version, observed, checksum, sourceSha, item) {
+export function registryArchiveMatches(name, version, observed, checksum, sourceSha, item, options = {}) {
   if (observed.checksum === checksum) return "exact";
-  const approved = equivalents[`${name}@${version}`];
+  const repository = options.repository ?? root;
+  const approved = (options.equivalents ?? equivalents)[`${name}@${version}`];
   if (
     !approved
     || approved.checksum !== observed.checksum
     || !/^[0-9a-f]{40}$/u.test(approved.sourceSha)
   ) return null;
-  const packageDir = relative(root, dirname(item.manifest_path)).split(sep).join("/");
+  const packageDir = relative(repository, dirname(item.manifest_path)).split(sep).join("/");
   if (!packageDir || packageDir.startsWith("../") || packageDir === "..") return null;
-  if (run("git", ["merge-base", "--is-ancestor", approved.sourceSha, sourceSha]).status !== 0) return null;
+  const git = args => run("git", args, { cwd: repository });
+  if (git(["merge-base", "--is-ancestor", approved.sourceSha, sourceSha]).status !== 0) return null;
   // Cargo packages the workspace manifest/lockfile and this crate directory.
   // A pinned registry checksum is accepted only while those inputs are unchanged.
-  const unchanged = run("git", [
+  const unchanged = git([
     "diff", "--quiet", approved.sourceSha, sourceSha, "--",
     "Cargo.toml", "Cargo.lock", packageDir,
   ]);
@@ -131,8 +133,10 @@ async function publish(sourceSha, releaseVersion) {
   }
 }
 
-const [command, sourceSha, releaseVersion] = process.argv.slice(2);
-if (command === "check" && sourceSha === undefined && releaseVersion === undefined) metadata();
-else if (command === "check" && sourceSha && releaseVersion) metadata(releaseVersion);
-else if (command === "publish" && sourceSha && releaseVersion) await publish(sourceSha, releaseVersion);
-else fail("usage: publish-cargo-crates.mjs check [SOURCE_SHA VERSION] | publish SOURCE_SHA VERSION");
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const [command, sourceSha, releaseVersion] = process.argv.slice(2);
+  if (command === "check" && sourceSha === undefined && releaseVersion === undefined) metadata();
+  else if (command === "check" && sourceSha && releaseVersion) metadata(releaseVersion);
+  else if (command === "publish" && sourceSha && releaseVersion) await publish(sourceSha, releaseVersion);
+  else fail("usage: publish-cargo-crates.mjs check [SOURCE_SHA VERSION] | publish SOURCE_SHA VERSION");
+}

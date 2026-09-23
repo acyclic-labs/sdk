@@ -100,6 +100,7 @@ case "$lane" in
     tar --extract --gzip --file "$actionlint_archive" --directory "$actionlint_root" actionlint
     "$actionlint_root/actionlint" .github/workflows/*.yml
     node scripts/publish-cargo-crates.mjs check
+    node --test scripts/test-publish-cargo-crates.mjs
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
