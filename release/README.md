@@ -15,8 +15,13 @@ There is no staging registry or `next` promotion step.
    the exact qualified source bundle and publishes crates in the order defined
    by [`cargo-crates.json`](cargo-crates.json).
 
-Both publishers are idempotent: an existing version is accepted only when its
-registry checksum or integrity is identical to the qualified artifact.
+Both publishers are idempotent. npm requires identical registry integrity.
+Cargo requires identical archive checksums, except for the already published
+0.1.0 crates pinned in [`cargo-equivalent-archives.json`](cargo-equivalent-archives.json):
+their registry checksums are accepted only while the crate source, workspace
+manifest, and lockfile remain unchanged from the recorded source commits.
+Those archives differ because Cargo embeds the packaging commit in
+`.cargo_vcs_info.json`.
 
 The GitHub release includes `SHA256SUMS` and `acyclic.spdx.json`. The release
 workflow verifies the checksum manifest before upload and creates both SLSA
