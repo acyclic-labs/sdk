@@ -1,4 +1,6 @@
-/** Append-only, hash-chained JSONL. Same record shape as the Python jev SDK. */
+/** Append-only, hash-chained JSONL. Same record shape as the jev SDK's log. The chain is unkeyed
+ *  (SHA-256 over the file's own contents), so verify() catches truncation, reordering and accidental
+ *  edits, not a deliberate rewrite of the whole file; anchor the tip hash elsewhere for that. */
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 

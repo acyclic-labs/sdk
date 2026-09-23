@@ -2,6 +2,7 @@
  *  Without acyclic, plain git worktrees do the same job with a copy per fork and a patch on promote,
  *  so the rest of the acyclic sdk is optional. */
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { tmpdir } from "node:os";
@@ -39,8 +40,24 @@ function git(cwd: string, args: string[], allowFail = false): string {
   return p.stdout;
 }
 
-const statusPaths = (cwd: string): string[] =>
-  git(cwd, ["status", "--porcelain", "--untracked-files=all"]).split("\n").filter(Boolean).map((l) => l.slice(3).trim().replace(/^"(.*)"$/, "$1"));
+/** Every path git status reports, from the NUL-delimited machine format: no C-quoting to undo, and a
+ *  rename or copy contributes both its new and its original path. */
+const statusPaths = (cwd: string): string[] => {
+  const fields = git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).split("\0");
+  const out: string[] = [];
+  for (let i = 0; i < fields.length; i++) {
+    const f = fields[i]!;
+    if (f.length < 4) continue;
+    const xy = f.slice(0, 2), path = f.slice(3);
+    out.push(path);
+    if (xy.includes("R") || xy.includes("C")) { const orig = fields[++i]; if (orig) out.push(orig); }
+  }
+  return out;
+};
+
+const fileSha = (path: string): string | null => {
+  try { const st = statSync(path); if (st.isDirectory()) return "dir"; return createHash("sha1").update(readFileSync(path)).digest("hex"); } catch { return null; }
+};
 
 function sameFile(a: string, b: string): boolean {
   try {
@@ -55,6 +72,9 @@ export class GitForker implements Forker {
   readonly name = "git" as const;
   private root: string | null = null;
   private basePaths = new Set<string>();
+  /** Content of every dirty or untracked base file at fork time; clean tracked files are at HEAD. */
+  private baseShas = new Map<string, string | null>();
+  private baseHead = "";
   exclude: string[];
   constructor(readonly repo: string, exclude: string[] = []) { this.exclude = [...new Set([".env", "arena.jsonl", ...exclude])]; }
   private excluded(path: string): boolean { return this.exclude.some((e) => path === e || path.startsWith(e + "/")); }
@@ -65,6 +85,8 @@ export class GitForker implements Forker {
     const untracked = git(this.repo, ["ls-files", "--others", "--exclude-standard"]).trim().split("\n").filter(Boolean).filter((f) => !this.excluded(f));
     this.root ??= mkdtempSync(join(tmpdir(), "arena-wt-"));
     this.basePaths = new Set(statusPaths(this.repo));
+    this.baseHead = head;
+    this.baseShas = new Map([...this.basePaths].map((p) => [p, fileSha(join(this.repo, p))]));
     const forks: Fork[] = [];
     for (let i = 0; i < n; i++) {
       const id = `${head.slice(0, 6)}${i}${Date.now().toString(36).slice(-4)}`;
@@ -96,11 +118,27 @@ export class GitForker implements Forker {
     return out;
   }
 
+  /** What the base held for `rel` when the forks were taken: the recorded content for a dirty or untracked
+   *  file, the HEAD blob for a clean tracked file, null for a file that did not exist. */
+  private baseShaAtFork(rel: string): string | null {
+    if (this.baseShas.has(rel)) return this.baseShas.get(rel)!;
+    const blob = git(this.repo, ["rev-parse", "--verify", "-q", `${this.baseHead}:${rel}`], true).trim();
+    return blob || null;
+  }
+
   /** Land the fork by syncing its changed files into the base working tree. A patch against the commit
    *  would not apply when the base already carries uncommitted edits, so files are copied, not patched;
-   *  the change arrives unstaged, like a hand edit. acyclic's promote does a real three-way merge instead. */
+   *  the change arrives unstaged, like a hand edit. acyclic's promote does a real three-way merge instead.
+   *  A base file edited since the fork was taken is a conflict: nothing is written and the caller hears
+   *  which paths clashed, rather than a newer local edit being silently overwritten. */
   promote(f: Fork, paths?: string[]): string {
     const changes = (paths && paths.length ? paths : this.diff(f).map((c) => c.path)).filter((p) => !this.excluded(p));
+    const conflicts = changes.filter((rel) => {
+      const now = fileSha(join(this.repo, rel));
+      if (now === "dir") return false;
+      return now !== this.baseShaAtFork(rel);
+    });
+    if (conflicts.length) throw new Error(`promote conflict: edited in the working tree since the fork was taken: ${conflicts.join(", ")}`);
     let n = 0;
     for (const rel of changes) {
       const src = join(f.path, rel), dst = join(this.repo, rel);

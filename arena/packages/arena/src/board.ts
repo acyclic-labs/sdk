@@ -18,10 +18,10 @@ export function buildBoard(log: Log): Board {
     const meta = d.data.meta as Record<string, unknown>;
     const c = get(String(meta.model), String(meta.kind ?? "unlabelled"));
     c.races += 1;
-    const probs = d.data.probs as number[]; const options = d.data.options as string[];
-    const mine = options.indexOf(`fork ${String(meta.label)}`);
-    const isWinner = mine >= 0 && probs[mine] === Math.max(...probs);
-    if (isWinner) c.wins += 1;
+    // the recorded winner only: a tied verdict credits the fork the tie-break chose, not every fork at the max
+    const options = d.data.options as string[];
+    const chosen = options[Number(d.data.chosen_index)];
+    if (chosen === `fork ${String(meta.label)}`) c.wins += 1;
     c.safeAvg += Number(meta.safe ?? 0);
     if (meta.probe_ok !== null && meta.probe_ok !== undefined) { c.probeRuns += 1; if (meta.probe_ok) c.probePass += 1; }
     c.cost += workersByFork.get(String(meta.fork))?.cost ?? 0;

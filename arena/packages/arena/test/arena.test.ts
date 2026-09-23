@@ -102,3 +102,42 @@ test("git worktree forker: fork, diff, promote, drop, without acyclic", () => {
   fk.drop(A!); fk.drop(B!);
   assert.equal(execSync("git worktree list", { cwd: repo, encoding: "utf8" }).trim().split("\n").length, 1);
 });
+
+import { redact } from "../src/arena.js";
+
+test("redact scrubs credential-shaped strings before the state leaves the machine", () => {
+  // fixtures are assembled at runtime so no secret-shaped literal sits in the source for scanners to find
+  const fence = (kind: string) => ["-----", kind, " RSA PRIVATE", " KEY-----"].join("");
+  const openai = ["sk", "-", "abcdefghijklmnop", "qrstuvwxyz1234"].join("");
+  const aws = ["AK", "IA", "ABCDEFGH", "IJKLMNOP"].join("");
+  const s = redact(`key ${openai} and ${aws} and token: super${"secret"}value123\n${fence("BEGIN")}\nabc\n${fence("END")}\nplain text stays`);
+  assert.equal(s.includes(openai), false); assert.equal(s.includes(aws), false);
+  assert.equal(s.includes("supersecretvalue123"), false); assert.doesNotMatch(s, /\nabc\n/); assert.match(s, /plain text stays/); assert.match(s, /REDACTED/);
+});
+
+test("board credits only the recorded winner on a tied verdict", () => {
+  const log = new Log();
+  log.note("worker", { fork: "a", label: "A", model: "x/m", cost: 0.01 }); log.note("worker", { fork: "b", label: "B", model: "y/m", cost: 0.01 });
+  for (const [fork, label, model] of [["a", "A", "x/m"], ["b", "B", "y/m"]] as const)
+    log.append("decision", { question: "fork verdict", options: ["fork A", "fork B"], probs: [0.5, 0.5], chosen_index: 1, meta: { fork, label, model, safe: 0.5, probe_ok: null, kind: "k" } });
+  const b = buildBoard(log);
+  assert.equal(b.cells.find((c) => c.model === "x/m")!.wins, 0); assert.equal(b.cells.find((c) => c.model === "y/m")!.wins, 1);
+});
+
+test("git forker: renames and quoted names are parsed, and promote refuses to clobber a newer local edit", () => {
+  const repo = mkdtempSync(join(tmpdir(), "repo-"));
+  const run = (c: string) => execSync(c, { cwd: repo, encoding: "utf8" });
+  run("git init -q -b main && git -c user.email=a@b -c user.name=t commit -q --allow-empty -m init");
+  writeFileSync(join(repo, "old.txt"), "same\n"); writeFileSync(join(repo, "keep.txt"), "v1\n");
+  run("git add . && git -c user.email=a@b -c user.name=t commit -q -m a");
+  run("git mv old.txt 'sp ace ü.txt'");                             // a staged rename with a quoted name
+  const fk = new GitForker(repo);
+  const [A] = fk.fork(1);
+  assert.equal(existsSync(join(A!.path, "sp ace ü.txt")), true);   // the rename reached the fork
+  assert.equal(existsSync(join(A!.path, "old.txt")), false);
+  writeFileSync(join(A!.path, "keep.txt"), "v2 from fork\n");
+  writeFileSync(join(repo, "keep.txt"), "v2 edited locally meanwhile\n");   // base moved after the fork
+  assert.throws(() => fk.promote(A!, ["keep.txt"]), /promote conflict.*keep\.txt/);
+  assert.equal(readFileSync(join(repo, "keep.txt"), "utf8"), "v2 edited locally meanwhile\n");
+  fk.drop(A!);
+});

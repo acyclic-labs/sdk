@@ -1,7 +1,7 @@
 """Replicate the label-A preference and test what drives it.
 Identical diffs under different option names, 3 repeats each. Only the option strings change."""
 import json, os, sys, statistics
-sys.path.insert(0, "/Users/avinjamuri/Projects/graphcoder-all-stuff/graphcoder-plugin/jev/src")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "packages", "jev", "src"))  # the checked-out jev package
 from jev import Question
 from jev.backends.jev import JevBackend
 b = JevBackend()

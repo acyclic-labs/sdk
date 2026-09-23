@@ -7,8 +7,8 @@
  *   arena run tasks.json [--promote] [--test "..."]          # [{"task":"...","kind":"...","models":[...]}]
  *   arena board [--log arena.jsonl] [--badge badge.svg]
  */
-import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { relative, resolve } from "node:path";
 import { Acyclic } from "./acyclic.js";
 import { pickForker } from "./forks.js";
 import { Jev } from "./jev.js";
@@ -52,15 +52,21 @@ async function main(): Promise<number> {
     console.log(JSON.stringify(r, null, 2)); return 0;
   }
   if (cmd === "race" || cmd === "run") {
-    const jev = new Jev(); const forker = pickForker(repo, (str(flags.forks, "auto") as "auto" | "acyclic" | "git"), [logPath]); const log = new Log(logPath);
+    // the log and the saved states must never enter a fork or be promoted back over themselves; git reports
+    // repository-relative paths, so anything inside the repo is excluded by its path relative to the repo
+    const saveStates = str(flags["save-states"]);
+    if (saveStates) mkdirSync(saveStates, { recursive: true });
+    const inRepo = (p: string): string | null => { const r = relative(repo, resolve(p)); return r && !r.startsWith("..") && !r.startsWith("/") ? r : null; };
+    const exclude = [logPath, saveStates].filter((p): p is string => !!p).map((p) => inRepo(p) ?? p);
+    const jev = new Jev(); const forker = pickForker(repo, (str(flags.forks, "auto") as "auto" | "acyclic" | "git"), exclude); const log = new Log(logPath);
     const tasks: Array<{ task: string; kind?: string; models?: string[]; test?: string }> = cmd === "race"
       ? [{ task: pos.slice(1).join(" "), kind: str(flags.kind), models: str(flags.models)?.split(",") }]
       : (JSON.parse(readFileSync(pos[1]!, "utf8")) as Array<{ task: string; kind?: string; models?: string[]; test?: string }>);
     const forceModels = str(flags.models)?.split(",");
+    // the budget is checked between races against everything paid so far (routing, workers, judge); a race
+    // that is already running is never cut short, so the final spend can exceed the budget by one race
     let total = 0;
     const budget = Number(str(flags.budget, "0"));
-    const saveStates = str(flags["save-states"]);
-    if (saveStates) { const { mkdirSync } = await import("node:fs"); mkdirSync(saveStates, { recursive: true }); }
     for (const t of tasks) {
       if (!t.task) throw new Error("empty task");
       if (budget > 0 && total >= budget) { say(`budget $${budget} reached after $${total.toFixed(4)}; stopping`); log.note("budget_stop", { budget, spent: total }); break; }
@@ -71,6 +77,7 @@ async function main(): Promise<number> {
         kind = kind ?? r.kind;
         say(`route: ${r.tier} × ${r.fanOut}  (complexity ${r.complexity.toFixed(1)}, risk ${r.risk.toFixed(1)}, reasoning ${r.reasoning.toFixed(2)}, kind ${r.kind})  $${r.cost.toFixed(5)}`);
         log.note("route", { task: t.task, ...r });
+        total += r.cost;
       }
       const res = await race(forker, jev, log, { task: t.task, models, kind, testCommand: t.test ?? str(flags.test), promote: flags.promote === true, workerTimeoutMs: Number(str(flags.timeout, "600")) * 1000, onEvent: say });
       total += res.judgeCost + res.workerCost;
@@ -99,6 +106,7 @@ async function main(): Promise<number> {
   arena route "<task>"
   arena race "<task>" [--models a,b,c] [--promote] [--test "<cmd>"] [--kind <kind>] [--timeout <s>] [--log arena.jsonl] [--forks auto|acyclic|git]
   arena run tasks.json [--promote] [--test "<cmd>"] [--models a,b] [--budget <usd>] [--save-states dir]
+      --budget is checked between races (routing + workers + judge so far); a running race is never cut short
   arena board [--log arena.jsonl] [--badge badge.svg] [--json board.json] [--min-races 3]
 
 Needs: opencode on PATH and OPENROUTER_API_KEY (env or ./.env). acyclic is optional: with it forks are O(1) mounts and promote is a three-way merge; without it, git worktrees and a patch.`);

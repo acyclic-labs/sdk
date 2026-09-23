@@ -1,7 +1,7 @@
 """Label prior with people's names as option labels, and three-way / six-way orderings, on identical diffs.
 Separates the position prior from the sequence-name prior: people's names carry no sequence."""
 import sys, os, itertools, random, statistics, json
-sys.path.insert(0, "/Users/avinjamuri/Projects/graphcoder-all-stuff/graphcoder-plugin/jev/src")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "packages", "jev", "src"))  # the checked-out jev package
 from jev import Question
 from jev.backends.jev import JevBackend
 b = JevBackend(); usd = 0

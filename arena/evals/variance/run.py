@@ -2,7 +2,7 @@
 Inputs: the 24 judge pairs (2 options, label = better fork or tie) and the 48 gate commands (3 options, labelled).
 Backends: Jev, letter-logit readings of small chat models, and open-jev's Space when its quota allows."""
 import json, math, os, sys, time, statistics
-sys.path.insert(0, "/Users/avinjamuri/Projects/graphcoder-all-stuff/graphcoder-plugin/jev/src")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "packages", "jev", "src"))  # the checked-out jev package
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "judge"))
 from jev import Question
 from jev.backends.jev import JevBackend

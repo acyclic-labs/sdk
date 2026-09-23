@@ -1,7 +1,7 @@
 """A ladder of pairs with a controlled quality gap, judged in four label/position configurations.
 Question: when one fork is genuinely a little better, can the label or the slot flip the verdict?"""
 import sys, os, statistics, json
-sys.path.insert(0, "/Users/avinjamuri/Projects/graphcoder-all-stuff/graphcoder-plugin/jev/src")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "packages", "jev", "src"))  # the checked-out jev package
 from jev import Question
 from jev.backends.jev import JevBackend
 b = JevBackend(); usd = 0

@@ -17,7 +17,8 @@ That shape is what a swarm wants. `jev` gives you:
 - **`Swarm`** – many agents, one state, **one encode**: every agent's questions for a step go to the
   backend in a single batch, come back to the agent that asked, and every agent then acts.
 - **`DecisionLog`** – append-only JSONL, time-ordered, hash-chained. Replay a run without the model.
-  `verify()` proves the file was not edited.
+  `verify()` detects truncation, reordering and accidental edits. The chain is unkeyed, so it is not
+  tamper-proof against someone who can rewrite the whole file; anchor the tip hash elsewhere for that.
 
 ## Getting the model running
 
@@ -197,7 +198,8 @@ The shared Space is too slow and too quota-bound for a hook on every tool call; 
 ## Self-hosting the scorer
 
 ```
-jev serve --backend local --host 0.0.0.0 --port 8788      # on a GPU box
+JEV_SERVE_TOKEN=<secret> jev serve --backend local --host 0.0.0.0 --port 8788   # on a GPU box; clients send Authorization: Bearer <secret>
+# Off loopback the server refuses to start without a token. Bodies (1 MiB), questions (64), options (64) and state (200k chars) are capped.
 jev decide --backend http://gpu:8788 ...                   # anywhere else
 ```
 

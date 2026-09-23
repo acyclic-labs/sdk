@@ -8,3 +8,5 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 *.jsonl
+!evals/gate/cases.jsonl
+!evals/gate/gate.jsonl

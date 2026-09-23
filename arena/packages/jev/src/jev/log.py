@@ -9,7 +9,9 @@ One JSON object per line. Every record has `seq`, `ts`, `kind`, `prev`, and
   note       anything else the caller wants on the record (fork ids, promotions, ...)
 
 Nothing is ever rewritten. A replay reproduces every decision without the
-model, and `verify()` proves the file was not edited.
+model, and `verify()` detects truncation, reordering and accidental edits. The chain is
+unkeyed (SHA-256 over the file's own contents from a public root), so it is not proof against
+someone who can rewrite the whole file; anchor the tip hash elsewhere if you need that.
 """
 from __future__ import annotations
 

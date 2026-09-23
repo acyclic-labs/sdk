@@ -77,7 +77,7 @@ def cmd_gate(args) -> int:
 
 def cmd_serve(args) -> int:
     from .server import serve
-    serve(get_backend(args.backend), args.host, args.port)
+    serve(get_backend(args.backend), args.host, args.port, args.token)
     return 0
 
 
@@ -156,6 +156,7 @@ def main(argv=None) -> int:
     sv = sub.add_parser("serve", help="serve a backend over HTTP for HttpBackend / --backend http://host:port")
     sv.add_argument("--backend", default="local")
     sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--token", default=None, help="bearer token every /decide must carry (or JEV_SERVE_TOKEN); required off loopback")
     sv.add_argument("--port", type=int, default=8788)
     sv.set_defaults(fn=cmd_serve)
     lg = sub.add_parser("log", help="inspect a decision log")
