@@ -159,6 +159,7 @@ case "$lane" in
     (cd plugin && bash scripts/check-product-name.sh)
     (cd plugin && JSCPD="bun x jscpd@4.3.0" bash scripts/check-code-quality.sh)
     bash -n plugin/scripts/*.sh plugin/tests/acceptance/*.sh plugin/packaging/npm/*.sh
+    bash scripts/check-agent-docs.sh
     ;;
   web)
     bash scripts/ensure-rust-target.sh wasm32-unknown-unknown

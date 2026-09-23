@@ -37,7 +37,9 @@ same.
 
 - **Local content-addressed snapshot store** — *shipped, but not in this
   repo.* The store, Merkle DAG, content-defined chunking and the filesystem
-  watcher all live in the `acyclic-fs` SDK, pinned by git revision. This
+  watcher all live in the `acyclic-fs` SDK, a path dependency two directories
+  up in the same workspace (it was a git dependency pinned by revision until
+  the plugin moved into the sdk repository). This
   repo builds the capture pipeline, checkpoint index, rewind, diff and the
   host adapters on top. The design docs never named that dependency, and it
   is the reason several items below are blocked rather than backlogged.

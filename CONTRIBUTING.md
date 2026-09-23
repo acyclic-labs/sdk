@@ -46,15 +46,21 @@ Beyond rustfmt and clippy's defaults, the workspace enables an additional lint s
   the panic unreachable.
 - **`unsafe` is opt-in per function**, carrying `#[allow(unsafe_code, reason = "...")]`
   naming the invariant.
-- **Duplication under 3% of tokens** (`jscpd`, config in `.jscpd.json`, not yet wired
-  into CI — run manually with `npx jscpd@4.3.0 --config .jscpd.json .`).
+- **Duplication under 3% of tokens** (`jscpd`, config in `.jscpd.json`). The policy
+  lane runs it over `plugin/`; run it over the whole tree with
+  `bun x jscpd@4.3.0 --config .jscpd.json .`.
 
-A wider lint set from the same source — no identical match arms, functions under 100
-lines/cognitive complexity under 30, no lossy `as` casts, no out-of-bounds indexing or
-string slicing outside tests — is tracked in [#59](https://github.com/acyclic-labs/sdk/issues/59)
-rather than enabled here: the workspace currently has ~866 pre-existing hits against
-that set, so it lands together with the fixes in a follow-up PR instead of breaking
-`-D warnings` on `main`.
+The wider lint set (no identical match arms, functions under 100 lines and cognitive
+complexity under 30, no lossy `as` casts, no out-of-bounds indexing or string slicing
+outside tests) is enabled in `Cargo.toml` and enforced by `-D warnings`.
+
+The `acyclic` CLI plugin under `plugin/` carries three more rules its policy-lane
+guard (`plugin/scripts/check-code-quality.sh`) enforces for that tree: Rust lines
+within 120 columns and shell within 200, every `TODO`/`FIXME` written as
+`TODO(topic):`, and no comment block longer than 30 lines. Its acceptance suite is
+run locally with `ACYCLIC_BIN=<release binary> bash plugin/tests/acceptance/run-all.sh`
+from `plugin/`, or through `plugin/scripts/ci-local.sh`; `plugin/README.md` is the
+entry point and `AGENTS.md` the short version for coding agents.
 
 ## Reporting bugs and security issues
 

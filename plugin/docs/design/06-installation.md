@@ -32,16 +32,16 @@ weaker half.
 | `scripts/install.sh` via curl | written, **blocked** | Verified download into `~/.local/bin`, checked against the release's `SHA256SUMS`. Blocked on two gates below. |
 | GitHub release asset, in a browser | **blocked** | Same two gates, plus Gatekeeper — see Signing. |
 | Homebrew | **not built** | No formula, no tap, no release job. Was documented in this file as if it shipped. |
-| crates.io `cargo install` | **not published** | The workspace is not published; `acyclic-fs` is a git dependency pinned to a SHA. |
-| From source | works with access | The `acyclic-fs` repo is public; only this one is private. |
+| crates.io `cargo install` | **not published** | The plugin crates are `publish = false`; they build inside the sdk workspace with `acyclic-fs` as a path dependency. |
+| From source | works | `cargo build --release -p acyclic` in a checkout of `acyclic-labs/sdk`. |
 
 ### The two gates
 
 The standalone installer fails for two independent reasons, and cutting a
 release only clears one:
 
-1. **This repo is private.** `raw.githubusercontent.com/<repo>/main/scripts/install.sh`
-   returns 404 to anyone outside the org, and release assets need a token too.
+1. ~~**This repo is private.**~~ Historical: the plugin lived in a private
+   repository until it moved into the public `acyclic-labs/sdk` (2026-09-19).
 2. **No release has been tagged.** `git tag` and `gh release list` are both
    empty, so `releases/latest/download/` has nothing to resolve even with a token.
 
