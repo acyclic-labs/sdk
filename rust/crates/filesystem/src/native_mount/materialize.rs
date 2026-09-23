@@ -104,6 +104,9 @@ pub enum MaterializeError {
     /// This host adapter cannot recreate the authenticated kind exactly.
     #[error("file kind {0:?} cannot be materialized exactly on this host")]
     UnsupportedKind(FileKind),
+    /// This host adapter cannot reproduce an authenticated metadata field.
+    #[error("metadata field {0} cannot be materialized exactly on this host")]
+    UnsupportedMetadata(&'static str),
     /// Supplied operation bounds are zero or exceed native addressability.
     #[error("materialization options are invalid")]
     InvalidOptions,
@@ -1771,6 +1774,13 @@ fn apply_host_metadata(
 ) -> Result<(), MaterializeError> {
     use crate::kernel::MetadataField;
     use cap_std::fs::PermissionsExt;
+    if matches!(metadata.windows_attributes, MetadataField::Value(_)) {
+        return Err(MaterializeError::UnsupportedMetadata("windows_attributes"));
+    }
+    if matches!(metadata.posix_flags, MetadataField::Value(_)) {
+        return Err(MaterializeError::UnsupportedMetadata("posix_flags"));
+    }
+    reject_opaque_metadata(metadata)?;
     let file_type = host_root.symlink_metadata(path)?.file_type();
     if file_type.is_symlink() {
         return if metadata_is_unavailable(metadata) {
@@ -1796,6 +1806,14 @@ fn apply_host_metadata(
     metadata: FileMetadata,
 ) -> Result<(), MaterializeError> {
     use crate::kernel::MetadataField;
+    if matches!(metadata.posix_mode, MetadataField::Value(_))
+        || matches!(metadata.posix_uid, MetadataField::Value(_))
+        || matches!(metadata.posix_gid, MetadataField::Value(_))
+        || matches!(metadata.posix_flags, MetadataField::Value(_))
+    {
+        return Err(MaterializeError::UnsupportedMetadata("posix"));
+    }
+    reject_opaque_metadata(metadata)?;
     if host_root.symlink_metadata(path)?.file_type().is_symlink() {
         return if metadata_is_unavailable(metadata) {
             Ok(())
@@ -1807,6 +1825,20 @@ fn apply_host_metadata(
         let mut permissions = host_root.symlink_metadata(path)?.permissions();
         permissions.set_readonly(attributes & 1 != 0);
         host_root.set_permissions(path, permissions)?;
+    }
+    Ok(())
+}
+
+fn reject_opaque_metadata(metadata: FileMetadata) -> Result<(), MaterializeError> {
+    use crate::kernel::MetadataField;
+    if matches!(metadata.named_attributes, MetadataField::Value(_)) {
+        return Err(MaterializeError::UnsupportedMetadata("named_attributes"));
+    }
+    if matches!(metadata.acl, MetadataField::Value(_)) {
+        return Err(MaterializeError::UnsupportedMetadata("acl"));
+    }
+    if matches!(metadata.security_descriptor, MetadataField::Value(_)) {
+        return Err(MaterializeError::UnsupportedMetadata("security_descriptor"));
     }
     Ok(())
 }
@@ -1830,6 +1862,31 @@ fn metadata_is_unavailable(metadata: FileMetadata) -> bool {
 #[cfg(test)]
 mod restore_recovery_tests {
     use super::*;
+
+    #[test]
+    fn native_materialization_rejects_unrepresentable_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::kernel::MetadataField;
+
+        let temporary = tempfile::tempdir()?;
+        std::fs::write(temporary.path().join("file"), b"data")?;
+        let root = HostRoot::open(temporary.path())?;
+        #[cfg(unix)]
+        let metadata = FileMetadata {
+            posix_flags: MetadataField::Value(1),
+            ..FileMetadata::default()
+        };
+        #[cfg(windows)]
+        let metadata = FileMetadata {
+            posix_mode: MetadataField::Value(0o644),
+            ..FileMetadata::default()
+        };
+        assert!(matches!(
+            apply_host_metadata(&root, Path::new("file"), metadata),
+            Err(MaterializeError::UnsupportedMetadata(_))
+        ));
+        Ok(())
+    }
 
     #[test]
     fn same_path_restores_are_serialized_by_a_process_crash_safe_lock()
