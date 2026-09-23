@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+
+const require = createRequire(import.meta.url);
+const { sha256File } = require("../bin/verify.js");
 
 function fail(message) {
   throw new Error(message);
@@ -87,6 +90,12 @@ if (args.require_universal) {
       || receipt.passed !== true
       || typeof receipt.executable_blake3 !== "string"
       || !/^[0-9a-f]{64}$/.test(receipt.executable_blake3)
+      || receipt.capability?.kind !== backend
+      || receipt.capability?.available !== true
+      || receipt.capability?.writable !== true
+      || receipt.capability?.provider_process_io_observable !== (os !== "windows")
+      || receipt.capability?.session_isolation !== "SharedProcess"
+      || receipt.capability?.unavailable_reason !== null
     ) fail(`invalid certification receipt: ${path}`);
   }
 }
@@ -101,7 +110,7 @@ for (const [target, entry] of Object.entries(manifest.targets)) {
   if (entry.path !== expectedPath) fail(`invalid binary path for ${target}`);
   const binary = join(plugin, "bin", target, expectedName);
   if (!existsSync(binary)) fail(`missing binary for ${target}`);
-  const actual = createHash("sha256").update(readFileSync(binary)).digest("hex");
+  const actual = sha256File(binary);
   if (actual !== entry.sha256) fail(`binary checksum mismatch for ${target}`);
   const verified = spawnSync(process.execPath, [join(plugin, "bin", "verify.js"), target], {
     cwd: plugin,

@@ -9,6 +9,7 @@ on:
       - 'Cargo.lock'
       - 'rust/crates/conformance/**'
       - 'rust/crates/filesystem/**'
+      - 'rust/crates/native-runtime/**'
       - 'scripts/qualify-native-mount.*'
 
 permissions:

@@ -70,6 +70,31 @@ impl HostRoot {
         }
     }
 
+    /// Reads leaf metadata while refusing every intermediate link or reparse point.
+    pub fn symlink_metadata_held(&self, path: &Path) -> io::Result<Metadata> {
+        if path.as_os_str().is_empty() {
+            return self.directory.dir_metadata();
+        }
+        let mut current = self.directory.try_clone()?;
+        let mut components = path.components().peekable();
+        while let Some(component) = components.next() {
+            let std::path::Component::Normal(name) = component else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid metadata path",
+                ));
+            };
+            if components.peek().is_none() {
+                return current.symlink_metadata(name);
+            }
+            current = current.open_dir_nofollow(name)?;
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "metadata path has no leaf",
+        ))
+    }
+
     pub fn open_file(&self, path: &Path) -> io::Result<cap_std::fs::File> {
         let mut options = OpenOptions::new();
         options
@@ -81,6 +106,23 @@ impl HostRoot {
     pub fn create_file(&self, path: &Path) -> io::Result<File> {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
+        self.directory
+            .open_with(path, &options)
+            .map(cap_std::fs::File::into_std)
+    }
+
+    /// Creates a capability-rooted Windows file ready for native overlapped I/O.
+    /// The returned handle has not been associated with a completion port.
+    #[cfg(windows)]
+    pub fn create_overlapped_file(&self, path: &Path) -> io::Result<File> {
+        use cap_std::fs::OpenOptionsExt as _;
+        use windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+
+        let mut options = OpenOptions::new();
+        options
+            .write(true)
+            .create_new(true)
+            .custom_flags(FILE_FLAG_OVERLAPPED.0);
         self.directory
             .open_with(path, &options)
             .map(cap_std::fs::File::into_std)
@@ -804,6 +846,10 @@ mod tests {
 
         let root = HostRoot::open(&root_path)?;
         assert!(root.open_file(Path::new("pivot/secret")).is_err());
+        assert!(
+            root.symlink_metadata_held(Path::new("pivot/secret"))
+                .is_err()
+        );
         assert!(root.create_file(Path::new("pivot/created")).is_err());
         assert!(!outside_path.join("created").exists());
 
@@ -859,12 +905,61 @@ mod tests {
 #[cfg(all(test, windows))]
 mod windows_clone_tests {
     use super::{HostRoot, allocated_data_ranges};
+    use acyclic_native_runtime::{Durability, NativeFile, OwnedWrite};
+    use bytes::Bytes;
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::os::windows::io::AsRawHandle;
     use std::path::Path;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::IO::DeviceIoControl;
     use windows::Win32::System::Ioctl::FSCTL_SET_SPARSE;
+
+    #[tokio::test]
+    async fn capability_opened_overlapped_file_runs_native_io_without_reopen() -> std::io::Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        let root = HostRoot::open(directory.path())?;
+        let path = Path::new("overlapped.bin");
+        let file = root.create_overlapped_file(path)?;
+        // SAFETY: HostRoot used FILE_FLAG_OVERLAPPED and this new handle is
+        // transferred directly, with no other I/O or completion-port owner.
+        #[allow(unsafe_code)]
+        let native = unsafe { NativeFile::from_overlapped_file_unchecked(file)? };
+        native.set_len_async(8).await?;
+        native
+            .write_all_batch_async(vec![OwnedWrite {
+                offset: 2,
+                bytes: Bytes::from_static(b"abc"),
+            }])
+            .await?;
+        native.sync_async(Durability::Full).await?;
+        assert_eq!(
+            std::fs::read(directory.path().join(path))?,
+            b"\0\0abc\0\0\0"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn held_metadata_rejects_intermediate_reparse_escape() -> std::io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let root_path = temporary.path().join("root");
+        let outside = temporary.path().join("outside");
+        std::fs::create_dir(&root_path)?;
+        std::fs::create_dir(&outside)?;
+        std::fs::write(outside.join("secret"), b"outside")?;
+        match std::os::windows::fs::symlink_dir(&outside, root_path.join("pivot")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        let root = HostRoot::open(&root_path)?;
+        assert!(
+            root.symlink_metadata_held(Path::new("pivot/secret"))
+                .is_err()
+        );
+        Ok(())
+    }
 
     #[cfg(feature = "native-mount")]
     #[test]

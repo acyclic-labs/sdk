@@ -2,7 +2,7 @@
 "use strict";
 
 const { createHash } = require("node:crypto");
-const { existsSync, readFileSync } = require("node:fs");
+const { closeSync, existsSync, openSync, readFileSync, readSync } = require("node:fs");
 const { join } = require("node:path");
 
 function linuxLibc(report = process.report?.getReport?.()) {
@@ -25,7 +25,23 @@ function targetExecutables(directory) {
   return schema.targets;
 }
 
-function verifyTarget(directory, target = hostTarget()) {
+function sha256File(path) {
+  const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(256 * 1024);
+  const handle = openSync(path, "r");
+  try {
+    for (;;) {
+      const count = readSync(handle, buffer, 0, buffer.length, null);
+      if (count === 0) break;
+      hash.update(buffer.subarray(0, count));
+    }
+  } finally {
+    closeSync(handle);
+  }
+  return hash.digest("hex");
+}
+
+function resolveTarget(directory, target = hostTarget()) {
   const manifestPath = join(directory, "platform-binaries.json");
   if (!existsSync(manifestPath)) throw new Error("Acyclic platform manifest is missing");
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
@@ -41,13 +57,19 @@ function verifyTarget(directory, target = hostTarget()) {
   if (entry.path !== expected) throw new Error("invalid Acyclic binary path in platform manifest");
   const source = join(directory, ...entry.path.split("/"));
   if (!existsSync(source)) throw new Error(`Acyclic binary is missing: ${entry.path}`);
-  const contents = readFileSync(source);
-  const actual = createHash("sha256").update(contents).digest("hex");
-  if (actual !== entry.sha256) throw new Error("Acyclic binary checksum verification failed");
   return { source, manifest };
 }
 
-module.exports = { hostTarget, linuxLibc, verifyTarget };
+function verifyTarget(directory, target = hostTarget()) {
+  const resolved = resolveTarget(directory, target);
+  const { source, manifest } = resolved;
+  const entry = manifest.targets[target];
+  const actual = sha256File(source);
+  if (actual !== entry.sha256) throw new Error("Acyclic binary checksum verification failed");
+  return resolved;
+}
+
+module.exports = { hostTarget, linuxLibc, resolveTarget, sha256File, verifyTarget };
 
 if (require.main === module) {
   verifyTarget(__dirname, process.argv[2]);

@@ -12,6 +12,7 @@ use crate::kernel::{
     FileKind, FileMetadata, FilePayload, FileRecord, LogicalName, MetadataField, NameEncoding,
     NamespacePath,
 };
+use crate::model::VolumeConfig;
 use crate::path::PortablePath;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, FileId, ForkOptions, Fs,
@@ -949,6 +950,30 @@ where
         store: S,
     ) -> Result<Self, LazyWorkspaceError> {
         let workspace = fs.create_workspace(name).await.map_err(workspace_error)?;
+        Self::attach_workspace(workspace, source, store).await
+    }
+
+    /// Creates an authored workspace with exact filesystem semantics and binds
+    /// a source without demanding any path.
+    pub async fn attach_with_config(
+        fs: &Fs<A, O>,
+        name: impl AsRef<str>,
+        source: Arc<D>,
+        store: S,
+        config: VolumeConfig,
+    ) -> Result<Self, LazyWorkspaceError> {
+        let workspace = fs
+            .create_workspace_with_config(name, config)
+            .await
+            .map_err(workspace_error)?;
+        Self::attach_workspace(workspace, source, store).await
+    }
+
+    async fn attach_workspace(
+        workspace: Workspace<A, O>,
+        source: Arc<D>,
+        store: S,
+    ) -> Result<Self, LazyWorkspaceError> {
         let overlay = LazyOverlay::default();
         let overlay_id = overlay.id()?;
         store
@@ -1343,6 +1368,17 @@ where
             .map(|receipt| receipt.value.lookup)
     }
 
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) async fn lookup_resolved(
+        &self,
+        path: &str,
+    ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
+        let cancellation = CancellationToken::new();
+        self.lookup_measured(path, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map(|receipt| (receipt.value.lookup, receipt.value.source))
+    }
+
     async fn lookup_measured(
         &self,
         path: &str,
@@ -1418,6 +1454,17 @@ where
         self.inspect_measured(path, WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map(|receipt| receipt.value.lookup)
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) async fn inspect_resolved(
+        &self,
+        path: &str,
+    ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
+        let cancellation = CancellationToken::new();
+        self.inspect_measured(path, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map(|receipt| (receipt.value.lookup, receipt.value.source))
     }
 
     async fn inspect_measured(
@@ -1551,12 +1598,47 @@ where
         FileId::from_bytes(bytes)
     }
 
+    pub(crate) async fn stable_file_id_for_lookup(
+        &self,
+        path: &str,
+        lookup: &LazyLookup,
+    ) -> Result<FileId, LazyWorkspaceError> {
+        match lookup {
+            LazyLookup::Source(node) => Ok(self.source_file_id(node)),
+            LazyLookup::Shadow { record, .. } => Ok(record.file_id),
+            LazyLookup::Authored { stat, .. } if stat.kind == FileKind::Directory => {
+                let state = self.state().await?;
+                match self.overlay_fact(state.overlay, path).await? {
+                    Some(LazyOverlayChange::Observe { node, .. })
+                        if node.kind == SourceNodeKind::Directory =>
+                    {
+                        Ok(self.source_file_id(&node))
+                    }
+                    Some(LazyOverlayChange::Observe { .. })
+                    | Some(LazyOverlayChange::Tombstone)
+                    | None => Ok(stat.file_id),
+                }
+            }
+            LazyLookup::Authored { stat, .. } => Ok(stat.file_id),
+        }
+    }
+
     async fn authored_alias_measured(
         &self,
         node: &SourceNode,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<Option<LazyLookup>>, LazyWorkspaceError> {
+        // Only source objects with multiple directory bindings can resolve
+        // through an authored alias. Avoid the generation-wide reverse-path
+        // query for ordinary files and directories; on large compiler trees
+        // that otherwise creates one derived path-index entry per stat.
+        if node.kind == SourceNodeKind::Directory || node.link_count == Some(1) {
+            return Ok(OperationReceipt {
+                value: None,
+                work: WorkCounters::default(),
+            });
+        }
         let file_id = self.source_file_id(node);
         let state = self.state_measured(budget, cancellation).await?;
         let generation = self
@@ -1626,6 +1708,32 @@ where
         self.read_range_measured(path, offset, length, WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map(|receipt| receipt.value)
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) async fn read_source_range(
+        &self,
+        path: &str,
+        source: SourceReference,
+        node: SourceNode,
+        offset: u64,
+        length: u64,
+    ) -> Result<Bytes, LazyWorkspaceError> {
+        if node.kind != SourceNodeKind::RegularFile {
+            return Err(LazyWorkspaceError::NotRegularFile);
+        }
+        self.source
+            .read_range(
+                source,
+                &self.namespace_path(path)?,
+                node.version,
+                offset,
+                length,
+                &CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| LazyWorkspaceError::from(failure.error))
     }
 
     async fn read_range_measured(
@@ -4070,6 +4178,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inspection_is_transient_and_resolved_reads_pin_the_source_version() {
+        let fs = Fs::memory();
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"before")));
+        let root = LazyWorkspace::attach(
+            &fs,
+            "transient-inspection",
+            Arc::clone(&source),
+            MemoryLazyWorkspaceStore::default(),
+        )
+        .await
+        .expect("attach");
+        let before = root.state().await.expect("state before inspection");
+
+        let (lookup, source_reference) = root
+            .inspect_resolved("/file.txt")
+            .await
+            .expect("inspect source file");
+        let LazyLookup::Source(node) = lookup else {
+            panic!("inspection must resolve the source file");
+        };
+        assert_eq!(root.state().await.expect("state after inspection"), before);
+
+        source.replace(Bytes::from_static(b"after"));
+        assert_eq!(
+            root.read_source_range(
+                "/file.txt",
+                source_reference.expect("source reference"),
+                node,
+                0,
+                6,
+            )
+            .await
+            .expect("read pinned version"),
+            Bytes::from_static(b"before")
+        );
+
+        root.rebind_source().await.expect("rebind source");
+        let LazyLookup::Source(rebound) = root.inspect("/file.txt").await.expect("reinspect")
+        else {
+            panic!("rebound inspection must resolve the source file");
+        };
+        assert_ne!(rebound.version, node.version);
+    }
+
+    #[tokio::test]
     async fn independent_alias_promotions_preserve_source_hard_links() {
         let fs = Fs::memory();
         let mut source = CountingSource::new(Bytes::from_static(b"shared"));
@@ -4115,10 +4268,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unresolved_alias_reads_and_promotes_the_latest_authored_identity() {
+    async fn unresolved_alias_with_unknown_link_count_reads_latest_authored_identity() {
         let fs = Fs::memory();
         let mut source = CountingSource::new(Bytes::from_static(b"source"));
-        source.node.link_count = Some(2);
+        source.node.link_count = None;
         let source = Arc::new(source);
         let root = LazyWorkspace::attach(
             &fs,
@@ -4148,7 +4301,7 @@ mod tests {
         let first = root.workspace().stat("/a").await.expect("first stat");
         let second = root.workspace().stat("/b").await.expect("second stat");
         assert_eq!(first.file_id, second.file_id);
-        assert_eq!(first.link_count, 2);
+        assert_eq!(first.file_id, root.source_file_id(&source.node));
         assert_eq!(
             root.read("/b", 64)
                 .await
@@ -4339,6 +4492,61 @@ mod tests {
         assert!(matches!(second, TransactionCommit::AlreadyCommitted(_)));
         assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 1);
         assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 2);
+    }
+
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn promoted_source_directory_keeps_its_identity_and_lazy_children() {
+        use crate::demand::native::NativeDemandSource;
+        use crate::model::{FilesystemProfile, VolumeLimits};
+
+        let directory = tempfile::tempdir().expect("temporary source");
+        std::fs::create_dir(directory.path().join("repo")).expect("source directory");
+        std::fs::write(
+            directory.path().join("repo/HEAD"),
+            b"ref: refs/heads/main\n",
+        )
+        .expect("source child");
+        let source = Arc::new(
+            NativeDemandSource::open(
+                directory.path(),
+                FilesystemProfile::Portable,
+                VolumeLimits::default(),
+            )
+            .await
+            .expect("source"),
+        );
+        let root = LazyWorkspace::attach(
+            &Fs::memory(),
+            "directory-identity",
+            source,
+            MemoryLazyWorkspaceStore::default(),
+        )
+        .await
+        .expect("attach");
+        let source_node = match root.lookup("/repo").await.expect("source directory") {
+            LazyLookup::Source(node) => node,
+            LazyLookup::Authored { .. } | LazyLookup::Shadow { .. } => {
+                panic!("expected source directory")
+            }
+        };
+        let source_id = root.source_file_id(&source_node);
+
+        root.promote("/repo", 0, IdempotencyKey::from_bytes([0x52; 16]))
+            .await
+            .expect("promote directory");
+
+        let promoted = root.lookup("/repo").await.expect("promoted directory");
+        assert_eq!(
+            root.stable_file_id_for_lookup("/repo", &promoted)
+                .await
+                .expect("stable projection identity"),
+            source_id
+        );
+        assert_eq!(
+            root.read("/repo/HEAD", 64).await.expect("lazy child"),
+            Bytes::from_static(b"ref: refs/heads/main\n")
+        );
     }
 
     #[tokio::test]

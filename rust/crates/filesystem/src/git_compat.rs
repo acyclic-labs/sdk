@@ -16,17 +16,38 @@ use crate::{
     WorkBudget, Workspace, WorkspaceError, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Mutex;
 use thiserror::Error;
 
-const STATE_VERSION: u32 = 8;
+const STATE_VERSION: u32 = 9;
 const COMMIT_DOMAIN: &[u8] = b"acyclic-fs-git-compat-commit-v1\0";
 const ACTION_DOMAIN: &[u8] = b"acyclic-fs-git-compat-action-v1\0";
 const MAXIMUM_CAS_ATTEMPTS: u8 = 32;
 const GREP_READ_CONCURRENCY: usize = 32;
 const MAXIMUM_PATCH_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+fn portable_git_name(name: &crate::kernel::LogicalName) -> Option<Cow<'_, str>> {
+    match name.encoding() {
+        NameEncoding::Utf8 | NameEncoding::PosixBytes => {
+            std::str::from_utf8(name.as_bytes()).ok().map(Cow::Borrowed)
+        }
+        NameEncoding::WindowsUtf16Le => {
+            let units = name.as_bytes().chunks_exact(2).map(|pair| {
+                let [low, high] = pair else {
+                    unreachable!("chunks_exact(2) always yields a length-2 slice")
+                };
+                u16::from_le_bytes([*low, *high])
+            });
+            char::decode_utf16(units)
+                .collect::<Result<String, _>>()
+                .ok()
+                .map(Cow::Owned)
+        }
+    }
+}
 
 async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &crate::PinnedReader<A, O>,
@@ -62,15 +83,10 @@ async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncObjectStore>
                     break 'walk;
                 }
                 visited = visited.saturating_add(1);
-                let name = match entry.name.encoding() {
-                    NameEncoding::Utf8 => std::str::from_utf8(entry.name.as_bytes())
-                        .map_err(|_| WorkspaceError::path("non-UTF-8 Git path"))?,
-                    NameEncoding::PosixBytes | NameEncoding::WindowsUtf16Le => {
-                        return Err(WorkspaceError::path("non-portable Git path"));
-                    }
-                };
+                let name = portable_git_name(&entry.name)
+                    .ok_or_else(|| WorkspaceError::path("non-portable Git path"))?;
                 let path = if directory_display.is_empty() {
-                    name.to_owned()
+                    name.to_string()
                 } else {
                     format!("{directory_display}/{name}")
                 };
@@ -183,6 +199,36 @@ impl<'de> Deserialize<'de> for GitCommitId {
     }
 }
 
+/// A filtered tree's exact SDK fork origin, verified when core capture creates
+/// it. Durable JSON is checked structurally on reload, not revalidated against
+/// the SDK lineage store; it is not a cryptographic attestation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GitCaptureProof {
+    fork_parent: GitTreeRef,
+    initial_generation: crate::GenerationId,
+    operation_id: OperationId,
+}
+
+impl GitCaptureProof {
+    fn structurally_valid(
+        &self,
+        tree: GitTreeRef,
+        workspace_tree: GitTreeRef,
+        previous_tree: Option<GitTreeRef>,
+    ) -> bool {
+        let GitTreeRef::Exact(tree) = tree else {
+            return false;
+        };
+        let GitTreeRef::Exact(parent) = self.fork_parent else {
+            return false;
+        };
+        tree.workspace_id != workspace_tree.workspace_id()
+            && tree.generation != self.initial_generation
+            && (self.fork_parent == workspace_tree || previous_tree == Some(self.fork_parent))
+            && parent.workspace_id != tree.workspace_id
+    }
+}
+
 /// One explicit Git-facing commit mapped to an SDK generation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GitCommit {
@@ -193,6 +239,9 @@ pub struct GitCommit {
     /// Complete live working tree captured by the commit. This may differ from
     /// `tree` when newly ignored paths are omitted from compatibility history.
     pub workspace_tree: GitTreeRef,
+    /// SDK-verified fork origin when the Git-visible tree is a filtered fork.
+    #[serde(default)]
+    pub capture_proof: Option<GitCaptureProof>,
     /// Exact portable paths represented by this compatibility snapshot.
     #[serde(default)]
     pub tracked_paths: BTreeSet<String>,
@@ -247,12 +296,41 @@ impl GitCommit {
         authored_at_seconds: i64,
         message: impl Into<String>,
     ) -> Self {
+        Self::new_with_capture_proof(
+            tree,
+            workspace_tree,
+            None,
+            tracked_paths,
+            parents,
+            author,
+            authored_at_seconds,
+            message,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_capture_proof(
+        tree: GitTreeRef,
+        workspace_tree: GitTreeRef,
+        capture_proof: Option<GitCaptureProof>,
+        tracked_paths: BTreeSet<String>,
+        parents: Vec<GitCommitId>,
+        author: impl Into<String>,
+        authored_at_seconds: i64,
+        message: impl Into<String>,
+    ) -> Self {
         let author = author.into();
         let message = message.into();
         let mut hasher = blake3::Hasher::new();
         hasher.update(COMMIT_DOMAIN);
         hash_tree_ref(&mut hasher, tree);
         hash_tree_ref(&mut hasher, workspace_tree);
+        if let Some(proof) = &capture_proof {
+            hasher.update(&[1]);
+            hash_tree_ref(&mut hasher, proof.fork_parent);
+            hasher.update(proof.initial_generation.digest().as_bytes());
+            hasher.update(&proof.operation_id.into_bytes());
+        }
         hasher.update(
             &u64::try_from(tracked_paths.len())
                 .unwrap_or(u64::MAX)
@@ -276,6 +354,7 @@ impl GitCommit {
             id: GitCommitId(*hasher.finalize().as_bytes()),
             tree,
             workspace_tree,
+            capture_proof,
             tracked_paths,
             parents,
             author,
@@ -844,6 +923,8 @@ pub enum GitFilesystemAction {
         from: Option<GitTreeRef>,
         /// Live workspace generation.
         to: GitTreeRef,
+        /// Already tracked paths remain visible even if later ignored.
+        tracked_paths: BTreeSet<String>,
     },
     /// Move the live workspace to an exact generation.
     RestoreGeneration {
@@ -933,6 +1014,7 @@ pub enum GitFilesystemAction {
 /// Typed result returned by a compatibility filesystem executor.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
+#[allow(clippy::large_enum_variant)] // Keep the public result shape direct; this is not a hot path.
 pub enum GitFilesystemResult {
     /// An eligible compatibility snapshot was captured.
     Captured {
@@ -940,6 +1022,8 @@ pub enum GitFilesystemResult {
         tree: GitTreeRef,
         /// Paths represented by the captured compatibility history.
         tracked_paths: BTreeSet<String>,
+        /// Authenticated origin when `tree` belongs to a filtered SDK fork.
+        proof: Option<GitCaptureProof>,
     },
     /// A dedicated compatibility branch workspace was created.
     Forked {
@@ -1024,6 +1108,7 @@ pub struct GitStatus {
 /// Stable machine-readable command result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
+#[allow(clippy::large_enum_variant)] // CLI responses favor a direct typed shape over allocation.
 pub enum GitCommandOutput {
     /// No state or filesystem change was required.
     NoOp,
@@ -1183,6 +1268,7 @@ struct GitCommitRecord {
     tree: GitTreeRef,
     workspace_tree: GitTreeRef,
     tracked_paths: BTreeSet<String>,
+    capture_proof: Option<GitCaptureProof>,
     message: String,
     author: String,
     authored_at_seconds: i64,
@@ -1199,6 +1285,8 @@ pub struct GitPublicationRecord {
     pub source_head: Option<GitCommitId>,
     /// Paths represented by the filtered compatibility tree.
     pub tracked_paths: BTreeSet<String>,
+    /// SDK-verified origin for a filtered publication tree.
+    pub capture_proof: Option<GitCaptureProof>,
     /// Merge commit message.
     pub message: String,
     /// Author identity.
@@ -1439,6 +1527,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 GitFilesystemResult::Captured {
                     tree,
                     tracked_paths,
+                    proof,
                 },
             ) => self
                 .record_captured_commit(GitCommitRecord {
@@ -1446,6 +1535,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                     tree,
                     workspace_tree,
                     tracked_paths,
+                    capture_proof: proof,
                     message,
                     author,
                     authored_at_seconds,
@@ -1568,12 +1658,16 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 .filter(|pending| pending.id == transition)
                 .ok_or(GitCompatError::StaleTransition)?;
             validate_completion_result(&state, &pending, result)?;
-            let output = complete_pending(&mut state, pending.mutation, result)?;
+            let output = match complete_pending(&mut state, pending.mutation, result) {
+                Ok(output) => Some(output),
+                Err(GitCompatError::NothingToCommit) => None,
+                Err(error) => return Err(error),
+            };
             state.pending = None;
             let expected = state.revision;
             state.revision = expected.saturating_add(1);
             if self.compare_and_swap_state(expected, state).await? {
-                return Ok(output);
+                return output.ok_or(GitCompatError::NothingToCommit);
             }
         }
         Err(GitCompatError::Contended)
@@ -1669,6 +1763,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             }
             .into(),
             tracked_paths,
+            capture_proof: None,
             message: message.into(),
             author: author.into(),
             authored_at_seconds,
@@ -1687,6 +1782,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             workspace_tree,
             source_head,
             tracked_paths,
+            capture_proof,
             message,
             author,
             authored_at_seconds,
@@ -1697,6 +1793,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 .current()
                 .map_err(|_| GitCompatError::InvalidState)?
                 .clone();
+            if workspace_tree.workspace_id() != current.workspace_id {
+                return Err(GitCompatError::WorkspaceMismatch);
+            }
             if current
                 .head
                 .and_then(|head| state.commits.get(&head))
@@ -1713,9 +1812,16 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 }
                 parents.push(source_head);
             }
-            let commit = GitCommit::new_with_metadata(
+            let previous_tree = current
+                .head
+                .and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
+            if !capture_proof_valid(tree, workspace_tree, capture_proof.as_ref(), previous_tree) {
+                return Err(GitCompatError::WorkspaceMismatch);
+            }
+            let commit = GitCommit::new_with_capture_proof(
                 tree,
                 workspace_tree,
+                capture_proof.clone(),
                 tracked_paths.clone(),
                 parents,
                 author.clone(),
@@ -1747,6 +1853,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             tree,
             workspace_tree,
             tracked_paths,
+            capture_proof,
             message,
             author,
             authored_at_seconds,
@@ -1760,6 +1867,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                     tree,
                     workspace_tree,
                     tracked_paths: tracked_paths.clone(),
+                    capture_proof: capture_proof.clone(),
                     message: message.clone(),
                     author: author.clone(),
                     authored_at_seconds,
@@ -1818,11 +1926,34 @@ fn validate_completion_result<E: std::error::Error + 'static>(
         .current()
         .map_err(|_| GitCompatError::InvalidState)?
         .workspace_id;
-    if result
-        .resulting_tree()
-        .is_some_and(|tree| tree.workspace_id() != workspace_id)
-    {
-        return Err(GitCompatError::WorkspaceMismatch);
+    match result {
+        GitFilesystemResult::Captured { tree, proof, .. } => {
+            let GitPendingMutation::CaptureCommit { workspace_tree, .. } = &pending.mutation else {
+                return Err(GitCompatError::WorkspaceMismatch);
+            };
+            let previous_tree = match &pending.mutation {
+                GitPendingMutation::CaptureCommit { expected_head, .. } => {
+                    expected_head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree))
+                }
+                _ => None,
+            };
+            let reused_head = proof.is_none() && previous_tree == Some(*tree);
+            let valid_capture =
+                capture_proof_valid(*tree, *workspace_tree, proof.as_ref(), previous_tree)
+                    && proof
+                        .as_ref()
+                        .is_none_or(|proof| proof.operation_id == pending.id.operation_id());
+            if !reused_head && !valid_capture {
+                return Err(GitCompatError::WorkspaceMismatch);
+            }
+        }
+        _ if result
+            .resulting_tree()
+            .is_some_and(|tree| tree.workspace_id() != workspace_id) =>
+        {
+            return Err(GitCompatError::WorkspaceMismatch);
+        }
+        _ => {}
     }
     if let GitPendingMutation::CaptureCommit { workspace_tree, .. } = pending.mutation
         && workspace_tree.workspace_id() != workspace_id
@@ -1830,6 +1961,18 @@ fn validate_completion_result<E: std::error::Error + 'static>(
         return Err(GitCompatError::WorkspaceMismatch);
     }
     Ok(())
+}
+
+fn capture_proof_valid(
+    tree: GitTreeRef,
+    workspace_tree: GitTreeRef,
+    proof: Option<&GitCaptureProof>,
+    previous_tree: Option<GitTreeRef>,
+) -> bool {
+    if tree.workspace_id() == workspace_tree.workspace_id() {
+        return proof.is_none();
+    }
+    proof.is_some_and(|proof| proof.structurally_valid(tree, workspace_tree, previous_tree))
 }
 
 fn validate_git_state(state: &GitCompatState) -> Result<(), ()> {
@@ -1874,9 +2017,10 @@ fn validate_git_commits(
     known_workspaces: &BTreeSet<WorkspaceId>,
 ) -> Result<(), ()> {
     for (id, commit) in &state.commits {
-        let rebuilt = GitCommit::new_with_metadata(
+        let rebuilt = GitCommit::new_with_capture_proof(
             commit.tree,
             commit.workspace_tree,
+            commit.capture_proof.clone(),
             commit.tracked_paths.clone(),
             commit.parents.clone(),
             commit.author.clone(),
@@ -1885,8 +2029,16 @@ fn validate_git_commits(
         );
         if *id != commit.id
             || rebuilt.id != commit.id
-            || commit.tree.workspace_id() != commit.workspace_tree.workspace_id()
-            || !known_workspaces.contains(&commit.tree.workspace_id())
+            // A filtered compatibility tree may be a pinned SDK fork of the
+            // live workspace when newly ignored paths are omitted. The live
+            // tree must still belong to this repository's branch workspace.
+            || !known_workspaces.contains(&commit.workspace_tree.workspace_id())
+            || !capture_proof_valid(
+                commit.tree,
+                commit.workspace_tree,
+                commit.capture_proof.as_ref(),
+                commit.parents.first().and_then(|id| state.commits.get(id).map(|parent| parent.tree)),
+            )
             || commit.parents.iter().any(|parent| {
                 !state.commits.contains_key(parent) && !state.external_parents.contains(parent)
             })
@@ -2067,6 +2219,7 @@ fn execute_command(
         GitCommand::Diff { .. } => GitCommandOutput::Action(GitFilesystemAction::Diff {
             from: head_tree,
             to: workspace,
+            tracked_paths: current.tracked_paths,
         }),
         GitCommand::Log { maximum } => {
             GitCommandOutput::Commits(walk_commits(state, current.head, maximum))
@@ -2533,9 +2686,18 @@ fn record_captured_commit_state<E: std::error::Error + 'static>(
     if head_tree == Some(record.tree) {
         return Err(GitCompatError::NothingToCommit);
     }
-    let commit = GitCommit::new_with_metadata(
+    if !capture_proof_valid(
         record.tree,
         record.workspace_tree,
+        record.capture_proof.as_ref(),
+        head_tree,
+    ) {
+        return Err(GitCompatError::WorkspaceMismatch);
+    }
+    let commit = GitCommit::new_with_capture_proof(
+        record.tree,
+        record.workspace_tree,
+        record.capture_proof,
         record.tracked_paths.clone(),
         current.head.into_iter().collect(),
         record.author,
@@ -2684,6 +2846,7 @@ fn complete_creation_pending<E: std::error::Error + 'static>(
             GitFilesystemResult::Captured {
                 tree,
                 tracked_paths,
+                proof,
             },
         ) => record_captured_commit_state(
             state,
@@ -2692,6 +2855,7 @@ fn complete_creation_pending<E: std::error::Error + 'static>(
                 tree: *tree,
                 workspace_tree,
                 tracked_paths: tracked_paths.clone(),
+                capture_proof: proof.clone(),
                 message,
                 author,
                 authored_at_seconds,
@@ -3593,9 +3757,78 @@ pub struct GitCapturedGeneration<A, O> {
     /// Immutable generation containing only compatibility-eligible paths.
     pub generation: Generation<A, O>,
     /// Initial generation of the capture workspace, when capture forked.
-    pub initial_generation: Option<crate::GenerationId>,
+    initial_generation: Option<crate::GenerationId>,
     /// Eligible non-directory paths represented by the snapshot.
     pub tracked_paths: BTreeSet<String>,
+    fork_parent: Option<Generation<A, O>>,
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> GitCapturedGeneration<A, O> {
+    /// Issues a capture proof only after the SDK has durably recorded its
+    /// authenticated direct-parent lineage. A caller cannot publish a proof
+    /// for a fork that recovery cannot reopen.
+    pub async fn authenticated_proof<S: crate::WorkspaceLineageStore>(
+        &self,
+        operation_id: OperationId,
+        graph: &crate::WorkspaceGraph<S>,
+    ) -> Result<Option<GitCaptureProof>, GitCaptureAuthenticationError<S::Error>> {
+        let proof = self.verified_proof(operation_id).await?;
+        if let (Some(parent), Some(initial_generation)) =
+            (&self.fork_parent, self.initial_generation)
+        {
+            graph
+                .register_existing_child_at_generation(
+                    &parent.workspace(),
+                    &self.generation.workspace(),
+                    parent.id(),
+                    initial_generation,
+                )
+                .await?;
+        }
+        Ok(proof)
+    }
+
+    /// Authenticates this filtered snapshot against its original SDK fork.
+    /// An unfiltered tree has no proof and retains its original workspace.
+    async fn verified_proof(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<Option<GitCaptureProof>, GitCaptureError> {
+        let (parent, initial_generation) = match (&self.fork_parent, self.initial_generation) {
+            (Some(parent), Some(initial_generation)) => (parent, initial_generation),
+            (None, None) => return Ok(None),
+            _ => return Err(GitCaptureError::Conflict),
+        };
+        let child = self.generation.workspace();
+        let expected_suffix = format!("-{}", hex::encode(operation_id.into_bytes()));
+        if !child.name().as_str().starts_with("git-capture-")
+            || !child.name().as_str().ends_with(&expected_suffix)
+        {
+            return Err(GitCaptureError::Conflict);
+        }
+        let expected_child = parent
+            .workspace()
+            .fork_workspace_id(child.name().as_str())
+            .map_err(WorkspaceError::from)?;
+        if child.id() != expected_child {
+            return Err(GitCaptureError::Conflict);
+        }
+        let initial = child.generation(initial_generation).await?;
+        if initial.parents().await?.as_slice() != [parent.id()] {
+            return Err(GitCaptureError::Conflict);
+        }
+        let result_parents = self.generation.parents().await?;
+        if self.generation.id() != initial_generation
+            && result_parents.as_slice() != [initial_generation]
+        {
+            return Err(GitCaptureError::Conflict);
+        }
+        Ok(Some(GitCaptureProof {
+            fork_parent: GitTreeRef::exact(parent.workspace_id(), parent.id()),
+            initial_generation,
+            operation_id,
+        }))
+    }
 }
 
 /// Portable namespace fact used by Git-shaped inspection commands.
@@ -3694,16 +3927,11 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .list_directory(&directory, after.as_ref(), 1_024)
                 .await?;
             for entry in &page.entries {
-                let name = match entry.name.encoding() {
-                    NameEncoding::Utf8 => std::str::from_utf8(entry.name.as_bytes())
-                        .map_err(|_| WorkspaceError::path("non-UTF-8 Git path"))?,
-                    NameEncoding::PosixBytes | NameEncoding::WindowsUtf16Le => {
-                        return Err(WorkspaceError::path("non-portable Git path"));
-                    }
-                };
+                let name = portable_git_name(&entry.name)
+                    .ok_or_else(|| WorkspaceError::path("non-portable Git path"))?;
                 let parent = directory.trim_start_matches('/');
                 let path = if parent.is_empty() {
-                    name.to_owned()
+                    name.to_string()
                 } else {
                     format!("{parent}/{name}")
                 };
@@ -4152,6 +4380,168 @@ pub enum GitCaptureError {
     Conflict,
 }
 
+/// Failure to authenticate and durably register one filtered Git capture.
+#[derive(Debug, Error)]
+pub enum GitCaptureAuthenticationError<E: std::error::Error + 'static> {
+    /// The immutable captured generation did not match its SDK fork.
+    #[error(transparent)]
+    Capture(#[from] GitCaptureError),
+    /// The direct-parent lineage could not be durably registered.
+    #[error(transparent)]
+    Lineage(#[from] crate::WorkspaceLineageError<E>),
+}
+
+/// Exact Git-visible change counts without creating a compatibility snapshot.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GitDiffCounts {
+    /// Changed eligible file records, counted once across hard-link aliases.
+    pub file_changes: usize,
+    /// Changed eligible namespace bindings.
+    pub binding_changes: usize,
+}
+
+/// Compares exact generations using the ignore policy belonging to each side.
+///
+/// Unlike commit capture, this read-only operation never forks or pins a
+/// workspace. Only ignore files on changed paths are read.
+pub async fn git_compatible_diff_counts<A, O>(
+    from: &Generation<A, O>,
+    to: &Generation<A, O>,
+    already_tracked: &BTreeSet<String>,
+    maximum_changes: u32,
+    cancellation: &CancellationToken,
+) -> Result<GitDiffCounts, GitCaptureError>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    let diff = from
+        .diff_to_bounded(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
+        .await?;
+    let paths = diff
+        .changed_paths_bounded(maximum_changes, WorkBudget::UNBOUNDED, cancellation)
+        .await?
+        .value;
+    let mut before_policies = BTreeMap::new();
+    let mut after_policies = BTreeMap::new();
+    let mut files = BTreeSet::new();
+    let mut bindings = 0_usize;
+    for change in paths {
+        cancellation.check().map_err(WorkspaceError::from)?;
+        let path = portable_changed_path(&change.path)?;
+        let record = change.after.or(change.before);
+        let Some(record) = record else { continue };
+        if record.kind == FileKind::Directory {
+            continue;
+        }
+        let (generation, policies) = if change.after.is_some() {
+            (to, &mut after_policies)
+        } else {
+            (from, &mut before_policies)
+        };
+        if !git_path_eligible_at(generation, policies, &path, already_tracked).await? {
+            continue;
+        }
+        let comparable = |record: Option<crate::kernel::FileRecord>| {
+            record.map(|mut record| {
+                record.link_count = 0;
+                record
+            })
+        };
+        if comparable(change.before) != comparable(change.after) {
+            files.insert(record.file_id);
+        }
+        if change.before.map(|record| record.file_id) != change.after.map(|record| record.file_id) {
+            bindings = bindings.saturating_add(1);
+        }
+    }
+    Ok(GitDiffCounts {
+        file_changes: files.len(),
+        binding_changes: bindings,
+    })
+}
+
+async fn git_path_eligible_at<A, O>(
+    generation: &Generation<A, O>,
+    policies: &mut BTreeMap<String, GitIgnorePolicy>,
+    path: &str,
+    already_tracked: &BTreeSet<String>,
+) -> Result<bool, GitCaptureError>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    load_git_ignore_policy(generation, policies, "").await?;
+    let root = policies.get("").cloned().unwrap_or_default();
+    git_path_eligible_with_root_at(generation, policies, &root, path, false, already_tracked).await
+}
+
+async fn git_path_eligible_with_root_at<A, O>(
+    generation: &Generation<A, O>,
+    policies: &mut BTreeMap<String, GitIgnorePolicy>,
+    root: &GitIgnorePolicy,
+    path: &str,
+    is_directory: bool,
+    already_tracked: &BTreeSet<String>,
+) -> Result<bool, GitCaptureError>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    if already_tracked.contains(path) {
+        return Ok(true);
+    }
+    let mut directory = String::new();
+    let components = path.split('/').collect::<Vec<_>>();
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        load_git_ignore_policy(generation, policies, &directory).await?;
+        if !directory.is_empty() {
+            directory.push('/');
+        }
+        directory.push_str(component);
+        let prefix = format!("{directory}/");
+        let tracked_descendant = already_tracked
+            .range(prefix.clone()..)
+            .next()
+            .is_some_and(|candidate| candidate.starts_with(&prefix));
+        if !tracked_descendant && !git_path_eligible(root, policies, &directory, true, false) {
+            return Ok(false);
+        }
+    }
+    load_git_ignore_policy(generation, policies, &directory).await?;
+    Ok(git_path_eligible(root, policies, path, is_directory, false))
+}
+
+async fn load_git_ignore_policy<A, O>(
+    generation: &Generation<A, O>,
+    policies: &mut BTreeMap<String, GitIgnorePolicy>,
+    directory: &str,
+) -> Result<(), GitCaptureError>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    if policies.contains_key(directory) {
+        return Ok(());
+    }
+    let path = if directory.is_empty() {
+        "/.gitignore".to_owned()
+    } else {
+        format!("/{directory}/.gitignore")
+    };
+    let policy = match generation.read(&path, 1024 * 1024).await {
+        Ok(contents) => {
+            let contents =
+                std::str::from_utf8(&contents).map_err(|_| GitCaptureError::NonPortableName)?;
+            GitIgnorePolicy::parse(contents)
+        }
+        Err(WorkspaceError::NotFound) => GitIgnorePolicy::default(),
+        Err(error) => return Err(error.into()),
+    };
+    policies.insert(directory.to_owned(), policy);
+    Ok(())
+}
+
 async fn scan_git_capture_entries<A, O>(
     live: &crate::Generation<A, O>,
 ) -> Result<(Vec<(String, bool)>, BTreeMap<String, GitIgnorePolicy>), GitCaptureError>
@@ -4169,15 +4559,10 @@ where
                 .list_directory(&directory, after.as_ref(), 1_024)
                 .await?;
             for entry in &page.entries {
-                let name = match entry.name.encoding() {
-                    NameEncoding::Utf8 => std::str::from_utf8(entry.name.as_bytes())
-                        .map_err(|_| GitCaptureError::NonPortableName)?,
-                    NameEncoding::PosixBytes | NameEncoding::WindowsUtf16Le => {
-                        return Err(GitCaptureError::NonPortableName);
-                    }
-                };
+                let name =
+                    portable_git_name(&entry.name).ok_or(GitCaptureError::NonPortableName)?;
                 let path = if directory == "/" {
-                    name.to_owned()
+                    name.to_string()
                 } else {
                     format!("{}/{}", directory.trim_start_matches('/'), name)
                 };
@@ -4283,6 +4668,7 @@ where
             generation: live,
             initial_generation: None,
             tracked_paths,
+            fork_parent: None,
         });
     }
     let bytes = operation_id.into_bytes();
@@ -4291,23 +4677,35 @@ where
     let capture = workspace
         .fork(
             capture_name,
-            crate::ForkOptions::from_generation(live, IdempotencyKey::from_bytes(bytes)),
+            crate::ForkOptions::from_generation(live.clone(), IdempotencyKey::from_bytes(bytes)),
         )
         .await?;
-    let initial_generation = capture.head().await?.id();
+    let capture_head = capture.head().await?;
     let mut commit_bytes = bytes;
     commit_bytes[0] ^= 0xa5;
     let commit_key = IdempotencyKey::from_bytes(commit_bytes);
-    let generation = if let Some(generation) = capture.operation_generation(commit_key).await? {
-        generation
+    let (generation, initial_generation) = if let Some(generation) =
+        capture.operation_generation(commit_key).await?
+    {
+        let parents = generation.parents().await?;
+        let [initial_generation] = parents.as_slice() else {
+            return Err(GitCaptureError::Conflict);
+        };
+        (generation, *initial_generation)
     } else {
         let mut transaction = capture.begin_transaction(commit_key).await?;
         for path in excluded.iter().rev() {
-            transaction.remove(&format!("/{path}")).await?;
+            // An unobserved lazy path may disappear between scanning the live
+            // source and first observation through the fork. It is already
+            // absent from the compatibility snapshot in that case.
+            match transaction.remove(&format!("/{path}")).await {
+                Ok(()) | Err(WorkspaceError::NotFound) => {}
+                Err(error) => return Err(error.into()),
+            }
         }
         match transaction.commit().await? {
             TransactionCommit::Committed(generation)
-            | TransactionCommit::AlreadyCommitted(generation) => generation,
+            | TransactionCommit::AlreadyCommitted(generation) => (generation, capture_head.id()),
             TransactionCommit::Conflict { .. }
             | TransactionCommit::Fenced
             | TransactionCommit::IdempotencyConflict => return Err(GitCaptureError::Conflict),
@@ -4319,6 +4717,7 @@ where
         generation,
         initial_generation: Some(initial_generation),
         tracked_paths,
+        fork_parent: Some(live),
     })
 }
 
@@ -4328,6 +4727,7 @@ where
 /// Equal Merkle subtrees are skipped. A `.gitignore` change deliberately
 /// falls back to an exact capture because eligibility may have changed for an
 /// otherwise unchanged path.
+#[allow(clippy::too_many_lines)] // Eligibility and the single atomic path application form one operation.
 pub async fn capture_git_compatible_generation_incremental<A, O>(
     workspace: &Workspace<A, O>,
     previous_live: &Generation<A, O>,
@@ -4360,6 +4760,8 @@ where
 
     let mut eligible = Vec::new();
     let mut tracked_paths = already_tracked.clone();
+    let mut before_policies = BTreeMap::new();
+    let mut after_policies = BTreeMap::new();
     for (path, before, after) in portable {
         let kind = after.or(before).map(|record| record.kind);
         let is_directory = kind == Some(FileKind::Directory);
@@ -4368,11 +4770,25 @@ where
             && already_tracked
                 .iter()
                 .any(|candidate| is_path_below(candidate, &path));
-        if tracked || tracked_descendant || policy.eligible(&path, is_directory, tracked) {
+        let (generation, policies) = if after.is_some() {
+            (&live, &mut after_policies)
+        } else {
+            (previous_live, &mut before_policies)
+        };
+        let allowed = git_path_eligible_with_root_at(
+            generation,
+            policies,
+            policy,
+            &path,
+            is_directory,
+            already_tracked,
+        )
+        .await?;
+        if tracked || tracked_descendant || allowed {
             eligible.push(path.clone());
         }
         if !is_directory {
-            if after.is_some() && (tracked || policy.eligible(&path, false, tracked)) {
+            if after.is_some() && (tracked || allowed) {
                 tracked_paths.insert(path);
             } else {
                 tracked_paths.remove(&path);
@@ -4384,11 +4800,15 @@ where
             generation: previous_capture.clone(),
             initial_generation: None,
             tracked_paths,
+            fork_parent: None,
         });
     }
 
     let bytes = operation_id.into_bytes();
-    let workspace_hash = hex::encode(&workspace.id().into_bytes()[..6]);
+    // This fork is a child of the previous filtered capture, not the live
+    // workspace. Bind its stable name to its actual parent so retries cannot
+    // reuse an identity derived from a different lineage.
+    let workspace_hash = hex::encode(&previous_capture.workspace_id().into_bytes()[..6]);
     let capture_name = format!("git-capture-{workspace_hash}-{}", hex::encode(bytes));
     let capture = previous_capture
         .workspace()
@@ -4403,7 +4823,7 @@ where
     let mut apply_bytes = bytes;
     apply_bytes[0] ^= 0xa5;
     let capture_head = capture.head().await?;
-    let generation = match capture
+    let (generation, initial_generation) = match capture
         .apply_paths_from(
             Some(previous_live),
             Some(&live),
@@ -4414,8 +4834,14 @@ where
         .await?
     {
         crate::WorkspacePathApply::Applied(generation)
-        | crate::WorkspacePathApply::AlreadyApplied(generation)
-        | crate::WorkspacePathApply::NoChanges(generation) => generation,
+        | crate::WorkspacePathApply::NoChanges(generation) => (generation, capture_head.id()),
+        crate::WorkspacePathApply::AlreadyApplied(generation) => {
+            let parents = generation.parents().await?;
+            let [initial_generation] = parents.as_slice() else {
+                return Err(GitCaptureError::Conflict);
+            };
+            (generation, *initial_generation)
+        }
         crate::WorkspacePathApply::Conflicted(_)
         | crate::WorkspacePathApply::Stale(_)
         | crate::WorkspacePathApply::Fenced
@@ -4426,8 +4852,9 @@ where
         .await?;
     Ok(GitCapturedGeneration {
         generation,
-        initial_generation: Some(capture_head.id()),
+        initial_generation: Some(initial_generation),
         tracked_paths,
+        fork_parent: Some(previous_capture.clone()),
     })
 }
 
@@ -4437,15 +4864,7 @@ fn portable_changed_path(path: &crate::kernel::NamespacePath) -> Result<String, 
         if !portable.is_empty() {
             portable.push('/');
         }
-        match component.encoding() {
-            NameEncoding::Utf8 => portable.push_str(
-                std::str::from_utf8(component.as_bytes())
-                    .map_err(|_| GitCaptureError::NonPortableName)?,
-            ),
-            NameEncoding::PosixBytes | NameEncoding::WindowsUtf16Le => {
-                return Err(GitCaptureError::NonPortableName);
-            }
-        }
+        portable.push_str(&portable_git_name(component).ok_or(GitCaptureError::NonPortableName)?);
     }
     Ok(portable)
 }
@@ -4739,6 +5158,38 @@ mod tests {
         GitTreeRef::exact(workspace(), generation(byte))
     }
 
+    #[test]
+    fn git_wire_identity_contract_matches_native_bytes() {
+        let operation = OperationId::from_bytes(std::array::from_fn(|index| {
+            u8::try_from(index).unwrap_or_default()
+        }));
+        let generation = GenerationId::new(Digest::from_bytes(std::array::from_fn(|index| {
+            u8::try_from(index).unwrap_or_default()
+        })));
+        let tree = GitTreeRef::exact(WorkspaceId::from_bytes(operation.into_bytes()), generation);
+        assert_eq!(
+            serde_json::to_value(GitTransitionId(operation)).expect("transition JSON"),
+            serde_json::json!("00010203-0405-0607-0809-0a0b0c0d0e0f")
+        );
+        assert_eq!(
+            serde_json::to_value(GitCaptureProof {
+                fork_parent: tree,
+                initial_generation: generation,
+                operation_id: operation,
+            })
+            .expect("proof JSON"),
+            serde_json::json!({
+                "fork_parent": {
+                    "kind": "exact",
+                    "workspace_id": (0u8..16).collect::<Vec<_>>(),
+                    "generation": (0u8..32).collect::<Vec<_>>()
+                },
+                "initial_generation": (0u8..32).collect::<Vec<_>>(),
+                "operation_id": "00010203-0405-0607-0809-0a0b0c0d0e0f"
+            })
+        );
+    }
+
     #[tokio::test]
     async fn foreign_workspace_tree_is_rejected_before_executor_side_effects() {
         let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
@@ -4802,6 +5253,7 @@ mod tests {
                     &GitFilesystemResult::Captured {
                         tree: GitTreeRef::exact(foreign, generation(1)),
                         tracked_paths: BTreeSet::new(),
+                        proof: None,
                     },
                 )
                 .await,
@@ -4830,6 +5282,43 @@ mod tests {
             let mut states = store.states.lock().expect("state lock");
             states.insert(workspace(), state);
         }
+        let repository = GitCompatRepository::new(workspace(), store);
+        assert!(matches!(
+            repository.execute(GitCommand::Status, generation(1)).await,
+            Err(GitCompatError::InvalidState)
+        ));
+    }
+
+    #[tokio::test]
+    async fn persisted_foreign_commit_tree_needs_capture_provenance() {
+        let store = MemoryGitCompatStore::new();
+        let mut state = GitCompatState::new("main", workspace());
+        let foreign = WorkspaceId::derive(
+            [8; 16],
+            &WorkspaceName::new("foreign-persisted-tree").expect("workspace name"),
+        );
+        let commit = GitCommit::new_with_metadata(
+            GitTreeRef::exact(foreign, generation(7)),
+            tree(1),
+            BTreeSet::from(["foreign.txt".to_owned()]),
+            Vec::new(),
+            "agent",
+            10,
+            "forged tree",
+        );
+        state.revision = 1;
+        state.branches.get_mut("main").expect("branch").head = Some(commit.id);
+        state
+            .branches
+            .get_mut("main")
+            .expect("branch")
+            .tracked_paths = commit.tracked_paths.clone();
+        state.commits.insert(commit.id, commit);
+        store
+            .states
+            .lock()
+            .expect("state lock")
+            .insert(workspace(), state);
         let repository = GitCompatRepository::new(workspace(), store);
         assert!(matches!(
             repository.execute(GitCommand::Status, generation(1)).await,
@@ -4902,6 +5391,7 @@ mod tests {
                 &GitFilesystemResult::Captured {
                     tree: tree(1),
                     tracked_paths: BTreeSet::from(["tracked.txt".to_owned()]),
+                    proof: None,
                 },
             )
             .await
@@ -4925,6 +5415,7 @@ mod tests {
         let commit_executor = TestExecutor::returning(GitFilesystemResult::Captured {
             tree: tree(9),
             tracked_paths: BTreeSet::from(["tracked.txt".to_owned()]),
+            proof: None,
         });
         let GitCommandOutput::Committed(commit) = repository
             .run(
@@ -4986,6 +5477,7 @@ mod tests {
         let commit_executor = TestExecutor::returning(GitFilesystemResult::Captured {
             tree: tree(1),
             tracked_paths: BTreeSet::new(),
+            proof: None,
         });
         repository
             .run(
@@ -5370,6 +5862,398 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
+        let fs = Fs::memory();
+        let workspace = fs
+            .create_workspace("git-diff-policy")
+            .await
+            .expect("workspace");
+        let before = workspace.head().await.expect("baseline");
+        let mut transaction = workspace
+            .begin_transaction(IdempotencyKey::from_bytes([0x4b; 16]))
+            .await
+            .expect("transaction");
+        transaction.create_dir_all("/src").await.expect("directory");
+        transaction
+            .write_text("/src/.gitignore", "*.tmp\n!keep.tmp\n")
+            .await
+            .expect("ignore policy");
+        transaction
+            .write_text("/src/drop.tmp", "drop")
+            .await
+            .expect("ignored");
+        transaction
+            .write_text("/src/keep.tmp", "keep")
+            .await
+            .expect("kept");
+        transaction.commit().await.expect("commit");
+        let after = workspace.head().await.expect("changed generation");
+
+        let counts = git_compatible_diff_counts(
+            &before,
+            &after,
+            &BTreeSet::new(),
+            100,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("read-only diff");
+        assert_eq!(counts.binding_changes, 2);
+        assert_eq!(counts.file_changes, 2);
+        assert_eq!(
+            workspace.head().await.expect("unchanged head").id(),
+            after.id()
+        );
+
+        let tracked_counts = git_compatible_diff_counts(
+            &before,
+            &after,
+            &BTreeSet::from(["src/drop.tmp".to_owned()]),
+            100,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("tracked override");
+        assert_eq!(tracked_counts.binding_changes, 3);
+        assert_eq!(tracked_counts.file_changes, 3);
+    }
+
+    #[tokio::test]
+    async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
+        let fs = Fs::memory();
+        let workspace = fs
+            .create_workspace("git-diff-deleted-policy")
+            .await
+            .expect("workspace");
+        let mut initial = workspace
+            .begin_transaction(IdempotencyKey::from_bytes([0x4c; 16]))
+            .await
+            .expect("initial transaction");
+        initial
+            .write_text("/drop.tmp", "old")
+            .await
+            .expect("source file");
+        initial.commit().await.expect("initial commit");
+        let before = workspace.head().await.expect("before");
+
+        let mut changed = workspace
+            .begin_transaction(IdempotencyKey::from_bytes([0x4d; 16]))
+            .await
+            .expect("changed transaction");
+        changed
+            .write_text("/.gitignore", "*.tmp\n")
+            .await
+            .expect("new ignore policy");
+        changed.remove("/drop.tmp").await.expect("delete old file");
+        changed.commit().await.expect("changed commit");
+        let after = workspace.head().await.expect("after");
+
+        let counts = git_compatible_diff_counts(
+            &before,
+            &after,
+            &BTreeSet::new(),
+            100,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("diff");
+        assert_eq!(counts.binding_changes, 2);
+        assert_eq!(counts.file_changes, 2);
+    }
+
+    #[tokio::test]
+    async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
+        let fs = Fs::memory();
+        let workspace = fs
+            .create_workspace("git-ignored-parent")
+            .await
+            .expect("workspace");
+        let before = workspace.head().await.expect("before");
+        let mut transaction = workspace
+            .begin_transaction(IdempotencyKey::from_bytes([0x4e; 16]))
+            .await
+            .expect("transaction");
+        transaction
+            .write_text("/.gitignore", "build/\n")
+            .await
+            .expect("root ignore");
+        transaction
+            .create_dir_all("/build")
+            .await
+            .expect("directory");
+        transaction
+            .write_text("/build/.gitignore", "!keep.txt\n")
+            .await
+            .expect("nested negation");
+        transaction
+            .write_text("/build/keep.txt", "ignored")
+            .await
+            .expect("file");
+        transaction.commit().await.expect("commit");
+        let after = workspace.head().await.expect("after");
+
+        let counts = git_compatible_diff_counts(
+            &before,
+            &after,
+            &BTreeSet::new(),
+            100,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("diff");
+        assert_eq!(counts.file_changes, 1, "only root .gitignore is eligible");
+        assert_eq!(counts.binding_changes, 1);
+        let captured = capture_git_compatible_generation(
+            &workspace,
+            &GitIgnorePolicy::parse("build/\n"),
+            &BTreeSet::new(),
+            OperationId::from_bytes([0x4f; 16]),
+        )
+        .await
+        .expect("capture");
+        assert!(captured.generation.stat("/build/keep.txt").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn incremental_capture_honors_unchanged_nested_ignore() {
+        let fs = Fs::memory();
+        let workspace = fs
+            .create_workspace("git-incremental-nested")
+            .await
+            .expect("workspace");
+        let mut initial = workspace
+            .begin_transaction(IdempotencyKey::from_bytes([0x65; 16]))
+            .await
+            .expect("transaction");
+        initial.create_dir_all("/src").await.expect("directory");
+        initial
+            .write_text("/src/.gitignore", "*.tmp\n")
+            .await
+            .expect("ignore");
+        initial
+            .write_text("/src/kept.txt", "before")
+            .await
+            .expect("kept");
+        let TransactionCommit::Committed(previous_live) = initial.commit().await.expect("commit")
+        else {
+            panic!("initial commit did not publish");
+        };
+        let previous_capture = capture_git_compatible_generation(
+            &workspace,
+            &GitIgnorePolicy::default(),
+            &BTreeSet::new(),
+            OperationId::from_bytes([0x66; 16]),
+        )
+        .await
+        .expect("capture");
+        let mut changed = workspace
+            .begin_transaction(IdempotencyKey::from_bytes([0x67; 16]))
+            .await
+            .expect("transaction");
+        changed
+            .write_text("/src/new.tmp", "ignored")
+            .await
+            .expect("ignored");
+        changed
+            .write_text("/src/kept.txt", "after")
+            .await
+            .expect("edit");
+        changed.commit().await.expect("commit");
+        let captured = capture_git_compatible_generation_incremental(
+            &workspace,
+            &previous_live,
+            &previous_capture.generation,
+            &GitIgnorePolicy::default(),
+            &previous_capture.tracked_paths,
+            OperationId::from_bytes([0x68; 16]),
+        )
+        .await
+        .expect("incremental capture");
+        assert!(captured.generation.stat("/src/new.tmp").await.is_err());
+        assert_eq!(
+            captured
+                .generation
+                .read("/src/kept.txt", 64)
+                .await
+                .expect("kept")
+                .as_ref(),
+            b"after"
+        );
+        assert!(!captured.tracked_paths.contains("src/new.tmp"));
+    }
+
+    #[tokio::test]
+    async fn filtered_capture_retry_keeps_original_fork_generation() {
+        let fs = Fs::memory();
+        let workspace = fs
+            .create_workspace("git-capture-retry")
+            .await
+            .expect("workspace");
+        let mut transaction = workspace
+            .begin_transaction(IdempotencyKey::from_bytes([0x69; 16]))
+            .await
+            .expect("transaction");
+        transaction
+            .write_text("/keep.txt", "keep")
+            .await
+            .expect("kept");
+        transaction
+            .write_text("/drop.tmp", "drop")
+            .await
+            .expect("ignored");
+        transaction.commit().await.expect("commit");
+        let operation_id = OperationId::from_bytes([0x6a; 16]);
+        let policy = GitIgnorePolicy::parse("*.tmp\n");
+        let first =
+            capture_git_compatible_generation(&workspace, &policy, &BTreeSet::new(), operation_id)
+                .await
+                .expect("first capture");
+        let retry =
+            capture_git_compatible_generation(&workspace, &policy, &BTreeSet::new(), operation_id)
+                .await
+                .expect("retry");
+        assert_eq!(first.generation.id(), retry.generation.id());
+        assert_eq!(first.initial_generation, retry.initial_generation);
+        assert_ne!(first.initial_generation, Some(first.generation.id()));
+    }
+
+    #[tokio::test]
+    async fn filtered_commit_completes_and_clears_its_transition() {
+        let fs = Fs::memory();
+        let workspace = fs
+            .create_workspace("git-filtered-commit")
+            .await
+            .expect("workspace");
+        let mut transaction = workspace
+            .begin_transaction(IdempotencyKey::from_bytes([0x6b; 16]))
+            .await
+            .expect("transaction");
+        transaction
+            .write_text("/keep.txt", "keep")
+            .await
+            .expect("kept");
+        transaction
+            .write_text("/drop.tmp", "drop")
+            .await
+            .expect("ignored");
+        transaction.commit().await.expect("commit");
+        let live = workspace.head().await.expect("live");
+        let repository = GitCompatRepository::new(workspace.id(), MemoryGitCompatStore::new());
+        let GitCommandOutput::Prepared {
+            transition,
+            action: GitFilesystemAction::CaptureCommit { .. },
+        } = repository
+            .execute(
+                GitCommand::Commit {
+                    message: "filtered".to_owned(),
+                    author: "agent".to_owned(),
+                    authored_at_seconds: 1,
+                },
+                live.id(),
+            )
+            .await
+            .expect("prepare")
+        else {
+            panic!("expected capture transition");
+        };
+        let captured = capture_git_compatible_generation(
+            &workspace,
+            &GitIgnorePolicy::parse("*.tmp\n"),
+            &BTreeSet::new(),
+            transition.operation_id(),
+        )
+        .await
+        .expect("capture");
+        let proof = captured
+            .verified_proof(transition.operation_id())
+            .await
+            .expect("verified proof");
+        let result = GitFilesystemResult::Captured {
+            tree: GitTreeRef::exact(
+                captured.generation.workspace().id(),
+                captured.generation.id(),
+            ),
+            tracked_paths: captured.tracked_paths,
+            proof,
+        };
+        let GitCommandOutput::Committed(commit) = repository
+            .complete_transition_result(transition, &result)
+            .await
+            .expect("complete")
+        else {
+            panic!("expected commit");
+        };
+        assert!(
+            repository
+                .pending_transition()
+                .await
+                .expect("pending")
+                .is_none()
+        );
+        assert!(commit.tracked_paths.contains("keep.txt"));
+        assert!(!commit.tracked_paths.contains("drop.tmp"));
+
+        let mut ignored_only = workspace
+            .begin_transaction(IdempotencyKey::from_bytes([0x6c; 16]))
+            .await
+            .expect("transaction");
+        ignored_only
+            .write_text("/new.tmp", "not committed")
+            .await
+            .expect("ignored file");
+        ignored_only.commit().await.expect("workspace change");
+        let live_after = workspace.head().await.expect("live after ignored change");
+        let GitCommandOutput::Prepared { transition, .. } = repository
+            .execute(
+                GitCommand::Commit {
+                    message: "ignored only".to_owned(),
+                    author: "agent".to_owned(),
+                    authored_at_seconds: 2,
+                },
+                live_after.id(),
+            )
+            .await
+            .expect("prepare ignored-only commit")
+        else {
+            panic!("expected prepared transition");
+        };
+        let ignored_capture = capture_git_compatible_generation_incremental(
+            &workspace,
+            &live,
+            &captured.generation,
+            &GitIgnorePolicy::parse("*.tmp\n"),
+            &commit.tracked_paths,
+            transition.operation_id(),
+        )
+        .await
+        .expect("ignored-only capture");
+        assert_eq!(ignored_capture.generation.id(), captured.generation.id());
+        assert!(matches!(
+            repository
+                .complete_transition_result(
+                    transition,
+                    &GitFilesystemResult::Captured {
+                        tree: GitTreeRef::exact(
+                            ignored_capture.generation.workspace_id(),
+                            ignored_capture.generation.id(),
+                        ),
+                        tracked_paths: ignored_capture.tracked_paths,
+                        proof: None,
+                    },
+                )
+                .await,
+            Err(GitCompatError::NothingToCommit)
+        ));
+        assert!(
+            repository
+                .pending_transition()
+                .await
+                .expect("pending")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn incremental_capture_applies_only_changed_eligible_paths() {
         let fs = Fs::memory();
         let workspace = fs
@@ -5388,6 +6272,10 @@ mod tests {
             .write_text("/unchanged.txt", "same")
             .await
             .expect("unchanged file");
+        transaction
+            .write_text("/previous.tmp", "ignored before capture")
+            .await
+            .expect("ignored fixture");
         let TransactionCommit::Committed(previous_live) =
             transaction.commit().await.expect("base commit")
         else {
@@ -5402,6 +6290,14 @@ mod tests {
         )
         .await
         .expect("base capture");
+        let state_root = tempfile::tempdir().expect("lineage state root");
+        let state_store = crate::LocalCoreStateStore::new(state_root.path());
+        let graph = crate::WorkspaceGraph::new(state_store.clone());
+        previous_capture
+            .authenticated_proof(OperationId::from_bytes([0x52; 16]), &graph)
+            .await
+            .expect("durable first capture lineage")
+            .expect("filtered first capture proof");
 
         let mut transaction = workspace
             .begin_transaction(IdempotencyKey::from_bytes([0x53; 16]))
@@ -5427,6 +6323,28 @@ mod tests {
         )
         .await
         .expect("incremental capture");
+        captured
+            .authenticated_proof(OperationId::from_bytes([0x54; 16]), &graph)
+            .await
+            .expect("durable incremental lineage")
+            .expect("filtered incremental proof");
+        let lineage = graph
+            .resolve(captured.generation.workspace_id())
+            .await
+            .expect("reopen incremental lineage");
+        assert_eq!(
+            lineage.parent_workspace_id,
+            Some(previous_capture.generation.workspace_id()),
+            "incremental capture must fork from the prior filtered capture"
+        );
+        let reopened = crate::DistributedFs::new(fs.clone(), state_store)
+            .workspace(captured.generation.workspace_id())
+            .await
+            .expect("reopen filtered capture from durable lineage");
+        reopened
+            .generation(captured.generation.id())
+            .await
+            .expect("reopen captured generation");
         assert_eq!(
             captured
                 .generation
@@ -5446,6 +6364,7 @@ mod tests {
             b"same"
         );
         assert!(captured.generation.stat("/new.tmp").await.is_err());
+        assert!(captured.generation.stat("/previous.tmp").await.is_err());
         assert_eq!(
             captured.tracked_paths,
             BTreeSet::from(["kept.txt".to_owned(), "unchanged.txt".to_owned()])
@@ -5769,6 +6688,21 @@ mod tests {
             .register_branch_workspace("agents/child", source, Some(initial.id), false)
             .await
             .expect("source branch");
+        assert!(matches!(
+            repository
+                .record_publication(GitPublicationRecord {
+                    tree: tree(1),
+                    workspace_tree: GitTreeRef::exact(source, generation(1)),
+                    source_head: None,
+                    tracked_paths: BTreeSet::new(),
+                    capture_proof: None,
+                    message: "foreign no-op".to_owned(),
+                    author: "parent".to_owned(),
+                    authored_at_seconds: 2,
+                })
+                .await,
+            Err(GitCompatError::WorkspaceMismatch)
+        ));
         let tracked = BTreeSet::from(["tracked.txt".to_owned(), "new.txt".to_owned()]);
         let GitCommandOutput::Committed(merged) = repository
             .record_publication(GitPublicationRecord {
@@ -5776,6 +6710,7 @@ mod tests {
                 workspace_tree: tree(3),
                 source_head: Some(initial.id),
                 tracked_paths: tracked.clone(),
+                capture_proof: None,
                 message: "Merge agents/child".to_owned(),
                 author: "parent".to_owned(),
                 authored_at_seconds: 2,
@@ -5798,6 +6733,7 @@ mod tests {
                     workspace_tree: tree(3),
                     source_head: Some(initial.id),
                     tracked_paths: BTreeSet::new(),
+                    capture_proof: None,
                     message: "retry".to_owned(),
                     author: "parent".to_owned(),
                     authored_at_seconds: 99,
@@ -5834,6 +6770,7 @@ mod tests {
                 &GitFilesystemResult::Captured {
                     tree: tree(1),
                     tracked_paths: BTreeSet::new(),
+                    proof: None,
                 },
             )
             .await
@@ -5858,10 +6795,13 @@ mod tests {
             GitCommandOutput::Prepared {
                 action: GitFilesystemAction::Diff {
                     from: Some(from),
-                    to
+                    to,
+                    tracked_paths,
                 },
                 ..
-            } if from == tree(1) && to == tree(2)
+            } if from == tree(1)
+                && to == tree(2)
+                && tracked_paths.is_empty()
         ));
     }
 
@@ -6238,6 +7178,7 @@ mod tests {
                 &GitFilesystemResult::Captured {
                     tree: tree(1),
                     tracked_paths: BTreeSet::new(),
+                    proof: None,
                 },
             )
             .await
@@ -6291,5 +7232,16 @@ mod tests {
         assert!(!policy.eligible("nested/debug.log", false, false));
         assert!(policy.eligible("nested/important.log", false, false));
         assert!(policy.eligible("target/cache", false, true));
+    }
+
+    #[test]
+    fn portable_git_names_decode_canonical_windows_names() {
+        let bytes = "source-λ.rs"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let name = crate::kernel::LogicalName::new(NameEncoding::WindowsUtf16Le, bytes, 255)
+            .expect("valid Windows name");
+        assert_eq!(portable_git_name(&name).as_deref(), Some("source-λ.rs"));
     }
 }

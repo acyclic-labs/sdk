@@ -17,10 +17,10 @@ use acyclic_fs::{
     GenerationExportManifest, GenerationId, GitCommand, GitCommitId, GitCompatRepository,
     GitFilesystemResult, GitTransitionId, GitTreeRef, IdempotencyKey, JoinHistory, JoinOutcome,
     JoinPlan, LiveMutationOutcome, LocalAuthorityBackend, LocalCoreStateStore, LocalFs,
-    LocalObjectBackend, LocalOptions, LocalVolume, MergeConflict, MergePreparation,
-    NamedAttributeWriteMode, NativeWatch as FsNativeWatch, NativeWatchOptions, ObjectCacheOptions,
-    ObjectId, ObjectKind, ObjectReadRequest, ObjectResidency, OperationId, OperationLeaseId,
-    OperationReconcileLimits, OperationWindowCoordinator, OperationWindowFinish,
+    LocalObjectBackend, LocalOperationWindowStore, LocalOptions, LocalVolume, MergeConflict,
+    MergePreparation, NamedAttributeWriteMode, NativeWatch as FsNativeWatch, NativeWatchOptions,
+    ObjectCacheOptions, ObjectId, ObjectKind, ObjectReadRequest, ObjectResidency, OperationId,
+    OperationLeaseId, OperationReconcileLimits, OperationWindowCoordinator, OperationWindowFinish,
     OperationWindowLease, OperationWindowPhase, PromotionAdmission, PromotionDestination,
     PromotionRejection, PromotionSpeculatorOptions, ResidencyAdmission, ResidencyHint,
     ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions, ResolvedFile,
@@ -1340,6 +1340,15 @@ pub struct NativeGitCompatRepository {
     workspace_id: WorkspaceId,
 }
 
+fn reject_unverified_git_capture(result: &GitFilesystemResult) -> Result<()> {
+    if matches!(result, GitFilesystemResult::Captured { proof: Some(_), .. }) {
+        return Err(Error::from_reason(
+            "filtered Git captures require an SDK-authenticated filesystem executor; JSON cannot supply capture authority",
+        ));
+    }
+    Ok(())
+}
+
 /// Native recursive-workspace graph backed by the shared core-state namespace.
 #[napi]
 pub struct NativeWorkspaceGraph {
@@ -1352,10 +1361,11 @@ pub struct NativeWorkspaceContextRegistry {
     inner: WorkspaceContextRegistry<LocalCoreStateStore>,
 }
 
-/// Native durable operation-window coordinator backed by shared core state.
+/// Native durable operation-window coordinator bound to one filesystem's
+/// generation-authority stream.
 #[napi]
 pub struct NativeOperationWindowCoordinator {
-    inner: OperationWindowCoordinator<LocalCoreStateStore>,
+    inner: OperationWindowCoordinator<LocalOperationWindowStore>,
 }
 
 /// One durable workspace-lineage record.
@@ -3183,6 +3193,7 @@ impl NativeGitCompatRepository {
         result_json: String,
     ) -> Result<String> {
         let result: GitFilesystemResult = serde_json::from_str(&result_json).map_err(napi_error)?;
+        reject_unverified_git_capture(&result)?;
         let output = self
             .inner
             .complete_transition_result(
@@ -3304,6 +3315,32 @@ impl NativeWorkspaceContextRegistry {
                 WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
                 WorkspaceContextId::from_bytes(fixed_16(&parent_context_id)?),
                 roots,
+            )
+            .await
+            .map_err(napi_error)?;
+        workspace_context_json(&context)
+    }
+
+    /// Adopts one parent-authorized root without enumerating its contents.
+    #[napi]
+    pub async fn adopt_root_json(&self, context_id: Buffer, root_json: String) -> Result<String> {
+        let root: WorkspaceContextRoot = serde_json::from_str(&root_json).map_err(napi_error)?;
+        let context = self
+            .inner
+            .adopt_root(WorkspaceContextId::from_bytes(fixed_16(&context_id)?), root)
+            .await
+            .map_err(napi_error)?;
+        workspace_context_json(&context)
+    }
+
+    /// Releases one root after callers have settled its filesystem changes.
+    #[napi]
+    pub async fn remove_root_json(&self, context_id: Buffer, root_id: Buffer) -> Result<String> {
+        let context = self
+            .inner
+            .remove_root(
+                WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
+                WorkspaceRootId::from_bytes(fixed_16(&root_id)?),
             )
             .await
             .map_err(napi_error)?;
@@ -3465,14 +3502,6 @@ impl NativeWorkspaceGraph {
 
 #[napi]
 impl NativeOperationWindowCoordinator {
-    /// Opens durable operation-window state in the shared private namespace.
-    #[napi(factory)]
-    pub fn open(state_root: String) -> Self {
-        Self {
-            inner: OperationWindowCoordinator::new(LocalCoreStateStore::new(state_root)),
-        }
-    }
-
     /// Opens one overlapping tool lease, pinning the first observed parent.
     #[napi]
     pub async fn begin(
@@ -3589,6 +3618,15 @@ impl NativeFs {
             inner: Arc::new(inner),
             cancellation: CancellationToken::new(),
         })
+    }
+
+    /// Opens operation windows on this exact filesystem authority. The bound
+    /// handle cannot manufacture leases for an unrelated local deployment.
+    #[napi]
+    pub fn operation_windows(&self) -> NativeOperationWindowCoordinator {
+        NativeOperationWindowCoordinator {
+            inner: OperationWindowCoordinator::new(self.inner.operation_window_store()),
+        }
     }
 
     /// Returns compile-time capability evidence without probing user paths.
@@ -7742,6 +7780,38 @@ fn boundary_budget() -> WorkBudget {
 mod tests {
     use super::*;
 
+    #[test]
+    #[allow(clippy::expect_used, reason = "fixed test fixture must deserialize")]
+    fn git_json_boundary_rejects_deserialized_capture_authority() {
+        let tree = serde_json::json!({
+            "kind": "exact",
+            "workspace_id": vec![0u8; 16],
+            "generation": vec![0u8; 32],
+        });
+        let result: GitFilesystemResult = serde_json::from_value(serde_json::json!({
+            "Captured": {
+                "tree": tree,
+                "tracked_paths": [],
+                "proof": {
+                    "fork_parent": tree,
+                    "initial_generation": vec![0u8; 32],
+                    "operation_id": "00000000-0000-0000-0000-000000000000",
+                },
+            },
+        }))
+        .expect("deserialize externally supplied proof");
+        assert!(reject_unverified_git_capture(&result).is_err());
+        let unfiltered = GitFilesystemResult::Captured {
+            tree: GitTreeRef::exact(
+                WorkspaceId::from_bytes([0; 16]),
+                GenerationId::new(Digest::from_bytes([0; 32])),
+            ),
+            tracked_paths: Default::default(),
+            proof: None,
+        };
+        assert!(reject_unverified_git_capture(&unfiltered).is_ok());
+    }
+
     fn test_config() -> VolumeConfig {
         VolumeConfig {
             profile: FilesystemProfile::Portable,
@@ -8305,6 +8375,75 @@ mod tests {
             main.read("/second".to_owned(), bigint(8)).await?.as_ref(),
             &[3]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn napi_operation_windows_share_the_native_authority_fence()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let fs = NativeFs::open(
+            root.path().to_string_lossy().into_owned(),
+            NativeObjectCacheOptions {
+                maximum_entries: 32,
+                maximum_bytes: bigint(1024 * 1024),
+                maximum_in_flight: 4,
+                maximum_waiters_per_object: 4,
+            },
+        )
+        .await?;
+        let workspace = fs.create_workspace("leased".to_owned()).await?;
+        let coordinator = fs.operation_windows();
+        let parent = workspace.inner.head().await?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis()
+            .try_into()?;
+        let lease = coordinator
+            .inner
+            .begin(workspace.inner.id(), parent.id(), "tool", now, u64::MAX)
+            .await?;
+        let mut transaction = workspace
+            .inner
+            .begin_transaction(IdempotencyKey::from_bytes([0x71; 16]))
+            .await?;
+        transaction.write_text("/accepted", "yes").await?;
+        assert!(matches!(
+            transaction
+                .commit_with_permit(lease.publication_permit())
+                .await?,
+            TransactionCommit::Committed(_)
+        ));
+
+        let parent = workspace.inner.head().await?;
+        let expired = coordinator
+            .inner
+            .begin(
+                workspace.inner.id(),
+                parent.id(),
+                "expired",
+                now,
+                now.saturating_add(1),
+            )
+            .await?;
+        assert!(matches!(
+            coordinator
+                .inner
+                .finish(&expired, now.saturating_add(2))
+                .await?,
+            OperationWindowFinish::AlreadyClosed
+        ));
+        let mut rejected = workspace
+            .inner
+            .begin_transaction(IdempotencyKey::from_bytes([0x72; 16]))
+            .await?;
+        rejected.write_text("/rejected", "no").await?;
+        assert!(matches!(
+            rejected
+                .commit_with_permit(expired.publication_permit())
+                .await?,
+            TransactionCommit::Fenced
+        ));
         Ok(())
     }
 

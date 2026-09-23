@@ -903,7 +903,9 @@ pub mod native {
                 file_identity: file_identity(metadata),
                 link_count: link_count(metadata),
                 device: device_identity(metadata, kind),
-                logical_bytes: (kind == SourceNodeKind::RegularFile).then_some(metadata.len()),
+                logical_bytes: (kind == SourceNodeKind::RegularFile
+                    || cfg!(unix) && kind == SourceNodeKind::SymbolicLink)
+                    .then_some(metadata.len()),
                 version: version(metadata),
                 metadata: source_metadata(metadata),
             }
@@ -1488,6 +1490,38 @@ mod tests {
             &portable,
             VolumeLimits::default(),
         )?)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_source_reports_symbolic_link_target_bytes() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        std::os::unix::fs::symlink("target", root.path().join("link"))?;
+        let source = NativeDemandSource::open(
+            root.path(),
+            FilesystemProfile::Posix,
+            VolumeLimits::default(),
+        )
+        .await?;
+        let reference = source.reference();
+        let cancellation = CancellationToken::new();
+        let node = source
+            .lookup(reference, &path("/link")?, &cancellation)
+            .await?
+            .value
+            .ok_or("symbolic link was absent")?;
+
+        assert_eq!(node.kind, SourceNodeKind::SymbolicLink);
+        assert_eq!(node.logical_bytes, Some(6));
+        assert_eq!(
+            source
+                .read_link(reference, &path("/link")?, node.version, &cancellation)
+                .await?
+                .value
+                .as_ref(),
+            b"target"
+        );
+        Ok(())
     }
 
     #[tokio::test]

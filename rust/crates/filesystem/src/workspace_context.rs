@@ -250,6 +250,9 @@ pub enum WorkspaceContextError<E: std::error::Error + 'static> {
     /// The context cannot be mutated in its current lifecycle state.
     #[error("workspace context is discarded")]
     Discarded,
+    /// A root cannot be removed while a descendant still depends on it.
+    #[error("workspace root is still bound by a live descendant")]
+    RootInUse,
 }
 
 impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
@@ -336,6 +339,80 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
             if self
                 .store
                 .compare_and_swap_many(expected, vec![context.clone()], false)
+                .await
+                .map_err(WorkspaceContextError::Store)?
+            {
+                return Ok(context);
+            }
+        }
+    }
+
+    /// Removes one root binding only when no live descendant depends on it.
+    ///
+    /// The caller must separately settle or explicitly discard unpublished
+    /// filesystem changes before invoking this topology operation. Verifying
+    /// the complete context set makes concurrent descendant creation fail the
+    /// CAS rather than leaving a child bound to a missing parent root.
+    pub async fn remove_root(
+        &self,
+        context_id: WorkspaceContextId,
+        root_id: WorkspaceRootId,
+    ) -> Result<WorkspaceContext, WorkspaceContextError<S::Error>> {
+        loop {
+            let contexts = self
+                .store
+                .list()
+                .await
+                .map_err(WorkspaceContextError::Store)?;
+            let by_id = contexts
+                .into_iter()
+                .map(|context| (context.context_id, context))
+                .collect::<BTreeMap<_, _>>();
+            let mut context = by_id
+                .get(&context_id)
+                .cloned()
+                .ok_or(WorkspaceContextError::IncompatibleState)?;
+            validate_record(&context, context_id)?;
+            if context.state == WorkspaceContextState::Discarded {
+                return Err(WorkspaceContextError::Discarded);
+            }
+            if !context.roots.contains_key(&root_id) || context.roots.len() == 1 {
+                return Err(WorkspaceContextError::InvalidRoots);
+            }
+            for candidate in by_id.values() {
+                if candidate.context_id == context_id
+                    || candidate.state == WorkspaceContextState::Discarded
+                    || !candidate.roots.contains_key(&root_id)
+                {
+                    continue;
+                }
+                let mut parent = candidate.parent_context_id;
+                let mut visited = BTreeSet::new();
+                while let Some(id) = parent {
+                    if id == context_id {
+                        return Err(WorkspaceContextError::RootInUse);
+                    }
+                    if !visited.insert(id) {
+                        return Err(WorkspaceContextError::IncompatibleState);
+                    }
+                    parent = by_id
+                        .get(&id)
+                        .ok_or(WorkspaceContextError::IncompatibleState)?
+                        .parent_context_id;
+                }
+            }
+            context.roots.remove(&root_id);
+            context.revision = context
+                .revision
+                .checked_add(1)
+                .ok_or(WorkspaceContextError::IncompatibleState)?;
+            let expected = by_id
+                .iter()
+                .map(|(id, record)| (*id, record.revision))
+                .collect();
+            if self
+                .store
+                .compare_and_swap_many(expected, vec![context.clone()], true)
                 .await
                 .map_err(WorkspaceContextError::Store)?
             {
@@ -1091,6 +1168,37 @@ mod tests {
         assert!(matches!(
             registry.authorize_parent(context(3), context(1)).await,
             Err(WorkspaceContextError::UnauthorizedParent)
+        ));
+    }
+
+    #[tokio::test]
+    async fn root_removal_requires_descendants_to_release_the_binding_first() {
+        let registry = WorkspaceContextRegistry::new(MemoryWorkspaceContextStore::new());
+        registry
+            .register_root(context(41), scaled_roots(0, 2))
+            .await
+            .expect("two root bindings");
+        registry
+            .register_child(context(42), context(41), scaled_roots(1, 2))
+            .await
+            .expect("child bindings");
+        assert!(matches!(
+            registry.remove_root(context(41), numbered_root(2)).await,
+            Err(WorkspaceContextError::RootInUse)
+        ));
+        let child = registry
+            .remove_root(context(42), numbered_root(2))
+            .await
+            .expect("child releases its root");
+        assert!(!child.roots.contains_key(&numbered_root(2)));
+        let parent = registry
+            .remove_root(context(41), numbered_root(2))
+            .await
+            .expect("parent releases unused root");
+        assert!(!parent.roots.contains_key(&numbered_root(2)));
+        assert!(matches!(
+            registry.remove_root(context(41), numbered_root(1)).await,
+            Err(WorkspaceContextError::InvalidRoots)
         ));
     }
 

@@ -35,11 +35,9 @@ mod bindings {
         Checkout, CheckoutCommitOutcome, Digest, EmbeddedCapabilities, FileCloneRequest, FileId,
         ForkOptions, Fs, Generation, GenerationExportManifest, GitCommand, GitCompatRepository,
         IdempotencyKey, JoinHistory, JoinOutcome, JoinPlan, LiveMutationOutcome,
-        MemoryGitCompatStore, MemoryOperationWindowStore, MemoryWorkspaceContextStore,
-        MergeConflict, MergePreparation, NamedAttributeWriteMode, ObjectCacheOptions, ObjectId,
-        ObjectKind, ObjectReadRequest, ObjectResidency, OperationId, OperationLeaseId,
-        OperationWindowCoordinator, OperationWindowFinish, OperationWindowLease,
-        OperationWindowPhase, PromotionAdmission, PromotionDestination, PromotionRejection,
+        MemoryGitCompatStore, MemoryWorkspaceContextStore, MergeConflict, MergePreparation,
+        NamedAttributeWriteMode, ObjectCacheOptions, ObjectId, ObjectKind, ObjectReadRequest,
+        ObjectResidency, OperationId, PromotionAdmission, PromotionDestination, PromotionRejection,
         PromotionSpeculatorOptions, ProviderObjectStore, ResidencyAdmission, ResidencyHint,
         ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions, ResolvedFile,
         SpeculationController, SpeculationOptions, StorageLocationId, StorageTier,
@@ -207,59 +205,6 @@ mod bindings {
     #[wasm_bindgen]
     pub struct BrowserWorkspaceContextRegistry {
         inner: WorkspaceContextRegistry<MemoryWorkspaceContextStore>,
-    }
-
-    /// Browser-safe overlapping-operation coordinator over process-local state.
-    #[wasm_bindgen]
-    pub struct BrowserOperationWindowCoordinator {
-        inner: OperationWindowCoordinator<MemoryOperationWindowStore>,
-    }
-
-    #[derive(Deserialize, Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct BrowserOperationWindowLease {
-        workspace_id: Vec<u8>,
-        lease_id: Vec<u8>,
-        pinned_parent: Vec<u8>,
-        expires_at_millis: String,
-    }
-
-    #[derive(Serialize)]
-    #[serde(
-        tag = "kind",
-        rename_all = "kebab-case",
-        rename_all_fields = "camelCase"
-    )]
-    enum BrowserOperationWindowPhase {
-        Idle,
-        Active {
-            pinned_parent: Vec<u8>,
-            pending_parent: Option<Vec<u8>>,
-            active_lease_count: usize,
-        },
-        Reconciling {
-            ticket: Vec<u8>,
-            pinned_parent: Vec<u8>,
-            pending_parent: Option<Vec<u8>>,
-        },
-    }
-
-    #[derive(Serialize)]
-    #[serde(
-        tag = "kind",
-        rename_all = "kebab-case",
-        rename_all_fields = "camelCase"
-    )]
-    enum BrowserOperationWindowFinish {
-        StillActive {
-            remaining: u32,
-        },
-        Reconcile {
-            ticket: Vec<u8>,
-            pinned_parent: Vec<u8>,
-            pending_parent: Option<Vec<u8>>,
-        },
-        AlreadyClosed,
     }
 
     /// Browser owner of one volume generation's residency and promotion engines.
@@ -2695,6 +2640,40 @@ mod bindings {
             workspace_context_json(&context)
         }
 
+        /// Adopts one parent-authorized root without enumerating its contents.
+        #[wasm_bindgen(js_name = adoptRootJson)]
+        pub async fn adopt_root_json(
+            &self,
+            context_id: Vec<u8>,
+            root_json: String,
+        ) -> Result<String, JsValue> {
+            let root: WorkspaceContextRoot = serde_json::from_str(&root_json).map_err(js_error)?;
+            let context = self
+                .inner
+                .adopt_root(WorkspaceContextId::from_bytes(fixed_16(&context_id)?), root)
+                .await
+                .map_err(js_error)?;
+            workspace_context_json(&context)
+        }
+
+        /// Releases one root after callers have settled its filesystem changes.
+        #[wasm_bindgen(js_name = removeRootJson)]
+        pub async fn remove_root_json(
+            &self,
+            context_id: Vec<u8>,
+            root_id: Vec<u8>,
+        ) -> Result<String, JsValue> {
+            let context = self
+                .inner
+                .remove_root(
+                    WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
+                    WorkspaceRootId::from_bytes(fixed_16(&root_id)?),
+                )
+                .await
+                .map_err(js_error)?;
+            workspace_context_json(&context)
+        }
+
         /// Resolves one context as stable JSON.
         #[wasm_bindgen(js_name = resolveJson)]
         pub async fn resolve_json(&self, context_id: Vec<u8>) -> Result<String, JsValue> {
@@ -2770,91 +2749,6 @@ mod bindings {
                 .await
                 .map_err(js_error)?;
             serde_json::to_string(&discarded).map_err(js_error)
-        }
-    }
-
-    #[wasm_bindgen]
-    impl BrowserOperationWindowCoordinator {
-        /// Creates one process-local deterministic coordinator.
-        #[wasm_bindgen(constructor)]
-        pub fn new() -> BrowserOperationWindowCoordinator {
-            Self {
-                inner: OperationWindowCoordinator::new(MemoryOperationWindowStore::new()),
-            }
-        }
-
-        /// Begins an overlapping operation lease.
-        #[wasm_bindgen(js_name = beginJson)]
-        pub async fn begin_json(
-            &self,
-            workspace_id: Vec<u8>,
-            parent: Vec<u8>,
-            owner: String,
-            now_millis: u64,
-            expires_at_millis: u64,
-        ) -> Result<String, JsValue> {
-            let lease = self
-                .inner
-                .begin(
-                    WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
-                    acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                        &parent,
-                        "parent generation",
-                    )?)),
-                    owner,
-                    now_millis,
-                    expires_at_millis,
-                )
-                .await
-                .map_err(js_error)?;
-            serde_json::to_string(&browser_operation_window_lease(&lease)).map_err(js_error)
-        }
-
-        /// Coalesces a newer parent while operations remain active.
-        #[wasm_bindgen(js_name = observeParent)]
-        pub async fn observe_parent(
-            &self,
-            workspace_id: Vec<u8>,
-            parent: Vec<u8>,
-        ) -> Result<bool, JsValue> {
-            self.inner
-                .observe_parent(
-                    WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
-                    acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                        &parent,
-                        "parent generation",
-                    )?)),
-                )
-                .await
-                .map_err(js_error)
-        }
-
-        /// Finishes one lease and returns the final-close reconciliation ticket.
-        #[wasm_bindgen(js_name = finishJson)]
-        pub async fn finish_json(
-            &self,
-            lease_json: String,
-            now_millis: u64,
-        ) -> Result<String, JsValue> {
-            let lease: BrowserOperationWindowLease =
-                serde_json::from_str(&lease_json).map_err(js_error)?;
-            let finish = self
-                .inner
-                .finish(&operation_window_lease(lease)?, now_millis)
-                .await
-                .map_err(js_error)?;
-            serde_json::to_string(&browser_operation_window_finish(finish)).map_err(js_error)
-        }
-
-        /// Inspects the current durable phase.
-        #[wasm_bindgen(js_name = inspectJson)]
-        pub async fn inspect_json(&self, workspace_id: Vec<u8>) -> Result<String, JsValue> {
-            let snapshot = self
-                .inner
-                .inspect(WorkspaceId::from_bytes(fixed_16(&workspace_id)?))
-                .await
-                .map_err(js_error)?;
-            serde_json::to_string(&browser_operation_window_phase(snapshot.phase)).map_err(js_error)
         }
     }
 
@@ -6554,31 +6448,6 @@ mod bindings {
         })
     }
 
-    fn browser_operation_window_lease(lease: &OperationWindowLease) -> BrowserOperationWindowLease {
-        BrowserOperationWindowLease {
-            workspace_id: lease.workspace_id.into_bytes().to_vec(),
-            lease_id: lease.lease_id.into_bytes().to_vec(),
-            pinned_parent: lease.pinned_parent.digest().as_bytes().to_vec(),
-            expires_at_millis: lease.expires_at_millis.to_string(),
-        }
-    }
-
-    fn operation_window_lease(
-        lease: BrowserOperationWindowLease,
-    ) -> Result<OperationWindowLease, JsValue> {
-        Ok(OperationWindowLease {
-            workspace_id: WorkspaceId::from_bytes(fixed_16(&lease.workspace_id)?),
-            lease_id: OperationLeaseId::from_bytes(fixed_16(&lease.lease_id)?),
-            pinned_parent: acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                &lease.pinned_parent,
-                "pinned parent generation",
-            )?)),
-            expires_at_millis: lease.expires_at_millis.parse().map_err(|_| {
-                JsValue::from_str("lease expiry must be an unsigned decimal integer")
-            })?,
-        })
-    }
-
     fn workspace_context_json(context: &acyclic_fs::WorkspaceContext) -> Result<String, JsValue> {
         let mut value = serde_json::to_value(context).map_err(js_error)?;
         let revision = value
@@ -6593,53 +6462,6 @@ mod bindings {
                 serde_json::Value::String(revision.to_string()),
             );
         serde_json::to_string(&value).map_err(js_error)
-    }
-
-    fn browser_operation_window_phase(phase: OperationWindowPhase) -> BrowserOperationWindowPhase {
-        match phase {
-            OperationWindowPhase::Idle => BrowserOperationWindowPhase::Idle,
-            OperationWindowPhase::Active {
-                pinned_parent,
-                leases,
-                pending_parent,
-            } => BrowserOperationWindowPhase::Active {
-                pinned_parent: pinned_parent.digest().as_bytes().to_vec(),
-                pending_parent: pending_parent
-                    .map(|generation| generation.digest().as_bytes().to_vec()),
-                active_lease_count: leases.len(),
-            },
-            OperationWindowPhase::Reconciling {
-                ticket,
-                pinned_parent,
-                pending_parent,
-                ..
-            } => BrowserOperationWindowPhase::Reconciling {
-                ticket: ticket.into_bytes().to_vec(),
-                pinned_parent: pinned_parent.digest().as_bytes().to_vec(),
-                pending_parent: pending_parent
-                    .map(|generation| generation.digest().as_bytes().to_vec()),
-            },
-        }
-    }
-
-    fn browser_operation_window_finish(
-        finish: OperationWindowFinish,
-    ) -> BrowserOperationWindowFinish {
-        match finish {
-            OperationWindowFinish::StillActive { remaining } => {
-                BrowserOperationWindowFinish::StillActive { remaining }
-            }
-            OperationWindowFinish::AlreadyClosed => BrowserOperationWindowFinish::AlreadyClosed,
-            OperationWindowFinish::Reconcile(reconcile) => {
-                BrowserOperationWindowFinish::Reconcile {
-                    ticket: reconcile.ticket.into_bytes().to_vec(),
-                    pinned_parent: reconcile.pinned_parent.digest().as_bytes().to_vec(),
-                    pending_parent: reconcile
-                        .pending_parent
-                        .map(|generation| generation.digest().as_bytes().to_vec()),
-                }
-            }
-        }
     }
 
     fn fixed_16(bytes: &[u8]) -> Result<[u8; 16], JsValue> {
@@ -7624,10 +7446,9 @@ mod bindings {
 
 #[cfg(target_arch = "wasm32")]
 pub use bindings::{
-    BrowserCheckout, BrowserFs, BrowserGitCompatRepository, BrowserOperationWindowCoordinator,
-    BrowserVolume, BrowserWorkspaceContextRegistry, decode_merge_candidate_json,
-    decode_merge_plan_json, decode_multi_root_candidate_json, decode_multi_root_plan_json,
-    decode_publication_json, encode_merge_candidate_json, encode_merge_plan_json,
-    encode_multi_root_candidate_json, encode_multi_root_plan_json, encode_publication_json,
-    open_browser_fs, open_memory_fs,
+    BrowserCheckout, BrowserFs, BrowserGitCompatRepository, BrowserVolume,
+    BrowserWorkspaceContextRegistry, decode_merge_candidate_json, decode_merge_plan_json,
+    decode_multi_root_candidate_json, decode_multi_root_plan_json, decode_publication_json,
+    encode_merge_candidate_json, encode_merge_plan_json, encode_multi_root_candidate_json,
+    encode_multi_root_plan_json, encode_publication_json, open_browser_fs, open_memory_fs,
 };

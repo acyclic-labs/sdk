@@ -20,6 +20,7 @@ path = "src/main.rs"
 [dependencies]
 acyclic-fs = { path = "../rust/crates/filesystem", version = "=0.1.0", features = ["local", "native-watch", "native-mount"] }
 acyclic-native-runtime = { path = "../rust/crates/native-runtime", version = "=0.1.0" }
+base64 = "0.22.1"
 blake3.workspace = true
 fs2.workspace = true
 hex.workspace = true
@@ -40,7 +41,11 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_Memory",
 ] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["fs"] }
+
 [dev-dependencies]
+bytes.workspace = true
 tempfile = "3"
 
 [lints]

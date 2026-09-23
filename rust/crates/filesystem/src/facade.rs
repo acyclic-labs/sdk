@@ -371,6 +371,7 @@ struct FsInner<A, O> {
 struct LocalRootRegistration {
     options: LocalOptions,
     live: Weak<FsInner<LocalAuthorityBackend, LocalObjectBackend>>,
+    opening: Arc<tokio::sync::Mutex<()>>,
     lifecycle: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -383,20 +384,21 @@ fn prepare_local_root_open(
     root: &Path,
     options: &LocalOptions,
 ) -> Arc<tokio::sync::Mutex<()>> {
-    if let Some(registration) = registry.get_mut(root) {
-        registration.options.clone_from(options);
-        return Arc::clone(&registration.lifecycle);
+    if let Some(registration) = registry.get(root) {
+        return Arc::clone(&registration.opening);
     }
+    let opening = Arc::new(tokio::sync::Mutex::new(()));
     let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
     registry.insert(
         root.to_path_buf(),
         LocalRootRegistration {
             options: options.clone(),
             live: Weak::new(),
+            opening: Arc::clone(&opening),
             lifecycle: Arc::clone(&lifecycle),
         },
     );
-    lifecycle
+    opening
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -508,7 +510,6 @@ pub struct Checkout<A, O> {
     root: GenerationRoot,
     authority_head: Option<Head>,
     authored_operation_id: Option<OperationId>,
-    pending_operations: Vec<Mutation>,
     live_operation_id: Option<OperationId>,
     last_commit: Option<LastCommit>,
     prepared_merge_parent: Option<ObjectId>,
@@ -683,6 +684,11 @@ pub type LocalObjectBackend = crate::cache::CachedObjectStore<
 /// Durable local filesystem composition with nonblocking native storage dispatch.
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub type LocalFs = Fs<LocalAuthorityBackend, LocalObjectBackend>;
+
+/// Durable operation-window store sharing the local filesystem's authority
+/// stream. Leases from any other store cannot authorize local publication.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub type LocalOperationWindowStore = crate::StreamOperationWindowStore<acyclic_stream::LocalStream>;
 
 /// Durable local volume handle with nonblocking native storage dispatch.
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -1574,34 +1580,48 @@ impl
         .map_err(FsError::LocalRoot)?;
         let mut options = options;
         options.root = root.clone();
-        let mut registry = REGISTRY
-            .get_or_init(|| tokio::sync::Mutex::new(LocalRootRegistry::new()))
-            .lock()
-            .await;
-        if let Some(existing) = registry.get(&root)
-            && let Some(inner) = existing.live.upgrade()
-        {
-            if existing.options != options {
-                return Err(FsError::LocalOptionsConflict);
+        let registry = REGISTRY.get_or_init(|| tokio::sync::Mutex::new(LocalRootRegistry::new()));
+        let opening = {
+            let mut registrations = registry.lock().await;
+            if let Some(existing) = registrations.get(&root)
+                && let Some(inner) = existing.live.upgrade()
+            {
+                if existing.options != options {
+                    return Err(FsError::LocalOptionsConflict);
+                }
+                return Ok(Self { inner });
             }
-            return Ok(Self { inner });
-        }
-        let lifecycle = prepare_local_root_open(&mut registry, &root, &options);
-        let ownership = Arc::clone(&lifecycle).lock_owned().await;
+            prepare_local_root_open(&mut registrations, &root, &options)
+        };
+        // Opening a root may wait for old provider handles or native I/O to finish. Keep that
+        // wait per-root so unrelated roots can attach and respond to hooks concurrently.
+        let _opening = opening.lock().await;
+        let lifecycle = {
+            let registrations = registry.lock().await;
+            let existing = registrations
+                .get(&root)
+                .ok_or(FsError::LocalInitializationWorker)?;
+            if let Some(inner) = existing.live.upgrade() {
+                if existing.options != options {
+                    return Err(FsError::LocalOptionsConflict);
+                }
+                return Ok(Self { inner });
+            }
+            Arc::clone(&existing.lifecycle)
+        };
+        let ownership = lifecycle.lock_owned().await;
         let open_options = options.clone();
         let fs = run_local_initialization(ownership, move |ownership| async move {
             let ownership = OwnershipAnchor::new(ownership);
             Self::open_local_unshared(open_options, Some(ownership)).await
         })
         .await??;
-        registry.insert(
-            root,
-            LocalRootRegistration {
-                options,
-                live: Arc::downgrade(&fs.inner),
-                lifecycle,
-            },
-        );
+        let mut registrations = registry.lock().await;
+        let existing = registrations
+            .get_mut(&root)
+            .ok_or(FsError::LocalInitializationWorker)?;
+        existing.options = options;
+        existing.live = Arc::downgrade(&fs.inner);
         Ok(fs)
     }
 
@@ -4250,7 +4270,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 root,
                 authority_head,
                 authored_operation_id: None,
-                pending_operations: Vec::new(),
                 live_operation_id: None,
                 last_commit: None,
                 prepared_merge_parent: None,
@@ -4344,8 +4363,8 @@ impl<A, O> Checkout<A, O> {
 
     /// Whether the private candidate differs from its immutable base.
     #[must_use]
-    pub const fn has_pending_mutations(&self) -> bool {
-        !self.pending_operations.is_empty() || self.prepared_merge_parent.is_some()
+    pub fn has_pending_mutations(&self) -> bool {
+        self.root.file_table != self.base_file_table || self.prepared_merge_parent.is_some()
     }
 
     /// Creates an immutable reader for this checkout's current private candidate.
@@ -5231,9 +5250,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             MergeGenerationRequest {
                 base_generation: self.base_generation_root,
                 base: self.base_root.clone(),
-                ours_generation: self
-                    .pending_operations
-                    .is_empty()
+                ours_generation: (self.root.file_table == self.base_file_table)
                     .then_some(self.generation_root),
                 ours: self.root.clone(),
                 theirs_generation: theirs_id,
@@ -5258,7 +5275,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             } => {
                 self.root = root;
                 self.generation_root = generation_root;
-                self.pending_operations.clear();
                 self.prepared_merge_parent = Some(theirs_id);
                 self.authority_head = Some(current_head);
                 Ok(OperationReceipt {
@@ -5398,7 +5414,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.base_root = self.root.clone();
         self.base_file_table = self.root.file_table;
         self.generation_root = self.base_generation_root;
-        self.pending_operations.clear();
         self.live_operation_id = None;
         self.prepared_merge_parent = None;
         self.dependencies.clear();
@@ -5467,11 +5482,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         })
     }
 
-    /// Safely advances to the current head and sparsely replays private mutations.
+    /// Safely advances to the current head and rebases the private candidate.
     ///
     /// Only exact regions captured by reads and mutation preconditions are
     /// compared. A conflict leaves the checkout unchanged. A safe dirty rebase
-    /// applies the retained ordered mutation log to the new immutable base.
+    /// combines the immutable candidate with the new base without retaining
+    /// an unbounded operation log.
     ///
     /// # Errors
     ///
@@ -5563,35 +5579,72 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         let candidate_file_table = candidate_root.file_table;
         let candidate_base_root = candidate_root.clone();
-        let rebased_root = if self.pending_operations.is_empty() {
-            candidate_root
-        } else {
-            let replay = apply_generation_mutations_retaining_async(
-                &self.volume.fs.inner.objects,
+        let rebased_root = self
+            .rebase_private_candidate(
+                candidate_object,
                 &candidate_root,
-                self.pending_operations.clone(),
-                self.volume.config,
-                remaining(work, budget)?,
+                maximum_conflicts,
+                &mut work,
+                budget,
                 cancellation,
             )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, FsError::Mutation))?;
-            work = add(work, replay.0.work)?;
-            replay.0.root
-        };
+            .await?;
         self.base_generation_root = candidate_object;
         self.base_file_table = candidate_file_table;
         self.base_root = candidate_base_root;
         self.generation_root = candidate_object;
         self.root = rebased_root;
         self.authority_head = Some(candidate_head);
-        if self.root.file_table == self.base_file_table {
-            self.pending_operations.clear();
-        }
         Ok(FsReceipt {
             value: classification.decision,
             work,
         })
+    }
+
+    async fn rebase_private_candidate(
+        &self,
+        candidate_object: ObjectId,
+        candidate_root: &GenerationRoot,
+        maximum_conflicts: u32,
+        work: &mut WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<GenerationRoot, OperationFailure<FsError>> {
+        if self.root.file_table == self.base_file_table {
+            return Ok(candidate_root.clone());
+        }
+        let checkpoint = self
+            .checkpoint_root(remaining(*work, budget)?, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(*work, std::convert::identity))?;
+        *work = add(*work, checkpoint.work)?;
+        let merged = merge_generation_async(
+            &self.volume.fs.inner.objects,
+            MergeGenerationRequest {
+                base_generation: self.base_generation_root,
+                base: self.base_root.clone(),
+                ours_generation: Some(candidate_object),
+                ours: candidate_root.clone(),
+                theirs_generation: checkpoint.value,
+                theirs: self.root.clone(),
+                retain_theirs_parent: false,
+                maximum_changes: u32::MAX,
+                maximum_conflicts,
+                resolutions: BTreeMap::new(),
+            },
+            decode_limits(self.volume.config),
+            remaining(*work, budget)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| map_merge_failure(failure, *work))?;
+        *work = add(*work, merged.work)?;
+        match merged.value {
+            MergeGenerationOutcome::Prepared { root, .. } => Ok(root),
+            MergeGenerationOutcome::Conflicted { .. } => {
+                Err(OperationFailure::new(FsError::InvalidDiff, *work))
+            }
+        }
     }
 
     /// Explicitly performs the same observation-safe head advancement used
@@ -6066,16 +6119,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 FsError::ExcessiveMutationCapacity,
             ));
         }
-        let pending_count = self
-            .pending_operations
-            .len()
-            .checked_add(operations.len())
-            .ok_or_else(|| OperationFailure::before_work(FsError::TooManyPendingMutations))?;
-        if pending_count > maximum {
-            return Err(OperationFailure::before_work(
-                FsError::TooManyPendingMutations,
-            ));
-        }
         // Keep the public mutation future within the Windows default thread
         // stack. Each planning and mutation phase is boxed once per
         // transaction rather than growing one deeply nested future.
@@ -6093,7 +6136,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .map_err(|error| OperationFailure::new(error.into(), dependency_work))?;
         let prior_file_table = self.root.file_table;
-        let (receipt, retained_operations) = Box::pin(apply_generation_mutations_retaining_async(
+        let (receipt, _) = Box::pin(apply_generation_mutations_retaining_async(
             &self.volume.fs.inner.objects,
             &self.root,
             operations,
@@ -6103,19 +6146,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ))
         .await
         .map_err(|failure| failure.map_with_prior_work(dependency_work, FsError::Mutation))?;
-        let mut work = add(dependency_work, receipt.work)?;
+        let work = add(dependency_work, receipt.work)?;
         if receipt.root.file_table != prior_file_table {
             if receipt.root.file_table == self.base_file_table {
                 next_dependencies.clear_mutations();
-                self.pending_operations.clear();
-            } else {
-                work = retain_pending_operations(
-                    &mut self.pending_operations,
-                    retained_operations,
-                    maximum,
-                    work,
-                    budget,
-                )?;
             }
             self.dependencies = next_dependencies;
             self.root = receipt.root;
@@ -6693,6 +6727,75 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             value: AuthoredTransactionResult { created_file_ids },
             work,
         })
+    }
+
+    /// Applies a large ordered capture without exposing an intermediate candidate.
+    /// Immutable staged objects may remain unreachable after failure, but the
+    /// caller's checkout is replaced only after every bounded batch succeeds.
+    pub(crate) async fn apply_authored_bulk_transaction(
+        &mut self,
+        authored: Vec<AuthoredMutation>,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<()> {
+        let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
+            .unwrap_or(usize::MAX);
+        if maximum == 0 {
+            return Err(OperationFailure::before_work(
+                FsError::TooManyPendingMutations,
+            ));
+        }
+        let mut candidate = self.private_candidate();
+        let mut work = WorkCounters::default();
+        let mut batch = Vec::with_capacity(maximum.min(authored.len()));
+        let mut operations = 0;
+        for mutation in authored {
+            let count = authored_mutation_operation_count(&mutation);
+            if count > maximum {
+                return Err(OperationFailure::new(
+                    FsError::TooManyPendingMutations,
+                    work,
+                ));
+            }
+            if !batch.is_empty() && (batch.len() == maximum || operations + count > maximum) {
+                let applied = candidate
+                    .apply_authored_transaction(batch, remaining(work, budget)?, cancellation)
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                work = add(work, applied.work)?;
+                batch = Vec::with_capacity(maximum.min(1024));
+                operations = 0;
+            }
+            operations += count;
+            batch.push(mutation);
+        }
+        if !batch.is_empty() {
+            let applied = candidate
+                .apply_authored_transaction(batch, remaining(work, budget)?, cancellation)
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = add(work, applied.work)?;
+        }
+        *self = candidate;
+        Ok(FsReceipt { value: (), work })
+    }
+
+    pub(crate) fn private_candidate(&self) -> Self {
+        Self {
+            volume: self.volume.clone(),
+            base_generation_root: self.base_generation_root,
+            generation_root: self.generation_root,
+            base_file_table: self.base_file_table,
+            base_root: self.base_root.clone(),
+            root: self.root.clone(),
+            authority_head: self.authority_head,
+            authored_operation_id: self.authored_operation_id,
+            live_operation_id: self.live_operation_id,
+            last_commit: self.last_commit,
+            prepared_merge_parent: self.prepared_merge_parent,
+            dependencies: self.dependencies.clone(),
+            mode: self.mode,
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -9283,7 +9386,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.base_root = self.root.clone();
                 self.base_file_table = self.root.file_table;
                 self.authority_head = Some(head);
-                self.pending_operations.clear();
                 self.prepared_merge_parent = None;
                 self.dependencies.clear();
                 self.last_commit = Some(LastCommit {
@@ -9304,7 +9406,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.base_root = self.root.clone();
                 self.base_file_table = self.root.file_table;
                 self.authority_head = Some(head);
-                self.pending_operations.clear();
                 self.prepared_merge_parent = None;
                 self.dependencies.clear();
                 self.last_commit = Some(LastCommit {
@@ -12125,88 +12226,6 @@ fn creation_commit(operation_id: OperationId, payload: Vec<u8>) -> (ProposedComm
             ..WorkCounters::default()
         },
     )
-}
-
-fn retain_pending_operations(
-    pending: &mut Vec<Mutation>,
-    mut incoming: Vec<Mutation>,
-    maximum: usize,
-    work: WorkCounters,
-    budget: WorkBudget,
-) -> Result<WorkCounters, OperationFailure<FsError>> {
-    if pending.is_empty() {
-        *pending = incoming;
-        return Ok(work);
-    }
-    let new_length = pending
-        .len()
-        .checked_add(incoming.len())
-        .ok_or_else(|| OperationFailure::new(FsError::TooManyPendingMutations, work))?;
-    if new_length > maximum {
-        return Err(OperationFailure::new(
-            FsError::TooManyPendingMutations,
-            work,
-        ));
-    }
-    let item_bytes = u64::try_from(size_of::<Mutation>())
-        .map_err(|_| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
-    let incoming_bytes = u64::try_from(incoming.len())
-        .ok()
-        .and_then(|count| count.checked_mul(item_bytes))
-        .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
-    let mut delta = WorkCounters {
-        bytes_copied: incoming_bytes,
-        ..WorkCounters::default()
-    };
-    let mut peak = work.peak_allocation_bytes;
-    if new_length > pending.capacity() {
-        let doubled = pending.capacity().checked_mul(2).unwrap_or(maximum);
-        let target = new_length.max(doubled.min(maximum));
-        let old_bytes = u64::try_from(pending.capacity())
-            .ok()
-            .and_then(|count| count.checked_mul(item_bytes))
-            .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
-        let new_bytes = u64::try_from(target)
-            .ok()
-            .and_then(|count| count.checked_mul(item_bytes))
-            .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
-        let copied_existing = u64::try_from(pending.len())
-            .ok()
-            .and_then(|count| count.checked_mul(item_bytes))
-            .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
-        delta.allocation_operations = 1;
-        delta.bytes_copied = delta
-            .bytes_copied
-            .checked_add(copied_existing)
-            .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
-        peak = peak.max(
-            old_bytes
-                .checked_add(new_bytes)
-                .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?,
-        );
-        let mut attempted = work
-            .checked_add(delta)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        attempted.peak_allocation_bytes = peak;
-        attempted
-            .verify(budget)
-            .map_err(|error| OperationFailure::new(error.into(), attempted))?;
-        pending
-            .try_reserve_exact(target - pending.capacity())
-            .map_err(|_| {
-                OperationFailure::new(FsError::PendingMutationAllocationFailed, attempted)
-            })?;
-        pending.append(&mut incoming);
-        return Ok(attempted);
-    }
-    let combined = work
-        .checked_add(delta)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    combined
-        .verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), combined))?;
-    pending.append(&mut incoming);
-    Ok(combined)
 }
 
 fn add(prior: WorkCounters, next: WorkCounters) -> Result<WorkCounters, OperationFailure<FsError>> {

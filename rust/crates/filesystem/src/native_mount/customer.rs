@@ -86,6 +86,21 @@ pub struct LazyMount<A, O, D, S> {
     destination: PathBuf,
 }
 
+fn flush_session_callbacks(
+    session: &Mutex<Option<NativeMountSession>>,
+) -> Result<(), MountLifecycleError> {
+    let owner = match session.lock() {
+        Ok(owner) => owner,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(session) = owner.as_ref() {
+        session
+            .flush_callbacks()
+            .map_err(MountLifecycleError::Native)?;
+    }
+    Ok(())
+}
+
 impl<A, O, D, S> LazyMount<A, O, D, S> {
     /// Exact mounted host path.
     #[must_use]
@@ -113,10 +128,12 @@ where
     ///
     /// Returns a typed publication failure without discarding pending state.
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
+        flush_session_callbacks(&self.session)?;
         self.source
             .sync_async()
             .await
-            .map_err(MountLifecycleError::Source)
+            .map_err(MountLifecycleError::Source)?;
+        Ok(())
     }
 
     /// Publishes all pending effects under one active operation lease.
@@ -124,6 +141,7 @@ where
         &self,
         permit: crate::PublicationPermit,
     ) -> Result<(), MountLifecycleError> {
+        flush_session_callbacks(&self.session)?;
         self.source
             .sync_async_with_permit(permit)
             .await
@@ -162,6 +180,7 @@ where
     ///
     /// Returns a typed publication failure without discarding pending state.
     pub fn sync_blocking(&self) -> Result<(), MountLifecycleError> {
+        flush_session_callbacks(&self.session)?;
         self.source.sync().map_err(MountLifecycleError::Source)
     }
 
@@ -218,6 +237,7 @@ where
 {
     /// Publishes all pending authored effects with one fenced generation.
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
+        flush_session_callbacks(&self.session)?;
         self.source
             .sync_async()
             .await
@@ -229,6 +249,7 @@ where
         &self,
         permit: crate::PublicationPermit,
     ) -> Result<(), MountLifecycleError> {
+        flush_session_callbacks(&self.session)?;
         self.source
             .sync_async_with_permit(permit)
             .await
@@ -251,6 +272,7 @@ where
 
     /// Publishes pending effects on the source callback runtime.
     pub fn sync_blocking(&self) -> Result<(), MountLifecycleError> {
+        flush_session_callbacks(&self.session)?;
         self.source.sync().map_err(MountLifecycleError::Source)
     }
 

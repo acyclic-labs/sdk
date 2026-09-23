@@ -4,7 +4,8 @@
     "SessionStart": [{
       "hooks": [{
         "type": "command",
-        "command": "node \"${PLUGIN_ROOT}/bin/acyclic.js\" __hook codex SessionStart",
+        "command": "\"${PLUGIN_ROOT}/bin/acyclic\" __hook codex SessionStart",
+        "commandWindows": "& \"$env:PLUGIN_ROOT\\bin\\acyclic.exe\" __hook codex SessionStart",
         "timeout": 120,
         "statusMessage": "Acyclic is attaching the workspace"
       }]
@@ -12,30 +13,32 @@
     "UserPromptSubmit": [{
       "hooks": [{
         "type": "command",
-        "command": "node \"${PLUGIN_ROOT}/bin/acyclic.js\" __hook codex UserPromptSubmit",
+        "command": "\"${PLUGIN_ROOT}/bin/acyclic\" __hook codex UserPromptSubmit",
+        "commandWindows": "& \"$env:PLUGIN_ROOT\\bin\\acyclic.exe\" __hook codex UserPromptSubmit",
         "timeout": 30
       }]
     }],
     "PreToolUse": [{
-      "matcher": ".*",
       "hooks": [{
         "type": "command",
-        "command": "node \"${PLUGIN_ROOT}/bin/acyclic.js\" __hook codex PreToolUse",
+        "command": "\"${PLUGIN_ROOT}/bin/acyclic\" __hook codex PreToolUse",
+        "commandWindows": "& \"$env:PLUGIN_ROOT\\bin\\acyclic.exe\" __hook codex PreToolUse",
         "timeout": 120
       }]
     }],
     "PostToolUse": [{
-      "matcher": ".*",
       "hooks": [{
         "type": "command",
-        "command": "node \"${PLUGIN_ROOT}/bin/acyclic.js\" __hook codex PostToolUse",
+        "command": "\"${PLUGIN_ROOT}/bin/acyclic\" __hook codex PostToolUse",
+        "commandWindows": "& \"$env:PLUGIN_ROOT\\bin\\acyclic.exe\" __hook codex PostToolUse",
         "timeout": 120
       }]
     }],
     "SubagentStart": [{
       "hooks": [{
         "type": "command",
-        "command": "node \"${PLUGIN_ROOT}/bin/acyclic.js\" __hook codex SubagentStart",
+        "command": "\"${PLUGIN_ROOT}/bin/acyclic\" __hook codex SubagentStart",
+        "commandWindows": "& \"$env:PLUGIN_ROOT\\bin\\acyclic.exe\" __hook codex SubagentStart",
         "timeout": 120,
         "statusMessage": "Acyclic is forking the subagent workspace"
       }]
@@ -43,14 +46,16 @@
     "SubagentStop": [{
       "hooks": [{
         "type": "command",
-        "command": "node \"${PLUGIN_ROOT}/bin/acyclic.js\" __hook codex SubagentStop",
+        "command": "\"${PLUGIN_ROOT}/bin/acyclic\" __hook codex SubagentStop",
+        "commandWindows": "& \"$env:PLUGIN_ROOT\\bin\\acyclic.exe\" __hook codex SubagentStop",
         "timeout": 120
       }]
     }],
     "SessionEnd": [{
       "hooks": [{
         "type": "command",
-        "command": "node \"${PLUGIN_ROOT}/bin/acyclic.js\" __hook codex SessionEnd",
+        "command": "\"${PLUGIN_ROOT}/bin/acyclic\" __hook codex SessionEnd",
+        "commandWindows": "& \"$env:PLUGIN_ROOT\\bin\\acyclic.exe\" __hook codex SessionEnd",
         "timeout": 3
       }]
     }]

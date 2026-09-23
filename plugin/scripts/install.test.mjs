@@ -1,24 +1,25 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import {
   chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
   rmSync, statSync, writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const plugin = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(import.meta.url);
-const { hostTarget, linuxLibc } = require("../bin/verify.js");
+const { hostTarget, linuxLibc, sha256File } = require("../bin/verify.js");
 const target = hostTarget();
 const executableName = process.platform === "win32" ? "acyclic.exe" : "acyclic";
+const scratch = process.env.ACYCLIC_TEST_TEMP_ROOT
+  || join(dirname(plugin), "target", "plugin-installer-tests");
+mkdirSync(scratch, { recursive: true });
 
 function digest(path) {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+  return sha256File(path);
 }
 
 function treeSnapshot(root, prefix = "") {
@@ -34,7 +35,7 @@ function treeSnapshot(root, prefix = "") {
 }
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "acyclic-install-"));
+  const root = mkdtempSync(join(scratch, "install-"));
   const bin = join(root, "bin");
   cpSync(join(plugin, "bin"), bin, {
     recursive: true,
@@ -67,7 +68,7 @@ function install(bin, crash, failure, extraEnvironment = {}) {
 
 test("installer publishes the exact release certification receipt", () => {
   const value = fixture();
-  const state = mkdtempSync(join(tmpdir(), "acyclic-state-"));
+  const state = mkdtempSync(join(scratch, "state-"));
   try {
     const platform = { linux: "linux", darwin: "macos", win32: "windows" }[process.platform];
     const architecture = { x64: "x86_64", arm64: "aarch64" }[process.arch];
@@ -82,6 +83,14 @@ test("installer publishes the exact release certification receipt", () => {
       required_kind: backend,
       release_version: "9.8.7-test.1",
       executable_blake3: "a".repeat(64),
+      capability: {
+        kind: backend,
+        available: true,
+        writable: true,
+        provider_process_io_observable: platform !== "windows",
+        session_isolation: "SharedProcess",
+        unavailable_reason: null,
+      },
       passed: true,
     };
     writeFileSync(join(certification, name), JSON.stringify(receipt));
@@ -94,8 +103,8 @@ test("installer publishes the exact release certification receipt", () => {
     const installed = install(value.bin, null, null, environment);
     assert.equal(installed.status, 0, installed.stderr);
     const destination = process.platform === "win32"
-      ? join(state, "Acyclic", "state-v2", "certification", name)
-      : join(state, "acyclic", "state-v2", "certification", name);
+      ? join(state, "Acyclic", "state-v4", "certification", name)
+      : join(state, "acyclic", "state-v4", "certification", name);
     assert.deepEqual(JSON.parse(readFileSync(destination, "utf8")), receipt);
   } finally {
     rmSync(value.root, { recursive: true, force: true });

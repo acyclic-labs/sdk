@@ -287,7 +287,7 @@ jobs:
           test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/plugin.json"
           test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/.agents/plugins/marketplace.json"
           test ! -e "$prefix/lib/node_modules/@acyclic-labs/plugin/src"
-          test -f "$state/acyclic/state-v2/certification/native-mount-linux-x64-gnu.json"
+          test -f "$state/acyclic/state-v4/certification/native-mount-linux-x64-gnu.json"
       - name: Run packaged Codex lifecycle end to end
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -314,9 +314,9 @@ jobs:
             > "$home/fresh-task.jsonl"
           grep -q 'ACYCLIC_E2E_OK' "$home/fresh-task.jsonl"
           acyclic agents --json | jq -e '.schemaVersion == 1'
-          test -d "$XDG_STATE_HOME/acyclic/state-v2"
+          test -d "$XDG_STATE_HOME/acyclic/state-v4"
           acyclic uninstall codex
-          test -d "$XDG_STATE_HOME/acyclic/state-v2"
+          test -d "$XDG_STATE_HOME/acyclic/state-v4"
       - name: Assemble release assets
         run: |
           cp release/package/plugin/bin/platform-binaries.json release/platform-binaries.json

@@ -130,10 +130,23 @@ static int mount_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     return 0;
 }
 
+/* mount_nfs probes NFSv4 named-attribute support before fuse_new() attaches
+ * the real callbacks.  Advertise an empty attribute namespace during that
+ * bootstrap window; otherwise OPENATTR returns NOTSUPP and macOS permanently
+ * falls back to AppleDouble files for this mount. */
+static int mount_listxattr(const char *path, char *list, size_t size)
+{
+    (void)path;
+    (void)list;
+    (void)size;
+    return 0;
+}
+
 static struct fuse_operations mount_ops = {
     .getattr = mount_getattr,
     .access  = mount_access,
     .readdir = mount_readdir,
+    .listxattr = mount_listxattr,
 };
 
 /* ---- Argument parsing helpers ---- */
@@ -144,6 +157,7 @@ typedef struct {
     int         nodev;
     int         rdonly;
     int         nobrowse;
+    int         namedattr;
     int         foreground;
     int         debug;
     int         singlethreaded;
@@ -164,6 +178,7 @@ static void parse_mount_opts(const char *opts, parsed_args_t *out)
         else if (strcmp(tok, "nodev") == 0)   out->nodev = 1;
         else if (strcmp(tok, "ro") == 0)      out->rdonly = 1;
         else if (strcmp(tok, "nobrowse") == 0) out->nobrowse = 1;
+        else if (strcmp(tok, "namedattr") == 0) out->namedattr = 1;
     }
 }
 
@@ -228,7 +243,7 @@ static int do_mount_nfs(uint16_t port, const char *mount_point,
     char opts[512];
     int len = snprintf(opts, sizeof(opts),
         "vers=4,tcp,noac,noacl,noresvport,"
-        "rsize=65536,wsize=65536,"
+        "rsize=262144,wsize=262144,"
         "soft,intr,retrycnt=0,"
         "port=%u",
         (unsigned)port);
@@ -241,6 +256,8 @@ static int do_mount_nfs(uint16_t port, const char *mount_point,
         len += snprintf(opts + len, sizeof(opts) - (size_t)len, ",rdonly");
     if (args && args->nobrowse)
         len += snprintf(opts + len, sizeof(opts) - (size_t)len, ",nobrowse");
+    if (args && args->namedattr)
+        len += snprintf(opts + len, sizeof(opts) - (size_t)len, ",namedattr");
 
     DFUSE_LOG("mount_nfs -o %s 127.0.0.1:/ %s", opts, mount_point);
 
@@ -468,8 +485,8 @@ int fuse_loop(struct fuse *f)
         memset(&conn_info, 0, sizeof(conn_info));
         conn_info.proto_major = 7;
         conn_info.proto_minor = 26;
-        conn_info.max_write = 65536;
-        conn_info.max_readahead = 65536;
+        conn_info.max_write = DFUSE_IO_SIZE;
+        conn_info.max_readahead = DFUSE_IO_SIZE;
         conn_info.capable = FUSE_CAP_BIG_WRITES | FUSE_CAP_EXPORT_SUPPORT |
                             FUSE_CAP_ATOMIC_O_TRUNC
 #ifdef __APPLE__
@@ -556,6 +573,12 @@ void fuse_exit(struct fuse *f)
     f->exited = 1;
     if (f->chan && f->chan->server)
         nfs4_server_stop(f->chan->server);
+}
+
+void fuse_mark_namespace_changed(struct fuse *f)
+{
+    if (f && f->chan)
+        nfs4_server_mark_namespace_changed(f->chan->server);
 }
 
 /* ---- Utility functions ---- */
@@ -703,8 +726,8 @@ int fuse_main_real(int argc, char *argv[],
             memset(&conn_info, 0, sizeof(conn_info));
             conn_info.proto_major = 7;
             conn_info.proto_minor = 26;
-            conn_info.max_write = 65536;
-            conn_info.max_readahead = 65536;
+            conn_info.max_write = DFUSE_IO_SIZE;
+            conn_info.max_readahead = DFUSE_IO_SIZE;
             conn_info.capable = FUSE_CAP_BIG_WRITES | FUSE_CAP_EXPORT_SUPPORT |
                                 FUSE_CAP_ATOMIC_O_TRUNC;
             init_result = op->init(&conn_info);
@@ -776,8 +799,8 @@ int fuse_main_real(int argc, char *argv[],
         memset(&conn_info, 0, sizeof(conn_info));
         conn_info.proto_major = 7;
         conn_info.proto_minor = 26;
-        conn_info.max_write = 65536;
-        conn_info.max_readahead = 65536;
+        conn_info.max_write = DFUSE_IO_SIZE;
+        conn_info.max_readahead = DFUSE_IO_SIZE;
         conn_info.capable = FUSE_CAP_BIG_WRITES | FUSE_CAP_EXPORT_SUPPORT |
                             FUSE_CAP_ATOMIC_O_TRUNC
 #ifdef __APPLE__

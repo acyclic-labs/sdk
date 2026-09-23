@@ -366,32 +366,56 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     operation: SourceOperation,
     terminal_state: SourceState,
 ) -> Result<ReconcileOutcome<A, O>, SourceError> {
-    session.watcher.begin_rescan().map_err(engine)?;
-    let policy = session.capture_policy.clone();
-    let capture = crate::capture_baseline_with_policy(
-        &mut session.checkout,
-        &session.capture,
-        &policy,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await;
-    if let Err(error) = capture {
-        let _ = session
-            .watcher
-            .abort_rescan(WatchInvalidationReason::BackendError);
-        let _ = persist_session_state(
-            session,
-            SourceState::NeedsRescan(WatchInvalidationReason::BackendError),
-        )
-        .await;
-        return Err(engine(error));
-    }
-    let trailing = session.watcher.finish_rescan().map_err(engine)?;
+    let trailing = {
+        let mut attempt = 0;
+        loop {
+            session.watcher.begin_rescan().map_err(engine)?;
+            let policy = session.capture_policy.clone();
+            let capture = crate::capture_baseline_with_policy(
+                &mut session.checkout,
+                &session.capture,
+                &policy,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await;
+            if let Err(error) = capture {
+                let _ = session
+                    .watcher
+                    .abort_rescan(WatchInvalidationReason::BackendError);
+                let _ = persist_session_state(
+                    session,
+                    SourceState::NeedsRescan(WatchInvalidationReason::BackendError),
+                )
+                .await;
+                discard_unpublished_capture(session).await?;
+                return Err(engine(error));
+            }
+            let batch = session.watcher.finish_rescan().map_err(engine)?;
+            if matches!(
+                batch,
+                WatchBatch::RescanRequired {
+                    reason: WatchInvalidationReason::NativeRescanRequired,
+                    ..
+                }
+            ) && attempt < 3
+            {
+                // Native backends may deliver a coalesced hint from before
+                // this scan after it completes. Never publish the partial
+                // checkout; retry the baseline under the same operation key.
+                discard_unpublished_capture(session).await?;
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                attempt += 1;
+                continue;
+            }
+            break batch;
+        }
+    };
     if let WatchBatch::RescanRequired { reason, .. } = trailing {
         let fact =
             persist_source_operation(session, SourceState::NeedsRescan(reason), key, operation)
                 .await?;
+        discard_unpublished_capture(session).await?;
         return reconcile_outcome_from_fact(session, fact);
     }
     let capture = session.capture.clone();
@@ -407,6 +431,25 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     .await
     .map_err(engine)?;
     publish_session(session, key, operation, terminal_state).await
+}
+
+async fn discard_unpublished_capture<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    session: &mut SourceSession<A, O>,
+) -> Result<(), SourceError> {
+    let base = session.checkout.generation_id();
+    session.checkout = session
+        .workspace
+        .volume
+        .checkout(
+            GenerationSelector::Exact(base),
+            CheckoutMode::tracking_transaction(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(engine)?
+        .value;
+    Ok(())
 }
 
 async fn publish_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -681,13 +724,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 authority_head,
             })),
         };
-        match source.rescan().await? {
-            ReconcileOutcome::Clean(_) => {}
-            ReconcileOutcome::NeedsRescan(_) | ReconcileOutcome::Conflict => {
-                return Err(SourceError::Engine(
-                    "initial source baseline did not become clean".to_owned(),
-                ));
-            }
+        if !matches!(source.rescan().await?, ReconcileOutcome::Clean(_)) {
+            return Err(SourceError::Engine(
+                "initial source baseline did not become clean".to_owned(),
+            ));
         }
         Ok(Workspace {
             source: Some(source),
@@ -1819,14 +1859,25 @@ mod tests {
         assert_eq!(advanced, acknowledged);
 
         let key = IdempotencyKey::from_bytes([63; 16]);
-        assert!(matches!(
-            Box::pin(source.reconcile_with_key(key)).await?,
-            ReconcileOutcome::Conflict
-        ));
-        assert!(matches!(
-            Box::pin(source.reconcile_with_key(key)).await?,
-            ReconcileOutcome::Conflict
-        ));
+        match Box::pin(source.reconcile_with_key(key)).await? {
+            ReconcileOutcome::Conflict => assert!(matches!(
+                Box::pin(source.reconcile_with_key(key)).await?,
+                ReconcileOutcome::Conflict
+            )),
+            ReconcileOutcome::NeedsRescan(WatchInvalidationReason::NativeRescanRequired)
+                if cfg!(target_os = "macos") =>
+            {
+                assert!(matches!(
+                    Box::pin(source.reconcile_with_key(key)).await?,
+                    ReconcileOutcome::NeedsRescan(WatchInvalidationReason::NativeRescanRequired)
+                ));
+                assert!(matches!(
+                    Box::pin(source.rescan_with_key(IdempotencyKey::from_bytes([71; 16]))).await?,
+                    ReconcileOutcome::Conflict
+                ));
+            }
+            _ => return Err("source did not preserve conflict or rescan state".into()),
+        }
         assert!(matches!(
             Box::pin(source.reconcile_with_key(IdempotencyKey::from_bytes([72; 16]))).await?,
             ReconcileOutcome::Conflict

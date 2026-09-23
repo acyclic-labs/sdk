@@ -1,7 +1,7 @@
 {
   "name": "acyclic",
   "version": "0.1.0",
-  "description": "Fast recursively isolated workspaces for coding agents, backed by the Acyclic distributed filesystem.",
+  "description": "Fast recursively forked workspaces for coding agents, backed by the Acyclic distributed filesystem.",
   "author": { "name": "Acyclic Labs" },
   "license": "Apache-2.0",
   "extensions": {

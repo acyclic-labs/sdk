@@ -157,8 +157,8 @@ pub use facade::{
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use facade::{
-    LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend, LocalOptions,
-    LocalVolume,
+    LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend,
+    LocalOperationWindowStore, LocalOptions, LocalVolume,
 };
 #[cfg(all(feature = "memory", feature = "distributed"))]
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
@@ -168,16 +168,17 @@ pub use foundation::{
     authority_commit_digest,
 };
 pub use git_compat::{
-    GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureError,
-    GitCapturedGeneration, GitCommand, GitCommandOutput, GitCommit, GitCommitId, GitCompatError,
-    GitCompatRepository, GitCompatRunError, GitCompatState, GitCompatStore, GitDirtyState,
-    GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitGenerationRef,
-    GitGrepMatch, GitGrepResult, GitIgnorePolicy, GitObjectName, GitPatchError, GitPendingMutation,
-    GitPendingTransition, GitPublicationRecord, GitResetMode, GitStatus, GitTransitionId,
-    GitTreeEntry, GitTreeRef, IntoGitTreeRef, MemoryGitCompatStore, apply_git_patch,
-    apply_git_patch_with_permit, blame_git_generations, capture_git_compatible_generation,
-    capture_git_compatible_generation_at, capture_git_compatible_generation_incremental,
-    grep_git_generation, walk_git_tree,
+    GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureAuthenticationError,
+    GitCaptureError, GitCaptureProof, GitCapturedGeneration, GitCommand, GitCommandOutput,
+    GitCommit, GitCommitId, GitCompatError, GitCompatRepository, GitCompatRunError, GitCompatState,
+    GitCompatStore, GitDiffCounts, GitDirtyState, GitFilesystemAction, GitFilesystemExecutor,
+    GitFilesystemResult, GitGenerationRef, GitGrepMatch, GitGrepResult, GitIgnorePolicy,
+    GitObjectName, GitPatchError, GitPendingMutation, GitPendingTransition, GitPublicationRecord,
+    GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef, IntoGitTreeRef,
+    MemoryGitCompatStore, apply_git_patch, apply_git_patch_with_permit, blame_git_generations,
+    capture_git_compatible_generation, capture_git_compatible_generation_at,
+    capture_git_compatible_generation_incremental, git_compatible_diff_counts, grep_git_generation,
+    walk_git_tree,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use hosted::{
@@ -262,7 +263,7 @@ pub use native_mount::{
     MaterializeError, MaterializeOptions, Mount, MountAttributePage, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLifecycleError, MountLookup, MountNode,
     MountNodeKind, MountOpenFile, MountOptions, MountPath, MountPublication, MountRangeAllocation,
-    MountSeekTarget, MountSourceError, MountSparseRange, MountSparseSpan,
+    MountSeekTarget, MountSourceError, MountSparseRange, MountSparseSpan, MountViewLease,
     NativeBlockCloneAccelerationEvidence, NativeMountCapabilities, NativeMountError,
     NativeMountKind, NativeMountRequest, NativeMountSession, NativeMountSessionIsolation,
     NativeSparseAccelerationEvidence, NativeStorageAccelerationError,

@@ -197,6 +197,8 @@ export interface WorkspaceContextRegistry {
     parentContextId: WorkspaceContextIdentity,
     roots: readonly WorkspaceContextRoot[],
   ): Promise<WorkspaceContext>;
+  adoptRoot(contextId: WorkspaceContextIdentity, root: WorkspaceContextRoot): Promise<WorkspaceContext>;
+  removeRoot(contextId: WorkspaceContextIdentity, rootId: WorkspaceRootIdentity): Promise<WorkspaceContext>;
   resolve(contextId: WorkspaceContextIdentity): Promise<WorkspaceContext>;
   setActive(contextId: WorkspaceContextIdentity, active: boolean): Promise<WorkspaceContext>;
   setWorkspace(
@@ -354,8 +356,8 @@ export type GitCompatCommand =
 export interface GitCompatStatus {
   readonly branch: string;
   readonly head: GitCommitIdentity | undefined;
-  readonly workspace: GenerationIdentity;
-  readonly dirty: boolean;
+  readonly workspace: GitTreeRef;
+  readonly dirty: "clean" | "dirty" | "unknown";
   readonly allChangesStaged: true;
 }
 
@@ -392,11 +394,32 @@ export interface GitGenerationRef {
   readonly generation: GenerationIdentity;
 }
 
+/** Exact or source-backed tree, matching Rust's tagged GitTreeRef serde shape. */
+export type GitTreeRef =
+  | ({ readonly kind: "exact" } & GitGenerationRef)
+  | {
+      readonly kind: "lazy";
+      readonly id: Uint8Array;
+      readonly workspace_id: WorkspaceIdentity;
+      readonly authored_generation: GenerationIdentity;
+      readonly source: { readonly identity: Uint8Array; readonly epoch: bigint };
+      readonly overlay: Uint8Array;
+      readonly shadows: Uint8Array;
+    };
+
+/** SDK-verified-at-issuance fork origin; obtain it from core capture. */
+export interface GitCaptureProof {
+  readonly fork_parent: GitTreeRef;
+  readonly initial_generation: GenerationIdentity;
+  readonly operation_id: OperationIdentity;
+}
+
 /** Complete typed work request emitted by the compatibility state machine. */
 export type GitFilesystemAction =
   | { readonly CaptureCommit: {
-      readonly workspace_generation: GenerationIdentity;
-      readonly head_generation: GenerationIdentity | undefined;
+      readonly workspace_tree: GitTreeRef;
+      readonly head_tree: GitTreeRef | undefined;
+      readonly head_workspace_tree: GitTreeRef | undefined;
       readonly tracked_paths: readonly string[];
       readonly message: string;
       readonly author: string;
@@ -405,33 +428,37 @@ export type GitFilesystemAction =
     } }
   | { readonly ForkBranch: {
       readonly branch: string;
-      readonly source_workspace: WorkspaceIdentity;
-      readonly source_generation: GenerationIdentity;
+      readonly source_tree: GitTreeRef;
       readonly head: GitCommitIdentity | undefined;
       readonly switch: boolean;
     } }
   | { readonly SwitchWorkspace: { readonly workspace_id: WorkspaceIdentity } }
   | { readonly Diff: {
-      readonly from: GitGenerationRef | undefined;
-      readonly to: GitGenerationRef;
+      readonly from: GitTreeRef | undefined;
+      readonly to: GitTreeRef;
+      readonly tracked_paths: readonly string[];
     } }
   | { readonly RestoreGeneration: {
-      readonly workspace_id: WorkspaceIdentity;
-      readonly generation: GenerationIdentity;
+      readonly tree: GitTreeRef;
       readonly paths: readonly string[] | undefined;
     } }
   | { readonly RestorePaths: {
-      readonly workspace_id: WorkspaceIdentity;
-      readonly generation: GenerationIdentity;
+      readonly tree: GitTreeRef;
       readonly paths: readonly string[];
     } }
-  | { readonly Join: { readonly source_workspace: WorkspaceIdentity; readonly rebase: boolean } }
+  | { readonly Join: {
+      readonly target_tree: GitTreeRef;
+      readonly source_workspace: WorkspaceIdentity;
+      readonly rebase: boolean;
+      readonly tracked_paths: readonly string[];
+    } }
   | { readonly ApplyCommit: {
       readonly commit: GitCommitIdentity;
       readonly reverse: boolean;
-      readonly base: GitGenerationRef | undefined;
-      readonly source: GitGenerationRef | undefined;
+      readonly base: GitTreeRef | undefined;
+      readonly source: GitTreeRef | undefined;
       readonly paths: readonly string[];
+      readonly tracked_paths: readonly string[];
     } }
   | { readonly Blame: {
       readonly path: string;
@@ -440,33 +467,33 @@ export type GitFilesystemAction =
   | { readonly Grep: {
       readonly pattern: string;
       readonly path: string | undefined;
-      readonly generation: GitGenerationRef;
+      readonly tree: GitTreeRef;
     } }
   | { readonly Clean: {
       readonly dry_run: boolean;
-      readonly generation: GitGenerationRef;
+      readonly tree: GitTreeRef;
       readonly tracked_paths: readonly string[];
     } }
-  | { readonly Archive: {
-      readonly workspace_id: WorkspaceIdentity;
-      readonly generation: GenerationIdentity;
-    } }
+  | { readonly Archive: { readonly tree: GitTreeRef } }
   | { readonly ApplyPatch: { readonly patch: readonly number[] } }
   | { readonly CheckIgnore: {
       readonly paths: readonly string[];
-      readonly generation: GitGenerationRef;
+      readonly tree: GitTreeRef;
     } };
 
 export type GitFilesystemResult =
   | {
       readonly Captured: {
-        readonly generation: GenerationIdentity;
-        readonly workspace_id: WorkspaceIdentity;
+        readonly tree: GitTreeRef;
         readonly tracked_paths: readonly string[];
+        readonly proof: GitCaptureProof | undefined;
       };
     }
   | { readonly Forked: { readonly workspace_id: WorkspaceIdentity } }
-  | { readonly Applied: { readonly generation: GenerationIdentity | undefined } }
+  | { readonly Applied: {
+      readonly tree: GitTreeRef | undefined;
+      readonly tracked_paths: readonly string[] | undefined;
+    } }
   | {
       readonly Data: {
         readonly kind: string;
@@ -604,15 +631,15 @@ export function gitCompatSafeTimestamp(value: bigint): number {
 
 /** Decode and validate the native façade's stable JSON envelope. */
 export function parseGitCompatOutputJson(json: string): GitCompatOutput {
-  return normalizeGitCompatOutput(JSON.parse(json) as unknown);
+  return normalizeGitCompatOutput(parseGitJson(json));
 }
 
 /** Decode one durable pending transition returned by the native store. */
 export function parseGitPendingTransitionJson(json: string): GitPendingTransition {
-  const pending = object(JSON.parse(json) as unknown, "pending transition");
+  const pending = object(parseGitJson(json), "pending transition");
   if (!("mutation" in pending)) throw new TypeError("Git pending transition lacks its mutation");
   return {
-    id: identity(pending.id, 16, "pending transition ID"),
+    id: uuidIdentity(pending.id, "pending transition ID"),
     action: normalizeAction(pending.action),
     mutation: pending.mutation,
   };
@@ -625,9 +652,9 @@ export function stringifyGitFilesystemResult(result: GitFilesystemResult): strin
     case "Captured": {
       const captured = object(value, "Captured result");
       return JSON.stringify({ Captured: {
-        generation: bytes(captured.generation, 32, "captured generation"),
-        workspace_id: bytes(captured.workspace_id, 16, "captured workspace"),
+        tree: treeRefJson(captured.tree, "captured tree"),
         tracked_paths: strings(captured.tracked_paths, "captured tracked paths"),
+        proof: captured.proof == null ? null : captureProofJson(captured.proof),
       } });
     }
     case "Forked": {
@@ -639,7 +666,8 @@ export function stringifyGitFilesystemResult(result: GitFilesystemResult): strin
     case "Applied": {
       const applied = object(value, "Applied result");
       return JSON.stringify({ Applied: {
-        generation: optionalBytes(applied.generation, 32, "applied generation"),
+        tree: applied.tree == null ? null : treeRefJson(applied.tree, "applied tree"),
+        tracked_paths: applied.tracked_paths == null ? null : strings(applied.tracked_paths, "applied tracked paths"),
       } });
     }
     case "Data": {
@@ -681,14 +709,16 @@ function normalizeGitCompatOutput(value: unknown): GitCompatOutput {
   switch (kind) {
     case "Status": {
       const status = object(body, "Status output");
-      if (typeof status.branch !== "string" || typeof status.dirty !== "boolean" || status.all_changes_staged !== true) {
+      if (typeof status.branch !== "string"
+        || !["clean", "dirty", "unknown"].includes(status.dirty as string)
+        || status.all_changes_staged !== true) {
         throw new TypeError("Git Status output is malformed");
       }
       return { Status: {
         branch: status.branch,
         head: optionalCommit(status.head, "status head"),
-        workspace: identity(status.workspace, 32, "status workspace"),
-        dirty: status.dirty,
+        workspace: treeRef(status.workspace, "status workspace"),
+        dirty: status.dirty as GitCompatStatus["dirty"],
         allChangesStaged: true,
       } };
     }
@@ -723,7 +753,7 @@ function normalizeGitCompatOutput(value: unknown): GitCompatOutput {
     case "Prepared": {
       const prepared = object(body, "Prepared output");
       return { Prepared: {
-        transition: identity(prepared.transition, 16, "prepared transition"),
+        transition: uuidIdentity(prepared.transition, "prepared transition"),
         action: normalizeAction(prepared.action),
       } };
     }
@@ -740,8 +770,9 @@ function normalizeAction(value: unknown): GitFilesystemAction {
   const data = object(body, `${kind} action`);
   switch (kind) {
     case "CaptureCommit": return { CaptureCommit: {
-      workspace_generation: identity(data.workspace_generation, 32, "capture workspace generation"),
-      head_generation: optionalIdentity(data.head_generation, 32, "capture head generation"),
+      workspace_tree: treeRef(data.workspace_tree, "capture workspace tree"),
+      head_tree: optionalTreeRef(data.head_tree, "capture head tree"),
+      head_workspace_tree: optionalTreeRef(data.head_workspace_tree, "capture head workspace tree"),
       tracked_paths: strings(data.tracked_paths, "capture tracked paths"),
       message: text(data.message, "capture message"),
       author: text(data.author, "capture author"),
@@ -750,8 +781,7 @@ function normalizeAction(value: unknown): GitFilesystemAction {
     } };
     case "ForkBranch": return { ForkBranch: {
       branch: text(data.branch, "fork branch"),
-      source_workspace: identity(data.source_workspace, 16, "fork source workspace"),
-      source_generation: identity(data.source_generation, 32, "fork source generation"),
+      source_tree: treeRef(data.source_tree, "fork source tree"),
       head: optionalCommit(data.head, "fork head"),
       switch: boolean(data.switch, "fork switch"),
     } };
@@ -759,29 +789,31 @@ function normalizeAction(value: unknown): GitFilesystemAction {
       workspace_id: identity(data.workspace_id, 16, "switch workspace"),
     } };
     case "Diff": return { Diff: {
-      from: optionalGenerationRef(data.from, "diff source"),
-      to: generationRef(data.to, "diff destination"),
+      from: optionalTreeRef(data.from, "diff source"),
+      to: treeRef(data.to, "diff destination"),
+      tracked_paths: strings(data.tracked_paths, "diff tracked paths"),
     } };
     case "RestoreGeneration": return { RestoreGeneration: {
-      workspace_id: identity(data.workspace_id, 16, "restore workspace"),
-      generation: identity(data.generation, 32, "restore generation"),
+      tree: treeRef(data.tree, "restore tree"),
       paths: data.paths == null ? undefined : strings(data.paths, "restore paths"),
     } };
     case "RestorePaths": return { RestorePaths: {
-      workspace_id: identity(data.workspace_id, 16, "path restore workspace"),
-      generation: identity(data.generation, 32, "path restore generation"),
+      tree: treeRef(data.tree, "path restore tree"),
       paths: strings(data.paths, "path restore paths"),
     } };
     case "Join": return { Join: {
+      target_tree: treeRef(data.target_tree, "join target tree"),
       source_workspace: identity(data.source_workspace, 16, "join source workspace"),
       rebase: boolean(data.rebase, "join rebase"),
+      tracked_paths: strings(data.tracked_paths, "join tracked paths"),
     } };
     case "ApplyCommit": return { ApplyCommit: {
       commit: commitId(data.commit, "applied commit"),
       reverse: boolean(data.reverse, "apply reverse"),
-      base: optionalGenerationRef(data.base, "apply base"),
-      source: optionalGenerationRef(data.source, "apply source"),
+      base: optionalTreeRef(data.base, "apply base"),
+      source: optionalTreeRef(data.source, "apply source"),
       paths: strings(data.paths, "apply paths"),
+      tracked_paths: strings(data.tracked_paths, "apply tracked paths"),
     } };
     case "Blame": {
       if (!Array.isArray(data.commits)) throw new TypeError("Git blame commits must be an array");
@@ -793,23 +825,22 @@ function normalizeAction(value: unknown): GitFilesystemAction {
     case "Grep": return { Grep: {
       pattern: text(data.pattern, "grep pattern"),
       path: optionalText(data.path, "grep path"),
-      generation: generationRef(data.generation, "grep generation"),
+      tree: treeRef(data.tree, "grep tree"),
     } };
     case "Clean": return { Clean: {
       dry_run: boolean(data.dry_run, "clean dry-run"),
-      generation: generationRef(data.generation, "clean generation"),
+      tree: treeRef(data.tree, "clean tree"),
       tracked_paths: strings(data.tracked_paths, "clean tracked paths"),
     } };
     case "Archive": return { Archive: {
-      workspace_id: identity(data.workspace_id, 16, "archive workspace"),
-      generation: identity(data.generation, 32, "archive generation"),
+      tree: treeRef(data.tree, "archive tree"),
     } };
     case "ApplyPatch": return { ApplyPatch: {
       patch: bytes(data.patch, undefined, "patch"),
     } };
     case "CheckIgnore": return { CheckIgnore: {
       paths: strings(data.paths, "ignore paths"),
-      generation: generationRef(data.generation, "ignore generation"),
+      tree: treeRef(data.tree, "ignore tree"),
     } };
   }
 }
@@ -819,15 +850,16 @@ function normalizeResult(value: unknown): GitFilesystemResult {
   const data = object(body, `${kind} result`);
   switch (kind) {
     case "Captured": return { Captured: {
-      generation: identity(data.generation, 32, "captured generation"),
-      workspace_id: identity(data.workspace_id, 16, "captured workspace"),
+      tree: treeRef(data.tree, "captured tree"),
       tracked_paths: strings(data.tracked_paths, "captured tracked paths"),
+      proof: data.proof == null ? undefined : captureProof(data.proof),
     } };
     case "Forked": return { Forked: {
       workspace_id: identity(data.workspace_id, 16, "forked workspace"),
     } };
     case "Applied": return { Applied: {
-      generation: optionalIdentity(data.generation, 32, "applied generation"),
+      tree: optionalTreeRef(data.tree, "applied tree"),
+      tracked_paths: data.tracked_paths == null ? undefined : strings(data.tracked_paths, "applied tracked paths"),
     } };
     case "Data": return { Data: {
       kind: text(data.kind, "data result kind"),
@@ -841,9 +873,9 @@ function normalizeCommit(value: unknown): Readonly<Record<string, unknown>> {
   return {
     ...commit,
     id: commitId(commit.id, "commit id"),
-    generation: identity(commit.generation, 32, "commit generation"),
-    generation_workspace_id: optionalIdentity(commit.generation_workspace_id, 16, "commit workspace"),
-    workspace_generation: optionalIdentity(commit.workspace_generation, 32, "commit workspace generation"),
+    tree: treeRef(commit.tree, "commit tree"),
+    workspace_tree: treeRef(commit.workspace_tree, "commit workspace tree"),
+    capture_proof: commit.capture_proof == null ? undefined : captureProof(commit.capture_proof),
     tracked_paths: strings(commit.tracked_paths, "commit tracked paths"),
     parents: commits(commit.parents, "commit parents"),
     author: text(commit.author, "commit author"),
@@ -875,16 +907,67 @@ function normalizeBisect(value: unknown): GitBisectResult {
   };
 }
 
-function generationRef(value: unknown, label: string): GitGenerationRef {
+function treeRef(value: unknown, label: string): GitTreeRef {
   const reference = object(value, label);
-  return {
+  if (reference.kind === "exact") return {
+    kind: "exact",
     workspace_id: identity(reference.workspace_id, 16, `${label} workspace`),
     generation: identity(reference.generation, 32, `${label} generation`),
   };
+  if (reference.kind === "lazy") {
+    const source = object(reference.source, `${label} source`);
+    const epoch = u64(source.epoch, `${label} source epoch`);
+    return {
+      kind: "lazy",
+      id: identity(reference.id, 32, `${label} snapshot`),
+      workspace_id: identity(reference.workspace_id, 16, `${label} workspace`),
+      authored_generation: identity(reference.authored_generation, 32, `${label} authored generation`),
+      source: { identity: identity(source.identity, 16, `${label} source identity`), epoch },
+      overlay: identity(reference.overlay, 32, `${label} overlay`),
+      shadows: identity(reference.shadows, 32, `${label} shadows`),
+    };
+  }
+  throw new TypeError(`Git ${label} has an unknown tree kind`);
 }
 
-function optionalGenerationRef(value: unknown, label: string): GitGenerationRef | undefined {
-  return value == null ? undefined : generationRef(value, label);
+function optionalTreeRef(value: unknown, label: string): GitTreeRef | undefined {
+  return value == null ? undefined : treeRef(value, label);
+}
+
+function captureProof(value: unknown): GitCaptureProof {
+  const proof = object(value, "capture proof");
+  return {
+    fork_parent: treeRef(proof.fork_parent, "capture fork parent"),
+    initial_generation: identity(proof.initial_generation, 32, "capture initial generation"),
+    operation_id: uuidIdentity(proof.operation_id, "capture operation"),
+  };
+}
+
+function treeRefJson(value: unknown, label: string): Readonly<Record<string, unknown>> {
+  const tree = treeRef(value, label);
+  if (tree.kind === "exact") return {
+    kind: "exact",
+    workspace_id: Array.from(tree.workspace_id),
+    generation: Array.from(tree.generation),
+  };
+  return {
+    kind: "lazy",
+    id: Array.from(tree.id),
+    workspace_id: Array.from(tree.workspace_id),
+    authored_generation: Array.from(tree.authored_generation),
+    source: { identity: Array.from(tree.source.identity), epoch: u64Json(tree.source.epoch, `${label} source epoch`) },
+    overlay: Array.from(tree.overlay),
+    shadows: Array.from(tree.shadows),
+  };
+}
+
+function captureProofJson(value: unknown): Readonly<Record<string, unknown>> {
+  const proof = object(value, "capture proof");
+  return {
+    fork_parent: treeRefJson(proof.fork_parent, "capture fork parent"),
+    initial_generation: bytes(proof.initial_generation, 32, "capture initial generation"),
+    operation_id: uuidString(proof.operation_id, "capture operation"),
+  };
 }
 
 function tagged<const K extends string>(
@@ -921,12 +1004,54 @@ function identity(value: unknown, length: number, label: string): Uint8Array {
   return Uint8Array.from(bytes(value, length, label));
 }
 
-function optionalBytes(value: unknown, length: number, label: string): number[] | null {
-  return value == null ? null : bytes(value, length, label);
+// Lazy source epochs are Rust u64 values. Read the original JSON token before
+// JavaScript rounds it; older engines fail closed on an unsafe numeric value.
+function parseGitJson(json: string): unknown {
+  return JSON.parse(json, (key: string, value: unknown, context?: { source?: string }) => {
+    if (key !== "epoch" || typeof value !== "number") return value;
+    const source = context?.source;
+    if (source === undefined) {
+      if (!Number.isSafeInteger(value)) throw new RangeError("Git source epoch needs lossless JSON parsing");
+      return BigInt(value);
+    }
+    if (!/^(0|[1-9][0-9]*)$/.test(source)) throw new TypeError("Git source epoch must be a u64");
+    return u64(BigInt(source), "source epoch");
+  }) as unknown;
 }
 
-function optionalIdentity(value: unknown, length: number, label: string): Uint8Array | undefined {
-  return value == null ? undefined : identity(value, length, label);
+function u64(value: unknown, label: string): bigint {
+  const epoch = typeof value === "bigint"
+    ? value
+    : typeof value === "number" && Number.isSafeInteger(value)
+      ? BigInt(value)
+      : undefined;
+  if (epoch === undefined || epoch < 0n || epoch > 18_446_744_073_709_551_615n) {
+    throw new TypeError(`Git ${label} must be a u64`);
+  }
+  return epoch;
+}
+
+function u64Json(value: unknown, label: string): unknown {
+  const epoch = u64(value, label);
+  if (epoch <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(epoch);
+  const rawJson = (JSON as typeof JSON & { rawJSON?: (text: string) => unknown }).rawJSON;
+  if (rawJson === undefined) throw new RangeError("Git source epoch needs lossless JSON serialization");
+  return rawJson(epoch.toString());
+}
+
+// Rust's transparent OperationId wraps uuid::Uuid: JSON uses its canonical
+// string form, while the native N-API boundary accepts the same 16 raw bytes.
+function uuidIdentity(value: unknown, label: string): OperationIdentity {
+  if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+    throw new TypeError(`Git ${label} must be a UUID string`);
+  }
+  const hex = value.replaceAll("-", "");
+  return Uint8Array.from({ length: 16 }, (_, index) => Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16));
+}
+
+function uuidString(value: unknown, label: string): string {
+  const hex = Array.from(bytes(value, 16, label), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function text(value: unknown, label: string): string {

@@ -29,6 +29,14 @@ impl ProcessTree {
             .try_wait()
     }
 
+    /// Waits for the direct child while retaining ownership of its descendants.
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.child
+            .as_mut()
+            .ok_or_else(|| io::Error::other("process output was already collected"))?
+            .wait()
+    }
+
     /// Collects the direct child's output while retaining the descendant guard.
     pub fn wait_with_output(&mut self) -> io::Result<Output> {
         self.child

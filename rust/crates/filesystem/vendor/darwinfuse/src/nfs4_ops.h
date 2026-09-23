@@ -73,6 +73,8 @@
 #define NFS4ERR_NOTEMPTY        66
 #define NFS4ERR_STALE           70
 #define NFS4ERR_BADHANDLE       10001
+#define NFS4ERR_BAD_COOKIE      10003
+#define NFS4ERR_TOOSMALL        10005
 #define NFS4ERR_BAD_STATEID     10026
 #define NFS4ERR_NOTSUPP         10004
 #define NFS4ERR_SERVERFAULT     10006
@@ -283,5 +285,7 @@ int nfs4_dispatch_compound(const darwinfuse_config_t *config,
 
 /* Callback-level regression hook used by the macOS Rust test suite. */
 int nfs4_test_exclusive_replay_identity(void);
+int nfs4_test_namedattr_exclusive_replay_identity(void);
+int nfs4_test_readdir_cookie_verifier(void);
 
 #endif /* DARWINFUSE_NFS4_OPS_H */

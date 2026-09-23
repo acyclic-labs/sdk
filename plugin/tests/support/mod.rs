@@ -1,6 +1,7 @@
 mod scripted_provider;
+mod workloads;
 
-pub use scripted_provider::{ProviderProtocol, ScriptedProvider};
+pub use scripted_provider::{RequestFingerprint, ScriptedProvider};
 
 use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
 use serde_json::Value;
@@ -8,18 +9,58 @@ use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Write as _;
+use std::io::{Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+const MAX_CAPTURED_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
+
 pub struct PackagedPlugin {
     pub root: PathBuf,
     pub launcher: PathBuf,
+    pub native: PathBuf,
+}
+
+pub fn test_tempdir(prefix: &str) -> tempfile::TempDir {
+    let root = std::env::var_os("ACYCLIC_E2E_SCRATCH_ROOT")
+        .map_or_else(default_e2e_scratch_root, PathBuf::from)
+        .join("acyclic-e2e-scratch");
+    fs::create_dir_all(&root).expect("test scratch root");
+    tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir_in(root)
+        .expect("workspace-local temporary directory")
+}
+
+#[cfg(target_os = "linux")]
+fn default_e2e_scratch_root() -> PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .expect("Linux qualification requires XDG_CACHE_HOME or HOME")
+}
+
+#[cfg(target_os = "windows")]
+fn default_e2e_scratch_root() -> PathBuf {
+    // MSVC's linker cannot open its generated object file when a native
+    // checkout has this test repository's deeply nested parent path either.
+    // Keep the qualification root short enough to test the projection rather
+    // than that unrelated linker MAX_PATH limit.
+    std::env::temp_dir()
+}
+
+#[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
+fn default_e2e_scratch_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("plugin workspace root")
+        .parent()
+        .expect("plugin workspace parent")
+        .to_path_buf()
 }
 
 pub struct ServiceGuard {
-    launcher: PathBuf,
     home: PathBuf,
     identity: Option<String>,
     process_tree: Option<ProcessTree>,
@@ -27,9 +68,8 @@ pub struct ServiceGuard {
 }
 
 impl ServiceGuard {
-    pub fn new(launcher: &Path, home: &Path) -> Self {
+    pub fn new(home: &Path) -> Self {
         Self {
-            launcher: launcher.to_path_buf(),
             home: home.to_path_buf(),
             identity: None,
             process_tree: None,
@@ -111,11 +151,8 @@ impl ServiceGuard {
         if let Some(tree) = self.process_tree.as_mut() {
             tree.terminate().map_err(|error| error.to_string())?;
         }
-        let mut drain = command("node");
-        drain
-            .arg(&self.launcher)
-            .arg("__service-drain")
-            .arg(&identity);
+        let mut drain = command(ACYCLIC);
+        drain.arg("__service-drain").arg(&identity);
         isolated_state(&mut drain, &self.home);
         let BoundedOutput {
             output,
@@ -151,11 +188,8 @@ impl ServiceGuard {
         {
             return Ok(false);
         }
-        let mut cleanup = command("node");
-        cleanup
-            .arg(&self.launcher)
-            .arg("__service-drain")
-            .arg(expected);
+        let mut cleanup = command(ACYCLIC);
+        cleanup.arg("__service-drain").arg(expected);
         isolated_state(&mut cleanup, &self.home);
         let BoundedOutput {
             output,
@@ -234,7 +268,7 @@ impl ServiceGuard {
     }
 
     fn status(&self) -> Result<Value, String> {
-        service_status(&self.launcher, &self.home)
+        service_status(&self.home)
     }
 }
 
@@ -253,8 +287,8 @@ impl Drop for ServiceGuard {
     }
 }
 
-pub fn assert_service_absent(launcher: &Path, home: &Path) -> Result<(), String> {
-    let status = service_status(launcher, home)?;
+pub fn assert_service_absent(home: &Path) -> Result<(), String> {
+    let status = service_status(home)?;
     if status.get("markerIdentity").is_some_and(Value::is_null)
         && status.get("reachableIdentity").is_some_and(Value::is_null)
         && status.get("lockAcquirable").and_then(Value::as_bool) == Some(true)
@@ -265,9 +299,9 @@ pub fn assert_service_absent(launcher: &Path, home: &Path) -> Result<(), String>
     }
 }
 
-fn service_status(launcher: &Path, home: &Path) -> Result<Value, String> {
-    let mut status = command("node");
-    status.arg(launcher).arg("__service-status");
+fn service_status(home: &Path) -> Result<Value, String> {
+    let mut status = command(ACYCLIC);
+    status.arg("__service-status");
     isolated_state(&mut status, home);
     let BoundedOutput {
         output,
@@ -287,9 +321,9 @@ fn service_status(launcher: &Path, home: &Path) -> Result<Value, String> {
 
 fn service_data(home: &Path) -> PathBuf {
     if cfg!(windows) {
-        home.join("local").join("Acyclic").join("state-v2")
+        home.join("local").join("Acyclic").join("state-v4")
     } else {
-        home.join("state").join("acyclic").join("state-v2")
+        home.join("state").join("acyclic").join("state-v4")
     }
 }
 
@@ -341,19 +375,28 @@ pub fn output_with_timeout(command: &mut Command, timeout: Duration) -> BoundedO
     try_output_with_timeout(command, timeout).expect("spawn bounded process tree")
 }
 
+pub fn output_with_stdin_timeout(
+    command: &mut Command,
+    input: &[u8],
+    timeout: Duration,
+) -> BoundedOutput {
+    let mut stdin = tempfile::tempfile().expect("create bounded process input");
+    stdin.write_all(input).expect("write bounded process input");
+    stdin
+        .seek(std::io::SeekFrom::Start(0))
+        .expect("rewind bounded process input");
+    try_output_with_timeout_and_stdin(command, timeout, Stdio::from(stdin))
+        .expect("spawn bounded process tree with input")
+}
+
 pub fn output_after_provider_admission(
     command: &mut Command,
     provider: &ScriptedProvider,
     admission_timeout: Duration,
     stall_timeout: Duration,
 ) -> (BoundedOutput, bool) {
-    let mut process_tree = spawn_process_tree(
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped()),
-    )
-    .expect("spawn provider-admission process tree");
+    let (mut process_tree, mut stdout, mut stderr) =
+        spawn_captured_process_tree(command).expect("spawn provider-admission process tree");
     let admission_deadline = Instant::now() + admission_timeout;
     let admitted = loop {
         if !provider.wait_for_requests(1, Duration::ZERO).is_empty() {
@@ -371,13 +414,20 @@ pub fn output_after_provider_admission(
     };
     let deadline = Instant::now() + stall_timeout;
     loop {
+        if captured_output_exceeds_limit(&stdout, &stderr).expect("inspect provider output capture")
+        {
+            process_tree
+                .terminate_descendants()
+                .expect("terminate output-flooding provider descendants");
+            let _ = process_tree.wait();
+            panic!("provider output exceeded {MAX_CAPTURED_OUTPUT_BYTES} bytes");
+        }
         match process_tree
             .try_wait()
             .expect("poll admitted provider process tree")
         {
-            Some(_) => {
-                let output = process_tree
-                    .wait_with_output()
+            Some(status) => {
+                let output = captured_output(status, &mut stdout, &mut stderr)
                     .expect("collect admitted provider process tree");
                 return (
                     BoundedOutput {
@@ -395,8 +445,10 @@ pub fn output_after_provider_admission(
                 process_tree
                     .terminate_descendants()
                     .expect("terminate admitted provider descendants");
-                let output = process_tree
-                    .wait_with_output()
+                let status = process_tree
+                    .wait()
+                    .expect("wait for timed-out provider process tree");
+                let output = captured_output(status, &mut stdout, &mut stderr)
                     .expect("collect timed-out provider process tree");
                 return (
                     BoundedOutput {
@@ -415,17 +467,29 @@ fn try_output_with_timeout(
     command: &mut Command,
     timeout: Duration,
 ) -> std::io::Result<BoundedOutput> {
-    let mut process_tree = spawn_process_tree(
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped()),
-    )?;
+    try_output_with_timeout_and_stdin(command, timeout, Stdio::null())
+}
+
+fn try_output_with_timeout_and_stdin(
+    command: &mut Command,
+    timeout: Duration,
+    stdin: Stdio,
+) -> std::io::Result<BoundedOutput> {
+    let (mut process_tree, mut stdout, mut stderr) =
+        spawn_captured_process_tree_with_stdin(command, stdin)?;
     let deadline = Instant::now() + timeout;
     loop {
+        if captured_output_exceeds_limit(&stdout, &stderr)? {
+            process_tree.terminate_descendants()?;
+            let _ = process_tree.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::FileTooLarge,
+                format!("host output exceeded {MAX_CAPTURED_OUTPUT_BYTES} bytes"),
+            ));
+        }
         match process_tree.try_wait()? {
-            Some(_) => {
-                let output = process_tree.wait_with_output()?;
+            Some(status) => {
+                let output = captured_output(status, &mut stdout, &mut stderr)?;
                 return Ok(BoundedOutput {
                     output,
                     expired: false,
@@ -435,7 +499,8 @@ fn try_output_with_timeout(
             None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             None => {
                 process_tree.terminate_descendants()?;
-                let output = process_tree.wait_with_output()?;
+                let status = process_tree.wait()?;
+                let output = captured_output(status, &mut stdout, &mut stderr)?;
                 return Ok(BoundedOutput {
                     output,
                     expired: true,
@@ -444,6 +509,64 @@ fn try_output_with_timeout(
             }
         }
     }
+}
+
+fn spawn_captured_process_tree(
+    command: &mut Command,
+) -> std::io::Result<(ProcessTree, fs::File, fs::File)> {
+    spawn_captured_process_tree_with_stdin(command, Stdio::null())
+}
+
+fn spawn_captured_process_tree_with_stdin(
+    command: &mut Command,
+    stdin: Stdio,
+) -> std::io::Result<(ProcessTree, fs::File, fs::File)> {
+    let stdout = tempfile::tempfile()?;
+    let stderr = tempfile::tempfile()?;
+    command
+        .stdin(stdin)
+        .stdout(Stdio::from(stdout.try_clone()?))
+        .stderr(Stdio::from(stderr.try_clone()?));
+    Ok((spawn_process_tree(command)?, stdout, stderr))
+}
+
+fn captured_output(
+    status: std::process::ExitStatus,
+    stdout: &mut fs::File,
+    stderr: &mut fs::File,
+) -> std::io::Result<Output> {
+    if captured_output_exceeds_limit(stdout, stderr)? {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            format!("host output exceeded {MAX_CAPTURED_OUTPUT_BYTES} bytes"),
+        ));
+    }
+    fn read(file: &mut fs::File) -> std::io::Result<Vec<u8>> {
+        file.seek(std::io::SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        file.take(MAX_CAPTURED_OUTPUT_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_CAPTURED_OUTPUT_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::FileTooLarge,
+                format!("host output exceeded {MAX_CAPTURED_OUTPUT_BYTES} bytes"),
+            ));
+        }
+        Ok(bytes)
+    }
+    Ok(Output {
+        status,
+        stdout: read(stdout)?,
+        stderr: read(stderr)?,
+    })
+}
+
+fn captured_output_exceeds_limit(stdout: &fs::File, stderr: &fs::File) -> std::io::Result<bool> {
+    Ok(stdout
+        .metadata()?
+        .len()
+        .saturating_add(stderr.metadata()?.len())
+        > MAX_CAPTURED_OUTPUT_BYTES)
 }
 
 pub fn target_name() -> &'static str {
@@ -487,13 +610,18 @@ pub fn package_production_plugin(temporary: &Path) -> PackagedPlugin {
     );
     PackagedPlugin {
         launcher: root.join("bin/acyclic.js"),
+        native: root.join(if cfg!(windows) {
+            "bin/acyclic.exe"
+        } else {
+            "bin/acyclic"
+        }),
         root,
     }
 }
 
 pub fn installed_host_binary(name: &str, override_name: &str) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os(override_name) {
-        return Some(PathBuf::from(path));
+        return executable_host_path(name, PathBuf::from(path));
     }
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
@@ -508,7 +636,48 @@ pub fn installed_host_binary(name: &str, override_name: &str) -> Option<PathBuf>
             let candidates = [name.to_owned()];
             candidates.map(move |candidate| directory.join(candidate))
         })
-        .find(|candidate| candidate.is_file())
+        .find_map(|candidate| executable_host_path(name, candidate))
+}
+
+fn executable_host_path(name: &str, candidate: PathBuf) -> Option<PathBuf> {
+    if !candidate.is_file() {
+        return None;
+    }
+    #[cfg(windows)]
+    {
+        if candidate
+            .extension()
+            .is_some_and(|extension| extension == "exe")
+        {
+            return Some(candidate);
+        }
+        if name != "codex" {
+            return None;
+        }
+        let (package, target) = match std::env::consts::ARCH {
+            "x86_64" => ("codex-win32-x64", "x86_64-pc-windows-msvc"),
+            "aarch64" => ("codex-win32-arm64", "aarch64-pc-windows-msvc"),
+            _ => return None,
+        };
+        let native = candidate
+            .parent()?
+            .join("node_modules")
+            .join("@openai")
+            .join("codex")
+            .join("node_modules")
+            .join("@openai")
+            .join(package)
+            .join("vendor")
+            .join(target)
+            .join("bin")
+            .join("codex.exe");
+        native.is_file().then_some(native)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = name;
+        Some(candidate)
+    }
 }
 
 pub fn tree_snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, String)> {

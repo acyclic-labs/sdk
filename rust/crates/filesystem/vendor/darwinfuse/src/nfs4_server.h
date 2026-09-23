@@ -9,6 +9,7 @@
 #define DARWINFUSE_NFS4_SERVER_H
 
 #include <stdint.h>
+#include <stdatomic.h>
 #include <sys/types.h>
 
 /* Forward declarations */
@@ -22,6 +23,7 @@ typedef struct {
     uid_t       uid;            /* Owner UID (for access control) */
     gid_t       gid;            /* Owner GID */
     struct dfuse_inode_table_s  *inode_table;  /* dynamic inode table */
+    atomic_uint_fast64_t namespace_change; /* conservative directory change id */
 } darwinfuse_config_t;
 
 /* Opaque server state */
@@ -99,5 +101,8 @@ void nfs4_server_set_multithreaded(darwinfuse_server_t *srv, int num_threads);
  * Should be called after ops->init() returns.
  */
 void nfs4_server_set_private_data(darwinfuse_server_t *srv, void *private_data);
+
+/* Invalidate outstanding READDIR cookie verifiers after an external change. */
+void nfs4_server_mark_namespace_changed(darwinfuse_server_t *srv);
 
 #endif /* DARWINFUSE_NFS4_SERVER_H */

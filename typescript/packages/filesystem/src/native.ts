@@ -108,6 +108,7 @@ import {
 const generationHandles = new WeakMap<FsGeneration, NativeRawGeneration>();
 const workspaceHandles = new WeakMap<FsWorkspace, NativeRawWorkspace>();
 const changeSetHandles = new WeakMap<FsChangeSet, NativeRawChangeSet>();
+const fsHandles = new WeakMap<NativeFsEngine, NativeRawFs>();
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOptions } from "./contracts.js";
@@ -209,7 +210,11 @@ export async function openNativeWorkspaceContextRegistry(
 }
 
 function encodeWorkspaceContextRoots(roots: readonly WorkspaceContextRoot[]): string {
-  return JSON.stringify(roots.map((root) => ({
+  return JSON.stringify(roots.map(encodeWorkspaceContextRoot));
+}
+
+function encodeWorkspaceContextRoot(root: WorkspaceContextRoot): object {
+  return {
     root_id: Array.from(root.rootId),
     source_path: root.sourcePath,
     workspace_id: Array.from(root.workspaceId),
@@ -218,7 +223,7 @@ function encodeWorkspaceContextRoots(roots: readonly WorkspaceContextRoot[]): st
       ? null
       : Array.from(root.parentWorkspaceId),
     mount_path: root.mountPath ?? null,
-  })));
+  };
 }
 
 function parseWorkspaceContext(json: string): WorkspaceContext {
@@ -273,6 +278,15 @@ function adaptWorkspaceContextRegistry(
         parentContextId,
         encodeWorkspaceContextRoots(roots),
       ));
+    },
+    async adoptRoot(contextId, root) {
+      return parseWorkspaceContext(await raw.adoptRootJson(
+        contextId,
+        JSON.stringify(encodeWorkspaceContextRoot(root)),
+      ));
+    },
+    async removeRoot(contextId, rootId) {
+      return parseWorkspaceContext(await raw.removeRootJson(contextId, rootId));
     },
     async resolve(contextId) {
       return parseWorkspaceContext(await raw.resolveJson(contextId));
@@ -401,13 +415,13 @@ export async function openNativeWorkspaceGraph(stateRoot: string): Promise<Works
 
 /** Opens the durable overlapping-tool lease coordinator. */
 export async function openNativeOperationWindowCoordinator(
-  stateRoot: string,
+  filesystem: NativeFsEngine,
 ): Promise<OperationWindowCoordinator> {
-  requireStateRoot(stateRoot, "operation window");
-  const binding = await bindings();
-  return adaptOperationWindowCoordinator(
-    binding.NativeOperationWindowCoordinator.open(stateRoot),
-  );
+  const raw = fsHandles.get(filesystem);
+  if (raw === undefined) {
+    throw new TypeError("operation windows require a native filesystem opened by this module");
+  }
+  return adaptOperationWindowCoordinator(raw.operationWindows());
 }
 
 function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
@@ -677,6 +691,7 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
     },
     close(): void {},
   };
+  fsHandles.set(engine, raw);
   return engine;
 }
 

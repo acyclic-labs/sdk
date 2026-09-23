@@ -1,11 +1,17 @@
 //! Native projection of one demand-backed lazy workspace.
 
 use super::adapter::CallbackRuntime;
+use super::view_gate::{
+    ViewGate as SourceViewGate, ViewReadLease as SourceViewLease,
+    ViewWriteLease as SourceMutationLease,
+};
 use super::{
     CheckoutMountSource, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
-    MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError,
+    MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError, MountViewLease,
 };
+#[cfg(target_os = "linux")]
+use crate::demand::SourceReference;
 use crate::demand::{DemandSource, SourceNode, SourceNodeKind};
 use crate::kernel::{FileKind, FileMetadata, FilePayload, MetadataField};
 use crate::{
@@ -21,8 +27,13 @@ use std::sync::{Arc, Mutex};
 const MAXIMUM_PROMOTION_BYTES: u64 = u64::MAX;
 const MAXIMUM_LAZY_DIRECTORY_CURSORS: usize = 1_024;
 
+struct StampedCursor<T> {
+    generation: u64,
+    cursor: T,
+}
+
 struct CursorTable<T> {
-    entries: Mutex<BTreeMap<u64, T>>,
+    entries: Mutex<BTreeMap<u64, StampedCursor<T>>>,
     next: AtomicU64,
     maximum: usize,
 }
@@ -36,7 +47,7 @@ impl<T> CursorTable<T> {
         }
     }
 
-    fn remember(&self, cursor: T) -> Result<Vec<u8>, MountSourceError> {
+    fn remember(&self, generation: u64, cursor: T) -> Result<Vec<u8>, MountSourceError> {
         let mut token = self.next.fetch_add(1, Ordering::Relaxed);
         if token == 0 {
             token = self.next.fetch_add(1, Ordering::Relaxed);
@@ -48,21 +59,25 @@ impl<T> CursorTable<T> {
             };
             entries.remove(&oldest);
         }
-        entries.insert(token, cursor);
+        entries.insert(token, StampedCursor { generation, cursor });
         Ok(token.to_le_bytes().to_vec())
     }
 
-    fn take(&self, cursor: Option<&[u8]>) -> Result<Option<T>, MountSourceError> {
+    fn take(&self, generation: u64, cursor: Option<&[u8]>) -> Result<Option<T>, MountSourceError> {
         let Some(cursor) = cursor else {
             return Ok(None);
         };
         let bytes: [u8; 8] = cursor.try_into().map_err(|_| MountSourceError::Stale)?;
-        self.entries
+        let stamped = self
+            .entries
             .lock()
             .map_err(|_| MountSourceError::Stale)?
             .remove(&u64::from_le_bytes(bytes))
-            .ok_or(MountSourceError::Stale)
-            .map(Some)
+            .ok_or(MountSourceError::Stale)?;
+        if stamped.generation != generation {
+            return Err(MountSourceError::Stale);
+        }
+        Ok(Some(stamped.cursor))
     }
 
     fn clear(&self) {
@@ -83,6 +98,7 @@ pub struct LazyMountSource<A, O, D, S> {
     root: String,
     runtime: Arc<CallbackRuntime>,
     cursors: CursorTable<LazyDirectoryCursor>,
+    source_view: Arc<SourceViewGate>,
 }
 
 impl<A, O, D, S> LazyMountSource<A, O, D, S>
@@ -104,6 +120,7 @@ where
             root,
             runtime: Arc::new(CallbackRuntime::create()?),
             cursors: CursorTable::new(MAXIMUM_LAZY_DIRECTORY_CURSORS),
+            source_view: Arc::new(SourceViewGate::new()),
         })
     }
 
@@ -119,6 +136,7 @@ where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
+        let _mutation = self.source_view.write_stable(None).await?;
         self.authored.sync_async().await
     }
 
@@ -131,6 +149,7 @@ where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
+        let _mutation = self.source_view.write_stable(None).await?;
         self.authored.sync_async_with_permit(permit).await
     }
 
@@ -140,6 +159,7 @@ where
         A: AsyncAuthorityStore + Send + Sync + 'static,
         O: AsyncObjectStore + Send + Sync + 'static,
     {
+        let _mutation = self.mutation_lease(None)?;
         self.authored.sync()
     }
 
@@ -149,10 +169,19 @@ where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        self.authored.advance_to_head_async().await?;
-        self.lazy.rebind_source().await.map_err(lazy_error)?;
-        self.cursors.clear();
-        Ok(())
+        let _writer = self.source_view.write().await;
+        self.source_view.begin_transition();
+        let result = async {
+            self.authored.advance_to_head_async().await?;
+            self.lazy.rebind_source().await.map_err(lazy_error)?;
+            self.cursors.clear();
+            Ok(())
+        }
+        .await;
+        if result.is_ok() {
+            self.source_view.finish_transition();
+        }
+        result
     }
 
     fn path(&self, path: &MountPath) -> Result<String, MountSourceError> {
@@ -282,24 +311,23 @@ where
         Ok(())
     }
 
-    async fn promote_parents(&self, path: &str) -> Result<(), MountSourceError>
+    fn promote_parents_locked(&self, path: &MountPath) -> Result<(), MountSourceError>
     where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
         D: DemandSource + 'static,
         S: LazyWorkspaceStore,
     {
-        let mut parents = Vec::new();
-        let mut current = path;
-        while let Some(index) = current.rfind('/') {
-            if index == 0 {
-                break;
+        let components = path.components();
+        let mut parent = MountPath::root();
+        for component in components.iter().take(components.len().saturating_sub(1)) {
+            parent = parent.child((*component).to_vec());
+            let authored = self.authored.lookup(&parent)?;
+            if authored.is_some() {
+                continue;
             }
-            current = current.get(..index).ok_or(MountSourceError::Stale)?;
-            parents.push(current.to_owned());
-        }
-        for parent in parents.into_iter().rev() {
-            self.promote(&parent).await?;
+            let text = self.path(&parent)?;
+            self.wait(|| async move { self.promote(&text).await })?;
         }
         Ok(())
     }
@@ -311,15 +339,20 @@ where
         self.runtime.wait(create)
     }
 
-    fn remember_cursor(&self, cursor: LazyDirectoryCursor) -> Result<Vec<u8>, MountSourceError> {
-        self.cursors.remember(cursor)
+    fn remember_cursor(
+        &self,
+        generation: u64,
+        cursor: LazyDirectoryCursor,
+    ) -> Result<Vec<u8>, MountSourceError> {
+        self.cursors.remember(generation, cursor)
     }
 
     fn take_cursor(
         &self,
+        generation: u64,
         cursor: Option<&[u8]>,
     ) -> Result<Option<LazyDirectoryCursor>, MountSourceError> {
-        self.cursors.take(cursor)
+        self.cursors.take(generation, cursor)
     }
 }
 
@@ -331,7 +364,111 @@ struct LazyOpenFile<A, O, D, S> {
     mount_path: MountPath,
     promotion_key: IdempotencyKey,
     expected_source: FileId,
+    #[cfg(target_os = "linux")]
+    source: SourceReference,
+    #[cfg(target_os = "linux")]
+    source_node: SourceNode,
+    source_generation: u64,
+    source_view: Arc<SourceViewGate>,
     promoted: Mutex<Option<Arc<dyn MountOpenFile>>>,
+}
+
+struct ViewBoundOpenFile {
+    inner: Arc<dyn MountOpenFile>,
+    runtime: Arc<CallbackRuntime>,
+    source_view: Arc<SourceViewGate>,
+    generation: u64,
+}
+
+impl ViewBoundOpenFile {
+    fn with_view<T>(
+        &self,
+        operation: impl FnOnce(&dyn MountOpenFile) -> Result<T, MountSourceError>,
+    ) -> Result<T, MountSourceError> {
+        let owner = SourceViewGate::callback_owner();
+        let _lease = self.runtime.wait(|| {
+            let source_view = Arc::clone(&self.source_view);
+            let generation = self.generation;
+            async move { source_view.read_for_callback(owner, Some(generation)).await }
+        })?;
+        operation(self.inner.as_ref())
+    }
+
+    fn with_mutation<T>(
+        &self,
+        operation: impl FnOnce(&dyn MountOpenFile) -> Result<T, MountSourceError>,
+    ) -> Result<T, MountSourceError> {
+        let _lease = self.runtime.wait(|| {
+            let source_view = Arc::clone(&self.source_view);
+            let generation = self.generation;
+            async move { source_view.write_stable(Some(generation)).await }
+        })?;
+        operation(self.inner.as_ref())
+    }
+}
+
+impl MountOpenFile for ViewBoundOpenFile {
+    fn lookup(&self) -> Result<MountLookup, MountSourceError> {
+        self.with_view(MountOpenFile::lookup)
+    }
+
+    fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
+        self.with_view(|file| file.read_range(offset, length))
+    }
+
+    fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
+        self.with_view(|file| file.seek(offset, target))
+    }
+
+    fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
+        self.with_mutation(|file| file.write_range(offset, bytes))
+    }
+
+    fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
+        self.with_mutation(|file| file.resize(logical_bytes))
+    }
+
+    fn allocate_range(
+        &self,
+        offset: u64,
+        length: u64,
+        operation: MountRangeAllocation,
+    ) -> Result<(), MountSourceError> {
+        self.with_mutation(|file| file.allocate_range(offset, length, operation))
+    }
+
+    fn set_attributes(
+        &self,
+        metadata: FileMetadata,
+        logical_bytes: Option<u64>,
+    ) -> Result<(), MountSourceError> {
+        self.with_mutation(|file| file.set_attributes(metadata, logical_bytes))
+    }
+
+    fn read_attribute(&self, name: &[u8]) -> Result<Option<Bytes>, MountSourceError> {
+        self.with_view(|file| file.read_attribute(name))
+    }
+
+    fn list_attributes(
+        &self,
+        cursor: Option<&[u8]>,
+        maximum_entries: u32,
+    ) -> Result<MountAttributePage, MountSourceError> {
+        self.with_view(|file| file.list_attributes(cursor, maximum_entries))
+    }
+
+    fn write_attribute(
+        &self,
+        name: &[u8],
+        value: Bytes,
+        mode: MountAttributeWriteMode,
+    ) -> Result<(), MountSourceError> {
+        self.with_mutation(|file| file.write_attribute(name, value, mode))
+    }
+
+    fn remove_attribute(&self, name: &[u8]) -> Result<(), MountSourceError> {
+        self.with_mutation(|file| file.remove_attribute(name))
+    }
 }
 
 impl<A, O, D, S> LazyOpenFile<A, O, D, S>
@@ -341,26 +478,44 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    fn authored(&self) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        let mut promoted = self.promoted.lock().map_err(|_| MountSourceError::Stale)?;
-        if let Some(file) = promoted.as_ref() {
-            return Ok(Arc::clone(file));
-        }
-        self.runtime.wait(|| async {
-            self.lazy
-                .promote_exact(
-                    &self.path,
-                    self.expected_source,
-                    MAXIMUM_PROMOTION_BYTES,
-                    self.promotion_key,
-                )
-                .await
-                .map_err(lazy_error)?;
-            self.authored.advance_to_head_async().await
+    fn source_lease(&self) -> Result<SourceViewLease, MountSourceError> {
+        let owner = SourceViewGate::callback_owner();
+        self.runtime.wait(|| {
+            let source_view = Arc::clone(&self.source_view);
+            async move {
+                source_view
+                    .read_for_callback(owner, Some(self.source_generation))
+                    .await
+            }
+        })
+    }
+
+    fn with_authored<T>(
+        &self,
+        operation: impl FnOnce(&dyn MountOpenFile) -> Result<T, MountSourceError>,
+    ) -> Result<T, MountSourceError> {
+        let _lease = self.runtime.wait(|| {
+            let source_view = Arc::clone(&self.source_view);
+            async move { source_view.write_stable(Some(self.source_generation)).await }
         })?;
-        let file = self.authored.open_file(&self.mount_path)?;
-        *promoted = Some(Arc::clone(&file));
-        Ok(file)
+        let mut promoted = self.promoted.lock().map_err(|_| MountSourceError::Stale)?;
+        if promoted.is_none() {
+            self.runtime.wait(|| async {
+                self.lazy
+                    .promote_exact(
+                        &self.path,
+                        self.expected_source,
+                        MAXIMUM_PROMOTION_BYTES,
+                        self.promotion_key,
+                    )
+                    .await
+                    .map_err(lazy_error)?;
+                self.authored.advance_to_head_async().await
+            })?;
+            *promoted = Some(self.authored.open_file(&self.mount_path)?);
+        }
+        let file = promoted.as_ref().ok_or(MountSourceError::Stale)?;
+        operation(file.as_ref())
     }
 }
 
@@ -372,6 +527,7 @@ where
     S: LazyWorkspaceStore,
 {
     fn lookup(&self) -> Result<MountLookup, MountSourceError> {
+        let _lease = self.source_lease()?;
         if let Some(file) = self
             .promoted
             .lock()
@@ -381,16 +537,25 @@ where
         {
             return file.lookup();
         }
+        #[cfg(target_os = "linux")]
+        {
+            let file_id = self.lazy.source_file_id(&self.source_node);
+            Ok(mount_lookup(LazyLookup::Source(self.source_node), file_id))
+        }
+        #[cfg(not(target_os = "linux"))]
         self.runtime.wait(|| async {
-            self.lazy
-                .lookup(&self.path)
+            let lookup = self.lazy.lookup(&self.path).await.map_err(lazy_error)?;
+            let file_id = self
+                .lazy
+                .stable_file_id_for_lookup(&self.path, &lookup)
                 .await
-                .map(|lookup| mount_lookup(&self.lazy, lookup))
-                .map_err(lazy_error)
+                .map_err(lazy_error)?;
+            Ok(mount_lookup(lookup, file_id))
         })
     }
 
     fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
+        let _lease = self.source_lease()?;
         if let Some(file) = self
             .promoted
             .lock()
@@ -400,6 +565,22 @@ where
         {
             return file.read_range(offset, length);
         }
+        #[cfg(target_os = "linux")]
+        {
+            self.runtime.wait(|| async {
+                self.lazy
+                    .read_source_range(
+                        &self.path,
+                        self.source,
+                        self.source_node,
+                        offset,
+                        u64::from(length),
+                    )
+                    .await
+                    .map_err(lazy_error)
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
         self.runtime.wait(|| async {
             self.lazy
                 .read_range(&self.path, offset, u64::from(length))
@@ -409,6 +590,7 @@ where
     }
 
     fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
+        let _lease = self.source_lease()?;
         if let Some(file) = self
             .promoted
             .lock()
@@ -418,6 +600,20 @@ where
         {
             return file.seek(offset, target);
         }
+        #[cfg(target_os = "linux")]
+        {
+            let length = self.source_node.logical_bytes.ok_or_else(|| {
+                MountSourceError::Invalid("seek requires a regular file".to_owned())
+            })?;
+            if offset >= length {
+                return Ok(None);
+            }
+            Ok(Some(match target {
+                MountSeekTarget::Data => offset,
+                MountSeekTarget::Hole => length,
+            }))
+        }
+        #[cfg(not(target_os = "linux"))]
         self.runtime.wait(|| async {
             self.lazy
                 .seek(
@@ -434,11 +630,11 @@ where
     }
 
     fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-        self.authored()?.write_range(offset, bytes)
+        self.with_authored(|file| file.write_range(offset, bytes))
     }
 
     fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
-        self.authored()?.resize(logical_bytes)
+        self.with_authored(|file| file.resize(logical_bytes))
     }
 
     fn allocate_range(
@@ -447,7 +643,7 @@ where
         length: u64,
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError> {
-        self.authored()?.allocate_range(offset, length, operation)
+        self.with_authored(|file| file.allocate_range(offset, length, operation))
     }
 
     fn set_attributes(
@@ -455,11 +651,11 @@ where
         metadata: FileMetadata,
         logical_bytes: Option<u64>,
     ) -> Result<(), MountSourceError> {
-        self.authored()?.set_attributes(metadata, logical_bytes)
+        self.with_authored(|file| file.set_attributes(metadata, logical_bytes))
     }
 
     fn read_attribute(&self, name: &[u8]) -> Result<Option<Bytes>, MountSourceError> {
-        self.authored()?.read_attribute(name)
+        self.with_authored(|file| file.read_attribute(name))
     }
 
     fn list_attributes(
@@ -467,7 +663,7 @@ where
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountAttributePage, MountSourceError> {
-        self.authored()?.list_attributes(cursor, maximum_entries)
+        self.with_authored(|file| file.list_attributes(cursor, maximum_entries))
     }
 
     fn write_attribute(
@@ -476,11 +672,11 @@ where
         value: Bytes,
         mode: MountAttributeWriteMode,
     ) -> Result<(), MountSourceError> {
-        self.authored()?.write_attribute(name, value, mode)
+        self.with_authored(|file| file.write_attribute(name, value, mode))
     }
 
     fn remove_attribute(&self, name: &[u8]) -> Result<(), MountSourceError> {
-        self.authored()?.remove_attribute(name)
+        self.with_authored(|file| file.remove_attribute(name))
     }
 }
 
@@ -491,11 +687,68 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    fn supports_posix_named_attributes(&self) -> bool {
+        self.authored.supports_posix_named_attributes()
+    }
+
+    fn flush_on_handle_close(&self) -> bool {
+        false
+    }
+
+    fn view_is_stable(&self) -> bool {
+        self.source_view.is_stable()
+    }
+
+    fn view_epoch(&self) -> Option<u64> {
+        self.authored.view_epoch()
+    }
+
+    fn binding_epoch(&self) -> Option<u64> {
+        Some(self.source_view.generation())
+    }
+
+    fn acquire_view_lease(
+        &self,
+        expected_epoch: Option<u64>,
+    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+        let lease = self.view_lease(None)?;
+        if self.authored.view_epoch() != expected_epoch {
+            return Err(MountSourceError::Stale);
+        }
+        Ok(Box::new(lease))
+    }
+
+    fn acquire_binding_lease(
+        &self,
+        expected_epoch: Option<u64>,
+    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+        self.view_lease(expected_epoch)
+            .map(|lease| Box::new(lease) as Box<dyn MountViewLease>)
+    }
+
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
+        let _lease = self.view_lease(None)?;
+        // Newly authored objects are visible before the operation barrier has
+        // published them into the lazy view. This is required for NFS CREATE
+        // compounds, which immediately GETATTR the returned filehandle.
+        if let Some(lookup) = self.authored.lookup(path)? {
+            return Ok(Some(lookup));
+        }
         let path = self.path(path)?;
         self.wait(|| async move {
-            match self.lazy.lookup(&path).await {
-                Ok(lookup) => Ok(Some(mount_lookup(&self.lazy, lookup))),
+            #[cfg(target_os = "linux")]
+            let lookup = self.lazy.inspect(&path).await;
+            #[cfg(not(target_os = "linux"))]
+            let lookup = self.lazy.lookup(&path).await;
+            match lookup {
+                Ok(lookup) => {
+                    let file_id = self
+                        .lazy
+                        .stable_file_id_for_lookup(&path, &lookup)
+                        .await
+                        .map_err(lazy_error)?;
+                    Ok(Some(mount_lookup(lookup, file_id)))
+                }
                 Err(LazyWorkspaceError::NotFound) => Ok(None),
                 Err(error) => Err(lazy_error(error)),
             }
@@ -503,26 +756,51 @@ where
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
+        let lease = self.view_lease(None)?;
         // A create returns an open handle before the operation barrier publishes the authored
         // generation. Consult the authored checkout first so that the just-created file can be
         // written through that handle instead of falling through to the still-unaware lazy view.
         if self.authored.lookup(path)?.is_some() {
-            return self.authored.open_file(path);
+            return self
+                .authored
+                .open_file(path)
+                .map(|file| self.bind_open_file(file, lease.generation));
         }
         let path_text = self.path(path)?;
         let lookup_path = path_text.clone();
-        let lookup =
-            self.wait(|| async move { self.lazy.lookup(&lookup_path).await.map_err(lazy_error) })?;
+        #[cfg(target_os = "linux")]
+        let (lookup, source) = self.wait(|| async move {
+            self.lazy
+                .inspect_resolved(&lookup_path)
+                .await
+                .map_err(lazy_error)
+        })?;
+        #[cfg(not(target_os = "linux"))]
+        let (lookup, source) = self.wait(|| async move {
+            self.lazy
+                .lookup_resolved(&lookup_path)
+                .await
+                .map_err(lazy_error)
+        })?;
+        let source_generation = lease.generation;
         match lookup {
             LazyLookup::Authored {
                 path: authored_path,
                 ..
-            } if authored_path == path_text => self.authored.open_file(path),
+            } if authored_path == path_text => self
+                .authored
+                .open_file(path)
+                .map(|file| self.bind_open_file(file, source_generation)),
             LazyLookup::Authored { .. } | LazyLookup::Shadow { .. } => {
-                self.promote_blocking(path)?;
-                self.authored.open_file(path)
+                drop(lease);
+                let _mutation = self.mutation_lease(Some(source_generation))?;
+                self.promote_locked(path)?;
+                self.authored
+                    .open_file(path)
+                    .map(|file| self.bind_open_file(file, source_generation))
             }
             LazyLookup::Source(node) if node.kind == SourceNodeKind::RegularFile => {
+                let _source = source.ok_or(MountSourceError::Stale)?;
                 let promotion_key = self.promotion_key(&path_text, &node);
                 let expected_source = self.lazy.source_file_id(&node);
                 Ok(Arc::new(LazyOpenFile {
@@ -533,6 +811,12 @@ where
                     mount_path: path.clone(),
                     promotion_key,
                     expected_source,
+                    #[cfg(target_os = "linux")]
+                    source: _source,
+                    #[cfg(target_os = "linux")]
+                    source_node: node,
+                    source_generation,
+                    source_view: Arc::clone(&self.source_view),
                     promoted: Mutex::new(None),
                 }))
             }
@@ -543,12 +827,15 @@ where
     }
 
     fn detach_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        let path_text = self.path(path)?;
-        self.wait(|| async move { self.promote(&path_text).await })?;
-        self.authored.detach_file(path)
+        let lease = self.mutation_lease(None)?;
+        self.promote_locked(path)?;
+        self.authored
+            .detach_file(path)
+            .map(|file| self.bind_open_file(file, lease.generation))
     }
 
     fn read_link(&self, path: &MountPath) -> Result<Bytes, MountSourceError> {
+        let _lease = self.view_lease(None)?;
         let path = self.path(path)?;
         self.wait(|| async move { self.lazy.read_link(&path).await.map_err(lazy_error) })
     }
@@ -559,6 +846,7 @@ where
         offset: u64,
         length: u32,
     ) -> Result<Bytes, MountSourceError> {
+        let _lease = self.view_lease(None)?;
         let path = self.path(path)?;
         self.wait(|| async move {
             self.lazy
@@ -574,6 +862,7 @@ where
         offset: u64,
         target: MountSeekTarget,
     ) -> Result<Option<u64>, MountSourceError> {
+        let _lease = self.view_lease(None)?;
         let path = self.path(path)?;
         self.wait(|| async move {
             self.lazy
@@ -596,8 +885,9 @@ where
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountDirectoryPage, MountSourceError> {
+        let lease = self.view_lease(None)?;
         let path = self.path(path)?;
-        let cursor = self.take_cursor(cursor)?;
+        let cursor = self.take_cursor(lease.generation, cursor)?;
         let page_path = path.clone();
         let page = self.wait(|| async move {
             self.lazy
@@ -609,11 +899,13 @@ where
         for entry in page.entries {
             let child = Self::child(&path, &entry.name)?;
             let lookup = self.wait(|| async {
-                self.lazy
-                    .inspect(&child)
+                let lookup = self.lazy.inspect(&child).await.map_err(lazy_error)?;
+                let file_id = self
+                    .lazy
+                    .stable_file_id_for_lookup(&child, &lookup)
                     .await
-                    .map(|lookup| mount_lookup(&self.lazy, lookup))
-                    .map_err(lazy_error)
+                    .map_err(lazy_error)?;
+                Ok(mount_lookup(lookup, file_id))
             })?;
             entries.push(MountDirectoryEntry {
                 name: Self::native_name(&entry.name)?,
@@ -625,7 +917,7 @@ where
             entries,
             next_cursor: page
                 .next
-                .map(|cursor| self.remember_cursor(cursor))
+                .map(|cursor| self.remember_cursor(lease.generation, cursor))
                 .transpose()?,
         })
     }
@@ -635,8 +927,8 @@ where
         path: &MountPath,
         metadata: FileMetadata,
     ) -> Result<MountLookup, MountSourceError> {
-        let text = self.path(path)?;
-        self.wait(|| async move { self.promote_parents(&text).await })?;
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_parents_locked(path)?;
         self.authored.create_file(path, metadata)
     }
 
@@ -645,8 +937,8 @@ where
         path: &MountPath,
         metadata: FileMetadata,
     ) -> Result<MountLookup, MountSourceError> {
-        let text = self.path(path)?;
-        self.wait(|| async move { self.promote_parents(&text).await })?;
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_parents_locked(path)?;
         self.authored.create_directory(path, metadata)
     }
 
@@ -656,8 +948,8 @@ where
         target: Bytes,
         metadata: FileMetadata,
     ) -> Result<MountLookup, MountSourceError> {
-        let text = self.path(path)?;
-        self.wait(|| async move { self.promote_parents(&text).await })?;
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_parents_locked(path)?;
         self.authored.create_symbolic_link(path, target, metadata)
     }
 
@@ -668,8 +960,8 @@ where
         device: Option<(u32, u32)>,
         metadata: FileMetadata,
     ) -> Result<MountLookup, MountSourceError> {
-        let text = self.path(path)?;
-        self.wait(|| async move { self.promote_parents(&text).await })?;
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_parents_locked(path)?;
         self.authored.create_special(path, kind, device, metadata)
     }
 
@@ -679,7 +971,8 @@ where
         metadata: FileMetadata,
         logical_bytes: Option<u64>,
     ) -> Result<(), MountSourceError> {
-        self.promote_blocking(path)?;
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_locked(path)?;
         self.authored.set_attributes(path, metadata, logical_bytes)
     }
 
@@ -688,7 +981,8 @@ where
         path: &MountPath,
         name: &[u8],
     ) -> Result<Option<Bytes>, MountSourceError> {
-        self.promote_blocking(path)?;
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_locked(path)?;
         self.authored.read_attribute(path, name)
     }
 
@@ -698,7 +992,8 @@ where
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountAttributePage, MountSourceError> {
-        self.promote_blocking(path)?;
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_locked(path)?;
         self.authored.list_attributes(path, cursor, maximum_entries)
     }
 
@@ -709,12 +1004,14 @@ where
         value: Bytes,
         mode: MountAttributeWriteMode,
     ) -> Result<(), MountSourceError> {
-        self.promote_blocking(path)?;
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_locked(path)?;
         self.authored.write_attribute(path, name, value, mode)
     }
 
     fn remove_attribute(&self, path: &MountPath, name: &[u8]) -> Result<(), MountSourceError> {
-        self.promote_blocking(path)?;
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_locked(path)?;
         self.authored.remove_attribute(path, name)
     }
 
@@ -724,12 +1021,14 @@ where
         offset: u64,
         bytes: Bytes,
     ) -> Result<(), MountSourceError> {
-        self.promote_blocking(path)?;
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_locked(path)?;
         self.authored.write_range(path, offset, bytes)
     }
 
     fn resize(&self, path: &MountPath, logical_bytes: u64) -> Result<(), MountSourceError> {
-        self.promote_blocking(path)?;
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_locked(path)?;
         self.authored.resize(path, logical_bytes)
     }
 
@@ -740,7 +1039,8 @@ where
         length: u64,
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError> {
-        self.promote_blocking(path)?;
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_locked(path)?;
         self.authored
             .allocate_range(path, offset, length, operation)
     }
@@ -753,8 +1053,9 @@ where
         destination_offset: u64,
         length: u64,
     ) -> Result<(), MountSourceError> {
-        self.promote_blocking(source)?;
-        self.promote_blocking(destination)?;
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_locked(source)?;
+        self.promote_locked(destination)?;
         self.authored.clone_range(
             source,
             source_offset,
@@ -785,6 +1086,7 @@ where
     }
 
     fn remove(&self, path: &MountPath, expected: Option<FileId>) -> Result<(), MountSourceError> {
+        let _mutation = self.mutation_lease(None)?;
         let text = self.path(path)?;
         self.wait(|| async move {
             self.lazy
@@ -801,23 +1103,25 @@ where
         destination: &MountPath,
         replace: bool,
     ) -> Result<(), MountSourceError> {
-        let source_text = self.path(source)?;
-        let destination_text = self.path(destination)?;
-        let source_lookup =
-            self.wait(|| async move { self.lazy.lookup(&source_text).await.map_err(lazy_error) })?;
-        if matches!(
-            source_lookup,
-            LazyLookup::Source(SourceNode {
-                kind: SourceNodeKind::Directory,
-                ..
-            })
-        ) {
-            return Err(MountSourceError::Unsupported(
-                "renaming an unresolved lazy directory requires a subtree remap".to_owned(),
-            ));
+        let _mutation = self.mutation_lease(None)?;
+        if self.authored.lookup(source)?.is_none() {
+            let source_text = self.path(source)?;
+            let source_lookup = self
+                .wait(|| async move { self.lazy.lookup(&source_text).await.map_err(lazy_error) })?;
+            if matches!(
+                source_lookup,
+                LazyLookup::Source(SourceNode {
+                    kind: SourceNodeKind::Directory,
+                    ..
+                })
+            ) {
+                return Err(MountSourceError::Unsupported(
+                    "renaming an unresolved lazy directory requires a subtree remap".to_owned(),
+                ));
+            }
         }
-        self.promote_blocking(source)?;
-        self.wait(|| async move { self.promote_parents(&destination_text).await })?;
+        self.promote_locked(source)?;
+        self.promote_parents_locked(destination)?;
         self.authored.rename(source, destination, replace)
     }
 
@@ -826,34 +1130,53 @@ where
         source: &MountPath,
         destination: &MountPath,
     ) -> Result<(), MountSourceError> {
-        self.promote_blocking(source)?;
-        let destination_text = self.path(destination)?;
-        self.wait(|| async move { self.promote_parents(&destination_text).await })?;
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_locked(source)?;
+        self.promote_parents_locked(destination)?;
         self.authored.hard_link(source, destination)
     }
 
     fn flush(&self) -> Result<(), MountSourceError> {
-        self.authored.sync()
+        let _mutation = self.mutation_lease(None)?;
+        self.authored.flush()
     }
 
     fn capture_host_path(
         &self,
-        _source_root: &Path,
-        _path: &MountPath,
+        source_root: &Path,
+        path: &MountPath,
     ) -> Result<(), MountSourceError> {
-        Err(MountSourceError::Unsupported(
-            "host capture is unavailable for demand-backed mounts".to_owned(),
-        ))
+        self.capture_host_paths(source_root, std::slice::from_ref(path))
+    }
+
+    fn capture_host_paths(
+        &self,
+        source_root: &Path,
+        paths: &[MountPath],
+    ) -> Result<(), MountSourceError> {
+        let _mutation = self.mutation_lease(None)?;
+        for path in paths {
+            self.promote_parents_locked(path)?;
+            match self.promote_locked(path) {
+                Ok(()) | Err(MountSourceError::NotFound) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        self.authored.capture_host_paths(source_root, paths)
     }
 
     fn capture_host_subtree(
         &self,
-        _source_root: &Path,
-        _path: &MountPath,
+        source_root: &Path,
+        path: &MountPath,
     ) -> Result<(), MountSourceError> {
-        Err(MountSourceError::Unsupported(
-            "host subtree capture is unavailable for demand-backed mounts".to_owned(),
-        ))
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_parents_locked(path)?;
+        match self.promote_locked(path) {
+            Ok(()) | Err(MountSourceError::NotFound) => {}
+            Err(error) => return Err(error),
+        }
+        self.authored.capture_host_subtree(source_root, path)
     }
 }
 
@@ -864,23 +1187,52 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    fn promote_blocking(&self, path: &MountPath) -> Result<(), MountSourceError> {
+    fn bind_open_file(
+        &self,
+        file: Arc<dyn MountOpenFile>,
+        generation: u64,
+    ) -> Arc<dyn MountOpenFile> {
+        Arc::new(ViewBoundOpenFile {
+            inner: file,
+            runtime: Arc::clone(&self.runtime),
+            source_view: Arc::clone(&self.source_view),
+            generation,
+        })
+    }
+
+    fn mutation_lease(
+        &self,
+        expected: Option<u64>,
+    ) -> Result<SourceMutationLease, MountSourceError> {
+        self.wait(|| {
+            let source_view = Arc::clone(&self.source_view);
+            async move { source_view.write_stable(expected).await }
+        })
+    }
+
+    fn view_lease(&self, expected: Option<u64>) -> Result<SourceViewLease, MountSourceError> {
+        let owner = SourceViewGate::callback_owner();
+        self.wait(|| {
+            let source_view = Arc::clone(&self.source_view);
+            async move { source_view.read_for_callback(owner, expected).await }
+        })
+    }
+
+    fn promote_locked(&self, path: &MountPath) -> Result<(), MountSourceError> {
+        if self.authored.lookup(path)?.is_some() {
+            return Ok(());
+        }
         let text = self.path(path)?;
-        self.wait(|| async move { self.promote(&text).await })
+        self.wait(|| async move { self.promote(&text).await })?;
+        Ok(())
     }
 }
 
-fn mount_lookup<A, O, D, S>(lazy: &LazyWorkspace<A, O, D, S>, lookup: LazyLookup) -> MountLookup
-where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
-    D: DemandSource + 'static,
-    S: LazyWorkspaceStore,
-{
+fn mount_lookup(lookup: LazyLookup, file_id: FileId) -> MountLookup {
     match lookup {
         LazyLookup::Authored { stat, .. } => MountLookup {
             node: MountNode {
-                file_id: stat.file_id,
+                file_id,
                 kind: file_kind(stat.kind),
                 logical_bytes: stat.logical_bytes.unwrap_or(0),
                 link_count: stat.link_count,
@@ -894,7 +1246,7 @@ where
             source_link_count,
         } => MountLookup {
             node: MountNode {
-                file_id: record.file_id,
+                file_id,
                 kind: file_kind(record.kind),
                 logical_bytes: record_logical_bytes(record.payload),
                 link_count: source_link_count,
@@ -907,7 +1259,7 @@ where
         },
         LazyLookup::Source(node) => MountLookup {
             node: MountNode {
-                file_id: lazy.source_file_id(&node),
+                file_id,
                 kind: source_kind(node.kind),
                 logical_bytes: node.logical_bytes.unwrap_or(0),
                 link_count: node.link_count.unwrap_or(1),
@@ -1038,22 +1390,165 @@ mod tests {
     #[test]
     fn abandoned_directory_cursors_are_bounded_and_cleared() {
         let cursors = CursorTable::new(2);
-        let first = cursors.remember(1_u8).expect("first cursor");
-        let second = cursors.remember(2_u8).expect("second cursor");
-        let third = cursors.remember(3_u8).expect("third cursor");
+        let first = cursors.remember(2, 1_u8).expect("first cursor");
+        let second = cursors.remember(2, 2_u8).expect("second cursor");
+        let third = cursors.remember(2, 3_u8).expect("third cursor");
 
         assert!(matches!(
-            cursors.take(Some(&first)),
+            cursors.take(2, Some(&first)),
             Err(MountSourceError::Stale)
         ));
-        assert_eq!(cursors.take(Some(&second)).expect("second token"), Some(2));
-        assert_eq!(cursors.take(Some(&third)).expect("third token"), Some(3));
+        assert_eq!(
+            cursors.take(2, Some(&second)).expect("second token"),
+            Some(2)
+        );
+        assert_eq!(cursors.take(2, Some(&third)).expect("third token"), Some(3));
 
-        let retained = cursors.remember(4_u8).expect("retained cursor");
+        let stale = cursors.remember(2, 4_u8).expect("stale cursor");
+        assert!(matches!(
+            cursors.take(4, Some(&stale)),
+            Err(MountSourceError::Stale)
+        ));
+        let retained = cursors.remember(2, 5_u8).expect("retained cursor");
         cursors.clear();
         assert!(matches!(
-            cursors.take(Some(&retained)),
+            cursors.take(2, Some(&retained)),
             Err(MountSourceError::Stale)
         ));
+    }
+
+    #[tokio::test]
+    async fn source_view_gate_serializes_rebinds_and_fences_old_handles() {
+        let gate = Arc::new(SourceViewGate::new());
+        let initial = Arc::clone(&gate).read(None).await.expect("initial lease");
+        assert_eq!(initial.generation, SourceViewGate::INITIAL_GENERATION);
+
+        let waiting_gate = Arc::clone(&gate);
+        let writer = tokio::spawn(async move { waiting_gate.write().await });
+        tokio::task::yield_now().await;
+        assert!(
+            !writer.is_finished(),
+            "a rebind must wait for active readers"
+        );
+        drop(initial);
+
+        let writer = writer.await.expect("writer task");
+        gate.begin_transition();
+        assert!(!gate.is_stable());
+        gate.finish_transition();
+        drop(writer);
+
+        assert!(matches!(
+            Arc::clone(&gate)
+                .read(Some(SourceViewGate::INITIAL_GENERATION))
+                .await,
+            Err(MountSourceError::Stale)
+        ));
+        assert_eq!(
+            Arc::clone(&gate)
+                .read(None)
+                .await
+                .expect("new lease")
+                .generation,
+            SourceViewGate::INITIAL_GENERATION + 2
+        );
+    }
+
+    #[tokio::test]
+    async fn source_view_gate_excludes_authored_mutations_from_read_callbacks() {
+        let gate = Arc::new(SourceViewGate::new());
+        let reader = Arc::clone(&gate).read(None).await.expect("reader lease");
+        let mutation_gate = Arc::clone(&gate);
+        let mutation = tokio::spawn(async move {
+            mutation_gate
+                .write_stable(Some(SourceViewGate::INITIAL_GENERATION))
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !mutation.is_finished(),
+            "an authored mutation must wait for active read callbacks"
+        );
+        drop(reader);
+
+        let mutation = mutation
+            .await
+            .expect("mutation task")
+            .expect("mutation lease");
+        assert_eq!(mutation.generation, SourceViewGate::INITIAL_GENERATION);
+        let reader_gate = Arc::clone(&gate);
+        let reader = tokio::spawn(async move { reader_gate.read(None).await });
+        tokio::task::yield_now().await;
+        assert!(
+            !reader.is_finished(),
+            "a read callback must wait for an authored mutation"
+        );
+        drop(mutation);
+        assert_eq!(
+            reader
+                .await
+                .expect("reader task")
+                .expect("reader lease")
+                .generation,
+            SourceViewGate::INITIAL_GENERATION
+        );
+    }
+
+    #[tokio::test]
+    async fn source_view_gate_allows_nested_callback_reads_while_writer_waits() {
+        let gate = Arc::new(SourceViewGate::new());
+        let owner = SourceViewGate::callback_owner();
+        let outer = Arc::clone(&gate)
+            .read_for_callback(owner, None)
+            .await
+            .expect("outer lease");
+        let writer_gate = Arc::clone(&gate);
+        let writer = tokio::spawn(async move { writer_gate.write().await });
+        tokio::task::yield_now().await;
+        assert!(!writer.is_finished(), "writer must wait for outer callback");
+
+        let nested = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            Arc::clone(&gate).read_for_callback(owner, Some(outer.generation)),
+        )
+        .await
+        .expect("a callback must not deadlock when its source method reacquires the view")
+        .expect("nested lease");
+        drop(nested);
+        drop(outer);
+        drop(writer.await.expect("writer task"));
+    }
+
+    #[tokio::test]
+    async fn source_view_gate_gives_a_waiting_writer_priority_over_new_callbacks() {
+        let gate = Arc::new(SourceViewGate::new());
+        let active = Arc::clone(&gate).read(None).await.expect("active reader");
+        let writer_gate = Arc::clone(&gate);
+        let writer = tokio::spawn(async move { writer_gate.write().await });
+        tokio::task::yield_now().await;
+        assert!(!writer.is_finished(), "writer must wait for active reader");
+
+        let later_gate = Arc::clone(&gate);
+        let later = tokio::spawn(async move { later_gate.read(None).await });
+        tokio::task::yield_now().await;
+        assert!(
+            !later.is_finished(),
+            "a new callback bypassed a waiting writer"
+        );
+
+        drop(active);
+        let writer = tokio::time::timeout(std::time::Duration::from_secs(1), writer)
+            .await
+            .expect("writer made no progress")
+            .expect("writer task");
+        assert!(!later.is_finished(), "reader crossed the active writer");
+        drop(writer);
+        drop(
+            tokio::time::timeout(std::time::Duration::from_secs(1), later)
+                .await
+                .expect("later reader made no progress")
+                .expect("reader task")
+                .expect("reader lease"),
+        );
     }
 }

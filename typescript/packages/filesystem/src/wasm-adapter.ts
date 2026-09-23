@@ -50,14 +50,9 @@ import type {
   LiveMutationResult,
   LiveTransactionResult,
   ResolvedFile,
-  WasmRawOperationWindowCoordinator,
   WasmRawWorkspaceContextRegistry,
 } from "./contracts.js";
 import type {
-  OperationWindowClose,
-  OperationWindowCoordinator,
-  OperationWindowLease,
-  OperationWindowPhase,
   WorkspaceContext,
   WorkspaceContextRegistry,
   WorkspaceContextRoot,
@@ -104,7 +99,11 @@ export function adaptWasmFs(raw: WasmRawFs): FsVolumeEngine {
 }
 
 function encodeWorkspaceContextRoots(roots: readonly WorkspaceContextRoot[]): string {
-  return JSON.stringify(roots.map((root) => ({
+  return JSON.stringify(roots.map(encodeWorkspaceContextRoot));
+}
+
+function encodeWorkspaceContextRoot(root: WorkspaceContextRoot): object {
+  return {
     root_id: Array.from(root.rootId),
     source_path: root.sourcePath,
     workspace_id: Array.from(root.workspaceId),
@@ -113,7 +112,7 @@ function encodeWorkspaceContextRoots(roots: readonly WorkspaceContextRoot[]): st
       ? null
       : Array.from(root.parentWorkspaceId),
     mount_path: root.mountPath ?? null,
-  })));
+  };
 }
 
 function parseWorkspaceContext(json: string): WorkspaceContext {
@@ -170,6 +169,15 @@ export function adaptWasmWorkspaceContextRegistry(
         encodeWorkspaceContextRoots(roots),
       ));
     },
+    async adoptRoot(contextId, root) {
+      return parseWorkspaceContext(await raw.adoptRootJson(
+        contextId,
+        JSON.stringify(encodeWorkspaceContextRoot(root)),
+      ));
+    },
+    async removeRoot(contextId, rootId) {
+      return parseWorkspaceContext(await raw.removeRootJson(contextId, rootId));
+    },
     async resolve(contextId) {
       return parseWorkspaceContext(await raw.resolveJson(contextId));
     },
@@ -192,116 +200,6 @@ export function adaptWasmWorkspaceContextRegistry(
         maximum,
       )) as unknown[];
       return values.map((value) => decodeFixedBytes(value, 16, "discarded context identity"));
-    },
-  };
-}
-
-function parseOperationWindowLease(json: string): OperationWindowLease {
-  const value = JSON.parse(json) as {
-    workspaceId: unknown;
-    leaseId: unknown;
-    pinnedParent: unknown;
-    expiresAtMillis: string;
-  };
-  return {
-    workspaceId: decodeFixedBytes(value.workspaceId, 16, "workspace identity"),
-    leaseId: decodeFixedBytes(value.leaseId, 16, "lease identity"),
-    pinnedParent: decodeFixedBytes(value.pinnedParent, 32, "pinned parent generation"),
-    expiresAtMillis: BigInt(value.expiresAtMillis),
-  };
-}
-
-function encodeOperationWindowLease(lease: OperationWindowLease): string {
-  return JSON.stringify({
-    workspaceId: Array.from(lease.workspaceId),
-    leaseId: Array.from(lease.leaseId),
-    pinnedParent: Array.from(lease.pinnedParent),
-    expiresAtMillis: lease.expiresAtMillis.toString(),
-  });
-}
-
-function parseOperationWindowPhase(json: string): OperationWindowPhase {
-  const value = JSON.parse(json) as {
-    kind: string;
-    ticket?: unknown;
-    pinnedParent?: unknown;
-    pendingParent?: unknown | null;
-    activeLeaseCount?: number;
-  };
-  if (value.kind === "idle") return { kind: "idle" };
-  const pinnedParent = decodeFixedBytes(value.pinnedParent, 32, "pinned parent generation");
-  const pendingParent = value.pendingParent == null
-    ? undefined
-    : decodeFixedBytes(value.pendingParent, 32, "pending parent generation");
-  if (value.kind === "active") {
-    return { kind: "active", pinnedParent, pendingParent, activeLeaseCount: value.activeLeaseCount ?? 0 };
-  }
-  if (value.kind === "reconciling") {
-    return {
-      kind: "reconciling",
-      ticket: decodeFixedBytes(value.ticket, 16, "reconciliation ticket"),
-      pinnedParent,
-      pendingParent,
-    };
-  }
-  throw new TypeError("WASM operation window returned a malformed phase");
-}
-
-function parseOperationWindowClose(json: string): OperationWindowClose {
-  const value = JSON.parse(json) as {
-    kind: string;
-    remaining?: number;
-    ticket?: unknown;
-    pinnedParent?: unknown;
-    pendingParent?: unknown | null;
-  };
-  if (value.kind === "still-active" && value.remaining !== undefined) {
-    return { kind: "still-active", remaining: value.remaining };
-  }
-  if (value.kind === "already-closed") return { kind: "already-closed" };
-  if (value.kind === "reconcile") {
-    return {
-      kind: "reconcile",
-      ticket: decodeFixedBytes(value.ticket, 16, "reconciliation ticket"),
-      pinnedParent: decodeFixedBytes(value.pinnedParent, 32, "pinned parent generation"),
-      pendingParent: value.pendingParent == null
-        ? undefined
-        : decodeFixedBytes(value.pendingParent, 32, "pending parent generation"),
-    };
-  }
-  throw new TypeError("WASM operation window returned a malformed close result");
-}
-
-export function adaptWasmOperationWindowCoordinator(
-  raw: WasmRawOperationWindowCoordinator,
-): OperationWindowCoordinator {
-  return {
-    async begin(workspaceId, parent, owner, nowMillis, expiresAtMillis) {
-      return parseOperationWindowLease(await raw.beginJson(
-        workspaceId,
-        parent,
-        owner,
-        nowMillis,
-        expiresAtMillis,
-      ));
-    },
-    async observeParent(workspaceId, parent) {
-      return raw.observeParent(workspaceId, parent);
-    },
-    async finish(lease, nowMillis) {
-      return parseOperationWindowClose(await raw.finishJson(
-        encodeOperationWindowLease(lease),
-        nowMillis,
-      ));
-    },
-    async inspect(workspaceId) {
-      return parseOperationWindowPhase(await raw.inspectJson(workspaceId));
-    },
-    async finishWorkspace() {
-      throw new Error("browser operation windows require an injected workspace rebase provider");
-    },
-    async recoverWorkspace() {
-      throw new Error("browser operation windows require an injected workspace rebase provider");
     },
   };
 }

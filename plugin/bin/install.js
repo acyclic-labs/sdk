@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 "use strict";
 
-const { createHash } = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 const { homedir, tmpdir } = require("node:os");
 const {
@@ -9,11 +8,9 @@ const {
   readFileSync, renameSync, rmSync, statSync, writeFileSync,
 } = require("node:fs");
 const { basename, dirname, join } = require("node:path");
-const { hostTarget, verifyTarget } = require("./verify.js");
+const { hostTarget, resolveTarget, sha256File, verifyTarget } = require("./verify.js");
 
-function sha256(path) {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
-}
+const sha256 = sha256File;
 
 function syncFile(path) {
   const handle = openSync(path, process.platform === "win32" ? "r+" : "r");
@@ -66,16 +63,16 @@ function readJson(path) {
 
 function durableStateDirectory() {
   if (process.platform === "win32" && process.env.LOCALAPPDATA) {
-    return join(process.env.LOCALAPPDATA, "Acyclic", "state-v2");
+    return join(process.env.LOCALAPPDATA, "Acyclic", "state-v4");
   }
   if (process.platform !== "win32" && process.env.XDG_STATE_HOME) {
-    return join(process.env.XDG_STATE_HOME, "acyclic", "state-v2");
+    return join(process.env.XDG_STATE_HOME, "acyclic", "state-v4");
   }
   const home = process.env.HOME || homedir();
   if (process.platform !== "win32" && home) {
-    return join(home, ".local", "state", "acyclic", "state-v2");
+    return join(home, ".local", "state", "acyclic", "state-v4");
   }
-  return join(tmpdir(), "acyclic-state-v2");
+  return join(tmpdir(), "acyclic-state-v4");
 }
 
 function installCertification(packageVersion, helper) {
@@ -97,6 +94,12 @@ function installCertification(packageVersion, helper) {
     || receipt.passed !== true
     || typeof receipt.executable_blake3 !== "string"
     || !/^[0-9a-f]{64}$/.test(receipt.executable_blake3)
+    || receipt.capability?.kind !== backend
+    || receipt.capability?.available !== true
+    || receipt.capability?.writable !== true
+    || receipt.capability?.provider_process_io_observable !== (platform !== "windows")
+    || receipt.capability?.session_isolation !== "SharedProcess"
+    || receipt.capability?.unavailable_reason !== null
   ) {
     throw new Error(`invalid Acyclic platform certification receipt: ${name}`);
   }
@@ -309,7 +312,7 @@ function ensureInstalled() {
 }
 
 function installedExecutable() {
-  const { manifest } = verifyTarget(__dirname);
+  const { manifest } = resolveTarget(__dirname);
   const packageVersion = readJson(join(__dirname, "..", "package.json")).version;
   const target = hostTarget();
   const expectedSha256 = manifest.targets[target].sha256;

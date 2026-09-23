@@ -16,15 +16,17 @@ categories = ["filesystem"]
 bytes.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-io-uring.workspace = true
+compio-buf = { version = "=0.8.3", features = ["bytes"] }
+compio-driver = { version = "=0.11.1", default-features = false, features = ["io-uring"] }
 libc = "0.2.175"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
-block2 = "0.6.2"
-dispatch2 = "0.3.1"
 libc = "0.2.175"
+rustix.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+compio-buf = { version = "=0.8.3", features = ["bytes"] }
+compio-driver = { version = "=0.11.1", default-features = false }
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_Security",
@@ -32,6 +34,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_IO",
   "Win32_System_JobObjects",
+  "Win32_System_Pipes",
   "Win32_System_Threading",
 ] }
 

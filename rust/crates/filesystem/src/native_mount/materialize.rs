@@ -958,6 +958,9 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     pending: &mut Vec<(NamespacePath, PathBuf)>,
     receipt: &mut MaterializationReceipt,
 ) -> Result<(), OperationFailure<MaterializeError>> {
+    cancellation.check().map_err(|error| {
+        OperationFailure::new(MaterializeError::Engine(error.to_string()), receipt.work)
+    })?;
     if let Some(existing) = known_files.get(&file_id) {
         host_root
             .hard_link(existing, host_path)
@@ -966,6 +969,9 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             OperationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work)
         })?;
         account_materialization(receipt, 0, budget)?;
+        cancellation.check().map_err(|error| {
+            OperationFailure::new(MaterializeError::Engine(error.to_string()), receipt.work)
+        })?;
         return Ok(());
     }
 
@@ -981,13 +987,21 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 OperationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work)
             })?;
             account_materialization(receipt, 0, budget)?;
+            cancellation.check().map_err(|error| {
+                OperationFailure::new(MaterializeError::Engine(error.to_string()), receipt.work)
+            })?;
             return Ok(());
         }
         (FileKind::Regular, FilePayload::InlineRegular(data)) => {
             let file = create_file(host_root, host_path, receipt.work)?;
-            acyclic_native_runtime::write_all_at(file.as_file(), 0, data.as_bytes())
-                .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
-            file.sync(acyclic_native_runtime::Durability::Full)
+            file.write_all_batch_async(vec![acyclic_native_runtime::OwnedWrite {
+                offset: 0,
+                bytes: Bytes::copy_from_slice(data.as_bytes()),
+            }])
+            .await
+            .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+            file.sync_async(acyclic_native_runtime::Durability::Full)
+                .await
                 .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
             known_files.insert(file_id, host_path.to_path_buf());
             account_file(
@@ -1025,10 +1039,12 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 let mut file = create_file(host_root, host_path, receipt.work)?;
                 #[cfg(windows)]
                 {
-                    mark_sparse(file.as_file())
+                    file.control_async(mark_sparse)
+                        .await
                         .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
                 }
-                file.set_len(logical_bytes)
+                file.set_len_async(logical_bytes)
+                    .await
                     .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
                 authenticated_metadata = Some(
                     materialize_sparse_file(
@@ -1043,14 +1059,20 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     )
                     .await?,
                 );
-                file.sync(acyclic_native_runtime::Durability::Full)
+                file.sync_async(acyclic_native_runtime::Durability::Full)
+                    .await
                     .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
             }
             #[cfg(target_os = "macos")]
             if cloned {
-                host_root
+                let file = host_root
                     .open_file(host_path)
-                    .and_then(|file| file.sync_all())
+                    .map(cap_std::fs::File::into_std)
+                    .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+                acyclic_native_runtime::NativeFile::from_file(file)
+                    .map_err(|error| OperationFailure::new(error.into(), receipt.work))?
+                    .sync_async(acyclic_native_runtime::Durability::Full)
+                    .await
                     .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
             }
             #[cfg(any(target_os = "macos", windows))]
@@ -1122,7 +1144,7 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     if let Some(metadata) = authenticated_metadata {
         apply_host_metadata(host_root, host_path, metadata)
-            .map_err(|error| OperationFailure::new(error, receipt.work))
+            .map_err(|error| OperationFailure::new(error, receipt.work))?;
     } else {
         apply_metadata(
             checkout,
@@ -1133,25 +1155,54 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             cancellation,
             receipt,
         )
-        .await
+        .await?;
     }
+    cancellation.check().map_err(|error| {
+        OperationFailure::new(MaterializeError::Engine(error.to_string()), receipt.work)
+    })?;
+    Ok(())
 }
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
 fn mark_sparse(file: &File) -> std::io::Result<()> {
     use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::System::IO::DeviceIoControl;
+    use windows::Win32::Foundation::{ERROR_IO_PENDING, HANDLE};
+    use windows::Win32::System::IO::{DeviceIoControl, GetOverlappedResult, OVERLAPPED};
     use windows::Win32::System::Ioctl::FSCTL_SET_SPARSE;
 
     let handle = HANDLE(file.as_raw_handle());
-    // SAFETY: `handle` is borrowed from the live `File` for the duration of
-    // this synchronous call. FSCTL_SET_SPARSE takes no input/output buffers,
-    // and every optional pointer is therefore null.
-    unsafe {
-        DeviceIoControl(handle, FSCTL_SET_SPARSE, None, 0, None, 0, None, None)
-            .map_err(|error| std::io::Error::other(error.to_string()))
+    let mut overlapped = OVERLAPPED::default();
+    // This runs as the first sequenced control operation, before the native
+    // completion owner attaches the overlapped file handle to an IOCP. The
+    // FSCTL has no payload buffers; its OVERLAPPED must nevertheless remain
+    // live until terminal completion, including when DeviceIoControl pends.
+    let submitted = unsafe {
+        DeviceIoControl(
+            handle,
+            FSCTL_SET_SPARSE,
+            None,
+            0,
+            None,
+            0,
+            None,
+            Some(&mut overlapped),
+        )
+    };
+    match submitted {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == windows::core::HRESULT::from_win32(ERROR_IO_PENDING.0) => {
+            let mut transferred = 0;
+            // SAFETY: the file and OVERLAPPED remain live through this wait.
+            // With no other I/O on this newly created file, a null hEvent is
+            // the file handle's own event. If waiting itself fails, completion
+            // is uncertain and unwinding would free the stack OVERLAPPED.
+            match unsafe { GetOverlappedResult(handle, &overlapped, &mut transferred, true) } {
+                Ok(()) => Ok(()),
+                Err(_) => std::process::abort(),
+            }
+        }
+        Err(error) => Err(std::io::Error::other(error.to_string())),
     }
 }
 
@@ -1220,8 +1271,11 @@ async fn materialize_sparse_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             match span.kind {
                 ExtentKind::Hole => {
                     #[cfg(target_os = "macos")]
-                    crate::native_host::punch_hole(file.as_file(), span.offset, span.length)
-                        .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+                    file.control_async(move |handle| {
+                        crate::native_host::punch_hole(handle, span.offset, span.length)
+                    })
+                    .await
+                    .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
                 }
                 ExtentKind::AllocatedZero => {
                     queue_zero_writes(
@@ -1265,9 +1319,7 @@ async fn materialize_sparse_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     OperationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work)
                 })
         })?;
-        let mut write = file
-            .write_all_batch_async(writes)
-            .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
+        let mut write = file.write_all_batch_async(writes);
         let mut cancelled = false;
         tokio::select! {
             result = &mut write => {
@@ -1424,10 +1476,26 @@ fn create_file(
     path: &Path,
     work: WorkCounters,
 ) -> Result<acyclic_native_runtime::NativeFile, OperationFailure<MaterializeError>> {
-    host_root
-        .create_file(path)
-        .map(acyclic_native_runtime::NativeFile::from_file)
-        .map_err(|error| OperationFailure::new(error.into(), work))
+    #[cfg(windows)]
+    {
+        let file = host_root
+            .create_overlapped_file(path)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        // SAFETY: HostRoot created this handle with FILE_FLAG_OVERLAPPED,
+        // capability-relative to the authorized root. It is newly created,
+        // has no completion-port association, and is moved directly into the
+        // sole native I/O owner without any independent file I/O.
+        #[allow(unsafe_code)]
+        unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file) }
+            .map_err(|error| OperationFailure::new(error.into(), work))
+    }
+    #[cfg(not(windows))]
+    {
+        host_root
+            .create_file(path)
+            .and_then(acyclic_native_runtime::NativeFile::from_file)
+            .map_err(|error| OperationFailure::new(error.into(), work))
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -1547,6 +1615,35 @@ pub(crate) fn host_name(name: &LogicalName) -> Result<OsString, MaterializeError
 #[cfg(all(test, windows))]
 mod windows_name_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn overlapped_sparse_control_finishes_before_native_writes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let root = HostRoot::open(directory.path())?;
+        let path = Path::new("sparse-control.bin");
+        let file = root.create_overlapped_file(path)?;
+        // SAFETY: the new capability-rooted handle is overlapped, unattached
+        // to an IOCP, and moved directly to its sole native owner.
+        #[allow(unsafe_code)]
+        let native =
+            unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file)? };
+        native.control_async(mark_sparse).await?;
+        native.set_len_async(1024 * 1024).await?;
+        native
+            .write_all_batch_async(vec![acyclic_native_runtime::OwnedWrite {
+                offset: 1024 * 1024 - 4,
+                bytes: Bytes::from_static(b"tail"),
+            }])
+            .await?;
+        native
+            .sync_async(acyclic_native_runtime::Durability::Full)
+            .await?;
+        let bytes = std::fs::read(directory.path().join(path))?;
+        assert_eq!(bytes.len(), 1024 * 1024);
+        assert_eq!(&bytes[bytes.len() - 4..], b"tail");
+        Ok(())
+    }
 
     #[test]
     fn posix_profile_names_materialize_through_utf8_on_windows()

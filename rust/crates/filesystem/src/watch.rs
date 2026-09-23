@@ -464,9 +464,14 @@ impl NativeWatch {
                 return Err(NativeWatchError::UnrepresentablePath);
             };
             candidate.push(component);
-            let metadata = candidate
-                .symlink_metadata()
-                .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            let metadata = match candidate.symlink_metadata() {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    candidate.pop();
+                    break;
+                }
+                Err(error) => return Err(NativeWatchError::Io(error.to_string())),
+            };
             if metadata.file_type().is_symlink() {
                 return Err(NativeWatchError::SymbolicLinkDirectory);
             }

@@ -355,6 +355,106 @@ pub async fn capture_paths_with_policy<A: AsyncAuthorityStore, O: AsyncObjectSto
     .await
 }
 
+/// Captures a large explicit path set as bounded transactions on one private
+/// checkout candidate. The caller sees either every path or none of them;
+/// hard-link identities are shared across batches. `budget` applies to each
+/// bounded batch rather than to the complete path set.
+pub(crate) async fn capture_paths_batched<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    paths: &[NamespacePath],
+    options: &CaptureOptions,
+    batch_size: usize,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    validate_path_count(paths, options).map_err(OperationFailure::before_work)?;
+    if batch_size == 0 {
+        return Err(OperationFailure::before_work(CaptureError::InvalidOptions));
+    }
+    let source_root = open_source_root(options).map_err(OperationFailure::before_work)?;
+    let mut unique = paths.to_vec();
+    unique.sort();
+    if unique
+        .windows(2)
+        .any(|pair| matches!(pair, [left, right] if left == right))
+    {
+        return Err(OperationFailure::before_work(CaptureError::InvalidOptions));
+    }
+    let mut candidate = checkout.private_candidate();
+    let mut receipt = CaptureReceipt::default();
+    let mut states = Vec::with_capacity(unique.len());
+    let mut observations = observe_unique_paths(unique, &source_root).into_iter();
+    loop {
+        let page = observations.by_ref().take(batch_size).collect::<Vec<_>>();
+        if page.is_empty() {
+            break;
+        }
+        let paths = page
+            .iter()
+            .map(|(_, path)| path.clone())
+            .collect::<Vec<_>>();
+        let lookup = candidate
+            .lookup_batch_no_follow(&paths, budget, cancellation)
+            .await
+            .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+        receipt.work = add_work(receipt.work, lookup.work)?;
+        states.extend(
+            page.into_iter()
+                .zip(lookup.value.entries)
+                .map(|((observation, path), entry)| (observation, path, entry.record)),
+        );
+    }
+    sort_capture_states(&mut states);
+    let mut host_links = BTreeMap::new();
+    let mut states = states.into_iter();
+    loop {
+        let batch = states.by_ref().take(batch_size).collect::<Vec<_>>();
+        if batch.is_empty() {
+            break;
+        }
+        let captured = capture_ranked_paths_from_root(
+            &mut candidate,
+            batch,
+            &mut host_links,
+            options.maximum_extent_spans,
+            &source_root,
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| map_capture_failure(failure, receipt.work))?;
+        for source in host_links.values_mut() {
+            if let HostLinkSource::Pending(path) = source {
+                *source = HostLinkSource::Ready(path.clone());
+            }
+        }
+        receipt.examined_paths = receipt
+            .examined_paths
+            .checked_add(captured.value.examined_paths)
+            .ok_or_else(|| {
+                OperationFailure::new(CaptureError::Work(WorkError::Overflow), receipt.work)
+            })?;
+        receipt.changed_paths = receipt
+            .changed_paths
+            .checked_add(captured.value.changed_paths)
+            .ok_or_else(|| {
+                OperationFailure::new(CaptureError::Work(WorkError::Overflow), receipt.work)
+            })?;
+        receipt.staged_file_bytes = receipt
+            .staged_file_bytes
+            .checked_add(captured.value.staged_file_bytes)
+            .ok_or_else(|| {
+                OperationFailure::new(CaptureError::Work(WorkError::Overflow), receipt.work)
+            })?;
+        receipt.work = add_work(receipt.work, captured.work)?;
+    }
+    *checkout = candidate;
+    Ok(OperationReceipt {
+        value: receipt,
+        work: receipt.work,
+    })
+}
+
 /// Reconciles one host directory and every descendant as one authored
 /// transaction. Both host and checkout descendants are included so removals
 /// inside a replaced imported tree are exact.
@@ -547,6 +647,22 @@ async fn capture_unique_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectSt
     // A comparator must not inspect a changing host tree: one path could
     // otherwise alternate between present and absent during the sort. This
     // also reduces host metadata probes from O(paths * log paths) to O(paths).
+    let ordered = observe_unique_paths(unique, source_root);
+    capture_observed_paths_from_root(
+        checkout,
+        ordered,
+        maximum_extent_spans,
+        source_root,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+fn observe_unique_paths(
+    unique: Vec<NamespacePath>,
+    source_root: &HostRoot,
+) -> Vec<(Option<HostObservation>, NamespacePath)> {
     let mut ordered = unique
         .into_iter()
         .map(|path| {
@@ -571,15 +687,7 @@ async fn capture_unique_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectSt
             (false, true) => std::cmp::Ordering::Greater,
         }
     });
-    capture_observed_paths_from_root(
-        checkout,
-        ordered,
-        maximum_extent_spans,
-        source_root,
-        budget,
-        cancellation,
-    )
-    .await
+    ordered
 }
 
 async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -591,11 +699,6 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let mut receipt = CaptureReceipt::default();
-    let mut mutations = Vec::new();
-    let mut host_links = BTreeMap::new();
-    mutations
-        .try_reserve(ordered.len().saturating_mul(3))
-        .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
 
     let mut observations = Vec::new();
     let mut paths = Vec::new();
@@ -629,11 +732,52 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
             .collect()
     };
 
+    let states = order_capture_states(observations, paths, current);
+    let mut host_links = BTreeMap::new();
+    let remaining = receipt
+        .work
+        .remaining(budget)
+        .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
+    let captured = capture_ranked_paths_from_root(
+        checkout,
+        states,
+        &mut host_links,
+        maximum_extent_spans,
+        source_root,
+        remaining,
+        cancellation,
+    )
+    .await
+    .map_err(|failure| map_capture_failure(failure, receipt.work))?;
+    receipt.examined_paths = captured.value.examined_paths;
+    receipt.changed_paths = captured.value.changed_paths;
+    receipt.staged_file_bytes = captured.value.staged_file_bytes;
+    receipt.work = add_work(receipt.work, captured.work)?;
+    Ok(OperationReceipt {
+        value: receipt,
+        work: receipt.work,
+    })
+}
+
+async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    states: Vec<CapturePathState>,
+    host_links: &mut BTreeMap<[u8; 16], HostLinkSource>,
+    maximum_extent_spans: u32,
+    source_root: &HostRoot,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    let mut receipt = CaptureReceipt::default();
+    let mut mutations = Vec::new();
+    mutations
+        .try_reserve(states.len().saturating_mul(3))
+        .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
     let mut prepared = Vec::new();
     prepared
-        .try_reserve(paths.len())
+        .try_reserve(states.len())
         .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, receipt.work))?;
-    for ((observation, path), current) in observations.into_iter().zip(paths).zip(current) {
+    for (observation, path, current) in states {
         let plan = prepare_final_path(
             checkout,
             path,
@@ -641,7 +785,7 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
             CaptureIntent::Complete,
             source_root,
             observation,
-            &mut host_links,
+            host_links,
             None,
             &mut mutations,
             &mut receipt,
@@ -674,6 +818,56 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
         value: receipt,
         work: receipt.work,
     })
+}
+
+type CapturePathState = (Option<HostObservation>, NamespacePath, Option<FileRecord>);
+
+fn order_capture_states(
+    observations: Vec<Option<HostObservation>>,
+    paths: Vec<NamespacePath>,
+    current: Vec<Option<FileRecord>>,
+) -> Vec<CapturePathState> {
+    let mut states = observations
+        .into_iter()
+        .zip(paths)
+        .zip(current)
+        .map(|((observation, path), current)| (observation, path, current))
+        .collect::<Vec<_>>();
+    // Existing bindings lead newly observed hard-link aliases so importing an
+    // earlier-sorting alias never replaces a stable SDK FileId. Directories
+    // still precede children, and absent paths still remove deepest first.
+    sort_capture_states(&mut states);
+    states
+}
+
+fn sort_capture_states(states: &mut [CapturePathState]) {
+    states.sort_by(
+        |(left, left_path, left_current), (right, right_path, right_current)| {
+            let rank = |observation: &Option<HostObservation>, current: &Option<FileRecord>| {
+                match observation {
+                    Some(observation) if observation.metadata.is_dir() => 0,
+                    Some(_) if current.is_some() => 1,
+                    Some(_) => 2,
+                    None => 3,
+                }
+            };
+            let left_rank = rank(left, left_current);
+            let right_rank = rank(right, right_current);
+            left_rank.cmp(&right_rank).then_with(|| {
+                if left_rank == 3 {
+                    right_path
+                        .depth()
+                        .cmp(&left_path.depth())
+                        .then_with(|| left_path.cmp(right_path))
+                } else {
+                    left_path
+                        .depth()
+                        .cmp(&right_path.depth())
+                        .then_with(|| left_path.cmp(right_path))
+                }
+            })
+        },
+    );
 }
 
 /// Authenticates one complete bounded host baseline into a checkout candidate.
@@ -1969,7 +2163,7 @@ async fn apply_capture_transaction<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .remaining(budget)
         .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
     let applied = checkout
-        .apply_authored_transaction(mutations, remaining, cancellation)
+        .apply_authored_bulk_transaction(mutations, remaining, cancellation)
         .await
         .map_err(|failure| map_engine_failure(failure, receipt.work))?;
     receipt.work = add_work(receipt.work, applied.work)?;
@@ -2599,11 +2793,10 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             .try_clone()
             .map(cap_std::fs::File::into_std)
             .map_err(|error| OperationFailure::new(error.into(), accumulated))?;
-        let mut bounded = NativeRangeSource(acyclic_native_runtime::AsyncRangeReader::new(
-            native,
-            range.offset,
-            range.length,
-        ));
+        let mut bounded = NativeRangeSource(
+            acyclic_native_runtime::AsyncRangeReader::new(native, range.offset, range.length)
+                .map_err(|error| OperationFailure::new(error.into(), accumulated))?,
+        );
         let remaining = accumulated
             .remaining(budget)
             .map_err(|error| OperationFailure::new(CaptureError::Work(error), accumulated))?;

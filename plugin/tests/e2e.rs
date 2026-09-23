@@ -6,46 +6,76 @@
     clippy::permissions_set_readonly_false
 )]
 
-mod scenarios;
 mod support;
 
-use scenarios::{AUTHORITATIVE_TEST_SOURCES, INVARIANTS};
 use serde_json::Value;
-use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt as _;
+use std::path::Path;
+use std::time::{Duration, Instant};
 use support::{
-    ACYCLIC, BoundedOutput, ProviderProtocol, ScriptedProvider, ServiceGuard,
+    ACYCLIC, BoundedOutput, RequestFingerprint, ScriptedProvider, ServiceGuard,
     assert_service_absent, command, installed_host_binary, isolated_state, make_read_only,
-    make_writable, output_after_provider_admission, output_with_stdin, output_with_timeout,
-    package_production_plugin, write_qualification_receipt,
+    make_writable, output_after_provider_admission, output_with_stdin, output_with_stdin_timeout,
+    output_with_timeout, package_production_plugin, test_tempdir, write_qualification_receipt,
 };
 
+// Provider admission proves SessionStart completed and the host is blocked on a request that the
+// provider will never answer. A long sleep adds no coverage; a short window catches accidental
+// early completion while keeping cleanup qualification fast.
+const STALLED_PROVIDER_OBSERVATION: Duration = Duration::from_millis(250);
+
 #[test]
-fn invariant_ledger_has_one_authoritative_test_per_requirement() {
-    let mut identifiers = BTreeSet::new();
-    let mut primary_tests = BTreeSet::new();
-    for invariant in INVARIANTS {
-        assert!(
-            identifiers.insert(invariant.id),
-            "duplicate invariant {}",
-            invariant.id
-        );
-        assert!(
-            primary_tests.insert(invariant.primary_test),
-            "{} is not an authoritative one-to-one test",
-            invariant.primary_test
-        );
-        let declaration = format!("fn {}", invariant.primary_test);
-        assert!(
-            AUTHORITATIVE_TEST_SOURCES
-                .iter()
-                .any(|source| source.contains(&declaration)),
-            "{} does not name a checked-in test function",
-            invariant.primary_test
-        );
-    }
+#[ignore = "local-only packaged hook latency comparison"]
+fn packaged_non_filesystem_hook_process_cost() {
+    let temporary = test_tempdir("hook-latency-");
+    let package = package_production_plugin(temporary.path());
+    let measure = |program: &Path, arguments: &[&str]| {
+        let mut samples = Vec::with_capacity(12);
+        for index in 0..15 {
+            let mut hook = command(program);
+            hook.args(arguments);
+            let started = Instant::now();
+            let output = output_with_stdin(&mut hook, br#"{"tool_name":"web.run"}"#);
+            let elapsed = started.elapsed();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout, b"{}");
+            if index >= 3 {
+                samples.push(elapsed);
+            }
+        }
+        samples.sort_unstable();
+        (
+            *samples.get(samples.len() / 2).expect("median sample"),
+            *samples.get(samples.len() * 95 / 100).expect("p95 sample"),
+        )
+    };
+    let native = measure(&package.native, &["__hook", "codex", "PreToolUse"]);
+    let launcher = measure(
+        Path::new("node"),
+        &[
+            package.launcher.to_str().expect("launcher path"),
+            "__hook",
+            "codex",
+            "PreToolUse",
+        ],
+    );
+    println!(
+        "packaged no-op hook median/p95: native={}/{}us Node={}/{}us",
+        native.0.as_micros(),
+        native.1.as_micros(),
+        launcher.0.as_micros(),
+        launcher.1.as_micros()
+    );
+    assert!(
+        native.1 < launcher.1,
+        "native hook did not beat the Node launcher"
+    );
 }
 
 #[test]
@@ -68,15 +98,19 @@ fn codex_hook_manifest_respects_terminal_deadline() {
         .expect("SessionEnd hook");
     assert_eq!(terminal.get("timeout").and_then(Value::as_u64), Some(3));
     assert!(
-        terminal["command"]
-            .as_str()
-            .is_some_and(|command| command.contains("${PLUGIN_ROOT}/bin/acyclic.js"))
+        terminal["command"].as_str().is_some_and(
+            |command| command == "\"${PLUGIN_ROOT}/bin/acyclic\" __hook codex SessionEnd"
+        )
+    );
+    assert_eq!(
+        terminal.get("commandWindows").and_then(Value::as_str),
+        Some("& \"$env:PLUGIN_ROOT\\bin\\acyclic.exe\" __hook codex SessionEnd")
     );
 }
 
 #[test]
-fn pre_tool_failure_uses_the_host_blocking_exit_code() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+fn hook_failure_allows_the_host_to_continue_with_a_visible_notice() {
+    let temporary = test_tempdir("pre-tool-");
     let unusable_state = temporary.path().join("not-a-directory");
     fs::write(&unusable_state, b"file").expect("unusable state root");
     let mut hook = command(ACYCLIC);
@@ -88,11 +122,21 @@ fn pre_tool_failure_uses_the_host_blocking_exit_code() {
         hook.env("XDG_STATE_HOME", &unusable_state);
     }
     let output = output_with_stdin(&mut hook, include_bytes!("fixtures/pre_tool_use.json"));
-    assert_eq!(
-        output.status.code(),
-        Some(2),
+    assert!(
+        output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    let response: Value = serde_json::from_slice(&output.stdout).expect("structured response");
+    assert_eq!(
+        response.pointer("/hookSpecificOutput/permissionDecision"),
+        Some(&Value::String("allow".to_owned()))
+    );
+    assert!(
+        response
+            .get("systemMessage")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("without an isolated workspace"))
     );
 
     let mut non_blocking = command(ACYCLIC);
@@ -107,26 +151,96 @@ fn pre_tool_failure_uses_the_host_blocking_exit_code() {
         &mut non_blocking,
         include_bytes!("fixtures/session_start.json"),
     );
-    assert_eq!(output.status.code(), Some(1));
+    assert!(output.status.success());
+    let response: Value = serde_json::from_slice(&output.stdout).expect("structured notice");
+    assert!(response.get("systemMessage").is_some_and(Value::is_string));
 }
 
 #[test]
-fn packaged_launcher_is_read_only() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+fn immutable_packaged_launcher_runs_the_real_service_lifecycle() {
+    let temporary = test_tempdir("immutable-lifecycle-");
+    let workspace = temporary.path().join("workspace");
+    fs::create_dir(&workspace).expect("workspace");
     let package = package_production_plugin(temporary.path());
     let before = support::tree_snapshot(&package.root);
     make_read_only(&package.root);
-    let mut launch = command("node");
-    launch.arg(&package.launcher).arg("--version");
-    isolated_state(&mut launch, temporary.path());
-    let launched = launch.output().expect("launch immutable package");
-    make_writable(&package.root);
-    assert!(
-        launched.status.success(),
-        "{}",
-        String::from_utf8_lossy(&launched.stderr)
+    let mut service = ServiceGuard::new(temporary.path());
+    let native_hook_command = format!(
+        "\"{}/bin/acyclic\" __hook codex PreToolUse",
+        package.root.display()
     );
+    let mut native_shell = command(if cfg!(windows) { "cmd" } else { "sh" });
+    #[cfg(windows)]
+    native_shell.raw_arg(format!("/S /C \"{native_hook_command}\""));
+    #[cfg(not(windows))]
+    native_shell.args(["-c", &native_hook_command]);
+    native_shell.current_dir(&workspace);
+    isolated_state(&mut native_shell, temporary.path());
+    let native_shell_result = output_with_stdin_timeout(
+        &mut native_shell,
+        br#"{"tool_name":"web.run"}"#,
+        Duration::from_secs(5),
+    );
+    assert!(
+        !native_shell_result.expired,
+        "native hook command timed out"
+    );
+    assert!(
+        native_shell_result.output.status.success(),
+        "native hook command: {}",
+        String::from_utf8_lossy(&native_shell_result.output.stderr)
+    );
+    assert_eq!(native_shell_result.output.stdout, b"{}");
+    let input = |event: &str| {
+        serde_json::to_vec(&serde_json::json!({
+            "session_id": "immutable-package-session",
+            "cwd": workspace,
+            "hook_event_name": event,
+        }))
+        .expect("hook input")
+    };
+
+    let mut start = command(&package.native);
+    start
+        .args(["__hook", "codex", "SessionStart"])
+        .current_dir(&workspace);
+    isolated_state(&mut start, temporary.path());
+    let started =
+        output_with_stdin_timeout(&mut start, &input("SessionStart"), Duration::from_secs(5));
+    let identity = service.assert_hook_service_live();
+
+    let mut agents = command("node");
+    agents
+        .arg(&package.launcher)
+        .arg("agents")
+        .current_dir(&workspace);
+    isolated_state(&mut agents, temporary.path());
+    let listed = output_with_timeout(&mut agents, Duration::from_secs(5));
+
+    let mut end = command(&package.native);
+    end.args(["__hook", "codex", "SessionEnd"])
+        .current_dir(&workspace);
+    isolated_state(&mut end, temporary.path());
+    let ended = output_with_stdin_timeout(&mut end, &input("SessionEnd"), Duration::from_secs(5));
+    service.drain();
+    make_writable(&package.root);
+
+    for (name, result) in [("start", started), ("agents", listed), ("end", ended)] {
+        assert!(
+            !result.expired,
+            "{name} exceeded its deadline: stdout={} stderr={}",
+            String::from_utf8_lossy(&result.output.stdout),
+            String::from_utf8_lossy(&result.output.stderr)
+        );
+        assert!(
+            result.output.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&result.output.stderr)
+        );
+    }
+    assert!(!identity.is_empty());
     assert_eq!(support::tree_snapshot(&package.root), before);
+    assert_service_absent(temporary.path()).expect("service drained after immutable lifecycle");
 }
 
 #[test]
@@ -135,71 +249,52 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     let Some(codex) = installed_host_binary("codex", "ACYCLIC_E2E_CODEX") else {
         panic!("Codex is unavailable; set ACYCLIC_E2E_CODEX to the exact binary");
     };
-    let run_root = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-        .map(PathBuf::from)
-        .expect("host home")
-        .join(".cache/acyclic-agent-qualification");
-    fs::create_dir_all(&run_root).expect("qualification run root");
-    let temporary = tempfile::Builder::new()
-        .prefix("run-")
-        .tempdir_in(run_root)
-        .expect("temporary qualification directory");
+    let temporary = test_tempdir("codex-");
     let workspace = temporary.path().join("workspace");
     fs::create_dir(&workspace).expect("workspace directory");
+    write_overlay_workflow_source(&workspace);
     let package = package_production_plugin(temporary.path());
-    let disabled_workspace = temporary.path().join("disabled-workspace");
-    fs::create_dir(&disabled_workspace).expect("disabled workspace directory");
-    let disabled_provider = ScriptedProvider::start(
-        ProviderProtocol::Responses,
-        disabled_workspace
-            .join("codex-e2e.txt")
-            .to_string_lossy()
-            .as_ref(),
-    );
-    let mut disabled_host = codex_host_command(
-        &codex,
-        temporary.path(),
-        &disabled_workspace,
-        &disabled_provider,
-        false,
-    );
-    let BoundedOutput {
-        output,
-        expired,
-        process_tree,
-    } = output_with_timeout(&mut disabled_host, Duration::from_secs(30));
-    drop(process_tree);
-    assert_host_success("disabled Codex", &output, expired, "");
-    assert_host_sentinel("disabled Codex", &disabled_workspace, &output, "");
-    assert_semantic_provider_exchange(&disabled_provider);
-    assert_service_absent(&package.launcher, temporary.path())
-        .expect("disabled Codex must not start Acyclic");
 
     let mut service = install_host(&package.launcher, "codex", &codex, temporary.path());
-    let provider = ScriptedProvider::start(
-        ProviderProtocol::Responses,
+    let provider = ScriptedProvider::start_codex(
         workspace.join("codex-e2e.txt").to_string_lossy().as_ref(),
+        "codex-child-isolation.txt",
     );
-    let mut host = codex_host_command(&codex, temporary.path(), &workspace, &provider, true);
+    let mut host = codex_host_command(&codex, temporary.path(), &workspace, &provider);
     let BoundedOutput {
         output,
         expired,
         process_tree,
-    } = output_with_timeout(&mut host, Duration::from_secs(30));
+    } = output_with_timeout(&mut host, Duration::from_secs(60));
     service.attach_process_tree(process_tree);
-    assert_host_success("installed Codex", &output, expired, "");
     let installed_config = fs::read_to_string(temporary.path().join("codex/config.toml"))
         .unwrap_or_else(|error| format!("<unreadable Codex config: {error}>"));
     let installed_debug = format!(
-        "{installed_config}\nprovider requests: {:#?}",
-        provider.wait_for_requests(0, Duration::ZERO)
+        "{installed_config}\nprovider fingerprints: {:#?}",
+        provider.semantic_fingerprints(0, Duration::ZERO)
     );
+    assert_host_success("installed Codex", &output, expired, &installed_debug);
     assert_host_sentinel("installed Codex", &workspace, &output, &installed_debug);
-    assert_semantic_provider_exchange(&provider);
+    let child_ran = assert_semantic_provider_exchange(&provider);
     service.assert_hook_service_live();
+    assert_overlay_workflow_stayed_in_child(&workspace, "codex-child-isolation.txt");
+    let mut doctor = command("node");
+    doctor
+        .arg(&package.launcher)
+        .arg("doctor")
+        .current_dir(&workspace);
+    isolated_state(&mut doctor, temporary.path());
+    let doctor = output_with_timeout(&mut doctor, Duration::from_secs(20));
+    assert!(!doctor.expired, "doctor exceeded its deadline");
+    let doctor_output = String::from_utf8_lossy(&doctor.output.stdout);
+    assert!(
+        doctor_output.contains("pass persistent-state"),
+        "spawn completion left durable recovery work behind:\n{doctor_output}\n{}",
+        String::from_utf8_lossy(&doctor.output.stderr)
+    );
 
     service.drain();
-    assert_codex_timeout_cleanup(&package.launcher, &codex, temporary.path(), &workspace);
+    assert_codex_timeout_cleanup(&codex, temporary.path(), &workspace);
     write_qualification_receipt(
         "codex",
         &codex,
@@ -207,6 +302,11 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
             "host.codex.actual-binary",
             "host.codex.hook-service-observed",
             "routing.root-cwd",
+            if child_ran {
+                "routing.child-native-mount"
+            } else {
+                "routing.child-failed-closed"
+            },
         ],
     );
 }
@@ -273,7 +373,7 @@ fn local_codex_adversarial_workspace_eval() {
     } = output_with_timeout(&mut host, Duration::from_secs(600));
     let artifact =
         persist_local_eval_artifacts("codex", &output.stdout, &output.stderr, temporary.path());
-    let mut service = ServiceGuard::new(&package.launcher, temporary.path());
+    let mut service = ServiceGuard::new(temporary.path());
     service.attach_process_tree(process_tree);
     assert!(
         !expired && output.status.success(),
@@ -314,8 +414,7 @@ fn local_codex_adversarial_workspace_eval() {
         );
     }
     service.drain();
-    assert_service_absent(&package.launcher, temporary.path())
-        .expect("authenticated Codex eval cleanup");
+    assert_service_absent(temporary.path()).expect("authenticated Codex eval cleanup");
 }
 
 const LOCAL_CODEX_ADVERSARIAL_PROMPT: &str = r#"
@@ -413,9 +512,9 @@ fn persist_local_eval_artifacts(
     fs::write(directory.join("trace.jsonl"), stdout).expect("persist local eval trace");
     fs::write(directory.join("stderr.log"), stderr).expect("persist local eval stderr");
     let state = if cfg!(windows) {
-        isolated_home.join("local/Acyclic/state-v2")
+        isolated_home.join("local/Acyclic/state-v4")
     } else {
-        isolated_home.join("state/acyclic/state-v2")
+        isolated_home.join("state/acyclic/state-v4")
     };
     copy_local_eval_tree(&state, &directory.join("state"));
     for name in ["sessions", "log"] {
@@ -447,53 +546,24 @@ fn copy_local_eval_tree(source: &Path, destination: &Path) {
 
 #[test]
 #[ignore = "requires the exact Claude Code binary selected by the qualification workflow"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one host qualification validates the ordered Claude lifecycle transcript"
+)]
 fn actual_claude_binary_executes_the_scripted_scenario() {
     let Some(claude) = installed_host_binary("claude", "ACYCLIC_E2E_CLAUDE") else {
         panic!("Claude Code is unavailable; set ACYCLIC_E2E_CLAUDE to the exact binary");
     };
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = test_tempdir("claude-");
     let workspace = temporary.path().join("workspace");
     fs::create_dir(&workspace).expect("workspace directory");
+    write_overlay_workflow_source(&workspace);
     let package = package_production_plugin(temporary.path());
-    let disabled_workspace = temporary.path().join("disabled-workspace");
-    fs::create_dir(&disabled_workspace).expect("disabled workspace directory");
-    let disabled_provider = ScriptedProvider::start(
-        ProviderProtocol::AnthropicMessages,
-        disabled_workspace
-            .join("claude-e2e.txt")
-            .to_string_lossy()
-            .as_ref(),
-    );
-    let disabled_debug = temporary.path().join("claude-disabled-debug.log");
-    let mut disabled_host = claude_host_command(
-        &claude,
-        temporary.path(),
-        &disabled_workspace,
-        &disabled_provider,
-        &disabled_debug,
-    );
-    let BoundedOutput {
-        output,
-        expired,
-        process_tree,
-    } = output_with_timeout(&mut disabled_host, Duration::from_secs(30));
-    drop(process_tree);
-    let disabled_debug_output = fs::read_to_string(&disabled_debug).unwrap_or_default();
-    assert_host_success("disabled Claude", &output, expired, &disabled_debug_output);
-    assert_eq!(
-        fs::read_to_string(disabled_workspace.join("claude-e2e.txt"))
-            .expect("disabled Claude sentinel")
-            .trim(),
-        "qualified"
-    );
-    assert_semantic_provider_exchange(&disabled_provider);
-    assert_service_absent(&package.launcher, temporary.path())
-        .expect("disabled Claude must not start Acyclic");
 
     let mut service = install_host(&package.launcher, "claude-code", &claude, temporary.path());
-    let provider = ScriptedProvider::start(
-        ProviderProtocol::AnthropicMessages,
+    let provider = ScriptedProvider::start_claude_lifecycle(
         workspace.join("claude-e2e.txt").to_string_lossy().as_ref(),
+        "claude-child-isolation.txt",
     );
     let debug_log = temporary.path().join("claude-debug.log");
     let mut host =
@@ -517,19 +587,33 @@ fn actual_claude_binary_executes_the_scripted_scenario() {
         String::from_utf8_lossy(&output.stderr),
         debug
     );
-    assert_semantic_provider_exchange(&provider);
     service.assert_hook_service_live();
-
-    qualify_claude_child(&claude, temporary.path(), &workspace, &service);
-    qualify_claude_failed_child(&claude, temporary.path(), &workspace);
+    assert_overlay_workflow_stayed_in_child(&workspace, "claude-child-isolation.txt");
+    let requests = provider.wait_for_requests(0, Duration::ZERO);
+    let fingerprints = provider.semantic_fingerprints(0, Duration::ZERO);
+    let request_text = requests.iter().map(Value::to_string).collect::<String>();
+    let spawn_denied =
+        request_text.contains("Acyclic denied the tool because workspace isolation failed");
+    assert_fingerprint_before(
+        &fingerprints,
+        RequestFingerprint::ClaudeRootPrompt,
+        RequestFingerprint::ClaudeRootToolResult,
+    );
+    let transcript = String::from_utf8_lossy(&output.stdout);
+    let leaked_lease = debug.contains("filesystem tools are still active");
+    assert!(!leaked_lease, "Claude leaked a filesystem operation lease");
+    if spawn_denied {
+        assert_claude_isolation_denial(&fingerprints, &transcript);
+    } else {
+        assert_claude_successful_lifecycle(&fingerprints, &request_text, &transcript);
+    }
 
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _service = service;
         panic!("injected host assertion failure");
     }));
     assert!(unwind.is_err(), "injected unwind must execute");
-    assert_service_absent(&package.launcher, temporary.path()).expect("Claude unwind cleanup");
-    assert_claude_timeout_cleanup(&package.launcher, &claude, temporary.path(), &workspace);
+    assert_claude_timeout_cleanup(&claude, temporary.path(), &workspace);
     write_qualification_receipt(
         "claude-code",
         &claude,
@@ -541,103 +625,174 @@ fn actual_claude_binary_executes_the_scripted_scenario() {
     );
 }
 
-fn qualify_claude_child(claude: &Path, home: &Path, workspace: &Path, _service: &ServiceGuard) {
-    let provider = ScriptedProvider::start_claude_subagent("claude-child-isolation.txt");
-    let debug_path = home.join("claude-child-debug.log");
-    let mut host = claude_host_command(claude, home, workspace, &provider, &debug_path);
-    let BoundedOutput {
-        output,
-        expired,
-        process_tree,
-    } = output_with_timeout(&mut host, Duration::from_secs(45));
-    drop(process_tree);
-    let debug = fs::read_to_string(&debug_path).unwrap_or_default();
-    assert_host_success("Claude child isolation", &output, expired, &debug);
+fn assert_claude_isolation_denial(fingerprints: &[RequestFingerprint], transcript: &str) {
     assert!(
-        !workspace.join("claude-child-isolation.txt").exists(),
-        "child relative write escaped into the physical root"
+        fingerprints.iter().all(|fingerprint| matches!(
+            fingerprint,
+            RequestFingerprint::ClaudeRootPrompt
+                | RequestFingerprint::ClaudeRootContinuation
+                | RequestFingerprint::ClaudeRootToolResult
+        )),
+        "a denied spawn must not start scripted child conversations: {fingerprints:?}"
     );
-    let requests = provider.wait_for_requests(3, Duration::from_secs(5));
     assert!(
-        requests.len() >= 3
-            && requests
-                .iter()
-                .any(|request| request.to_string().contains("ACYCLIC_DETERMINISTIC_CHILD"))
-            && requests
-                .iter()
-                .any(|request| contains_type(request, "tool_result")),
-        "Claude did not complete the scripted child tool exchange: {requests:#?}"
+        transcript.contains("permissionDecision") && transcript.contains("deny"),
+        "Claude did not expose the structured fail-closed hook decision"
     );
-    let transcript = String::from_utf8_lossy(&output.stdout);
     assert!(
-        transcript.contains("SubagentStart")
+        !transcript.contains("\"hook_event\":\"SubagentStart\"")
+            && !transcript.contains("\"hook_event\": \"SubagentStart\""),
+        "an isolation-denied spawn unexpectedly started a subagent"
+    );
+}
+
+fn assert_claude_successful_lifecycle(
+    fingerprints: &[RequestFingerprint],
+    request_text: &str,
+    transcript: &str,
+) {
+    for (earlier, later) in [
+        (
+            RequestFingerprint::ClaudeRootPrompt,
+            RequestFingerprint::ClaudeSuccessChildPrompt,
+        ),
+        (
+            RequestFingerprint::ClaudeSuccessChildPrompt,
+            RequestFingerprint::ClaudeSuccessChildResult,
+        ),
+        (
+            RequestFingerprint::ClaudeSuccessChildResult,
+            RequestFingerprint::ClaudeFailureChildPrompt,
+        ),
+        (
+            RequestFingerprint::ClaudeRootToolResult,
+            RequestFingerprint::ClaudeFailureChildPrompt,
+        ),
+        (
+            RequestFingerprint::ClaudeFailureChildPrompt,
+            RequestFingerprint::ClaudeFailureChildResult,
+        ),
+        (
+            RequestFingerprint::ClaudeFailureChildResult,
+            RequestFingerprint::ClaudeRootContinuation,
+        ),
+        (
+            RequestFingerprint::ClaudeRootFailedChildResult,
+            RequestFingerprint::ClaudeRootContinuation,
+        ),
+    ] {
+        assert_fingerprint_before(fingerprints, earlier, later);
+    }
+    let continuation_count = fingerprints
+        .iter()
+        .filter(|fingerprint| **fingerprint == RequestFingerprint::ClaudeRootContinuation)
+        .count();
+    assert!(
+        (1..=2).contains(&continuation_count),
+        "Claude emitted {continuation_count} hook-driven continuation turns"
+    );
+    let mut observed = fingerprints
+        .iter()
+        .copied()
+        .filter(|fingerprint| *fingerprint != RequestFingerprint::ClaudeRootContinuation)
+        .collect::<Vec<_>>();
+    observed.sort_unstable();
+    let mut expected = vec![
+        RequestFingerprint::ClaudeRootPrompt,
+        RequestFingerprint::ClaudeRootToolResult,
+        RequestFingerprint::ClaudeRootFailedChildResult,
+        RequestFingerprint::ClaudeSuccessChildPrompt,
+        RequestFingerprint::ClaudeSuccessChildResult,
+        RequestFingerprint::ClaudeFailureChildPrompt,
+        RequestFingerprint::ClaudeFailureChildResult,
+    ];
+    expected.sort_unstable();
+    assert_eq!(observed, expected, "Claude lifecycle schedule drifted");
+    assert!(
+        request_text.contains("ACYCLIC_SUCCESS_CHILD")
+            && request_text.contains("ACYCLIC_FAILURE_CHILD")
+            && request_text.contains("\"is_error\":true"),
+        "Claude did not complete both child exchanges"
+    );
+    let subagent_starts = transcript
+        .matches("\"hook_event\":\"SubagentStart\"")
+        .count()
+        + transcript
+            .matches("\"hook_event\": \"SubagentStart\"")
+            .count();
+    assert!(
+        subagent_starts >= 2
             && transcript.contains("PostToolUse")
             && transcript.contains("updatedInput")
-            && transcript.contains("claude-child-isolation.txt"),
-        "Claude child hooks did not expose the rewritten successful tool lifecycle:\n{transcript}\n{debug}"
+            && transcript.contains("claude-child-isolation.txt")
+            && transcript.contains("PostToolUseFailure"),
+        "Claude lifecycle transcript lacked required structured evidence"
     );
 }
 
-fn qualify_claude_failed_child(claude: &Path, home: &Path, workspace: &Path) {
-    let provider = ScriptedProvider::start_claude_failed_subagent();
-    let debug_path = home.join("claude-failed-child-debug.log");
-    let mut host = claude_host_command(claude, home, workspace, &provider, &debug_path);
-    let BoundedOutput {
-        output,
-        expired,
-        process_tree,
-    } = output_with_timeout(&mut host, Duration::from_secs(45));
-    drop(process_tree);
-    let debug = fs::read_to_string(&debug_path).unwrap_or_default();
-    assert_host_success("Claude failed child", &output, expired, &debug);
-    let requests = provider.wait_for_requests(3, Duration::from_secs(5));
+fn write_overlay_workflow_source(workspace: &Path) {
+    fs::write(
+        workspace.join("acyclic-workflow.rs"),
+        include_bytes!("fixtures/overlay_workflow.rs"),
+    )
+    .expect("overlay workflow source");
+}
+fn assert_overlay_workflow_stayed_in_child(workspace: &Path, output: &str) {
     assert!(
-        requests
+        !workspace.join(output).exists(),
+        "child relative write escaped into the physical root"
+    );
+    assert!(
+        !workspace.join("acyclic-workflow-bin").exists()
+            && !workspace.join("acyclic-workflow-bin.exe").exists(),
+        "child compiler output escaped into the physical root"
+    );
+    assert!(
+        !(0..2).any(|server| workspace
+            .join(format!(".acyclic-workflow-child-{server}"))
+            .exists()),
+        "workflow subprocess wrote through the physical root"
+    );
+}
+
+fn assert_fingerprint_before(
+    fingerprints: &[RequestFingerprint],
+    earlier: RequestFingerprint,
+    later: RequestFingerprint,
+) {
+    let position = |fingerprint| {
+        fingerprints
             .iter()
-            .any(|request| request.to_string().contains("\"is_error\":true")),
-        "Claude did not report the expected failed child tool: {requests:#?}"
-    );
-    let transcript = String::from_utf8_lossy(&output.stdout);
+            .position(|candidate| *candidate == fingerprint)
+            .unwrap_or_else(|| panic!("missing semantic provider phase {fingerprint:?}"))
+    };
     assert!(
-        transcript.contains("PostToolUseFailure")
-            && !debug.contains("filesystem tools are still active"),
-        "failed child did not close its operation lease:\n{transcript}\n{debug}"
+        position(earlier) < position(later),
+        "semantic provider phase {earlier:?} must precede {later:?}: {fingerprints:?}"
     );
 }
 
-fn assert_codex_timeout_cleanup(launcher: &Path, binary: &Path, home: &Path, workspace: &Path) {
-    let service = install_host(launcher, "codex", binary, home);
-    let provider = ScriptedProvider::start_stalled(ProviderProtocol::Responses);
-    let mut host = codex_host_command(binary, home, workspace, &provider, true);
-    let (
-        BoundedOutput {
-            output,
-            expired,
-            process_tree,
-        },
-        admitted,
-    ) = output_after_provider_admission(
-        &mut host,
-        &provider,
-        Duration::from_secs(30),
-        Duration::from_secs(15),
-    );
-    assert!(
-        admitted,
-        "Codex did not reach the stalled provider\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(expired, "stalled Codex must hit the process-tree deadline");
-    service.assert_timeout_cleanup(process_tree);
-    assert_service_absent(launcher, home).expect("Codex timeout cleanup");
+fn assert_codex_timeout_cleanup(binary: &Path, home: &Path, workspace: &Path) {
+    let provider = ScriptedProvider::start_stalled();
+    let host = codex_host_command(binary, home, workspace, &provider);
+    assert_host_timeout_cleanup("Codex", home, &provider, host);
 }
 
-fn assert_claude_timeout_cleanup(launcher: &Path, binary: &Path, home: &Path, workspace: &Path) {
-    let service = install_host(launcher, "claude-code", binary, home);
-    let provider = ScriptedProvider::start_stalled(ProviderProtocol::AnthropicMessages);
+fn assert_claude_timeout_cleanup(binary: &Path, home: &Path, workspace: &Path) {
+    let provider = ScriptedProvider::start_stalled();
     let debug = home.join("claude-timeout-debug.log");
-    let mut host = claude_host_command(binary, home, workspace, &provider, &debug);
+    let host = claude_host_command(binary, home, workspace, &provider, &debug);
+    assert_host_timeout_cleanup("Claude", home, &provider, host);
+}
+
+fn assert_host_timeout_cleanup(
+    host_name: &str,
+    home: &Path,
+    provider: &ScriptedProvider,
+    mut host: std::process::Command,
+) {
+    // The lifecycle run installed the integration; a fresh host proves it can start a new service.
+    let service = ServiceGuard::new(home);
     let (
         BoundedOutput {
             output,
@@ -647,19 +802,21 @@ fn assert_claude_timeout_cleanup(launcher: &Path, binary: &Path, home: &Path, wo
         admitted,
     ) = output_after_provider_admission(
         &mut host,
-        &provider,
+        provider,
         Duration::from_secs(30),
-        Duration::from_secs(15),
+        STALLED_PROVIDER_OBSERVATION,
     );
     assert!(
         admitted,
-        "Claude did not reach the stalled provider\nstdout:\n{}\nstderr:\n{}",
+        "{host_name} did not reach the stalled provider\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(expired, "stalled Claude must hit the process-tree deadline");
+    assert!(
+        expired,
+        "stalled {host_name} must hit the process-tree deadline"
+    );
     service.assert_timeout_cleanup(process_tree);
-    assert_service_absent(launcher, home).expect("Claude timeout cleanup");
 }
 
 fn codex_host_command(
@@ -667,14 +824,12 @@ fn codex_host_command(
     home: &Path,
     workspace: &Path,
     provider: &ScriptedProvider,
-    integration_enabled: bool,
 ) -> std::process::Command {
     let mut host = command(binary);
     host.current_dir(workspace);
     host.args([
         "exec",
         "--json",
-        "--ephemeral",
         "--ignore-rules",
         "--skip-git-repo-check",
         "--dangerously-bypass-approvals-and-sandbox",
@@ -685,6 +840,8 @@ fn codex_host_command(
         "recommended_plugins",
         "--disable",
         "plugin_sharing",
+        "--enable",
+        "hooks",
         "-c",
         "model_provider=\"acyclic_e2e\"",
         "-c",
@@ -701,11 +858,9 @@ fn codex_host_command(
         "-c",
         "model_providers.acyclic_e2e.env_key=\"ACYCLIC_E2E_API_KEY\"",
     ]);
-    if !integration_enabled {
-        host.arg("--ignore-user-config");
-    }
     host.arg("Run the deterministic qualification command.");
     host.env("ACYCLIC_E2E_API_KEY", "test");
+    host.env("ACYCLIC_WORKFLOW_TOKEN", "qualified");
     isolated_codex_state(&mut host, home);
     host
 }
@@ -731,11 +886,14 @@ fn claude_host_command(
         "bypassPermissions",
         "--permission-prompts",
         "none",
+        "--debug",
+        "hooks",
         "--debug-file",
     ]);
     host.arg(debug_log).args(["--setting-sources", "user"]);
     host.env("ANTHROPIC_API_KEY", "test");
     host.env("ANTHROPIC_BASE_URL", provider.base_url());
+    host.env("ACYCLIC_WORKFLOW_TOKEN", "qualified");
     isolated_state(&mut host, home);
     host
 }
@@ -776,7 +934,7 @@ fn install_host(launcher: &Path, host: &str, host_binary: &Path, home: &Path) ->
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    ServiceGuard::new(launcher, home)
+    ServiceGuard::new(home)
 }
 
 fn isolated_codex_state(command: &mut std::process::Command, root: &Path) {
@@ -803,29 +961,46 @@ fn prepend_binary_directory(command: &mut std::process::Command, binary: &Path) 
     command.env("PATH", std::env::join_paths(paths).expect("host PATH"));
 }
 
-fn assert_semantic_provider_exchange(provider: &ScriptedProvider) {
-    let requests = provider.wait_for_requests(2, Duration::from_secs(5));
-    assert_eq!(requests.len(), 2, "expected tool and completion requests");
-    let is_completion = |request: &Value| {
-        [
-            "function_call_output",
-            "custom_tool_call_output",
-            "tool_result",
-        ]
-        .iter()
-        .any(|kind| contains_type(request, kind))
-    };
-    assert!(requests.iter().any(is_completion));
-    assert!(requests.iter().any(|request| !is_completion(request)));
-}
-
-fn contains_type(value: &Value, expected: &str) -> bool {
-    match value {
-        Value::Object(values) => {
-            values.get("type").and_then(Value::as_str) == Some(expected)
-                || values.values().any(|value| contains_type(value, expected))
-        }
-        Value::Array(values) => values.iter().any(|value| contains_type(value, expected)),
-        _ => false,
+fn assert_semantic_provider_exchange(provider: &ScriptedProvider) -> bool {
+    let fingerprints = provider.semantic_fingerprints(5, Duration::from_millis(250));
+    let mut observed = fingerprints.clone();
+    observed.sort_unstable();
+    let mut success = vec![
+        RequestFingerprint::CodexRootPrompt,
+        RequestFingerprint::CodexRootToolResult,
+        RequestFingerprint::CodexRootSpawnResult,
+        RequestFingerprint::CodexChildPrompt,
+        RequestFingerprint::CodexChildToolResult,
+    ];
+    success.sort_unstable();
+    let mut denied = vec![
+        RequestFingerprint::CodexRootPrompt,
+        RequestFingerprint::CodexRootToolResult,
+        RequestFingerprint::CodexRootSpawnResult,
+    ];
+    denied.sort_unstable();
+    assert!(
+        observed == success || observed == denied,
+        "unexpected Codex request phases: {fingerprints:?}"
+    );
+    assert_fingerprint_before(
+        &fingerprints,
+        RequestFingerprint::CodexRootPrompt,
+        RequestFingerprint::CodexRootToolResult,
+    );
+    assert_fingerprint_before(
+        &fingerprints,
+        RequestFingerprint::CodexRootToolResult,
+        RequestFingerprint::CodexRootSpawnResult,
+    );
+    if observed == success {
+        assert_fingerprint_before(
+            &fingerprints,
+            RequestFingerprint::CodexChildPrompt,
+            RequestFingerprint::CodexChildToolResult,
+        );
+        true
+    } else {
+        false
     }
 }

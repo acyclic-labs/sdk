@@ -428,6 +428,9 @@ int acyclic_fs_darwin_mount_invalidate(struct acyclic_fs_darwin_mount_session *s
   /* DarwinFUSE mounts with `noac`; there is no kernel-side entry cache to
      invalidate, so a live session is already coherent. */
   int status = instance == NULL ? -ESTALE : 0;
+  if (instance != NULL) {
+    fuse_mark_namespace_changed(instance);
+  }
   pthread_mutex_unlock(&session->mutex);
   return status;
 }

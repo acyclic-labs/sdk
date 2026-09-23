@@ -2,12 +2,16 @@
 
 #![allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 
+mod control_protocol;
+
 use acyclic_fs::demand::native::NativeDemandSource;
 use acyclic_fs::demand::{
     DemandDirectoryObserver, DemandSource, FilteredDemandSource, SourceReference,
 };
 use acyclic_fs::kernel::{FileKind, NameEncoding, NamespacePath};
-use acyclic_fs::model::{CheckoutMode, GenerationSelector, VolumeLimits};
+use acyclic_fs::model::{
+    CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle, VolumeConfig, VolumeLimits,
+};
 use acyclic_fs::native_host::HostRoot;
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
@@ -24,12 +28,14 @@ use acyclic_fs::{
     MultiRootPublicationError, MultiRootPublicationPhase, NativeWatch, NativeWatchOptions,
     OperationId, OperationReconcileLimits, OperationWindowLease, Publication, PublicationPermit,
     TransactionCommit, WatchBatch, WorkBudget, Workspace, WorkspaceContextId, WorkspaceContextRoot,
-    WorkspaceDelete, WorkspaceError, WorkspaceMultiRootPublisherError, WorkspacePathApply,
-    WorkspaceRestore, WorkspaceRootId, apply_git_patch_with_permit, blame_git_generations,
-    capture_baseline_with_policy, capture_git_compatible_generation,
+    WorkspaceContextState, WorkspaceDelete, WorkspaceError, WorkspaceMultiRootPublisherError,
+    WorkspacePathApply, WorkspaceRestore, WorkspaceRootId, apply_git_patch_with_permit,
+    blame_git_generations, capture_baseline_with_policy, capture_git_compatible_generation,
     capture_git_compatible_generation_at, capture_git_compatible_generation_incremental,
-    capture_watch_batch_with_policy, grep_git_generation, resolve_merge_plan, walk_git_tree,
+    capture_watch_batch_with_policy, git_compatible_diff_counts, grep_git_generation,
+    resolve_merge_plan, walk_git_tree,
 };
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -45,6 +51,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use acyclic_native_runtime::{RenameMode, durable_rename};
+use control_protocol::{ControlEnvelope, ControlLedger, LedgerDecision};
 use fs2::FileExt as _;
 #[cfg(target_os = "linux")]
 use notify::Watcher as _;
@@ -63,13 +70,14 @@ type LocalSingleMount =
 
 #[derive(Clone, Default)]
 struct SharedRootRegistry {
-    roots: Arc<AsyncMutex<BTreeMap<PathBuf, SharedRootRegistration>>>,
+    roots: Arc<AsyncMutex<BTreeMap<PathBuf, Arc<AsyncMutex<SharedRootRegistration>>>>>,
 }
 
+#[derive(Default)]
 struct SharedRootRegistration {
     live: Weak<SharedPhysicalRoot>,
-    reference: Arc<Mutex<SourceReference>>,
-    native_identity: [u8; 16],
+    reference: Option<Arc<Mutex<SourceReference>>>,
+    native_identity: Option<[u8; 16]>,
 }
 
 #[derive(Clone, Copy)]
@@ -118,14 +126,29 @@ impl SharedPhysicalRoot {
     }
 
     fn observe(&self) -> Result<SharedRootObservation, String> {
-        let prior_source = self.source.reference();
-        let batch = self
-            .watcher
+        self.observe_with(|| {
+            Ok(self
+                .watcher
+                .lock()
+                .map_err(|_| "physical root watcher state is poisoned".to_owned())?
+                .poll(65_536, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .map_err(display)?
+                .value)
+        })
+    }
+
+    fn observe_with(
+        &self,
+        poll: impl FnOnce() -> Result<WatchBatch, String>,
+    ) -> Result<SharedRootObservation, String> {
+        // Serialize the full observation transaction across sessions sharing this root.
+        // A watcher poll and the source epoch it publishes must be indivisible.
+        let mut reference = self
+            .reference
             .lock()
-            .map_err(|_| "physical root watcher state is poisoned".to_owned())?
-            .poll(65_536, WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .map_err(display)?
-            .value;
+            .map_err(|_| "physical root reference state is poisoned".to_owned())?;
+        let prior_source = self.source.reference();
+        let batch = poll()?;
         let consumed_changes =
             !matches!(&batch, WatchBatch::Changes { changes, .. } if changes.is_empty());
         let source = if consumed_changes {
@@ -133,10 +156,7 @@ impl SharedPhysicalRoot {
         } else {
             prior_source
         };
-        *self
-            .reference
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = source;
+        *reference = source;
         Ok(SharedRootObservation {
             batch,
             prior_source,
@@ -153,44 +173,63 @@ impl SharedRootRegistry {
         admission: SharedRootAdmission,
     ) -> Result<Arc<SharedPhysicalRoot>, String> {
         let canonical = root.canonicalize().map_err(display)?;
-        let mut roots = self.roots.lock().await;
-        if let Some(registration) = roots.get(&canonical) {
-            let observed_identity = HostRoot::open(&canonical)
-                .map_err(display)?
-                .identity()
-                .to_bytes();
-            if observed_identity != registration.native_identity {
-                return Err(format!(
-                    "physical root {} changed identity while it was in use",
-                    canonical.display()
-                ));
-            }
-            let retained = *registration
-                .reference
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if admission
-                .reference()
-                .is_some_and(|expected| expected.identity != retained.identity)
+        let registration =
             {
-                return Err(format!(
-                    "physical root {} is already registered with another source identity",
-                    canonical.display()
-                ));
-            }
-            if let Some(shared) = registration.live.upgrade() {
-                shared.validate_path_identity(canonical.clone()).await?;
-                return Ok(shared);
+                let mut roots = self.roots.lock().await;
+                Arc::clone(roots.entry(canonical.clone()).or_insert_with(|| {
+                    Arc::new(AsyncMutex::new(SharedRootRegistration::default()))
+                }))
+            };
+        let mut registration = registration.lock().await;
+        if let Some(native_identity) = registration.native_identity {
+            let identity_path = canonical.clone();
+            let observed_identity = tokio::task::spawn_blocking(move || {
+                HostRoot::open(&identity_path).map(|root| root.identity().to_bytes())
+            })
+            .await
+            .map_err(|error| format!("physical root validation worker failed: {error}"))?
+            .map_err(display)?;
+            let live = registration.live.upgrade();
+            if observed_identity == native_identity {
+                let retained = *registration
+                    .reference
+                    .as_ref()
+                    .ok_or_else(|| "shared root registration lost its source reference".to_owned())?
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if admission
+                    .reference()
+                    .is_some_and(|expected| expected.identity != retained.identity)
+                {
+                    return Err(format!(
+                        "physical root {} is already registered with another source identity",
+                        canonical.display()
+                    ));
+                }
+                if let Some(shared) = live {
+                    shared.validate_path_identity(canonical.clone()).await?;
+                    return Ok(shared);
+                }
+            } else {
+                if live.is_some() || matches!(admission, SharedRootAdmission::Resume(_)) {
+                    return Err(format!(
+                        "physical root {} changed identity while it was in use",
+                        canonical.display()
+                    ));
+                }
+                *registration = SharedRootRegistration::default();
             }
         }
 
-        let retained = roots.get(&canonical).map(|registration| {
-            *registration
-                .reference
+        let retained = registration.reference.as_ref().map(|reference| {
+            *reference
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
         });
-        let watcher = open_native_watcher(&canonical)?;
+        let watcher_path = canonical.clone();
+        let watcher = tokio::task::spawn_blocking(move || open_native_watcher(&watcher_path))
+            .await
+            .map_err(|error| format!("physical root watcher worker failed: {error}"))??;
         let source = open_lazy_source(
             &canonical,
             retained.or(admission.reference()),
@@ -218,28 +257,40 @@ impl SharedRootRegistry {
             watcher,
             reference: Arc::clone(&reference),
         });
-        roots.insert(
-            canonical,
-            SharedRootRegistration {
-                live: Arc::downgrade(&shared),
-                reference,
-                native_identity: native_identity.to_bytes(),
-            },
-        );
+        *registration = SharedRootRegistration {
+            live: Arc::downgrade(&shared),
+            reference: Some(reference),
+            native_identity: Some(native_identity.to_bytes()),
+        };
         Ok(shared)
+    }
+
+    async fn prune(&self) {
+        self.roots.lock().await.retain(|_, registration| {
+            if Arc::strong_count(registration) != 1 {
+                return true;
+            }
+            registration
+                .try_lock()
+                .map_or(true, |state| state.live.strong_count() != 0)
+        });
     }
 
     #[cfg(test)]
     async fn live_roots(&self) -> usize {
-        self.roots
+        let registrations = self
+            .roots
             .lock()
             .await
             .values()
-            .filter(|root| root.live.strong_count() > 0)
-            .count()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut live = 0;
+        for registration in registrations {
+            live += usize::from(registration.lock().await.live.strong_count() > 0);
+        }
+        live
     }
-
-    async fn prune(&self) {}
 }
 
 struct LocalMount {
@@ -256,7 +307,13 @@ impl LocalMount {
         for (name, workspace) in routes {
             let path = destination.join(&name);
             fs::create_dir_all(&path).map_err(display)?;
-            match workspace.mount(&path, MountOptions::read_write()).await {
+            match workspace
+                .mount(
+                    &path,
+                    MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual),
+                )
+                .await
+            {
                 Ok(mount) => {
                     mounted.insert(name, mount);
                 }
@@ -370,21 +427,8 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
         if workspace.id() != physical.workspace_id {
             return Ok(());
         }
-        let staging_parent = physical
-            .path
-            .parent()
-            .ok_or_else(|| {
-                PluginRootMaterializerError(
-                    "root checkout has no same-filesystem staging parent".to_owned(),
-                )
-            })?
-            .join(".acyclic-workspace-materializations")
-            .join(short_hash(
-                physical.path.as_os_str().to_string_lossy().as_bytes(),
-            ));
-        let directory = staging_parent
-            .join(hex::encode(operation_id.into_bytes()))
-            .join(hex::encode(root_id.into_bytes()));
+        let directory = root_materialization_directory(&physical.path, operation_id)
+            .map_err(PluginRootMaterializerError)?;
         let options = MaterializeOptions {
             destination: directory.join("target"),
             maximum_directory_entries: 4_096,
@@ -423,22 +467,11 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
             )
         })?;
         self.state
-            .remove_materialization(operation_id)
+            .remove_materialization_async(operation_id)
+            .await
             .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
-        let directory = physical
-            .path
-            .parent()
-            .ok_or_else(|| {
-                PluginRootMaterializerError(
-                    "root checkout has no same-filesystem staging parent".to_owned(),
-                )
-            })?
-            .join(".acyclic-workspace-materializations")
-            .join(short_hash(
-                physical.path.as_os_str().to_string_lossy().as_bytes(),
-            ))
-            .join(hex::encode(operation_id.into_bytes()))
-            .join(hex::encode(root_id.into_bytes()));
+        let directory = root_materialization_directory(&physical.path, operation_id)
+            .map_err(PluginRootMaterializerError)?;
         match fs::remove_dir_all(&directory) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -465,39 +498,62 @@ async fn existing_tracked_paths(
     Ok(tracked)
 }
 
-const AGENT_GUIDANCE: &str = "Acyclic gives native subagents isolated, recursively forked workspace contexts. Child commands run in their mounted cwd; never target a parent's original path. Use `acyclic git` for history inside managed workspaces; bare `git` is unrelated. Run each `acyclic ...` command as its own shell invocation, without shell operators or unrelated commands. Children appear under `agents/...`: inspect with `acyclic agents` and `acyclic git diff <ref>`, merge a direct child with `acyclic git merge <ref>`, and remove an unwanted subtree with `acyclic discard <ref>`. Start independent or dependent work speculatively as soon as you can state its assumptions; reconcile, merge, or restart when upstream changes. For debugging, freely add logs, probes, and tests in a child, then normally discard it after confirming the issue. For exploration, run hypotheses in parallel and merge only useful results. Descendants publish upward one parent at a time.";
+const AGENT_GUIDANCE: &str = "Acyclic gives native subagents independent, recursively forked workspace contexts. Supported filesystem tools are routed to the child's mounted workspace; never target a parent's original path. Use `acyclic git` for history inside managed workspaces; bare `git` is unrelated. Run each `acyclic ...` command as its own shell invocation, without shell operators or unrelated commands. Children appear under `agents/...`: inspect with `acyclic agents` and `acyclic git diff <ref>`, merge a direct child with `acyclic git merge <ref>`, and remove an unwanted subtree with `acyclic discard <ref>`. Start independent or dependent work speculatively as soon as you can state its assumptions; reconcile, merge, or restart when upstream changes. For debugging, freely add logs, probes, and tests in a child, then normally discard it after confirming the issue. For exploration, run hypotheses in parallel and merge only useful results. Descendants publish upward one parent at a time.";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChildWorkspaceSupport {
+    RecursiveToolRouting,
+    RootLifecycleOnly,
+    CliOnly,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HostAdapterProfile {
+    child_workspaces: ChildWorkspaceSupport,
+    stable_child_identity: bool,
+}
+
+fn host_adapter_profile(host: &str) -> HostAdapterProfile {
+    match host {
+        "codex" | "claude-code" => HostAdapterProfile {
+            child_workspaces: ChildWorkspaceSupport::RecursiveToolRouting,
+            stable_child_identity: true,
+        },
+        "copilot" => HostAdapterProfile {
+            child_workspaces: ChildWorkspaceSupport::RootLifecycleOnly,
+            stable_child_identity: false,
+        },
+        _ => HostAdapterProfile {
+            child_workspaces: ChildWorkspaceSupport::CliOnly,
+            stable_child_identity: false,
+        },
+    }
+}
 
 fn capability_guidance(host: &str) -> &'static str {
-    match host {
-        "codex" => {
-            "Codex lifecycle routing is active. Process-level escape confinement remains provisional until this host/platform installation passes the release escape suite."
+    let profile = host_adapter_profile(host);
+    match (profile.child_workspaces, profile.stable_child_identity) {
+        (ChildWorkspaceSupport::RecursiveToolRouting, true) => {
+            "Recursive lifecycle routing is active. This claim covers recognized tool routing, not process-level confinement; full confinement requires a passing host/platform escape qualification."
         }
-        "claude-code" => {
-            "Claude Code lifecycle routing is active. Process-level escape confinement remains provisional until this host/platform installation passes the release escape suite."
+        (ChildWorkspaceSupport::RootLifecycleOnly, false) => {
+            "Only root lifecycle routing is available because this host does not provide a stable child identity. Native child workspace routing is not claimed."
         }
-        "copilot" => {
-            "Copilot lifecycle routing is provisional: subagentStart omits a stable child id and general-purpose subagents emit no lifecycle events."
+        (ChildWorkspaceSupport::CliOnly, false) => {
+            "Child work is CLI-only because this host does not expose a correlated native-subagent lifecycle. Native child workspace routing or confinement is not claimed."
         }
-        "cursor" => {
-            "Cursor support is provisional and CLI-only for child work: this adapter attaches the root and injects guidance, but does not claim transparent native-subagent isolation."
-        }
-        "opencode" => {
-            "OpenCode support is provisional and CLI-only: its public plugin lifecycle does not expose enough correlated subagent lifecycle and cwd control to claim transparent isolation."
-        }
-        _ => {
-            "This host exposes only its installed capability tier; unclassified filesystem tools fail closed."
-        }
+        _ => "This adapter has an invalid capability profile and cannot route child work.",
     }
 }
 
 fn guidance_for(host: &str) -> String {
-    if matches!(host, "cursor" | "opencode") {
+    if host_adapter_profile(host).child_workspaces == ChildWorkspaceSupport::RecursiveToolRouting {
+        format!("{AGENT_GUIDANCE} {}", capability_guidance(host))
+    } else {
         format!(
             "Acyclic provides a Git-shaped local history CLI without intercepting bare `git`. Use `acyclic git` from the current workspace. {}",
             capability_guidance(host)
         )
-    } else {
-        format!("{AGENT_GUIDANCE} {}", capability_guidance(host))
     }
 }
 
@@ -659,6 +715,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     return Ok(GitFilesystemResult::Captured {
                         tree: *workspace_tree,
                         tracked_paths: tracked_paths.clone(),
+                        proof: None,
                     });
                 }
                 let workspace_generation = self.exact(*workspace_tree, "commit").await?;
@@ -707,12 +764,17 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     }
                 }
                 .map_err(display)?;
+                let proof = captured
+                    .authenticated_proof(operation_id, &self.distributed.lineage())
+                    .await
+                    .map_err(display)?;
                 Ok(GitFilesystemResult::Captured {
                     tree: GitTreeRef::exact(
                         captured.generation.workspace_id(),
                         captured.generation.id(),
                     ),
                     tracked_paths: captured.tracked_paths,
+                    proof,
                 })
             }
             GitFilesystemAction::ForkBranch {
@@ -793,7 +855,11 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     tracked_paths: None,
                 })
             }
-            GitFilesystemAction::Diff { from, to } => {
+            GitFilesystemAction::Diff {
+                from,
+                to,
+                tracked_paths,
+            } => {
                 let to = self.exact(*to, "diff").await?;
                 let to_workspace = self.workspace(to.workspace_id).await?;
                 let to = to_workspace
@@ -807,12 +873,20 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                         .generation(from.generation)
                         .await
                         .map_err(display)?;
-                    let diff = from.diff_to(&to, 100_000).await.map_err(display)?;
+                    let diff = git_compatible_diff_counts(
+                        &from,
+                        &to,
+                        tracked_paths,
+                        100_000,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(display)?;
                     json!({
                         "from": hex::encode(from.id().digest().as_bytes()),
                         "to": hex::encode(to.id().digest().as_bytes()),
-                        "fileChanges": diff.changes().files.len(),
-                        "bindingChanges": diff.changes().bindings.len()
+                        "fileChanges": diff.file_changes,
+                        "bindingChanges": diff.binding_changes
                     })
                 } else {
                     json!({
@@ -1362,7 +1436,8 @@ impl RootMaterializingGitExecutor<'_> {
         .await
         .map_err(display)?;
         self.store
-            .remove_materialization(operation_id)
+            .remove_materialization_async(operation_id)
+            .await
             .map_err(display)?;
         remove_tree_checked(
             &root_materialization_root(self.root).map_err(PluginGitError)?,
@@ -1513,9 +1588,6 @@ async fn git_policy(
 struct RootBinding {
     root_id: [u8; 16],
     path: PathBuf,
-    workspace_name: String,
-    workspace_id: [u8; 16],
-    #[serde(default)]
     repository_workspace_id: [u8; 16],
     source_identity: [u8; 16],
     source_epoch: u64,
@@ -1526,14 +1598,19 @@ struct RootBinding {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RouteRoot {
     root_id: [u8; 16],
-    workspace_name: String,
-    workspace_id: [u8; 16],
-    #[serde(default)]
     repository_workspace_id: [u8; 16],
-    parent_workspace_id: [u8; 16],
-    route_name: String,
     #[serde(default)]
     published_generation: [u8; 32],
+}
+
+impl RouteRoot {
+    fn id(&self) -> WorkspaceRootId {
+        WorkspaceRootId::from_bytes(self.root_id)
+    }
+
+    fn mount_name(&self) -> String {
+        route_name(self.id())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1547,19 +1624,80 @@ struct Route {
     roots: BTreeMap<String, RouteRoot>,
     #[serde(default)]
     mount_path: PathBuf,
-    path: PathBuf,
     #[serde(default)]
-    stopped: bool,
+    lifecycle: RouteLifecycle,
+}
+
+impl Route {
+    fn active_path(&self) -> Result<PathBuf, String> {
+        let active = self
+            .roots
+            .get(&root_key(WorkspaceRootId::from_bytes(self.root_id)))
+            .ok_or_else(|| "persisted route is missing its active root".to_owned())?;
+        Ok(self.mount_path.join(active.mount_name()))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RouteLifecycle {
+    #[default]
+    Mounting,
+    Active,
+    StopRequested,
+    Frozen,
+}
+
+impl RouteLifecycle {
+    fn accepts_tools(self) -> bool {
+        self == Self::Active
+    }
+
+    fn needs_mount(self) -> bool {
+        self != Self::Frozen
+    }
+
+    fn is_frozen(self) -> bool {
+        self == Self::Frozen
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct PendingSpawn {
     parent_agent_id: String,
     #[serde(default)]
+    tool_use_id: String,
+    #[serde(default)]
     active_root_id: Option<[u8; 16]>,
     expires_at_millis: u64,
     workspace_name: String,
     fork_key: [u8; 16],
+    #[serde(default)]
+    roots: BTreeMap<String, RouteRoot>,
+    #[serde(default)]
+    mount_path: PathBuf,
+    #[serde(default)]
+    lifecycle: PendingSpawnLifecycle,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PendingSpawnLifecycle {
+    #[default]
+    Preparing,
+    Mounting,
+    Prepared,
+    Discarding,
+}
+
+impl PendingSpawn {
+    fn context_id(&self) -> WorkspaceContextId {
+        WorkspaceContextId::from_bytes(self.fork_key)
+    }
+
+    fn mount_name(&self) -> String {
+        compact_id(&self.fork_key)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1576,7 +1714,6 @@ struct LeaseRecord {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RootLeaseRecord {
     root_id: [u8; 16],
-    route_name: String,
     workspace_id: [u8; 16],
     lease_id: [u8; 16],
     pinned_parent: [u8; 32],
@@ -1593,8 +1730,6 @@ struct DiscardWorkspace {
 struct DiscardAgent {
     agent_id: String,
     path: PathBuf,
-    repository_workspace_id: [u8; 16],
-    #[serde(default)]
     repository_workspace_ids: Vec<[u8; 16]>,
     #[serde(default)]
     mount_detached: bool,
@@ -1614,16 +1749,15 @@ impl LeaseRecord {
         agent_id: String,
         turn_id: String,
         tool_name: String,
-        roots: impl IntoIterator<Item = (WorkspaceRootId, String, OperationWindowLease)>,
+        roots: impl IntoIterator<Item = (WorkspaceRootId, OperationWindowLease)>,
     ) -> Self {
         let roots = roots
             .into_iter()
-            .map(|(root_id, route_name, lease)| {
+            .map(|(root_id, lease)| {
                 (
                     root_key(root_id),
                     RootLeaseRecord {
                         root_id: root_id.into_bytes(),
-                        route_name,
                         workspace_id: lease.workspace_id.into_bytes(),
                         lease_id: lease.lease_id.into_bytes(),
                         pinned_parent: *lease.pinned_parent.digest().as_bytes(),
@@ -1664,35 +1798,24 @@ impl RootLeaseRecord {
 struct AdapterState {
     version: u32,
     root_session_id: String,
-    #[serde(default = "active_adapter_state")]
     active: bool,
     root_agent_id: String,
     #[serde(default)]
     root_turns: BTreeSet<String>,
-    root_path: PathBuf,
-    root_workspace_name: String,
-    #[serde(default)]
-    root_repository_workspace_id: [u8; 16],
     root_context_id: [u8; 16],
     root_id: [u8; 16],
     #[serde(default)]
-    root_source_identity: [u8; 16],
-    #[serde(default)]
-    root_source_epoch: u64,
-    #[serde(default)]
-    root_native_identity: [u8; 16],
-    #[serde(default)]
     roots: BTreeMap<String, RootBinding>,
+    #[serde(default)]
+    pending_root_registration: bool,
+    #[serde(default)]
+    pending_root_adoptions: BTreeSet<String>,
     routes: BTreeMap<String, Route>,
     turns: BTreeMap<String, String>,
     pending: VecDeque<PendingSpawn>,
     leases: BTreeMap<String, LeaseRecord>,
     #[serde(default)]
     pending_discards: BTreeMap<String, PendingDiscard>,
-}
-
-const fn active_adapter_state() -> bool {
-    true
 }
 
 struct ControlPlane {
@@ -1706,6 +1829,9 @@ struct ControlPlane {
     roots: BTreeMap<String, LocalLazyWorkspace>,
     physical_roots: BTreeMap<String, Arc<SharedPhysicalRoot>>,
     mounts: BTreeMap<String, LocalMount>,
+    pending_mounts: BTreeMap<[u8; 16], LocalMount>,
+    #[cfg(test)]
+    owns_local_root: bool,
     #[cfg(test)]
     fail_next_unmount: BTreeSet<String>,
     #[cfg(test)]
@@ -1716,6 +1842,32 @@ struct ControlPlane {
     fail_before_publication_history: bool,
     #[cfg(test)]
     fail_after_watch_poll: bool,
+    #[cfg(test)]
+    fail_after_root_intent: bool,
+}
+
+fn workspace_mount_root(config_root: &Path) -> PathBuf {
+    config_root.join("w")
+}
+
+fn root_workspace_name(session_id: &str, root: &Path) -> String {
+    format!(
+        "root-{}-{}",
+        short_hash(session_id.as_bytes()),
+        short_hash(root.as_os_str().to_string_lossy().as_bytes()),
+    )
+}
+
+fn validate_persisted_route_paths(config_root: &Path, route: &Route) -> Result<(), String> {
+    let expected_mount = workspace_mount_root(config_root).join(compact_id(&route.context_id));
+    if route.mount_path != expected_mount {
+        return Err(format!(
+            "persisted mount path for agent '{}' does not match its derived service path",
+            route.agent_id
+        ));
+    }
+    route.active_path()?;
+    Ok(())
 }
 
 impl ControlPlane {
@@ -1726,7 +1878,10 @@ impl ControlPlane {
             .await
             .map_err(display)?;
         let store = LocalCoreStateStore::new(data.join("core-state"));
-        Self::open_with(data.clone(), data, fs, store, SharedRootRegistry::default()).await
+        let mut control =
+            Self::open_with(data.clone(), data, fs, store, SharedRootRegistry::default()).await?;
+        control.owns_local_root = true;
+        Ok(control)
     }
 
     async fn open_with(
@@ -1749,6 +1904,9 @@ impl ControlPlane {
             roots: BTreeMap::new(),
             physical_roots: BTreeMap::new(),
             mounts: BTreeMap::new(),
+            pending_mounts: BTreeMap::new(),
+            #[cfg(test)]
+            owns_local_root: false,
             #[cfg(test)]
             fail_next_unmount: BTreeSet::new(),
             #[cfg(test)]
@@ -1759,59 +1917,47 @@ impl ControlPlane {
             fail_before_publication_history: false,
             #[cfg(test)]
             fail_after_watch_poll: false,
+            #[cfg(test)]
+            fail_after_root_intent: false,
         };
-        control.reconcile_routes_from_contexts().await?;
         control.restore_root().await?;
+        control.validate_pending_spawn_paths()?;
+        control.validate_routes_against_contexts().await?;
         control.recover_multi_root_publications().await?;
         control.recover_expired_adapter_leases().await?;
         control.restore_mounts().await?;
+        control.recover_pending_spawns().await?;
         control.recover_pending_discards().await?;
+        let requested_stops = control
+            .state
+            .routes
+            .values()
+            .filter(|route| route.lifecycle == RouteLifecycle::StopRequested)
+            .map(|route| route.agent_id.clone())
+            .collect::<Vec<_>>();
+        for agent_id in requested_stops {
+            control.finalize_requested_stops(&agent_id).await?;
+        }
         Ok(control)
     }
 
-    fn session_mount_root(&self) -> PathBuf {
-        self.config_root
-            .join("workspaces")
-            .join(short_hash(self.state.root_session_id.as_bytes()))
+    fn workspace_mount_root(&self) -> PathBuf {
+        workspace_mount_root(&self.config_root)
     }
 
-    async fn reconcile_routes_from_contexts(&mut self) -> Result<(), String> {
-        let registry = self.distributed.contexts();
-        if self.state.root_context_id != [0; 16] {
-            let root_context = registry
-                .resolve(WorkspaceContextId::from_bytes(self.state.root_context_id))
-                .await
-                .map_err(display)?;
-            for (root_id, context_root) in root_context.roots {
-                if let Some(binding) = self.state.roots.get_mut(&root_key(root_id)) {
-                    binding.workspace_id = context_root.workspace_id.into_bytes();
-                    binding
-                        .workspace_name
-                        .clone_from(&context_root.workspace_name);
-                }
-                if root_id.into_bytes() == self.state.root_id {
-                    self.state.root_workspace_name = context_root.workspace_name;
-                }
+    fn validate_route_paths(&self, route: &Route) -> Result<(), String> {
+        validate_persisted_route_paths(&self.config_root, route)
+    }
+
+    fn validate_pending_spawn_paths(&self) -> Result<(), String> {
+        for pending in &self.state.pending {
+            if pending.mount_path != self.workspace_mount_root().join(pending.mount_name()) {
+                return Err(
+                    "persisted pending spawn mount is outside its workspace root".to_owned(),
+                );
             }
         }
-        for route in self.state.routes.values_mut() {
-            let context = registry
-                .resolve(WorkspaceContextId::from_bytes(route.context_id))
-                .await
-                .map_err(display)?;
-            for (root_id, context_root) in context.roots {
-                let routed = route
-                    .roots
-                    .get_mut(&root_key(root_id))
-                    .ok_or_else(|| "adapter route is missing a core context root".to_owned())?;
-                routed.workspace_id = context_root.workspace_id.into_bytes();
-                routed.workspace_name = context_root.workspace_name;
-                routed.parent_workspace_id = context_root
-                    .parent_workspace_id
-                    .map_or([0; 16], acyclic_fs::WorkspaceId::into_bytes);
-            }
-        }
-        self.persist()
+        Ok(())
     }
 
     fn author_for_argv(&self, argv: &[String], fallback: &str) -> Result<String, String> {
@@ -1950,7 +2096,10 @@ impl ControlPlane {
                     .roots
                     .get(&root_key(*root_id))
                     .ok_or_else(|| "published root binding is unavailable".to_owned())?;
-                repository_id(binding.workspace_id, binding.repository_workspace_id)
+                repository_id(
+                    root.target_workspace_id.into_bytes(),
+                    binding.repository_workspace_id,
+                )
             } else {
                 let route = parent_route
                     .as_ref()
@@ -1959,7 +2108,10 @@ impl ControlPlane {
                     .roots
                     .get(&root_key(*root_id))
                     .ok_or_else(|| "published parent root is unavailable".to_owned())?;
-                repository_id(binding.workspace_id, binding.repository_workspace_id)
+                repository_id(
+                    root.target_workspace_id.into_bytes(),
+                    binding.repository_workspace_id,
+                )
             };
             let published_generation = publication
                 .published_generations
@@ -1988,7 +2140,7 @@ impl ControlPlane {
                 .get(&root_key(*root_id))
                 .ok_or_else(|| "published child root is unavailable".to_owned())?;
             let child_repository_id = repository_id(
-                child_binding.workspace_id,
+                root.source_workspace_id.into_bytes(),
                 child_binding.repository_workspace_id,
             );
             let source_head = self
@@ -2011,7 +2163,14 @@ impl ControlPlane {
                 OperationId::from_bytes(capture_id),
             )
             .await
-            .map_err(display)?;
+            .map_err(|error| format!("capturing published root {root_id:?}: {error}"))?;
+            let capture_proof = captured
+                .authenticated_proof(
+                    OperationId::from_bytes(capture_id),
+                    &self.distributed.lineage(),
+                )
+                .await
+                .map_err(display)?;
             repository
                 .record_publication(GitPublicationRecord {
                     tree: GitTreeRef::exact(
@@ -2021,6 +2180,7 @@ impl ControlPlane {
                     workspace_tree: GitTreeRef::exact(workspace.id(), published_generation),
                     source_head,
                     tracked_paths: captured.tracked_paths,
+                    capture_proof,
                     message: format!("Merge agents/{child_agent}"),
                     author: parent_agent.to_owned(),
                     authored_at_seconds: i64::try_from(now_millis() / 1_000).unwrap_or(i64::MAX),
@@ -2029,6 +2189,80 @@ impl ControlPlane {
                 .map_err(display)?;
         }
         Ok(())
+    }
+
+    async fn finalize_applied_publication(
+        &mut self,
+        coordinator: &LocalPublicationCoordinator,
+        parent_agent: &str,
+        child_agent: &str,
+        publication: &MultiRootPublication,
+    ) -> Result<(), String> {
+        self.record_publication_history(parent_agent, child_agent, publication)
+            .await
+            .map_err(|error| format!("recording published compatibility history: {error}"))?;
+        let limits = OperationReconcileLimits::default();
+        let mut published_heads = BTreeMap::new();
+        for (root_id, root) in &publication.candidate.plan.roots {
+            let source = self
+                .distributed
+                .workspace(root.source_workspace_id)
+                .await
+                .map_err(display)?;
+            let rebase_key = derived_idempotency_key(
+                IdempotencyKey::from_bytes(publication.candidate.plan.operation_id.into_bytes()),
+                *root_id,
+            );
+            let generation = match source
+                .live_rebase(
+                    rebase_key,
+                    limits.maximum_generations,
+                    limits.maximum_changes,
+                    limits.maximum_conflicts,
+                )
+                .await
+                .map_err(|error| format!("rebasing published child root {root_id:?}: {error}"))?
+            {
+                acyclic_fs::WorkspaceRebase::Rebased(generation)
+                | acyclic_fs::WorkspaceRebase::AlreadyRebased(generation)
+                | acyclic_fs::WorkspaceRebase::Current(generation) => generation,
+                acyclic_fs::WorkspaceRebase::Stale(_) => {
+                    return Err(
+                        "child workspace changed while finalizing its publication".to_owned()
+                    );
+                }
+                acyclic_fs::WorkspaceRebase::Conflicted { .. } => {
+                    return Err("published child could not advance to its parent result".to_owned());
+                }
+                acyclic_fs::WorkspaceRebase::Fenced => {
+                    return Err("published child rebase was fenced".to_owned());
+                }
+                acyclic_fs::WorkspaceRebase::IdempotencyConflict => {
+                    return Err("published child rebase reused an operation identity".to_owned());
+                }
+            };
+            published_heads.insert(*root_id, generation.id());
+        }
+        if let Some(child_mount) = self.mounts.get(child_agent) {
+            child_mount.advance_to_head().await.map_err(display)?;
+        }
+        let route = self
+            .state
+            .routes
+            .get_mut(child_agent)
+            .ok_or_else(|| "merged agent route disappeared".to_owned())?;
+        for (root_id, generation) in &published_heads {
+            let routed = route
+                .roots
+                .get_mut(&root_key(*root_id))
+                .ok_or_else(|| "merged agent route root disappeared".to_owned())?;
+            routed.published_generation = *generation.digest().as_bytes();
+        }
+        self.persist()?;
+        coordinator
+            .acknowledge_applied(publication)
+            .await
+            .map_err(display)
     }
 
     async fn agent_merge_transition(&mut self, caller: &str, abort: bool) -> Result<Value, String> {
@@ -2069,19 +2303,8 @@ impl ControlPlane {
                 })
                 .map(|route| route.agent_id.clone())
                 .ok_or_else(|| "published child route is unavailable".to_owned())?;
-            self.record_publication_history(caller, &child_agent, publication)
+            self.finalize_applied_publication(&coordinator, caller, &child_agent, publication)
                 .await?;
-            if let Some(route) = self.state.routes.get_mut(&child_agent) {
-                for (root_id, root) in &publication.candidate.plan.roots {
-                    if let Some(routed) = route.roots.get_mut(&root_key(*root_id)) {
-                        routed.published_generation = *root.source_generation.digest().as_bytes();
-                    }
-                }
-            }
-            coordinator
-                .acknowledge_applied(publication)
-                .await
-                .map_err(display)?;
         }
         self.persist()?;
         Ok(json!({
@@ -2108,12 +2331,8 @@ impl ControlPlane {
                     let child = self
                         .agent_for_context(publication.candidate.plan.child_context_id)
                         .ok_or_else(|| "published child route is unavailable".to_owned())?;
-                    self.record_publication_history(&parent, &child, &publication)
+                    self.finalize_applied_publication(&coordinator, &parent, &child, &publication)
                         .await?;
-                    coordinator
-                        .acknowledge_applied(&publication)
-                        .await
-                        .map_err(display)?;
                 }
                 Some(Publication::Paused(_))
                 | Some(Publication::Conflicted(_))
@@ -2142,7 +2361,17 @@ impl ControlPlane {
         if expired.is_empty() {
             return Ok(());
         }
-        let mut recovered_agents = BTreeSet::new();
+        let recovered_agents = expired
+            .iter()
+            .map(|record| record.agent_id.clone())
+            .collect::<BTreeSet<_>>();
+        for agent_id in &recovered_agents {
+            if let Some(mount) = self.mounts.remove(agent_id) {
+                mount.abandon().map_err(|error| {
+                    format!("cannot fence expired agent '{agent_id}' before recovery: {error}")
+                })?;
+            }
+        }
         for record in expired {
             let route = self
                 .state
@@ -2160,21 +2389,17 @@ impl ControlPlane {
                     .await
                     .map_err(display)?;
             }
-            recovered_agents.insert(record.agent_id);
         }
         for agent_id in recovered_agents {
-            if let Some(mount) = self.mounts.remove(&agent_id) {
-                mount.abandon().map_err(display)?;
-                let route = self
-                    .state
-                    .routes
-                    .get(&agent_id)
-                    .cloned()
-                    .ok_or_else(|| "recovered lease route is missing".to_owned())?;
-                if !route.stopped {
-                    self.mounts
-                        .insert(agent_id, self.mount_route(&route).await?);
-                }
+            let route = self
+                .state
+                .routes
+                .get(&agent_id)
+                .cloned()
+                .ok_or_else(|| "recovered lease route is missing".to_owned())?;
+            if route.lifecycle.needs_mount() {
+                self.mounts
+                    .insert(agent_id, self.mount_route(&route).await?);
             }
         }
         self.state
@@ -2187,24 +2412,109 @@ impl ControlPlane {
         if self.state.root_session_id.is_empty() {
             return Ok(());
         }
-        if self.state.roots.is_empty() {
-            if self.state.root_source_identity == [0; 16] {
-                return Err("legacy eager Acyclic state is not reopened; remove the old per-user store manually".to_owned());
+        if self.state.pending_root_registration {
+            let root_id = WorkspaceRootId::from_bytes(self.state.root_id);
+            let binding = self
+                .state
+                .roots
+                .get(&root_key(root_id))
+                .ok_or_else(|| "pending root registration has no durable binding".to_owned())?;
+            let workspace = self
+                .fs
+                .open_workspace(&root_workspace_name(
+                    &self.state.root_session_id,
+                    &binding.path,
+                ))
+                .await
+                .map_err(display)?;
+            if workspace.id().into_bytes() != binding.repository_workspace_id {
+                return Err("pending root workspace identity changed".to_owned());
             }
-            self.state.roots.insert(
-                hex::encode(self.state.root_id),
-                RootBinding {
-                    root_id: self.state.root_id,
-                    path: self.state.root_path.clone(),
-                    workspace_name: self.state.root_workspace_name.clone(),
-                    workspace_id: self.state.root_repository_workspace_id,
-                    repository_workspace_id: self.state.root_repository_workspace_id,
-                    source_identity: self.state.root_source_identity,
-                    source_epoch: self.state.root_source_epoch,
-                    native_root_identity: self.state.root_native_identity,
-                },
-            );
+            self.distributed
+                .lineage()
+                .register_root(&workspace)
+                .await
+                .map_err(display)?;
+            self.distributed
+                .contexts()
+                .register_root(
+                    WorkspaceContextId::from_bytes(self.state.root_context_id),
+                    [WorkspaceContextRoot {
+                        root_id,
+                        source_path: binding.path.clone(),
+                        workspace_id: workspace.id(),
+                        workspace_name: workspace.name().as_str().to_owned(),
+                        parent_workspace_id: None,
+                        mount_path: None,
+                    }],
+                )
+                .await
+                .map_err(display)?;
+            self.state.pending_root_registration = false;
+            self.persist()?;
         }
+        let mut context = self
+            .distributed
+            .contexts()
+            .resolve(WorkspaceContextId::from_bytes(self.state.root_context_id))
+            .await
+            .map_err(display)?;
+        for key in self
+            .state
+            .pending_root_adoptions
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let binding = self
+                .state
+                .roots
+                .get(&key)
+                .ok_or_else(|| "pending root adoption has no durable binding".to_owned())?;
+            let root_id = WorkspaceRootId::from_bytes(binding.root_id);
+            if !context.roots.contains_key(&root_id) {
+                let workspace = self
+                    .distributed
+                    .workspace(acyclic_fs::WorkspaceId::from_bytes(
+                        binding.repository_workspace_id,
+                    ))
+                    .await
+                    .map_err(display)?;
+                context = self
+                    .distributed
+                    .contexts()
+                    .adopt_root(
+                        context.context_id,
+                        WorkspaceContextRoot {
+                            root_id,
+                            source_path: binding.path.clone(),
+                            workspace_id: workspace.id(),
+                            workspace_name: workspace.name().as_str().to_owned(),
+                            parent_workspace_id: None,
+                            mount_path: None,
+                        },
+                    )
+                    .await
+                    .map_err(display)?;
+            }
+            self.state.pending_root_adoptions.remove(&key);
+        }
+        if self.state.roots.is_empty() {
+            return Err("Acyclic core context has no registered roots".to_owned());
+        }
+        for root in self.state.roots.values() {
+            if !context
+                .roots
+                .contains_key(&WorkspaceRootId::from_bytes(root.root_id))
+            {
+                return Err("adapter root is absent from its core context".to_owned());
+            }
+        }
+        if context.roots.len() != self.state.roots.len() {
+            return Err("core context has a root without an adapter source binding".to_owned());
+        }
+        // Persist completion of any recovered adoption before reopening the source.
+        self.persist()?;
         for (key, root) in self.state.roots.clone() {
             let physical = self
                 .shared_roots
@@ -2222,12 +2532,15 @@ impl ControlPlane {
             if let Some(binding) = self.state.roots.get_mut(&key) {
                 binding.source_epoch = refreshed.epoch;
             }
-            if root.root_id == self.state.root_id {
-                self.state.root_source_epoch = refreshed.epoch;
-            }
             let workspace = self
                 .distributed
-                .workspace(acyclic_fs::WorkspaceId::from_bytes(root.workspace_id))
+                .workspace(
+                    context
+                        .roots
+                        .get(&WorkspaceRootId::from_bytes(root.root_id))
+                        .ok_or_else(|| "adapter root is absent from its core context".to_owned())?
+                        .workspace_id,
+                )
                 .await
                 .map_err(display)?;
             self.roots.insert(
@@ -2240,6 +2553,58 @@ impl ControlPlane {
             self.physical_roots.insert(key, physical);
         }
         self.persist()
+    }
+
+    async fn validate_routes_against_contexts(&self) -> Result<(), String> {
+        for route in self.state.routes.values() {
+            self.validate_route_paths(route)?;
+            let context_id = WorkspaceContextId::from_bytes(route.context_id);
+            let context = self
+                .distributed
+                .contexts()
+                .resolve(context_id)
+                .await
+                .map_err(display)?;
+            let expected_parent = self.context_for_agent(&route.parent_agent_id)?;
+            if context.parent_context_id != Some(expected_parent) {
+                return Err(format!(
+                    "route '{}' has a different direct parent in core state",
+                    route.agent_id
+                ));
+            }
+            let adapter_roots = route
+                .roots
+                .values()
+                .map(|root| WorkspaceRootId::from_bytes(root.root_id))
+                .collect::<BTreeSet<_>>();
+            let context_roots = context.roots.keys().copied().collect::<BTreeSet<_>>();
+            if adapter_roots != context_roots {
+                return Err(format!(
+                    "route '{}' root set differs from its core context",
+                    route.agent_id
+                ));
+            }
+            let expected_state = if route.lifecycle.is_frozen() {
+                WorkspaceContextState::Frozen
+            } else {
+                WorkspaceContextState::Active
+            };
+            let pending_discard = self.state.pending_discards.values().any(|discard| {
+                discard
+                    .agents
+                    .iter()
+                    .any(|agent| agent.agent_id == route.agent_id)
+            });
+            if context.state != expected_state
+                && !(pending_discard && context.state == WorkspaceContextState::Discarded)
+            {
+                return Err(format!(
+                    "route '{}' lifecycle differs from its core context",
+                    route.agent_id
+                ));
+            }
+        }
+        Ok(())
     }
 
     async fn restore_mounts(&mut self) -> Result<(), String> {
@@ -2255,30 +2620,28 @@ impl ControlPlane {
                     .map(|agent| agent.agent_id.clone())
             })
             .collect::<BTreeSet<_>>();
-        for route in self.state.routes.values() {
-            if !route.stopped || discarding_agents.contains(&route.agent_id) {
+        let routes = self.state.routes.values().cloned().collect::<Vec<_>>();
+        let mut completed_mount_intent = false;
+        for route in routes {
+            if route.lifecycle.needs_mount() || discarding_agents.contains(&route.agent_id) {
+                self.validate_route_paths(&route)?;
                 fs::create_dir_all(&route.mount_path).map_err(display)?;
-                let mount = self.mount_route(route).await?;
+                let mount = self.mount_route(&route).await?;
                 self.mounts.insert(route.agent_id.clone(), mount);
+                if route.lifecycle == RouteLifecycle::Mounting {
+                    self.state
+                        .routes
+                        .get_mut(&route.agent_id)
+                        .ok_or_else(|| "mounting route disappeared during recovery".to_owned())?
+                        .lifecycle = RouteLifecycle::Active;
+                    completed_mount_intent = true;
+                }
             }
         }
-        Ok(())
-    }
-
-    #[cfg(test)]
-    async fn call(&mut self, name: &str, arguments: Value) -> Result<Value, String> {
-        match name {
-            "agent_changes" => self.agent_changes(arguments).await,
-            "agent_merge" => self.agent_merge(arguments).await,
-            "agent_discard" => self.agent_discard(arguments).await,
-            "_hook_session_start" => self.session_start(arguments).await,
-            "_hook_user_prompt" => self.user_prompt(arguments),
-            "_hook_pre_tool" => self.pre_tool(arguments).await,
-            "_hook_subagent_start" => self.subagent_start(arguments).await,
-            "_hook_post_tool" => self.post_tool(arguments).await,
-            "_hook_subagent_stop" => self.subagent_stop(arguments).await,
-            _ => Err(format!("unknown control-plane method '{name}'")),
+        if completed_mount_intent {
+            self.persist()?;
         }
+        Ok(())
     }
 
     async fn session_start(&mut self, input: Value) -> Result<Value, String> {
@@ -2291,7 +2654,7 @@ impl ControlPlane {
         }
         if !self.state.root_session_id.is_empty() {
             self.state.active = true;
-            if self.roots.is_empty() {
+            if self.roots.is_empty() || !self.state.pending_root_adoptions.is_empty() {
                 self.restore_root().await?;
             }
             let already_registered = self
@@ -2301,11 +2664,7 @@ impl ControlPlane {
                 .any(|root| canonical.starts_with(&root.path));
             if !already_registered {
                 let root_id = WorkspaceRootId::new();
-                let workspace_name = format!(
-                    "root-{}-{}",
-                    short_hash(session_id.as_bytes()),
-                    short_hash(canonical.as_os_str().to_string_lossy().as_bytes()),
-                );
+                let workspace_name = root_workspace_name(&session_id, &canonical);
                 let physical = self
                     .shared_roots
                     .acquire(&canonical, SharedRootAdmission::Fresh)
@@ -2314,7 +2673,11 @@ impl ControlPlane {
                 let source_reference = source.reference();
                 let workspace = self
                     .distributed
-                    .attach_lazy(&workspace_name, Arc::clone(&source))
+                    .attach_lazy_with_config(
+                        &workspace_name,
+                        Arc::clone(&source),
+                        native_volume_config(),
+                    )
                     .await
                     .map_err(display)?;
                 self.distributed
@@ -2322,6 +2685,25 @@ impl ControlPlane {
                     .register_root(workspace.workspace())
                     .await
                     .map_err(display)?;
+                let key = root_key(root_id);
+                self.state.roots.insert(
+                    key.clone(),
+                    RootBinding {
+                        root_id: root_id.into_bytes(),
+                        path: canonical.clone(),
+                        repository_workspace_id: workspace.workspace().id().into_bytes(),
+                        source_identity: source_reference.identity,
+                        source_epoch: source_reference.epoch,
+                        native_root_identity: source.inner().root_identity().to_bytes(),
+                    },
+                );
+                self.state.pending_root_adoptions.insert(key.clone());
+                self.persist()?;
+                #[cfg(test)]
+                if self.fail_after_root_intent {
+                    self.fail_after_root_intent = false;
+                    return Err("injected failure after root adoption intent".to_owned());
+                }
                 self.distributed
                     .contexts()
                     .adopt_root(
@@ -2337,21 +2719,9 @@ impl ControlPlane {
                     )
                     .await
                     .map_err(display)?;
-                self.state.roots.insert(
-                    root_key(root_id),
-                    RootBinding {
-                        root_id: root_id.into_bytes(),
-                        path: canonical,
-                        workspace_name,
-                        workspace_id: workspace.workspace().id().into_bytes(),
-                        repository_workspace_id: workspace.workspace().id().into_bytes(),
-                        source_identity: source_reference.identity,
-                        source_epoch: source_reference.epoch,
-                        native_root_identity: source.inner().root_identity().to_bytes(),
-                    },
-                );
-                self.roots.insert(root_key(root_id), workspace);
-                self.physical_roots.insert(root_key(root_id), physical);
+                self.state.pending_root_adoptions.remove(&key);
+                self.roots.insert(key.clone(), workspace);
+                self.physical_roots.insert(key, physical);
                 self.persist()?;
             }
             return Ok(json!({
@@ -2361,11 +2731,7 @@ impl ControlPlane {
                 }
             }));
         }
-        let workspace_name = format!(
-            "root-{}-{}",
-            short_hash(session_id.as_bytes()),
-            short_hash(canonical.as_os_str().to_string_lossy().as_bytes()),
-        );
+        let workspace_name = root_workspace_name(&session_id, &canonical);
         let physical = self
             .shared_roots
             .acquire(&canonical, SharedRootAdmission::Fresh)
@@ -2374,12 +2740,7 @@ impl ControlPlane {
         let source_reference = source.reference();
         let workspace = self
             .distributed
-            .attach_lazy(&workspace_name, Arc::clone(&source))
-            .await
-            .map_err(display)?;
-        self.distributed
-            .lineage()
-            .register_root(workspace.workspace())
+            .attach_lazy_with_config(&workspace_name, Arc::clone(&source), native_volume_config())
             .await
             .map_err(display)?;
         let context_id = if self.state.root_context_id == [0; 16] {
@@ -2392,6 +2753,33 @@ impl ControlPlane {
         } else {
             WorkspaceRootId::from_bytes(self.state.root_id)
         };
+        self.state.version = ADAPTER_STATE_VERSION;
+        self.state.root_session_id = session_id.clone();
+        self.state.active = true;
+        self.state.root_agent_id = format!("root:{session_id}");
+        self.state.root_context_id = context_id.into_bytes();
+        self.state.root_id = root_id.into_bytes();
+        let binding = RootBinding {
+            root_id: root_id.into_bytes(),
+            path: canonical.clone(),
+            repository_workspace_id: workspace.workspace().id().into_bytes(),
+            source_identity: source_reference.identity,
+            source_epoch: source_reference.epoch,
+            native_root_identity: source.inner().root_identity().to_bytes(),
+        };
+        self.state.roots.insert(root_key(root_id), binding);
+        self.state.pending_root_registration = true;
+        self.persist()?;
+        #[cfg(test)]
+        if self.fail_after_root_intent {
+            self.fail_after_root_intent = false;
+            return Err("injected failure after root registration intent".to_owned());
+        }
+        self.distributed
+            .lineage()
+            .register_root(workspace.workspace())
+            .await
+            .map_err(display)?;
         self.distributed
             .contexts()
             .register_root(
@@ -2400,38 +2788,14 @@ impl ControlPlane {
                     root_id,
                     source_path: canonical.clone(),
                     workspace_id: workspace.workspace().id(),
-                    workspace_name: workspace_name.clone(),
+                    workspace_name,
                     parent_workspace_id: None,
                     mount_path: None,
                 }],
             )
             .await
             .map_err(display)?;
-        self.state.version = 1;
-        self.state.root_session_id = session_id.clone();
-        self.state.active = true;
-        self.state.root_agent_id = format!("root:{session_id}");
-        self.state.root_path = canonical;
-        self.state.root_workspace_name = workspace_name;
-        if self.state.root_repository_workspace_id == [0; 16] {
-            self.state.root_repository_workspace_id = workspace.workspace().id().into_bytes();
-        }
-        self.state.root_context_id = context_id.into_bytes();
-        self.state.root_id = root_id.into_bytes();
-        self.state.root_source_identity = source_reference.identity;
-        self.state.root_source_epoch = source_reference.epoch;
-        self.state.root_native_identity = source.inner().root_identity().to_bytes();
-        let binding = RootBinding {
-            root_id: root_id.into_bytes(),
-            path: self.state.root_path.clone(),
-            workspace_name: self.state.root_workspace_name.clone(),
-            workspace_id: workspace.workspace().id().into_bytes(),
-            repository_workspace_id: self.state.root_repository_workspace_id,
-            source_identity: source_reference.identity,
-            source_epoch: source_reference.epoch,
-            native_root_identity: source.inner().root_identity().to_bytes(),
-        };
-        self.state.roots.insert(root_key(root_id), binding);
+        self.state.pending_root_registration = false;
         self.roots.insert(root_key(root_id), workspace);
         self.physical_roots.insert(root_key(root_id), physical);
         self.persist()?;
@@ -2460,6 +2824,9 @@ impl ControlPlane {
 
     async fn pre_tool(&mut self, input: Value) -> Result<Value, String> {
         self.require_session(&input)?;
+        // Quarantine every expired writer before the mount can be advanced or
+        // reused for a new operation. Recovery owns remounting after fencing.
+        self.recover_expired_adapter_leases().await?;
         let tool_name = string(&input, "tool_name")?;
         let turn_id = string(&input, "turn_id")?;
         let tool_use_id = string(&input, "tool_use_id")?;
@@ -2473,16 +2840,25 @@ impl ControlPlane {
                 .get(&caller)
                 .cloned()
                 .ok_or_else(|| "subagent route is missing".to_owned())?;
-            if route.stopped {
+            if !route.lifecycle.accepts_tools() {
                 return Err("subagent workspace is sealed after SubagentStop".to_owned());
             }
             Some(route)
         };
         if is_spawn_tool(&tool_name) {
             let now = now_millis();
-            self.state
-                .pending
-                .retain(|spawn| spawn.expires_at_millis > now);
+            self.discard_expired_pending_spawns(now).await?;
+            if let Some(existing) =
+                self.state.pending.iter().find(|spawn| {
+                    spawn.parent_agent_id == caller && spawn.tool_use_id == tool_use_id
+                })
+            {
+                return if existing.lifecycle == PendingSpawnLifecycle::Prepared {
+                    Ok(json!({}))
+                } else {
+                    Err("the retried subagent spawn is not fully prepared".to_owned())
+                };
+            }
             if !self.state.pending.is_empty() {
                 return Err(
                     "a subagent spawn handshake is already pending; retry after SubagentStart"
@@ -2492,6 +2868,7 @@ impl ControlPlane {
             let fork_key = IdempotencyKey::new();
             self.state.pending.push_back(PendingSpawn {
                 parent_agent_id: caller,
+                tool_use_id,
                 active_root_id: input
                     .get("_caller_root_id")
                     .and_then(Value::as_str)
@@ -2503,8 +2880,22 @@ impl ControlPlane {
                     hex::encode(fork_key.into_bytes())
                 ),
                 fork_key: fork_key.into_bytes(),
+                roots: BTreeMap::new(),
+                mount_path: self
+                    .workspace_mount_root()
+                    .join(compact_id(&fork_key.into_bytes())),
+                lifecycle: PendingSpawnLifecycle::Preparing,
             });
             self.persist()?;
+            if let Err(error) = self.prepare_pending_spawn(fork_key.into_bytes()).await {
+                let cleanup = self.discard_pending_spawn(fork_key.into_bytes()).await;
+                return match cleanup {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => Err(format!(
+                        "{error}; failed to recover the rejected spawn: {cleanup}"
+                    )),
+                };
+            }
             return Ok(json!({}));
         }
         if caller == self.state.root_agent_id {
@@ -2535,7 +2926,7 @@ impl ControlPlane {
             return Ok(json!({}));
         }
         let agent_id = caller;
-        if is_pure_remote_tool(&tool_name) {
+        if is_known_non_filesystem_tool(&tool_name) {
             return Ok(json!({}));
         }
         if !is_filesystem_tool(&tool_name) {
@@ -2544,11 +2935,6 @@ impl ControlPlane {
             ));
         }
         let route = caller_route.ok_or_else(|| "subagent route is missing".to_owned())?;
-        let first_overlapping_operation = !self
-            .state
-            .leases
-            .values()
-            .any(|lease| lease.agent_id == agent_id);
         let selected_root_id = input
             .get("_caller_root_id")
             .and_then(Value::as_str)
@@ -2566,7 +2952,7 @@ impl ControlPlane {
             .roots
             .get(&root_key(selected_root_id))
             .ok_or_else(|| "caller physical root binding is missing".to_owned())?;
-        let selected_path = route.mount_path.join(&selected_route_root.route_name);
+        let selected_path = route.mount_path.join(selected_route_root.mount_name());
         let original =
             normalize_tool_input(input.get("tool_input").cloned().unwrap_or(Value::Null))?;
         for binding in self.state.roots.values() {
@@ -2600,6 +2986,11 @@ impl ControlPlane {
             }
             self.state.leases.remove(&tool_use_id);
         }
+        let first_overlapping_operation = !self
+            .state
+            .leases
+            .values()
+            .any(|lease| lease.agent_id == agent_id);
         if first_overlapping_operation {
             self.mounts
                 .get(&agent_id)
@@ -2637,7 +3028,7 @@ impl ControlPlane {
                     .begin(
                         workspace.id(),
                         parent.head().await.map_err(display)?.id(),
-                        format!("{agent_id}:{tool_use_id}:{}", route_root.route_name),
+                        format!("{agent_id}:{tool_use_id}:{}", route_root.mount_name()),
                         now,
                         now.saturating_add(15 * 60 * 1_000),
                     )
@@ -2646,7 +3037,7 @@ impl ControlPlane {
             }
             .await;
             match acquired {
-                Ok(lease) => leases.push((root_id, route_root.route_name.clone(), lease)),
+                Ok(lease) => leases.push((root_id, lease)),
                 Err(error) => {
                     self.rollback_started_leases(&route, &leases, now).await?;
                     return Err(error);
@@ -2654,21 +3045,36 @@ impl ControlPlane {
             }
         }
         self.state.leases.insert(
-            tool_use_id,
+            tool_use_id.clone(),
             LeaseRecord::from_leases(agent_id, turn_id, tool_name, leases),
         );
-        self.persist()?;
+        if let Err(error) = self.persist() {
+            let leases = self
+                .state
+                .leases
+                .get(&tool_use_id)
+                .map_or_else(Vec::new, |record| {
+                    record
+                        .roots
+                        .values()
+                        .map(|root| (WorkspaceRootId::from_bytes(root.root_id), root.lease()))
+                        .collect()
+                });
+            self.state.leases.remove(&tool_use_id);
+            self.rollback_started_leases(&route, &leases, now).await?;
+            return Err(error);
+        }
         Ok(pre_tool_update(updated))
     }
 
     async fn rollback_started_leases(
         &self,
         route: &Route,
-        leases: &[(WorkspaceRootId, String, OperationWindowLease)],
+        leases: &[(WorkspaceRootId, OperationWindowLease)],
         now: u64,
     ) -> Result<(), String> {
         let operations = self.distributed.operations();
-        for (root_id, _, lease) in leases.iter().rev() {
+        for (root_id, lease) in leases.iter().rev() {
             let workspace = self.workspace_root(route, *root_id).await?;
             match operations.finish(lease, now).await.map_err(display)? {
                 acyclic_fs::OperationWindowFinish::Reconcile(reconcile) => {
@@ -2699,16 +3105,18 @@ impl ControlPlane {
             .roots
             .get(&root_key(root_id))
             .ok_or_else(|| "selected route root is missing".to_owned())?;
-        let route_path = route.mount_path.join(&route_root.route_name);
+        let route_path = route.mount_path.join(route_root.mount_name());
         let lazy_workspace = self.lazy_workspace_root(route, root_id).await?;
         let workspace = lazy_workspace.workspace().clone();
-        self.sync_agent(&route.parent_agent_id).await?;
+        self.sync_agent(&route.parent_agent_id)
+            .await
+            .map_err(|error| format!("cannot synchronize the parent workspace: {error}"))?;
         let parent_context = self
             .distributed
             .contexts()
             .resolve(self.context_for_agent(&route.parent_agent_id)?)
             .await
-            .map_err(display)?;
+            .map_err(|error| format!("cannot resolve the parent workspace context: {error}"))?;
         let parent = self
             .distributed
             .workspace(
@@ -2736,8 +3144,10 @@ impl ControlPlane {
         ) {
             return Err("Git compatibility commands require an idle agent workspace".to_owned());
         }
-        let repository_id =
-            repository_id(route_root.workspace_id, route_root.repository_workspace_id);
+        let repository_id = repository_id(
+            workspace.id().into_bytes(),
+            route_root.repository_workspace_id,
+        );
         let lease = operations
             .begin(
                 workspace.id(),
@@ -2885,8 +3295,6 @@ impl ControlPlane {
                 .roots
                 .get_mut(&root_key(root_id))
                 .ok_or_else(|| "selected route root is missing".to_owned())?;
-            active.workspace_name = switched.workspace().name().as_str().to_owned();
-            active.workspace_id = switched.workspace().id().into_bytes();
             active.published_generation = [0; 32];
             let current = current.clone();
             let mount = self.mount_route(&current).await?;
@@ -2921,7 +3329,7 @@ impl ControlPlane {
         let before_tree = git_workspace_tree(&lazy_workspace, &argv, None).await?;
         let apply_patch = git_apply_patch(&lazy_workspace, &root_binding.path, &argv).await?;
         let repository_id = repository_id(
-            root_binding.workspace_id,
+            workspace.id().into_bytes(),
             root_binding.repository_workspace_id,
         );
         let (ignore, merge_drivers) = git_policy(&lazy_workspace).await?;
@@ -2967,13 +3375,6 @@ impl ControlPlane {
                 )
                 .await
                 .map_err(display)?;
-            if root_id.into_bytes() == self.state.root_id {
-                self.state.root_workspace_name = switched.workspace().name().as_str().to_owned();
-            }
-            if let Some(binding) = self.state.roots.get_mut(&root_key(root_id)) {
-                binding.workspace_name = switched.workspace().name().as_str().to_owned();
-                binding.workspace_id = switched.workspace().id().into_bytes();
-            }
             self.roots.insert(root_key(root_id), switched);
         }
         self.persist()?;
@@ -3008,10 +3409,40 @@ impl ControlPlane {
                 .get(&agent_id)
                 .cloned()
                 .ok_or("route missing")?;
-            if !route.stopped && route.turn_id != turn_id {
+            if route.lifecycle == RouteLifecycle::Mounting {
+                if authenticated_parent != Some(route.parent_agent_id.as_str()) {
+                    return Err(
+                        "subagent mount recovery is not authenticated by its direct parent"
+                            .to_owned(),
+                    );
+                }
+                fs::create_dir_all(&route.mount_path).map_err(display)?;
+                let mount = self.mount_route(&route).await?;
+                self.distributed
+                    .contexts()
+                    .set_active(WorkspaceContextId::from_bytes(route.context_id), true)
+                    .await
+                    .map_err(display)?;
+                let recovered = self
+                    .state
+                    .routes
+                    .get_mut(&agent_id)
+                    .ok_or("route missing")?;
+                recovered.lifecycle = RouteLifecycle::Active;
+                recovered.turn_id.clone_from(&turn_id);
+                self.mounts.insert(agent_id.clone(), mount);
+                self.state.turns.insert(turn_id, agent_id.clone());
+                self.persist()?;
+                let route = self.state.routes.get(&agent_id).ok_or("route missing")?;
+                return Ok(subagent_context(&route.active_path()?));
+            }
+            if route.lifecycle == RouteLifecycle::StopRequested {
+                return Err("subagent stop is pending until its live descendants finish".to_owned());
+            }
+            if !route.lifecycle.is_frozen() && route.turn_id != turn_id {
                 return Err("subagent identity is already bound to another turn".to_owned());
             }
-            if route.stopped {
+            if route.lifecycle.is_frozen() {
                 if authenticated_parent != Some(route.parent_agent_id.as_str()) {
                     return Err(
                         "subagent resume is not authenticated by its direct parent".to_owned()
@@ -3029,153 +3460,68 @@ impl ControlPlane {
                     .routes
                     .get_mut(&agent_id)
                     .ok_or("route missing")?;
-                resumed.stopped = false;
+                resumed.lifecycle = RouteLifecycle::Active;
                 resumed.turn_id.clone_from(&turn_id);
                 self.mounts.insert(agent_id.clone(), mount);
             }
             self.state.turns.insert(turn_id, agent_id.clone());
             self.persist()?;
             let route = self.state.routes.get(&agent_id).ok_or("route missing")?;
-            return Ok(subagent_context(&route.path));
+            return Ok(subagent_context(&route.active_path()?));
         }
         let pending = self
             .state
             .pending
-            .pop_front()
+            .front()
+            .cloned()
             .ok_or_else(|| "subagent start has no serialized spawn handshake".to_owned())?;
         if pending.expires_at_millis <= now_millis() {
-            self.persist()?;
+            self.discard_pending_spawn(pending.fork_key).await?;
             return Err("subagent spawn handshake expired before SubagentStart".to_owned());
         }
         if authenticated_parent.is_some_and(|parent| parent != pending.parent_agent_id) {
-            self.persist()?;
             return Err("subagent start parent does not match its spawn permit".to_owned());
         }
-        self.sync_agent(&pending.parent_agent_id).await?;
-        let workspace_name_prefix = pending.workspace_name;
-        let fork_key = IdempotencyKey::from_bytes(pending.fork_key);
-        let mount_path = self
-            .session_mount_root()
-            .join(short_hash(agent_id.as_bytes()));
-        fs::create_dir_all(&mount_path).map_err(display)?;
-        if mount_path.read_dir().map_err(display)?.next().is_some() {
-            return Err("child workspace destination is not empty".to_owned());
+        if pending.lifecycle != PendingSpawnLifecycle::Prepared {
+            return Err("subagent spawn workspace is not fully prepared".to_owned());
         }
-        let context_id = WorkspaceContextId::from_bytes(fork_key.into_bytes());
-        let parent_context_id = self.context_for_agent(&pending.parent_agent_id)?;
-        let parent_context = self
-            .distributed
-            .contexts()
-            .resolve(parent_context_id)
-            .await
-            .map_err(display)?;
-        let active_root_id = if let Some(active_root_id) = pending.active_root_id {
-            WorkspaceRootId::from_bytes(active_root_id)
-        } else if pending.parent_agent_id == self.state.root_agent_id {
-            WorkspaceRootId::from_bytes(self.state.root_id)
-        } else {
-            WorkspaceRootId::from_bytes(
-                self.state
-                    .routes
-                    .get(&pending.parent_agent_id)
-                    .ok_or_else(|| "subagent parent route is missing".to_owned())?
-                    .root_id,
-            )
-        };
-        let mut context_roots = Vec::with_capacity(parent_context.roots.len());
-        let mut route_roots = BTreeMap::new();
-        let mut mounted_roots = Vec::with_capacity(parent_context.roots.len());
-        for (root_id, parent_root) in parent_context.roots {
-            let source_binding = self
-                .state
-                .roots
-                .get(&root_key(root_id))
-                .ok_or_else(|| "physical root binding is missing".to_owned())?;
-            let source = self
-                .physical_roots
-                .get(&root_key(root_id))
-                .map(|root| Arc::clone(&root.source))
-                .ok_or_else(|| "physical root source is unavailable".to_owned())?;
-            verify_native_root_identity(
-                &source,
-                source_binding.native_root_identity,
-                &source_binding.path,
-            )?;
-            let parent_workspace = self
-                .distributed
-                .workspace(parent_root.workspace_id)
-                .await
-                .map_err(display)?;
-            let parent_lazy = self
-                .distributed
-                .open_lazy(parent_workspace, source)
-                .await
-                .map_err(display)?;
-            let root_name = route_name(root_id);
-            let child_name = format!("{workspace_name_prefix}-{root_name}");
-            let root_fork_key = derived_idempotency_key(fork_key, root_id);
-            let fork_generation = parent_lazy.workspace().head().await.map_err(display)?.id();
-            let child = parent_lazy
-                .fork(&child_name, root_fork_key)
-                .await
-                .map_err(display)?;
-            self.distributed
-                .lineage()
-                .register_existing_child(
-                    parent_lazy.workspace(),
-                    child.workspace(),
-                    fork_generation,
-                )
-                .await
-                .map_err(display)?;
-            let child_path = mount_path.join(&root_name);
-            context_roots.push(WorkspaceContextRoot {
-                root_id,
-                source_path: source_binding.path.clone(),
-                workspace_id: child.workspace().id(),
-                workspace_name: child_name.clone(),
-                parent_workspace_id: Some(parent_lazy.workspace().id()),
-                mount_path: Some(child_path),
-            });
-            route_roots.insert(
-                root_key(root_id),
-                RouteRoot {
-                    root_id: root_id.into_bytes(),
-                    workspace_name: child_name,
-                    workspace_id: child.workspace().id().into_bytes(),
-                    repository_workspace_id: child.workspace().id().into_bytes(),
-                    parent_workspace_id: parent_lazy.workspace().id().into_bytes(),
-                    route_name: root_name.clone(),
-                    published_generation: [0; 32],
-                },
-            );
-            mounted_roots.push((root_name, child));
+        let active_root_id = self.pending_active_root(&pending)?;
+        if !pending.roots.contains_key(&root_key(active_root_id)) {
+            return Err("active root is missing from prepared child context".to_owned());
         }
-        let active = route_roots
-            .get(&root_key(active_root_id))
-            .ok_or_else(|| "active root is missing from parent context".to_owned())?;
-        let active_path = mount_path.join(&active.route_name);
-        self.distributed
-            .contexts()
-            .register_child(context_id, parent_context_id, context_roots)
-            .await
-            .map_err(display)?;
-        let mount = LocalMount::mount(mounted_roots, &mount_path).await?;
+        let mount = self
+            .pending_mounts
+            .remove(&pending.fork_key)
+            .ok_or_else(|| "prepared child mount is unavailable".to_owned())?;
         let route = Route {
             agent_id: agent_id.clone(),
             turn_id: turn_id.clone(),
-            context_id: context_id.into_bytes(),
+            context_id: pending.fork_key,
             root_id: active_root_id.into_bytes(),
-            parent_agent_id: pending.parent_agent_id,
-            roots: route_roots,
-            mount_path: mount_path.clone(),
-            path: active_path.clone(),
-            stopped: false,
+            parent_agent_id: pending.parent_agent_id.clone(),
+            roots: pending.roots.clone(),
+            mount_path: pending.mount_path.clone(),
+            lifecycle: RouteLifecycle::Active,
         };
-        self.mounts.insert(agent_id.clone(), mount);
+        let active_path = route.active_path()?;
+        let consumed = self
+            .state
+            .pending
+            .pop_front()
+            .ok_or_else(|| "subagent spawn handshake disappeared during start".to_owned())?;
+        if consumed.fork_key != pending.fork_key {
+            return Err("subagent spawn handshake changed during start".to_owned());
+        }
         self.state.turns.insert(turn_id, agent_id.clone());
-        self.state.routes.insert(agent_id, route);
-        self.persist()?;
+        self.state.routes.insert(agent_id.clone(), route);
+        if let Err(error) = self.persist() {
+            self.state.routes.remove(&agent_id);
+            self.state.turns.retain(|_, bound| bound != &agent_id);
+            self.state.pending.push_front(consumed);
+            self.pending_mounts.insert(pending.fork_key, mount);
+            return Err(error);
+        }
+        self.mounts.insert(agent_id.clone(), mount);
         Ok(subagent_context(&active_path))
     }
 
@@ -3187,7 +3533,7 @@ impl ControlPlane {
         let tool_use_id = string(&input, "tool_use_id")?;
         let Some(record) = self.state.leases.get(&tool_use_id).cloned() else {
             if caller != self.state.root_agent_id
-                && !is_pure_remote_tool(&tool_name)
+                && !is_known_non_filesystem_tool(&tool_name)
                 && !is_filesystem_tool(&tool_name)
                 && !is_spawn_tool(&tool_name)
             {
@@ -3209,14 +3555,16 @@ impl ControlPlane {
             .get(&record.agent_id)
             .cloned()
             .ok_or_else(|| "post-tool route is missing".to_owned())?;
-        self.sync_agent(&route.parent_agent_id).await?;
+        self.sync_agent(&route.parent_agent_id)
+            .await
+            .map_err(|error| format!("cannot synchronize the parent workspace: {error}"))?;
         let operations = self.distributed.operations();
         let parent_context = self
             .distributed
             .contexts()
             .resolve(self.context_for_agent(&route.parent_agent_id)?)
             .await
-            .map_err(display)?;
+            .map_err(|error| format!("cannot resolve the parent workspace context: {error}"))?;
         let mut sync_error = None;
         let mut expired = false;
         let mut conflicts = Vec::new();
@@ -3224,7 +3572,10 @@ impl ControlPlane {
         let now = now_millis();
         for root_record in record.roots.values() {
             let root_id = WorkspaceRootId::from_bytes(root_record.root_id);
-            let workspace = self.workspace_root(&route, root_id).await?;
+            let workspace = self
+                .workspace_root(&route, root_id)
+                .await
+                .map_err(|error| format!("cannot resolve the child workspace root: {error}"))?;
             let parent_root = parent_context
                 .roots
                 .get(&root_id)
@@ -3233,17 +3584,21 @@ impl ControlPlane {
                 .distributed
                 .workspace(parent_root.workspace_id)
                 .await
-                .map_err(display)?;
-            operations
-                .observe_parent(workspace.id(), parent.head().await.map_err(display)?.id())
+                .map_err(|error| format!("cannot open the parent workspace root: {error}"))?;
+            let parent_head = parent
+                .head()
                 .await
-                .map_err(display)?;
+                .map_err(|error| format!("cannot read the parent workspace head: {error}"))?;
+            operations
+                .observe_parent(workspace.id(), parent_head.id())
+                .await
+                .map_err(|error| format!("cannot observe the latest parent generation: {error}"))?;
             let lease = root_record.lease();
             if sync_error.is_none() {
                 let sync = match self.mounts.get(&record.agent_id) {
                     Some(mount) => mount
                         .sync_route_with_permit(
-                            root_record.route_name.as_bytes(),
+                            route_name(root_id).as_bytes(),
                             lease.publication_permit(),
                         )
                         .await
@@ -3254,7 +3609,11 @@ impl ControlPlane {
                     sync_error = Some(error);
                 }
             }
-            match operations.finish(&lease, now).await.map_err(display)? {
+            match operations
+                .finish(&lease, now)
+                .await
+                .map_err(|error| format!("cannot close the filesystem operation lease: {error}"))?
+            {
                 acyclic_fs::OperationWindowFinish::StillActive { .. } => {}
                 acyclic_fs::OperationWindowFinish::Reconcile(reconcile) => {
                     if let acyclic_fs::WorkspaceRebase::Conflicted {
@@ -3267,7 +3626,9 @@ impl ControlPlane {
                             OperationReconcileLimits::default(),
                         )
                         .await
-                        .map_err(display)?
+                        .map_err(|error| {
+                            format!("cannot reconcile the closed filesystem operation: {error}")
+                        })?
                     {
                         conflicts.extend(root_conflicts);
                         truncated |= root_truncated;
@@ -3276,32 +3637,23 @@ impl ControlPlane {
                 acyclic_fs::OperationWindowFinish::AlreadyClosed => expired = true,
             }
         }
+        self.state.leases.remove(&tool_use_id);
+        self.persist()
+            .map_err(|error| format!("cannot persist the closed tool lease: {error}"))?;
         if let Some(error) = sync_error {
-            self.state.leases.remove(&tool_use_id);
-            if let Some(mount) = self.mounts.remove(&record.agent_id) {
-                mount.abandon().map_err(display)?;
-            }
-            if !self
-                .state
-                .leases
-                .values()
-                .any(|lease| lease.agent_id == record.agent_id)
-            {
-                let mount = self.mount_route(&route).await?;
-                self.mounts.insert(record.agent_id.clone(), mount);
-            }
-            self.persist()?;
+            let quarantine_error = self
+                .mounts
+                .remove(&record.agent_id)
+                .and_then(|mount| mount.abandon().err())
+                .map(|cleanup| format!("; mount quarantine also failed: {cleanup}"))
+                .unwrap_or_default();
             return Err(format!(
-                "filesystem tool publication was fenced before lease close: {error}"
+                "filesystem tool publication was fenced before lease close: {error}{quarantine_error}"
             ));
         }
         if expired {
-            self.state.leases.remove(&tool_use_id);
-            self.persist()?;
             return Err("filesystem tool lease expired; late writes were fenced".to_owned());
         }
-        self.state.leases.remove(&tool_use_id);
-        self.persist()?;
         if conflicts.is_empty() {
             Ok(json!({}))
         } else {
@@ -3330,7 +3682,7 @@ impl ControlPlane {
             .get(&agent_id)
             .cloned()
             .ok_or_else(|| "subagent stop refers to an unknown agent".to_owned())?;
-        if route.stopped {
+        if route.lifecycle.is_frozen() {
             return Ok(json!({"suppressOutput": true}));
         }
         if self
@@ -3341,18 +3693,16 @@ impl ControlPlane {
         {
             return Err("subagent cannot stop while filesystem tools are still active".to_owned());
         }
-        self.unmount_agent(&agent_id).await?;
-        self.distributed
-            .contexts()
-            .set_active(WorkspaceContextId::from_bytes(route.context_id), false)
-            .await
-            .map_err(display)?;
         self.state
             .routes
             .get_mut(&agent_id)
             .ok_or_else(|| "subagent route disappeared during stop".to_owned())?
-            .stopped = true;
+            .lifecycle = RouteLifecycle::StopRequested;
+        // Persist the intent before unmounting. If this process dies, restore
+        // remounts the route and the next lifecycle event can finish the same
+        // transition without losing a descendant's publication target.
         self.persist()?;
+        self.finalize_requested_stops(&agent_id).await?;
         let descendants = self
             .state
             .routes
@@ -3368,8 +3718,14 @@ impl ControlPlane {
             .await
             .unwrap_or_else(|error| json!({"unavailable": error}));
         let reference = format!("agents/{agent_id}");
+        let deferred = self
+            .state
+            .routes
+            .get(&agent_id)
+            .is_some_and(|route| route.lifecycle == RouteLifecycle::StopRequested);
         let summary = json!({
             "agent": reference,
+            "state": if deferred { "stopping" } else { "frozen" },
             "changed": changes,
             "tests": {"status": "not-reported", "detail": "Acyclic does not infer test execution from process output"},
             "pendingDescendants": descendants,
@@ -3380,12 +3736,75 @@ impl ControlPlane {
             }
         });
         Ok(json!({
-            "suppressOutput": false,
-            "systemMessage": format!(
-                "Acyclic stopped {reference}. Inspect with `acyclic git diff {reference}`; merge with `acyclic git merge {reference}`; discard with `acyclic discard {reference}`."
-            ),
+            "suppressOutput": deferred,
+            "systemMessage": if deferred {
+                format!("Acyclic will freeze {reference} after its live descendants finish.")
+            } else {
+                format!(
+                    "Acyclic stopped {reference}. Inspect with `acyclic git diff {reference}`; merge with `acyclic git merge {reference}`; discard with `acyclic discard {reference}`."
+                )
+            },
             "acyclicSummary": summary,
         }))
+    }
+
+    fn has_live_descendant(&self, ancestor: &str) -> bool {
+        self.state.routes.values().any(|candidate| {
+            if candidate.lifecycle.is_frozen() {
+                return false;
+            }
+            let mut parent = candidate.parent_agent_id.as_str();
+            let mut visited = BTreeSet::new();
+            while parent != self.state.root_agent_id && visited.insert(parent.to_owned()) {
+                if parent == ancestor {
+                    return true;
+                }
+                let Some(route) = self.state.routes.get(parent) else {
+                    break;
+                };
+                parent = &route.parent_agent_id;
+            }
+            false
+        })
+    }
+
+    async fn finalize_requested_stops(&mut self, agent_id: &str) -> Result<(), String> {
+        let mut candidate = Some(agent_id.to_owned());
+        while let Some(agent_id) = candidate {
+            let Some(route) = self.state.routes.get(&agent_id).cloned() else {
+                break;
+            };
+            if route.lifecycle != RouteLifecycle::StopRequested
+                || self.has_live_descendant(&agent_id)
+            {
+                break;
+            }
+            if self
+                .state
+                .leases
+                .values()
+                .any(|lease| lease.agent_id == agent_id)
+            {
+                return Err(format!(
+                    "subagent '{agent_id}' cannot finish stopping while filesystem tools are active"
+                ));
+            }
+            self.unmount_agent(&agent_id).await?;
+            self.distributed
+                .contexts()
+                .set_active(WorkspaceContextId::from_bytes(route.context_id), false)
+                .await
+                .map_err(display)?;
+            self.state
+                .routes
+                .get_mut(&agent_id)
+                .ok_or_else(|| "subagent route disappeared during stop".to_owned())?
+                .lifecycle = RouteLifecycle::Frozen;
+            self.persist()?;
+            candidate = (route.parent_agent_id != self.state.root_agent_id)
+                .then_some(route.parent_agent_id);
+        }
+        Ok(())
     }
 
     async fn agents_status(&mut self, caller: &str) -> Result<Value, String> {
@@ -3428,12 +3847,23 @@ impl ControlPlane {
                 .pending_conflict_for_parent(WorkspaceContextId::from_bytes(route.context_id))
                 .await?
                 .is_some();
+            let context = self
+                .distributed
+                .contexts()
+                .resolve(WorkspaceContextId::from_bytes(route.context_id))
+                .await
+                .map_err(display)?;
             let mut roots = Vec::with_capacity(route.roots.len());
             let mut pending_publications = 0_usize;
             for root in route.roots.values() {
+                let workspace_id = context
+                    .roots
+                    .get(&WorkspaceRootId::from_bytes(root.root_id))
+                    .ok_or_else(|| "adapter route is absent from its core context".to_owned())?
+                    .workspace_id;
                 let current = self
                     .distributed
-                    .workspace(acyclic_fs::WorkspaceId::from_bytes(root.workspace_id))
+                    .workspace(workspace_id)
                     .await
                     .map_err(display)?
                     .head()
@@ -3445,8 +3875,8 @@ impl ControlPlane {
                 pending_publications += usize::from(unpublished);
                 roots.push(json!({
                     "id": hex::encode(root.root_id),
-                    "route": root.route_name,
-                    "workspace": hex::encode(root.workspace_id),
+                    "route": root.mount_name(),
+                    "workspace": hex::encode(workspace_id.into_bytes()),
                     "generation": hex::encode(current),
                     "publishedGeneration": if root.published_generation == [0; 32] {
                         Value::Null
@@ -3495,7 +3925,12 @@ impl ControlPlane {
                     Value::String(format!("agents/{}", route.parent_agent_id))
                 },
                 "depth": depth,
-                "state": if route.stopped { "frozen" } else { "running" },
+                "state": match route.lifecycle {
+                    RouteLifecycle::Mounting => "mounting",
+                    RouteLifecycle::Active => "running",
+                    RouteLifecycle::StopRequested => "stopping",
+                    RouteLifecycle::Frozen => "frozen",
+                },
                 "activeLeases": active_leases,
                 "conflicts": usize::from(conflict),
                 "descendants": descendants,
@@ -3504,7 +3939,7 @@ impl ControlPlane {
                 "changedPaths": changed_paths,
                 "workRemaining": file_changes.zip(binding_changes).map(|(files, bindings)| files.saturating_add(bindings)),
                 "pendingPublications": pending_publications,
-                "mount": route.path,
+                "mount": route.active_path()?,
                 "roots": roots,
             }));
         }
@@ -3519,6 +3954,307 @@ impl ControlPlane {
                 })
         });
         Ok(json!({"schemaVersion": 1, "root": self.state.root_agent_id, "agents": agents}))
+    }
+
+    /// Builds and mounts the actual child workspace before the host is allowed
+    /// to spawn it. `SubagentStart` is advisory in several hosts, while the
+    /// spawn tool hook is a blocking boundary. Preparing here therefore closes
+    /// the isolation gap without paying for a throwaway probe mount.
+    async fn prepare_pending_spawn(&mut self, fork_key: [u8; 16]) -> Result<(), String> {
+        let pending = self
+            .state
+            .pending
+            .iter()
+            .find(|pending| pending.fork_key == fork_key)
+            .cloned()
+            .ok_or_else(|| "pending spawn disappeared during preparation".to_owned())?;
+        if pending.lifecycle == PendingSpawnLifecycle::Prepared
+            && self.pending_mounts.contains_key(&pending.fork_key)
+        {
+            return Ok(());
+        }
+        if pending.lifecycle == PendingSpawnLifecycle::Discarding {
+            return Err("pending spawn is already being discarded".to_owned());
+        }
+        let capabilities = acyclic_fs::probe_native_mount();
+        if !capabilities.available || !capabilities.writable {
+            return Err(format!(
+                "cannot isolate the requested subagent: {}",
+                capabilities
+                    .unavailable_reason
+                    .as_deref()
+                    .unwrap_or("the native writable mount backend is unavailable")
+            ));
+        }
+        self.sync_agent(&pending.parent_agent_id).await?;
+        let parent_context_id = self.context_for_agent(&pending.parent_agent_id)?;
+        let parent_context = self
+            .distributed
+            .contexts()
+            .resolve(parent_context_id)
+            .await
+            .map_err(display)?;
+        let active_root_id = self.pending_active_root(&pending)?;
+        if !parent_context.roots.contains_key(&active_root_id) {
+            return Err("active root is missing from parent context".to_owned());
+        }
+        let mut route_roots = pending.roots.clone();
+        if pending.lifecycle == PendingSpawnLifecycle::Preparing {
+            fs::create_dir_all(&pending.mount_path).map_err(display)?;
+            if pending
+                .mount_path
+                .read_dir()
+                .map_err(display)?
+                .next()
+                .is_some()
+            {
+                return Err("child workspace destination is not empty".to_owned());
+            }
+            let fork_key = IdempotencyKey::from_bytes(fork_key);
+            let mut context_roots = Vec::with_capacity(parent_context.roots.len());
+            for (root_id, parent_root) in &parent_context.roots {
+                let source_binding = self
+                    .state
+                    .roots
+                    .get(&root_key(*root_id))
+                    .ok_or_else(|| "physical root binding is missing".to_owned())?;
+                let source = self
+                    .physical_roots
+                    .get(&root_key(*root_id))
+                    .map(|root| Arc::clone(&root.source))
+                    .ok_or_else(|| "physical root source is unavailable".to_owned())?;
+                verify_native_root_identity(
+                    &source,
+                    source_binding.native_root_identity,
+                    &source_binding.path,
+                )?;
+                let parent_workspace = self
+                    .distributed
+                    .workspace(parent_root.workspace_id)
+                    .await
+                    .map_err(display)?;
+                let parent_lazy = self
+                    .distributed
+                    .open_lazy(parent_workspace, source)
+                    .await
+                    .map_err(display)?;
+                let root_name = route_name(*root_id);
+                let child_name = format!("{}-{root_name}", pending.workspace_name);
+                let fork_generation = parent_lazy.workspace().head().await.map_err(display)?.id();
+                let child = parent_lazy
+                    .fork(&child_name, derived_idempotency_key(fork_key, *root_id))
+                    .await
+                    .map_err(display)?;
+                self.distributed
+                    .lineage()
+                    .register_existing_child(
+                        parent_lazy.workspace(),
+                        child.workspace(),
+                        fork_generation,
+                    )
+                    .await
+                    .map_err(display)?;
+                context_roots.push(WorkspaceContextRoot {
+                    root_id: *root_id,
+                    source_path: source_binding.path.clone(),
+                    workspace_id: child.workspace().id(),
+                    workspace_name: child_name,
+                    parent_workspace_id: Some(parent_lazy.workspace().id()),
+                    mount_path: Some(pending.mount_path.join(&root_name)),
+                });
+                route_roots.insert(
+                    root_key(*root_id),
+                    RouteRoot {
+                        root_id: root_id.into_bytes(),
+                        repository_workspace_id: child.workspace().id().into_bytes(),
+                        published_generation: [0; 32],
+                    },
+                );
+            }
+            self.distributed
+                .contexts()
+                .register_child(pending.context_id(), parent_context_id, context_roots)
+                .await
+                .map_err(display)?;
+            let prepared = self
+                .state
+                .pending
+                .iter_mut()
+                .find(|candidate| candidate.fork_key == fork_key.into_bytes())
+                .ok_or_else(|| "pending spawn disappeared before mount intent".to_owned())?;
+            prepared.roots.clone_from(&route_roots);
+            prepared.lifecycle = PendingSpawnLifecycle::Mounting;
+            self.persist()?;
+        }
+        let mut roots = Vec::with_capacity(route_roots.len());
+        for root in route_roots.values() {
+            let root_id = root.id();
+            let binding = self
+                .state
+                .roots
+                .get(&root_key(root_id))
+                .ok_or_else(|| "physical root binding is missing".to_owned())?;
+            let source = self
+                .physical_roots
+                .get(&root_key(root_id))
+                .map(|root| Arc::clone(&root.source))
+                .ok_or_else(|| "physical root source is unavailable".to_owned())?;
+            verify_native_root_identity(&source, binding.native_root_identity, &binding.path)?;
+            let workspace = self
+                .distributed
+                .workspace(acyclic_fs::WorkspaceId::from_bytes(
+                    root.repository_workspace_id,
+                ))
+                .await
+                .map_err(display)?;
+            roots.push((
+                root.mount_name(),
+                self.distributed
+                    .open_lazy(workspace, source)
+                    .await
+                    .map_err(display)?,
+            ));
+        }
+        let mount = LocalMount::mount(roots, &pending.mount_path)
+            .await
+            .map_err(|error| {
+                format!("cannot isolate the requested subagent; native mount failed: {error}")
+            })?;
+        self.pending_mounts.insert(pending.fork_key, mount);
+        self.state
+            .pending
+            .iter_mut()
+            .find(|candidate| candidate.fork_key == fork_key)
+            .ok_or_else(|| "pending spawn disappeared after mount".to_owned())?
+            .lifecycle = PendingSpawnLifecycle::Prepared;
+        self.persist()
+    }
+
+    fn pending_active_root(&self, pending: &PendingSpawn) -> Result<WorkspaceRootId, String> {
+        if let Some(root_id) = pending.active_root_id {
+            return Ok(WorkspaceRootId::from_bytes(root_id));
+        }
+        if pending.parent_agent_id == self.state.root_agent_id {
+            return Ok(WorkspaceRootId::from_bytes(self.state.root_id));
+        }
+        self.state
+            .routes
+            .get(&pending.parent_agent_id)
+            .map(|route| WorkspaceRootId::from_bytes(route.root_id))
+            .ok_or_else(|| "subagent parent route is missing".to_owned())
+    }
+
+    async fn discard_expired_pending_spawns(&mut self, now: u64) -> Result<(), String> {
+        let expired = self
+            .state
+            .pending
+            .iter()
+            .filter(|pending| pending.expires_at_millis <= now)
+            .map(|pending| pending.fork_key)
+            .collect::<Vec<_>>();
+        for fork_key in expired {
+            self.discard_pending_spawn(fork_key).await?;
+        }
+        Ok(())
+    }
+
+    async fn recover_pending_spawns(&mut self) -> Result<(), String> {
+        let pending = self
+            .state
+            .pending
+            .iter()
+            .map(|pending| {
+                (
+                    pending.fork_key,
+                    pending.expires_at_millis,
+                    pending.lifecycle,
+                )
+            })
+            .collect::<Vec<_>>();
+        let now = now_millis();
+        for (fork_key, expires_at, lifecycle) in pending {
+            if expires_at <= now || lifecycle == PendingSpawnLifecycle::Discarding {
+                self.discard_pending_spawn(fork_key).await?;
+            } else {
+                self.prepare_pending_spawn(fork_key).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn discard_pending_spawn(&mut self, fork_key: [u8; 16]) -> Result<(), String> {
+        let pending = self
+            .state
+            .pending
+            .iter_mut()
+            .find(|pending| pending.fork_key == fork_key)
+            .ok_or_else(|| "pending spawn disappeared during discard".to_owned())?;
+        pending.lifecycle = PendingSpawnLifecycle::Discarding;
+        let pending = pending.clone();
+        self.persist()?;
+        if let Some(mount) = self.pending_mounts.get(&pending.fork_key) {
+            mount.unmount().await.map_err(display)?;
+            self.pending_mounts.remove(&pending.fork_key);
+        }
+        if let Ok(context) = self
+            .distributed
+            .contexts()
+            .resolve(pending.context_id())
+            .await
+        {
+            match self
+                .distributed
+                .contexts()
+                .discard_subtree(
+                    context
+                        .parent_context_id
+                        .ok_or_else(|| "prepared child context has no parent".to_owned())?,
+                    pending.context_id(),
+                    1,
+                )
+                .await
+            {
+                Ok(_) | Err(acyclic_fs::WorkspaceContextError::Discarded) => {}
+                Err(error) => return Err(display(error)),
+            }
+        }
+        let root_ids = if pending.roots.is_empty() {
+            self.distributed
+                .contexts()
+                .resolve(self.context_for_agent(&pending.parent_agent_id)?)
+                .await
+                .map_err(display)?
+                .roots
+                .keys()
+                .copied()
+                .collect::<Vec<_>>()
+        } else {
+            pending.roots.values().map(RouteRoot::id).collect()
+        };
+        for root_id in root_ids {
+            let name = format!("{}-{}", pending.workspace_name, route_name(root_id));
+            match self
+                .fs
+                .delete_workspace(&name, derived_cleanup_key(fork_key, root_id))
+                .await
+                .map_err(display)?
+            {
+                WorkspaceDelete::Deleted | WorkspaceDelete::AlreadyDeleted => {}
+                WorkspaceDelete::Conflict => {
+                    return Err("prepared workspace deletion conflicted".to_owned());
+                }
+                WorkspaceDelete::IdempotencyConflict => {
+                    return Err("prepared workspace cleanup identity conflicted".to_owned());
+                }
+            }
+        }
+        if pending.mount_path.exists() {
+            remove_tree_checked(&self.workspace_mount_root(), &pending.mount_path)?;
+        }
+        self.state
+            .pending
+            .retain(|candidate| candidate.fork_key != fork_key);
+        self.persist()
     }
 
     #[cfg(test)]
@@ -3562,8 +4298,10 @@ impl ControlPlane {
             }
             let root_id = WorkspaceRootId::from_bytes(route_root.root_id);
             let workspace = self.workspace_root(&route, root_id).await?;
-            let repository_id =
-                repository_id(route_root.workspace_id, route_root.repository_workspace_id);
+            let repository_id = repository_id(
+                workspace.id().into_bytes(),
+                route_root.repository_workspace_id,
+            );
             let mut lineage_cursor = workspace.clone();
             let mut visited = BTreeSet::new();
             let mut branch_base = None;
@@ -3708,7 +4446,6 @@ impl ControlPlane {
             .map_err(|error| format!("cannot synchronize parent before merge: {error}"))?;
         let mut roots = BTreeMap::new();
         let mut resolutions = BTreeMap::new();
-        let mut source_heads = BTreeMap::new();
         let mut target_heads = BTreeMap::new();
         for (root_id, child_root) in &child_context.roots {
             let parent_root = parent_context
@@ -3733,83 +4470,20 @@ impl ControlPlane {
                 .exactify(WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
                 .map_err(display)?;
-            let source_head = source.head().await.map_err(display)?.id();
-            let ignore_text = match lazy_source.read("/.gitignore", 1024 * 1024).await {
-                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-                Err(acyclic_fs::LazyWorkspaceError::NotFound) => String::new(),
-                Err(error) => return Err(display(error)),
-            };
-            let parent_repository_id = if caller == self.state.root_agent_id {
-                let binding = self
-                    .state
-                    .roots
-                    .get(&root_key(*root_id))
-                    .ok_or_else(|| "parent root binding is unavailable".to_owned())?;
-                repository_id(binding.workspace_id, binding.repository_workspace_id)
-            } else {
-                let binding = self
-                    .state
-                    .routes
-                    .get(caller)
-                    .and_then(|route| route.roots.get(&root_key(*root_id)))
-                    .ok_or_else(|| "parent route root is unavailable".to_owned())?;
-                repository_id(binding.workspace_id, binding.repository_workspace_id)
-            };
-            let tracked = self
-                .distributed
-                .git(parent_repository_id)
-                .tracked_paths()
-                .await
-                .map_err(display)?;
-            let mut capture_hasher = blake3::Hasher::new();
-            capture_hasher.update(b"acyclic-agent-publication-source-v1\0");
-            capture_hasher.update(&route.context_id);
-            capture_hasher.update(&root_id.into_bytes());
-            capture_hasher.update(source_head.digest().as_bytes());
-            let mut capture_id = [0_u8; 16];
-            capture_id.copy_from_slice(&capture_hasher.finalize().as_bytes()[..16]);
-            let captured = capture_git_compatible_generation(
-                &source,
-                &GitIgnorePolicy::parse(&format!("{ignore_text}\n.git/\n.acyclic-sdk/\n")),
-                &tracked,
-                OperationId::from_bytes(capture_id),
-            )
-            .await
-            .map_err(display)?;
-            let merge_source = captured.generation.workspace();
-            let merge_workspace_id =
-                (merge_source.id() != source.id()).then_some(merge_source.id());
-            if let Some(initial_generation) = captured.initial_generation {
-                self.distributed
-                    .lineage()
-                    .register_existing_child_at_generation(
-                        &source,
-                        &merge_source,
-                        source_head,
-                        initial_generation,
-                    )
-                    .await
-                    .map_err(display)?;
-            }
-            let plan = merge_source
-                .join_into(&target)
-                .plan()
-                .await
-                .map_err(display)?;
+            let plan = source.join_into(&target).plan().await.map_err(display)?;
             let target_head = plan.target_head();
             roots.insert(
                 *root_id,
                 MultiRootMergeRoot {
                     source_workspace_id: source.id(),
-                    merge_workspace_id,
-                    source_generation: captured.generation.id(),
+                    merge_workspace_id: None,
+                    source_generation: plan.source_head(),
                     target_workspace_id: target.id(),
                     target_generation: target_head,
                     base_generation: plan.common_ancestor(),
                 },
             );
             resolutions.insert(*root_id, BTreeMap::new());
-            source_heads.insert(*root_id, source_head);
             target_heads.insert(*root_id, target_head);
         }
         if roots.is_empty() {
@@ -3895,71 +4569,9 @@ impl ControlPlane {
             self.fail_before_publication_history = false;
             return Err("injected failure before compatibility history".to_owned());
         }
-        self.record_publication_history(caller, &agent, &applied_publication)
-            .await?;
-        let limits = OperationReconcileLimits::default();
-        let mut published_source_heads = BTreeMap::new();
-        for (root_id, child_root) in &child_context.roots {
-            let source = self
-                .distributed
-                .workspace(child_root.workspace_id)
-                .await
-                .map_err(display)?;
-            let rebase_key = derived_idempotency_key(
-                IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                *root_id,
-            );
-            let generation = match source
-                .live_rebase(
-                    rebase_key,
-                    limits.maximum_generations,
-                    limits.maximum_changes,
-                    limits.maximum_conflicts,
-                )
-                .await
-                .map_err(display)?
-            {
-                acyclic_fs::WorkspaceRebase::Rebased(generation)
-                | acyclic_fs::WorkspaceRebase::AlreadyRebased(generation)
-                | acyclic_fs::WorkspaceRebase::Current(generation) => generation,
-                acyclic_fs::WorkspaceRebase::Stale(_) => {
-                    return Err(
-                        "child workspace changed while finalizing its publication".to_owned()
-                    );
-                }
-                acyclic_fs::WorkspaceRebase::Conflicted { .. } => {
-                    return Err("published child could not advance to its parent result".to_owned());
-                }
-                acyclic_fs::WorkspaceRebase::Fenced => {
-                    return Err("published child rebase was fenced".to_owned());
-                }
-                acyclic_fs::WorkspaceRebase::IdempotencyConflict => {
-                    return Err("published child rebase reused an operation identity".to_owned());
-                }
-            };
-            published_source_heads.insert(*root_id, generation.id());
-        }
-        if let Some(child_mount) = self.mounts.get(&agent) {
-            child_mount.advance_to_head().await.map_err(display)?;
-        }
-        coordinator
-            .acknowledge_applied(&applied_publication)
-            .await
-            .map_err(display)?;
         let route_root_id = route.root_id;
-        let route = self
-            .state
-            .routes
-            .get_mut(&agent)
-            .ok_or_else(|| "merged agent route disappeared".to_owned())?;
-        for (root_id, source_head) in &published_source_heads {
-            let routed = route
-                .roots
-                .get_mut(&root_key(*root_id))
-                .ok_or_else(|| "merged agent route root disappeared".to_owned())?;
-            routed.published_generation = *source_head.digest().as_bytes();
-        }
-        self.persist()?;
+        self.finalize_applied_publication(&coordinator, caller, &agent, &applied_publication)
+            .await?;
         let mut generations = BTreeMap::new();
         let mut changed = false;
         for (root_id, parent_root) in &parent_context.roots {
@@ -4050,9 +4662,16 @@ impl ControlPlane {
                 );
             }
         }
-        self.state
+        let abandoned_spawns = self
+            .state
             .pending
-            .retain(|spawn| !subtree.contains(&spawn.parent_agent_id));
+            .iter()
+            .filter(|spawn| subtree.contains(&spawn.parent_agent_id))
+            .map(|spawn| spawn.fork_key)
+            .collect::<Vec<_>>();
+        for fork_key in abandoned_spawns {
+            self.discard_pending_spawn(fork_key).await?;
+        }
         if !self.state.pending_discards.contains_key(&agent) {
             let parent_context_id = self.context_for_agent(caller)?;
             let child_context_id = WorkspaceContextId::from_bytes(route.context_id);
@@ -4068,14 +4687,27 @@ impl ControlPlane {
                     .get(&descendant)
                     .cloned()
                     .ok_or_else(|| "discard subtree route disappeared".to_owned())?;
+                let removed_context = self
+                    .distributed
+                    .contexts()
+                    .resolve(WorkspaceContextId::from_bytes(removed.context_id))
+                    .await
+                    .map_err(display)?;
                 let mut repository_ids = BTreeSet::new();
                 let mut workspace_ids = BTreeSet::new();
                 for root in removed.roots.values() {
+                    let workspace_id = removed_context
+                        .roots
+                        .get(&WorkspaceRootId::from_bytes(root.root_id))
+                        .ok_or_else(|| {
+                            "discarded adapter route is absent from its core context".to_owned()
+                        })?
+                        .workspace_id;
                     let repository_id =
-                        repository_id(root.workspace_id, root.repository_workspace_id);
+                        repository_id(workspace_id.into_bytes(), root.repository_workspace_id);
                     repository_ids.insert(repository_id);
                     workspace_ids.insert(repository_id);
-                    workspace_ids.insert(acyclic_fs::WorkspaceId::from_bytes(root.workspace_id));
+                    workspace_ids.insert(workspace_id);
                     if let Some(state) = <LocalCoreStateStore as acyclic_fs::GitCompatStore>::load(
                         &self.store,
                         repository_id,
@@ -4106,10 +4738,6 @@ impl ControlPlane {
                 discard_agents.push(DiscardAgent {
                     agent_id: descendant,
                     path: removed.mount_path,
-                    repository_workspace_id: repository_ids
-                        .iter()
-                        .next()
-                        .map_or([0; 16], |id| id.into_bytes()),
                     repository_workspace_ids: repository_ids
                         .into_iter()
                         .map(|id| id.into_bytes())
@@ -4124,7 +4752,7 @@ impl ControlPlane {
                     .routes
                     .get_mut(member)
                     .ok_or_else(|| "discard subtree route disappeared".to_owned())?;
-                route.stopped = true;
+                route.lifecycle = RouteLifecycle::Frozen;
             }
             self.state.pending_discards.insert(
                 agent.clone(),
@@ -4204,14 +4832,9 @@ impl ControlPlane {
                     .mount_detached = true;
                 self.persist()?;
             }
-            remove_tree_checked(&self.session_mount_root(), &agent.path)
+            remove_tree_checked(&self.workspace_mount_root(), &agent.path)
                 .map_err(|error| format!("cannot remove discarded mount path: {error}"))?;
-            let repository_ids = if agent.repository_workspace_ids.is_empty() {
-                vec![agent.repository_workspace_id]
-            } else {
-                agent.repository_workspace_ids.clone()
-            };
-            for repository_id in repository_ids {
+            for repository_id in agent.repository_workspace_ids {
                 let repository_id = acyclic_fs::WorkspaceId::from_bytes(repository_id);
                 if let Some(state) = <LocalCoreStateStore as acyclic_fs::GitCompatStore>::load(
                     &self.store,
@@ -4328,9 +4951,14 @@ impl ControlPlane {
     ) -> Result<(String, Option<Route>, WorkspaceRootId), String> {
         let canonical = cwd.canonicalize().map_err(display)?;
         let mut mounted = Vec::new();
-        for route in self.state.routes.values().filter(|route| !route.stopped) {
+        for route in self
+            .state
+            .routes
+            .values()
+            .filter(|route| route.lifecycle.needs_mount())
+        {
             for root in route.roots.values() {
-                let path = route.mount_path.join(&root.route_name);
+                let path = route.mount_path.join(root.mount_name());
                 if let Ok(path) = path.canonicalize()
                     && canonical.starts_with(&path)
                 {
@@ -4453,12 +5081,22 @@ impl ControlPlane {
         route: &Route,
         root_id: WorkspaceRootId,
     ) -> Result<LocalWorkspace, String> {
-        let route_root = route
+        if !route.roots.contains_key(&root_key(root_id)) {
+            return Err("workspace route root is missing".to_owned());
+        }
+        let context = self
+            .distributed
+            .contexts()
+            .resolve(WorkspaceContextId::from_bytes(route.context_id))
+            .await
+            .map_err(display)?;
+        let workspace_id = context
             .roots
-            .get(&root_key(root_id))
-            .ok_or_else(|| "workspace route root is missing".to_owned())?;
+            .get(&root_id)
+            .ok_or_else(|| "workspace route root is absent from its core context".to_owned())?
+            .workspace_id;
         self.distributed
-            .workspace(acyclic_fs::WorkspaceId::from_bytes(route_root.workspace_id))
+            .workspace(workspace_id)
             .await
             .map_err(display)
     }
@@ -4487,11 +5125,12 @@ impl ControlPlane {
     }
 
     async fn mount_route(&self, route: &Route) -> Result<LocalMount, String> {
+        self.validate_route_paths(route)?;
         let mut roots = Vec::with_capacity(route.roots.len());
         for root in route.roots.values() {
             let root_id = WorkspaceRootId::from_bytes(root.root_id);
             roots.push((
-                root.route_name.clone(),
+                root.mount_name(),
                 self.lazy_workspace_root(route, root_id).await?,
             ));
         }
@@ -4514,13 +5153,19 @@ impl ControlPlane {
         physical
             .validate_path_identity(binding.path.clone())
             .await?;
-        let observation = physical.observe()?;
+        let observation = tokio::task::spawn_blocking({
+            let physical = Arc::clone(&physical);
+            move || physical.observe()
+        })
+        .await
+        .map_err(|error| format!("physical root observation worker failed: {error}"))??;
         let source_advanced_elsewhere = binding.source_epoch != observation.prior_source.epoch;
         if !observation.consumed_changes && !source_advanced_elsewhere {
             return Ok(());
         }
         #[cfg(test)]
-        if observation.consumed_changes && self.fail_after_watch_poll {
+        if (observation.consumed_changes || source_advanced_elsewhere) && self.fail_after_watch_poll
+        {
             self.fail_after_watch_poll = false;
             return Err("injected failure after shared watcher poll".to_owned());
         }
@@ -4530,11 +5175,7 @@ impl ControlPlane {
             .ok_or_else(|| "root workspace is unavailable".to_owned())?
             .workspace()
             .clone();
-        let root_identity = physical
-            .watcher
-            .lock()
-            .map_err(|_| "physical root watcher state is poisoned".to_owned())?
-            .root_identity();
+        let root_identity = physical.source.inner().root_identity();
         let limits = VolumeLimits::default();
         let capture = CaptureOptions {
             source_root: binding.path.clone(),
@@ -4649,9 +5290,6 @@ impl ControlPlane {
             .get_mut(&key)
             .ok_or_else(|| "physical root binding is missing".to_owned())?;
         binding.source_epoch = observation.source.epoch;
-        if self.state.root_id == root_id.into_bytes() {
-            self.state.root_source_epoch = observation.source.epoch;
-        }
         self.persist()
     }
 
@@ -4696,6 +5334,12 @@ impl ControlPlane {
     }
 
     async fn shutdown(mut self) -> Result<(), String> {
+        #[cfg(test)]
+        let root_released = if self.owns_local_root {
+            self.fs.local_root_release_barrier()
+        } else {
+            None
+        };
         let result = async {
             let operations = self.distributed.operations();
             let now = now_millis();
@@ -4771,14 +5415,36 @@ impl ControlPlane {
                     });
                 }
             }
+            let pending_mounts = std::mem::take(&mut self.pending_mounts);
+            for (key, mount) in pending_mounts {
+                if let Err(error) = mount.unmount().await {
+                    first_error.get_or_insert_with(|| {
+                        format!(
+                            "cannot unmount prepared spawn '{}' during shutdown: {error}",
+                            hex::encode(key)
+                        )
+                    });
+                }
+            }
             drop(operations);
             first_error.map_or(Ok(()), Err)
         }
         .await;
-        // Release and observe every durable provider even when reconciliation or mount teardown
-        // failed. Service shutdown may publish its result only after this physical ownership
-        // boundary, otherwise a replacement can race provider destruction.
+        // The shared service owns the physical root-release boundary. A standalone test control
+        // owns its root directly, so it waits here after dropping every provider handle.
         drop(self);
+        #[cfg(test)]
+        if let Some(barrier) = root_released {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while !barrier.is_released() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .map_err(|_| {
+                "standalone control retained filesystem handles after shutdown".to_owned()
+            })?;
+        }
         result
     }
 }
@@ -4826,7 +5492,7 @@ fn rewrite_tool_input(
                 Value::String(child.to_string_lossy().into_owned()),
             );
         }
-    } else if tool_name == "exec_command" {
+    } else if is_exec_command_tool(tool_name) {
         if let Some(object) = input.as_object_mut() {
             object.insert("workdir".to_owned(), Value::String(child_text.into_owned()));
         }
@@ -4882,9 +5548,7 @@ fn pre_tool_update(updated: Value) -> Value {
 }
 
 fn is_acyclic_cli_invocation(tool_name: &str, input: &Value) -> Result<bool, String> {
-    if !(matches!(tool_name, "Bash" | "PowerShell" | "exec_command")
-        || tool_name.ends_with("__exec_command"))
-    {
+    if !(matches!(tool_name, "Bash" | "PowerShell") || is_exec_command_tool(tool_name)) {
         return Ok(false);
     }
     let command = input
@@ -4991,8 +5655,7 @@ fn split_standalone_command(command: &str) -> Result<Vec<String>, String> {
 }
 
 fn validate_tool_paths(tool_name: &str, input: &Value, child: &Path) -> Result<(), String> {
-    if (matches!(tool_name, "Bash" | "PowerShell" | "exec_command")
-        || tool_name.ends_with("__exec_command"))
+    if (matches!(tool_name, "Bash" | "PowerShell") || is_exec_command_tool(tool_name))
         && let Some(command) = input
             .get("cmd")
             .or_else(|| input.get("command"))
@@ -5001,6 +5664,10 @@ fn validate_tool_paths(tool_name: &str, input: &Value, child: &Path) -> Result<(
         validate_shell_paths(command, child)?;
     }
     validate_structured_paths(input, None, child)
+}
+
+fn is_exec_command_tool(tool_name: &str) -> bool {
+    tool_name == "exec_command" || tool_name.ends_with("__exec_command")
 }
 
 fn validate_structured_paths(value: &Value, key: Option<&str>, child: &Path) -> Result<(), String> {
@@ -5189,7 +5856,7 @@ async fn open_lazy_source(
         Some(reference) => {
             NativeDemandSource::open_with_reference_and_observer(
                 root,
-                acyclic_fs::model::FilesystemProfile::Portable,
+                native_filesystem_profile(),
                 limits,
                 reference,
                 observer,
@@ -5199,7 +5866,7 @@ async fn open_lazy_source(
         None => {
             NativeDemandSource::open_with_observer(
                 root,
-                acyclic_fs::model::FilesystemProfile::Portable,
+                native_filesystem_profile(),
                 limits,
                 observer,
             )
@@ -5220,7 +5887,7 @@ async fn open_lazy_source(
 fn open_native_watcher(root: &Path) -> Result<Arc<Mutex<NativeWatch>>, String> {
     let mut watcher = NativeWatch::open_with_profile(
         root,
-        acyclic_fs::model::FilesystemProfile::Portable,
+        native_filesystem_profile(),
         NativeWatchOptions {
             limits: VolumeLimits::default(),
             maximum_queued_changes: 65_536,
@@ -5232,6 +5899,21 @@ fn open_native_watcher(root: &Path) -> Result<Arc<Mutex<NativeWatch>>, String> {
     .map_err(display)?;
     watcher.accept_lazy_baseline().map_err(display)?;
     Ok(Arc::new(Mutex::new(watcher)))
+}
+
+const fn native_filesystem_profile() -> FilesystemProfile {
+    if cfg!(windows) {
+        FilesystemProfile::Windows
+    } else {
+        FilesystemProfile::Posix
+    }
+}
+
+fn native_volume_config() -> VolumeConfig {
+    VolumeConfig {
+        profile: native_filesystem_profile(),
+        ..VolumeConfig::portable(Lifecycle::Durable)
+    }
 }
 
 fn verify_native_root_identity(
@@ -5283,7 +5965,7 @@ fn agent_change_filter(
     let candidate = Path::new(path);
     let relative = if candidate.is_absolute() {
         candidate
-            .strip_prefix(route.mount_path.join(&root.route_name))
+            .strip_prefix(route.mount_path.join(root.mount_name()))
             .map_err(|_| "the selected path is outside the inspected workspace root".to_owned())?
             .to_path_buf()
     } else {
@@ -5320,9 +6002,9 @@ fn namespace_path_text(path: &NamespacePath) -> Result<String, String> {
         .components()
         .iter()
         .map(|name| match name.encoding() {
-            NameEncoding::Utf8 => std::str::from_utf8(name.as_bytes())
+            NameEncoding::Utf8 | NameEncoding::PosixBytes => std::str::from_utf8(name.as_bytes())
                 .map(str::to_owned)
-                .map_err(display),
+                .map_err(|_| "non-UTF-8 path cannot be presented to an agent".to_owned()),
             NameEncoding::WindowsUtf16Le => {
                 let units = name
                     .as_bytes()
@@ -5332,9 +6014,6 @@ fn namespace_path_text(path: &NamespacePath) -> Result<String, String> {
                 char::decode_utf16(units)
                     .collect::<Result<String, _>>()
                     .map_err(display)
-            }
-            NameEncoding::PosixBytes => {
-                Err("non-UTF-8 path cannot be presented to an agent".to_owned())
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -5358,12 +6037,66 @@ fn is_filesystem_tool(tool_name: &str) -> bool {
         || tool_name.starts_with("mcp__acyclic__")
 }
 
-fn is_pure_remote_tool(tool_name: &str) -> bool {
-    tool_name.starts_with("web__")
-        || ((tool_name.starts_with("collaboration.") || tool_name.starts_with("collaboration"))
-            && !is_spawn_tool(tool_name))
-        || tool_name.starts_with("mcp__codex_app__")
-        || matches!(tool_name, "send_message" | "wait_agent" | "list_agents")
+fn is_known_non_filesystem_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "web__run"
+            | "web.run"
+            | "webrun"
+            | "collaboration.followup_task"
+            | "collaboration.interrupt_agent"
+            | "collaboration.list_agents"
+            | "collaboration.send_message"
+            | "collaboration.wait_agent"
+            | "collaborationfollowup_task"
+            | "collaborationinterrupt_agent"
+            | "collaborationlist_agents"
+            | "collaborationsend_message"
+            | "collaborationwait_agent"
+            | "followup_task"
+            | "interrupt_agent"
+            | "list_agents"
+            | "send_message"
+            | "wait_agent"
+            | "get_goal"
+            | "functions.get_goal"
+            | "functionsget_goal"
+            | "update_goal"
+            | "functions.update_goal"
+            | "functionsupdate_goal"
+            | "request_user_input"
+            | "functions.request_user_input"
+            | "functionsrequest_user_input"
+            | "mcp__codex_app__attach_artifact"
+            | "mcp__codex_app__automation_update"
+            | "mcp__codex_app__capture_screen_context"
+            | "mcp__codex_app__consume_usage_reset"
+            | "mcp__codex_app__create_sidebar_section"
+            | "mcp__codex_app__delete_sidebar_section"
+            | "mcp__codex_app__end_realtime_voice_call"
+            | "mcp__codex_app__get_handoff_status"
+            | "mcp__codex_app__get_usage_limits"
+            | "mcp__codex_app__list_archived_threads"
+            | "mcp__codex_app__list_artifacts"
+            | "mcp__codex_app__list_projects"
+            | "mcp__codex_app__list_threads"
+            | "mcp__codex_app__load_workspace_dependencies"
+            | "mcp__codex_app__move_project_to_sidebar_section"
+            | "mcp__codex_app__move_thread_to_sidebar_section"
+            | "mcp__codex_app__navigate_to_codex_page"
+            | "mcp__codex_app__read_thread"
+            | "mcp__codex_app__read_thread_terminal"
+            | "mcp__codex_app__remove_artifact"
+            | "mcp__codex_app__rename_sidebar_section"
+            | "mcp__codex_app__reorder_section"
+            | "mcp__codex_app__reorder_sidebar_projects"
+            | "mcp__codex_app__reorder_sidebar_sections"
+            | "mcp__codex_app__send_message_to_thread"
+            | "mcp__codex_app__set_thread_archived"
+            | "mcp__codex_app__set_thread_title"
+            | "mcp__codex_app__share_thread"
+            | "mcp__codex_app__wait_threads"
+    )
 }
 
 fn is_spawn_tool(tool_name: &str) -> bool {
@@ -5434,7 +6167,13 @@ fn rewrite_relative_tool_paths(
 }
 
 fn rewrite_patch_header(line: &str, child: &Path) -> Result<String, String> {
-    for prefix in ["*** Add File: ", "*** Update File: ", "*** Delete File: "] {
+    for prefix in [
+        "*** Add File: ",
+        "*** Update File: ",
+        "*** Delete File: ",
+        "*** Move to: ",
+        "*** Copy to: ",
+    ] {
         if let Some(path) = line.strip_prefix(prefix) {
             let path = Path::new(path);
             if path
@@ -5473,6 +6212,7 @@ fn subagent_context(path: &Path) -> Value {
 }
 
 const MAXIMUM_ADAPTER_STATE_BYTES: u64 = 4 * 1024 * 1024;
+const ADAPTER_STATE_VERSION: u32 = 4;
 const MAXIMUM_ADAPTER_ROOTS: usize = 256;
 const MAXIMUM_ADAPTER_ROUTES: usize = 4_096;
 const MAXIMUM_ADAPTER_TURNS: usize = 16_384;
@@ -5486,10 +6226,20 @@ fn load_state(data: &Path) -> Result<AdapterState, String> {
     let previous = data.join("adapter-state.previous.json");
     match read_state(&path) {
         Ok(Some(state)) => Ok(state),
-        Ok(None) | Err(_) => match read_state(&previous) {
+        Ok(None) => match read_state(&previous) {
             Ok(Some(state)) => Ok(state),
-            Ok(None) => Ok(AdapterState::default()),
+            Ok(None) => Ok(AdapterState {
+                version: ADAPTER_STATE_VERSION,
+                ..AdapterState::default()
+            }),
             Err(error) => Err(error),
+        },
+        Err(current_error) => match read_state(&previous) {
+            Ok(Some(state)) => Ok(state),
+            Ok(None) => Err(current_error),
+            Err(previous_error) => Err(format!(
+                "current adapter state is invalid: {current_error}; previous adapter state is invalid: {previous_error}"
+            )),
         },
     }
 }
@@ -5503,6 +6253,7 @@ fn save_state_with_rename(
     state: &AdapterState,
     mut rename: impl FnMut(&Path, &Path, RenameMode) -> io::Result<()>,
 ) -> Result<(), String> {
+    validate_state_version(state)?;
     validate_state_bounds(state)?;
     let mut serialized = BoundedJsonBuffer::new();
     serde_json::to_writer(&mut serialized, state).map_err(|_| {
@@ -5547,6 +6298,7 @@ fn read_state(path: &Path) -> Result<Option<AdapterState>, String> {
                 ));
             }
             let state = serde_json::from_slice(&bytes).map_err(display)?;
+            validate_state_version(&state)?;
             validate_state_bounds(&state)?;
             Ok(Some(state))
         }
@@ -5555,9 +6307,25 @@ fn read_state(path: &Path) -> Result<Option<AdapterState>, String> {
     }
 }
 
+fn validate_state_version(state: &AdapterState) -> Result<(), String> {
+    if state.version == ADAPTER_STATE_VERSION {
+        Ok(())
+    } else {
+        Err(format!(
+            "unsupported Acyclic adapter state version {}; expected {ADAPTER_STATE_VERSION}. Leave the old store untouched or remove it manually",
+            state.version
+        ))
+    }
+}
+
 fn validate_state_bounds(state: &AdapterState) -> Result<(), String> {
     for (name, observed, maximum) in [
         ("roots", state.roots.len(), MAXIMUM_ADAPTER_ROOTS),
+        (
+            "pending root adoptions",
+            state.pending_root_adoptions.len(),
+            MAXIMUM_ADAPTER_ROOTS,
+        ),
         ("routes", state.routes.len(), MAXIMUM_ADAPTER_ROUTES),
         ("turns", state.turns.len(), MAXIMUM_ADAPTER_TURNS),
         (
@@ -5583,10 +6351,51 @@ fn validate_state_bounds(state: &AdapterState) -> Result<(), String> {
             ));
         }
     }
+    if !state
+        .pending_root_adoptions
+        .iter()
+        .all(|key| state.roots.contains_key(key))
+    {
+        return Err("pending root adoption has no durable binding".to_owned());
+    }
+    if state
+        .roots
+        .iter()
+        .any(|(key, root)| key != &root_key(WorkspaceRootId::from_bytes(root.root_id)))
+        || state.routes.values().any(|route| {
+            route
+                .roots
+                .iter()
+                .any(|(key, root)| key != &root_key(WorkspaceRootId::from_bytes(root.root_id)))
+        })
+        || state.leases.values().any(|lease| {
+            lease
+                .roots
+                .iter()
+                .any(|(key, root)| key != &root_key(WorkspaceRootId::from_bytes(root.root_id)))
+        })
+    {
+        return Err("adapter root map key differs from its typed root identity".to_owned());
+    }
+    if state.pending_root_registration
+        && (state.root_session_id.is_empty()
+            || state.root_id == [0; 16]
+            || state.root_context_id == [0; 16]
+            || state.roots.len() != 1
+            || !state
+                .roots
+                .contains_key(&root_key(WorkspaceRootId::from_bytes(state.root_id))))
+    {
+        return Err("pending root registration is incomplete".to_owned());
+    }
     if state
         .routes
         .values()
         .any(|route| route.roots.len() > MAXIMUM_ADAPTER_ROOTS)
+        || state
+            .pending
+            .iter()
+            .any(|pending| pending.roots.len() > MAXIMUM_ADAPTER_ROOTS)
         || state
             .leases
             .values()
@@ -5594,10 +6403,36 @@ fn validate_state_bounds(state: &AdapterState) -> Result<(), String> {
     {
         return Err("adapter route or lease exceeds the root bound".to_owned());
     }
+    if state.pending.iter().any(|pending| {
+        let pending_key = pending.mount_name();
+        pending
+            .mount_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(pending_key.as_str())
+            || pending
+                .mount_path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                != Some("w")
+            || pending
+                .roots
+                .iter()
+                .any(|(key, root)| key != &root_key(root.id()))
+            || (pending.lifecycle == PendingSpawnLifecycle::Preparing && !pending.roots.is_empty())
+            || (matches!(
+                pending.lifecycle,
+                PendingSpawnLifecycle::Mounting | PendingSpawnLifecycle::Prepared
+            ) && pending.roots.is_empty())
+    }) {
+        return Err("adapter pending spawn is structurally invalid".to_owned());
+    }
     if state.pending_discards.values().any(|discard| {
         discard.agents.len() > MAXIMUM_ADAPTER_ROUTES
             || discard.agents.iter().any(|agent| {
-                agent.repository_workspace_ids.len() > MAXIMUM_ADAPTER_ROOTS
+                agent.repository_workspace_ids.is_empty()
+                    || agent.repository_workspace_ids.len() > MAXIMUM_ADAPTER_ROOTS
                     || agent.workspaces.len() > MAXIMUM_ADAPTER_ROOTS
             })
     }) {
@@ -5654,6 +6489,10 @@ fn short_hash(bytes: &[u8]) -> String {
     hex::encode(&blake3::hash(bytes).as_bytes()[..12])
 }
 
+fn compact_id(bytes: &[u8; 16]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
 fn root_key(root_id: WorkspaceRootId) -> String {
     hex::encode(root_id.into_bytes())
 }
@@ -5670,8 +6509,7 @@ fn repository_id(
 }
 
 fn route_name(root_id: WorkspaceRootId) -> String {
-    let key = root_key(root_id);
-    format!("root-{}", key.get(..12).unwrap_or(&key))
+    format!("r{}", compact_id(&root_id.into_bytes()))
 }
 
 fn derived_idempotency_key(fork_key: IdempotencyKey, root_id: WorkspaceRootId) -> IdempotencyKey {
@@ -5684,19 +6522,31 @@ fn derived_idempotency_key(fork_key: IdempotencyKey, root_id: WorkspaceRootId) -
     IdempotencyKey::from_bytes(bytes)
 }
 
+fn derived_cleanup_key(fork_key: [u8; 16], root_id: WorkspaceRootId) -> IdempotencyKey {
+    let mut input = Vec::with_capacity(39);
+    input.extend_from_slice(&fork_key);
+    input.extend_from_slice(&root_id.into_bytes());
+    input.extend_from_slice(b"discard");
+    let digest = blake3::hash(&input);
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(digest.as_bytes().get(..16).unwrap_or(digest.as_bytes()));
+    IdempotencyKey::from_bytes(bytes)
+}
+
 fn root_materialization_root(root: &Path) -> Result<PathBuf, String> {
+    let digest = blake3::hash(root.as_os_str().to_string_lossy().as_bytes());
     Ok(root
         .parent()
         .ok_or_else(|| "root checkout has no same-filesystem staging parent".to_owned())?
-        .join(".acyclic-workspace-materializations")
-        .join(short_hash(root.as_os_str().to_string_lossy().as_bytes())))
+        .join(".acyclic-m")
+        .join(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&digest.as_bytes()[..16])))
 }
 
 fn root_materialization_directory(
     root: &Path,
     operation_id: OperationId,
 ) -> Result<PathBuf, String> {
-    Ok(root_materialization_root(root)?.join(hex::encode(operation_id.into_bytes())))
+    Ok(root_materialization_root(root)?.join(compact_id(&operation_id.into_bytes())))
 }
 
 fn conflict_json(conflict: &MergeConflict) -> Value {
@@ -5760,8 +6610,12 @@ fn public_tools(commandless: bool) -> Value {
 }
 
 const MAXIMUM_CONTROL_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+const MAXIMUM_CONCURRENT_CONTROL_REQUESTS: usize = 64;
 #[cfg(any(test, not(target_os = "linux")))]
 const CONTROL_RESPONSE_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+const CONTROL_PROBE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+const CONTROL_HOOK_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+const CONTROL_COMMAND_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -5776,7 +6630,7 @@ enum ControlCommand {
     Discard,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct ControlRequest {
     version: u32,
     command: ControlCommand,
@@ -5787,6 +6641,24 @@ struct ControlRequest {
     name: String,
     #[serde(default)]
     arguments: Value,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct CliRouting {
+    selected_cwd: PathBuf,
+}
+
+fn cli_routing(selected_cwd: PathBuf) -> Value {
+    json!(CliRouting { selected_cwd })
+}
+
+fn selected_cli_cwd(request: &ControlRequest) -> Result<PathBuf, String> {
+    if request.arguments.is_null() {
+        return request.cwd.canonicalize().map_err(display);
+    }
+    let routing: CliRouting = serde_json::from_value(request.arguments.clone()).map_err(display)?;
+    routing.selected_cwd.canonicalize().map_err(display)
 }
 
 struct ControlEndpoint {
@@ -5823,10 +6695,11 @@ impl ControlEndpoint {
 }
 
 async fn start_control_endpoint(
-    control: Arc<AsyncMutex<impl ControlRequestDispatcher + 'static>>,
+    control: Arc<impl ConcurrentControlRequestDispatcher + 'static>,
     data: &Path,
 ) -> Result<ControlEndpoint, String> {
     fs::create_dir_all(data).map_err(display)?;
+    let ledger = Arc::new(ControlLedger::open(data)?);
     #[cfg(windows)]
     let opaque_id = short_hash(data.as_os_str().to_string_lossy().as_bytes());
     let (shutdown, receiver) = watch::channel(false);
@@ -5839,6 +6712,7 @@ async fn start_control_endpoint(
         let task = tokio::spawn(serve_linux_control_mailbox(
             mailbox_path.clone(),
             control,
+            ledger,
             shutdown.clone(),
             receiver,
         ));
@@ -5862,6 +6736,7 @@ async fn start_control_endpoint(
         let task = tokio::spawn(serve_unix_control(
             listener,
             control,
+            ledger,
             shutdown.clone(),
             receiver,
             #[cfg(test)]
@@ -5884,6 +6759,7 @@ async fn start_control_endpoint(
         let task = tokio::spawn(serve_windows_control(
             pipe_path,
             control,
+            ledger,
             shutdown.clone(),
             receiver,
             #[cfg(test)]
@@ -5930,29 +6806,53 @@ fn prepare_linux_control_mailbox(data: &Path) -> Result<PathBuf, String> {
 #[cfg(target_os = "linux")]
 async fn serve_linux_control_mailbox(
     mailbox: PathBuf,
-    control: Arc<AsyncMutex<impl ControlRequestDispatcher + 'static>>,
+    control: Arc<impl ConcurrentControlRequestDispatcher + 'static>,
+    ledger: Arc<ControlLedger>,
     shutdown_sender: watch::Sender<bool>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let (events, mut notifications) = tokio::sync::mpsc::unbounded_channel();
-    let mut watcher = notify::recommended_watcher(move |event| {
-        let _ = events.send(event);
+    let notification = Arc::new(tokio::sync::Notify::new());
+    let watcher_notification = Arc::clone(&notification);
+    let (watch_error, mut watch_errors) = watch::channel(None::<String>);
+    let mut watcher = notify::recommended_watcher(move |event| match event {
+        Ok(_) => watcher_notification.notify_one(),
+        Err(error) => {
+            let _ = watch_error.send(Some(display(error)));
+        }
     })
     .map_err(display)?;
     watcher
         .watch(&mailbox, notify::RecursiveMode::Recursive)
         .map_err(display)?;
+    let mailbox_directory = Arc::new(
+        rustix::fs::open(
+            &mailbox,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(display)?,
+    );
 
-    let result = loop {
-        if !process_linux_mailbox_requests(&mailbox, &control, &mut shutdown).await? {
-            break Ok(());
-        }
+    let mut requests = tokio::task::JoinSet::new();
+    let mut result = loop {
+        claim_linux_mailbox_requests(&mailbox_directory, &control, &ledger, &mut requests).await?;
         tokio::select! {
-            event = notifications.recv() => {
-                match event {
-                    Some(Ok(_)) => {}
-                    Some(Err(error)) => break Err(display(error)),
-                    None => break Err("Acyclic mailbox watcher stopped".to_owned()),
+            () = notification.notified() => {}
+            completed = requests.join_next(), if !requests.is_empty() => {
+                match completed {
+                    Some(Ok(_)) | None => {}
+                    Some(Err(error)) => break Err(format!("Acyclic mailbox request task failed: {error}")),
+                }
+            }
+            changed = watch_errors.changed() => {
+                if changed.is_err() {
+                    break Err("Acyclic mailbox watcher stopped".to_owned());
+                }
+                if let Some(error) = watch_errors.borrow().clone() {
+                    break Err(error);
                 }
             }
             changed = shutdown.changed() => {
@@ -5963,58 +6863,174 @@ async fn serve_linux_control_mailbox(
         }
     };
     let _ = shutdown_sender.send(true);
+    while let Some(completed) = requests.join_next().await {
+        if result.is_ok() {
+            result = match completed {
+                Ok(_) => Ok(()),
+                Err(error) => Err(format!("Acyclic mailbox request task failed: {error}")),
+            };
+        }
+    }
     result
 }
 
 #[cfg(target_os = "linux")]
-async fn process_linux_mailbox_requests(
-    mailbox: &Path,
-    control: &Arc<AsyncMutex<impl ControlRequestDispatcher>>,
-    shutdown: &mut watch::Receiver<bool>,
-) -> Result<bool, String> {
-    let mut entries = fs::read_dir(mailbox)
-        .map_err(display)?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .collect::<Vec<_>>();
-    entries.sort_by_key(fs::DirEntry::file_name);
-    for entry in entries {
-        let request_path = entry.path().join("request");
-        let claimed_path = entry.path().join("processing");
-        match fs::rename(&request_path, &claimed_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(display(error)),
-        }
-        let response = match fs::read(&claimed_path) {
-            Ok(request) if request.len() <= MAXIMUM_CONTROL_MESSAGE_BYTES => {
-                match serde_json::from_slice::<ControlRequest>(&request) {
-                    Ok(request) => tokio::select! {
-                        result = dispatch_control_request(control, request) => {
-                            control_response(result)
-                        }
-                        changed = shutdown.changed() => {
-                            let _ = changed;
-                            return Ok(false);
-                        }
-                    },
-                    Err(error) => {
-                        control_response(Err(format!("invalid Acyclic control request: {error}")))
-                    }
-                }
+async fn claim_linux_mailbox_requests(
+    mailbox_directory: &Arc<rustix::fd::OwnedFd>,
+    control: &Arc<impl ConcurrentControlRequestDispatcher + 'static>,
+    ledger: &Arc<ControlLedger>,
+    requests: &mut tokio::task::JoinSet<Result<(), String>>,
+) -> Result<(), String> {
+    let directory = Arc::clone(mailbox_directory);
+    let entries = tokio::task::spawn_blocking(move || {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let mut entries = Vec::new();
+        let directory = rustix::fs::Dir::read_from(&*directory).map_err(display)?;
+        for entry in directory {
+            let entry = entry.map_err(display)?;
+            let name = entry.file_name().to_bytes();
+            if name != b"." && name != b".." && entry.file_type().is_dir() {
+                entries.push(std::ffi::OsString::from_vec(name.to_vec()));
             }
-            Ok(_) => control_response(Err(
-                "Acyclic control request exceeds the 4 MiB bound".to_owned()
-            )),
-            Err(error) => control_response(Err(display(error))),
+        }
+        entries.sort();
+        Ok::<_, String>(entries)
+    })
+    .await
+    .map_err(display)??;
+    for name in entries {
+        if requests.len() >= MAXIMUM_CONCURRENT_CONTROL_REQUESTS {
+            break;
+        }
+        let exchange = match rustix::fs::openat(
+            &**mailbox_directory,
+            &name,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        ) {
+            Ok(exchange) => Arc::new(exchange),
+            Err(_) => continue,
         };
-        let encoded = encode_control_response(&response)?;
-        let response_path = entry.path().join("response");
-        let pending_response_path = entry.path().join("response.pending");
-        fs::write(&pending_response_path, encoded).map_err(display)?;
-        fs::rename(pending_response_path, response_path).map_err(display)?;
+        match rustix::fs::renameat(&*exchange, "request", &*exchange, "processing") {
+            Ok(()) => {}
+            Err(_) => continue,
+        }
+        let control = Arc::clone(control);
+        let ledger = Arc::clone(ledger);
+        requests
+            .spawn(async move { handle_linux_mailbox_request(exchange, control, ledger).await });
     }
-    Ok(true)
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn handle_linux_mailbox_request(
+    exchange: Arc<rustix::fd::OwnedFd>,
+    control: Arc<impl ConcurrentControlRequestDispatcher>,
+    ledger: Arc<ControlLedger>,
+) -> Result<(), String> {
+    let response = match read_linux_control_file_at(&exchange, "processing").await {
+        Ok(request) if request.len() <= MAXIMUM_CONTROL_MESSAGE_BYTES => {
+            match serde_json::from_slice::<ControlEnvelope<ControlRequest>>(&request) {
+                Ok(envelope) => dispatch_control_envelope(&control, &ledger, envelope).await,
+                Err(error) => invalid_control_request_response(&request, &error),
+            }
+        }
+        Ok(_) => uncorrelated_control_response("Acyclic control request exceeds the 4 MiB bound"),
+        Err(error) => uncorrelated_control_response(&display(error)),
+    };
+    let encoded = encode_control_response(&response)?;
+    let Ok(response_file) = rustix::fs::openat(
+        &*exchange,
+        "response.pending",
+        rustix::fs::OFlags::WRONLY
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::EXCL
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    ) else {
+        return Ok(());
+    };
+    let mut response_file = tokio::fs::File::from_std(std::fs::File::from(response_file));
+    if response_file.write_all(&encoded).await.is_err() || response_file.flush().await.is_err() {
+        return Ok(());
+    }
+    drop(response_file);
+    let _ = rustix::fs::renameat(&*exchange, "response.pending", &*exchange, "response");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn read_linux_control_file_at(
+    directory: &rustix::fd::OwnedFd,
+    name: &str,
+) -> io::Result<Vec<u8>> {
+    let file = rustix::fs::openat(
+        directory,
+        name,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(errno_to_io)?;
+    let metadata = rustix::fs::fstat(&file).map_err(errno_to_io)?;
+    if !rustix::fs::FileType::from_raw_mode(metadata.st_mode).is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Acyclic control message is not a regular file",
+        ));
+    }
+    let file = tokio::fs::File::from_std(std::fs::File::from(file));
+    let mut request = Vec::with_capacity(MAXIMUM_CONTROL_MESSAGE_BYTES.min(64 * 1024));
+    file.take(
+        u64::try_from(MAXIMUM_CONTROL_MESSAGE_BYTES)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1),
+    )
+    .read_to_end(&mut request)
+    .await?;
+    Ok(request)
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+struct LinuxMailboxExchange {
+    mailbox: Arc<rustix::fd::OwnedFd>,
+    exchange: Option<Arc<rustix::fd::OwnedFd>>,
+    name: String,
+}
+
+#[cfg(target_os = "linux")]
+fn remove_linux_mailbox_exchange(exchange: &LinuxMailboxExchange) {
+    if let Some(directory) = &exchange.exchange {
+        for name in [
+            "request.pending",
+            "request",
+            "processing",
+            "response.pending",
+            "response",
+        ] {
+            let _ = rustix::fs::unlinkat(&**directory, name, rustix::fs::AtFlags::empty());
+        }
+    }
+    let _ = rustix::fs::unlinkat(
+        &*exchange.mailbox,
+        &exchange.name,
+        rustix::fs::AtFlags::REMOVEDIR,
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn errno_to_io(error: rustix::io::Errno) -> io::Error {
+    io::Error::from_raw_os_error(error.raw_os_error())
 }
 
 #[cfg(unix)]
@@ -6092,7 +7108,8 @@ fn prepare_unix_control_runtime_directory() -> Result<PathBuf, String> {
 #[cfg(all(unix, not(target_os = "linux")))]
 async fn serve_unix_control(
     listener: tokio::net::UnixListener,
-    control: Arc<AsyncMutex<impl ControlRequestDispatcher + 'static>>,
+    control: Arc<impl ConcurrentControlRequestDispatcher + 'static>,
+    ledger: Arc<ControlLedger>,
     shutdown_sender: watch::Sender<bool>,
     mut shutdown: watch::Receiver<bool>,
     #[cfg(test)] accepted: Arc<tokio::sync::Notify>,
@@ -6100,7 +7117,7 @@ async fn serve_unix_control(
     let mut connections = tokio::task::JoinSet::new();
     let result = loop {
         tokio::select! {
-            incoming = listener.accept() => {
+            incoming = listener.accept(), if connections.len() < MAXIMUM_CONCURRENT_CONTROL_REQUESTS => {
                 let (stream, _) = match incoming {
                     Ok(accepted) => accepted,
                     Err(error) => break Err(display(error)),
@@ -6109,9 +7126,10 @@ async fn serve_unix_control(
                     continue;
                 }
                 let control = Arc::clone(&control);
+                let ledger = Arc::clone(&ledger);
                 let connection_shutdown = shutdown.clone();
                 connections.spawn(async move {
-                    let _ = handle_control_connection(stream, control, connection_shutdown).await;
+                    let _ = handle_control_connection(stream, control, ledger, connection_shutdown).await;
                 });
                 #[cfg(test)]
                 accepted.notify_one();
@@ -6149,7 +7167,8 @@ fn same_user_peer(stream: &tokio::net::UnixStream) -> Result<bool, String> {
 #[cfg(windows)]
 async fn serve_windows_control(
     pipe_path: String,
-    control: Arc<AsyncMutex<impl ControlRequestDispatcher + 'static>>,
+    control: Arc<impl ConcurrentControlRequestDispatcher + 'static>,
+    ledger: Arc<ControlLedger>,
     shutdown_sender: watch::Sender<bool>,
     mut shutdown: watch::Receiver<bool>,
     #[cfg(test)] accepted: Arc<tokio::sync::Notify>,
@@ -6165,7 +7184,7 @@ async fn serve_windows_control(
         first = false;
         let connected = loop {
             tokio::select! {
-                connected = server.connect() => break connected,
+                connected = server.connect(), if connections.len() < MAXIMUM_CONCURRENT_CONTROL_REQUESTS => break connected,
                 completed = connections.join_next(), if !connections.is_empty() => {
                     let _ = completed;
                 }
@@ -6180,9 +7199,10 @@ async fn serve_windows_control(
             break Err(display(error));
         }
         let control = Arc::clone(&control);
+        let ledger = Arc::clone(&ledger);
         let connection_shutdown = shutdown.clone();
         connections.spawn(async move {
-            let _ = handle_control_connection(server, control, connection_shutdown).await;
+            let _ = handle_control_connection(server, control, ledger, connection_shutdown).await;
         });
         #[cfg(test)]
         accepted.notify_one();
@@ -6252,7 +7272,8 @@ fn create_current_user_pipe(
 #[cfg(any(test, not(target_os = "linux")))]
 async fn handle_control_connection<S>(
     mut stream: S,
-    control: Arc<AsyncMutex<impl ControlRequestDispatcher + 'static>>,
+    control: Arc<impl ConcurrentControlRequestDispatcher + 'static>,
+    ledger: Arc<ControlLedger>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String>
 where
@@ -6278,20 +7299,14 @@ where
     }
     let dispatch = async {
         if request.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
-            control_response(Err(
-                "Acyclic control request exceeds the 4 MiB bound".to_owned()
-            ))
+            uncorrelated_control_response("Acyclic control request exceeds the 4 MiB bound")
         } else if request.last() != Some(&b'\n') {
-            control_response(Err(
-                "Acyclic control request must end with a newline".to_owned()
-            ))
+            uncorrelated_control_response("Acyclic control request must end with a newline")
         } else {
             request.pop();
-            match serde_json::from_slice::<ControlRequest>(&request) {
-                Ok(request) => control_response(dispatch_control_request(&control, request).await),
-                Err(error) => {
-                    control_response(Err(format!("invalid Acyclic control request: {error}")))
-                }
+            match serde_json::from_slice::<ControlEnvelope<ControlRequest>>(&request) {
+                Ok(envelope) => dispatch_control_envelope(&control, &ledger, envelope).await,
+                Err(error) => invalid_control_request_response(&request, &error),
             }
         }
     };
@@ -6301,7 +7316,10 @@ where
         response = &mut dispatch => response,
         peer = stream.read(&mut peer_byte) => {
             match peer {
-                Ok(0) => return Ok(()),
+                Ok(0) => {
+                    let _ = dispatch.await;
+                    return Ok(());
+                }
                 Ok(_) => return Err("Acyclic control request included trailing bytes".to_owned()),
                 Err(error) if matches!(
                     error.kind(),
@@ -6309,13 +7327,12 @@ where
                         | io::ErrorKind::ConnectionAborted
                         | io::ErrorKind::ConnectionReset
                         | io::ErrorKind::UnexpectedEof
-                ) => return Ok(()),
+                ) => {
+                    let _ = dispatch.await;
+                    return Ok(());
+                }
                 Err(error) => return Err(display(error)),
             }
-        }
-        changed = shutdown.changed() => {
-            let _ = changed;
-            return Ok(());
         }
     };
     let encoded = encode_control_response(&response)?;
@@ -6324,27 +7341,77 @@ where
         stream.write_all(b"\n").await.map_err(display)?;
         stream.flush().await.map_err(display)
     };
-    tokio::pin!(write);
-    tokio::select! {
-        result = &mut write => result,
-        changed = shutdown.changed() => {
-            let _ = changed;
-            tokio::time::timeout(CONTROL_RESPONSE_DRAIN_GRACE, &mut write)
-                .await
-                .unwrap_or(Ok(()))
-        }
-    }
+    tokio::time::timeout(CONTROL_RESPONSE_DRAIN_GRACE, write)
+        .await
+        .map_err(|_| "Acyclic control response exceeded its drain deadline".to_owned())?
 }
 
 async fn dispatch_control_request(
-    control: &Arc<AsyncMutex<impl ControlRequestDispatcher>>,
+    control: &Arc<impl ConcurrentControlRequestDispatcher>,
     request: ControlRequest,
 ) -> Result<Value, String> {
     if request.version != 1 {
         return Err("unsupported Acyclic control request".to_owned());
     }
-    let mut control = control.lock().await;
     control.dispatch_request(request).await
+}
+
+async fn dispatch_control_envelope(
+    control: &Arc<impl ConcurrentControlRequestDispatcher>,
+    ledger: &Arc<ControlLedger>,
+    envelope: ControlEnvelope<ControlRequest>,
+) -> Value {
+    let request_id = envelope.request_id.clone();
+    if let Err(error) = envelope.validate() {
+        return control_response_for(&request_id, Err(error));
+    }
+    if matches!(
+        envelope.request.command,
+        ControlCommand::Ping | ControlCommand::Doctor | ControlCommand::Agents
+    ) {
+        return control_response_for(
+            &request_id,
+            dispatch_control_request(control, envelope.request).await,
+        );
+    }
+    let begin = {
+        let ledger = Arc::clone(ledger);
+        let envelope = envelope.clone();
+        tokio::task::spawn_blocking(move || ledger.begin(&envelope)).await
+    };
+    match begin {
+        Err(error) => control_response_for(
+            &request_id,
+            Err(format!("Acyclic control replay worker failed: {error}")),
+        ),
+        Ok(Err(error)) => control_response_for(&request_id, Err(error)),
+        Ok(Ok(LedgerDecision::Completed(response))) => response,
+        Ok(Ok(LedgerDecision::Execute)) => {
+            let result = dispatch_control_request(control, envelope.request.clone()).await;
+            let response = control_response_for(&request_id, result);
+            let completion = {
+                let ledger = Arc::clone(ledger);
+                let envelope = envelope.clone();
+                let response = response.clone();
+                tokio::task::spawn_blocking(move || ledger.complete(&envelope, response)).await
+            };
+            match completion {
+                Err(error) => control_response_for(
+                    &request_id,
+                    Err(format!(
+                        "Acyclic completed the operation but its replay worker failed: {error}"
+                    )),
+                ),
+                Ok(Ok(())) => response,
+                Ok(Err(error)) => control_response_for(
+                    &request_id,
+                    Err(format!(
+                        "Acyclic completed the operation but could not durably record its response: {error}"
+                    )),
+                ),
+            }
+        }
+    }
 }
 
 trait ControlRequestDispatcher: Send {
@@ -6354,38 +7421,49 @@ trait ControlRequestDispatcher: Send {
     ) -> impl std::future::Future<Output = Result<Value, String>> + Send;
 }
 
-struct ServiceControl {
+trait ConcurrentControlRequestDispatcher: Send + Sync {
+    fn dispatch_request(
+        &self,
+        request: ControlRequest,
+    ) -> impl std::future::Future<Output = Result<Value, String>> + Send;
+}
+
+impl<T: ControlRequestDispatcher + Send> ConcurrentControlRequestDispatcher for AsyncMutex<T> {
+    async fn dispatch_request(&self, request: ControlRequest) -> Result<Value, String> {
+        self.lock().await.dispatch_request(request).await
+    }
+}
+
+#[derive(Clone)]
+struct ServiceResources {
     data: PathBuf,
     fs: LocalFs,
     store: LocalCoreStateStore,
     shared_roots: SharedRootRegistry,
-    sessions: BTreeMap<String, ControlPlane>,
     binary_identity: String,
     instance_id: String,
     upgrade: Arc<tokio::sync::Notify>,
     drain_id: Arc<Mutex<Option<String>>>,
 }
 
-impl ServiceControl {
-    async fn open(data: PathBuf) -> Result<Self, String> {
+impl ServiceResources {
+    async fn open(data: PathBuf) -> Result<(Self, BTreeMap<String, ControlPlane>), String> {
         fs::create_dir_all(data.join("sessions")).map_err(display)?;
         let fs = LocalFs::local(LocalOptions::new(data.join("filesystem")))
             .await
             .map_err(display)?;
-        let store = LocalCoreStateStore::new(data.join("core-state"));
-        let shared_roots = SharedRootRegistry::default();
-        let mut service = Self {
-            data,
-            fs,
-            store,
-            shared_roots: shared_roots.clone(),
-            sessions: BTreeMap::new(),
-            binary_identity: service_identity()?,
+        let binary_identity = service_identity()?;
+        let resources = Self {
+            store: LocalCoreStateStore::new(data.join("core-state")),
+            shared_roots: SharedRootRegistry::default(),
+            binary_identity,
             instance_id: uuid::Uuid::new_v4().to_string(),
             upgrade: Arc::new(tokio::sync::Notify::new()),
             drain_id: Arc::new(Mutex::new(None)),
+            data,
+            fs,
         };
-        let mut entries = fs::read_dir(service.data.join("sessions"))
+        let mut entries = fs::read_dir(resources.data.join("sessions"))
             .map_err(display)?
             .filter_map(|entry| match entry {
                 Ok(entry) => match entry.file_type() {
@@ -6408,6 +7486,7 @@ impl ServiceControl {
                 .cmp(&modified(left))
                 .then_with(|| right.cmp(left))
         });
+        let mut sessions = BTreeMap::new();
         let mut retained_sources = BTreeMap::<PathBuf, ([u8; 16], [u8; 16])>::new();
         for entry in entries {
             let state = load_state(&entry)?;
@@ -6433,22 +7512,13 @@ impl ServiceControl {
                 fs::remove_dir_all(&entry).map_err(display)?;
                 continue;
             }
-            let control = ControlPlane::open_with(
-                entry,
-                service.data.clone(),
-                service.fs.clone(),
-                service.store.clone(),
-                shared_roots.clone(),
-            )
-            .await?;
+            let control = resources.open_session_directory(entry).await?;
             if !control.state.root_session_id.is_empty() {
                 retained_sources.extend(roots);
-                service
-                    .sessions
-                    .insert(control.state.root_session_id.clone(), control);
+                sessions.insert(control.state.root_session_id.clone(), control);
             }
         }
-        Ok(service)
+        Ok((resources, sessions))
     }
 
     fn session_directory(&self, session_id: &str) -> PathBuf {
@@ -6457,16 +7527,51 @@ impl ServiceControl {
             .join(blake3::hash(session_id.as_bytes()).to_hex().as_str())
     }
 
+    async fn open_session(&self, session_id: &str) -> Result<ControlPlane, String> {
+        self.open_session_directory(self.session_directory(session_id))
+            .await
+    }
+
+    async fn open_session_directory(&self, directory: PathBuf) -> Result<ControlPlane, String> {
+        ControlPlane::open_with(
+            directory,
+            self.data.clone(),
+            self.fs.clone(),
+            self.store.clone(),
+            self.shared_roots.clone(),
+        )
+        .await
+    }
+}
+
+#[cfg(test)]
+struct ServiceControl {
+    resources: ServiceResources,
+    sessions: BTreeMap<String, ControlPlane>,
+}
+
+#[cfg(test)]
+impl std::ops::Deref for ServiceControl {
+    type Target = ServiceResources;
+
+    fn deref(&self) -> &Self::Target {
+        &self.resources
+    }
+}
+
+#[cfg(test)]
+impl ServiceControl {
+    async fn open(data: PathBuf) -> Result<Self, String> {
+        let (resources, sessions) = ServiceResources::open(data).await?;
+        Ok(Self {
+            resources,
+            sessions,
+        })
+    }
+
     async fn create_session(&mut self, session_id: &str) -> Result<&mut ControlPlane, String> {
         if !self.sessions.contains_key(session_id) {
-            let control = ControlPlane::open_with(
-                self.session_directory(session_id),
-                self.data.clone(),
-                self.fs.clone(),
-                self.store.clone(),
-                self.shared_roots.clone(),
-            )
-            .await?;
+            let control = self.resources.open_session(session_id).await?;
             self.sessions.insert(session_id.to_owned(), control);
         }
         self.sessions
@@ -6486,7 +7591,12 @@ impl ServiceControl {
                 .filter(|root| cwd.starts_with(root))
                 .map(|root| root.components().count())
                 .max();
-            for route in control.state.routes.values().filter(|route| !route.stopped) {
+            for route in control
+                .state
+                .routes
+                .values()
+                .filter(|route| route.lifecycle.needs_mount())
+            {
                 if let Ok(mount_path) = route.mount_path.canonicalize()
                     && cwd.starts_with(&mount_path)
                 {
@@ -6543,7 +7653,12 @@ impl ServiceControl {
         let cwd = cwd.canonicalize().map_err(display)?;
         let mut matches = Vec::new();
         for (session_id, control) in &self.sessions {
-            for route in control.state.routes.values().filter(|route| !route.stopped) {
+            for route in control
+                .state
+                .routes
+                .values()
+                .filter(|route| route.lifecycle.needs_mount())
+            {
                 if let Ok(mount_path) = route.mount_path.canonicalize()
                     && cwd.starts_with(&mount_path)
                 {
@@ -6551,6 +7666,22 @@ impl ServiceControl {
                         mount_path.components().count(),
                         session_id.clone(),
                         route.agent_id.clone(),
+                    ));
+                }
+            }
+            for pending in control
+                .state
+                .pending
+                .iter()
+                .filter(|pending| pending.lifecycle == PendingSpawnLifecycle::Prepared)
+            {
+                if let Ok(mount_path) = pending.mount_path.canonicalize()
+                    && cwd.starts_with(&mount_path)
+                {
+                    matches.push((
+                        mount_path.components().count(),
+                        session_id.clone(),
+                        format!("pending:{}", pending.mount_name()),
                     ));
                 }
             }
@@ -6569,29 +7700,17 @@ impl ServiceControl {
     }
 
     async fn shutdown_sessions(&mut self, deactivate: bool) -> Result<(), String> {
-        let sessions = std::mem::take(&mut self.sessions);
+        let sessions = self.sessions.keys().cloned().collect::<Vec<_>>();
         let mut failed_sessions = 0_usize;
         let mut first_error = None;
-        for (session_id, mut control) in sessions {
-            let mut session_failed = false;
-            if deactivate {
-                control.state.active = false;
-                if let Err(error) = control.persist() {
-                    session_failed = true;
-                    first_error.get_or_insert_with(|| {
-                        format!("cannot persist inactive session '{session_id}': {error}")
-                    });
-                }
-            }
-            if let Err(error) = control.shutdown().await {
-                session_failed = true;
-                first_error.get_or_insert_with(|| {
-                    format!("cannot shut down session '{session_id}': {error}")
-                });
+        for session_id in sessions {
+            let error = self.close_session(&session_id, deactivate).await.err();
+            let session_failed = error.is_some();
+            if let Some(error) = error {
+                first_error.get_or_insert_with(|| format!("session {session_id}: {error}"));
             }
             failed_sessions += usize::from(session_failed);
         }
-        self.shared_roots.prune().await;
         first_error.map_or(Ok(()), |error| {
             Err(format!(
                 "Acyclic service shutdown failed for {failed_sessions} session(s); first error: {error}"
@@ -6599,6 +7718,42 @@ impl ServiceControl {
         })
     }
 
+    async fn close_session(&mut self, session_id: &str, deactivate: bool) -> Result<(), String> {
+        let control = self
+            .sessions
+            .remove(session_id)
+            .ok_or_else(|| "Acyclic native hook session is not registered".to_owned())?;
+        let mut terminal_state = control.state.clone();
+        let directory = control.data.clone();
+        if let Err(shutdown_error) = control.shutdown().await {
+            let recovered = ControlPlane::open_with(
+                directory,
+                self.data.clone(),
+                self.fs.clone(),
+                self.store.clone(),
+                self.shared_roots.clone(),
+            )
+            .await;
+            return match recovered {
+                Ok(control) => {
+                    self.sessions.insert(session_id.to_owned(), control);
+                    Err(format!(
+                        "Acyclic session shutdown failed and was restored: {shutdown_error}"
+                    ))
+                }
+                Err(recovery_error) => Err(format!(
+                    "Acyclic session shutdown failed: {shutdown_error}; live recovery failed: {recovery_error}"
+                )),
+            };
+        }
+        if deactivate {
+            terminal_state.active = false;
+            save_state(&directory, &terminal_state)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     async fn shutdown(mut self) -> Result<(), String> {
         let root_released = self.fs.local_root_release_barrier();
         let result = self.shutdown_sessions(false).await;
@@ -6617,7 +7772,7 @@ impl ServiceControl {
         input: Value,
         cwd: &Path,
     ) -> Result<Value, String> {
-        let session_id = hook_string(&input, "session_id", "sessionId")?;
+        let session_id = hook_id(&input, "session_id", "sessionId")?;
         if matches!(event, "SessionStart" | "sessionStart") {
             let root = hook_root_path(&input).unwrap_or_else(|| cwd.to_path_buf());
             if let Some((owner_session, owner_agent)) = self.child_mount_for_cwd(&root)? {
@@ -6640,157 +7795,14 @@ impl ServiceControl {
             return Ok(output);
         }
         if matches!(event, "SessionEnd" | "sessionEnd") {
-            let control = self
-                .sessions
-                .get_mut(&session_id)
-                .ok_or_else(|| "Acyclic native hook session is not registered".to_owned())?;
-            control.state.active = false;
-            control.persist()?;
-            let control = self.sessions.remove(&session_id).ok_or_else(|| {
-                "Acyclic native hook session disappeared during shutdown".to_owned()
-            })?;
-            let shutdown = control.shutdown().await;
-            self.shared_roots.prune().await;
-            shutdown?;
+            self.close_session(&session_id, true).await?;
             return Ok(json!({}));
         }
         let control = self
             .sessions
             .get_mut(&session_id)
             .ok_or_else(|| "Acyclic native hook session is not registered".to_owned())?;
-        let hook_cwd = hook_path(&input, "cwd").unwrap_or_else(|| cwd.to_path_buf());
-        match event {
-            "UserPromptSubmit" | "userPromptSubmitted" => {
-                let (caller, _, _) = control.route_root_from_cwd(&hook_cwd)?;
-                if caller != control.state.root_agent_id {
-                    return Err("root prompt hook originated inside a child mount".to_owned());
-                }
-                let turn_id = if host == "codex" {
-                    hook_optional_string(&input, "turn_id", "turnId").ok_or_else(|| {
-                        "Codex prompt hook lacks a stable turn identity".to_owned()
-                    })?
-                } else {
-                    hook_optional_string(&input, "turn_id", "turnId")
-                        .or_else(|| hook_optional_string(&input, "prompt_id", "promptId"))
-                        .unwrap_or_else(|| format!("{host}:root:{session_id}"))
-                };
-                control.user_prompt(json!({
-                    "session_id": session_id,
-                    "turn_id": turn_id
-                }))
-            }
-            "PreToolUse" | "preToolUse" => {
-                let (_, turn_id, root_id) = native_tool_identity(control, host, &input, &hook_cwd)?;
-                let mut tool_name = hook_string(&input, "tool_name", "toolName")?;
-                if host == "copilot" && tool_name == "task" {
-                    tool_name = "Agent".to_owned();
-                }
-                let tool_input = input
-                    .get("tool_input")
-                    .or_else(|| input.get("toolArgs"))
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
-                let tool_use_id =
-                    native_hook_tool_id(&input, &session_id, &tool_name, &tool_input)?;
-                let output = control
-                    .pre_tool(json!({
-                        "session_id": session_id,
-                        "turn_id": turn_id,
-                        "tool_use_id": tool_use_id,
-                        "tool_name": tool_name,
-                        "tool_input": tool_input,
-                        "_caller_root_id": hex::encode(root_id.into_bytes())
-                    }))
-                    .await?;
-                if host == "copilot" {
-                    let updated = output.pointer("/hookSpecificOutput/updatedInput").cloned();
-                    Ok(json!({
-                        "permissionDecision": "allow",
-                        "permissionDecisionReason": "Acyclic routed this tool to its workspace context",
-                        "modifiedArgs": updated
-                    }))
-                } else {
-                    Ok(output)
-                }
-            }
-            "PostToolUse" | "postToolUse" | "PostToolUseFailure" | "postToolUseFailure" => {
-                let (_, turn_id, _) = native_tool_identity(control, host, &input, &hook_cwd)?;
-                let mut tool_name = hook_string(&input, "tool_name", "toolName")?;
-                if host == "copilot" && tool_name == "task" {
-                    tool_name = "Agent".to_owned();
-                }
-                let tool_input = input
-                    .get("tool_input")
-                    .or_else(|| input.get("toolArgs"))
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
-                let tool_use_id =
-                    native_hook_tool_id(&input, &session_id, &tool_name, &tool_input)?;
-                control
-                    .post_tool(json!({
-                        "session_id": session_id,
-                        "turn_id": turn_id,
-                        "tool_use_id": tool_use_id,
-                        "tool_name": tool_name
-                    }))
-                    .await
-            }
-            "SubagentStart" | "subagentStart" => {
-                let agent_id = hook_optional_string(&input, "agent_id", "agentId")
-                    .or_else(|| hook_optional_string(&input, "agent_name", "agentName"))
-                    .ok_or_else(|| "subagent start lacks a stable agent identity".to_owned())?;
-                let turn_id = if host == "codex" {
-                    hook_string(&input, "turn_id", "turnId")?
-                } else {
-                    hook_optional_string(&input, "turn_id", "turnId")
-                        .unwrap_or_else(|| format!("{host}:agent:{agent_id}"))
-                };
-                let parent = control
-                    .state
-                    .routes
-                    .get(&agent_id)
-                    .map(|route| route.parent_agent_id.clone())
-                    .or_else(|| {
-                        control
-                            .state
-                            .pending
-                            .front()
-                            .map(|pending| pending.parent_agent_id.clone())
-                    })
-                    .ok_or_else(|| {
-                        "subagent start has no serialized spawn or resume identity".to_owned()
-                    })?;
-                control
-                    .subagent_start(json!({
-                        "session_id": session_id,
-                        "turn_id": turn_id,
-                        "agent_id": agent_id,
-                        "_authenticated_parent_agent_id": parent,
-                        "agent_type": hook_optional_string(&input, "agent_type", "agentType").unwrap_or_else(|| "subagent".to_owned())
-                    }))
-                    .await
-            }
-            "SubagentStop" | "subagentStop" => {
-                let agent_id = hook_optional_string(&input, "agent_id", "agentId")
-                    .or_else(|| hook_optional_string(&input, "agent_name", "agentName"))
-                    .ok_or_else(|| "subagent stop lacks a stable agent identity".to_owned())?;
-                let turn_id = if host == "codex" {
-                    hook_string(&input, "turn_id", "turnId")?
-                } else {
-                    hook_optional_string(&input, "turn_id", "turnId")
-                        .unwrap_or_else(|| format!("{host}:agent:{agent_id}"))
-                };
-                control
-                    .subagent_stop(json!({
-                        "session_id": session_id,
-                        "turn_id": turn_id,
-                        "agent_id": agent_id
-                    }))
-                    .await
-            }
-            "Stop" | "agentStop" => Ok(json!({})),
-            _ => Err(format!("unsupported {host} lifecycle event '{event}'")),
-        }
+        dispatch_native_session_hook(control, host, event, input, cwd).await
     }
 }
 
@@ -6800,21 +7812,29 @@ fn native_tool_identity(
     input: &Value,
     cwd: &Path,
 ) -> Result<(String, String, WorkspaceRootId), String> {
-    if let Some(agent_id) = hook_optional_string(input, "agent_id", "agentId") {
+    if let Some(agent_id) = hook_optional_id(input, "agent_id", "agentId")? {
         let route = control
             .state
             .routes
             .get(&agent_id)
             .ok_or_else(|| format!("{host} tool reports an unknown subagent identity"))?
             .clone();
-        if route.stopped {
+        if !route.lifecycle.accepts_tools() {
             return Err("subagent workspace is sealed after SubagentStop".to_owned());
         }
+        let (cwd_caller, _, root_id) = control.route_root_from_cwd(cwd)?;
+        let owns_reported_root = cwd_caller == agent_id
+            || (cwd_caller == control.state.root_agent_id
+                && route.roots.contains_key(&root_key(root_id)));
+        if !owns_reported_root {
+            return Err(format!(
+                "{host} tool identity does not own its reported workspace cwd"
+            ));
+        }
         let turn_id = if host == "codex" {
-            hook_string(input, "turn_id", "turnId")?
+            hook_id(input, "turn_id", "turnId")?
         } else {
-            hook_optional_string(input, "turn_id", "turnId")
-                .unwrap_or_else(|| route.turn_id.clone())
+            hook_optional_id(input, "turn_id", "turnId")?.unwrap_or_else(|| route.turn_id.clone())
         };
         if control.state.root_turns.contains(&turn_id)
             || control
@@ -6834,14 +7854,10 @@ fn native_tool_identity(
                 .insert(turn_id.clone(), agent_id.clone());
             control.persist()?;
         }
-        return Ok((
-            agent_id,
-            turn_id,
-            WorkspaceRootId::from_bytes(route.root_id),
-        ));
+        return Ok((agent_id, turn_id, root_id));
     }
     if host == "codex" {
-        let turn_id = hook_string(input, "turn_id", "turnId")?;
+        let turn_id = hook_id(input, "turn_id", "turnId")?;
         let caller = control.resolve_turn(&turn_id)?;
         let root_id = if caller == control.state.root_agent_id {
             let (cwd_caller, _, root_id) = control.route_root_from_cwd(cwd)?;
@@ -6872,6 +7888,149 @@ fn native_tool_identity(
     Ok((caller, turn_id, root_id))
 }
 
+async fn dispatch_native_session_hook(
+    control: &mut ControlPlane,
+    host: &str,
+    event: &str,
+    input: Value,
+    cwd: &Path,
+) -> Result<Value, String> {
+    let session_id = hook_id(&input, "session_id", "sessionId")?;
+    let hook_cwd = hook_path(&input, "cwd").unwrap_or_else(|| cwd.to_path_buf());
+    match event {
+        "UserPromptSubmit" | "userPromptSubmitted" => {
+            let (caller, _, _) = control.route_root_from_cwd(&hook_cwd)?;
+            if caller != control.state.root_agent_id {
+                return Err("root prompt hook originated inside a child mount".to_owned());
+            }
+            let turn_id = if host == "codex" {
+                hook_optional_id(&input, "turn_id", "turnId")?
+                    .ok_or_else(|| "Codex prompt hook lacks a stable turn identity".to_owned())?
+            } else {
+                hook_optional_id(&input, "turn_id", "turnId")?
+                    .or(hook_optional_id(&input, "prompt_id", "promptId")?)
+                    .unwrap_or_else(|| format!("{host}:root:{session_id}"))
+            };
+            control.user_prompt(json!({
+                "session_id": session_id,
+                "turn_id": turn_id
+            }))
+        }
+        "PreToolUse" | "preToolUse" => {
+            let (_, turn_id, root_id) = native_tool_identity(control, host, &input, &hook_cwd)?;
+            let mut tool_name = hook_string(&input, "tool_name", "toolName")?;
+            if host == "copilot" && tool_name == "task" {
+                tool_name = "Agent".to_owned();
+            }
+            let tool_input = input
+                .get("tool_input")
+                .or_else(|| input.get("toolArgs"))
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let tool_use_id = native_hook_tool_id(&input, &session_id, &tool_name, &tool_input)?;
+            let output = control
+                .pre_tool(json!({
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "tool_use_id": tool_use_id,
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "_caller_root_id": hex::encode(root_id.into_bytes())
+                }))
+                .await?;
+            if host == "copilot" {
+                let updated = output.pointer("/hookSpecificOutput/updatedInput").cloned();
+                Ok(json!({
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "Acyclic routed this tool to its workspace context",
+                    "modifiedArgs": updated
+                }))
+            } else {
+                Ok(output)
+            }
+        }
+        "PostToolUse" | "postToolUse" | "PostToolUseFailure" | "postToolUseFailure" => {
+            let (_, turn_id, _) = native_tool_identity(control, host, &input, &hook_cwd)?;
+            let mut tool_name = hook_string(&input, "tool_name", "toolName")?;
+            if host == "copilot" && tool_name == "task" {
+                tool_name = "Agent".to_owned();
+            }
+            let tool_input = input
+                .get("tool_input")
+                .or_else(|| input.get("toolArgs"))
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let tool_use_id = native_hook_tool_id(&input, &session_id, &tool_name, &tool_input)?;
+            control
+                .post_tool(json!({
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "tool_use_id": tool_use_id,
+                    "tool_name": tool_name
+                }))
+                .await
+        }
+        "SubagentStart" | "subagentStart" => {
+            let agent_id = hook_optional_id(&input, "agent_id", "agentId")?
+                .or(hook_optional_id(&input, "agent_name", "agentName")?)
+                .ok_or_else(|| "subagent start lacks a stable agent identity".to_owned())?;
+            let turn_id = if host == "codex" {
+                hook_id(&input, "turn_id", "turnId")?
+            } else {
+                hook_optional_id(&input, "turn_id", "turnId")?
+                    .unwrap_or_else(|| format!("{host}:agent:{agent_id}"))
+            };
+            let parent = control
+                .state
+                .routes
+                .get(&agent_id)
+                .map(|route| route.parent_agent_id.clone())
+                .or_else(|| {
+                    control
+                        .state
+                        .pending
+                        .front()
+                        .map(|pending| pending.parent_agent_id.clone())
+                })
+                .ok_or_else(|| {
+                    "subagent start has no serialized spawn or resume identity".to_owned()
+                })?;
+            control
+                .subagent_start(json!({
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "agent_id": agent_id,
+                    "_authenticated_parent_agent_id": parent,
+                    "agent_type": hook_optional_string(&input, "agent_type", "agentType").unwrap_or_else(|| "subagent".to_owned())
+                }))
+                .await
+        }
+        "SubagentStop" | "subagentStop" => {
+            let agent_id = hook_optional_id(&input, "agent_id", "agentId")?
+                .or(hook_optional_id(&input, "agent_name", "agentName")?)
+                .ok_or_else(|| "subagent stop lacks a stable agent identity".to_owned())?;
+            let turn_id = if host == "codex" {
+                hook_id(&input, "turn_id", "turnId")?
+            } else {
+                hook_optional_id(&input, "turn_id", "turnId")?
+                    .unwrap_or_else(|| format!("{host}:agent:{agent_id}"))
+            };
+            control
+                .subagent_stop(json!({
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "agent_id": agent_id
+                }))
+                .await
+        }
+        "Stop" | "agentStop" => Ok(json!({})),
+        "SessionStart" | "sessionStart" | "SessionEnd" | "sessionEnd" => {
+            Err("session boundary hook reached a workspace actor".to_owned())
+        }
+        _ => Err(format!("unsupported {host} lifecycle event '{event}'")),
+    }
+}
+
 fn hook_optional_string(input: &Value, snake: &str, camel: &str) -> Option<String> {
     input
         .get(snake)
@@ -6883,6 +8042,30 @@ fn hook_optional_string(input: &Value, snake: &str, camel: &str) -> Option<Strin
 fn hook_string(input: &Value, snake: &str, camel: &str) -> Result<String, String> {
     hook_optional_string(input, snake, camel)
         .ok_or_else(|| format!("native hook is missing '{snake}'"))
+}
+
+fn hook_optional_id(input: &Value, snake: &str, camel: &str) -> Result<Option<String>, String> {
+    hook_optional_string(input, snake, camel)
+        .map(|value| validate_hook_id(snake, value))
+        .transpose()
+}
+
+fn hook_id(input: &Value, snake: &str, camel: &str) -> Result<String, String> {
+    hook_optional_id(input, snake, camel)?
+        .ok_or_else(|| format!("native hook is missing '{snake}'"))
+}
+
+fn validate_hook_id(field: &str, value: String) -> Result<String, String> {
+    const MAXIMUM_HOOK_ID_BYTES: usize = 512;
+    if value.is_empty()
+        || value.len() > MAXIMUM_HOOK_ID_BYTES
+        || value.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(format!(
+            "native hook '{field}' must be 1-{MAXIMUM_HOOK_ID_BYTES} non-control bytes"
+        ));
+    }
+    Ok(value)
 }
 
 fn hook_path(input: &Value, field: &str) -> Option<PathBuf> {
@@ -6918,7 +8101,7 @@ fn native_hook_tool_id(
     tool_name: &str,
     tool_input: &Value,
 ) -> Result<String, String> {
-    if let Some(id) = hook_optional_string(input, "tool_use_id", "toolUseId") {
+    if let Some(id) = hook_optional_id(input, "tool_use_id", "toolUseId")? {
         return Ok(id);
     }
     if is_filesystem_tool(tool_name) {
@@ -6941,9 +8124,10 @@ fn native_hook_is_process_local_noop(host: &str, event: &str, input: &Value) -> 
                 | "postToolUseFailure"
         )
         && hook_optional_string(input, "tool_name", "toolName")
-            .is_some_and(|tool| is_pure_remote_tool(&tool))
+            .is_some_and(|tool| is_known_non_filesystem_tool(&tool))
 }
 
+#[cfg(test)]
 impl ControlRequestDispatcher for ServiceControl {
     async fn dispatch_request(&mut self, request: ControlRequest) -> Result<Value, String> {
         if matches!(request.command, ControlCommand::Ping) {
@@ -7008,6 +8192,7 @@ impl ControlRequestDispatcher for ServiceControl {
         }
         if matches!(request.command, ControlCommand::Doctor) {
             parse_read_only_arguments(&request.argv)?;
+            let executable = executable_digests_async().await?;
             let routes = self
                 .sessions
                 .values()
@@ -7024,6 +8209,8 @@ impl ControlRequestDispatcher for ServiceControl {
             return doctor_report(
                 &self.data,
                 &self.binary_identity,
+                &executable.sha256,
+                &executable.blake3,
                 self.sessions.len(),
                 routes,
                 leases,
@@ -7044,14 +8231,847 @@ impl ControlRequestDispatcher for ServiceControl {
             .sessions
             .get_mut(&session_id)
             .ok_or_else(|| "Acyclic session is not registered".to_owned())?;
-        dispatch_plane_request(control, request).await
+        dispatch_session_request(control, request).await
+    }
+}
+
+const SESSION_ACTIVE: u8 = 0;
+const SESSION_CLOSING: u8 = 1;
+const SESSION_CLOSED: u8 = 2;
+const SESSION_CLOSE_FAILED: u8 = 3;
+const SESSION_DATA_CAPACITY: usize = 64;
+const SESSION_QUEUE_CAPACITY: usize = SESSION_DATA_CAPACITY + 1;
+const SERVICE_RUNNING: u8 = 0;
+const SERVICE_DRAINING: u8 = 1;
+const SERVICE_CLOSED: u8 = 2;
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct SessionKey {
+    session_id: String,
+    epoch: u64,
+}
+
+struct SessionHandle {
+    key: SessionKey,
+    state: Arc<std::sync::atomic::AtomicU8>,
+    admission: Mutex<()>,
+    sender: tokio::sync::mpsc::Sender<SessionCommand>,
+    data_slots: Arc<tokio::sync::Semaphore>,
+    snapshot: Arc<std::sync::RwLock<Option<AdapterState>>>,
+    close_result: watch::Sender<Option<Result<(), String>>>,
+}
+
+enum SessionCommand {
+    Dispatch {
+        request: ControlRequest,
+        response: tokio::sync::oneshot::Sender<Result<Value, String>>,
+        _permit: tokio::sync::OwnedSemaphorePermit,
+    },
+    Shutdown {
+        deactivate: bool,
+        response: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    #[cfg(test)]
+    Pause {
+        entered: tokio::sync::oneshot::Sender<()>,
+        resume: tokio::sync::oneshot::Receiver<()>,
+    },
+}
+
+impl SessionHandle {
+    fn new(key: SessionKey, control: ControlPlane, resources: ServiceResources) -> Self {
+        let snapshot = Arc::new(std::sync::RwLock::new(Some(control.state.clone())));
+        let actor_snapshot = Arc::clone(&snapshot);
+        let state = Arc::new(std::sync::atomic::AtomicU8::new(SESSION_ACTIVE));
+        let actor_state = Arc::clone(&state);
+        let close_result = watch::channel(None).0;
+        let actor_close_result = close_result.clone();
+        let data_slots = Arc::new(tokio::sync::Semaphore::new(SESSION_DATA_CAPACITY));
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(SESSION_QUEUE_CAPACITY);
+        tokio::spawn(async move {
+            let mut control = Some(control);
+            while let Some(command) = receiver.recv().await {
+                match command {
+                    SessionCommand::Dispatch {
+                        request,
+                        response,
+                        _permit,
+                    } => {
+                        let result = match control.as_mut() {
+                            Some(control) => dispatch_session_request(control, request).await,
+                            None => Err("Acyclic session actor has no workspace".to_owned()),
+                        };
+                        let next = control.as_ref().map(|control| control.state.clone());
+                        if let Ok(mut snapshot) = actor_snapshot.write() {
+                            *snapshot = next;
+                        }
+                        let _ = response.send(result);
+                    }
+                    SessionCommand::Shutdown {
+                        deactivate,
+                        response,
+                    } => {
+                        let current = control
+                            .take()
+                            .ok_or_else(|| "Acyclic session actor has no workspace".to_owned());
+                        let result = match current {
+                            Err(error) => Err(error),
+                            Ok(current) => {
+                                let mut terminal_state = current.state.clone();
+                                let directory = current.data.clone();
+                                match current.shutdown().await {
+                                    Ok(()) => {
+                                        if deactivate {
+                                            terminal_state.active = false;
+                                            save_state(&directory, &terminal_state)
+                                        } else {
+                                            Ok(())
+                                        }
+                                    }
+                                    Err(shutdown_error) => {
+                                        match ControlPlane::open_with(
+                                            directory,
+                                            resources.data.clone(),
+                                            resources.fs.clone(),
+                                            resources.store.clone(),
+                                            resources.shared_roots.clone(),
+                                        )
+                                        .await
+                                        {
+                                            Ok(recovered) => {
+                                                control = Some(recovered);
+                                                Err(format!(
+                                                    "Acyclic session shutdown failed and was restored: {shutdown_error}"
+                                                ))
+                                            }
+                                            Err(recovery_error) => Err(format!(
+                                                "Acyclic session shutdown failed: {shutdown_error}; live recovery failed: {recovery_error}"
+                                            )),
+                                        }
+                                    }
+                                }
+                            }
+                        };
+                        let _ = actor_close_result.send(Some(result.clone()));
+                        if result.is_ok() {
+                            actor_state.store(SESSION_CLOSED, std::sync::atomic::Ordering::Release);
+                            if let Ok(mut snapshot) = actor_snapshot.write() {
+                                *snapshot = None;
+                            }
+                            let _ = response.send(result);
+                            break;
+                        }
+                        actor_state
+                            .store(SESSION_CLOSE_FAILED, std::sync::atomic::Ordering::Release);
+                        let next = control.as_ref().map(|control| control.state.clone());
+                        if let Ok(mut snapshot) = actor_snapshot.write() {
+                            *snapshot = next;
+                        }
+                        let _ = response.send(result);
+                    }
+                    #[cfg(test)]
+                    SessionCommand::Pause { entered, resume } => {
+                        let _ = entered.send(());
+                        let _ = resume.await;
+                    }
+                }
+            }
+        });
+        Self {
+            key,
+            state,
+            admission: Mutex::new(()),
+            sender,
+            data_slots,
+            snapshot,
+            close_result,
+        }
+    }
+
+    fn snapshot(&self) -> Result<Option<AdapterState>, String> {
+        self.snapshot
+            .read()
+            .map(|snapshot| snapshot.clone())
+            .map_err(|_| "session routing snapshot lock is poisoned".to_owned())
+    }
+
+    fn is_active(&self) -> bool {
+        self.state.load(std::sync::atomic::Ordering::Acquire) == SESSION_ACTIVE
+    }
+
+    async fn dispatch(&self, request: ControlRequest) -> Result<Value, String> {
+        let (response, result) = tokio::sync::oneshot::channel();
+        {
+            let _admission = self
+                .admission
+                .lock()
+                .map_err(|_| "session admission lock is poisoned".to_owned())?;
+            if !self.is_active() {
+                return Err("Acyclic session is closing".to_owned());
+            }
+            let permit = Arc::clone(&self.data_slots)
+                .try_acquire_owned()
+                .map_err(|_| "Acyclic session operation queue is full".to_owned())?;
+            self.sender
+                .try_send(SessionCommand::Dispatch {
+                    request,
+                    response,
+                    _permit: permit,
+                })
+                .map_err(|error| match error {
+                    tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                        "Acyclic session operation queue is full".to_owned()
+                    }
+                    tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                        "Acyclic session actor stopped".to_owned()
+                    }
+                })?;
+        }
+        result
+            .await
+            .map_err(|_| "Acyclic session actor dropped an accepted operation".to_owned())?
+    }
+
+    async fn shutdown(&self, deactivate: bool) -> Result<(), String> {
+        let (response, result) = tokio::sync::oneshot::channel();
+        let mut existing = None;
+        {
+            let _admission = self
+                .admission
+                .lock()
+                .map_err(|_| "session admission lock is poisoned".to_owned())?;
+            match self.state.load(std::sync::atomic::Ordering::Acquire) {
+                SESSION_ACTIVE => self
+                    .state
+                    .store(SESSION_CLOSING, std::sync::atomic::Ordering::Release),
+                SESSION_CLOSING => existing = Some(self.close_result.subscribe()),
+                SESSION_CLOSE_FAILED => {
+                    self.state
+                        .store(SESSION_CLOSING, std::sync::atomic::Ordering::Release);
+                    let _ = self.close_result.send(None);
+                }
+                SESSION_CLOSED => return Ok(()),
+                _ => return Err("invalid Acyclic session lifecycle state".to_owned()),
+            }
+            if existing.is_none()
+                && let Err(error) = self.sender.try_send(SessionCommand::Shutdown {
+                    deactivate,
+                    response,
+                })
+            {
+                let error = match error {
+                    tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                        "Acyclic session control queue is unexpectedly full during shutdown"
+                            .to_owned()
+                    }
+                    tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                        "Acyclic session actor stopped before shutdown".to_owned()
+                    }
+                };
+                self.state
+                    .store(SESSION_CLOSE_FAILED, std::sync::atomic::Ordering::Release);
+                let _ = self.close_result.send(Some(Err(error.clone())));
+                return Err(error);
+            }
+        }
+        if let Some(mut existing) = existing {
+            if existing.borrow().is_none() {
+                existing.changed().await.map_err(display)?;
+            }
+            return existing
+                .borrow()
+                .clone()
+                .ok_or_else(|| "Acyclic session close completed without a result".to_owned())?;
+        }
+        result
+            .await
+            .map_err(|_| "Acyclic session actor dropped shutdown".to_owned())?
+    }
+
+    #[cfg(test)]
+    #[allow(
+        clippy::expect_used,
+        reason = "this deterministic test gate must panic immediately if its actor fixture is broken"
+    )]
+    async fn pause(&self) -> tokio::sync::oneshot::Sender<()> {
+        let (entered, accepted) = tokio::sync::oneshot::channel();
+        let (resume, paused) = tokio::sync::oneshot::channel();
+        self.sender
+            .try_send(SessionCommand::Pause {
+                entered,
+                resume: paused,
+            })
+            .expect("session actor");
+        accepted.await.expect("actor pause accepted");
+        resume
+    }
+}
+
+struct OpeningSession {
+    key: SessionKey,
+    cancelled: bool,
+    complete: watch::Sender<bool>,
+}
+
+#[derive(Default)]
+struct SessionCatalog {
+    next_epoch: u64,
+    opening: BTreeMap<String, OpeningSession>,
+    active: BTreeMap<String, Arc<SessionHandle>>,
+    draining: BTreeMap<SessionKey, Arc<SessionHandle>>,
+    completed: BTreeSet<String>,
+}
+
+struct ConcurrentServiceControl {
+    resources: ServiceResources,
+    lifecycle: std::sync::atomic::AtomicU8,
+    shutdown_deactivates: std::sync::atomic::AtomicBool,
+    catalog: AsyncMutex<SessionCatalog>,
+}
+
+impl std::ops::Deref for ConcurrentServiceControl {
+    type Target = ServiceResources;
+
+    fn deref(&self) -> &Self::Target {
+        &self.resources
+    }
+}
+
+impl ConcurrentServiceControl {
+    async fn open(data: PathBuf) -> Result<Self, String> {
+        let (resources, sessions) = ServiceResources::open(data).await?;
+        Ok(Self::from_parts(resources, sessions))
+    }
+
+    fn from_parts(resources: ServiceResources, sessions: BTreeMap<String, ControlPlane>) -> Self {
+        let mut catalog = SessionCatalog::default();
+        for (session_id, control) in sessions {
+            catalog.next_epoch += 1;
+            let key = SessionKey {
+                session_id: session_id.clone(),
+                epoch: catalog.next_epoch,
+            };
+            catalog.active.insert(
+                session_id,
+                Arc::new(SessionHandle::new(key, control, resources.clone())),
+            );
+        }
+        Self {
+            resources,
+            lifecycle: std::sync::atomic::AtomicU8::new(SERVICE_RUNNING),
+            shutdown_deactivates: std::sync::atomic::AtomicBool::new(false),
+            catalog: AsyncMutex::new(catalog),
+        }
+    }
+
+    fn ensure_running(&self) -> Result<(), String> {
+        if self.lifecycle.load(std::sync::atomic::Ordering::Acquire) == SERVICE_RUNNING {
+            Ok(())
+        } else {
+            Err("Acyclic service is draining".to_owned())
+        }
+    }
+
+    async fn session(&self, session_id: &str) -> Result<Arc<SessionHandle>, String> {
+        self.catalog
+            .lock()
+            .await
+            .active
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| "Acyclic native hook session is not registered".to_owned())
+    }
+
+    async fn start_session(
+        &self,
+        session_id: &str,
+        host: &str,
+        root: PathBuf,
+    ) -> Result<(Arc<SessionHandle>, Value), String> {
+        let root = root.canonicalize().map_err(display)?;
+        if let Some(owner) = self.route_session(&root).await?
+            && owner.key.session_id != session_id
+        {
+            return Err(format!(
+                "session {session_id} cannot attach a workspace owned by session {} as a physical root",
+                owner.key.session_id
+            ));
+        }
+        loop {
+            self.ensure_running()?;
+            let (key, wait) = {
+                let mut catalog = self.catalog.lock().await;
+                if let Some(handle) = catalog.active.get(session_id) {
+                    let handle = Arc::clone(handle);
+                    drop(catalog);
+                    let output = handle
+                        .dispatch(ControlRequest {
+                            version: 1,
+                            command: ControlCommand::Hook,
+                            cwd: root.clone(),
+                            argv: Vec::new(),
+                            name: format!("{host}:SessionStart"),
+                            arguments: json!({
+                                "session_id": session_id,
+                                "cwd": root,
+                            }),
+                        })
+                        .await?;
+                    return Ok((handle, output));
+                }
+                if let Some(opening) = catalog.opening.get(session_id) {
+                    (opening.key.clone(), Some(opening.complete.subscribe()))
+                } else {
+                    catalog.completed.remove(session_id);
+                    catalog.next_epoch += 1;
+                    let key = SessionKey {
+                        session_id: session_id.to_owned(),
+                        epoch: catalog.next_epoch,
+                    };
+                    catalog.opening.insert(
+                        session_id.to_owned(),
+                        OpeningSession {
+                            key: key.clone(),
+                            cancelled: false,
+                            complete: watch::channel(false).0,
+                        },
+                    );
+                    (key, None)
+                }
+            };
+            if let Some(mut wait) = wait {
+                if !*wait.borrow() {
+                    wait.changed().await.map_err(display)?;
+                }
+                continue;
+            }
+
+            let mut control = self.resources.open_session(session_id).await?;
+            let opened = control
+                .session_start(json!({"session_id": session_id, "cwd": root, "host": host}))
+                .await;
+            let handle = Some(Arc::new(SessionHandle::new(
+                key.clone(),
+                control,
+                self.resources.clone(),
+            )));
+            let (cancelled, complete) = {
+                let mut catalog = self.catalog.lock().await;
+                let opening = catalog
+                    .opening
+                    .remove(session_id)
+                    .ok_or_else(|| "Acyclic session opening reservation disappeared".to_owned())?;
+                if opening.key != key {
+                    return Err("Acyclic session opening epoch changed".to_owned());
+                }
+                let cancelled = opened.is_err()
+                    || opening.cancelled
+                    || self.lifecycle.load(std::sync::atomic::Ordering::Acquire) != SERVICE_RUNNING;
+                if let Some(handle) = &handle {
+                    if cancelled {
+                        catalog
+                            .draining
+                            .insert(handle.key.clone(), Arc::clone(handle));
+                    } else {
+                        catalog
+                            .active
+                            .insert(session_id.to_owned(), Arc::clone(handle));
+                    }
+                }
+                (cancelled, opening.complete)
+            };
+            let output = match opened {
+                Ok(output) => output,
+                Err(error) => {
+                    let cleanup = if let Some(handle) = &handle {
+                        let cleanup = handle.shutdown(true).await;
+                        if cleanup.is_ok() {
+                            let mut catalog = self.catalog.lock().await;
+                            catalog.draining.remove(&handle.key);
+                            catalog.completed.insert(session_id.to_owned());
+                        }
+                        cleanup
+                    } else {
+                        Ok(())
+                    };
+                    let _ = complete.send(true);
+                    return match cleanup {
+                        Ok(()) => Err(error),
+                        Err(cleanup) => Err(format!(
+                            "{error}; failed session-start cleanup was retained: {cleanup}"
+                        )),
+                    };
+                }
+            };
+            let handle = handle.ok_or_else(|| "Acyclic session did not open".to_owned())?;
+            if cancelled {
+                let cleanup = handle.shutdown(true).await;
+                if cleanup.is_ok() {
+                    let mut catalog = self.catalog.lock().await;
+                    catalog.draining.remove(&handle.key);
+                    catalog.completed.insert(session_id.to_owned());
+                }
+                let _ = complete.send(true);
+                cleanup?;
+                return Err("Acyclic session start was cancelled".to_owned());
+            }
+            let _ = complete.send(true);
+            return Ok((handle, output));
+        }
+    }
+
+    async fn end_session(&self, session_id: &str, deactivate: bool) -> Result<(), String> {
+        let mut cancelled_opening = false;
+        loop {
+            let wait = {
+                let mut catalog = self.catalog.lock().await;
+                if let Some(opening) = catalog.opening.get_mut(session_id) {
+                    opening.cancelled = true;
+                    cancelled_opening = true;
+                    Some(opening.complete.subscribe())
+                } else {
+                    None
+                }
+            };
+            if let Some(mut wait) = wait {
+                if !*wait.borrow() {
+                    wait.changed().await.map_err(display)?;
+                }
+                continue;
+            }
+            break;
+        }
+        let handle = {
+            let mut catalog = self.catalog.lock().await;
+            if let Some(handle) = catalog.active.remove(session_id) {
+                catalog
+                    .draining
+                    .insert(handle.key.clone(), Arc::clone(&handle));
+                handle
+            } else if let Some(handle) = catalog
+                .draining
+                .values()
+                .find(|handle| handle.key.session_id == session_id)
+                .cloned()
+            {
+                handle
+            } else {
+                if cancelled_opening {
+                    return Ok(());
+                }
+                if catalog.completed.contains(session_id) {
+                    return Ok(());
+                }
+                return Err("Acyclic native hook session is not registered".to_owned());
+            }
+        };
+        let result = handle.shutdown(deactivate).await;
+        {
+            let mut catalog = self.catalog.lock().await;
+            if result.is_ok() {
+                catalog.draining.remove(&handle.key);
+                catalog.completed.insert(session_id.to_owned());
+            }
+        }
+        if result.is_ok() {
+            self.shared_roots.prune().await;
+        }
+        result
+    }
+
+    async fn route_session(&self, cwd: &Path) -> Result<Option<Arc<SessionHandle>>, String> {
+        let cwd = cwd.canonicalize().map_err(display)?;
+        let handles = self.catalog.lock().await;
+        let handles = handles
+            .active
+            .values()
+            .chain(handles.draining.values())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut matches = Vec::new();
+        for handle in handles {
+            let Some(snapshot) = handle.snapshot()? else {
+                continue;
+            };
+            let mut score = snapshot
+                .roots
+                .values()
+                .filter_map(|root| root.path.canonicalize().ok())
+                .filter(|root| cwd.starts_with(root))
+                .map(|root| root.components().count())
+                .max();
+            for route in snapshot
+                .routes
+                .values()
+                .filter(|route| route.lifecycle.needs_mount())
+            {
+                if let Ok(mount) = route.mount_path.canonicalize()
+                    && cwd.starts_with(&mount)
+                {
+                    score = Some(score.unwrap_or(0).max(mount.components().count()));
+                }
+            }
+            if let Some(score) = score {
+                matches.push((score, handle));
+            }
+        }
+        matches.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+        let Some((score, handle)) = matches.first() else {
+            return Ok(None);
+        };
+        if matches
+            .get(1)
+            .is_some_and(|candidate| candidate.0 == *score)
+        {
+            return Err(
+                "cwd belongs to multiple Acyclic sessions; run inside a managed child mount"
+                    .to_owned(),
+            );
+        }
+        Ok(Some(Arc::clone(handle)))
+    }
+
+    async fn drain_sessions(&self, deactivate: bool) -> Result<(), String> {
+        self.lifecycle
+            .store(SERVICE_DRAINING, std::sync::atomic::Ordering::Release);
+        loop {
+            let waits = {
+                let mut catalog = self.catalog.lock().await;
+                if catalog.opening.is_empty() {
+                    break;
+                }
+                catalog
+                    .opening
+                    .values_mut()
+                    .map(|opening| {
+                        opening.cancelled = true;
+                        opening.complete.subscribe()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            for mut wait in waits {
+                if !*wait.borrow() {
+                    wait.changed().await.map_err(display)?;
+                }
+            }
+        }
+        let handles = {
+            let mut catalog = self.catalog.lock().await;
+            let active = std::mem::take(&mut catalog.active);
+            for handle in active.values() {
+                catalog
+                    .draining
+                    .insert(handle.key.clone(), Arc::clone(handle));
+            }
+            catalog.draining.values().cloned().collect::<Vec<_>>()
+        };
+        let mut failed_sessions = 0_usize;
+        let mut first_error = None;
+        for handle in handles {
+            if let Err(error) = handle.shutdown(deactivate).await {
+                failed_sessions += 1;
+                first_error
+                    .get_or_insert_with(|| format!("session {}: {error}", handle.key.session_id));
+            } else {
+                self.catalog.lock().await.draining.remove(&handle.key);
+            }
+        }
+        if let Some(error) = first_error {
+            Err(format!(
+                "Acyclic service shutdown failed for {failed_sessions} session(s); first error: {error}"
+            ))
+        } else {
+            self.lifecycle
+                .store(SERVICE_CLOSED, std::sync::atomic::Ordering::Release);
+            Ok(())
+        }
+    }
+
+    async fn shutdown(self) -> Result<(), String> {
+        let root_released = self.fs.local_root_release_barrier();
+        let deactivate = self
+            .shutdown_deactivates
+            .load(std::sync::atomic::Ordering::Acquire);
+        let result = self.drain_sessions(deactivate).await;
+        drop(self);
+        wait_for_root_release(root_released).await?;
+        result
+    }
+}
+
+impl ConcurrentControlRequestDispatcher for ConcurrentServiceControl {
+    async fn dispatch_request(&self, request: ControlRequest) -> Result<Value, String> {
+        if request.command == ControlCommand::Ping {
+            let catalog = self.catalog.lock().await;
+            let active_sessions = catalog.active.len();
+            let opening_sessions = catalog.opening.len();
+            let draining_sessions = catalog.draining.len();
+            return Ok(json!({
+                "identity": self.binary_identity,
+                "instanceId": self.instance_id,
+                "sessions": active_sessions + opening_sessions + draining_sessions,
+                "activeSessions": active_sessions,
+                "openingSessions": opening_sessions,
+                "drainingSessions": draining_sessions,
+            }));
+        }
+        if matches!(
+            request.command,
+            ControlCommand::Upgrade | ControlCommand::Shutdown
+        ) {
+            let expected = request.arguments.get("identity").and_then(Value::as_str);
+            if expected != Some(self.binary_identity.as_str()) {
+                return Err("upgrade request targets a different service binary".to_owned());
+            }
+            let expected_instance = request.arguments.get("instanceId").and_then(Value::as_str);
+            if expected_instance != Some(self.instance_id.as_str()) {
+                return Err("upgrade request targets a replacement service".to_owned());
+            }
+            let drain_id = request
+                .arguments
+                .get("drainId")
+                .and_then(Value::as_str)
+                .filter(|value| {
+                    !value.is_empty()
+                        && value.len() <= 128
+                        && value
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                })
+                .ok_or_else(|| "upgrade request has an invalid drain identity".to_owned())?;
+            let live_claims = {
+                let catalog = self.catalog.lock().await;
+                catalog.active.len() + catalog.opening.len() + catalog.draining.len()
+            };
+            if request.command == ControlCommand::Upgrade && live_claims != 0 {
+                return Err(format!(
+                    "cannot replace the Acyclic service while {live_claims} session lifecycle claim(s) may own live mounts"
+                ));
+            }
+            *self
+                .drain_id
+                .lock()
+                .map_err(|_| "service drain identity lock is poisoned".to_owned())? =
+                Some(drain_id.to_owned());
+            self.shutdown_deactivates.store(
+                request.command == ControlCommand::Shutdown,
+                std::sync::atomic::Ordering::Release,
+            );
+            self.lifecycle
+                .store(SERVICE_DRAINING, std::sync::atomic::Ordering::Release);
+            let notify = Arc::clone(&self.upgrade);
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                notify.notify_waiters();
+            });
+            return Ok(json!({ "draining": true }));
+        }
+        self.ensure_running()?;
+        if request.command == ControlCommand::Doctor {
+            parse_read_only_arguments(&request.argv)?;
+            let executable = executable_digests_async().await?;
+            let (session_claims, handles) = {
+                let catalog = self.catalog.lock().await;
+                (
+                    catalog.active.len() + catalog.opening.len() + catalog.draining.len(),
+                    catalog
+                        .active
+                        .values()
+                        .chain(catalog.draining.values())
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
+            };
+            let mut routes = 0;
+            let mut leases = 0;
+            let mut pending_recovery = false;
+            for handle in &handles {
+                if let Some(state) = handle.snapshot()? {
+                    routes += state.routes.len();
+                    leases += state.leases.len();
+                    pending_recovery |=
+                        !state.pending_discards.is_empty() || !state.pending.is_empty();
+                }
+            }
+            return doctor_report(
+                &self.data,
+                &self.binary_identity,
+                &executable.sha256,
+                &executable.blake3,
+                session_claims,
+                routes,
+                leases,
+                pending_recovery,
+            );
+        }
+        if request.command == ControlCommand::Hook {
+            let (host, event) = request
+                .name
+                .split_once(':')
+                .ok_or_else(|| "native hook request has no host/event pair".to_owned())?;
+            let session_id = hook_id(&request.arguments, "session_id", "sessionId")?;
+            if matches!(event, "SessionStart" | "sessionStart") {
+                let root =
+                    hook_root_path(&request.arguments).unwrap_or_else(|| request.cwd.clone());
+                let (_, output) = self.start_session(&session_id, host, root).await?;
+                return Ok(output);
+            }
+            if matches!(event, "SessionEnd" | "sessionEnd") {
+                self.end_session(&session_id, true).await?;
+                return Ok(json!({}));
+            }
+            return self.session(&session_id).await?.dispatch(request).await;
+        }
+        let handle = if let Some(handle) = self.route_session(&request.cwd).await? {
+            handle
+        } else {
+            let catalog = self.catalog.lock().await;
+            if !catalog.active.is_empty()
+                || !catalog.opening.is_empty()
+                || !catalog.draining.is_empty()
+            {
+                return Err("cwd is outside every registered Acyclic session; refusing service-assisted filesystem access".to_owned());
+            }
+            drop(catalog);
+            let canonical = request.cwd.canonicalize().map_err(display)?;
+            let session_id = format!(
+                "cwd:{}",
+                blake3::hash(canonical.as_os_str().to_string_lossy().as_bytes()).to_hex()
+            );
+            self.start_session(&session_id, "cli", canonical).await?.0
+        };
+        handle.dispatch(request).await
     }
 }
 
 impl ControlRequestDispatcher for ControlPlane {
     async fn dispatch_request(&mut self, request: ControlRequest) -> Result<Value, String> {
-        dispatch_plane_request(self, request).await
+        dispatch_session_request(self, request).await
     }
+}
+
+async fn dispatch_session_request(
+    control: &mut ControlPlane,
+    request: ControlRequest,
+) -> Result<Value, String> {
+    if request.command == ControlCommand::Hook {
+        let (host, event) = request
+            .name
+            .split_once(':')
+            .ok_or_else(|| "native hook request has no host/event pair".to_owned())?;
+        return dispatch_native_session_hook(control, host, event, request.arguments, &request.cwd)
+            .await;
+    }
+    let selected_cwd = selected_cli_cwd(&request)?;
+    let (invocation_caller, _) = control.route_from_cwd(&request.cwd)?;
+    let (selected_caller, _) = control.route_from_cwd(&selected_cwd)?;
+    if selected_caller != invocation_caller {
+        return Err("acyclic -C cannot cross workspace-context authority boundaries".to_owned());
+    }
+    let mut request = request;
+    request.cwd = selected_cwd;
+    request.arguments = Value::Null;
+    dispatch_plane_request(control, request).await
 }
 
 async fn dispatch_plane_request(
@@ -7062,9 +9082,12 @@ async fn dispatch_plane_request(
         ControlCommand::Ping => Ok(json!({})),
         ControlCommand::Doctor => {
             parse_read_only_arguments(&request.argv)?;
+            let executable = executable_digests_async().await?;
             doctor_report(
                 &control.config_root,
-                &service_identity()?,
+                &executable.service_identity,
+                &executable.sha256,
+                &executable.blake3,
                 1,
                 control.state.routes.len(),
                 control.state.leases.len(),
@@ -7194,10 +9217,53 @@ async fn dispatch_plane_request(
     }
 }
 
+#[cfg(test)]
 fn control_response(result: Result<Value, String>) -> Value {
     match result {
         Ok(result) => json!({"version":1,"ok":true,"result":result}),
         Err(error) => json!({"version":1,"ok":false,"error":error}),
+    }
+}
+
+fn uncorrelated_control_response(error: &str) -> Value {
+    json!({"version":2,"ok":false,"error":error})
+}
+
+fn invalid_control_request_response(request: &[u8], error: &serde_json::Error) -> Value {
+    let message = format!("invalid Acyclic control request: {error}");
+    let request_id = serde_json::from_slice::<Value>(request)
+        .ok()
+        .and_then(|value| value.get("requestId")?.as_str().map(str::to_owned))
+        .and_then(|value| control_protocol::RequestId::from_wire(value).ok());
+    match request_id {
+        Some(request_id) => control_response_for(&request_id, Err(message)),
+        None => uncorrelated_control_response(&message),
+    }
+}
+
+fn control_response_for(
+    request_id: &control_protocol::RequestId,
+    result: Result<Value, String>,
+) -> Value {
+    let response = match result {
+        Ok(result) => {
+            json!({"version":2,"requestId":request_id.as_str(),"ok":true,"result":result})
+        }
+        Err(error) => {
+            json!({"version":2,"requestId":request_id.as_str(),"ok":false,"error":error})
+        }
+    };
+    if serde_json::to_vec(&response)
+        .is_ok_and(|encoded| encoded.len().saturating_add(1) < MAXIMUM_CONTROL_MESSAGE_BYTES)
+    {
+        response
+    } else {
+        json!({
+            "version":2,
+            "requestId":request_id.as_str(),
+            "ok":false,
+            "error":"Acyclic control response exceeds the 4 MiB bound"
+        })
     }
 }
 
@@ -7235,34 +9301,66 @@ fn encode_control_response(response: &Value) -> Result<Vec<u8>, String> {
     if serde_json::to_writer(&mut bounded, response).is_ok() {
         return Ok(bounded.bytes);
     }
-    serde_json::to_vec(&control_response(Err(
-        "Acyclic control response exceeds the 4 MiB bound".to_owned(),
-    )))
-    .map_err(display)
+    let fallback = response
+        .get("requestId")
+        .and_then(Value::as_str)
+        .map_or_else(
+            || uncorrelated_control_response("Acyclic control response exceeds the 4 MiB bound"),
+            |request_id| {
+                json!({
+                    "version":2,
+                    "requestId":request_id,
+                    "ok":false,
+                    "error":"Acyclic control response exceeds the 4 MiB bound"
+                })
+            },
+        );
+    serde_json::to_vec(&fallback).map_err(display)
 }
 
 /// Unified Acyclic CLI, local service, Codex hook bridge, and installer.
 fn main() {
     if let Err(error) = main_result() {
+        if let Some((host, event)) = hook_invocation() {
+            let notice = format!(
+                "Acyclic is unavailable; this tool will run without an isolated workspace: {error}"
+            );
+            let response = if matches!(event.as_str(), "PreToolUse" | "preToolUse") {
+                if host == "copilot" {
+                    json!({
+                        "permissionDecision": "allow",
+                        "permissionDecisionReason": notice,
+                        "systemMessage": notice
+                    })
+                } else {
+                    json!({
+                        "systemMessage": notice,
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "allow",
+                            "permissionDecisionReason": notice,
+                            "additionalContext": notice
+                        }
+                    })
+                }
+            } else {
+                json!({"systemMessage": notice})
+            };
+            if serde_json::to_writer(io::stdout().lock(), &response).is_ok() {
+                return;
+            }
+        }
         eprintln!("{error}");
-        std::process::exit(hook_failure_exit_code());
+        std::process::exit(1);
     }
 }
 
-fn hook_failure_exit_code() -> i32 {
+fn hook_invocation() -> Option<(String, String)> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
-    let hook = arguments
+    arguments
         .windows(3)
-        .find(|arguments| arguments.first().is_some_and(|value| value == "__hook"));
-    if hook.is_some_and(|arguments| {
-        arguments
-            .get(2)
-            .is_some_and(|event| matches!(event.as_str(), "PreToolUse" | "preToolUse"))
-    }) {
-        2
-    } else {
-        1
-    }
+        .find(|arguments| arguments.first().is_some_and(|value| value == "__hook"))
+        .and_then(|arguments| Some((arguments.get(1)?.clone(), arguments.get(2)?.clone())))
 }
 
 fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -7326,7 +9424,8 @@ fn is_foreground_cli_invocation() -> bool {
 
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut arguments = env::args().skip(1).collect::<Vec<_>>();
-    let mut cwd = env::current_dir()?;
+    let invocation_cwd = env::current_dir()?.canonicalize()?;
+    let mut cwd = invocation_cwd.clone();
     if arguments.first().is_some_and(|argument| argument == "-C") {
         if arguments.len() < 2 {
             return Err(io::Error::other("acyclic -C requires a path").into());
@@ -7410,10 +9509,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "discard" => ControlCommand::Discard,
                 _ => unreachable!(),
             },
-            cwd,
+            cwd: invocation_cwd,
             argv: arguments.get(1..).unwrap_or_default().to_vec(),
             name: String::new(),
-            arguments: Value::Null,
+            arguments: cli_routing(cwd),
         };
         let response = send_cli_control_request(&data, &request)
             .await
@@ -7469,20 +9568,23 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             name: format!("{host}:{event}"),
             arguments: input,
         };
+        let envelope = prepare_control_envelope(&data, request)
+            .await
+            .map_err(io::Error::other)?;
         let response = if matches!(event.as_str(), "SessionStart" | "sessionStart") {
             // Session boundaries are the one cheap, deterministic place to advance
             // an idle service to the installed binary. Tool hooks stay on the direct
             // single-round-trip path, and a service with live mounts remains intact.
             ensure_service(&data).await.map_err(io::Error::other)?;
-            send_control_request(&data, &request)
+            send_control_envelope(&data, &envelope)
                 .await
                 .map_err(|error| io::Error::other(error.to_string()))?
         } else {
-            match send_control_request_once(&data, &request).await {
+            match send_control_envelope_once(&data, &envelope).await {
                 Ok(response) => response,
-                Err(ControlRequestError::Transport(_)) => {
+                Err(ControlRequestError::Unavailable(_)) => {
                     ensure_service(&data).await.map_err(io::Error::other)?;
-                    send_control_request(&data, &request)
+                    send_control_envelope(&data, &envelope)
                         .await
                         .map_err(|error| io::Error::other(error.to_string()))?
                 }
@@ -7564,11 +9666,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 fn default_data_directory() -> PathBuf {
     #[cfg(windows)]
     if let Some(root) = env::var_os("LOCALAPPDATA") {
-        return PathBuf::from(root).join("Acyclic").join("state-v2");
+        return PathBuf::from(root).join("Acyclic").join("state-v4");
     }
     #[cfg(not(windows))]
     if let Some(root) = env::var_os("XDG_STATE_HOME") {
-        return PathBuf::from(root).join("acyclic").join("state-v2");
+        return PathBuf::from(root).join("acyclic").join("state-v4");
     }
     #[cfg(not(windows))]
     if let Some(root) = env::var_os("HOME") {
@@ -7576,27 +9678,27 @@ fn default_data_directory() -> PathBuf {
             .join(".local")
             .join("state")
             .join("acyclic")
-            .join("state-v2");
+            .join("state-v4");
     }
-    env::temp_dir().join("acyclic-state-v2")
+    env::temp_dir().join("acyclic-state-v4")
 }
 
 fn service_identity() -> Result<String, String> {
-    let executable = env::current_exe().map_err(display)?;
-    service_identity_for(&executable)
+    service_identity_for(&env::current_exe().map_err(display)?)
 }
 
 fn service_identity_for(executable: &Path) -> Result<String, String> {
-    // Launchers and plugin caches can expose the same signed artifact at different paths. The
-    // service belongs to the artifact, not to one of those aliases; including the path caused
-    // identical clients to continuously drain and replace each other's service.
-    let value = format!("{}:{}", env!("CARGO_PKG_VERSION"), sha256_file(executable)?,);
-    Ok(blake3::hash(value.as_bytes()).to_hex().to_string())
+    Ok(service_identity_from_digest(&blake3_file(executable)?))
 }
 
-fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut file = fs::File::open(path).map_err(display)?;
-    let mut hasher = Sha256::new();
+fn service_identity_from_digest(digest: &str) -> String {
+    blake3::hash(format!("{}:{digest}", env!("CARGO_PKG_VERSION")).as_bytes())
+        .to_hex()
+        .to_string()
+}
+
+fn read_executable(executable: &Path, mut update: impl FnMut(&[u8])) -> Result<(), String> {
+    let mut file = fs::File::open(executable).map_err(display)?;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         let read = file.read(&mut buffer).map_err(display)?;
@@ -7606,25 +9708,51 @@ fn sha256_file(path: &Path) -> Result<String, String> {
         let chunk = buffer
             .get(..read)
             .ok_or_else(|| "binary hash read exceeded its buffer".to_owned())?;
-        hasher.update(chunk);
+        update(chunk);
     }
-    Ok(hex::encode(hasher.finalize()))
+    Ok(())
+}
+
+struct ExecutableDigests {
+    service_identity: String,
+    sha256: String,
+    blake3: String,
+}
+
+fn executable_digests() -> Result<ExecutableDigests, String> {
+    executable_digests_for(&env::current_exe().map_err(display)?)
+}
+
+async fn executable_digests_async() -> Result<ExecutableDigests, String> {
+    tokio::task::spawn_blocking(executable_digests)
+        .await
+        .map_err(display)?
+}
+
+fn executable_digests_for(executable: &Path) -> Result<ExecutableDigests, String> {
+    // Launchers and plugin caches can expose the same signed artifact at different paths. The
+    // service belongs to the artifact, not to one of those aliases; including the path caused
+    // identical clients to continuously drain and replace each other's service.
+    let mut sha256 = Sha256::new();
+    let mut blake3 = blake3::Hasher::new();
+    read_executable(executable, |chunk| {
+        sha256.update(chunk);
+        blake3.update(chunk);
+    })?;
+    let sha256 = hex::encode(sha256.finalize());
+    let blake3 = blake3.finalize().to_hex().to_string();
+    Ok(ExecutableDigests {
+        service_identity: service_identity_from_digest(&blake3),
+        sha256,
+        blake3,
+    })
 }
 
 fn blake3_file(path: &Path) -> Result<String, String> {
-    let mut file = fs::File::open(path).map_err(display)?;
     let mut hasher = blake3::Hasher::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let count = file.read(&mut buffer).map_err(display)?;
-        if count == 0 {
-            break;
-        }
-        let bytes = buffer
-            .get(..count)
-            .ok_or_else(|| "executable digest read exceeded its buffer".to_owned())?;
+    read_executable(path, |bytes| {
         hasher.update(bytes);
-    }
+    })?;
     Ok(hasher.finalize().to_hex().to_string())
 }
 
@@ -7655,10 +9783,10 @@ fn valid_platform_receipt(receipt: &Value, executable_blake3: &str) -> bool {
         "crash-detach-recovery",
         "checkout-and-git-untouched",
     ];
-    let required_kind = match env::consts::OS {
-        "linux" => "linux-fuse",
-        "macos" => "macos-nfs",
-        "windows" => "windows-projfs",
+    let (required_kind, provider_process_io_observable) = match env::consts::OS {
+        "linux" => ("linux-fuse", true),
+        "macos" => ("macos-nfs", true),
+        "windows" => ("windows-projfs", false),
         _ => return false,
     };
     let Some(document) = receipt.as_object() else {
@@ -7712,6 +9840,17 @@ fn valid_platform_receipt(receipt: &Value, executable_blake3: &str) -> bool {
             .and_then(|value| value.get("writable"))
             .and_then(Value::as_bool)
             != Some(true)
+        || capability
+            .and_then(|value| value.get("provider_process_io_observable"))
+            .and_then(Value::as_bool)
+            != Some(provider_process_io_observable)
+        || capability
+            .and_then(|value| value.get("session_isolation"))
+            .and_then(Value::as_str)
+            != Some("SharedProcess")
+        || capability
+            .and_then(|value| value.get("unavailable_reason"))
+            .is_none_or(|value| !value.is_null())
     {
         return false;
     }
@@ -7747,13 +9886,14 @@ fn codex_json(arguments: &[&str]) -> Result<Value, String> {
 fn doctor_report(
     data: &Path,
     identity: &str,
+    executable_sha256: &str,
+    executable_blake3: &str,
     sessions: usize,
     routes: usize,
     leases: usize,
     pending_recovery: bool,
 ) -> Result<Value, String> {
     let executable = env::current_exe().map_err(display)?;
-    let executable_sha256 = sha256_file(&executable)?;
     let mut checks = Vec::new();
     let binary_identity_path = executable
         .parent()
@@ -7767,7 +9907,7 @@ fn doctor_report(
             if installed.get("version").and_then(Value::as_str)
                 == Some(env!("CARGO_PKG_VERSION"))
                 && installed.get("sha256").and_then(Value::as_str)
-                    == Some(executable_sha256.as_str()) =>
+                    == Some(executable_sha256) =>
         {
             checks.push(doctor_check(
                 "binary",
@@ -7836,59 +9976,40 @@ fn doctor_report(
                 if marketplace_owned { "pass" } else { "fail" },
                 marketplace.display().to_string(),
             ));
-            let configured = codex_json(&["plugin", "marketplace", "list", "--json"])
-                .ok()
-                .and_then(|value| value.get("marketplaces").and_then(Value::as_array).cloned())
-                .into_iter()
-                .flatten()
-                .find(|entry| entry.get("name").and_then(Value::as_str) == Some("acyclic"));
-            let installed = codex_json(&[
-                "plugin",
-                "list",
-                "--marketplace",
-                "acyclic",
-                "--available",
-                "--json",
-            ])
-            .ok()
-            .and_then(|value| value.get("installed").and_then(Value::as_array).cloned())
-            .into_iter()
-            .flatten()
-            .find(|entry| entry.get("pluginId").and_then(Value::as_str) == Some("acyclic@acyclic"));
-            let configured_root = configured
-                .as_ref()
-                .and_then(|entry| entry.get("root"))
-                .and_then(Value::as_str)
-                .unwrap_or("unconfigured");
-            let configured_owned = Path::new(configured_root)
-                .canonicalize()
-                .ok()
-                .zip(root.canonicalize().ok())
-                .is_some_and(|(configured, packaged)| configured == packaged);
-            let installed_version = installed
-                .as_ref()
-                .and_then(|entry| entry.get("version"))
-                .and_then(Value::as_str)
-                .unwrap_or("not-installed");
+            let ownership = read_codex_ownership(&codex_ownership_path()).ok().flatten();
+            let configured_owned = ownership.as_ref().is_some_and(|ownership| {
+                ownership.version == 1
+                    && ownership
+                        .marketplace_root
+                        .canonicalize()
+                        .ok()
+                        .zip(root.canonicalize().ok())
+                        .is_some_and(|(configured, packaged)| configured == packaged)
+                    && plan_codex_config(ownership).is_ok()
+                    && codex_plugin_configuration_matches(ownership, root)
+            });
             checks.push(doctor_check(
                 "codex-install",
-                if configured_owned
-                    && installed.as_ref().is_some_and(|entry| {
-                        entry.get("installed").and_then(Value::as_bool) == Some(true)
-                            && entry.get("enabled").and_then(Value::as_bool) == Some(true)
-                            && entry.get("version").and_then(Value::as_str)
-                                == Some(env!("CARGO_PKG_VERSION"))
-                    })
-                {
-                    "pass"
-                } else {
-                    "fail"
-                },
-                format!("marketplace={configured_root} plugin-version={installed_version}"),
+                if configured_owned { "pass" } else { "fail" },
+                ownership.map_or_else(
+                    || "Acyclic has no Codex installation ownership record".to_owned(),
+                    |ownership| {
+                        format!(
+                            "marketplace={} plugin-version={}",
+                            ownership.marketplace_root.display(),
+                            env!("CARGO_PKG_VERSION")
+                        )
+                    },
+                ),
             ));
             let hooks = root.join("hooks/hooks.json");
             let mcp = root.join(".mcp.json");
             let launcher = root.join("bin/acyclic.js");
+            let native = root.join(if cfg!(windows) {
+                "bin/acyclic.exe"
+            } else {
+                "bin/acyclic"
+            });
             let hooks_valid = fs::read(&hooks)
                 .ok()
                 .filter(|bytes| bytes.len() <= 1024 * 1024)
@@ -7917,14 +10038,16 @@ fn doctor_report(
                                     .into_iter()
                                     .flatten()
                             })
-                            .filter_map(|hook| hook.get("command").and_then(Value::as_str))
-                            .any(|command| {
-                                command.contains("${PLUGIN_ROOT}/bin/acyclic.js")
-                                    && command.contains(&format!("__hook codex {event}"))
+                            .any(|hook| {
+                                hook.get("command").and_then(Value::as_str)
+                                    == Some(format!("\"${{PLUGIN_ROOT}}/bin/acyclic\" __hook codex {event}").as_str())
+                                    && (!cfg!(windows)
+                                        || hook.get("commandWindows").and_then(Value::as_str)
+                                            == Some(format!("& \"$env:PLUGIN_ROOT\\bin\\acyclic.exe\" __hook codex {event}").as_str()))
                             })
                     })
                 });
-            let command_valid = launcher.is_file() && !mcp.exists();
+            let command_valid = launcher.is_file() && native.is_file() && !mcp.exists();
             checks.push(doctor_check(
                 "hooks",
                 if hooks_valid { "pass" } else { "fail" },
@@ -7957,17 +10080,22 @@ fn doctor_report(
     let native = acyclic_fs::probe_native_mount();
     checks.push(doctor_check(
         "mount-backend",
-        if native.available && native.writable {
+        if native.available && native.writable && routes > 0 {
             "pass"
         } else {
             "warn"
         },
         format!(
-            "kind={:?} available={} writable={} provider-io-observable={}{}",
+            "kind={:?} available={} writable={} provider-io-observable={} qualification={}{}",
             native.kind,
             native.available,
             native.writable,
             native.provider_process_io_observable,
+            if routes > 0 {
+                "runtime-observed"
+            } else {
+                "first-spawn-runtime-check"
+            },
             native
                 .unavailable_reason
                 .as_deref()
@@ -8005,18 +10133,11 @@ fn doctor_report(
         env::consts::OS,
         env::consts::ARCH
     ));
-    let executable_blake3 = env::current_exe()
-        .map_err(display)
-        .and_then(|path| blake3_file(&path));
     let certified = fs::read(&receipt_path)
         .ok()
         .filter(|bytes| bytes.len() <= 1024 * 1024)
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .is_some_and(|receipt| {
-            executable_blake3
-                .as_deref()
-                .is_ok_and(|digest| valid_platform_receipt(&receipt, digest))
-        });
+        .is_some_and(|receipt| valid_platform_receipt(&receipt, executable_blake3));
     checks.push(doctor_check(
         "platform-certification",
         if certified { "pass" } else { "fail" },
@@ -8033,9 +10154,21 @@ fn doctor_report(
         .iter()
         .all(|check| check.get("status").and_then(Value::as_str) != Some("fail"));
     Ok(json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "ok": ok,
-        "certified": certified,
+        "capabilities": {
+            "nativeMount": {
+                "available": native.available,
+                "writable": native.writable,
+                "providerProcessIoObservable": native.provider_process_io_observable,
+                "sessionIsolation": format!("{:?}", native.session_isolation),
+                "qualifiedForThisBinary": certified,
+            },
+            "processConfinement": {
+                "qualified": false,
+                "reason": "requires a separate passing host/platform escape qualification"
+            }
+        },
         "version": env!("CARGO_PKG_VERSION"),
         "platform": {"os": env::consts::OS, "arch": env::consts::ARCH},
         "checks": checks,
@@ -8043,13 +10176,22 @@ fn doctor_report(
 }
 
 struct ServiceLock {
-    _lifecycle_file: fs::File,
+    lifecycle_file: fs::File,
     data_file: Option<fs::File>,
 }
 
 impl ServiceLock {
     fn prepare_purge(&mut self) {
-        self.data_file.take();
+        if let Some(file) = self.data_file.take() {
+            let _ = file.unlock();
+        }
+    }
+}
+
+impl Drop for ServiceLock {
+    fn drop(&mut self) {
+        self.prepare_purge();
+        let _ = self.lifecycle_file.unlock();
     }
 }
 
@@ -8166,7 +10308,7 @@ fn acquire_service_lock(data: &Path) -> Result<Option<ServiceLock>, String> {
         .map_err(display)?;
     match file.try_lock_exclusive() {
         Ok(()) => Ok(Some(ServiceLock {
-            _lifecycle_file: lifecycle_file,
+            lifecycle_file,
             data_file: Some(file),
         })),
         Err(error) if service_lock_is_contended(&error) => Ok(None),
@@ -8184,11 +10326,11 @@ async fn run_service(data: PathBuf) -> Result<(), String> {
 
 async fn shutdown_service_endpoint(
     endpoint: ControlEndpoint,
-    control: Arc<AsyncMutex<ServiceControl>>,
+    control: Arc<ConcurrentServiceControl>,
 ) -> Result<(), String> {
     let endpoint_result = endpoint.shutdown().await;
     let control_result = match Arc::try_unwrap(control) {
-        Ok(control) => control.into_inner().shutdown().await,
+        Ok(control) => control.shutdown().await,
         Err(_) => Err("control service retained an active request during shutdown".to_owned()),
     };
     endpoint_result.and(control_result)
@@ -8198,22 +10340,31 @@ async fn run_service_with_identity(
     data: PathBuf,
     identity_override: Option<String>,
 ) -> Result<(), String> {
-    let Some(_lock) = acquire_service_lock(&data)? else {
+    let Some(lock) = acquire_service_lock(&data)? else {
         return Ok(());
     };
-    let mut service = ServiceControl::open(data.clone()).await?;
+    let result = run_locked_service(data, identity_override).await;
+    drop(lock);
+    result
+}
+
+async fn run_locked_service(
+    data: PathBuf,
+    identity_override: Option<String>,
+) -> Result<(), String> {
+    let mut service = ConcurrentServiceControl::open(data.clone()).await?;
     if let Some(identity) = identity_override {
-        service.binary_identity = identity;
+        service.resources.binary_identity = identity;
     }
     let upgrade = Arc::clone(&service.upgrade);
     let drain_id = Arc::clone(&service.drain_id);
     let instance_id = service.instance_id.clone();
-    let control = Arc::new(AsyncMutex::new(service));
+    let control = Arc::new(service);
     let endpoint = match start_control_endpoint(Arc::clone(&control), &data).await {
         Ok(endpoint) => endpoint,
         Err(endpoint_error) => {
             let control_result = match Arc::try_unwrap(control) {
-                Ok(control) => control.into_inner().shutdown().await,
+                Ok(control) => control.shutdown().await,
                 Err(_) => Err("failed endpoint retained the control service".to_owned()),
             };
             return match control_result {
@@ -8258,20 +10409,18 @@ async fn service_is_ready_for_identity(data: &Path, identity: &str) -> Result<bo
             if active.get("identity").and_then(Value::as_str) == Some(identity) {
                 return Ok(true);
             }
-            // A mounted workspace is owned by the process serving it. Replacing that
-            // process invalidates every open cwd and file handle in the mount. Keep a
-            // protocol-compatible older service alive until its final session ends;
-            // the next invocation can then perform the binary handoff safely.
-            if active.get("sessions").and_then(Value::as_u64).unwrap_or(0) > 0 {
-                return Ok(true);
-            }
             let fence = drain_service(data, None).await?;
             clear_obsolete_runtime_state(data)?;
             drop(fence);
             Ok(false)
         }
-        Err(ControlRequestError::Transport(_)) => {
+        Err(ControlRequestError::Unavailable(_)) => {
             drop(drain_service(data, None).await?);
+            Ok(false)
+        }
+        Err(ControlRequestError::ProtocolMismatch(_)) => {
+            drop(drain_legacy_service(data, None).await?);
+            clear_obsolete_runtime_state(data)?;
             Ok(false)
         }
         Err(error) => Err(format!(
@@ -8280,20 +10429,81 @@ async fn service_is_ready_for_identity(data: &Path, identity: &str) -> Result<bo
     }
 }
 
+async fn drain_legacy_service(
+    data: &Path,
+    expected_identity: Option<&str>,
+) -> Result<ServiceLock, String> {
+    let ping = ping_request()?;
+    let active = send_legacy_control_request_once(data, &ping)
+        .await
+        .map_err(|error| format!("cannot identify the legacy Acyclic service: {error}"))?;
+    let binary_identity = active
+        .get("identity")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "legacy Acyclic service omitted its identity".to_owned())?
+        .to_owned();
+    let instance_id = active
+        .get("instanceId")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let drain_identity = instance_id
+        .clone()
+        .unwrap_or_else(|| binary_identity.clone());
+    if expected_identity.is_some_and(|expected| expected != drain_identity) {
+        return Err("refusing to drain a replacement Acyclic service".to_owned());
+    }
+    let published_identity = fs::read_to_string(data.join("service.identity"))
+        .map_err(|error| format!("cannot authenticate the legacy Acyclic service: {error}"))?;
+    if published_identity != drain_identity {
+        return Err("legacy Acyclic endpoint does not match its published identity".to_owned());
+    }
+    let drain_id = uuid::Uuid::new_v4().to_string();
+    let arguments = instance_id.as_ref().map_or_else(
+        || json!({"identity":binary_identity,"drainId":drain_id}),
+        |instance_id| {
+            json!({"identity":binary_identity,"instanceId":instance_id,"drainId":drain_id})
+        },
+    );
+    let shutdown = ControlRequest {
+        version: 1,
+        command: ControlCommand::Shutdown,
+        cwd: env::current_dir().map_err(display)?,
+        argv: Vec::new(),
+        name: String::new(),
+        arguments,
+    };
+    match send_legacy_control_request_once(data, &shutdown).await {
+        Ok(_) | Err(ControlRequestError::Indeterminate(_)) => {}
+        Err(error) => return Err(format!("cannot drain the legacy Acyclic service: {error}")),
+    }
+    let mut endpoint_closed = false;
+    for _ in 0..250 {
+        if !endpoint_closed && send_legacy_control_request_once(data, &ping).await.is_err() {
+            endpoint_closed = true;
+        }
+        if endpoint_closed && let Some(lock) = acquire_service_lock(data)? {
+            verify_service_drain_completion(data, &drain_identity, &drain_id)?;
+            return Ok(lock);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Err("legacy Acyclic service did not drain; durable state was preserved".to_owned())
+}
+
 fn clear_obsolete_runtime_state(data: &Path) -> Result<(), String> {
-    for name in ["core-state", "filesystem", "sessions", "workspaces"] {
+    for name in ["core-state", "filesystem", "sessions", "w"] {
         remove_tree_checked(data, &data.join(name))?;
     }
     Ok(())
 }
 
 async fn ensure_service(data: &Path) -> Result<(), String> {
+    fs::create_dir_all(data).map_err(display)?;
     let identity = service_identity()?;
     if service_is_ready_for_identity(data, &identity).await? {
         return Ok(());
     }
     let ping = ping_request()?;
-    fs::create_dir_all(data).map_err(display)?;
     spawn_service_process(&env::current_exe().map_err(display)?)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     let last = loop {
@@ -8338,42 +10548,33 @@ async fn send_cli_control_request(data: &Path, request: &ControlRequest) -> Resu
     for attempt in 0..10 {
         match send_control_request(data, &ping).await {
             Ok(active)
-                if active.get("identity").and_then(Value::as_str) == Some(identity.as_str())
-                    || active.get("sessions").and_then(Value::as_u64).unwrap_or(0) > 0 =>
+                if active.get("identity").and_then(Value::as_str) == Some(identity.as_str()) =>
             {
                 return send_control_request(data, request)
                     .await
                     .map_err(|error| error.to_string());
             }
-            Err(ControlRequestError::Transport(_)) if attempt < 9 => {
+            Err(ControlRequestError::Unavailable(_)) if attempt < 9 => {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
-            Ok(_) | Err(ControlRequestError::Transport(_)) => break,
+            Ok(_) | Err(ControlRequestError::Unavailable(_)) => break,
             Err(error) => return Err(error.to_string()),
         }
     }
     ensure_service(data).await?;
-    match send_control_request(data, request).await {
-        Ok(response) => Ok(response),
-        Err(ControlRequestError::Transport(_)) => {
-            ensure_service(data).await?;
-            send_control_request(data, request)
-                .await
-                .map_err(|error| error.to_string())
-        }
-        Err(error) => Err(error.to_string()),
-    }
+    send_control_request(data, request)
+        .await
+        .map_err(|error| error.to_string())
 }
 
-fn control_request_from_argv(
-    mut cwd: PathBuf,
-    mut argv: Vec<String>,
-) -> Result<ControlRequest, String> {
+fn control_request_from_argv(cwd: &Path, mut argv: Vec<String>) -> Result<ControlRequest, String> {
+    let cwd = cwd.canonicalize().map_err(display)?;
+    let mut selected_cwd = cwd.clone();
     if argv.first().is_some_and(|argument| argument == "-C") {
         if argv.len() < 2 {
             return Err("acyclic -C requires a path".to_owned());
         }
-        cwd = PathBuf::from(argv.remove(1))
+        selected_cwd = PathBuf::from(argv.remove(1))
             .canonicalize()
             .map_err(display)?;
         argv.remove(0);
@@ -8391,22 +10592,21 @@ fn control_request_from_argv(
         cwd,
         argv: argv.get(1..).unwrap_or_default().to_vec(),
         name: String::new(),
-        arguments: Value::Null,
+        arguments: cli_routing(selected_cwd),
     })
 }
 
 async fn run_rpc_proxy(
     data: &Path,
-    reader: impl BufRead,
+    mut reader: impl BufRead,
     mut writer: impl Write,
     commandless: bool,
 ) -> Result<(), String> {
-    for line in reader.lines() {
-        let line = line.map_err(display)?;
-        if line.trim().is_empty() {
+    while let Some(line) = read_bounded_rpc_line(&mut reader)? {
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let request: Value = serde_json::from_str(&line).map_err(display)?;
+        let request: Value = serde_json::from_slice(&line).map_err(display)?;
         let Some(id) = request.get("id").cloned() else {
             continue;
         };
@@ -8439,7 +10639,7 @@ async fn run_rpc_proxy(
                                 .ok_or_else(|| "acyclic argv entries must be strings".to_owned())
                         })
                         .collect::<Result<Vec<_>, _>>()?;
-                    control_request_from_argv(env::current_dir().map_err(display)?, argv)?
+                    control_request_from_argv(&env::current_dir().map_err(display)?, argv)?
                 } else {
                     return Err("this Acyclic MCP endpoint does not expose that tool".to_owned());
                 };
@@ -8463,16 +10663,42 @@ async fn run_rpc_proxy(
     Ok(())
 }
 
+fn read_bounded_rpc_line(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>, String> {
+    let mut line = Vec::new();
+    let read = reader
+        .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
+        .read_until(b'\n', &mut line)
+        .map_err(display)?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if line.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
+        return Err("Acyclic MCP request exceeds the maximum frame size".to_owned());
+    }
+    if line.last() == Some(&b'\n') {
+        line.pop();
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+    }
+    Ok(Some(line))
+}
+
 #[derive(Debug)]
 enum ControlRequestError {
-    Transport(String),
+    Unavailable(String),
+    Indeterminate(String),
+    ProtocolMismatch(String),
     Response(String),
 }
 
 impl std::fmt::Display for ControlRequestError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Transport(message) | Self::Response(message) => formatter.write_str(message),
+            Self::Unavailable(message)
+            | Self::Indeterminate(message)
+            | Self::ProtocolMismatch(message)
+            | Self::Response(message) => formatter.write_str(message),
         }
     }
 }
@@ -8481,59 +10707,147 @@ async fn send_control_request(
     data: &Path,
     request: &ControlRequest,
 ) -> Result<Value, ControlRequestError> {
-    send_control_request_with_attempts(data, request, 50).await
+    let envelope = prepare_control_envelope(data, request.clone())
+        .await
+        .map_err(ControlRequestError::Unavailable)?;
+    send_control_envelope(data, &envelope).await
+}
+
+async fn send_control_envelope(
+    data: &Path,
+    envelope: &ControlEnvelope<ControlRequest>,
+) -> Result<Value, ControlRequestError> {
+    send_control_envelope_with_attempts(data, envelope, 50, control_request_wait(&envelope.request))
+        .await
+}
+
+fn control_request_wait(request: &ControlRequest) -> std::time::Duration {
+    match request.command {
+        ControlCommand::Ping | ControlCommand::Upgrade | ControlCommand::Shutdown => {
+            CONTROL_PROBE_WAIT
+        }
+        ControlCommand::Hook if request.name.ends_with(":SessionEnd") => CONTROL_PROBE_WAIT,
+        ControlCommand::Hook => CONTROL_HOOK_WAIT,
+        ControlCommand::Doctor
+        | ControlCommand::Git
+        | ControlCommand::Agents
+        | ControlCommand::Discard => CONTROL_COMMAND_WAIT,
+    }
 }
 
 async fn send_control_request_once(
     data: &Path,
     request: &ControlRequest,
 ) -> Result<Value, ControlRequestError> {
-    send_control_request_with_attempts(data, request, 1).await
+    let envelope = prepare_control_envelope(data, request.clone())
+        .await
+        .map_err(ControlRequestError::Unavailable)?;
+    send_control_envelope_once(data, &envelope).await
 }
 
-async fn send_control_request_with_attempts(
+async fn send_control_envelope_once(
     data: &Path,
-    request: &ControlRequest,
-    windows_connect_attempts: usize,
+    envelope: &ControlEnvelope<ControlRequest>,
 ) -> Result<Value, ControlRequestError> {
+    send_control_envelope_with_attempts(data, envelope, 1, CONTROL_PROBE_WAIT).await
+}
+
+async fn prepare_control_envelope(
+    data: &Path,
+    request: ControlRequest,
+) -> Result<ControlEnvelope<ControlRequest>, String> {
+    if matches!(
+        request.command,
+        ControlCommand::Ping | ControlCommand::Doctor | ControlCommand::Agents
+    ) {
+        Ok(ControlEnvelope::ephemeral(request))
+    } else {
+        let data = data.to_path_buf();
+        tokio::task::spawn_blocking(move || ControlEnvelope::new_for_install(&data, request))
+            .await
+            .map_err(|error| format!("Acyclic control operation allocator failed: {error}"))?
+    }
+}
+
+async fn send_control_envelope_with_attempts(
+    data: &Path,
+    envelope: &ControlEnvelope<ControlRequest>,
+    windows_connect_attempts: usize,
+    response_wait: std::time::Duration,
+) -> Result<Value, ControlRequestError> {
+    let deadline = tokio::time::Instant::now() + response_wait;
     #[cfg(not(windows))]
     let _ = windows_connect_attempts;
-    let mut encoded = serde_json::to_vec(request)
-        .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
+    let mut encoded = serde_json::to_vec(envelope)
+        .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
     encoded.push(b'\n');
     #[cfg(target_os = "linux")]
-    match send_linux_mailbox_request(data, &encoded).await {
+    match send_linux_mailbox_request(
+        data,
+        &encoded,
+        &envelope.request_id,
+        remaining_control_wait(deadline)?,
+    )
+    .await
+    {
         Ok(response) => return Ok(response),
-        Err(error @ ControlRequestError::Response(_)) => return Err(error),
-        Err(ControlRequestError::Transport(_)) => {
+        Err(error @ ControlRequestError::Unavailable(_)) => {
             // Releases before the mailbox transport served this same authenticated
             // endpoint over a private Unix socket. During a live binary handoff the
             // old process must keep its mounts, so a new client falls back until that
             // process exits. New services expose only the mailbox.
+            // Once a mailbox exists, the request may already have executed. Never
+            // replay a potentially mutating command over the legacy socket.
+            if linux_control_mailbox_path(data).is_dir() {
+                return Err(error);
+            }
         }
+        Err(error) => return Err(error),
     }
     #[cfg(target_os = "linux")]
     let socket_path = unix_control_socket_path(data);
     #[cfg(target_os = "linux")]
-    let stream = tokio::net::UnixStream::connect(socket_path)
-        .await
-        .map_err(|error| {
-            ControlRequestError::Transport(format!(
-                "Acyclic service is not running through either Linux control transport: {error}"
-            ))
-        })?;
+    let stream = tokio::time::timeout(
+        CONTROL_PROBE_WAIT.min(remaining_control_wait(deadline)?),
+        tokio::net::UnixStream::connect(socket_path),
+    )
+    .await
+    .map_err(|_| {
+        ControlRequestError::Unavailable(
+            "Acyclic service connection exceeded the probe deadline".to_owned(),
+        )
+    })?
+    .map_err(|error| {
+        ControlRequestError::Unavailable(format!(
+            "Acyclic service is not running through either Linux control transport: {error}"
+        ))
+    })?;
     #[cfg(target_os = "linux")]
-    return exchange_control_stream(stream, &encoded).await;
+    return exchange_control_stream(
+        stream,
+        &encoded,
+        &envelope.request_id,
+        remaining_control_wait(deadline)?,
+    )
+    .await;
     #[cfg(not(target_os = "linux"))]
     {
         #[cfg(all(unix, not(target_os = "linux")))]
         let socket_path = unix_control_socket_path(data);
         #[cfg(all(unix, not(target_os = "linux")))]
-        let stream = tokio::net::UnixStream::connect(socket_path)
-            .await
-            .map_err(|error| {
-                ControlRequestError::Transport(format!("Acyclic service is not running: {error}"))
-            })?;
+        let stream = tokio::time::timeout(
+            CONTROL_PROBE_WAIT.min(remaining_control_wait(deadline)?),
+            tokio::net::UnixStream::connect(socket_path),
+        )
+        .await
+        .map_err(|_| {
+            ControlRequestError::Unavailable(
+                "Acyclic service connection exceeded the probe deadline".to_owned(),
+            )
+        })?
+        .map_err(|error| {
+            ControlRequestError::Unavailable(format!("Acyclic service is not running: {error}"))
+        })?;
         #[cfg(windows)]
         let stream = {
             let pipe = format!(
@@ -8543,6 +10857,7 @@ async fn send_control_request_with_attempts(
             let mut last = None;
             let mut connected = None;
             for _ in 0..windows_connect_attempts {
+                let remaining = remaining_control_wait(deadline)?;
                 match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe) {
                     Ok(client) => {
                         connected = Some(client);
@@ -8550,12 +10865,13 @@ async fn send_control_request_with_attempts(
                     }
                     Err(error) => {
                         last = Some(error);
-                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(20).min(remaining))
+                            .await;
                     }
                 }
             }
             connected.ok_or_else(|| {
-                ControlRequestError::Transport(format!(
+                ControlRequestError::Unavailable(format!(
                     "Acyclic service is not running: {}",
                     last.map_or_else(
                         || "unknown connection failure".to_owned(),
@@ -8564,55 +10880,170 @@ async fn send_control_request_with_attempts(
                 ))
             })?
         };
-        exchange_control_stream(stream, &encoded).await
+        exchange_control_stream(
+            stream,
+            &encoded,
+            &envelope.request_id,
+            remaining_control_wait(deadline)?,
+        )
+        .await
     }
+}
+
+fn remaining_control_wait(
+    deadline: tokio::time::Instant,
+) -> Result<std::time::Duration, ControlRequestError> {
+    let now = tokio::time::Instant::now();
+    if now >= deadline {
+        return Err(ControlRequestError::Unavailable(
+            "Acyclic service did not answer before the request deadline".to_owned(),
+        ));
+    }
+    Ok(deadline - now)
 }
 
 async fn exchange_control_stream(
     mut stream: impl AsyncRead + AsyncWrite + Unpin,
     encoded: &[u8],
+    request_id: &control_protocol::RequestId,
+    maximum_wait: std::time::Duration,
 ) -> Result<Value, ControlRequestError> {
-    stream
-        .write_all(encoded)
+    let exchange = async {
+        stream
+            .write_all(encoded)
+            .await
+            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+        stream
+            .flush()
+            .await
+            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+        let mut response = Vec::new();
+        let mut reader = BufReader::new(stream).take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64);
+        reader
+            .read_until(b'\n', &mut response)
+            .await
+            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+        Ok::<_, ControlRequestError>(response)
+    };
+    let mut response = tokio::time::timeout(maximum_wait, exchange)
         .await
-        .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
-    stream
-        .flush()
-        .await
-        .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
-    let mut response = Vec::new();
-    let mut reader = BufReader::new(stream).take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64);
-    reader
-        .read_until(b'\n', &mut response)
-        .await
-        .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
+        .map_err(|_| {
+            ControlRequestError::Indeterminate(
+                "Acyclic service did not answer before the request deadline".to_owned(),
+            )
+        })??;
     if response.len() > MAXIMUM_CONTROL_MESSAGE_BYTES || response.last() != Some(&b'\n') {
-        return Err(ControlRequestError::Transport(
+        return Err(ControlRequestError::Indeterminate(
             "invalid response from Acyclic service".to_owned(),
         ));
     }
     response.pop();
-    decode_control_response(&response)
+    decode_control_response(&response, request_id)
+}
+
+async fn exchange_legacy_control_stream(
+    mut stream: impl AsyncRead + AsyncWrite + Unpin,
+    request: &ControlRequest,
+) -> Result<Value, ControlRequestError> {
+    let mut encoded = serde_json::to_vec(request)
+        .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
+    encoded.push(b'\n');
+    let exchange = async {
+        stream
+            .write_all(&encoded)
+            .await
+            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+        stream
+            .flush()
+            .await
+            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+        let mut response = Vec::new();
+        BufReader::new(stream)
+            .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
+            .read_until(b'\n', &mut response)
+            .await
+            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+        Ok::<_, ControlRequestError>(response)
+    };
+    let mut response = tokio::time::timeout(CONTROL_PROBE_WAIT, exchange)
+        .await
+        .map_err(|_| {
+            ControlRequestError::Indeterminate(
+                "legacy Acyclic service did not answer before the probe deadline".to_owned(),
+            )
+        })??;
+    if response.len() > MAXIMUM_CONTROL_MESSAGE_BYTES || response.last() != Some(&b'\n') {
+        return Err(ControlRequestError::Indeterminate(
+            "invalid response from legacy Acyclic service".to_owned(),
+        ));
+    }
+    response.pop();
+    let response: Value = serde_json::from_slice(&response)
+        .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+    if response.get("version").and_then(Value::as_u64) != Some(1) {
+        return Err(ControlRequestError::ProtocolMismatch(
+            "legacy Acyclic service returned an unexpected protocol version".to_owned(),
+        ));
+    }
+    if response.get("ok").and_then(Value::as_bool) == Some(true) {
+        Ok(response.get("result").cloned().unwrap_or(Value::Null))
+    } else {
+        Err(ControlRequestError::Response(
+            response
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("legacy Acyclic service request failed")
+                .to_owned(),
+        ))
+    }
+}
+
+async fn send_legacy_control_request_once(
+    data: &Path,
+    request: &ControlRequest,
+) -> Result<Value, ControlRequestError> {
+    #[cfg(unix)]
+    {
+        let stream = tokio::time::timeout(
+            CONTROL_PROBE_WAIT,
+            tokio::net::UnixStream::connect(unix_control_socket_path(data)),
+        )
+        .await
+        .map_err(|_| {
+            ControlRequestError::Unavailable(
+                "legacy Acyclic service connection exceeded the probe deadline".to_owned(),
+            )
+        })?
+        .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
+        exchange_legacy_control_stream(stream, request).await
+    }
+    #[cfg(windows)]
+    {
+        let pipe = format!(
+            r"\\.\pipe\acyclic-{}",
+            short_hash(data.as_os_str().to_string_lossy().as_bytes())
+        );
+        let stream = tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(&pipe)
+            .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
+        exchange_legacy_control_stream(stream, request).await
+    }
 }
 
 #[cfg(target_os = "linux")]
 async fn send_linux_mailbox_request(
     data: &Path,
     encoded: &[u8],
+    request_id: &control_protocol::RequestId,
+    maximum_wait: std::time::Duration,
 ) -> Result<Value, ControlRequestError> {
-    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let mailbox = linux_control_mailbox_path(data);
-    let metadata = fs::symlink_metadata(&mailbox).map_err(|error| {
-        ControlRequestError::Transport(format!("Acyclic service is not running: {error}"))
-    })?;
-    if !metadata.file_type().is_dir() || metadata.permissions().mode() & 0o777 != 0o700 {
-        return Err(ControlRequestError::Transport(
-            "Acyclic service mailbox is not a private directory".to_owned(),
-        ));
-    }
+    let deadline = tokio::time::Instant::now() + maximum_wait;
+    let cleanup = Arc::new(Mutex::new(None::<LinuxMailboxExchange>));
+    let cleanup_after_request = Arc::clone(&cleanup);
     let nonce = format!(
         "{}:{}:{}",
         std::process::id(),
@@ -8622,40 +11053,153 @@ async fn send_linux_mailbox_request(
             .as_nanos(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
-    let exchange = mailbox.join(short_hash(nonce.as_bytes()));
-    let mut builder = fs::DirBuilder::new();
-    builder.mode(0o700);
-    builder.create(&exchange).map_err(|error| {
-        ControlRequestError::Transport(format!("cannot create Acyclic control exchange: {error}"))
-    })?;
-    let result = async {
-        let pending_request = exchange.join("request.pending");
-        fs::write(&pending_request, encoded)
-            .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
-        fs::rename(pending_request, exchange.join("request"))
-            .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
-        let response_path = exchange.join("response");
-        for _ in 0..1_000 {
-            match fs::read(&response_path) {
-                Ok(response) => return decode_control_response(&response),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+    let exchange_name = short_hash(nonce.as_bytes());
+    let result = tokio::time::timeout_at(deadline, async {
+        let mailbox_directory = Arc::new(
+            rustix::fs::open(
+                &mailbox,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .map_err(|error| {
+                ControlRequestError::Unavailable(format!("Acyclic service is not running: {error}"))
+            })?,
+        );
+        let metadata = rustix::fs::fstat(&*mailbox_directory)
+            .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
+        if !rustix::fs::FileType::from_raw_mode(metadata.st_mode).is_dir()
+            || metadata.st_mode & 0o777 != 0o700
+        {
+            return Err(ControlRequestError::Unavailable(
+                "Acyclic service mailbox is not a private directory".to_owned(),
+            ));
+        }
+        rustix::fs::mkdirat(
+            &*mailbox_directory,
+            &exchange_name,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR | rustix::fs::Mode::XUSR,
+        )
+        .map_err(|error| {
+            ControlRequestError::Unavailable(format!(
+                "cannot create Acyclic control exchange: {error}"
+            ))
+        })?;
+        if let Ok(mut slot) = cleanup.lock() {
+            *slot = Some(LinuxMailboxExchange {
+                mailbox: Arc::clone(&mailbox_directory),
+                exchange: None,
+                name: exchange_name.clone(),
+            });
+        }
+        let exchange_directory = Arc::new(
+            rustix::fs::openat(
+                &*mailbox_directory,
+                &exchange_name,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?,
+        );
+        if let Ok(mut slot) = cleanup.lock() {
+            *slot = Some(LinuxMailboxExchange {
+                mailbox: Arc::clone(&mailbox_directory),
+                exchange: Some(Arc::clone(&exchange_directory)),
+                name: exchange_name.clone(),
+            });
+        }
+        let request_file = rustix::fs::openat(
+            &*exchange_directory,
+            "request.pending",
+            rustix::fs::OFlags::WRONLY
+                | rustix::fs::OFlags::CREATE
+                | rustix::fs::OFlags::EXCL
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        )
+        .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
+        let mut request_file = tokio::fs::File::from_std(std::fs::File::from(request_file));
+        request_file
+            .write_all(encoded)
+            .await
+            .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
+        request_file
+            .flush()
+            .await
+            .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
+        drop(request_file);
+        rustix::fs::renameat(
+            &*exchange_directory,
+            "request.pending",
+            &*exchange_directory,
+            "request",
+        )
+        .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+        let response = loop {
+            match read_linux_control_file_at(&exchange_directory, "response").await {
+                Ok(response) if response.len() <= MAXIMUM_CONTROL_MESSAGE_BYTES => break response,
+                Ok(_) => {
+                    return Err(ControlRequestError::Indeterminate(
+                        "Acyclic control response exceeds the 4 MiB bound".to_owned(),
+                    ));
+                }
+                Err(error)
+                    if error.kind() == io::ErrorKind::NotFound
+                        && tokio::time::Instant::now() < deadline =>
+                {
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }
-                Err(error) => return Err(ControlRequestError::Transport(error.to_string())),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return Err(ControlRequestError::Indeterminate(
+                        "Acyclic service did not answer the filesystem control request".to_owned(),
+                    ));
+                }
+                Err(error) => return Err(ControlRequestError::Indeterminate(error.to_string())),
             }
-        }
-        Err(ControlRequestError::Transport(
-            "Acyclic service did not answer the filesystem control request".to_owned(),
-        ))
-    }
+        };
+        decode_control_response(&response, request_id)
+    })
     .await;
-    let _ = fs::remove_dir_all(exchange);
-    result
+    let exchange = cleanup_after_request
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take());
+    if let Some(exchange) = exchange {
+        tokio::task::spawn_blocking(move || remove_linux_mailbox_exchange(&exchange));
+    }
+    match result {
+        Ok(result) => result,
+        Err(_) => Err(ControlRequestError::Indeterminate(
+            "Acyclic service did not answer before the filesystem control deadline".to_owned(),
+        )),
+    }
 }
 
-fn decode_control_response(response: &[u8]) -> Result<Value, ControlRequestError> {
+fn decode_control_response(
+    response: &[u8],
+    request_id: &control_protocol::RequestId,
+) -> Result<Value, ControlRequestError> {
     let response: Value = serde_json::from_slice(response)
-        .map_err(|error| ControlRequestError::Transport(error.to_string()))?;
+        .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+    if response.get("requestId").and_then(Value::as_str) != Some(request_id.as_str()) {
+        if response.get("version").and_then(Value::as_u64) == Some(1)
+            && response.get("ok").and_then(Value::as_bool).is_some()
+        {
+            return Err(ControlRequestError::ProtocolMismatch(
+                "the running Acyclic service uses the legacy control protocol".to_owned(),
+            ));
+        }
+        return Err(ControlRequestError::Indeterminate(
+            "Acyclic control response does not match the request identity".to_owned(),
+        ));
+    }
     if response.get("ok").and_then(Value::as_bool) == Some(true) {
         Ok(response.get("result").cloned().unwrap_or(Value::Null))
     } else {
@@ -9005,7 +11549,7 @@ async fn drain_service(
                     .to_owned(),
             )
         }
-        Err(ControlRequestError::Transport(_)) => match acquire_service_lock(data)? {
+        Err(ControlRequestError::Unavailable(_)) => match acquire_service_lock(data)? {
             Some(lock) => {
                 if let Some(expected) = expected_identity {
                     let marker = fs::read_to_string(data.join("service.identity"))
@@ -9026,6 +11570,9 @@ async fn drain_service(
                     .to_owned(),
             ),
         },
+        Err(ControlRequestError::ProtocolMismatch(_)) => {
+            drain_legacy_service(data, expected_identity).await
+        }
         Err(error) => Err(format!(
             "cannot safely identify the Acyclic service: {error}"
         )),
@@ -9051,7 +11598,7 @@ async fn service_status(data: &Path) -> Result<Value, String> {
                 .ok_or_else(|| "reachable service omitted its identity".to_owned())?
                 .to_owned(),
         ),
-        Err(ControlRequestError::Transport(_)) => None,
+        Err(ControlRequestError::Unavailable(_)) => None,
         Err(error) => return Err(format!("cannot inspect the Acyclic service: {error}")),
     };
     let lock = acquire_service_lock(data)?;
@@ -9635,6 +12182,48 @@ fn codex_config_path() -> Result<PathBuf, String> {
         .join("config.toml"))
 }
 
+fn codex_plugin_configuration_matches(
+    ownership: &CodexPluginOwnership,
+    packaged_root: &Path,
+) -> bool {
+    let Some(config_path) = ownership.config_path.as_ref() else {
+        return false;
+    };
+    let Ok(document) = fs::read_to_string(config_path)
+        .map_err(display)
+        .and_then(|text| text.parse::<toml_edit::DocumentMut>().map_err(display))
+    else {
+        return false;
+    };
+    let marketplace = document
+        .get("marketplaces")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|marketplaces| marketplaces.get("acyclic"))
+        .and_then(toml_edit::Item::as_table);
+    let configured_root = marketplace
+        .and_then(|marketplace| marketplace.get("source"))
+        .and_then(toml_edit::Item::as_str)
+        .map(Path::new);
+    let source_is_local = marketplace
+        .and_then(|marketplace| marketplace.get("source_type"))
+        .and_then(toml_edit::Item::as_str)
+        == Some("local");
+    let enabled = document
+        .get("plugins")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|plugins| plugins.get("acyclic@acyclic"))
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|plugin| plugin.get("enabled"))
+        .and_then(toml_edit::Item::as_bool)
+        == Some(true);
+    source_is_local
+        && enabled
+        && configured_root
+            .and_then(|configured| configured.canonicalize().ok())
+            .zip(packaged_root.canonicalize().ok())
+            .is_some_and(|(configured, packaged)| configured == packaged)
+}
+
 fn read_optional_text(path: &Path) -> Result<Option<String>, String> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
@@ -9659,7 +12248,7 @@ fn codex_permission_profile(data: &Path, base: &str) -> Result<toml_edit::Table,
     profile.insert("extends", toml_edit::value(base));
     let roots = toml_table(&mut profile, "workspace_roots")?;
     roots.insert(
-        data.join("workspaces").to_string_lossy().as_ref(),
+        data.join("w").to_string_lossy().as_ref(),
         toml_edit::value(true),
     );
     #[cfg(unix)]
@@ -9688,7 +12277,7 @@ fn codex_profile_matches(profile: &toml_edit::Table, data: &Path, base_profile: 
             && roots.is_some_and(|roots| {
                 roots.len() == 2
                     && roots
-                        .get(data.join("workspaces").to_string_lossy().as_ref())
+                        .get(data.join("w").to_string_lossy().as_ref())
                         .and_then(toml_edit::Item::as_bool)
                         == Some(true)
                     && roots
@@ -9707,7 +12296,7 @@ fn codex_profile_matches(profile: &toml_edit::Table, data: &Path, base_profile: 
             && roots.is_some_and(|roots| {
                 roots.len() == 1
                     && roots
-                        .get(data.join("workspaces").to_string_lossy().as_ref())
+                        .get(data.join("w").to_string_lossy().as_ref())
                         .and_then(toml_edit::Item::as_bool)
                         == Some(true)
             })
@@ -10461,87 +13050,6 @@ fn claude_desktop_config() -> Result<PathBuf, String> {
 }
 
 #[cfg(test)]
-async fn run_rpc(
-    data: PathBuf,
-    reader: impl BufRead,
-    mut writer: impl Write,
-) -> Result<(), String> {
-    let control = ControlPlane::open(data.clone()).await?;
-    let root_released = control.fs.local_root_release_barrier();
-    let control = Arc::new(AsyncMutex::new(control));
-    let endpoint = start_control_endpoint(Arc::clone(&control), &data).await?;
-    let service = async {
-        for line in reader.lines() {
-            let line = line.map_err(display)?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let request: Value = serde_json::from_str(&line).map_err(display)?;
-            let mut locked = control.lock().await;
-            let Some(response) = rpc_response(&mut locked, &request).await? else {
-                continue;
-            };
-            drop(locked);
-            serde_json::to_writer(&mut writer, &response).map_err(display)?;
-            writer.write_all(b"\n").map_err(display)?;
-            writer.flush().map_err(display)?;
-        }
-        Ok(())
-    }
-    .await;
-    let endpoint_shutdown = endpoint.shutdown().await;
-    let control = Arc::try_unwrap(control)
-        .map_err(|_| "control endpoint retained an active request during shutdown".to_owned())?
-        .into_inner();
-    let control_shutdown = control.shutdown().await;
-    let root_release = wait_for_root_release(root_released).await;
-    // LocalFs owns the exclusive Stream journal. Release it before reporting
-    // graceful EOF so a replacement host can reopen the same plugin data.
-    service
-        .and(endpoint_shutdown)
-        .and(control_shutdown)
-        .and(root_release)
-}
-
-#[cfg(test)]
-async fn rpc_response(
-    control: &mut ControlPlane,
-    request: &Value,
-) -> Result<Option<Value>, String> {
-    let Some(id) = request.get("id").cloned() else {
-        return Ok(None);
-    };
-    let method = request.get("method").and_then(Value::as_str).unwrap_or("");
-    let response = match method {
-        "initialize" => {
-            json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"acyclic","version":env!("CARGO_PKG_VERSION")}}})
-        }
-        "ping" => json!({"jsonrpc":"2.0","id":id,"result":{}}),
-        "tools/list" => json!({"jsonrpc":"2.0","id":id,"result":{"tools":public_tools(false)}}),
-        "tools/call" => {
-            let params = request.get("params").cloned().unwrap_or(Value::Null);
-            let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-            let arguments = params
-                .get("arguments")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            match control.call(name, arguments).await {
-                Ok(result) => {
-                    json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":serde_json::to_string(&result).map_err(display)?}]}})
-                }
-                Err(error) => {
-                    json!({"jsonrpc":"2.0","id":id,"result":{"isError":true,"content":[{"type":"text","text":error}]}})
-                }
-            }
-        }
-        _ => {
-            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"method not found"}})
-        }
-    };
-    Ok(Some(response))
-}
-
-#[cfg(test)]
 #[allow(
     clippy::expect_used,
     clippy::indexing_slicing,
@@ -10550,7 +13058,469 @@ async fn rpc_response(
 )]
 mod tests {
     use super::*;
-    use acyclic_fs::{GitCommand, OperationWindowCoordinator, WorkspaceGraph};
+    use acyclic_fs::GitCommand;
+
+    fn root_repository_workspace_id(control: &ControlPlane) -> [u8; 16] {
+        control.state.roots[&root_key(WorkspaceRootId::from_bytes(control.state.root_id))]
+            .repository_workspace_id
+    }
+
+    async fn active_root_workspace_id(control: &ControlPlane) -> acyclic_fs::WorkspaceId {
+        let root_id = WorkspaceRootId::from_bytes(control.state.root_id);
+        control
+            .distributed
+            .contexts()
+            .resolve(WorkspaceContextId::from_bytes(
+                control.state.root_context_id,
+            ))
+            .await
+            .expect("root context")
+            .roots[&root_id]
+            .workspace_id
+    }
+
+    async fn root_has_file_contents(
+        control: &ControlPlane,
+        portable_name: &str,
+        expected: &[u8],
+    ) -> bool {
+        let Ok(workspace) = control
+            .distributed
+            .workspace(active_root_workspace_id(control).await)
+            .await
+        else {
+            return false;
+        };
+        let Ok(head) = workspace.head().await else {
+            return false;
+        };
+        let Ok(page) = head.list_directory("/", None, 1024).await else {
+            return false;
+        };
+        let limits = VolumeLimits::default();
+        let Some(path) = page.entries.into_iter().find_map(|entry| {
+            let path = NamespacePath::new(vec![entry.name], limits).ok()?;
+            (namespace_path_text(&path).ok()?.trim_start_matches('/') == portable_name)
+                .then_some(path)
+        }) else {
+            return false;
+        };
+        let Ok(lookup) = head
+            .lookup_paths(&[path], WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+        else {
+            return false;
+        };
+        matches!(
+            lookup.value.as_slice(),
+            [Some(acyclic_fs::kernel::FileRecord {
+                payload: acyclic_fs::kernel::FilePayload::InlineRegular(data),
+                ..
+            })] if data.as_bytes() == expected
+        )
+    }
+
+    #[test]
+    fn native_posix_names_are_presented_when_they_are_valid_utf8() {
+        use acyclic_fs::kernel::LogicalName;
+
+        let limits = VolumeLimits::default();
+        let readable = LogicalName::new(
+            NameEncoding::PosixBytes,
+            b"shared.txt".to_vec(),
+            limits.maximum_component_bytes,
+        )
+        .expect("valid POSIX name");
+        let invalid = LogicalName::new(
+            NameEncoding::PosixBytes,
+            vec![0xff],
+            limits.maximum_component_bytes,
+        )
+        .expect("valid non-UTF-8 POSIX name");
+        assert_eq!(
+            namespace_path_text(&NamespacePath::new(vec![readable], limits).expect("path"))
+                .expect("readable native name"),
+            "/shared.txt"
+        );
+        assert!(
+            namespace_path_text(&NamespacePath::new(vec![invalid], limits).expect("path")).is_err()
+        );
+    }
+
+    fn route_path(route: &Route) -> PathBuf {
+        route.active_path().expect("route active path")
+    }
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "taking ownership keeps temporary json! values ergonomic at every fixture call site"
+    )]
+    fn native_hook_request(
+        host: &str,
+        event: &str,
+        session_id: &str,
+        cwd: &Path,
+        extra: Value,
+    ) -> ControlRequest {
+        let mut arguments = extra.as_object().cloned().unwrap_or_default();
+        arguments.insert("session_id".to_owned(), json!(session_id));
+        arguments.insert("cwd".to_owned(), json!(cwd));
+        ControlRequest {
+            version: 1,
+            command: ControlCommand::Hook,
+            cwd: cwd.to_path_buf(),
+            argv: Vec::new(),
+            name: format!("{host}:{event}"),
+            arguments: Value::Object(arguments),
+        }
+    }
+
+    #[test]
+    fn concurrent_service_isolates_sessions_and_fences_reused_ids() {
+        run_large_stack("concurrent-service", concurrent_service_case);
+    }
+
+    async fn concurrent_service_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root_a = temporary.path().join("root-a");
+        let root_b = temporary.path().join("root-b");
+        fs::create_dir_all(&root_a).expect("root a");
+        fs::create_dir_all(&root_b).expect("root b");
+        let service = ConcurrentServiceControl::open(temporary.path().join("state"))
+            .await
+            .expect("service");
+        for (session, root) in [("a", &root_a), ("b", &root_b)] {
+            service
+                .dispatch_request(native_hook_request(
+                    "claude-code",
+                    "SessionStart",
+                    session,
+                    root,
+                    json!({}),
+                ))
+                .await
+                .expect("session start");
+        }
+
+        let handle_a = service.session("a").await.expect("session a");
+        let resume_a = handle_a.pause().await;
+        let request_b = ControlRequest {
+            version: 1,
+            command: ControlCommand::Agents,
+            cwd: root_b.clone(),
+            argv: Vec::new(),
+            name: String::new(),
+            arguments: Value::Null,
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            service.dispatch_request(request_b),
+        )
+        .await
+        .expect("session b must not queue behind session a")
+        .expect("session b request");
+        let _ = resume_a.send(());
+
+        let first_epoch = handle_a.key.epoch;
+        service.end_session("a", true).await.expect("end a");
+        service
+            .dispatch_request(native_hook_request(
+                "claude-code",
+                "SessionStart",
+                "a",
+                &root_a,
+                json!({}),
+            ))
+            .await
+            .expect("resume a");
+        let resumed = service.session("a").await.expect("resumed a");
+        assert!(resumed.key.epoch > first_epoch);
+        assert!(!handle_a.is_active());
+
+        service.drain_sessions(true).await.expect("service drain");
+    }
+
+    #[test]
+    fn accepted_session_operation_survives_waiter_cancellation() {
+        run_large_stack(
+            "accepted-session-operation",
+            accepted_session_operation_case,
+        );
+    }
+
+    async fn accepted_session_operation_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        fs::create_dir_all(&root).expect("root");
+        let service = Arc::new(
+            ConcurrentServiceControl::open(temporary.path().join("state"))
+                .await
+                .expect("service"),
+        );
+        service
+            .dispatch_request(native_hook_request(
+                "codex",
+                "SessionStart",
+                "session",
+                &root,
+                json!({}),
+            ))
+            .await
+            .expect("session start");
+        let handle = service.session("session").await.expect("session");
+        let resume = handle.pause().await;
+        let service_for_request = Arc::clone(&service);
+        let root_for_request = root.clone();
+        let waiter = tokio::spawn(async move {
+            service_for_request
+                .dispatch_request(native_hook_request(
+                    "codex",
+                    "UserPromptSubmit",
+                    "session",
+                    &root_for_request,
+                    json!({"turn_id":"durable-turn"}),
+                ))
+                .await
+        });
+        tokio::task::yield_now().await;
+        waiter.abort();
+        let _ = resume.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if handle
+                    .snapshot()
+                    .expect("snapshot")
+                    .is_some_and(|state| state.root_turns.contains("durable-turn"))
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("accepted operation must complete after waiter cancellation");
+        service.drain_sessions(true).await.expect("service drain");
+    }
+
+    #[test]
+    fn authenticated_shutdown_acknowledges_before_session_drain() {
+        run_large_stack("shutdown-ack-before-drain", shutdown_ack_before_drain_case);
+    }
+
+    async fn shutdown_ack_before_drain_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        let data = temporary.path().join("state");
+        fs::create_dir_all(&root).expect("root");
+        let service = ConcurrentServiceControl::open(data.clone())
+            .await
+            .expect("service");
+        service
+            .dispatch_request(native_hook_request(
+                "codex",
+                "SessionStart",
+                "session",
+                &root,
+                json!({}),
+            ))
+            .await
+            .expect("session start");
+        let handle = service.session("session").await.expect("session");
+        let resume = handle.pause().await;
+        let shutdown = ControlRequest {
+            version: 1,
+            command: ControlCommand::Shutdown,
+            cwd: root,
+            argv: Vec::new(),
+            name: String::new(),
+            arguments: json!({
+                "identity": service.binary_identity,
+                "instanceId": service.instance_id,
+                "drainId": "scheduled-shutdown",
+            }),
+        };
+        let acknowledgement = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            service.dispatch_request(shutdown),
+        )
+        .await
+        .expect("shutdown must acknowledge before the actor resumes")
+        .expect("authenticated shutdown");
+        assert_eq!(acknowledgement["draining"], true);
+        assert_eq!(
+            service.lifecycle.load(std::sync::atomic::Ordering::Acquire),
+            SERVICE_DRAINING
+        );
+        let drain = tokio::spawn(async move { service.shutdown().await });
+        tokio::task::yield_now().await;
+        assert!(!drain.is_finished(), "paused actor must delay actual drain");
+        resume.send(()).expect("resume session actor");
+        tokio::time::timeout(std::time::Duration::from_secs(10), drain)
+            .await
+            .expect("drain completes")
+            .expect("drain task")
+            .expect("service shutdown");
+        let state = load_state(
+            &data
+                .join("sessions")
+                .join(blake3::hash(b"session").to_hex().as_str()),
+        )
+        .expect("terminal session state");
+        assert!(!state.active, "explicit shutdown must deactivate sessions");
+    }
+
+    #[test]
+    fn session_close_is_fifo_idempotent_and_durable() {
+        run_large_stack("session-close-order", session_close_order_case);
+    }
+
+    #[test]
+    fn saturated_session_data_queue_reserves_shutdown_capacity() {
+        run_large_stack("session-saturated-close", session_saturated_close_case);
+    }
+
+    async fn session_saturated_close_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        fs::create_dir_all(&root).expect("root");
+        let service = Arc::new(
+            ConcurrentServiceControl::open(temporary.path().join("state"))
+                .await
+                .expect("service"),
+        );
+        service
+            .dispatch_request(native_hook_request(
+                "codex",
+                "SessionStart",
+                "session",
+                &root,
+                json!({}),
+            ))
+            .await
+            .expect("session start");
+        let handle = service.session("session").await.expect("session");
+        let resume = handle.pause().await;
+        let mut operations = Vec::new();
+        for _ in 0..SESSION_DATA_CAPACITY {
+            let handle = Arc::clone(&handle);
+            let root = root.clone();
+            operations.push(tokio::spawn(async move {
+                handle
+                    .dispatch(ControlRequest {
+                        version: 1,
+                        command: ControlCommand::Ping,
+                        cwd: root,
+                        argv: Vec::new(),
+                        name: String::new(),
+                        arguments: Value::Null,
+                    })
+                    .await
+            }));
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while handle.data_slots.available_permits() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("data queue saturation");
+        let overflow = handle
+            .dispatch(ControlRequest {
+                version: 1,
+                command: ControlCommand::Ping,
+                cwd: root,
+                argv: Vec::new(),
+                name: String::new(),
+                arguments: Value::Null,
+            })
+            .await;
+        assert_eq!(
+            overflow.expect_err("overflow must fail"),
+            "Acyclic session operation queue is full"
+        );
+        let close_service = Arc::clone(&service);
+        let close = tokio::spawn(async move { close_service.end_session("session", true).await });
+        tokio::task::yield_now().await;
+        assert_eq!(
+            handle.state.load(std::sync::atomic::Ordering::Acquire),
+            SESSION_CLOSING
+        );
+        let _ = resume.send(());
+        for operation in operations {
+            operation.await.expect("operation task").expect("operation");
+        }
+        close.await.expect("close task").expect("close");
+        assert_eq!(
+            handle.state.load(std::sync::atomic::Ordering::Acquire),
+            SESSION_CLOSED
+        );
+    }
+
+    async fn session_close_order_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        fs::create_dir_all(&root).expect("root");
+        let service = Arc::new(
+            ConcurrentServiceControl::open(temporary.path().join("state"))
+                .await
+                .expect("service"),
+        );
+        service
+            .dispatch_request(native_hook_request(
+                "codex",
+                "SessionStart",
+                "session",
+                &root,
+                json!({}),
+            ))
+            .await
+            .expect("session start");
+        let handle = service.session("session").await.expect("session");
+        let resume = handle.pause().await;
+
+        let operation_service = Arc::clone(&service);
+        let operation_root = root.clone();
+        let operation = tokio::spawn(async move {
+            operation_service
+                .dispatch_request(native_hook_request(
+                    "codex",
+                    "UserPromptSubmit",
+                    "session",
+                    &operation_root,
+                    json!({"turn_id":"before-close"}),
+                ))
+                .await
+        });
+        tokio::task::yield_now().await;
+        let close_service = Arc::clone(&service);
+        let close = tokio::spawn(async move { close_service.end_session("session", true).await });
+        tokio::task::yield_now().await;
+        let duplicate_service = Arc::clone(&service);
+        let duplicate =
+            tokio::spawn(async move { duplicate_service.end_session("session", true).await });
+        let _ = resume.send(());
+
+        operation.await.expect("operation task").expect("operation");
+        close.await.expect("close task").expect("close");
+        duplicate
+            .await
+            .expect("duplicate task")
+            .expect("duplicate close");
+        service
+            .end_session("session", true)
+            .await
+            .expect("late duplicate close");
+
+        let state = load_state(
+            &service
+                .data
+                .join("sessions")
+                .join(blake3::hash(b"session").to_hex().as_str()),
+        )
+        .expect("terminal state");
+        assert!(!state.active);
+        assert!(state.root_turns.contains("before-close"));
+    }
 
     #[test]
     fn compatibility_commit_keeps_the_lazy_workspace_snapshot() {
@@ -10668,6 +13638,83 @@ mod tests {
         assert_eq!(registry.live_roots().await, 1);
     }
 
+    #[test]
+    fn shared_root_observations_publish_monotonic_source_epochs() {
+        run_large_stack("shared-root-observations", shared_root_observations_case);
+    }
+
+    async fn shared_root_observations_case() {
+        use acyclic_fs::{WatchEpoch, WatchInvalidationReason, WatchSequence};
+        use std::sync::mpsc;
+
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        fs::create_dir(&root).expect("root");
+        let shared = SharedRootRegistry::default()
+            .acquire(&root, SharedRootAdmission::Fresh)
+            .await
+            .expect("shared physical root");
+        let (first_entered_tx, first_entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let first_root = Arc::clone(&shared);
+        let first = std::thread::spawn(move || {
+            first_root.observe_with(|| {
+                first_entered_tx
+                    .send(())
+                    .expect("first observation entered");
+                release_rx.recv().expect("release first observation");
+                Ok(WatchBatch::RescanRequired {
+                    epoch: WatchEpoch::from_u64(1),
+                    reason: WatchInvalidationReason::NativeRescanRequired,
+                })
+            })
+        });
+        first_entered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("first observation reached watcher poll");
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+        let (second_entered_tx, second_entered_rx) = mpsc::channel();
+        let second_root = Arc::clone(&shared);
+        let second = std::thread::spawn(move || {
+            second_started_tx.send(()).expect("second thread started");
+            second_root.observe_with(|| {
+                second_entered_tx
+                    .send(())
+                    .expect("second observation entered");
+                Ok(WatchBatch::Changes {
+                    epoch: WatchEpoch::from_u64(1),
+                    first_sequence: WatchSequence::from_u64(1),
+                    next_sequence: WatchSequence::from_u64(1),
+                    changes: Vec::new(),
+                })
+            })
+        });
+        second_started_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("second observer started");
+        assert!(
+            second_entered_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "second observation must wait for the first publication"
+        );
+        release_tx.send(()).expect("release first observation");
+        let first = first
+            .join()
+            .expect("first thread")
+            .expect("first observation");
+        let second = second
+            .join()
+            .expect("second thread")
+            .expect("second observation");
+        assert_eq!(second.prior_source.epoch, first.source.epoch);
+        assert_eq!(second.source.epoch, first.source.epoch);
+        assert_eq!(
+            shared.reference.lock().expect("published reference").epoch,
+            second.source.epoch
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn shared_root_rejects_live_path_replacement() {
@@ -10690,8 +13737,18 @@ mod tests {
         let Err(error) = registry.acquire(&root, SharedRootAdmission::Fresh).await else {
             panic!("replacement must fail closed");
         };
-        assert!(error.contains("changed identity"), "{error}");
+        assert!(
+            error.contains("identity") && error.contains("changed"),
+            "{error}"
+        );
         drop(held);
+        registry.prune().await;
+        let replacement = registry
+            .acquire(&root, SharedRootAdmission::Fresh)
+            .await
+            .expect("released registration must not pin the old root identity");
+        assert_eq!(registry.live_roots().await, 1);
+        drop(replacement);
     }
 
     async fn shared_service_case() {
@@ -10738,15 +13795,39 @@ mod tests {
             })
             .await
             .expect("second session on same root");
+        let first_context = service.sessions["a"]
+            .distributed
+            .contexts()
+            .resolve(WorkspaceContextId::from_bytes(
+                service.sessions["a"].state.root_context_id,
+            ))
+            .await
+            .expect("first root context");
+        let second_context = service.sessions["same-root"]
+            .distributed
+            .contexts()
+            .resolve(WorkspaceContextId::from_bytes(
+                service.sessions["same-root"].state.root_context_id,
+            ))
+            .await
+            .expect("second root context");
         assert_ne!(
-            service.sessions["a"].state.root_workspace_name,
-            service.sessions["same-root"].state.root_workspace_name
+            first_context
+                .roots
+                .values()
+                .next()
+                .expect("first root")
+                .workspace_name,
+            second_context
+                .roots
+                .values()
+                .next()
+                .expect("second root")
+                .workspace_name
         );
         assert_ne!(
-            service.sessions["a"].state.root_repository_workspace_id,
-            service.sessions["same-root"]
-                .state
-                .root_repository_workspace_id
+            root_repository_workspace_id(&service.sessions["a"]),
+            root_repository_workspace_id(&service.sessions["same-root"])
         );
         let root_a_key = root_key(WorkspaceRootId::from_bytes(
             service.sessions["a"].state.root_id,
@@ -10796,7 +13877,7 @@ mod tests {
                 }))
                 .await
                 .expect("child start");
-            control.state.routes["child"].path.clone()
+            route_path(&control.state.routes["child"])
         };
         assert!(
             service
@@ -10810,6 +13891,44 @@ mod tests {
                 .is_err(),
             "a child mount must never be registered as another session's physical root"
         );
+        let error = service
+            .dispatch_request(ControlRequest {
+                version: 1,
+                command: ControlCommand::Agents,
+                cwd: child_path.clone(),
+                argv: Vec::new(),
+                name: String::new(),
+                arguments: cli_routing(root_a.clone()),
+            })
+            .await
+            .expect_err("a child must not select its parent with -C");
+        assert!(error.contains("authority boundaries"), "{error}");
+        let error = service
+            .dispatch_request(ControlRequest {
+                version: 1,
+                command: ControlCommand::Agents,
+                cwd: root_a.clone(),
+                argv: Vec::new(),
+                name: String::new(),
+                arguments: cli_routing(child_path.clone()),
+            })
+            .await
+            .expect_err("a root must inspect descendants through agent refs, not -C");
+        assert!(
+            error.contains("authority boundaries") || error.contains("multiple Acyclic sessions"),
+            "{error}"
+        );
+        service
+            .dispatch_request(ControlRequest {
+                version: 1,
+                command: ControlCommand::Agents,
+                cwd: child_path.clone(),
+                argv: Vec::new(),
+                name: String::new(),
+                arguments: cli_routing(child_path.clone()),
+            })
+            .await
+            .expect("a child may select its own mounted context");
         {
             let control = service.sessions.get_mut("a").expect("session a");
             control
@@ -10832,6 +13951,10 @@ mod tests {
         }
 
         fs::write(root_a.join("shared.txt"), b"shared update").expect("shared root update");
+        service.sessions["a"].physical_roots[&root_a_key]
+            .source
+            .inner()
+            .invalidate();
         for session_id in ["a", "same-root"] {
             let root_agent = service.sessions[session_id].state.root_agent_id.clone();
             let mut observed = false;
@@ -10843,19 +13966,12 @@ mod tests {
                     .sync_agent(&root_agent)
                     .await
                     .expect("shared root reconciliation");
-                let control = &service.sessions[session_id];
-                let workspace = control
-                    .distributed
-                    .workspace(acyclic_fs::WorkspaceId::from_bytes(
-                        control.state.root_repository_workspace_id,
-                    ))
-                    .await
-                    .expect("session root workspace");
-                let head = workspace.head().await.expect("session root head");
-                if head
-                    .read("/shared.txt", 1024)
-                    .await
-                    .is_ok_and(|bytes| bytes.as_ref() == b"shared update")
+                if root_has_file_contents(
+                    &service.sessions[session_id],
+                    "shared.txt",
+                    b"shared update",
+                )
+                .await
                 {
                     observed = true;
                     break;
@@ -10870,6 +13986,10 @@ mod tests {
 
         fs::write(root_a.join("recovered.txt"), b"recovered update")
             .expect("failed-consumer root update");
+        service.sessions["a"].physical_roots[&root_a_key]
+            .source
+            .inner()
+            .invalidate();
         service
             .sessions
             .get_mut("a")
@@ -10904,21 +14024,12 @@ mod tests {
                 .sync_agent(&root_agent)
                 .await
                 .expect("reconcile after peer capture failure");
-            let control = &service.sessions["same-root"];
-            let workspace = control
-                .distributed
-                .workspace(acyclic_fs::WorkspaceId::from_bytes(
-                    control.state.root_repository_workspace_id,
-                ))
-                .await
-                .expect("same-root workspace");
-            if workspace
-                .head()
-                .await
-                .expect("same-root head")
-                .read("/recovered.txt", 1024)
-                .await
-                .is_ok_and(|bytes| bytes.as_ref() == b"recovered update")
+            if root_has_file_contents(
+                &service.sessions["same-root"],
+                "recovered.txt",
+                b"recovered update",
+            )
+            .await
             {
                 recovered = true;
                 break;
@@ -10962,7 +14073,8 @@ mod tests {
             )
             .await
             .expect("first session");
-        let first_identity = service.sessions["first"].state.root_source_identity;
+        let first_state = &service.sessions["first"].state;
+        let first_identity = first_state.roots[&hex::encode(first_state.root_id)].source_identity;
         service
             .dispatch_native_hook("codex", "SessionEnd", json!({"session_id":"first"}), &root)
             .await
@@ -10979,7 +14091,9 @@ mod tests {
             .await
             .expect("second session");
         assert_eq!(
-            service.sessions["second"].state.root_source_identity,
+            service.sessions["second"].state.roots
+                [&hex::encode(service.sessions["second"].state.root_id)]
+                .source_identity,
             first_identity
         );
         service.shutdown().await.expect("shutdown");
@@ -11028,7 +14142,6 @@ mod tests {
 
         let mut conflicting = load_state(&older).expect("older state");
         conflicting.active = true;
-        conflicting.root_source_identity = [9; 16];
         for binding in conflicting.roots.values_mut() {
             binding.source_identity = [9; 16];
         }
@@ -11079,7 +14192,11 @@ mod tests {
                 .next()
                 .expect("session")
                 .state
-                .root_path,
+                .roots
+                .values()
+                .next()
+                .expect("root binding")
+                .path,
             root.canonicalize().expect("canonical root")
         );
         service.shutdown().await.expect("shutdown");
@@ -11174,6 +14291,35 @@ mod tests {
         run_large_stack("cursor-hook-e2e", cursor_hook_case);
     }
 
+    #[test]
+    fn host_capability_profiles_never_conflate_routing_with_confinement() {
+        for host in ["codex", "claude-code"] {
+            let profile = host_adapter_profile(host);
+            assert_eq!(
+                profile.child_workspaces,
+                ChildWorkspaceSupport::RecursiveToolRouting
+            );
+            assert!(profile.stable_child_identity);
+            let guidance = guidance_for(host);
+            assert!(guidance.contains("routing"));
+            assert!(guidance.contains("not process-level confinement"));
+            assert!(!guidance.contains("subagents isolated"));
+        }
+        let copilot = host_adapter_profile("copilot");
+        assert_eq!(
+            copilot.child_workspaces,
+            ChildWorkspaceSupport::RootLifecycleOnly
+        );
+        assert!(!copilot.stable_child_identity);
+        for host in ["cursor", "opencode", "unknown"] {
+            assert_eq!(
+                host_adapter_profile(host).child_workspaces,
+                ChildWorkspaceSupport::CliOnly
+            );
+            assert!(guidance_for(host).contains("CLI-only"));
+        }
+    }
+
     async fn cursor_hook_case() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let root = temporary.path().join("root");
@@ -11201,7 +14347,13 @@ mod tests {
         assert!(guidance.contains("CLI-only"));
         assert!(!guidance.contains("native subagents isolated"));
         assert_eq!(
-            service.sessions["cursor-session"].state.root_path,
+            service.sessions["cursor-session"]
+                .state
+                .roots
+                .values()
+                .next()
+                .expect("root binding")
+                .path,
             root.canonicalize().expect("canonical root")
         );
         service.shutdown().await.expect("shutdown");
@@ -11252,9 +14404,7 @@ mod tests {
             .await
             .expect("child start");
         assert!(child.to_string().contains("acyclic git"));
-        let child_path = service.sessions["session"].state.routes["child"]
-            .path
-            .clone();
+        let child_path = route_path(&service.sessions["session"].state.routes["child"]);
         assert!(
             service
                 .dispatch_native_hook(
@@ -11377,9 +14527,7 @@ mod tests {
             )
             .await
             .expect("child start");
-        let child_path = service.sessions["session"].state.routes["child"]
-            .path
-            .clone();
+        let child_path = route_path(&service.sessions["session"].state.routes["child"]);
         let routed = service
             .dispatch_native_hook(
                 "claude-code",
@@ -11489,7 +14637,11 @@ mod tests {
             )
             .await
             .expect("duplicate child stop");
-        assert!(service.sessions["session"].state.routes["child"].stopped);
+        assert!(
+            service.sessions["session"].state.routes["child"]
+                .lifecycle
+                .is_frozen()
+        );
         service
             .dispatch_native_hook(
                 "claude-code",
@@ -11504,7 +14656,10 @@ mod tests {
             )
             .await
             .expect("child resume");
-        assert!(!service.sessions["session"].state.routes["child"].stopped);
+        assert_eq!(
+            service.sessions["session"].state.routes["child"].lifecycle,
+            RouteLifecycle::Active
+        );
         let context_id = service.sessions["session"].state.root_context_id;
         service
             .dispatch_native_hook(
@@ -11611,9 +14766,7 @@ mod tests {
             )
             .await
             .expect("child start");
-        let child = service.sessions["session"].state.routes["child"]
-            .path
-            .clone();
+        let child = route_path(&service.sessions["session"].state.routes["child"]);
         let routed = service
             .dispatch_native_hook(
                 "codex",
@@ -11691,6 +14844,11 @@ mod tests {
     }
 
     #[test]
+    fn root_registration_intents_recover_before_native_reopen() {
+        run_large_stack("core-root-recovery", core_root_recovery_case);
+    }
+
+    #[test]
     fn lifecycle_edges_recover_and_fail_closed() {
         std::thread::Builder::new()
             .name("plugin-lifecycle-e2e".to_owned())
@@ -11705,23 +14863,6 @@ mod tests {
             .expect("test thread")
             .join()
             .expect("plugin lifecycle e2e thread");
-    }
-
-    #[test]
-    fn json_rpc_host_simulates_lifecycle_and_graceful_shutdown() {
-        std::thread::Builder::new()
-            .name("plugin-rpc-host".to_owned())
-            .stack_size(32 * 1024 * 1024)
-            .spawn(|| {
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("test runtime")
-                    .block_on(json_rpc_host_case());
-            })
-            .expect("test thread")
-            .join()
-            .expect("plugin RPC host thread");
     }
 
     #[cfg(any(unix, windows))]
@@ -11870,6 +15011,17 @@ mod tests {
                             drop(lock);
                         });
 
+                        let mismatch = drain_service(&data, Some("replacement-service")).await;
+                        assert!(matches!(
+                            mismatch,
+                            Err(error) if error == "refusing to drain a replacement Acyclic service"
+                        ));
+                        assert!(
+                            acquire_service_lock(&data)
+                                .expect("legacy service lock")
+                                .is_none(),
+                            "identity mismatch must leave the legacy service running"
+                        );
                         let fence = drain_service(&data, Some(&identity))
                             .await
                             .expect("legacy service transition");
@@ -11941,6 +15093,12 @@ mod tests {
         assert_eq!(
             service_identity_for(&launcher).expect("launcher identity"),
             service_identity_for(&plugin_cache).expect("cached identity")
+        );
+        assert_eq!(
+            service_identity_for(&launcher).expect("launcher identity"),
+            executable_digests_for(&launcher)
+                .expect("full launcher digests")
+                .service_identity
         );
 
         fs::write(&plugin_cache, b"replacement artifact").expect("replacement artifact");
@@ -12059,7 +15217,7 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn service_handoff_never_replaces_live_session_mounts() {
+    fn service_handoff_durably_drains_live_sessions_before_replacement() {
         std::thread::Builder::new()
             .name("plugin-live-service-handoff".to_owned())
             .stack_size(32 * 1024 * 1024)
@@ -12102,16 +15260,9 @@ mod tests {
                         .expect("start live session");
 
                         assert!(
-                            service_is_ready_for_identity(&data, "replacement-service-binary")
+                            !service_is_ready_for_identity(&data, "replacement-service-binary")
                                 .await
-                                .expect("retain live service")
-                        );
-                        assert!(!service.is_finished(), "live service was replaced");
-
-                        drop(
-                            drain_service(&data, None)
-                                .await
-                                .expect("explicit drain closes every live session"),
+                                .expect("drain live service")
                         );
                         tokio::time::timeout(std::time::Duration::from_secs(5), service)
                             .await
@@ -12123,7 +15274,7 @@ mod tests {
                             .expect("reopen drained service state");
                         assert!(
                             reopened.sessions.is_empty(),
-                            "explicitly drained sessions must not reopen"
+                            "handoff-drained sessions must not reopen"
                         );
                     });
             })
@@ -12158,6 +15309,7 @@ mod tests {
                 );
                 broken.persist().expect("broken session state");
             }
+            let broken_directory = service.session_directory("a-broken");
             {
                 let healthy = service
                     .create_session("z-healthy")
@@ -12175,6 +15327,12 @@ mod tests {
                 .expect_err("orphaned lease must fail shutdown");
             assert!(error.contains("a-broken"));
             assert!(service.sessions.is_empty());
+            assert!(
+                load_state(&broken_directory)
+                    .expect("failed session remains recoverable")
+                    .active,
+                "failed teardown must not publish an inactive session"
+            );
             assert!(
                 !load_state(&healthy_directory)
                     .expect("healthy session state")
@@ -12208,9 +15366,23 @@ mod tests {
         run_large_stack("concurrent-hook-endpoint", concurrent_hook_endpoint_case);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a real Lean project path in ACYCLIC_E2E_LEAN_WORKSPACE"]
+    fn real_lean_compiler_executes_inside_the_child_mount() {
+        run_large_stack("real-lean-child-mount", real_lean_child_mount_case);
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    #[ignore = "requires a live native mount and the installed Rust compiler"]
+    fn rustc_executes_inside_the_child_mount() {
+        run_large_stack("rustc-child-mount", rustc_child_mount_case);
+    }
+
     #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
     #[test]
-    fn client_disconnect_cancels_inflight_control_dispatch() {
+    fn client_disconnect_does_not_cancel_inflight_control_dispatch() {
         std::thread::Builder::new()
             .name("plugin-endpoint-disconnect".to_owned())
             .stack_size(32 * 1024 * 1024)
@@ -12228,11 +15400,29 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn mailbox_shutdown_cancels_inflight_dispatch() {
+    fn mailbox_shutdown_drains_inflight_dispatch() {
         run_large_stack(
             "plugin-mailbox-shutdown",
-            mailbox_shutdown_cancels_dispatch_case,
+            mailbox_shutdown_drains_dispatch_case,
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stalled_mailbox_respects_the_caller_deadline() {
+        run_large_stack("plugin-mailbox-deadline", mailbox_deadline_case);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn malformed_mailbox_exchange_does_not_stop_the_endpoint() {
+        run_large_stack("plugin-mailbox-malformed", mailbox_malformed_exchange_case);
+    }
+
+    #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
+    #[test]
+    fn stalled_control_stream_respects_the_caller_deadline() {
+        run_large_stack("plugin-stream-deadline", stream_deadline_case);
     }
 
     #[cfg(windows)]
@@ -12352,10 +15542,12 @@ mod tests {
             .await
             .expect("ignore policy");
         transaction
-            .write_text("/scratch.tmp", "must not publish")
+            .write_text("/scratch.tmp", "publish without tracking")
             .await
             .expect("ignored child file");
         transaction.commit().await.expect("child commit");
+        fs::write(root.join("scratch.tmp"), b"competing parent cache")
+            .expect("parent cache update");
         control.fail_before_publication_history = true;
         let failure = control
             .agent_merge(json!({"agent":"child","_caller_turn_id":"root-turn"}))
@@ -12366,7 +15558,10 @@ mod tests {
             fs::read(root.join("published.txt")).expect("physical publication committed"),
             b"published"
         );
-        assert!(!root.join("scratch.tmp").exists());
+        assert_eq!(
+            fs::read(root.join("scratch.tmp")).expect("ignored file reaches parent worktree"),
+            b"publish without tracking"
+        );
         assert_eq!(
             <LocalCoreStateStore as acyclic_fs::MultiRootPublicationStore>::list_operations(
                 &control.store
@@ -12392,13 +15587,36 @@ mod tests {
             .await
             .expect("later root update");
         later_transaction.commit().await.expect("later root commit");
+        drop(transaction);
+        drop(later_transaction);
+        drop(child);
+        drop(root_workspace);
         drop(control);
 
-        let reopened = ControlPlane::open(data)
+        let mut reopened = ControlPlane::open(data)
             .await
             .expect("restart recovers compatibility history");
+        let child_route = &reopened.state.routes["child"];
+        let child_workspace = reopened
+            .workspace(child_route)
+            .await
+            .expect("recovered child workspace");
+        let child_head = child_workspace.head().await.expect("recovered child head");
+        assert_eq!(
+            child_route.roots[&root_key(WorkspaceRootId::from_bytes(reopened.state.root_id))]
+                .published_generation,
+            *child_head.id().digest().as_bytes(),
+            "recovery must persist child finalization before removing the publication journal"
+        );
+        assert_eq!(
+            child_head
+                .read("/later.txt", 1024)
+                .await
+                .expect("child rebased onto latest parent"),
+            b"must not enter recovered publication history"[..]
+        );
         let repository = GitCompatRepository::new(
-            acyclic_fs::WorkspaceId::from_bytes(reopened.state.root_repository_workspace_id),
+            acyclic_fs::WorkspaceId::from_bytes(root_repository_workspace_id(&reopened)),
             reopened.store.clone(),
         );
         let root_workspace = reopened
@@ -12439,6 +15657,13 @@ mod tests {
         );
         assert!(
             matches!(
+                published_generation.read("/scratch.tmp", 1024).await,
+                Err(WorkspaceError::NotFound)
+            ),
+            "newly ignored file must remain outside compatibility history"
+        );
+        assert!(
+            matches!(
                 published_generation.read("/later.txt", 1024).await,
                 Err(WorkspaceError::NotFound)
             ),
@@ -12452,6 +15677,26 @@ mod tests {
             .expect("publication cleanup")
             .is_empty()
         );
+        let diff: GitCommandOutput = serde_json::from_value(
+            reopened
+                .root_git_tool(root_id, vec!["diff".to_owned()])
+                .await
+                .expect("diff after ignored-file publication"),
+        )
+        .expect("typed diff result");
+        let GitCommandOutput::Filesystem(GitFilesystemResult::Data { kind, value }) = diff else {
+            panic!("root diff must return filesystem data");
+        };
+        assert_eq!(kind, "diff");
+        assert_eq!(
+            value["bindingChanges"], 1,
+            "only the later uncommitted file, not the ignored scratch file, belongs in diff: {value}"
+        );
+        drop(child_workspace);
+        drop(child_head);
+        drop(root_workspace);
+        drop(published_workspace);
+        drop(published_generation);
         reopened.shutdown().await.expect("shutdown");
     }
 
@@ -12499,7 +15744,7 @@ mod tests {
             .await
             .expect("file-targeted lazy root grep");
         let repository_id =
-            acyclic_fs::WorkspaceId::from_bytes(control.state.root_repository_workspace_id);
+            acyclic_fs::WorkspaceId::from_bytes(root_repository_workspace_id(&control));
         control
             .root_git_tool(
                 WorkspaceRootId::from_bytes(control.state.root_id),
@@ -12569,61 +15814,6 @@ mod tests {
             "created by root git\n"
         );
         control.shutdown().await.expect("control shutdown");
-    }
-
-    async fn json_rpc_host_case() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let root = temporary.path().join("root");
-        fs::create_dir_all(&root).expect("root directory");
-        let requests = [
-            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
-            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"_hook_session_start","arguments":{"session_id":"session","cwd":root.display().to_string()}}}),
-            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"_hook_user_prompt","arguments":{"session_id":"session","turn_id":"root-turn"}}}),
-            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"_hook_pre_tool","arguments":{"session_id":"session","turn_id":"root-turn","tool_use_id":"spawn-child","tool_name":"spawn_agent","tool_input":{}}}}),
-            json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"_hook_subagent_start","arguments":{"session_id":"session","turn_id":"child-turn","agent_id":"child","agent_type":"explorer"}}}),
-        ];
-        let input = requests
-            .iter()
-            .map(|request| serde_json::to_string(request).expect("serialize request"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut output = Vec::new();
-        run_rpc(
-            temporary.path().join("plugin-data"),
-            io::Cursor::new(input.into_bytes()),
-            &mut output,
-        )
-        .await
-        .expect("run deterministic RPC host");
-        let responses = String::from_utf8(output)
-            .expect("UTF-8 responses")
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).expect("JSON-RPC response"))
-            .collect::<Vec<_>>();
-        assert_eq!(responses.len(), requests.len());
-        assert!(
-            responses
-                .iter()
-                .all(|response| response.get("error").is_none())
-        );
-        assert_eq!(
-            responses[1]["result"]["tools"]
-                .as_array()
-                .expect("public tools"),
-            &Vec::<Value>::new()
-        );
-        assert!(
-            responses[2]["result"]["content"][0]["text"]
-                .as_str()
-                .is_some_and(|text| text.contains("speculatively"))
-        );
-
-        let reopened = ControlPlane::open(temporary.path().join("plugin-data"))
-            .await
-            .expect("reopen after graceful RPC EOF");
-        assert!(reopened.mounts.contains_key("child"));
-        reopened.shutdown().await.expect("second graceful shutdown");
     }
 
     #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
@@ -12705,7 +15895,7 @@ mod tests {
         )
         .await
         .expect("session start");
-        send_control_request(
+        let first_spawn = send_control_request(
             &data,
             &hook(
                 "PreToolUse",
@@ -12716,8 +15906,16 @@ mod tests {
                 }),
             ),
         )
-        .await
-        .expect("first spawn");
+        .await;
+        if first_spawn.is_err() {
+            endpoint.shutdown().await.expect("endpoint shutdown");
+            let service = Arc::try_unwrap(service)
+                .unwrap_or_else(|_| panic!("endpoint retained service"))
+                .into_inner();
+            assert!(service.sessions["session"].state.pending.is_empty());
+            service.shutdown().await.expect("service shutdown");
+            return;
+        }
         send_control_request(
             &data,
             &hook(
@@ -12728,9 +15926,7 @@ mod tests {
         )
         .await
         .expect("child start");
-        let child = service.lock().await.sessions["session"].state.routes["child"]
-            .path
-            .clone();
+        let child = route_path(&service.lock().await.sessions["session"].state.routes["child"]);
         let spawn = hook(
             "PreToolUse",
             &root,
@@ -12777,15 +15973,429 @@ mod tests {
         service.shutdown().await.expect("service shutdown");
     }
 
-    struct StalledDispatcher {
-        started: Arc<tokio::sync::Notify>,
+    #[cfg(any(target_os = "linux", windows))]
+    async fn rustc_child_mount_case() {
+        #[cfg(target_os = "linux")]
+        let source = tempfile::tempdir_in("/dev/shm").expect("source workspace");
+        #[cfg(windows)]
+        let source = tempfile::tempdir().expect("source workspace");
+        std::fs::write(
+            source.path().join("acyclic-workflow.rs"),
+            include_bytes!("../tests/fixtures/overlay_workflow.rs"),
+        )
+        .expect("Rust source");
+        #[cfg(target_os = "linux")]
+        let state = tempfile::tempdir_in("/dev/shm").expect("temporary state");
+        #[cfg(windows)]
+        let state = tempfile::tempdir().expect("temporary state");
+        let mut service = ServiceControl::open(state.path().join("state"))
+            .await
+            .expect("service");
+        service
+            .dispatch_native_hook(
+                "claude-code",
+                "SessionStart",
+                json!({"session_id":"rustc","cwd":source.path()}),
+                source.path(),
+            )
+            .await
+            .expect("session start");
+        service
+            .dispatch_native_hook(
+                "claude-code",
+                "PreToolUse",
+                json!({
+                    "session_id":"rustc","cwd":source.path(),"tool_name":"Agent",
+                    "tool_use_id":"spawn","tool_input":{"description":"compile"}
+                }),
+                source.path(),
+            )
+            .await
+            .expect("spawn handshake");
+        service
+            .dispatch_native_hook(
+                "claude-code",
+                "SubagentStart",
+                json!({
+                    "session_id":"rustc","cwd":source.path(),"agent_id":"compiler",
+                    "agent_type":"general-purpose"
+                }),
+                source.path(),
+            )
+            .await
+            .expect("child start");
+        let child = route_path(&service.sessions["rustc"].state.routes["compiler"]);
+        service
+            .dispatch_native_hook(
+                "claude-code",
+                "PreToolUse",
+                json!({
+                    "session_id":"rustc","cwd":child,"agent_id":"compiler",
+                    "tool_name":"Bash","tool_use_id":"rustc",
+                    "tool_input":{"command":format!("rustc --edition 2021 acyclic-workflow.rs -o {}", if cfg!(windows) { "main.exe" } else { "main" })}
+                }),
+                &child,
+            )
+            .await
+            .expect("tool lease");
+        let started = std::time::Instant::now();
+        let mut compiler = std::process::Command::new("rustc")
+            .current_dir(&child)
+            .args([
+                "--edition",
+                "2021",
+                "acyclic-workflow.rs",
+                "-o",
+                if cfg!(windows) { "main.exe" } else { "main" },
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("start rustc");
+        let deadline = started + std::time::Duration::from_secs(10);
+        let timed_out = loop {
+            if compiler.try_wait().expect("poll rustc").is_some() {
+                break false;
+            }
+            if std::time::Instant::now() >= deadline {
+                compiler.kill().expect("kill timed out rustc");
+                break true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        let output = compiler.wait_with_output().expect("collect rustc output");
+        let executable = child.join(if cfg!(windows) { "main.exe" } else { "main" });
+        #[cfg(unix)]
+        let executable_mode = std::fs::metadata(&executable)
+            .map(|metadata| std::os::unix::fs::MetadataExt::mode(&metadata));
+        #[cfg(windows)]
+        let executable_mode = std::fs::metadata(&executable).map(|metadata| metadata.len());
+        service
+            .dispatch_native_hook(
+                "claude-code",
+                "PostToolUse",
+                json!({
+                    "session_id":"rustc","cwd":child,"agent_id":"compiler",
+                    "tool_name":"Bash","tool_use_id":"rustc"
+                }),
+                &child,
+            )
+            .await
+            .expect("close tool lease");
+        let mut workflow = std::process::Command::new(&executable)
+            .current_dir(&child)
+            .arg("workflow-output.txt")
+            .env("ACYCLIC_WORKFLOW_TOKEN", "qualified")
+            .spawn()
+            .expect("start mounted workflow");
+        let workflow_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let execution_after_sync = loop {
+            if let Some(status) = workflow.try_wait().expect("poll mounted workflow") {
+                break Some(status);
+            }
+            if std::time::Instant::now() >= workflow_deadline {
+                workflow.kill().expect("kill timed-out mounted workflow");
+                break None;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        assert_eq!(
+            std::fs::read(child.join("workflow-output.txt")).expect("workflow output"),
+            b"isolated"
+        );
+        service
+            .dispatch_native_hook(
+                "claude-code",
+                "SubagentStop",
+                json!({"session_id":"rustc","cwd":child,"agent_id":"compiler"}),
+                &child,
+            )
+            .await
+            .expect("child stop");
+        service
+            .dispatch_native_hook(
+                "claude-code",
+                "SessionEnd",
+                json!({"session_id":"rustc","cwd":source.path()}),
+                source.path(),
+            )
+            .await
+            .expect("session end");
+        service.shutdown().await.expect("service shutdown");
+        assert!(!timed_out, "rustc exceeded its 10 second deadline");
+        assert!(
+            output.status.success(),
+            "rustc failed after {:?}\nstdout:\n{}\nstderr:\n{}",
+            started.elapsed(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            execution_after_sync
+                .as_ref()
+                .is_some_and(std::process::ExitStatus::success),
+            "compiled binary did not execute after tool synchronization: mode={executable_mode:?}, result={execution_after_sync:?}"
+        );
+        assert!(
+            !source
+                .path()
+                .join(if cfg!(windows) { "main.exe" } else { "main" })
+                .exists()
+        );
     }
 
-    impl ControlRequestDispatcher for StalledDispatcher {
+    #[cfg(target_os = "linux")]
+    async fn real_lean_child_mount_case() {
+        let root = PathBuf::from(
+            env::var_os("ACYCLIC_E2E_LEAN_WORKSPACE")
+                .expect("set ACYCLIC_E2E_LEAN_WORKSPACE to a real Lean project"),
+        )
+        .canonicalize()
+        .expect("Lean project path");
+        assert!(root.join("lakefile.toml").exists() || root.join("lakefile.lean").exists());
+        // Resolve the real project environment before mounting so this bounded gate measures
+        // Lean compiler I/O, not Lake's whole dependency-graph freshness scan.
+        let lean_environment = std::process::Command::new("lake")
+            .args(["env", "printenv", "LEAN_PATH"])
+            .current_dir(&root)
+            .output()
+            .expect("resolve Lean project environment");
+        assert!(
+            lean_environment.status.success(),
+            "lake env failed: {}",
+            String::from_utf8_lossy(&lean_environment.stderr)
+        );
+        let lean_path = String::from_utf8(lean_environment.stdout)
+            .expect("UTF-8 LEAN_PATH")
+            .trim()
+            .to_owned();
+        let temporary = tempfile::tempdir_in("/dev/shm").expect("temporary state");
+        let mut service = ServiceControl::open(temporary.path().join("state"))
+            .await
+            .expect("service");
+        service
+            .dispatch_native_hook(
+                "claude-code",
+                "SessionStart",
+                json!({"session_id":"lean","cwd":root}),
+                &root,
+            )
+            .await
+            .expect("session start");
+        service
+            .dispatch_native_hook(
+                "claude-code",
+                "PreToolUse",
+                json!({
+                    "session_id":"lean","cwd":root,"tool_name":"Agent",
+                    "tool_use_id":"spawn","tool_input":{"description":"compile"}
+                }),
+                &root,
+            )
+            .await
+            .expect("spawn handshake");
+        service
+            .dispatch_native_hook(
+                "claude-code",
+                "SubagentStart",
+                json!({
+                    "session_id":"lean","cwd":root,"agent_id":"compiler",
+                    "agent_type":"general-purpose"
+                }),
+                &root,
+            )
+            .await
+            .expect("child start");
+        let child = route_path(&service.sessions["lean"].state.routes["compiler"]);
+        service
+            .dispatch_native_hook(
+                "claude-code",
+                "PreToolUse",
+                json!({
+                    "session_id":"lean","cwd":child,"agent_id":"compiler",
+                    "tool_name":"Bash","tool_use_id":"lean-compile",
+                    "tool_input":{"command":"lean YcDemo/Lemmas.lean -o .acyclic-lean-qualification.olean"}
+                }),
+                &child,
+            )
+            .await
+            .expect("tool lease");
+        let started = std::time::Instant::now();
+        let mut compilation = std::process::Command::new("lean")
+            .args([
+                "YcDemo/Lemmas.lean",
+                "-o",
+                ".acyclic-lean-qualification.olean",
+            ])
+            .current_dir(&child)
+            .env("LEAN_PATH", lean_path)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("start Lean compilation");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let timed_out = loop {
+            if compilation
+                .try_wait()
+                .expect("poll Lean compilation")
+                .is_some()
+            {
+                break false;
+            }
+            if std::time::Instant::now() >= deadline {
+                compilation.kill().expect("kill timed out Lean compilation");
+                break true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        let output = compilation
+            .wait_with_output()
+            .expect("collect Lean compilation output");
+        let child_output_exists = child.join(".acyclic-lean-qualification.olean").is_file();
+        service
+            .dispatch_native_hook(
+                "claude-code",
+                "PostToolUse",
+                json!({
+                    "session_id":"lean","cwd":child,"agent_id":"compiler",
+                    "tool_name":"Bash","tool_use_id":"lean-compile"
+                }),
+                &child,
+            )
+            .await
+            .expect("close tool lease");
+        service
+            .dispatch_native_hook(
+                "claude-code",
+                "SubagentStop",
+                json!({"session_id":"lean","cwd":child,"agent_id":"compiler"}),
+                &child,
+            )
+            .await
+            .expect("child stop");
+        service
+            .dispatch_native_hook(
+                "claude-code",
+                "SessionEnd",
+                json!({"session_id":"lean","cwd":root}),
+                &root,
+            )
+            .await
+            .expect("session end");
+        service.shutdown().await.expect("service shutdown");
+        assert!(
+            !timed_out,
+            "Lean compilation exceeded the 30 second mount budget\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success(),
+            "Lean compilation failed after {:?}:\n{}",
+            started.elapsed(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(child_output_exists);
+        assert!(!root.join(".acyclic-lean-qualification.olean").exists());
+    }
+
+    struct ControlledDispatcher {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        completed: Arc<tokio::sync::Notify>,
+    }
+
+    struct ReplayCountingDispatcher {
+        executions: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ConcurrentControlRequestDispatcher for ReplayCountingDispatcher {
+        async fn dispatch_request(&self, _request: ControlRequest) -> Result<Value, String> {
+            let execution = self
+                .executions
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            Ok(json!({"execution": execution}))
+        }
+    }
+
+    impl ControlRequestDispatcher for ControlledDispatcher {
         async fn dispatch_request(&mut self, _request: ControlRequest) -> Result<Value, String> {
             self.started.notify_one();
-            std::future::pending().await
+            self.release.notified().await;
+            self.completed.notify_one();
+            Ok(json!({}))
         }
+    }
+
+    #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
+    async fn stream_deadline_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let completed = Arc::new(tokio::sync::Notify::new());
+        let control = Arc::new(AsyncMutex::new(ControlledDispatcher {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            completed: Arc::clone(&completed),
+        }));
+        let endpoint = start_control_endpoint(Arc::clone(&control), &data)
+            .await
+            .expect("control endpoint");
+        let request = ControlRequest {
+            version: 1,
+            command: ControlCommand::Ping,
+            cwd: temporary.path().to_path_buf(),
+            argv: Vec::new(),
+            name: String::new(),
+            arguments: Value::Null,
+        };
+        #[cfg(unix)]
+        let client = tokio::net::UnixStream::connect(&endpoint.socket_path)
+            .await
+            .expect("connect control endpoint");
+        #[cfg(windows)]
+        let client = connect_test_pipe(&endpoint.pipe_path).await;
+        endpoint.accepted.notified().await;
+        let envelope = ControlEnvelope::new(request);
+        let request_id = envelope.request_id.clone();
+        let mut request = serde_json::to_vec(&envelope).expect("encode request");
+        request.push(b'\n');
+        let began = std::time::Instant::now();
+        let exchange = tokio::spawn(async move {
+            exchange_control_stream(
+                client,
+                &request,
+                &request_id,
+                std::time::Duration::from_millis(25),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), started.notified())
+            .await
+            .expect("stalled dispatcher never received the request");
+        let error = exchange
+            .await
+            .expect("exchange task")
+            .expect_err("stalled control response must time out");
+        assert!(matches!(error, ControlRequestError::Indeterminate(_)));
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(1),
+            "control stream ignored its request deadline"
+        );
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(1), completed.notified())
+            .await
+            .expect("timed-out request was cancelled before completion");
+        tokio::time::timeout(std::time::Duration::from_secs(1), endpoint.shutdown())
+            .await
+            .expect("endpoint shutdown deadline")
+            .expect("endpoint shutdown");
+        assert!(
+            Arc::try_unwrap(control).is_ok(),
+            "timed-out stream retained dispatch state"
+        );
     }
 
     #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
@@ -12795,8 +16405,12 @@ mod tests {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let data = temporary.path().join("plugin-data");
         let started = Arc::new(tokio::sync::Notify::new());
-        let control = Arc::new(AsyncMutex::new(StalledDispatcher {
+        let release = Arc::new(tokio::sync::Notify::new());
+        let completed = Arc::new(tokio::sync::Notify::new());
+        let control = Arc::new(AsyncMutex::new(ControlledDispatcher {
             started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            completed: Arc::clone(&completed),
         }));
         let endpoint = start_control_endpoint(Arc::clone(&control), &data)
             .await
@@ -12808,24 +16422,30 @@ mod tests {
         #[cfg(windows)]
         let mut client = connect_test_pipe(&endpoint.pipe_path).await;
         endpoint.accepted.notified().await;
-        let request = serde_json::to_vec(&ControlRequest {
+        let envelope = ControlEnvelope::new(ControlRequest {
             version: 1,
             command: ControlCommand::Ping,
             cwd: temporary.path().to_path_buf(),
             argv: Vec::new(),
             name: String::new(),
             arguments: Value::Null,
-        })
-        .expect("encode request");
+        });
+        let request = serde_json::to_vec(&envelope).expect("encode request");
         client.write_all(&request).await.expect("write request");
         client.write_all(b"\n").await.expect("finish request");
         started.notified().await;
         drop(client);
 
-        let guard = tokio::time::timeout(std::time::Duration::from_secs(1), control.lock())
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), control.lock())
+                .await
+                .is_err(),
+            "disconnect cancelled the accepted request"
+        );
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(1), completed.notified())
             .await
-            .expect("disconnected client retained the service lock");
-        drop(guard);
+            .expect("disconnected request did not finish");
         endpoint.shutdown().await.expect("endpoint shutdown");
         assert!(
             Arc::try_unwrap(control).is_ok(),
@@ -12833,13 +16453,368 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn legacy_wire_is_probe_only_and_detected_by_v2() {
+        let request = ControlRequest {
+            version: 1,
+            command: ControlCommand::Ping,
+            cwd: PathBuf::from("legacy-probe"),
+            argv: Vec::new(),
+            name: String::new(),
+            arguments: Value::Null,
+        };
+        let (client, mut server) = tokio::io::duplex(16 * 1024);
+        let legacy_peer = tokio::spawn(async move {
+            let mut line = String::new();
+            BufReader::new(&mut server)
+                .read_line(&mut line)
+                .await
+                .expect("legacy request");
+            let request: ControlRequest = serde_json::from_str(&line).expect("bare request");
+            assert!(matches!(request.command, ControlCommand::Ping));
+            server
+                .write_all(b"{\"version\":1,\"ok\":true,\"result\":{\"identity\":\"legacy\"}}\n")
+                .await
+                .expect("legacy response");
+        });
+        let response = exchange_legacy_control_stream(client, &request)
+            .await
+            .expect("legacy probe");
+        assert_eq!(response["identity"], "legacy");
+        legacy_peer.await.expect("legacy peer");
+
+        let envelope = ControlEnvelope::new(request);
+        let request_id = envelope.request_id.clone();
+        let mut encoded = serde_json::to_vec(&envelope).expect("v2 envelope");
+        encoded.push(b'\n');
+        let (client, mut server) = tokio::io::duplex(16 * 1024);
+        let rejecting_peer = tokio::spawn(async move {
+            let mut ignored = String::new();
+            BufReader::new(&mut server)
+                .read_line(&mut ignored)
+                .await
+                .expect("v2 request");
+            server
+                .write_all(b"{\"version\":1,\"ok\":false,\"error\":\"unsupported request\"}\n")
+                .await
+                .expect("legacy rejection");
+        });
+        let error = exchange_control_stream(
+            client,
+            &encoded,
+            &request_id,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect_err("v2 must classify the legacy peer");
+        assert!(matches!(error, ControlRequestError::ProtocolMismatch(_)));
+        rejecting_peer.await.expect("rejecting peer");
+    }
+
+    #[tokio::test]
+    async fn durable_hook_response_is_replayed_without_reexecution_after_restart() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        fs::create_dir(&data).expect("plugin data directory");
+        let dispatcher = Arc::new(ReplayCountingDispatcher {
+            executions: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let envelope = ControlEnvelope::new(ControlRequest {
+            version: 1,
+            command: ControlCommand::Hook,
+            cwd: temporary.path().to_path_buf(),
+            argv: Vec::new(),
+            name: "codex:PreToolUse".to_owned(),
+            arguments: json!({"session_id":"session","tool_use_id":"tool"}),
+        });
+
+        let first_ledger = Arc::new(ControlLedger::open(&data).expect("first ledger"));
+        let first = dispatch_control_envelope(&dispatcher, &first_ledger, envelope.clone()).await;
+        drop(first_ledger);
+        let reopened = Arc::new(ControlLedger::open(&data).expect("reopened ledger"));
+        let replay = dispatch_control_envelope(&dispatcher, &reopened, envelope).await;
+
+        assert_eq!(first["ok"], true, "first hook must execute: {first}");
+        assert_eq!(first, replay, "a retry must receive the durable response");
+        assert_eq!(
+            dispatcher
+                .executions
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a completed hook must never execute twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn ephemeral_control_commands_still_require_exact_protocol_negotiation() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        fs::create_dir(&data).expect("plugin data directory");
+        let dispatcher = Arc::new(ReplayCountingDispatcher {
+            executions: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let ledger = Arc::new(ControlLedger::open(&data).expect("ledger"));
+
+        for command in [ControlCommand::Ping, ControlCommand::Agents] {
+            let mut envelope = ControlEnvelope::ephemeral(ControlRequest {
+                version: 1,
+                command,
+                cwd: temporary.path().to_path_buf(),
+                argv: Vec::new(),
+                name: String::new(),
+                arguments: Value::Null,
+            });
+            envelope.protocol.major = envelope.protocol.major.saturating_add(1);
+            let response = dispatch_control_envelope(&dispatcher, &ledger, envelope).await;
+            assert_eq!(response["ok"], false, "mismatched protocol was accepted");
+        }
+        assert_eq!(
+            dispatcher
+                .executions
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "invalid ephemeral envelopes must not reach the dispatcher"
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_spawn_hook_does_not_allocate_a_second_workspace_handshake() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        let root = temporary.path().join("root");
+        fs::create_dir(&root).expect("root directory");
+        let mut control = ControlPlane::open(data).await.expect("control plane");
+        control
+            .session_start(json!({"session_id":"session","cwd":root}))
+            .await
+            .expect("session start");
+        control
+            .user_prompt(json!({"session_id":"session","turn_id":"turn"}))
+            .expect("root turn");
+        let hook = json!({
+            "session_id":"session",
+            "turn_id":"turn",
+            "tool_use_id":"spawn",
+            "tool_name":"spawn_agent",
+            "tool_input":{}
+        });
+        if control.pre_tool(hook.clone()).await.is_err() {
+            assert!(control.state.pending.is_empty());
+            assert!(control.pending_mounts.is_empty());
+            control.shutdown().await.expect("shutdown after rejection");
+            return;
+        }
+        let first = control
+            .state
+            .pending
+            .front()
+            .expect("pending spawn")
+            .clone();
+        control.pre_tool(hook).await.expect("duplicate spawn");
+        assert_eq!(control.state.pending.len(), 1);
+        assert_eq!(
+            control
+                .state
+                .pending
+                .front()
+                .expect("pending spawn")
+                .fork_key,
+            first.fork_key
+        );
+        control.shutdown().await.expect("shutdown");
+    }
+
+    #[test]
+    fn spawn_preparation_is_atomic_and_restartable() {
+        run_large_stack("spawn-preparation", spawn_preparation_case);
+    }
+
+    #[test]
+    fn direct_control_shutdown_waits_for_detached_root_owner() {
+        run_large_stack("control-root-release", || async {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let data = temporary.path().join("plugin-data");
+            let control = ControlPlane::open(data.clone())
+                .await
+                .expect("control plane");
+            let detached = control.fs.clone();
+            let shutdown = tokio::spawn(control.shutdown());
+            tokio::pin!(shutdown);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(100), &mut shutdown)
+                    .await
+                    .is_err(),
+                "shutdown acknowledged while a detached filesystem owner was still live"
+            );
+            drop(detached);
+            tokio::time::timeout(std::time::Duration::from_secs(5), shutdown)
+                .await
+                .expect("root release deadline")
+                .expect("shutdown task")
+                .expect("shutdown");
+            let reopened = ControlPlane::open(data)
+                .await
+                .expect("reopen after release");
+            reopened.shutdown().await.expect("reopened shutdown");
+        });
+    }
+
+    #[test]
+    fn shared_control_shutdown_leaves_root_release_to_service() {
+        run_large_stack("shared-control-root-release", || async {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let data = temporary.path().join("plugin-data");
+            let fs = LocalFs::local(LocalOptions::new(data.join("filesystem")))
+                .await
+                .expect("shared filesystem");
+            let release = fs.local_root_release_barrier().expect("release barrier");
+            let control = ControlPlane::open_with(
+                data.clone(),
+                data.clone(),
+                fs.clone(),
+                LocalCoreStateStore::new(data.join("core-state")),
+                SharedRootRegistry::default(),
+            )
+            .await
+            .expect("shared control");
+            tokio::time::timeout(std::time::Duration::from_secs(5), control.shutdown())
+                .await
+                .expect("session shutdown deadline")
+                .expect("session shutdown");
+            assert!(
+                !release.is_released(),
+                "session shutdown released the service-owned filesystem"
+            );
+            drop(fs);
+            wait_for_root_release(Some(release))
+                .await
+                .expect("service root release");
+        });
+    }
+
+    async fn spawn_preparation_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        let root = temporary.path().join("root");
+        fs::create_dir(&root).expect("root directory");
+        let mut control = ControlPlane::open(data.clone())
+            .await
+            .expect("control plane");
+        control
+            .session_start(json!({"session_id":"session","cwd":root}))
+            .await
+            .expect("session start");
+        control
+            .user_prompt(json!({"session_id":"session","turn_id":"turn"}))
+            .expect("root turn");
+        let incomplete_key = [9; 16];
+        control.state.pending.push_back(PendingSpawn {
+            parent_agent_id: control.state.root_agent_id.clone(),
+            tool_use_id: "incomplete".to_owned(),
+            active_root_id: None,
+            expires_at_millis: now_millis() + 60_000,
+            workspace_name: "incomplete".to_owned(),
+            fork_key: incomplete_key,
+            roots: BTreeMap::new(),
+            mount_path: control
+                .workspace_mount_root()
+                .join(compact_id(&incomplete_key)),
+            lifecycle: PendingSpawnLifecycle::Discarding,
+        });
+        assert!(
+            control
+                .pre_tool(json!({
+                    "session_id":"session",
+                    "turn_id":"turn",
+                    "tool_use_id":"incomplete",
+                    "tool_name":"spawn_agent",
+                    "tool_input":{}
+                }))
+                .await
+                .is_err(),
+            "an incomplete retry must remain denied"
+        );
+        control.state.pending.clear();
+        let spawn = control
+            .pre_tool(json!({
+                "session_id":"session",
+                "turn_id":"turn",
+                "tool_use_id":"spawn",
+                "tool_name":"spawn_agent",
+                "tool_input":{}
+            }))
+            .await;
+        if spawn.is_err() {
+            assert!(
+                control.state.pending.is_empty(),
+                "a rejected spawn retained durable preparation state"
+            );
+            assert!(
+                control.pending_mounts.is_empty(),
+                "a rejected spawn retained a native mount"
+            );
+            control.shutdown().await.expect("shutdown after rejection");
+            return;
+        }
+        let prepared = control
+            .state
+            .pending
+            .front()
+            .expect("prepared spawn")
+            .clone();
+        assert_eq!(prepared.lifecycle, PendingSpawnLifecycle::Prepared);
+        assert!(control.pending_mounts.contains_key(&prepared.fork_key));
+        control.shutdown().await.expect("first shutdown");
+
+        let mut recovered = ControlPlane::open(data)
+            .await
+            .expect("recover control plane");
+        assert_eq!(
+            recovered
+                .state
+                .pending
+                .front()
+                .expect("recovered spawn")
+                .lifecycle,
+            PendingSpawnLifecycle::Prepared
+        );
+        assert!(recovered.pending_mounts.contains_key(&prepared.fork_key));
+        let started = recovered
+            .subagent_start(json!({
+                "session_id":"session",
+                "turn_id":"child-turn",
+                "agent_id":"child",
+                "agent_type":"explorer"
+            }))
+            .await
+            .expect("bind prepared spawn");
+        let active_path = prepared
+            .mount_path
+            .join(route_name(WorkspaceRootId::from_bytes(
+                recovered.state.root_id,
+            )));
+        assert!(
+            started
+                .pointer("/hookSpecificOutput/additionalContext")
+                .and_then(Value::as_str)
+                .is_some_and(|context| context.contains(active_path.to_string_lossy().as_ref()))
+        );
+        assert!(recovered.state.pending.is_empty());
+        assert!(recovered.mounts.contains_key("child"));
+        recovered.shutdown().await.expect("recovered shutdown");
+    }
+
     #[cfg(target_os = "linux")]
-    async fn mailbox_shutdown_cancels_dispatch_case() {
+    async fn mailbox_shutdown_drains_dispatch_case() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let data = temporary.path().join("plugin-data");
         let started = Arc::new(tokio::sync::Notify::new());
-        let control = Arc::new(AsyncMutex::new(StalledDispatcher {
+        let release = Arc::new(tokio::sync::Notify::new());
+        let completed = Arc::new(tokio::sync::Notify::new());
+        let control = Arc::new(AsyncMutex::new(ControlledDispatcher {
             started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            completed: Arc::clone(&completed),
         }));
         let endpoint = start_control_endpoint(Arc::clone(&control), &data)
             .await
@@ -12857,9 +16832,21 @@ mod tests {
             tokio::spawn(async move { send_control_request_once(&client_data, &request).await });
         started.notified().await;
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), endpoint.shutdown())
+        let shutdown = tokio::spawn(endpoint.shutdown());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), control.lock())
+                .await
+                .is_err(),
+            "mailbox shutdown cancelled the accepted request"
+        );
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(1), completed.notified())
+            .await
+            .expect("mailbox request did not finish during shutdown");
+        tokio::time::timeout(std::time::Duration::from_secs(1), shutdown)
             .await
             .expect("mailbox shutdown deadline")
+            .expect("mailbox shutdown task")
             .expect("mailbox shutdown");
         let _ = client.await;
         assert!(
@@ -12868,24 +16855,89 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    async fn mailbox_deadline_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        prepare_linux_control_mailbox(&data).expect("mailbox");
+        let envelope = ControlEnvelope::new(ControlRequest {
+            version: 1,
+            command: ControlCommand::Hook,
+            cwd: temporary.path().to_path_buf(),
+            argv: Vec::new(),
+            name: "claude-code:PreToolUse".to_owned(),
+            arguments: Value::Null,
+        });
+        let request_id = envelope.request_id.clone();
+        let request = serde_json::to_vec(&envelope).expect("request");
+        let started = std::time::Instant::now();
+        let error = send_linux_mailbox_request(
+            &data,
+            &request,
+            &request_id,
+            std::time::Duration::from_millis(25),
+        )
+        .await
+        .expect_err("stalled mailbox must time out");
+        assert!(matches!(error, ControlRequestError::Indeterminate(_)));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "mailbox ignored its caller deadline"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn mailbox_malformed_exchange_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        let control = Arc::new(ReplayCountingDispatcher {
+            executions: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let endpoint = start_control_endpoint(Arc::clone(&control), &data)
+            .await
+            .expect("control endpoint");
+        let malformed = endpoint.mailbox_path.join("000-malformed");
+        fs::create_dir(&malformed).expect("malformed exchange");
+        fs::write(malformed.join("request"), b"{}").expect("malformed request");
+        fs::create_dir(malformed.join("processing")).expect("conflicting processing directory");
+
+        let response = send_control_request_once(
+            &data,
+            &ControlRequest {
+                version: 1,
+                command: ControlCommand::Ping,
+                cwd: temporary.path().to_path_buf(),
+                argv: Vec::new(),
+                name: String::new(),
+                arguments: Value::Null,
+            },
+        )
+        .await
+        .expect("valid request after malformed exchange");
+        assert_eq!(response["execution"], 1);
+        assert_eq!(
+            control.executions.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        endpoint.shutdown().await.expect("endpoint shutdown");
+    }
+
     #[cfg(windows)]
     async fn sequential_endpoint_case() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let data = temporary.path().join("plugin-data");
-        let control = Arc::new(AsyncMutex::new(
-            ControlPlane::open(data.clone())
-                .await
-                .expect("control plane"),
-        ));
+        let control = Arc::new(ReplayCountingDispatcher {
+            executions: std::sync::atomic::AtomicUsize::new(0),
+        });
         let endpoint = start_control_endpoint(Arc::clone(&control), &data)
             .await
             .expect("control endpoint");
         for sequence in 0..64 {
-            let error = send_control_request(
+            let response = send_control_request(
                 &data,
                 &ControlRequest {
                     version: 1,
-                    command: ControlCommand::Upgrade,
+                    command: ControlCommand::Ping,
                     cwd: temporary.path().to_path_buf(),
                     argv: Vec::new(),
                     name: String::new(),
@@ -12893,22 +16945,18 @@ mod tests {
                 },
             )
             .await
-            .expect_err("unsupported request");
-            assert!(
-                matches!(
-                    error,
-                    ControlRequestError::Response(ref message)
-                        if message == "control command is invalid for a workspace session"
-                ),
-                "request {sequence} must remain a non-retryable domain response: {error}"
+            .expect("sequential request");
+            assert_eq!(
+                response["execution"],
+                sequence + 1,
+                "every accepted pipe must return its own complete response"
             );
         }
         endpoint.shutdown().await.expect("endpoint shutdown");
-        let control = match Arc::try_unwrap(control) {
-            Ok(control) => control.into_inner(),
-            Err(_) => panic!("endpoint retained a completed request"),
-        };
-        control.shutdown().await.expect("control shutdown");
+        assert!(
+            Arc::try_unwrap(control).is_ok(),
+            "endpoint retained a completed request"
+        );
     }
 
     #[cfg(windows)]
@@ -12963,6 +17011,11 @@ mod tests {
             .pre_tool(json!({"session_id":"session","turn_id":"root-turn","tool_use_id":"spawn-expiring","tool_name":"spawn_agent","tool_input":{}}))
             .await
             .expect("first serialized spawn");
+        control
+            .pre_tool(json!({"session_id":"session","turn_id":"root-turn","tool_use_id":"spawn-expiring","tool_name":"spawn_agent","tool_input":{}}))
+            .await
+            .expect("duplicate spawn hook is idempotent");
+        assert_eq!(control.state.pending.len(), 1);
         assert!(control
             .pre_tool(json!({"session_id":"session","turn_id":"root-turn","tool_use_id":"spawn-overlap","tool_name":"spawn_agent","tool_input":{}}))
             .await
@@ -13002,24 +17055,44 @@ mod tests {
             .subagent_start(json!({"session_id":"other","turn_id":"child-turn","agent_id":"child","agent_type":"explorer"}))
             .await
             .is_err());
+        let (caller, _, _) = native_tool_identity(
+            &mut control,
+            "claude-code",
+            &json!({"agent_id":"child"}),
+            &root,
+        )
+        .expect("the authenticated child identity permits cwd redirection from its physical root");
+        assert_eq!(caller, "child");
         assert!(control
             .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"unknown-tool","tool_name":"mystery_mutator","tool_input":{}}))
             .await
             .is_err());
+        let leases_before_remote = control.state.leases.len();
+        control
+            .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"remote-message","tool_name":"mcp__codex_app__send_message_to_thread","tool_input":{"threadId":"thread","prompt":"status"}}))
+            .await
+            .expect("known non-filesystem tool bypasses workspace routing");
+        control
+            .post_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"remote-message","tool_name":"mcp__codex_app__send_message_to_thread"}))
+            .await
+            .expect("known non-filesystem post hook is a no-op");
+        assert_eq!(control.state.leases.len(), leases_before_remote);
         let shell = control
             .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"system-status","tool_name":"exec_command","tool_input":{"cmd":"git status","workdir":root.display().to_string()}}))
             .await
             .expect("shell command is redirected to the child mount");
         assert_eq!(
             shell["hookSpecificOutput"]["updatedInput"]["workdir"],
-            control.state.routes["child"].path.display().to_string()
+            route_path(&control.state.routes["child"])
+                .display()
+                .to_string()
         );
         control
             .post_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"system-status","tool_name":"exec_command"}))
             .await
             .expect("close redirected shell lease");
 
-        let child_path = control.state.routes["child"].path.clone();
+        let child_path = route_path(&control.state.routes["child"]);
         for tool_use_id in ["read-one", "read-two"] {
             control
                 .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":tool_use_id,"tool_name":"Read","tool_input":{"path":child_path.join("missing.txt").display().to_string()}}))
@@ -13060,6 +17133,7 @@ mod tests {
             .await
             .expect("first file");
         transaction.commit().await.expect("commit first file");
+        drop(transaction);
         control.mounts["child"]
             .advance_to_head()
             .await
@@ -13085,6 +17159,7 @@ mod tests {
             .get(&root_key(WorkspaceRootId::from_bytes(route.root_id)))
             .expect("active route root")
             .published_generation;
+        drop(child);
         let child = control.workspace(route).await.expect("incremental child");
         let mut transaction = child
             .begin_transaction(IdempotencyKey::new())
@@ -13095,6 +17170,7 @@ mod tests {
             .await
             .expect("incremental file");
         transaction.commit().await.expect("incremental commit");
+        drop(transaction);
         control.mounts["child"]
             .advance_to_head()
             .await
@@ -13135,13 +17211,33 @@ mod tests {
                 .is_err()
         );
         assert!(control.mounts.contains_key("child"));
-        assert!(!control.state.routes["child"].stopped);
+        assert_eq!(
+            control.state.routes["child"].lifecycle,
+            RouteLifecycle::StopRequested
+        );
+        drop(child);
         drop(control);
         let mut control = ControlPlane::open(data.clone())
             .await
             .expect("reopen after failed stop teardown");
+        assert!(!control.mounts.contains_key("child"));
+        assert!(control.state.routes["child"].lifecycle.is_frozen());
+        let root_agent = control.state.root_agent_id.clone();
+        control
+            .subagent_start(json!({
+                "session_id":"session",
+                "turn_id":"child-turn",
+                "agent_id":"child",
+                "agent_type":"explorer",
+                "_authenticated_parent_agent_id":root_agent,
+            }))
+            .await
+            .expect("resume child after durable stop recovery");
         assert!(control.mounts.contains_key("child"));
-        assert!(!control.state.routes["child"].stopped);
+        assert_eq!(
+            control.state.routes["child"].lifecycle,
+            RouteLifecycle::Active
+        );
 
         control
             .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"active-read","tool_name":"Read","tool_input":{"path":child_path.join("first.txt").display().to_string()}}))
@@ -13169,21 +17265,43 @@ mod tests {
             .expires_at_millis = 0;
         control.persist().expect("persist expired adapter lease");
         control
-            .recover_expired_adapter_leases()
+            .pre_tool(json!({
+                "session_id":"session",
+                "turn_id":"child-turn",
+                "tool_use_id":"recovered-read",
+                "tool_name":"Read",
+                "tool_input":{"path":child_path.join("first.txt").display().to_string()}
+            }))
             .await
-            .expect("recover expired adapter lease");
-        assert!(control.state.leases.is_empty());
+            .expect("next tool fences and recovers the expired writer first");
+        assert!(!control.state.leases.contains_key("active-read"));
+        assert!(control.state.leases.contains_key("recovered-read"));
+        control
+            .post_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"recovered-read","tool_name":"Read"}))
+            .await
+            .expect("close recovered tool");
         control
             .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"pending-descendant","tool_name":"spawn_agent","tool_input":{}}))
             .await
             .expect("pending descendant before discard");
+        control
+            .subagent_start(json!({
+                "session_id":"session",
+                "turn_id":"grandchild-turn",
+                "agent_id":"grandchild",
+                "agent_type":"explorer",
+                "_authenticated_parent_agent_id":"child",
+            }))
+            .await
+            .expect("start live grandchild");
         let stopped = control
             .subagent_stop(
                 json!({"session_id":"session","turn_id":"child-turn","agent_id":"child"}),
             )
             .await
-            .expect("seal child");
-        assert_eq!(stopped["suppressOutput"], false);
+            .expect("request parent stop while grandchild is live");
+        assert_eq!(stopped["suppressOutput"], true);
+        assert_eq!(stopped["acyclicSummary"]["state"], "stopping");
         assert_eq!(stopped["acyclicSummary"]["agent"], "agents/child");
         assert_eq!(stopped["acyclicSummary"]["tests"]["status"], "not-reported");
         assert!(
@@ -13191,6 +17309,23 @@ mod tests {
                 .as_str()
                 .is_some_and(|command| command.contains("agents/child"))
         );
+        assert_eq!(
+            control.state.routes["child"].lifecycle,
+            RouteLifecycle::StopRequested
+        );
+        assert!(control.mounts.contains_key("child"));
+        assert!(control
+            .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"after-stop-request","tool_name":"Read","tool_input":{"path":child_path.join("first.txt").display().to_string()}}))
+            .await
+            .is_err());
+        control
+            .subagent_stop(json!({
+                "session_id":"session",
+                "turn_id":"grandchild-turn",
+                "agent_id":"grandchild",
+            }))
+            .await
+            .expect("grandchild stop freezes it and its waiting parent");
         let root_agent = control.state.root_agent_id.clone();
         let status = control
             .agents_status(&root_agent)
@@ -13200,7 +17335,7 @@ mod tests {
         assert_eq!(status["agents"][0]["ref"], "agents/child");
         assert_eq!(status["agents"][0]["state"], "frozen");
         assert!(status["agents"][0]["roots"].is_array());
-        assert!(control.state.routes["child"].stopped);
+        assert!(control.state.routes["child"].lifecycle.is_frozen());
         assert!(!control.mounts.contains_key("child"));
         drop(control);
 
@@ -13212,7 +17347,7 @@ mod tests {
             .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"after-stop","tool_name":"Read","tool_input":{"path":child_path.join("first.txt").display().to_string()}}))
             .await
             .is_err());
-        assert_eq!(control.state.pending.len(), 1);
+        assert!(control.state.pending.is_empty());
         control.fail_after_context_discard = true;
         assert!(
             control
@@ -13258,12 +17393,20 @@ mod tests {
             .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"git-switch","tool_name":"exec_command","tool_input":{"cmd":"acyclic git switch -c feature","workdir":root.display().to_string()}}))
             .await
             .expect("open authenticated command");
-        let routed_workspace = |route: &Route| {
-            route.roots[&root_key(WorkspaceRootId::from_bytes(route.root_id))].workspace_id
-        };
-        let original_workspace = routed_workspace(&control.state.routes["child"]);
-        let child_cwd = control.state.routes["child"].path.clone();
+        let child_context_id =
+            WorkspaceContextId::from_bytes(control.state.routes["child"].context_id);
+        let child_root_id = WorkspaceRootId::from_bytes(control.state.routes["child"].root_id);
+        let original_workspace = control
+            .distributed
+            .contexts()
+            .resolve(child_context_id)
+            .await
+            .expect("child context")
+            .roots[&child_root_id]
+            .workspace_id;
+        let child_cwd = route_path(&control.state.routes["child"]);
         let shared = Arc::new(AsyncMutex::new(control));
+        let ledger = Arc::new(ControlLedger::open(&data).expect("control ledger"));
         for argv in [vec![
             "status".to_owned(),
             "&&".to_owned(),
@@ -13288,12 +17431,18 @@ mod tests {
         let handler = tokio::spawn(handle_control_connection(
             server,
             Arc::clone(&shared),
+            Arc::clone(&ledger),
             receiver,
         ));
-        let request = serde_json::to_vec(&json!({
-            "version":1,"command":"git","cwd":child_cwd,"argv":["status"]
-        }))
-        .expect("control request");
+        let envelope = ControlEnvelope::new(ControlRequest {
+            version: 1,
+            command: ControlCommand::Git,
+            cwd: child_cwd.clone(),
+            argv: vec!["status".to_owned()],
+            name: String::new(),
+            arguments: Value::Null,
+        });
+        let request = serde_json::to_vec(&envelope).expect("control request");
         client.write_all(&request).await.expect("write request");
         client.write_all(b"\n").await.expect("write newline");
         client.flush().await.expect("flush request");
@@ -13303,7 +17452,11 @@ mod tests {
             .await
             .expect("read response");
         let response: Value = serde_json::from_str(&response).expect("response JSON");
-        assert_eq!(response["version"], 1);
+        assert_eq!(response["version"], 2);
+        assert_eq!(
+            response["requestId"],
+            Value::String(envelope.request_id.as_str().to_owned())
+        );
         assert_eq!(response["ok"], true, "{response}");
         assert!(response["result"].is_object());
         handler
@@ -13316,19 +17469,33 @@ mod tests {
         let handler = tokio::spawn(handle_control_connection(
             server,
             Arc::clone(&shared),
+            Arc::clone(&ledger),
             receiver,
         ));
-        let request = serde_json::to_vec(&json!({
-            "version":1,"command":"git","cwd":child_cwd,"argv":["switch","-c","feature"]
-        }))
-        .expect("control request");
+        let switch_envelope = ControlEnvelope::new(ControlRequest {
+            version: 1,
+            command: ControlCommand::Git,
+            cwd: child_cwd.clone(),
+            argv: vec!["switch".to_owned(), "-c".to_owned(), "feature".to_owned()],
+            name: String::new(),
+            arguments: Value::Null,
+        });
+        let request = serde_json::to_vec(&switch_envelope).expect("control request");
         client.write_all(&request).await.expect("write request");
         client.write_all(b"\n").await.expect("write newline");
         client.flush().await.expect("flush request");
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
             loop {
                 let control = shared.lock().await;
-                if routed_workspace(&control.state.routes["child"]) != original_workspace {
+                let current = control
+                    .distributed
+                    .contexts()
+                    .resolve(child_context_id)
+                    .await
+                    .expect("switched child context")
+                    .roots[&child_root_id]
+                    .workspace_id;
+                if current != original_workspace {
                     break;
                 }
                 drop(control);
@@ -13340,12 +17507,53 @@ mod tests {
         connection_shutdown
             .send(true)
             .expect("signal connection shutdown");
-        tokio::time::timeout(std::time::Duration::from_secs(5), handler)
+        let error = tokio::time::timeout(std::time::Duration::from_secs(5), handler)
             .await
             .expect("blocked response shutdown")
             .expect("handler task")
-            .expect("handler result");
+            .expect_err("an unread bounded response must reach its drain deadline");
+        assert!(
+            error.contains("response exceeded its drain deadline"),
+            "{error}"
+        );
         drop(client);
+        drop(ledger);
+        let ledger = Arc::new(ControlLedger::open(&data).expect("reopen control ledger"));
+
+        let (mut retry_client, retry_server) = tokio::io::duplex(64 * 1024);
+        let (_retry_shutdown, retry_receiver) = watch::channel(false);
+        let retry_handler = tokio::spawn(handle_control_connection(
+            retry_server,
+            Arc::clone(&shared),
+            Arc::clone(&ledger),
+            retry_receiver,
+        ));
+        let retry_request = serde_json::to_vec(&switch_envelope).expect("retry request");
+        retry_client
+            .write_all(&retry_request)
+            .await
+            .expect("write retry request");
+        retry_client
+            .write_all(b"\n")
+            .await
+            .expect("write retry newline");
+        retry_client.flush().await.expect("flush retry request");
+        let mut retry_response = String::new();
+        BufReader::new(&mut retry_client)
+            .read_line(&mut retry_response)
+            .await
+            .expect("read cached retry response");
+        let retry_response: Value =
+            serde_json::from_str(&retry_response).expect("cached response JSON");
+        assert_eq!(retry_response["ok"], true, "{retry_response}");
+        assert_eq!(
+            retry_response["requestId"],
+            Value::String(switch_envelope.request_id.as_str().to_owned())
+        );
+        retry_handler
+            .await
+            .expect("retry handler task")
+            .expect("retry handler result");
 
         let mut control = shared.lock().await;
         control
@@ -13381,237 +17589,6 @@ mod tests {
             .await
             .expect("reopen after blocked response shutdown");
         reopened.shutdown().await.expect("reopened shutdown");
-    }
-
-    #[allow(
-        dead_code,
-        reason = "retained for the authenticated acyclic-git IPC dispatcher"
-    )]
-    async fn compatibility_branch_case() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let root = temporary.path().join("root");
-        fs::create_dir_all(&root).expect("root directory");
-        let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
-            .await
-            .expect("control plane");
-        control
-            .session_start(json!({"session_id":"session","cwd":root.display().to_string()}))
-            .await
-            .expect("root session");
-        control
-            .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
-            .expect("root turn");
-        control
-            .pre_tool(json!({
-                "session_id":"session",
-                "turn_id":"root-turn","tool_use_id":"spawn-child",
-                "tool_name":"spawn_agent","tool_input":{}
-            }))
-            .await
-            .expect("child spawn");
-        control
-            .subagent_start(json!({
-                "session_id":"session","turn_id":"child-turn",
-                "agent_id":"child","agent_type":"explorer"
-            }))
-            .await
-            .expect("child start");
-        assert_eq!(
-            fs::read(root.join("base.txt")).expect("base after fork"),
-            b"base"
-        );
-        assert!(
-            control
-                .pre_tool(json!({
-                    "session_id":"session",
-                    "turn_id":"child-turn","tool_use_id":"git-apply-missing",
-                    "tool_name":"exec_command",
-                    "tool_input":{"cmd":"git apply missing.patch","workdir":root.display().to_string()}
-                }))
-                .await
-                .is_err()
-        );
-        let initial_route = control.state.routes["child"].clone();
-        let initial_workspace = control
-            .workspace(&initial_route)
-            .await
-            .expect("initial child workspace");
-        assert!(matches!(
-            OperationWindowCoordinator::new(control.store.clone())
-                .snapshot(initial_workspace.id())
-                .await
-                .expect("operation window after rejected Git command")
-                .phase,
-            acyclic_fs::OperationWindowPhase::Idle
-        ));
-        control
-            .pre_tool(json!({
-                "session_id":"session",
-                "turn_id":"child-turn","tool_use_id":"git-switch",
-                "tool_name":"exec_command",
-                "tool_input":{"cmd":"git switch -c feature","workdir":root.display().to_string()}
-            }))
-            .await
-            .expect("Git branch switch");
-        control
-            .post_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"git-switch","tool_name":"exec_command"}))
-            .await
-            .expect("Git switch post hook");
-        let route = control.state.routes["child"].clone();
-        let repository_id = acyclic_fs::WorkspaceId::from_bytes(
-            route
-                .roots
-                .get(&root_key(WorkspaceRootId::from_bytes(route.root_id)))
-                .expect("active route root")
-                .repository_workspace_id,
-        );
-        let branch = control.workspace(&route).await.expect("branch workspace");
-        assert_ne!(branch.id(), repository_id);
-        let root_workspace = control
-            .roots
-            .get(&root_key(WorkspaceRootId::from_bytes(
-                control.state.root_id,
-            )))
-            .cloned()
-            .expect("root workspace")
-            .workspace()
-            .clone();
-        assert!(
-            WorkspaceGraph::new(control.store.clone())
-                .authorize_join(branch.id(), root_workspace.id())
-                .await
-                .is_err(),
-            "a compatibility branch cannot bypass its repository lineage"
-        );
-        let mut transaction = branch
-            .begin_transaction(IdempotencyKey::new())
-            .await
-            .expect("branch transaction");
-        transaction
-            .write_text("/branch.txt", "branch")
-            .await
-            .expect("branch file");
-        transaction.commit().await.expect("commit branch file");
-        control.mounts["child"]
-            .advance_to_head()
-            .await
-            .expect("advance branch mount");
-        let merged = control
-            .agent_merge(json!({"agent":"child","_caller_turn_id":"root-turn"}))
-            .await
-            .expect("publish compatibility branch");
-        assert!(matches!(
-            merged["status"].as_str(),
-            Some("applied" | "already-applied")
-        ));
-        assert_eq!(
-            fs::read(root.join("branch.txt")).expect("root branch file"),
-            b"branch"
-        );
-        let repository = GitCompatRepository::new(repository_id, control.store.clone());
-        assert!(matches!(
-            repository
-                .execute(
-                    GitCommand::Switch {
-                        branch: "main".to_owned(),
-                        create: false,
-                    },
-                    branch.head().await.expect("branch head").id(),
-                )
-                .await
-                .expect("prepare interrupted switch"),
-            acyclic_fs::GitCommandOutput::Prepared { .. }
-        ));
-        drop(control);
-
-        let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
-            .await
-            .expect("reopen with interrupted Git transition");
-        assert!(
-            GitCompatRepository::new(repository_id, control.store.clone())
-                .pending_transition()
-                .await
-                .expect("pending transition")
-                .is_some()
-        );
-        assert!(
-            control
-                .pre_tool(json!({
-                    "session_id":"session",
-                    "turn_id":"child-turn","tool_use_id":"recover-git-switch",
-                    "tool_name":"exec_command",
-                    "tool_input":{"cmd":"git status","workdir":root.display().to_string()}
-                }))
-                .await
-                .is_err()
-        );
-        drop(control);
-        let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
-            .await
-            .expect("reopen after leased Git recovery");
-        assert_eq!(
-            control.state.routes["child"].roots[&root_key(WorkspaceRootId::from_bytes(
-                control.state.routes["child"].root_id,
-            ))]
-                .workspace_id,
-            repository_id.into_bytes()
-        );
-        control
-            .pre_tool(json!({
-                "session_id":"session",
-                "turn_id":"child-turn","tool_use_id":"retry-git-status",
-                "tool_name":"exec_command",
-                "tool_input":{"cmd":"git status","workdir":root.display().to_string()}
-            }))
-            .await
-            .expect("retry Git status after leased recovery");
-        control
-            .user_prompt(json!({"session_id":"session","turn_id":"root-turn-recovered"}))
-            .expect("recovered root turn");
-        control
-            .agent_discard(json!({"agent":"child","_caller_turn_id":"root-turn-recovered"}))
-            .await
-            .expect("discard compatibility branch");
-        assert!(!control.state.routes.contains_key("child"));
-        assert!(!control.mounts.contains_key("child"));
-        assert!(
-            <LocalCoreStateStore as acyclic_fs::GitCompatStore>::load(
-                &control.store,
-                repository_id,
-            )
-            .await
-            .expect("load discarded Git state")
-            .is_none()
-        );
-        drop(control);
-
-        let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
-            .await
-            .expect("reopen control plane");
-        control
-            .user_prompt(json!({"session_id":"session","turn_id":"root-turn-reopened"}))
-            .expect("reopened root turn");
-        control
-            .pre_tool(json!({
-                "session_id":"session",
-                "turn_id":"root-turn-reopened","tool_use_id":"spawn-reused-child",
-                "tool_name":"spawn_agent","tool_input":{}
-            }))
-            .await
-            .expect("reused child spawn");
-        control
-            .subagent_start(json!({
-                "session_id":"session","turn_id":"child-turn-reused",
-                "agent_id":"child","agent_type":"explorer"
-            }))
-            .await
-            .expect("reuse discarded child identity");
-        let reused = &control.state.routes["child"];
-        assert_ne!(
-            reused.roots[&root_key(WorkspaceRootId::from_bytes(reused.root_id))]
-                .repository_workspace_id,
-            repository_id.into_bytes()
-        );
     }
 
     async fn recursive_publication_case() {
@@ -13654,7 +17631,7 @@ mod tests {
             }))
             .await
             .expect("child start");
-        let child_path = control.state.routes["child"].path.clone();
+        let child_path = route_path(&control.state.routes["child"]);
         control
             .pre_tool(json!({
                 "session_id":"session",
@@ -13697,7 +17674,9 @@ mod tests {
             .workspace(&control.state.routes["child"])
             .await
             .expect("child workspace");
-        let snapshot = OperationWindowCoordinator::new(control.store.clone())
+        let snapshot = control
+            .distributed
+            .operations()
             .snapshot(child_workspace.id())
             .await
             .expect("operation window");
@@ -13749,6 +17728,7 @@ mod tests {
             .await
             .expect("nested file");
         transaction.commit().await.expect("commit nested file");
+        drop(transaction);
         assert_eq!(
             fs::read(root.join("base.txt")).expect("base after grandchild write"),
             b"base"
@@ -13810,6 +17790,8 @@ mod tests {
         );
         assert!(!control.mounts.contains_key("grandchild"));
         assert!(control.state.pending_discards.contains_key("child"));
+        drop(child_workspace);
+        drop(grandchild);
         drop(control);
 
         let control = ControlPlane::open(data)
@@ -13882,16 +17864,28 @@ mod tests {
         let root_keys = route.roots.keys().cloned().collect::<Vec<_>>();
         let first_key = root_keys.first().expect("first ordered root").clone();
         let last_key = root_keys.last().expect("last ordered root").clone();
-        let original_workspace_id = control.state.routes["child"].roots[&last_key].workspace_id;
+        let child_context_id = WorkspaceContextId::from_bytes(route.context_id);
+        let last_root_id = WorkspaceRootId::from_bytes(route.roots[&last_key].root_id);
+        let original_root = control
+            .distributed
+            .contexts()
+            .resolve(child_context_id)
+            .await
+            .expect("child context")
+            .roots[&last_root_id]
+            .clone();
         control
-            .state
-            .routes
-            .get_mut("child")
-            .expect("child route")
-            .roots
-            .get_mut(&last_key)
-            .expect("last root")
-            .workspace_id = [u8::MAX; 16];
+            .distributed
+            .contexts()
+            .set_workspace(
+                child_context_id,
+                last_root_id,
+                acyclic_fs::WorkspaceId::from_bytes([u8::MAX; 16]),
+                "missing-workspace".to_owned(),
+                original_root.parent_workspace_id,
+            )
+            .await
+            .expect("inject missing core workspace");
         assert!(
             control
                 .pre_tool(json!({
@@ -13899,7 +17893,7 @@ mod tests {
                     "turn_id":"child-turn",
                     "tool_use_id":"partial-lease",
                     "tool_name":"Read",
-                    "tool_input":{"path":route.path.join("base.txt")}
+                    "tool_input":{"path":route_path(&route).join("base.txt")}
                 }))
                 .await
                 .is_err()
@@ -13911,7 +17905,9 @@ mod tests {
             .await
             .expect("first child root");
         assert!(matches!(
-            OperationWindowCoordinator::new(control.store.clone())
+            control
+                .distributed
+                .operations()
                 .snapshot(first_workspace.id())
                 .await
                 .expect("rolled-back window")
@@ -13919,21 +17915,24 @@ mod tests {
             acyclic_fs::OperationWindowPhase::Idle
         ));
         control
-            .state
-            .routes
-            .get_mut("child")
-            .expect("child route")
-            .roots
-            .get_mut(&last_key)
-            .expect("last root")
-            .workspace_id = original_workspace_id;
+            .distributed
+            .contexts()
+            .set_workspace(
+                child_context_id,
+                last_root_id,
+                original_root.workspace_id,
+                original_root.workspace_name,
+                original_root.parent_workspace_id,
+            )
+            .await
+            .expect("restore core workspace");
         control
             .pre_tool(json!({
                 "session_id":"session",
                 "turn_id":"child-turn",
                 "tool_use_id":"active-write",
                 "tool_name":"Write",
-                "tool_input":{"path":route.path.join("in-flight.txt")}
+                "tool_input":{"path":route_path(&route).join("in-flight.txt")}
             }))
             .await
             .expect("active child write lease");
@@ -13986,7 +17985,7 @@ mod tests {
                 .await
                 .expect("root transaction");
             transaction
-                .write_text("/child.txt", &route_root.route_name)
+                .write_text("/child.txt", &route_root.mount_name())
                 .await
                 .expect("root write");
             transaction.commit().await.expect("root commit");
@@ -14018,6 +18017,7 @@ mod tests {
         assert_eq!(result["status"], "applied");
         assert!(first.join("child.txt").is_file());
         assert!(second.join("child.txt").is_file());
+        drop(first_workspace);
         control.shutdown().await.expect("shutdown");
 
         let resumed = ControlPlane::open(data)
@@ -14026,11 +18026,131 @@ mod tests {
         assert_eq!(resumed.state.roots.len(), 2);
         assert_eq!(resumed.state.routes["child"].roots.len(), 2);
         let (_, routed, root_id) = resumed
-            .route_root_from_cwd(&resumed.state.routes["child"].path)
+            .route_root_from_cwd(&route_path(&resumed.state.routes["child"]))
             .expect("route resumed child cwd");
         assert_eq!(routed.expect("child route").agent_id, "child");
         assert_eq!(root_id, second_root);
         resumed.shutdown().await.expect("resumed shutdown");
+    }
+
+    async fn core_root_recovery_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        let first = temporary.path().join("first");
+        let second = temporary.path().join("second");
+        fs::create_dir_all(&first).expect("first root");
+        fs::create_dir_all(&second).expect("second root");
+
+        let initial_data = temporary.path().join("initial-plugin-data");
+        let mut initial = ControlPlane::open(initial_data.clone())
+            .await
+            .expect("initial control plane");
+        initial.fail_after_root_intent = true;
+        let error = initial
+            .session_start(json!({"session_id":"initial","cwd":first}))
+            .await
+            .expect_err("injected crash after durable initial root intent");
+        assert_eq!(error, "injected failure after root registration intent");
+        assert!(initial.state.pending_root_registration);
+        let expected_context = initial.state.root_context_id;
+        let expected_workspace = initial
+            .state
+            .roots
+            .values()
+            .next()
+            .expect("root intent")
+            .repository_workspace_id;
+        drop(initial);
+        let resumed_initial = ControlPlane::open(initial_data)
+            .await
+            .expect("finish pending initial root registration");
+        assert!(!resumed_initial.state.pending_root_registration);
+        assert_eq!(resumed_initial.state.root_context_id, expected_context);
+        assert_eq!(
+            resumed_initial
+                .state
+                .roots
+                .values()
+                .next()
+                .expect("recovered root")
+                .repository_workspace_id,
+            expected_workspace
+        );
+        resumed_initial.shutdown().await.expect("initial shutdown");
+
+        let mut control = ControlPlane::open(data.clone())
+            .await
+            .expect("control plane");
+        control
+            .session_start(json!({"session_id":"session","cwd":first}))
+            .await
+            .expect("first root attach");
+        control.fail_after_root_intent = true;
+        let error = control
+            .session_start(json!({"session_id":"session","cwd":second}))
+            .await
+            .expect_err("injected crash after durable root intent");
+        assert_eq!(error, "injected failure after root adoption intent");
+        assert_eq!(control.state.pending_root_adoptions.len(), 1);
+        let second_root = control
+            .state
+            .roots
+            .values()
+            .find(|root| root.root_id != control.state.root_id)
+            .map(|root| WorkspaceRootId::from_bytes(root.root_id))
+            .expect("second root binding");
+        let second_key = root_key(second_root);
+        let expected_workspace = control
+            .state
+            .roots
+            .get(&second_key)
+            .expect("durable root intent")
+            .repository_workspace_id;
+        drop(control);
+
+        let resumed = ControlPlane::open(data)
+            .await
+            .expect("finish pending core root adoption");
+        assert_eq!(resumed.state.roots.len(), 2);
+        assert!(resumed.state.pending_root_adoptions.is_empty());
+        assert_eq!(
+            resumed.state.roots[&second_key].repository_workspace_id,
+            expected_workspace
+        );
+        resumed.shutdown().await.expect("shutdown");
+
+        let fenced_data = temporary.path().join("fenced-plugin-data");
+        let mut fenced = ControlPlane::open(fenced_data.clone())
+            .await
+            .expect("fenced control plane");
+        fenced
+            .session_start(json!({"session_id":"fenced","cwd":first}))
+            .await
+            .expect("fenced first root");
+        fenced.fail_after_root_intent = true;
+        fenced
+            .session_start(json!({"session_id":"fenced","cwd":second}))
+            .await
+            .expect_err("fenced adoption fault");
+        let pending = fenced
+            .state
+            .pending_root_adoptions
+            .first()
+            .cloned()
+            .expect("pending fenced root");
+        fenced
+            .state
+            .roots
+            .get_mut(&pending)
+            .expect("pending fenced binding")
+            .native_root_identity = [u8::MAX; 16];
+        fenced.persist().expect("persist replacement identity");
+        drop(fenced);
+        let error = ControlPlane::open(fenced_data)
+            .await
+            .err()
+            .expect("replacement root must be fenced");
+        assert!(error.contains("identity changed"), "{error}");
     }
 
     #[test]
@@ -14038,11 +18158,12 @@ mod tests {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let child = temporary.path().join("workspace");
         fs::create_dir(&child).expect("child directory");
-        let input = json!({"command": "*** Begin Patch\n*** Add File: src/new.rs\n*** End Patch"});
+        let input = json!({"command": "*** Begin Patch\n*** Add File: src/new.rs\n*** Move to: src/moved.rs\n*** End Patch"});
         let rewritten = rewrite_tool_input("apply_patch", input, temporary.path(), &child)
             .expect("rewrite patch");
         let command = rewritten["command"].as_str().expect("command");
         assert!(command.contains(&child.join("src/new.rs").display().to_string()));
+        assert!(command.contains(&child.join("src/moved.rs").display().to_string()));
     }
 
     #[test]
@@ -14053,10 +18174,19 @@ mod tests {
         fs::create_dir(&root).expect("root directory");
         fs::create_dir(&child).expect("child directory");
         let outside = temporary.path().join("outside.txt").display().to_string();
-        for path in ["../parent.txt", &outside] {
-            let input =
-                json!({"command": format!("*** Begin Patch\n*** Add File: {path}\n*** End Patch")});
-            assert!(rewrite_tool_input("apply_patch", input, &root, &child).is_err());
+        for directive in [
+            "Add File",
+            "Update File",
+            "Delete File",
+            "Move to",
+            "Copy to",
+        ] {
+            for path in ["../parent.txt", &outside] {
+                let input = json!({
+                    "command": format!("*** Begin Patch\n*** {directive}: {path}\n*** End Patch")
+                });
+                assert!(rewrite_tool_input("apply_patch", input, &root, &child).is_err());
+            }
         }
     }
 
@@ -14064,11 +18194,16 @@ mod tests {
     fn remote_tool_hooks_are_process_local_noops_for_every_native_host() {
         for host in ["codex", "claude-code", "copilot", "cursor"] {
             for event in ["PreToolUse", "PostToolUse", "PostToolUseFailure"] {
-                assert!(native_hook_is_process_local_noop(
-                    host,
-                    event,
-                    &json!({"tool_name":"mcp__codex_app__list_threads"})
-                ));
+                for tool in [
+                    "mcp__codex_app__list_threads",
+                    "mcp__codex_app__send_message_to_thread",
+                ] {
+                    assert!(native_hook_is_process_local_noop(
+                        host,
+                        event,
+                        &json!({"tool_name":tool})
+                    ));
+                }
             }
         }
         assert!(!native_hook_is_process_local_noop(
@@ -14081,6 +18216,20 @@ mod tests {
             "SessionStart",
             &json!({"tool_name":"mcp__codex_app__list_threads"})
         ));
+        for tool in [
+            "mcp__codex_app__create_thread",
+            "mcp__codex_app__create_worktree",
+            "mcp__codex_app__fork_thread",
+            "mcp__codex_app__handoff_thread",
+            "mcp__codex_app__open_in_codex",
+            "mcp__codex_app__uninstall_plugin",
+            "mcp__codex_app__future_unknown_tool",
+        ] {
+            assert!(
+                !is_known_non_filesystem_tool(tool),
+                "filesystem-capable or unknown app tool must fail closed: {tool}"
+            );
+        }
     }
 
     #[test]
@@ -14111,6 +18260,66 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn persisted_mount_paths_are_derived_not_authoritative() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root_id = WorkspaceRootId::from_bytes([1; 16]);
+        let mount_path = workspace_mount_root(temporary.path()).join(compact_id(&[2; 16]));
+        assert_eq!(compact_id(&[2; 16]).len(), 22);
+        assert_eq!(route_name(root_id).len(), 23);
+        assert_eq!(
+            mount_path
+                .strip_prefix(temporary.path())
+                .expect("relative mount"),
+            Path::new("w").join(compact_id(&[2; 16]))
+        );
+        let mut different_context = [2; 16];
+        different_context[15] = 3;
+        assert_ne!(compact_id(&[2; 16]), compact_id(&different_context));
+        let mut different_root = [1; 16];
+        different_root[15] = 2;
+        assert_ne!(
+            route_name(root_id),
+            route_name(WorkspaceRootId::from_bytes(different_root))
+        );
+        let staging = root_materialization_directory(
+            &temporary.path().join("physical-root"),
+            OperationId::from_bytes([4; 16]),
+        )
+        .expect("materialization directory");
+        let staging_segments = staging
+            .strip_prefix(temporary.path())
+            .expect("relative staging")
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(staging_segments.len(), 3);
+        assert_eq!(staging_segments[0], ".acyclic-m");
+        assert_eq!(staging_segments[1].len(), 22);
+        assert_eq!(staging_segments[2].len(), 22);
+        let mut route = Route {
+            agent_id: "child".to_owned(),
+            turn_id: "turn".to_owned(),
+            context_id: [2; 16],
+            root_id: root_id.into_bytes(),
+            parent_agent_id: "root".to_owned(),
+            roots: BTreeMap::from([(
+                root_key(root_id),
+                RouteRoot {
+                    root_id: root_id.into_bytes(),
+                    repository_workspace_id: [3; 16],
+                    published_generation: [0; 32],
+                },
+            )]),
+            mount_path: mount_path.clone(),
+            lifecycle: RouteLifecycle::Active,
+        };
+        assert_eq!(route_path(&route), mount_path.join(route_name(root_id)));
+        validate_persisted_route_paths(temporary.path(), &route).expect("derived route paths");
+        route.mount_path = temporary.path().join("outside");
+        assert!(validate_persisted_route_paths(temporary.path(), &route).is_err());
     }
 
     #[test]
@@ -14184,6 +18393,14 @@ mod tests {
         .expect("redirect workdir");
         assert_eq!(rewritten["workdir"], child.display().to_string());
         let rewritten = rewrite_tool_input(
+            "mcp__shell__exec_command",
+            json!({"cmd": "pwd"}),
+            &root,
+            &child,
+        )
+        .expect("redirect namespaced exec workdir");
+        assert_eq!(rewritten["workdir"], child.display().to_string());
+        let rewritten = rewrite_tool_input(
             "PowerShell",
             json!({"command": "Get-Location"}),
             &root,
@@ -14211,6 +18428,45 @@ mod tests {
                 .as_str()
                 .is_some_and(|error| error.contains("4 MiB"))
         );
+
+        let request_id = control_protocol::RequestId::fresh();
+        let response = control_response_for(
+            &request_id,
+            Ok(json!({"payload":"x".repeat(MAXIMUM_CONTROL_MESSAGE_BYTES)})),
+        );
+        let encoded = encode_control_response(&response).expect("bounded v2 response");
+        assert!(encoded.len() < MAXIMUM_CONTROL_MESSAGE_BYTES);
+        let response: Value = serde_json::from_slice(&encoded).expect("v2 response JSON");
+        assert_eq!(response["requestId"], request_id.as_str());
+        assert_eq!(response["ok"], false);
+    }
+
+    #[test]
+    fn malformed_v2_requests_keep_their_correlation_identity() {
+        let request_id = control_protocol::RequestId::fresh();
+        let request = serde_json::to_vec(&json!({
+            "requestId": request_id.as_str(),
+            "unexpected": true
+        }))
+        .expect("invalid envelope fixture");
+        let error = serde_json::from_slice::<ControlEnvelope<ControlRequest>>(&request)
+            .expect_err("fixture must not be a valid envelope");
+        let response = invalid_control_request_response(&request, &error);
+        assert_eq!(response["version"], 2);
+        assert_eq!(response["requestId"], request_id.as_str());
+        assert_eq!(response["ok"], false);
+
+        let uncorrelated = br#"{"unexpected":true}"#;
+        let error = serde_json::from_slice::<ControlEnvelope<ControlRequest>>(uncorrelated)
+            .expect_err("fixture must not be a valid envelope");
+        let response = invalid_control_request_response(uncorrelated, &error);
+        assert_eq!(response["version"], 2);
+        assert!(response.get("requestId").is_none());
+        let encoded = serde_json::to_vec(&response).expect("uncorrelated response");
+        assert!(matches!(
+            decode_control_response(&encoded, &request_id),
+            Err(ControlRequestError::Indeterminate(_))
+        ));
     }
 
     #[test]
@@ -14495,7 +18751,10 @@ mod tests {
                 .contains("byte bound")
         );
 
-        let mut state = AdapterState::default();
+        let mut state = AdapterState {
+            version: ADAPTER_STATE_VERSION,
+            ..AdapterState::default()
+        };
         for index in 0..=MAXIMUM_ADAPTER_TURNS {
             state.turns.insert(index.to_string(), "root".to_owned());
         }
@@ -14514,6 +18773,23 @@ mod tests {
                 .contains("too many root turns")
         );
         state.root_turns.clear();
+        state.roots.insert(
+            "wrong-key".to_owned(),
+            RootBinding {
+                root_id: [1; 16],
+                path: temporary.path().to_path_buf(),
+                repository_workspace_id: [2; 16],
+                source_identity: [3; 16],
+                source_epoch: 0,
+                native_root_identity: [4; 16],
+            },
+        );
+        assert!(
+            validate_state_bounds(&state)
+                .expect_err("mismatched root map key must fail")
+                .contains("typed root identity")
+        );
+        state.roots.clear();
         state.root_session_id = "x"
             .repeat(usize::try_from(MAXIMUM_ADAPTER_STATE_BYTES).expect("state bound fits usize"));
         assert!(
@@ -14525,8 +18801,8 @@ mod tests {
     }
 
     #[test]
-    fn adapter_state_without_activity_marker_recovers_as_live() {
-        let state: AdapterState = serde_json::from_value(json!({
+    fn adapter_state_requires_the_current_explicit_schema() {
+        let legacy = serde_json::from_value::<AdapterState>(json!({
             "version": 1,
             "root_session_id": "legacy-session",
             "root_agent_id": "legacy-agent",
@@ -14538,9 +18814,17 @@ mod tests {
             "turns": {},
             "leases": {},
             "pending": []
-        }))
-        .expect("legacy adapter state");
-        assert!(state.active);
+        }));
+        assert!(
+            legacy.is_err(),
+            "legacy state must not be silently migrated"
+        );
+        let unsupported = AdapterState {
+            version: ADAPTER_STATE_VERSION + 1,
+            active: true,
+            ..AdapterState::default()
+        };
+        assert!(validate_state_version(&unsupported).is_err());
     }
 
     #[test]
@@ -14549,7 +18833,8 @@ mod tests {
         fs::write(temporary.path().join("adapter-state.json"), b"not json")
             .expect("corrupt current state");
         let previous = AdapterState {
-            version: 7,
+            version: ADAPTER_STATE_VERSION,
+            root_session_id: "previous".to_owned(),
             ..AdapterState::default()
         };
         fs::write(
@@ -14560,8 +18845,15 @@ mod tests {
         assert_eq!(
             load_state(temporary.path())
                 .expect("recovered state")
-                .version,
-            7
+                .root_session_id,
+            "previous"
+        );
+
+        fs::remove_file(temporary.path().join("adapter-state.previous.json"))
+            .expect("remove previous state");
+        assert!(
+            load_state(temporary.path()).is_err(),
+            "corrupt current state without a valid recovery snapshot must fail closed"
         );
     }
 
@@ -14569,12 +18861,13 @@ mod tests {
     fn adapter_state_rename_failures_keep_a_loadable_generation() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let mut state = AdapterState {
-            version: 1,
+            version: ADAPTER_STATE_VERSION,
+            root_session_id: "first".to_owned(),
             ..AdapterState::default()
         };
         save_state(temporary.path(), &state).expect("initial state");
 
-        state.version = 2;
+        state.root_session_id = "second".to_owned();
         let mut calls = 0;
         assert!(
             save_state_with_rename(temporary.path(), &state, |from, to, mode| {
@@ -14588,12 +18881,14 @@ mod tests {
             .is_err()
         );
         assert_eq!(
-            load_state(temporary.path()).expect("current state").version,
-            1
+            load_state(temporary.path())
+                .expect("current state")
+                .root_session_id,
+            "first"
         );
 
         save_state(temporary.path(), &state).expect("second state");
-        state.version = 3;
+        state.root_session_id = "third".to_owned();
         let mut calls = 0;
         assert!(
             save_state_with_rename(temporary.path(), &state, |from, to, mode| {
@@ -14609,8 +18904,8 @@ mod tests {
         assert_eq!(
             load_state(temporary.path())
                 .expect("previous state after publication failure")
-                .version,
-            2
+                .root_session_id,
+            "second"
         );
     }
 
@@ -14627,6 +18922,31 @@ mod tests {
     }
 
     #[test]
+    fn rpc_line_reader_is_bounded_and_handles_stream_boundaries() {
+        let mut input = io::Cursor::new(b"first\r\nsecond\nlast".to_vec());
+        assert_eq!(
+            read_bounded_rpc_line(&mut input).expect("first frame"),
+            Some(b"first".to_vec())
+        );
+        assert_eq!(
+            read_bounded_rpc_line(&mut input).expect("second frame"),
+            Some(b"second".to_vec())
+        );
+        assert_eq!(
+            read_bounded_rpc_line(&mut input).expect("final frame"),
+            Some(b"last".to_vec())
+        );
+        assert_eq!(read_bounded_rpc_line(&mut input).expect("eof"), None);
+
+        let mut oversized = io::Cursor::new(vec![b'x'; MAXIMUM_CONTROL_MESSAGE_BYTES + 1]);
+        assert!(
+            read_bounded_rpc_line(&mut oversized)
+                .expect_err("oversized frame must fail closed")
+                .contains("maximum frame size")
+        );
+    }
+
+    #[test]
     fn doctor_requires_an_exact_binary_bound_platform_receipt() {
         let kind = match env::consts::OS {
             "linux" => "linux-fuse",
@@ -14634,6 +18954,7 @@ mod tests {
             "windows" => "windows-projfs",
             _ => return,
         };
+        let provider_process_io_observable = !cfg!(windows);
         let canonical = json!({
             "schema":"acyclic-native-mount-qualification-v2",
             "os":env::consts::OS,
@@ -14647,7 +18968,7 @@ mod tests {
             ],
             "capability":{
                 "kind":kind,"available":true,"writable":true,
-                "provider_process_io_observable":false,
+                "provider_process_io_observable":provider_process_io_observable,
                 "session_isolation":"SharedProcess","unavailable_reason":null
             },
             "required_kind":kind,
@@ -14715,6 +19036,22 @@ mod tests {
             strings(&["--json", "--json"]),
         ] {
             assert!(parse_read_only_arguments(&invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn native_hook_identities_are_nonempty_bounded_and_control_free() {
+        assert_eq!(
+            hook_id(
+                &json!({"session_id":"session-1"}),
+                "session_id",
+                "sessionId"
+            )
+            .expect("valid session ID"),
+            "session-1"
+        );
+        for invalid in [String::new(), "line\nbreak".to_owned(), "x".repeat(513)] {
+            assert!(validate_hook_id("session_id", invalid).is_err());
         }
     }
 
