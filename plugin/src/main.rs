@@ -2676,7 +2676,7 @@ impl ControlPlane {
                     .attach_lazy_with_config(
                         &workspace_name,
                         Arc::clone(&source),
-                        native_volume_config(),
+                        VolumeConfig::native(Lifecycle::Durable),
                     )
                     .await
                     .map_err(display)?;
@@ -2740,7 +2740,11 @@ impl ControlPlane {
         let source_reference = source.reference();
         let workspace = self
             .distributed
-            .attach_lazy_with_config(&workspace_name, Arc::clone(&source), native_volume_config())
+            .attach_lazy_with_config(
+                &workspace_name,
+                Arc::clone(&source),
+                VolumeConfig::native(Lifecycle::Durable),
+            )
             .await
             .map_err(display)?;
         let context_id = if self.state.root_context_id == [0; 16] {
@@ -4348,7 +4352,7 @@ impl ControlPlane {
                 .await
                 .map_err(display)?;
             let (root_files, root_bindings, paths) = if let Some(path) = requested_path {
-                let filter = agent_change_filter(path, &route, route_root)?;
+                let filter = agent_change_filter(path, &route, route_root, workspace.profile())?;
                 let paths = changes
                     .changed_paths(100_000)
                     .await
@@ -5188,7 +5192,8 @@ impl ControlPlane {
                 .into_iter()
                 .map(|path| {
                     let path = PortablePath::parse(path, limits).map_err(display)?;
-                    NamespacePath::from_portable(&path, limits).map_err(display)
+                    NamespacePath::from_portable_in_profile(&path, workspace.profile(), limits)
+                        .map_err(display)
                 })
                 .collect::<Result<Vec<_>, String>>()?,
         )
@@ -5878,7 +5883,8 @@ async fn open_lazy_source(
         .into_iter()
         .map(|path| {
             let path = PortablePath::parse(path, limits).map_err(display)?;
-            NamespacePath::from_portable(&path, limits).map_err(display)
+            NamespacePath::from_portable_in_profile(&path, native_filesystem_profile(), limits)
+                .map_err(display)
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(Arc::new(FilteredDemandSource::new(source, excluded)))
@@ -5906,13 +5912,6 @@ const fn native_filesystem_profile() -> FilesystemProfile {
         FilesystemProfile::Windows
     } else {
         FilesystemProfile::Posix
-    }
-}
-
-fn native_volume_config() -> VolumeConfig {
-    VolumeConfig {
-        profile: native_filesystem_profile(),
-        ..VolumeConfig::portable(Lifecycle::Durable)
     }
 }
 
@@ -5961,6 +5960,7 @@ fn agent_change_filter(
     path: &str,
     route: &Route,
     root: &RouteRoot,
+    profile: FilesystemProfile,
 ) -> Result<NamespacePath, String> {
     let candidate = Path::new(path);
     let relative = if candidate.is_absolute() {
@@ -5991,7 +5991,7 @@ fn agent_change_filter(
     }
     let limits = VolumeLimits::default();
     let portable = PortablePath::parse(&portable, limits).map_err(display)?;
-    NamespacePath::from_portable(&portable, limits).map_err(display)
+    NamespacePath::from_portable_in_profile(&portable, profile, limits).map_err(display)
 }
 
 fn namespace_path_text(path: &NamespacePath) -> Result<String, String> {

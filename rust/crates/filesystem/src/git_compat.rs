@@ -3983,7 +3983,10 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let reader = checkout.pinned_reader().map_err(WorkspaceError::engine)?;
     let limits = checkout.volume_config().limits;
     let root = root.unwrap_or("/");
-    let root_path = customer_path(&format!("/{}", root.trim_start_matches('/')), limits)?;
+    let root_path = customer_path(
+        &format!("/{}", root.trim_start_matches('/')),
+        checkout.volume_config(),
+    )?;
     let root_display = root.trim_matches('/').to_owned();
     let maximum_entries = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
     let (regular, mut truncated) = resolved_git_grep_files(

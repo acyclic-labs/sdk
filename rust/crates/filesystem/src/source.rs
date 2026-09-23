@@ -682,8 +682,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .excluded_paths
                 .iter()
                 .map(|path| {
-                    crate::kernel::NamespacePath::from_portable(
+                    crate::kernel::NamespacePath::from_portable_in_profile(
                         path,
+                        workspace.volume.config().profile,
                         workspace.volume.config().limits,
                     )
                     .map_err(engine)

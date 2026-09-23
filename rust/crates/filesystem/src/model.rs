@@ -190,6 +190,20 @@ impl VolumeConfig {
         }
     }
 
+    /// Constructs the host-native filesystem profile for a mounted checkout.
+    #[must_use]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native(lifecycle: Lifecycle) -> Self {
+        Self {
+            profile: if cfg!(windows) {
+                FilesystemProfile::Windows
+            } else {
+                FilesystemProfile::Posix
+            },
+            ..Self::portable(lifecycle)
+        }
+    }
+
     /// Validates all limits and cross-field semantic requirements.
     ///
     /// # Errors

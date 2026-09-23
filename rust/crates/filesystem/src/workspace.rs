@@ -478,14 +478,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             )
             .await?;
         let mut transaction = self.begin_transaction(idempotency_key).await?;
-        let limits = self.volume.config.limits;
+        let config = self.volume.config;
         let cancellation = crate::CancellationToken::new();
         let parsed = paths
             .iter()
             .map(|path| {
                 let relative = path.trim_start_matches('/');
                 let absolute = format!("/{relative}");
-                customer_path(&absolute, limits).map(|path| (relative, path))
+                customer_path(&absolute, config).map(|path| (relative, path))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let lookup_paths = parsed
@@ -628,14 +628,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             None => None,
         };
         let mut transaction = self.begin_transaction(idempotency_key).await?;
-        let limits = self.volume.config.limits;
+        let config = self.volume.config;
         let cancellation = crate::CancellationToken::new();
         let parsed = paths
             .iter()
             .map(|path| {
                 let relative = path.trim_start_matches('/');
                 let absolute = format!("/{relative}");
-                customer_path(&absolute, limits).map(|path| (relative, path))
+                customer_path(&absolute, config).map(|path| (relative, path))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let lookup_paths = parsed
@@ -1309,7 +1309,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let mut checkout = self
             .engine_checkout(selector, CheckoutMode::read_only_pinned())
             .await?;
-        let path = customer_path(path, checkout.volume_config().limits)?;
+        let path = customer_path(path, checkout.volume_config())?;
         let lookup = checkout
             .lookup_no_follow(
                 &path,
@@ -1391,7 +1391,7 @@ async fn read_generation_range<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let mut checkout = workspace
         .engine_checkout(selector, CheckoutMode::read_only_pinned())
         .await?;
-    let path = customer_path(path, checkout.volume_config().limits)?;
+    let path = customer_path(path, checkout.volume_config())?;
     checkout
         .read_file_range(
             &path,
@@ -1452,7 +1452,7 @@ async fn stat_generation_optional_measured<A: AsyncAuthorityStore, O: AsyncObjec
         .await?;
     let mut work = checkout.work;
     let mut checkout = checkout.value;
-    let path = customer_path(path, checkout.volume_config().limits)?;
+    let path = customer_path(path, checkout.volume_config())?;
     let lookup = checkout
         .lookup_no_follow_with_metadata(
             &path,
@@ -1534,7 +1534,7 @@ async fn list_generation_directory_measured<A: AsyncAuthorityStore, O: AsyncObje
         .await?;
     let prior = checkout.work;
     let mut checkout = checkout.value;
-    let path = customer_path(path, checkout.volume_config().limits)?;
+    let path = customer_path(path, checkout.volume_config())?;
     let page = checkout
         .list_directory(
             &path,
@@ -1572,7 +1572,7 @@ async fn read_generation_symbolic_link<A: AsyncAuthorityStore, O: AsyncObjectSto
     let mut checkout = workspace
         .engine_checkout(selector, CheckoutMode::read_only_pinned())
         .await?;
-    let path = customer_path(path, checkout.volume_config().limits)?;
+    let path = customer_path(path, checkout.volume_config())?;
     checkout
         .read_symbolic_link(
             &path,
@@ -1595,7 +1595,7 @@ async fn plan_generation_extents<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let mut checkout = workspace
         .engine_checkout(selector, CheckoutMode::read_only_pinned())
         .await?;
-    let path = customer_path(path, checkout.volume_config().limits)?;
+    let path = customer_path(path, checkout.volume_config())?;
     let plan = checkout
         .plan_file_extents(
             &path,
@@ -1655,7 +1655,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply_engine_measured(
             vec![crate::kernel::Mutation::Restore { path, record }],
             budget,
@@ -1678,7 +1678,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             cancellation.check().map_err(WorkspaceError::from)?;
             current.push('/');
             current.push_str(component);
-            let path = customer_path(&current, self.checkout.volume_config().limits)?;
+            let path = customer_path(&current, self.checkout.volume_config())?;
             let lookup = self
                 .checkout
                 .lookup_no_follow(
@@ -1728,7 +1728,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply_authored_measured(
             AuthoredMutation::CreateDirectory {
                 path,
@@ -1747,7 +1747,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply_authored_measured(
             AuthoredMutation::CreateFile {
                 path,
@@ -1768,7 +1768,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply_authored_measured(
             AuthoredMutation::Write {
                 path,
@@ -1788,7 +1788,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply_authored_measured(
             AuthoredMutation::CreateSymbolicLink {
                 path,
@@ -1809,7 +1809,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         let operation = match (kind, device) {
             (FileKind::Fifo | FileKind::Socket, None) => AuthoredMutation::CreateEmptySpecial {
                 path,
@@ -1838,7 +1838,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply_authored_measured(
             AuthoredMutation::SetMetadata { path, metadata },
             budget,
@@ -1854,7 +1854,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply_authored_measured(
             AuthoredMutation::Reidentify { path, file_id },
             budget,
@@ -1870,11 +1870,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::WorkCounters, WorkspaceError> {
-        let limits = self.checkout.volume_config().limits;
+        let config = self.checkout.volume_config();
         self.apply_authored_measured(
             AuthoredMutation::HardLink {
-                source: customer_path(source, limits)?,
-                destination: customer_path(destination, limits)?,
+                source: customer_path(source, config)?,
+                destination: customer_path(destination, config)?,
             },
             budget,
             cancellation,
@@ -1904,7 +1904,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         path: &str,
         file_id: FileId,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::Reidentify { path, file_id }])
             .await
     }
@@ -1921,7 +1921,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         bytes: Bytes,
         metadata: FileMetadata,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::CreateFile {
             path,
             bytes,
@@ -1965,7 +1965,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         for component in portable.components() {
             current.push('/');
             current.push_str(component);
-            let path = customer_path(&current, self.checkout.volume_config().limits)?;
+            let path = customer_path(&current, self.checkout.volume_config())?;
             let existing = self
                 .checkout
                 .lookup_no_follow(
@@ -1998,7 +1998,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ///
     /// Rejects invalid/existing paths or authenticated engine failures.
     pub async fn create_directory(&mut self, path: &str) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::CreateDirectory {
             path,
             metadata: FileMetadata::default(),
@@ -2016,7 +2016,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         path: &str,
         target: Bytes,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::CreateSymbolicLink {
             path,
             target,
@@ -2032,7 +2032,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         kind: FileKind,
         device: Option<(u32, u32)>,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         let mutation = match (kind, device) {
             (FileKind::Fifo | FileKind::Socket, None) => AuthoredMutation::CreateEmptySpecial {
                 path,
@@ -2071,7 +2071,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     /// Rejects invalid paths, non-regular destinations, size limits, and
     /// authenticated engine failures.
     pub async fn write(&mut self, path: &str, bytes: Bytes) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         let existing = self
             .checkout
             .lookup_no_follow(
@@ -2119,7 +2119,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         if parts.is_empty() {
             return Err(WorkspaceError::EmptyContentSet);
         }
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         let existing = self
             .checkout
             .lookup_no_follow(
@@ -2165,7 +2165,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ///
     /// Rejects invalid or absent paths and authenticated engine failures.
     pub async fn remove(&mut self, path: &str) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         let existing = self
             .checkout
             .lookup_no_follow(
@@ -2194,7 +2194,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         path: &str,
         expected_file_id: crate::FileId,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::Remove {
             path,
             expected_file_id: Some(expected_file_id),
@@ -2208,9 +2208,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ///
     /// Rejects invalid paths, non-regular endpoints, and bounded engine errors.
     pub async fn copy(&mut self, source: &str, destination: &str) -> Result<(), WorkspaceError> {
-        let limits = self.checkout.volume_config().limits;
-        let source = customer_path(source, limits)?;
-        let destination = customer_path(destination, limits)?;
+        let config = self.checkout.volume_config();
+        let source = customer_path(source, config)?;
+        let destination = customer_path(destination, config)?;
         let source_record = self
             .checkout
             .lookup_no_follow(
@@ -2280,10 +2280,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         destination: &str,
         replace: bool,
     ) -> Result<(), WorkspaceError> {
-        let limits = self.checkout.volume_config().limits;
+        let config = self.checkout.volume_config();
         self.apply(vec![AuthoredMutation::Rename {
-            source: customer_path(source, limits)?,
-            destination: customer_path(destination, limits)?,
+            source: customer_path(source, config)?,
+            destination: customer_path(destination, config)?,
             replace,
         }])
         .await
@@ -2299,10 +2299,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         source: &str,
         destination: &str,
     ) -> Result<(), WorkspaceError> {
-        let limits = self.checkout.volume_config().limits;
+        let config = self.checkout.volume_config();
         self.apply(vec![AuthoredMutation::HardLink {
-            source: customer_path(source, limits)?,
-            destination: customer_path(destination, limits)?,
+            source: customer_path(source, config)?,
+            destination: customer_path(destination, config)?,
         }])
         .await
     }
@@ -2318,7 +2318,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         offset: u64,
         bytes: Bytes,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::Write {
             path,
             offset,
@@ -2333,7 +2333,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ///
     /// Rejects invalid paths, incompatible kinds, limits, or engine failures.
     pub async fn resize(&mut self, path: &str, logical_bytes: u64) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::Resize {
             path,
             logical_bytes,
@@ -2353,7 +2353,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         allocated: bool,
         extend: bool,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::ZeroRange {
             path,
             range,
@@ -2374,7 +2374,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         range: crate::ByteRange,
         keep_size: bool,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::Preallocate {
             path,
             range,
@@ -2396,12 +2396,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         destination_offset: u64,
         length: u64,
     ) -> Result<(), WorkspaceError> {
-        let limits = self.checkout.volume_config().limits;
+        let config = self.checkout.volume_config();
         self.apply(vec![AuthoredMutation::CloneRange(
             crate::FileCloneRequest {
-                source: customer_path(source, limits)?,
+                source: customer_path(source, config)?,
                 source_offset,
-                destination: customer_path(destination, limits)?,
+                destination: customer_path(destination, config)?,
                 destination_offset,
                 length,
             },
@@ -2419,7 +2419,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         path: &str,
         metadata: FileMetadata,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::SetMetadata { path, metadata }])
             .await
     }
@@ -4414,7 +4414,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             )
             .await?;
         let mut value = checkout.value;
-        let path = customer_path(path, value.volume_config().limits)?;
+        let path = customer_path(path, value.volume_config())?;
         let receipt = crate::materialize_checkout_path(
             &mut value,
             &path,
@@ -4452,7 +4452,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         let mut value = checkout.value;
         let paths = paths
             .iter()
-            .map(|path| customer_path(path, value.volume_config().limits))
+            .map(|path| customer_path(path, value.volume_config()))
             .collect::<Result<Vec<_>, _>>()?;
         let receipt = crate::materialize_checkout_paths(
             &mut value,
@@ -5193,10 +5193,11 @@ impl From<FsError> for WorkspaceError {
 
 pub(crate) fn customer_path(
     path: &str,
-    limits: crate::model::VolumeLimits,
+    config: crate::model::VolumeConfig,
 ) -> Result<NamespacePath, WorkspaceError> {
-    let portable = PortablePath::parse(path, limits).map_err(WorkspaceError::path)?;
-    NamespacePath::from_portable(&portable, limits).map_err(WorkspaceError::path)
+    let portable = PortablePath::parse(path, config.limits).map_err(WorkspaceError::path)?;
+    NamespacePath::from_portable_in_profile(&portable, config.profile, config.limits)
+        .map_err(WorkspaceError::path)
 }
 
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]

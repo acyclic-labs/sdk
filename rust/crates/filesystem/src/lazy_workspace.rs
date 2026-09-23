@@ -3302,8 +3302,12 @@ where
     fn namespace_path(&self, path: &str) -> Result<NamespacePath, LazyWorkspaceError> {
         let portable = PortablePath::parse(path, self.workspace.limits())
             .map_err(|error| LazyWorkspaceError::Workspace(error.to_string()))?;
-        NamespacePath::from_portable(&portable, self.workspace.limits())
-            .map_err(|error| LazyWorkspaceError::Workspace(error.to_string()))
+        NamespacePath::from_portable_in_profile(
+            &portable,
+            self.workspace.profile(),
+            self.workspace.limits(),
+        )
+        .map_err(|error| LazyWorkspaceError::Workspace(error.to_string()))
     }
 }
 

@@ -103,8 +103,12 @@ impl<A, O> MountedView<A, O> {
         let relative = relative_path(path, &selected, binding.checkout.volume_config().limits)?;
         Ok(RoutedCheckout {
             mount_id: binding.mount_id,
-            path: NamespacePath::from_portable(&relative, binding.checkout.volume_config().limits)
-                .map_err(MountError::InvalidNamespacePath)?,
+            path: NamespacePath::from_portable_in_profile(
+                &relative,
+                binding.checkout.volume_config().profile,
+                binding.checkout.volume_config().limits,
+            )
+            .map_err(MountError::InvalidNamespacePath)?,
             checkout: &mut binding.checkout,
         })
     }

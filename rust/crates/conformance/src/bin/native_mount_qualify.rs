@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 use acyclic_fs::detach_native_mount_destination_after_crash;
 use acyclic_fs::kernel::FileMetadata;
+use acyclic_fs::model::{Lifecycle, VolumeConfig};
 use acyclic_fs::{
     Fs, LocalOptions, MountOptions, NativeMountKind, TransactionCommit, probe_native_mount,
     recover_native_mount_destination,
@@ -456,7 +457,9 @@ async fn rename_hydration_case() -> Result<(), Failure> {
     let mount_path = root.path().join("mount");
     fs::create_dir(&mount_path)?;
     let engine = Fs::local(LocalOptions::new(root.path().join("store"))).await?;
-    let workspace = engine.create_workspace("rename-hydration").await?;
+    let workspace = engine
+        .create_workspace_with_config("rename-hydration", VolumeConfig::native(Lifecycle::Durable))
+        .await?;
     let mut fixture = workspace
         .begin_transaction(acyclic_fs::IdempotencyKey::new())
         .await?;
@@ -795,7 +798,9 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     fs::create_dir(&mount_path)?;
     fs::write(root.path().join("outside-guard"), b"outside-safe")?;
     let engine = Fs::local(LocalOptions::new(&store)).await?;
-    let workspace = engine.create_workspace("native-matrix").await?;
+    let workspace = engine
+        .create_workspace_with_config("native-matrix", VolumeConfig::native(Lifecycle::Durable))
+        .await?;
     let mut transaction = workspace
         .begin_transaction(acyclic_fs::IdempotencyKey::new())
         .await?;
@@ -1645,8 +1650,13 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
         fs::create_dir(&replacement)?;
         let runtime = tokio::runtime::Runtime::new()?;
         runtime.block_on(async {
+            eprintln!("qualification phase: reopening durable crash workspace");
             let engine = Fs::local(LocalOptions::new(crash_root.join("store"))).await?;
             let workspace = engine.open_workspace("crash-owner").await?;
+            if workspace.read("/alive.txt", 16).await?.as_ref() != b"alive" {
+                return Err::<(), Failure>("durable workspace lost crash fixture".into());
+            }
+            eprintln!("qualification phase: rejecting stale ProjFS destination");
             if workspace
                 .mount(mount, MountOptions::read_write())
                 .await
@@ -1661,9 +1671,11 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
                     "rejected stale ProjFS mount removed the recovery root".into(),
                 );
             }
+            eprintln!("qualification phase: mounting fresh ProjFS destination");
             let resumed = workspace
                 .mount(&replacement, MountOptions::read_write())
                 .await?;
+            eprintln!("qualification phase: reading durable ProjFS content");
             let contents = fs::read(replacement.join("alive.txt"))?;
             resumed.unmount().await?;
             if contents != b"alive" {
@@ -1710,7 +1722,9 @@ fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Result<(), Fail
     runtime.block_on(async move {
         fs::create_dir_all(&root)?;
         let engine = Fs::local(LocalOptions::new(root.join("store"))).await?;
-        let workspace = engine.create_workspace("crash-owner").await?;
+        let workspace = engine
+            .create_workspace_with_config("crash-owner", VolumeConfig::native(Lifecycle::Durable))
+            .await?;
         workspace.write_text("/alive.txt", "alive").await?;
         let _mount = workspace.mount(&mount, MountOptions::read_write()).await?;
         #[cfg(not(windows))]

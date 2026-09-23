@@ -35,6 +35,35 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
 }
 
 #[test]
+fn string_paths_use_the_volume_name_encoding() -> Result<(), Box<dyn std::error::Error>> {
+    let limits = VolumeLimits::default();
+    let portable = PortablePath::parse("/é/𝄞", limits)?;
+    for (profile, encoding) in [
+        (FilesystemProfile::Portable, NameEncoding::Utf8),
+        (FilesystemProfile::Posix, NameEncoding::PosixBytes),
+        (FilesystemProfile::Windows, NameEncoding::WindowsUtf16Le),
+    ] {
+        let path = NamespacePath::from_portable_in_profile(&portable, profile, limits)?;
+        assert!(
+            path.components()
+                .iter()
+                .all(|name| name.encoding() == encoding)
+        );
+        assert_eq!(
+            path.components()[0].as_bytes(),
+            match profile {
+                FilesystemProfile::Windows => &[0xe9, 0x00][..],
+                _ => "é".as_bytes(),
+            }
+        );
+        if profile == FilesystemProfile::Windows {
+            assert_eq!(path.components()[1].as_bytes(), &[0x34, 0xd8, 0x1e, 0xdd]);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn bounds_are_checked_without_storage() -> Result<(), Box<dyn std::error::Error>> {
     let limits = VolumeLimits {
         maximum_path_bytes: 4,

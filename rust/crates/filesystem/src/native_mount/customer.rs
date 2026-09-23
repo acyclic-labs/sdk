@@ -342,7 +342,7 @@ where
             .await?;
         let config = probe.volume_config();
         drop(probe);
-        let root = customer_path(&options.subdirectory, config.limits)?;
+        let root = customer_path(&options.subdirectory, config)?;
         let root_text = portable_namespace_path(&root)?;
         let selected = self.lookup(&root_text).await?;
         if !matches!(
@@ -472,7 +472,7 @@ where
         };
         let mut checkout = self.engine_checkout(GenerationSelector::Head, mode).await?;
         let config = checkout.volume_config();
-        let root = customer_path(&options.subdirectory, config.limits)?;
+        let root = customer_path(&options.subdirectory, config)?;
         let selected = checkout
             .lookup_no_follow(
                 &root,
