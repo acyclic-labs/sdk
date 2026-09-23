@@ -97,8 +97,11 @@ pub struct LazyMount<A, O, D, S> {
 /// same source used by native mounts. No mount driver is started by this handle.
 pub struct LazyWorkingSet<A, O, D, S> {
     source: Arc<LazyMountSource<A, O, D, S>>,
+    workspace: Workspace<A, O>,
     source_root: PathBuf,
     source_identity: NativeRootIdentity,
+    selected_root: PathBuf,
+    expected_generation: Option<GenerationId>,
 }
 
 impl<A, O, D, S> LazyWorkingSet<A, O, D, S>
@@ -108,6 +111,38 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    /// Revalidates a prepared native view immediately before a quiescent
+    /// presentation switch. This is optimistic admission, not a lock on the
+    /// workspace head: publication remains fenced by the operation permit.
+    /// It reads only the selected directory metadata and the current head.
+    pub async fn validate_for_presentation(&self) -> Result<(), MountLifecycleError> {
+        let expected = self.expected_generation.ok_or_else(|| {
+            MountLifecycleError::Source(MountSourceError::Invalid(
+                "working set was not prepared at an exact generation".to_owned(),
+            ))
+        })?;
+        if self.workspace.head().await?.id() != expected {
+            return Err(MountLifecycleError::Workspace(
+                WorkspaceError::StaleGeneration,
+            ));
+        }
+        let source_root = self.source_root.clone();
+        let selected_root = self.selected_root.clone();
+        let identity = self.source_identity;
+        tokio::task::spawn_blocking(move || {
+            validate_native_working_set_root(&source_root, &selected_root, identity)
+        })
+        .await
+        .map_err(|error| MountSourceError::Engine(error.to_string()))?
+        .map_err(MountLifecycleError::Source)?;
+        if self.workspace.head().await?.id() != expected {
+            return Err(MountLifecycleError::Workspace(
+                WorkspaceError::StaleGeneration,
+            ));
+        }
+        Ok(())
+    }
+
     /// Captures only the supplied changed paths from a native working directory.
     ///
     /// The source root is authenticated by the core capture path. Call this at
@@ -463,21 +498,13 @@ where
         let relative = crate::namespace_to_host_path(&root)
             .map_err(|error| MountSourceError::Engine(error.to_string()))?;
         let validated_root = source_root.clone();
+        let selected_root = relative.clone();
         tokio::task::spawn_blocking(move || {
-            let root = crate::native_host::HostRoot::open(&validated_root)?;
-            let metadata = root.symlink_metadata_held(&relative)?;
-            if metadata.is_dir() {
-                Ok(())
-            } else {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "selected native working-set directory is absent",
-                ))
-            }
+            validate_native_working_set_root(&validated_root, &selected_root, source_identity)
         })
         .await
         .map_err(|error| MountSourceError::Engine(error.to_string()))?
-        .map_err(|error| MountSourceError::Engine(error.to_string()))?;
+        .map_err(MountLifecycleError::Source)?;
         // Directory validation may wait for host I/O while another writer
         // advances the workspace. Do not return an already-stale preparation.
         if let Some(expected) = expected_generation
@@ -489,8 +516,11 @@ where
         }
         Ok(LazyWorkingSet {
             source,
+            workspace: self.workspace().clone(),
             source_root,
             source_identity,
+            selected_root: relative,
+            expected_generation,
         })
     }
 
@@ -618,6 +648,27 @@ where
             destination,
         })
     }
+}
+
+fn validate_native_working_set_root(
+    source_root: &Path,
+    selected_root: &Path,
+    expected_identity: NativeRootIdentity,
+) -> Result<(), MountSourceError> {
+    let root = crate::native_host::HostRoot::open(source_root)
+        .map_err(|error| MountSourceError::Engine(error.to_string()))?;
+    if root.identity() != expected_identity {
+        return Err(MountSourceError::Stale);
+    }
+    let metadata = root
+        .symlink_metadata_held(selected_root)
+        .map_err(|error| MountSourceError::Engine(error.to_string()))?;
+    if !metadata.is_dir() {
+        return Err(MountSourceError::Invalid(
+            "selected native working-set directory is absent".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn portable_namespace_path(
@@ -822,6 +873,7 @@ mod tests {
         let working_set = lazy
             .working_set_at_generation("/hot", &working, generation)
             .await?;
+        working_set.validate_for_presentation().await?;
         std::fs::write(working.join("hot/file.txt"), b"native-edit")?;
         let name = if cfg!(windows) {
             "file.txt"
@@ -872,11 +924,29 @@ mod tests {
         lazy.write("/later.txt", bytes::Bytes::from_static(b"later"))
             .await?;
         assert!(matches!(
+            working_set.validate_for_presentation().await,
+            Err(MountLifecycleError::Workspace(
+                WorkspaceError::StaleGeneration
+            ))
+        ));
+        assert!(matches!(
             lazy.working_set_at_generation("/hot", &working, generation)
                 .await,
             Err(MountLifecycleError::Workspace(
                 WorkspaceError::StaleGeneration
             ))
+        ));
+        let latest = lazy.workspace().head().await?.id();
+        let ready = lazy
+            .working_set_at_generation("/hot", &working, latest)
+            .await?;
+        ready.validate_for_presentation().await?;
+        std::fs::rename(working, source.path().join("retired-native-view"))?;
+        std::fs::create_dir(working)?;
+        std::fs::create_dir(working.join("hot"))?;
+        assert!(matches!(
+            ready.validate_for_presentation().await,
+            Err(MountLifecycleError::Source(MountSourceError::Stale))
         ));
         Ok(())
     }
