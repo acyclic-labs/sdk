@@ -53,6 +53,8 @@ extern int acyclic_fs_darwin_mount_write(uintptr_t context, const char *path, ui
 extern int acyclic_fs_darwin_mount_truncate(uintptr_t context, const char *path, uint64_t handle,
                                       int64_t length);
 extern int acyclic_fs_darwin_mount_flush(uintptr_t context, uint64_t handle);
+extern int acyclic_fs_darwin_mount_fsync(uintptr_t context);
+extern uint64_t acyclic_fs_darwin_mount_change(uintptr_t context);
 extern int acyclic_fs_darwin_mount_opendir(uintptr_t context, const char *path, uint64_t *handle);
 extern int acyclic_fs_darwin_mount_readdir(uintptr_t context, const char *path, void *buffer,
                                      fuse_fill_dir_t filler, int64_t offset, uint64_t handle);
@@ -201,7 +203,12 @@ static int bridge_flush(const char *path, struct fuse_file_info *info) {
 static int bridge_fsync(const char *path, int data_only, struct fuse_file_info *info) {
   (void)path;
   (void)data_only;
-  return acyclic_fs_darwin_mount_flush(current_context(), info->fh);
+  (void)info;
+  return acyclic_fs_darwin_mount_fsync(current_context());
+}
+
+static uint64_t bridge_change(void) {
+  return acyclic_fs_darwin_mount_change(current_context());
 }
 
 static int bridge_opendir(const char *path, struct fuse_file_info *info) {
@@ -355,6 +362,7 @@ static const struct fuse_operations bridge_operations = {
     .fallocate = bridge_fallocate,
     .statfs = bridge_statfs,
     .init = bridge_init,
+    .change = bridge_change,
 };
 
 struct acyclic_fs_darwin_mount_session {
@@ -425,8 +433,9 @@ int acyclic_fs_darwin_mount_invalidate(struct acyclic_fs_darwin_mount_session *s
   pthread_mutex_lock(&session->mutex);
   struct fuse *instance = session->instance;
   (void)path;
-  /* DarwinFUSE mounts with `noac`; there is no kernel-side entry cache to
-     invalidate, so a live session is already coherent. */
+  /* NFS has no server-to-client invalidation without delegations. The Rust
+     caller advances the change attribute, so the client discards cached
+     names and data at its next revalidation, within one second. */
   int status = instance == NULL ? -ESTALE : 0;
   if (instance != NULL) {
     fuse_mark_namespace_changed(instance);

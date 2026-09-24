@@ -238,6 +238,16 @@ struct fuse_operations {
     int (*fsetattr_x) (const char *, struct setattr_x *,
                        struct fuse_file_info *);
 #endif /* __APPLE__ */
+
+    /* --- DarwinFUSE extensions --- */
+    /*
+     * NFSv4 change attribute (RFC 7530 s5.4) shared by every object.  A
+     * result may repeat an earlier one only while no callback can observe
+     * different names, attributes, or data.  The NFS client caches for at
+     * most one second and trusts cached data while this value is unchanged;
+     * without it every sample is new, so cached data is never reused.
+     */
+    uint64_t (*change) (void);
 };
 
 /* ---- High-level API (fuse_main) ---- */
@@ -262,9 +272,11 @@ int fuse_main_real(int argc, char *argv[],
 /* ---- Component API ---- */
 
 /*
- * Mount a FUSE filesystem. Creates the NFSv4 server and mounts it.
- * Returns a channel on success, NULL on failure.
- * The args may be modified (consumed options are removed).
+ * Prepare a FUSE filesystem mount. Creates the NFSv4 server for mountpoint
+ * and validates the options; the kernel mount itself happens when the
+ * event loop starts, so the NFS client never caches answers produced before
+ * fuse_new() attached the filesystem callbacks.
+ * Returns a channel on success, NULL on failure (including unknown options).
  */
 struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args);
 
@@ -275,7 +287,7 @@ void fuse_unmount(const char *mountpoint, struct fuse_chan *ch);
 
 /*
  * Create a new FUSE filesystem instance.
- * Attaches the filesystem callbacks to a mounted channel.
+ * Attaches the filesystem callbacks to a channel from fuse_mount().
  * Returns the FUSE handle on success, NULL on failure.
  */
 struct fuse *fuse_new(struct fuse_chan *ch, struct fuse_args *args,
@@ -289,9 +301,9 @@ void fuse_destroy(struct fuse *f);
 
 /*
  * Run the FUSE event loop (single-threaded).
- * Calls init() at start and destroy() at end.
+ * Calls init() at start, mounts the channel, and calls destroy() at end.
  * Blocks until the filesystem is unmounted or fuse_exit() is called.
- * Returns 0 on clean exit, -1 on error.
+ * Returns 0 on clean exit, -1 on error (including a failed mount).
  */
 int fuse_loop(struct fuse *f);
 

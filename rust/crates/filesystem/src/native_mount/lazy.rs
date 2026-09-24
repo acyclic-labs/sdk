@@ -8,8 +8,8 @@ use super::view_gate::{
 use super::{
     CheckoutMountSource, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
-    MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError, MountViewLease,
-    capture_root_identity,
+    MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
+    MountViewLease, capture_root_identity,
 };
 use crate::LazySeekTarget;
 #[cfg(unix)]
@@ -191,6 +191,9 @@ pub struct LazyMountSource<A, O, D, S> {
     removals: Mutex<MountedRemovals>,
     detached: DetachedIdentities<A, O>,
     open_sources: OpenIdentityHandles,
+    /// The authored checkout's policy, which decides whether a native
+    /// durability request (`fsync`) publishes.
+    publication: MountPublication,
 }
 
 impl<A, O, D, S> LazyMountSource<A, O, D, S>
@@ -205,6 +208,7 @@ where
         lazy: Arc<LazyWorkspace<A, O, D, S>>,
         authored: Arc<CheckoutMountSource<A, O>>,
         root: String,
+        publication: MountPublication,
     ) -> Result<Self, super::NativeMountError> {
         Ok(Self {
             lazy,
@@ -216,6 +220,7 @@ where
             removals: Mutex::new(MountedRemovals::default()),
             detached: Arc::new(Mutex::new(BTreeMap::new())),
             open_sources: Arc::new(Mutex::new(BTreeMap::new())),
+            publication,
         })
     }
 
@@ -2035,7 +2040,13 @@ where
     }
 
     fn flush(&self) -> Result<(), MountSourceError> {
+        // As at every checkout's native boundary: a manual mount publishes
+        // only through `sync` and `unmount`.
+        if self.publication == MountPublication::Manual {
+            return Ok(());
+        }
         let _mutation = self.mutation_lease(None)?;
+
         self.wait(|| async {
             self.sync_staged_with_permit(crate::PublicationPermit::Unrestricted)
                 .await
@@ -2443,7 +2454,12 @@ mod tests {
             )),
             config,
         )?);
-        let view = LazyMountSource::new(Arc::clone(&lazy), authored, "/".to_owned())?;
+        let view = LazyMountSource::new(
+            Arc::clone(&lazy),
+            authored,
+            "/".to_owned(),
+            MountPublication::Manual,
+        )?;
         let path = |name: &str| {
             MountPath::root().child(if cfg!(windows) {
                 name.encode_utf16().flat_map(u16::to_le_bytes).collect()
@@ -2473,6 +2489,80 @@ mod tests {
             lazy.lookup("/b").await,
             Err(LazyWorkspaceError::NotFound)
         ));
+        Ok(())
+    }
+
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn manual_fsync_publishes_nothing_until_sync() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::demand::native::NativeDemandSource;
+        use crate::model::{CheckoutMode, FilesystemProfile, GenerationSelector, VolumeLimits};
+        use crate::native_mount::SharedCheckout;
+        use crate::{Fs, MemoryLazyWorkspaceStore};
+
+        let source_root = tempfile::tempdir()?;
+        let demand = Arc::new(
+            NativeDemandSource::open(
+                source_root.path(),
+                FilesystemProfile::Portable,
+                VolumeLimits::default(),
+            )
+            .await?,
+        );
+        let fs = Fs::memory();
+        let lazy = Arc::new(
+            LazyWorkspace::attach(
+                &fs,
+                "manual-fsync",
+                demand,
+                MemoryLazyWorkspaceStore::default(),
+            )
+            .await?,
+        );
+        let checkout = lazy
+            .workspace()
+            .engine_checkout(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        let config = checkout.volume_config();
+        let authored = Arc::new(CheckoutMountSource::new(
+            Arc::new(SharedCheckout::with_publication(
+                checkout,
+                MountPublication::Manual,
+            )),
+            config,
+        )?);
+        let view = LazyMountSource::new(
+            Arc::clone(&lazy),
+            authored,
+            "/".to_owned(),
+            MountPublication::Manual,
+        )?;
+        let written = MountPath::root().child(if cfg!(windows) {
+            "written"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect()
+        } else {
+            b"written".to_vec()
+        });
+        view.create_file(&written, FileMetadata::default())?;
+        view.write_range(&written, 0, Bytes::from_static(b"fsynced"))?;
+        view.flush()?;
+        assert!(
+            matches!(
+                lazy.lookup("/written").await,
+                Err(LazyWorkspaceError::NotFound)
+            ),
+            "a native fsync under manual publication publishes nothing"
+        );
+        view.sync_async().await?;
+        assert_eq!(
+            lazy.read_range("/written", 0, 7).await?.as_ref(),
+            b"fsynced"
+        );
         Ok(())
     }
 
@@ -2522,7 +2612,12 @@ mod tests {
             )),
             config,
         )?);
-        let view = LazyMountSource::new(Arc::clone(&lazy), authored, "/".to_owned())?;
+        let view = LazyMountSource::new(
+            Arc::clone(&lazy),
+            authored,
+            "/".to_owned(),
+            MountPublication::Manual,
+        )?;
         let mount_path = |name: &str| {
             let bytes = if cfg!(windows) {
                 name.encode_utf16().flat_map(u16::to_le_bytes).collect()
@@ -2614,7 +2709,12 @@ mod tests {
             )),
             config,
         )?);
-        let view = LazyMountSource::new(Arc::clone(&lazy), authored, "/".to_owned())?;
+        let view = LazyMountSource::new(
+            Arc::clone(&lazy),
+            authored,
+            "/".to_owned(),
+            MountPublication::Manual,
+        )?;
         let path = MountPath::root().child(if cfg!(windows) {
             "file".encode_utf16().flat_map(u16::to_le_bytes).collect()
         } else {
@@ -2699,7 +2799,12 @@ mod tests {
                 )),
                 config,
             )?);
-            let view = LazyMountSource::new(Arc::clone(&lazy), authored, "/".to_owned())?;
+            let view = LazyMountSource::new(
+                Arc::clone(&lazy),
+                authored,
+                "/".to_owned(),
+                MountPublication::Manual,
+            )?;
             let mount_path = |name: &str| {
                 let bytes = if cfg!(windows) {
                     name.encode_utf16().flat_map(u16::to_le_bytes).collect()

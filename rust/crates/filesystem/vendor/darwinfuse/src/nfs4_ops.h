@@ -288,5 +288,7 @@ int nfs4_test_exclusive_replay_identity(void);
 int nfs4_test_namedattr_exclusive_replay_identity(void);
 int nfs4_test_readdir_cookie_verifier(void);
 int nfs4_test_sync_acknowledgement(void);
+int nfs4_test_read_reply(void);
+int nfs4_test_change_attribute(void);
 
 #endif /* DARWINFUSE_NFS4_OPS_H */

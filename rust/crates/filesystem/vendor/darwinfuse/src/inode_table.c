@@ -337,6 +337,15 @@ void dfuse_itable_rename(dfuse_inode_table_t *tbl,
     pthread_mutex_unlock(&tbl->lock);
 }
 
+int dfuse_itable_contains(dfuse_inode_table_t *tbl, dfuse_ino_t ino)
+{
+    if (!tbl) return 0;
+    pthread_mutex_lock(&tbl->lock);
+    int found = find_by_ino(tbl, ino) != NULL;
+    pthread_mutex_unlock(&tbl->lock);
+    return found;
+}
+
 /* ---- Named attribute (xattr) inode support ---- */
 
 dfuse_ino_type_t dfuse_itable_type(dfuse_inode_table_t *tbl, dfuse_ino_t ino)
