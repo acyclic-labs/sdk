@@ -65,6 +65,41 @@ mod darwin_mount;
 #[cfg(target_os = "linux")]
 mod fuse;
 
+/// The errno for an engine failure. Engine errors reach the mount boundary as
+/// text; the POSIX-visible cases a caller must be able to act on are mapped,
+/// the rest are EIO.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn engine_errno(message: &str) -> i32 {
+    if message.contains("directory is not empty") {
+        libc::ENOTEMPTY
+    } else {
+        libc::EIO
+    }
+}
+
+/// Records a callback failure before it is reduced to an errno. Expected
+/// outcomes (absent paths, existing names) are debug events; the rest are
+/// what a user sees as EIO/ESTALE with no other explanation.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn report_callback_error(driver: &str, error: &MountSourceError, errno: i32) {
+    use crate::diagnostics::Level;
+    let level = match error {
+        MountSourceError::NotFound | MountSourceError::AlreadyExists => Level::Debug,
+        MountSourceError::Stale
+        | MountSourceError::Invalid(_)
+        | MountSourceError::Unsupported(_) => Level::Warn,
+        MountSourceError::Engine(_) => Level::Error,
+    };
+    crate::diag!(
+        level,
+        "mount",
+        "callback_error",
+        driver = driver,
+        errno = errno,
+        error = format!("{error:?}")
+    );
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn metadata_or<T>(field: MetadataField<T>, unavailable: T) -> T {
     match field {

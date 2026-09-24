@@ -1895,10 +1895,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             .map_err(|failure| WorkspaceError::from(failure.error))
     }
 
-    /// Preserves a stable source identity for an existing non-directory object.
+    /// Preserves a stable source identity for an existing object.
     ///
     /// Reusing an identity creates a hard-link alias only when kind, metadata,
-    /// and payload match exactly; collisions fail closed.
+    /// and payload match exactly; collisions fail closed. A directory, which
+    /// cannot be aliased, may take an identity only no other record holds.
     pub async fn preserve_file_identity(
         &mut self,
         path: &str,

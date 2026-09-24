@@ -766,3 +766,24 @@ fn live_native_backend_saturation_fails_closed_and_recovers()
     assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
     Ok(())
 }
+
+/// A fork can create a directory that the physical source never had; the lazy
+/// source then observes it as a parent. That must mean "absent", not an I/O
+/// failure (it surfaced as EIO creating `handlers/refunds.rs` in a fork).
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_demand_watch_accepts_directories_absent_from_the_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("present"))?;
+    let mut options = NativeWatchOptions::new(VolumeLimits::default());
+    options.recursive = false;
+    let mut watch = NativeWatch::open(root.path(), options)?;
+    watch.accept_lazy_baseline()?;
+    for absent in ["/handlers", "/present/handlers", "/present/handlers/deeper"] {
+        let portable = crate::path::PortablePath::parse(absent, VolumeLimits::default())?;
+        let path = NamespacePath::from_portable(&portable, VolumeLimits::default())?;
+        watch.watch_directory(&path)?;
+    }
+    Ok(())
+}

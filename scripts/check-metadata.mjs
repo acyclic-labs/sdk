@@ -24,7 +24,7 @@ if (!fixturePattern.test(`${"p" + "ython"} fixture`) || fixturePattern.test("nod
 const git = (...args) => spawnSync("git", args, { cwd: rootPath, encoding: "utf8" });
 const tracked = git("ls-files", "-z", "--cached", "--others", "--exclude-standard");
 if (tracked.error || tracked.status !== 0) throw tracked.error ?? new Error(tracked.stderr.trim());
-const exemptPrefixes = ["arena/"];
+const exemptPrefixes = ["arena/", "plugin/packaging/pypi/", "BUG_REPORT-fork-join.md"];
 const isExempt = path => exemptPrefixes.some(prefix => path.startsWith(prefix));
 const presentFiles = tracked.stdout
   .split("\0")

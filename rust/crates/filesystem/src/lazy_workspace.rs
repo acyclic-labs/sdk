@@ -1251,6 +1251,52 @@ where
         })
     }
 
+    /// Paths this view removed from its source (and that exist only as
+    /// tombstones, never as authored records), in path order.
+    ///
+    /// A generation diff cannot show these: the source path was never part of
+    /// any generation, so a merge learns of the deletion only from here.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale binding, store failure, or more than `maximum` paths.
+    pub async fn source_tombstones(
+        &self,
+        maximum: usize,
+    ) -> Result<Vec<String>, LazyWorkspaceError> {
+        let state = self.state().await?;
+        let mut pending = vec![state.overlay];
+        let mut tombstones = Vec::new();
+        while let Some(id) = pending.pop() {
+            let Some(LazyOverlay::Node {
+                path,
+                change,
+                left,
+                right,
+                ..
+            }) = self
+                .store
+                .load_lazy_overlay(id)
+                .await
+                .map_err(store_error)?
+            else {
+                continue;
+            };
+            if matches!(change, LazyOverlayChange::Tombstone) {
+                if tombstones.len() == maximum {
+                    return Err(LazyWorkspaceError::Work(format!(
+                        "more than {maximum} source tombstones"
+                    )));
+                }
+                tombstones.push(path);
+            }
+            pending.push(left);
+            pending.push(right);
+        }
+        tombstones.sort();
+        Ok(tombstones)
+    }
+
     /// Advances this binding to the provider's current invalidation epoch
     /// without enumerating the source. Prior overlay roots remain immutable;
     /// observations are refreshed on demand in the new epoch while authored
@@ -1963,7 +2009,10 @@ where
             .await
             .map_err(workspace_error)?;
         work = account_work(work, applied, budget)?;
-        if node.kind != SourceNodeKind::Directory {
+        // Directories keep their source identity too: every fork that promotes
+        // one shared source directory must name it identically, or siblings
+        // adding entries to it conflict as independent additions.
+        {
             let applied = transaction
                 .preserve_file_identity_measured(
                     requested,
@@ -2306,7 +2355,7 @@ where
         };
         match phase {
             LazyDirectoryPhase::Source(source_cursor) => {
-                let receipt = self
+                let receipt = match self
                     .source
                     .list_page(
                         state.source,
@@ -2316,7 +2365,32 @@ where
                         cancellation,
                     )
                     .await
-                    .map_err(|failure| failure.error)?;
+                {
+                    Ok(receipt) => receipt,
+                    // The directory exists only in the authored generation; the
+                    // source contributes no entries and the authored phase follows.
+                    Err(failure) if matches!(failure.error, DemandError::Absent) => {
+                        work = account_work(work, *failure.work, budget)?;
+                        return Box::pin(self.list_directory_measured(
+                            path,
+                            Some(LazyDirectoryCursor {
+                                source: state.source,
+                                overlay: state.overlay,
+                                directory,
+                                phase: LazyDirectoryPhase::Authored(None),
+                            }),
+                            maximum_entries,
+                            remaining_work(work, budget)?,
+                            cancellation,
+                        ))
+                        .await
+                        .map(|receipt| OperationReceipt {
+                            value: receipt.value,
+                            work: account_work(work, receipt.work, budget).unwrap_or(receipt.work),
+                        });
+                    }
+                    Err(failure) => return Err(failure.error.into()),
+                };
                 work = account_work(work, receipt.work, budget)?;
                 let page = receipt.value;
                 if page.entries.len() > usize::try_from(maximum_entries).unwrap_or(usize::MAX) {
@@ -2821,16 +2895,40 @@ where
             .await
             .map_err(store_error)?
             .ok_or_else(|| LazyWorkspaceError::Store("lazy binding is absent".to_owned()))?;
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source != self.source.reference()
-        {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
+        let state = self.follow_source_epoch(state).await?;
         if state.pending_remove.is_some() {
             return Err(LazyWorkspaceError::Concurrent);
         }
         Ok(state)
+    }
+
+    /// Every view of one physical root shares its source, and a refresh of
+    /// that root advances the source epoch for all of them at once. A view
+    /// still bound to an earlier epoch of the same source adopts the current
+    /// one (as [`Self::rebind_source`] does) instead of failing: otherwise a
+    /// fork racing the refresh sees every unobserved path as stale.
+    async fn follow_source_epoch(
+        &self,
+        state: LazyWorkspaceState,
+    ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
+        if state.schema_version != LAZY_STATE_SCHEMA || state.workspace_id != self.workspace.id() {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        let live = self.source.reference();
+        if state.source == live {
+            return Ok(state);
+        }
+        if state.source.identity != live.identity || state.source.epoch > live.epoch {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        crate::diag!(
+            crate::diagnostics::Level::Debug,
+            "lazy",
+            "source_epoch_followed",
+            from = state.source.epoch,
+            to = live.epoch,
+        );
+        self.rebind_source().await
     }
 
     async fn state_measured(
@@ -2845,12 +2943,7 @@ where
         let state = receipt
             .value
             .ok_or_else(|| LazyWorkspaceError::Store("lazy binding is absent".to_owned()))?;
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source != self.source.reference()
-        {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
+        let state = self.follow_source_epoch(state).await?;
         if state.pending_remove.is_some() {
             return Err(LazyWorkspaceError::Concurrent);
         }
@@ -4410,6 +4503,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn source_tombstones_list_only_removed_source_paths() {
+        let fs = Fs::memory();
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+        let root = LazyWorkspace::attach(
+            &fs,
+            "tombstones",
+            Arc::clone(&source),
+            MemoryLazyWorkspaceStore::default(),
+        )
+        .await
+        .expect("attach");
+        root.stat("/kept.txt").await.expect("observe kept");
+        root.stat("/removed.txt").await.expect("observe removed");
+        root.remove("/removed.txt")
+            .await
+            .expect("remove source path");
+        root.remove("/also-removed.txt")
+            .await
+            .expect("remove unobserved source path");
+        assert_eq!(
+            root.source_tombstones(16).await.expect("tombstones"),
+            ["/also-removed.txt", "/removed.txt"]
+        );
+        assert!(matches!(
+            root.source_tombstones(1).await,
+            Err(LazyWorkspaceError::Work(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn source_epoch_can_rebind_without_enumeration() {
         let fs = Fs::memory();
         let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
@@ -4424,10 +4547,9 @@ mod tests {
         root.stat("/observed.txt").await.expect("observe");
         let before = root.snapshot().await.expect("snapshot before rebind");
         source.invalidate();
-        assert!(matches!(
-            root.stat("/new.txt").await,
-            Err(LazyWorkspaceError::StaleSource)
-        ));
+        // A view bound to an earlier epoch of the same source follows the
+        // current one on its next access instead of failing as stale.
+        root.stat("/new.txt").await.expect("follows the new epoch");
         let rebound = root.rebind_source().await.expect("rebind");
         assert_eq!(rebound.source, source.reference());
         assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
@@ -4440,7 +4562,8 @@ mod tests {
         );
         let after = root.snapshot().await.expect("snapshot after refresh");
         assert_ne!(after, before);
-        assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 2);
+        // `/observed.txt` twice (once per epoch) and `/new.txt` once.
+        assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 3);
     }
 
     #[tokio::test]

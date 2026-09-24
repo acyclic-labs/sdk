@@ -120,6 +120,14 @@ missing_panics_doc = "warn"
 semicolon_if_nothing_returned = "warn"
 uninlined_format_args = "warn"
 
+# The CLI hashes its own executable to name its service. Unoptimized, that
+# takes ~20 s for a Linux debug binary and outlasts the client's readiness wait.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.blake3]
+opt-level = 3
+
 [profile.release]
 incremental = true
 

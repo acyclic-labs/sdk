@@ -6,6 +6,7 @@ use acyclic_fs::demand::native::NativeDemandSource;
 use acyclic_fs::demand::{
     DemandDirectoryObserver, DemandSource, FilteredDemandSource, SourceReference,
 };
+use acyclic_fs::diagnostics::Level;
 use acyclic_fs::kernel::{FileKind, NameEncoding, NamespacePath};
 use acyclic_fs::model::{CheckoutMode, GenerationSelector, VolumeLimits};
 use acyclic_fs::native_host::HostRoot;
@@ -483,6 +484,9 @@ fn capability_guidance(host: &str) -> &'static str {
         }
         "opencode" => {
             "OpenCode support is provisional and CLI-only: its public plugin lifecycle does not expose enough correlated subagent lifecycle and cwd control to claim transparent isolation."
+        }
+        "sdk" => {
+            "SDK lifecycle routing is explicit: the embedding program drives spawn, start and stop itself and must hand each child its mount path; no tool input is rewritten on its behalf."
         }
         _ => {
             "This host exposes only its installed capability tier; unclassified filesystem tools fail closed."
@@ -1493,6 +1497,27 @@ async fn git_workspace_tree(
         workspace.workspace().id(),
         exact.value.id(),
     ))
+}
+
+/// Paths a child only reads through the shared physical root that its parent
+/// gained after the fork; the child drops them before its capture.
+#[derive(Default)]
+struct InheritedPaths {
+    tombstone: Vec<String>,
+    /// Every path the parent (or an ancestor) changed since the fork.
+    changed: BTreeSet<String>,
+}
+
+impl InheritedPaths {
+    fn extend(&mut self, other: Self) {
+        self.tombstone.extend(other.tombstone);
+        self.changed.extend(other.changed);
+    }
+
+    fn normalize(&mut self) {
+        self.tombstone.sort();
+        self.tombstone.dedup();
+    }
 }
 
 async fn git_policy(
@@ -3342,6 +3367,8 @@ impl ControlPlane {
             return Err("subagent cannot stop while filesystem tools are still active".to_owned());
         }
         self.unmount_agent(&agent_id).await?;
+        #[cfg(target_os = "macos")]
+        self.remove_appledouble_companions(&route).await?;
         self.distributed
             .contexts()
             .set_active(WorkspaceContextId::from_bytes(route.context_id), false)
@@ -3667,6 +3694,132 @@ impl ControlPlane {
         self.agent_merge_as(&caller, input).await
     }
 
+    /// Paths added to `parent` after `child` forked from it that the child never
+    /// authored: its lazy view would otherwise read them from the shared
+    /// physical root as if they were its own.
+    /// Paths added to `parent` after `child` forked from it that the child never
+    /// authored. The child's unresolved view reads the shared physical root, so
+    /// it would otherwise see a sibling's merged files, or files the parent only
+    /// promoted, as its own additions under a different identity.
+    async fn paths_inherited_since_fork(
+        &self,
+        child: &LocalWorkspace,
+        parent: &LocalWorkspace,
+        child_view: &LocalLazyWorkspace,
+    ) -> Result<InheritedPaths, String> {
+        let fork_point = child
+            .join_into(parent)
+            .plan()
+            .await
+            .map_err(display)?
+            .common_ancestor();
+        let base = parent.generation(fork_point).await.map_err(display)?;
+        let head = parent.head().await.map_err(display)?;
+        if base.id() == head.id() {
+            return Ok(InheritedPaths::default());
+        }
+        let changes = parent.diff(&base, &head, 100_000).await.map_err(display)?;
+        let mut inherited = InheritedPaths::default();
+        for change in changes.changed_paths(100_000).await.map_err(display)? {
+            let mut path = String::new();
+            for component in change.path.components() {
+                path.push('/');
+                path.push_str(&String::from_utf8_lossy(component.as_bytes()));
+            }
+            inherited.changed.insert(path.clone());
+            let (None, Some(added)) = (change.before, change.after) else {
+                continue;
+            };
+            // The child only reads this path through the shared physical root
+            // and never wrote it, so the parent's copy is authoritative whatever
+            // identity each side derived for it.
+            let lookup = child_view.lookup(&path).await;
+            acyclic_fs::diag!(
+                Level::Debug,
+                "merge",
+                "inherited_candidate",
+                path = path,
+                parent_file_id = format!("{:?}", added.file_id),
+                child_view = match &lookup {
+                    Ok(acyclic_fs::LazyLookup::Source(node)) =>
+                        format!("source {:?}", child_view.source_file_id(node)),
+                    Ok(other) => format!("{other:?}"),
+                    Err(error) => format!("error {error}"),
+                },
+            );
+            // A directory both sides hold under different identities needs
+            // nothing here: the merge folds same-named directories by path.
+            if let Ok(acyclic_fs::LazyLookup::Source(_)) = lookup {
+                inherited.tombstone.push(path);
+            }
+        }
+        Ok(inherited)
+    }
+
+    /// Deletes in the parent the source paths a merged child deleted. For the
+    /// root that is the physical file itself (the next refresh records it);
+    /// for a child parent, a removal in its own view.
+    async fn apply_source_deletions(
+        &mut self,
+        caller: &str,
+        agent: &str,
+        deletions: BTreeMap<WorkspaceRootId, Vec<String>>,
+    ) -> Result<bool, String> {
+        let mut deleted_any = false;
+        for (root_id, paths) in deletions {
+            let mut deleted = Vec::new();
+            if caller == self.state.root_agent_id {
+                let base = self
+                    .state
+                    .roots
+                    .get(&root_key(root_id))
+                    .map(|binding| binding.path.clone())
+                    .ok_or_else(|| "physical root binding is missing".to_owned())?;
+                // The next refresh of the physical root records these.
+                for path in paths {
+                    let host = base.join(path.trim_start_matches('/'));
+                    let removed = match fs::symlink_metadata(&host) {
+                        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&host),
+                        Ok(_) => fs::remove_file(&host),
+                        // Never in the parent (a client bookkeeping file, say).
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                        Err(error) => Err(error),
+                    };
+                    removed
+                        .map_err(|error| format!("cannot delete {}: {error}", host.display()))?;
+                    deleted.push(path);
+                }
+            } else {
+                let parent_route = self
+                    .state
+                    .routes
+                    .get(caller)
+                    .cloned()
+                    .ok_or_else(|| "parent route is unavailable".to_owned())?;
+                let view = self.lazy_workspace_root(&parent_route, root_id).await?;
+                for path in paths {
+                    match view.remove(&path).await {
+                        Ok(()) => deleted.push(path),
+                        Err(acyclic_fs::LazyWorkspaceError::NotFound) => {}
+                        Err(error) => return Err(format!("cannot delete {path}: {error}")),
+                    }
+                }
+            }
+            if !deleted.is_empty() {
+                deleted_any = true;
+                acyclic_fs::diag!(
+                    Level::Info,
+                    "merge",
+                    "source_deletions_propagated",
+                    agent = agent,
+                    parent = caller,
+                    paths = deleted.join(","),
+                );
+            }
+        }
+        Ok(deleted_any)
+    }
+
     async fn agent_merge_as(&mut self, caller: &str, input: Value) -> Result<Value, String> {
         let agent = string(&input, "agent")?;
         self.ensure_agent_idle(&agent)?;
@@ -3709,6 +3862,7 @@ impl ControlPlane {
         let mut roots = BTreeMap::new();
         let mut resolutions = BTreeMap::new();
         let mut source_heads = BTreeMap::new();
+        let mut source_deletions = BTreeMap::<WorkspaceRootId, Vec<String>>::new();
         let mut target_heads = BTreeMap::new();
         for (root_id, child_root) in &child_context.roots {
             let parent_root = parent_context
@@ -3729,6 +3883,97 @@ impl ControlPlane {
                 .await
                 .map_err(display)?;
             let lazy_source = self.lazy_workspace_root(&route, *root_id).await?;
+            // Source paths the child itself deleted (or renamed away). No
+            // generation ever held them, so the merge below cannot carry the
+            // deletion; it is applied to the parent once the merge lands.
+            let own_tombstones = lazy_source
+                .source_tombstones(100_000)
+                .await
+                .map_err(display)?;
+            // Paths the parent gained since this child forked (a sibling's merge,
+            // a refresh from the physical root) are also on the physical root the
+            // child's unresolved view reads from. They are not the child's work:
+            // exactifying would capture them under fresh identities and every
+            // one would conflict with the parent's copy.
+            // Every ancestor's gains reach the physical root, not only the
+            // direct parent's: a sibling of the parent may already have merged
+            // into the root while this grandchild was working.
+            let mut inherited = self
+                .paths_inherited_since_fork(&source, &target, &lazy_source)
+                .await?;
+            let mut ancestor = parent_context.clone();
+            while let Some(grandparent_id) = ancestor.parent_context_id {
+                let grandparent = registry.resolve(grandparent_id).await.map_err(display)?;
+                let (Some(upper_child), Some(upper_parent)) =
+                    (ancestor.roots.get(root_id), grandparent.roots.get(root_id))
+                else {
+                    break;
+                };
+                let upper_source = self
+                    .distributed
+                    .workspace(upper_child.workspace_id)
+                    .await
+                    .map_err(display)?;
+                let upper_target = self
+                    .distributed
+                    .workspace(upper_parent.workspace_id)
+                    .await
+                    .map_err(display)?;
+                inherited.extend(
+                    self.paths_inherited_since_fork(&upper_source, &upper_target, &lazy_source)
+                        .await?,
+                );
+                ancestor = grandparent;
+            }
+            inherited.normalize();
+            let child_head = source.head().await.map_err(display)?;
+            let mut deletions = Vec::new();
+            for path in own_tombstones {
+                if inherited.tombstone.binary_search(&path).is_ok()
+                    || child_head.stat(&path).await.is_ok()
+                {
+                    continue;
+                }
+                if inherited.changed.contains(&path) {
+                    // Deleted here, changed in the parent since the fork: the
+                    // parent's newer version is kept.
+                    acyclic_fs::diag!(
+                        Level::Warn,
+                        "merge",
+                        "deletion_skipped_changed_in_parent",
+                        agent = agent,
+                        parent = caller,
+                        path = path,
+                    );
+                    continue;
+                }
+                deletions.push(path);
+            }
+            source_deletions.insert(*root_id, deletions);
+            if !inherited.tombstone.is_empty() {
+                acyclic_fs::diag!(
+                    Level::Info,
+                    "merge",
+                    "inherited_paths_filtered",
+                    agent = agent,
+                    parent = caller,
+                    count = inherited.tombstone.len(),
+                    paths = inherited
+                        .tombstone
+                        .iter()
+                        .take(32)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+            }
+            for path in inherited.tombstone {
+                // Source-only: records a tombstone, never an authored removal.
+                match lazy_source.remove_if(&path, None).await {
+                    Ok(()) | Err(acyclic_fs::LazyWorkspaceError::NotFound) => {}
+                    Err(error) => return Err(display(error)),
+                }
+            }
             lazy_source
                 .exactify(WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
@@ -3960,8 +4205,12 @@ impl ControlPlane {
             routed.published_generation = *source_head.digest().as_bytes();
         }
         self.persist()?;
+        // Last, once the child has advanced onto the merge result: deletions
+        // the merge itself could not carry.
+        let mut changed = self
+            .apply_source_deletions(caller, &agent, source_deletions)
+            .await?;
         let mut generations = BTreeMap::new();
-        let mut changed = false;
         for (root_id, parent_root) in &parent_context.roots {
             let target = self
                 .distributed
@@ -4288,6 +4537,74 @@ impl ControlPlane {
         self.persist()
     }
 
+    /// The macOS NFS client stores extended attributes it cannot hand to the
+    /// server as `._name` `AppleDouble` files beside `name`. They are client
+    /// bookkeeping, not agent work: once the mount is gone, remove the ones this
+    /// agent created straight from its workspace. (Unlinking through the mount
+    /// would send the service back into the NFS server it is itself running.)
+    #[cfg(target_os = "macos")]
+    async fn remove_appledouble_companions(&mut self, route: &Route) -> Result<(), String> {
+        let changes = self
+            .agent_changes_as(
+                &route.parent_agent_id,
+                json!({"agent": route.agent_id, "path": "."}),
+            )
+            .await?;
+        let roots = changes
+            .get("roots")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for root in roots {
+            let Some(root_id) = root
+                .get("root")
+                .and_then(Value::as_str)
+                .and_then(|text| hex::decode(text).ok())
+                .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+            else {
+                continue;
+            };
+            let companions = root
+                .get("paths")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|path| {
+                    path.rsplit_once('/')
+                        .and_then(|(_, name)| name.strip_prefix("._"))
+                        .is_some_and(|rest| !rest.is_empty())
+                })
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            if companions.is_empty() {
+                continue;
+            }
+            let view = self
+                .lazy_workspace_root(route, WorkspaceRootId::from_bytes(root_id))
+                .await?;
+            for companion in companions {
+                // Orphaned companions too (the client leaves one behind when it
+                // renames or removes the file it described).
+                match view.remove(&companion).await {
+                    Ok(()) | Err(acyclic_fs::LazyWorkspaceError::NotFound) => {
+                        acyclic_fs::diag!(
+                            Level::Debug,
+                            "mount",
+                            "appledouble_removed",
+                            agent = route.agent_id,
+                            path = companion,
+                        );
+                    }
+                    Err(error) => {
+                        return Err(format!("cannot remove {companion}: {error}"));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn unmount_agent(&mut self, agent_id: &str) -> Result<(), String> {
         self.ensure_agent_idle(agent_id)?;
         #[cfg(test)]
@@ -4295,9 +4612,28 @@ impl ControlPlane {
             return Err("injected mount teardown failure".to_owned());
         }
         if let Some(mount) = self.mounts.get(agent_id) {
+            let started = std::time::Instant::now();
             mount.sync().await.map_err(display)?;
-            mount.unmount().await.map_err(display)?;
+            let synced_ms = started.elapsed().as_millis();
+            mount.unmount().await.map_err(|error| {
+                acyclic_fs::diag!(
+                    Level::Error,
+                    "mount",
+                    "unmount_failed",
+                    agent = agent_id,
+                    error = error
+                );
+                display(error)
+            })?;
             self.mounts.remove(agent_id);
+            acyclic_fs::diag!(
+                Level::Info,
+                "mount",
+                "unmounted",
+                agent = agent_id,
+                sync_ms = synced_ms,
+                total_ms = started.elapsed().as_millis(),
+            );
         }
         Ok(())
     }
@@ -4495,7 +4831,27 @@ impl ControlPlane {
                 self.lazy_workspace_root(route, root_id).await?,
             ));
         }
-        LocalMount::mount(roots, &route.mount_path).await
+        let started = std::time::Instant::now();
+        let mounted = LocalMount::mount(roots, &route.mount_path).await;
+        match &mounted {
+            Ok(_) => acyclic_fs::diag!(
+                Level::Info,
+                "mount",
+                "mounted",
+                agent = route.agent_id,
+                path = route.mount_path.display(),
+                elapsed_ms = started.elapsed().as_millis(),
+            ),
+            Err(error) => acyclic_fs::diag!(
+                Level::Error,
+                "mount",
+                "mount_failed",
+                agent = route.agent_id,
+                path = route.mount_path.display(),
+                error = error,
+            ),
+        }
+        mounted
     }
 
     async fn refresh_native_root(&mut self, root_id: WorkspaceRootId) -> Result<(), String> {
@@ -4643,6 +4999,32 @@ impl ControlPlane {
             .rebind_source()
             .await
             .map_err(display)?;
+        // Every fork of this root reads the same shared source. Leaving a fork
+        // on the prior epoch turns each lookup of a path it has not yet
+        // observed (creating a new file, say) into a stale-source failure.
+        let forks = self
+            .state
+            .routes
+            .values()
+            .filter(|route| route.roots.contains_key(&key))
+            .cloned()
+            .collect::<Vec<_>>();
+        acyclic_fs::diag!(
+            Level::Info,
+            "root",
+            "source_refreshed",
+            root = binding.path.display(),
+            epoch_before = observation.prior_source.epoch,
+            epoch_after = observation.source.epoch,
+            forks_rebound = forks.len(),
+        );
+        for route in forks {
+            self.lazy_workspace_root(&route, root_id)
+                .await?
+                .rebind_source()
+                .await
+                .map_err(display)?;
+        }
         let binding = self
             .state
             .roots
@@ -6343,8 +6725,46 @@ async fn dispatch_control_request(
     if request.version != 1 {
         return Err("unsupported Acyclic control request".to_owned());
     }
+    let command = format!("{:?}", request.command);
+    let name = request.name.clone();
+    let argv = request.argv.join(" ");
+    let cwd = request.cwd.display().to_string();
+    acyclic_fs::diag!(
+        Level::Debug,
+        "control",
+        "request_started",
+        command = command,
+        name = name,
+        cwd = cwd,
+    );
+    let requested = std::time::Instant::now();
     let mut control = control.lock().await;
-    control.dispatch_request(request).await
+    let waited_ms = requested.elapsed().as_millis();
+    let started = std::time::Instant::now();
+    let result = control.dispatch_request(request).await;
+    let elapsed_ms = started.elapsed().as_millis();
+    let level = match (&result, command.as_str()) {
+        (Err(_), _) => Level::Error,
+        (Ok(_), "Ping") => Level::Debug,
+        (Ok(_), _) if elapsed_ms + waited_ms > 2_000 => Level::Warn,
+        (Ok(_), _) => Level::Info,
+    };
+    acyclic_fs::diag!(
+        level,
+        "control",
+        "request",
+        command = command,
+        name = name,
+        argv = argv,
+        cwd = cwd,
+        waited_ms = waited_ms,
+        elapsed_ms = elapsed_ms,
+        outcome = match &result {
+            Ok(_) => "ok".to_owned(),
+            Err(error) => error.clone(),
+        },
+    );
+    result
 }
 
 trait ControlRequestDispatcher: Send {
@@ -7444,7 +7864,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         };
         if !matches!(
             host.as_str(),
-            "codex" | "claude-code" | "copilot" | "cursor"
+            "codex" | "claude-code" | "copilot" | "cursor" | "sdk"
         ) {
             return Err(io::Error::other("unsupported native hook host").into());
         }
@@ -8201,6 +8621,17 @@ async fn run_service_with_identity(
     let Some(_lock) = acquire_service_lock(&data)? else {
         return Ok(());
     };
+    if let Err(error) = acyclic_fs::diagnostics::install(&data.join("service.log")) {
+        eprintln!("acyclic: cannot open the service log: {error}");
+    }
+    acyclic_fs::diag!(
+        Level::Info,
+        "service",
+        "started",
+        version = env!("CARGO_PKG_VERSION"),
+        data = data.display(),
+        os = std::env::consts::OS,
+    );
     let mut service = ServiceControl::open(data.clone()).await?;
     if let Some(identity) = identity_override {
         service.binary_identity = identity;
@@ -8644,9 +9075,10 @@ async fn send_linux_mailbox_request(
                 Err(error) => return Err(ControlRequestError::Transport(error.to_string())),
             }
         }
-        Err(ControlRequestError::Transport(
-            "Acyclic service did not answer the filesystem control request".to_owned(),
-        ))
+        Err(ControlRequestError::Transport(format!(
+            "Acyclic service did not answer the filesystem control request within 5s (service log: {})",
+            data.join("service.log").display()
+        )))
     }
     .await;
     let _ = fs::remove_dir_all(exchange);
@@ -9021,10 +9453,10 @@ async fn drain_service(
                 }
                 Ok(lock)
             }
-            None => Err(
-                "Acyclic service lock is held without a reachable endpoint; state was preserved"
-                    .to_owned(),
-            ),
+            None => Err(format!(
+                "Acyclic service lock is held without a reachable endpoint; state was preserved (service log: {})",
+                data.join("service.log").display()
+            )),
         },
         Err(error) => Err(format!(
             "cannot safely identify the Acyclic service: {error}"
@@ -10645,6 +11077,76 @@ mod tests {
             .session_for_cwd(&nested_child)
             .expect_err("equal-depth roots must fail closed");
         assert!(error.contains("multiple Acyclic sessions"), "{error}");
+        service.shutdown().await.expect("shutdown");
+    }
+
+    #[test]
+    fn sdk_host_drives_the_spawn_handshake_explicitly() {
+        run_large_stack("sdk-host-handshake", sdk_host_handshake_case);
+    }
+
+    async fn sdk_host_handshake_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        fs::create_dir(&root).expect("root");
+        let mut service = ServiceControl::open(temporary.path().join("state"))
+            .await
+            .expect("service");
+        let started = service
+            .dispatch_native_hook(
+                "sdk",
+                "SessionStart",
+                json!({"session_id":"sdk","cwd":root}),
+                &root,
+            )
+            .await
+            .expect("sdk session start");
+        assert!(
+            started
+                .pointer("/hookSpecificOutput/additionalContext")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.contains("SDK lifecycle routing is explicit")),
+            "{started}"
+        );
+        service
+            .dispatch_native_hook(
+                "sdk",
+                "PreToolUse",
+                json!({"session_id":"sdk","cwd":root,"tool_name":"Agent","tool_use_id":"spawn","tool_input":{}}),
+                &root,
+            )
+            .await
+            .expect("sdk spawn");
+        let child = service
+            .dispatch_native_hook(
+                "sdk",
+                "SubagentStart",
+                json!({"session_id":"sdk","cwd":root,"agent_id":"worker"}),
+                &root,
+            )
+            .await
+            .expect("sdk child start");
+        assert!(
+            child
+                .pointer("/hookSpecificOutput/additionalContext")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.starts_with("Your workspace mount is ")),
+            "{child}"
+        );
+        assert_eq!(
+            service.sessions["sdk"].state.routes["worker"].parent_agent_id,
+            service.sessions["sdk"].state.root_agent_id
+        );
+        service
+            .dispatch_native_hook(
+                "sdk",
+                "SubagentStop",
+                json!({"session_id":"sdk","cwd":root,"agent_id":"worker"}),
+                &root,
+            )
+            .await
+            .expect("sdk child stop");
+        assert!(service.sessions["sdk"].state.routes["worker"].stopped);
         service.shutdown().await.expect("shutdown");
     }
 
@@ -12287,6 +12789,85 @@ mod tests {
             .expect("test thread")
             .join()
             .expect("plugin root Git thread");
+    }
+
+    #[test]
+    fn forks_follow_the_shared_root_source_across_a_refresh() {
+        std::thread::Builder::new()
+            .name("plugin-fork-source-rebind".to_owned())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime")
+                    .block_on(fork_source_rebind_case());
+            })
+            .expect("test thread")
+            .join()
+            .expect("fork source rebind thread");
+    }
+
+    /// A refresh of the physical root advances the shared source epoch. A fork
+    /// left on the prior epoch fails every lookup of a path it has not yet
+    /// observed (on a mount: ESTALE when creating a file).
+    async fn fork_source_rebind_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        let root = temporary.path().join("root");
+        fs::create_dir_all(&root).expect("root directory");
+        fs::write(root.join("README.md"), "base\n").expect("root file");
+        let mut control = ControlPlane::open(data).await.expect("control plane");
+        control
+            .session_start(json!({"session_id":"session","cwd":root.display().to_string()}))
+            .await
+            .expect("root session");
+        control
+            .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
+            .expect("root turn");
+        control
+            .pre_tool(json!({
+                "session_id":"session","turn_id":"root-turn","tool_use_id":"spawn-fork",
+                "tool_name":"spawn_agent","tool_input":{}
+            }))
+            .await
+            .expect("spawn fork");
+        control
+            .subagent_start(json!({
+                "session_id":"session","turn_id":"fork-turn",
+                "agent_id":"fork","agent_type":"explorer"
+            }))
+            .await
+            .expect("fork start");
+        let route = control.state.routes["fork"].clone();
+        let root_id =
+            WorkspaceRootId::from_bytes(route.roots.values().next().expect("fork root").root_id);
+        let key = root_key(root_id);
+        let view = control
+            .lazy_workspace_root(&route, root_id)
+            .await
+            .expect("fork view");
+        assert!(view.lookup("/README.md").await.is_ok());
+        let initial_epoch = control.state.roots[&key].source_epoch;
+        fs::write(root.join("sibling.rs"), "merged elsewhere\n").expect("root change");
+        let mut refreshed = false;
+        for _ in 0..100 {
+            control
+                .refresh_native_root(root_id)
+                .await
+                .expect("refresh root");
+            if control.state.roots[&key].source_epoch != initial_epoch {
+                refreshed = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(refreshed, "the root watcher never reported the change");
+        assert!(matches!(
+            view.lookup("/never-seen.rs").await,
+            Err(acyclic_fs::LazyWorkspaceError::NotFound)
+        ));
+        assert!(view.lookup("/README.md").await.is_ok());
     }
 
     #[test]

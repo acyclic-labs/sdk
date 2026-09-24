@@ -9448,6 +9448,7 @@ fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
     Ok(())
 }
 
+#[allow(clippy::expect_used)]
 #[test]
 #[allow(clippy::too_many_lines)]
 fn directory_merge_helper_covers_scalar_binding_limit_and_invalid_diff_matrix()
@@ -9456,9 +9457,20 @@ fn directory_merge_helper_covers_scalar_binding_limit_and_invalid_diff_matrix()
     let cancellation = CancellationToken::new();
     let limits = DecodeLimits::default();
     let directory_id = FileId::from_bytes([80; 16]);
-    let metadata = |byte| ObjectId {
-        kind: ObjectKind::Metadata,
-        digest: Digest::from_bytes([byte; 32]),
+    // Real stored metadata differing in authored state (the mode): the merge
+    // reads metadata to tell activity timestamps from authored changes.
+    let metadata = |byte: u8| -> ObjectId {
+        let record = crate::kernel::FileMetadata {
+            posix_mode: crate::kernel::MetadataField::Value(u32::from(byte)),
+            ..crate::kernel::FileMetadata::default()
+        };
+        let bytes = Bytes::from(crate::kernel::encode_file_metadata(record).expect("metadata"));
+        let object_id = ObjectId {
+            kind: ObjectKind::Metadata,
+            digest: object_digest(ObjectKind::Metadata, &bytes),
+        };
+        ObjectStore::put(&store, object_id, bytes, WorkBudget::UNBOUNDED).expect("store metadata");
+        object_id
     };
     let put_tree = |page: TreePage| -> Result<ObjectId, Box<dyn std::error::Error>> {
         let bytes = Bytes::from(encode_tree_page(&page, 16)?);

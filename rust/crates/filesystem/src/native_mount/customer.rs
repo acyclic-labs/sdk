@@ -487,3 +487,190 @@ where
         })
     }
 }
+
+/// Read-your-writes through the lazy mount source, at the callback boundary a
+/// kernel driver uses. Every native mount backend (FUSE, loopback NFS,
+/// `ProjFS`) sees exactly these answers, so these hold whatever the driver.
+#[cfg(all(test, unix))]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod live_view_tests {
+    use super::*;
+    use crate::MemoryLazyWorkspaceStore;
+    use crate::demand::native::NativeDemandSource;
+    use crate::facade::Fs;
+    use crate::kernel::FileMetadata;
+    use crate::model::{FilesystemProfile, VolumeLimits};
+    use crate::native_mount::{MountFilesystem, MountNodeKind, MountPath};
+    use bytes::Bytes;
+
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn at(path: &str) -> MountPath {
+        path.split('/')
+            .filter(|part| !part.is_empty())
+            .fold(MountPath::root(), |parent, part| {
+                parent.child(part.as_bytes().to_vec())
+            })
+    }
+
+    /// Every name in one directory, paging `page` entries at a time. A page
+    /// with no entries must be the last one: native drivers treat an empty
+    /// page with a continuation as an error.
+    fn list(source: &dyn MountFilesystem, path: &str, page: u32) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut cursor: Option<Vec<u8>> = None;
+        loop {
+            let listed = source
+                .read_directory(&at(path), cursor.as_deref(), page)
+                .unwrap_or_else(|error| panic!("directory page for {path}: {error:?}"));
+            assert!(
+                !(listed.entries.is_empty() && listed.next_cursor.is_some()),
+                "empty page with a continuation"
+            );
+            names.extend(
+                listed
+                    .entries
+                    .iter()
+                    .map(|entry| String::from_utf8_lossy(&entry.name).into_owned()),
+            );
+            match listed.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            names.len(),
+            "a name was listed twice: {names:?}"
+        );
+        sorted
+    }
+
+    fn write(source: &dyn MountFilesystem, path: &str, bytes: &'static [u8]) {
+        source
+            .create_file(&at(path), FileMetadata::default())
+            .expect("create file");
+        source
+            .open_file(&at(path))
+            .expect("open created file")
+            .write_range(0, Bytes::from_static(bytes))
+            .expect("write created file");
+    }
+
+    async fn mounted_source(
+        root: &Path,
+    ) -> Result<Arc<dyn MountFilesystem>, Box<dyn std::error::Error + Send + Sync>> {
+        std::fs::write(root.join("README.md"), b"source\n")?;
+        std::fs::create_dir(root.join("src"))?;
+        std::fs::write(root.join("src").join("lib.rs"), b"fn source() {}\n")?;
+        let source = Arc::new(
+            NativeDemandSource::open(root, FilesystemProfile::Portable, VolumeLimits::default())
+                .await?,
+        );
+        let fs = Fs::memory();
+        let lazy = LazyWorkspace::attach(
+            &fs,
+            "live-view",
+            source,
+            MemoryLazyWorkspaceStore::default(),
+        )
+        .await?;
+        let (mount, _) = lazy
+            .prepare_mount_source(&MountOptions::read_write())
+            .await?;
+        Ok(mount)
+    }
+
+    /// Runs blocking callbacks off the async runtime, as a kernel thread would.
+    async fn callbacks(
+        source: Arc<dyn MountFilesystem>,
+        body: impl FnOnce(&dyn MountFilesystem) + Send + 'static,
+    ) -> TestResult {
+        tokio::task::spawn_blocking(move || body(source.as_ref())).await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn created_files_and_directories_are_visible_before_publication() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let source = mounted_source(root.path()).await?;
+        callbacks(source, |fs| {
+            write(fs, "/new.txt", b"hello\n");
+            let found = fs
+                .lookup(&at("/new.txt"))
+                .expect("lookup")
+                .expect("new file is visible");
+            assert_eq!(
+                found.node.logical_bytes, 6,
+                "size reflects the unpublished write"
+            );
+            assert_eq!(
+                fs.read_range(&at("/new.txt"), 0, 6).expect("read").as_ref(),
+                b"hello\n"
+            );
+
+            fs.create_directory(&at("/pkg"), FileMetadata::default())
+                .expect("mkdir");
+            let dir = fs
+                .lookup(&at("/pkg"))
+                .expect("lookup dir")
+                .expect("new directory is visible");
+            assert_eq!(dir.node.kind, MountNodeKind::Directory);
+            write(fs, "/pkg/mod.rs", b"x = 1\n");
+            write(fs, "/src/extra.rs", b"// new beside a source file\n");
+
+            for page in [1, 2, 512] {
+                assert_eq!(list(fs, "/", page), ["README.md", "new.txt", "pkg", "src"]);
+                assert_eq!(list(fs, "/pkg", page), ["mod.rs"]);
+                assert_eq!(list(fs, "/src", page), ["extra.rs", "lib.rs"]);
+            }
+        })
+        .await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unpublished_renames_and_removals_are_visible() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let source = mounted_source(root.path()).await?;
+        callbacks(source, |fs| {
+            // Write-then-rename, the way editors and package managers save.
+            write(fs, "/.tmp-save", b"saved\n");
+            fs.rename(&at("/.tmp-save"), &at("/saved.txt"), false)
+                .expect("rename new file");
+            assert!(fs.lookup(&at("/.tmp-save")).expect("lookup").is_none());
+            assert_eq!(
+                fs.read_range(&at("/saved.txt"), 0, 6)
+                    .expect("read")
+                    .as_ref(),
+                b"saved\n"
+            );
+
+            write(fs, "/scratch.txt", b"gone soon\n");
+            fs.remove(&at("/scratch.txt"), None)
+                .expect("remove new file");
+            assert!(fs.lookup(&at("/scratch.txt")).expect("lookup").is_none());
+
+            // A source file renamed away is gone from its old name at once.
+            fs.rename(&at("/README.md"), &at("/README.old"), false)
+                .expect("rename source file");
+            assert!(fs.lookup(&at("/README.md")).expect("lookup").is_none());
+            fs.remove(&at("/src/lib.rs"), None)
+                .expect("remove source file");
+            assert!(fs.lookup(&at("/src/lib.rs")).expect("lookup").is_none());
+
+            for page in [1, 3, 512] {
+                assert_eq!(list(fs, "/", page), ["README.old", "saved.txt", "src"]);
+                assert!(list(fs, "/src", page).is_empty());
+            }
+
+            // Publishing must not bring a renamed-away source file back.
+            fs.flush().expect("publish");
+            assert!(fs.lookup(&at("/README.md")).expect("lookup").is_none());
+            assert_eq!(list(fs, "/", 512), ["README.old", "saved.txt", "src"]);
+        })
+        .await
+    }
+}

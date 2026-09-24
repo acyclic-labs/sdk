@@ -464,9 +464,20 @@ impl NativeWatch {
                 return Err(NativeWatchError::UnrepresentablePath);
             };
             candidate.push(component);
-            let metadata = candidate
-                .symlink_metadata()
-                .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            let metadata = match candidate.symlink_metadata() {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // Absent from the source (a directory only a fork created,
+                    // say): nothing to watch here. Its creation is reported by
+                    // the deepest existing ancestor, which is watched instead.
+                    candidate.pop();
+                    if candidate == self.root {
+                        return Ok(());
+                    }
+                    break;
+                }
+                Err(error) => return Err(NativeWatchError::Io(error.to_string())),
+            };
             if metadata.file_type().is_symlink() {
                 return Err(NativeWatchError::SymbolicLinkDirectory);
             }

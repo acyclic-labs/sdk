@@ -80,6 +80,7 @@ struct FuseProjection {
 /// One background libfuse session.
 pub(super) struct FuseSession {
     session: Option<BackgroundSession>,
+    mountpoint: std::path::PathBuf,
     shutdown_failed: bool,
 }
 
@@ -154,6 +155,7 @@ impl FuseSession {
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
         Ok(Self {
             session: Some(session),
+            mountpoint: request.destination.clone(),
             shutdown_failed: false,
         })
     }
@@ -163,6 +165,9 @@ impl FuseSession {
             return Err(NativeMountError::Driver(
                 "FUSE background session previously failed during shutdown".to_owned(),
             ));
+        }
+        if self.session.is_some() {
+            unmount(&self.mountpoint);
         }
         if let Some(session) = self.session.take()
             && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.join())).is_err()
@@ -174,6 +179,83 @@ impl FuseSession {
         }
         Ok(())
     }
+}
+
+/// Unmounts before the background session is joined. `fuser` unmounts only
+/// when the session is dropped and swallows any failure, after which `join`
+/// waits forever for a request loop that ends only on unmount. A transiently
+/// busy mount is retried, then detached lazily; unprivileged services go
+/// through the setuid `fusermount3`.
+#[allow(unsafe_code)]
+fn unmount(mountpoint: &Path) {
+    let Ok(path) = std::ffi::CString::new(mountpoint.as_os_str().as_bytes()) else {
+        return;
+    };
+    // The FUSE connection id is the mount's device minor; read it while the
+    // mount is still attached so a lazily detached mount can be aborted.
+    let connection = std::fs::metadata(mountpoint)
+        .ok()
+        .map(|metadata| libc::minor(metadata.dev()));
+    for attempt in 0..20 {
+        // SAFETY: `path` is a valid NUL-terminated string for the call's duration.
+        if unsafe { libc::umount2(path.as_ptr(), 0) } == 0 {
+            return;
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EINVAL | libc::ENOENT) => return,
+            Some(libc::EBUSY) if attempt < 19 => std::thread::sleep(Duration::from_millis(50)),
+            Some(libc::EBUSY) => {
+                // SAFETY: as above.
+                if unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) } == 0 {
+                    abort_connection(mountpoint, connection);
+                    return;
+                }
+                break;
+            }
+            _ => break,
+        }
+    }
+    for (lazy, arguments) in [(false, ["-u"].as_slice()), (true, ["-u", "-z"].as_slice())] {
+        for program in ["fusermount3", "fusermount"] {
+            if std::process::Command::new(program)
+                .args(arguments)
+                .arg(mountpoint)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+            {
+                if lazy {
+                    abort_connection(mountpoint, connection);
+                }
+                return;
+            }
+        }
+    }
+}
+
+/// A lazily detached mount stays connected while anything still holds it (a
+/// process whose cwd is inside, say), and the session's request loop, which
+/// `join` waits for, runs until the connection ends. Aborting it ends the loop
+/// now; lingering holders see `ENOTCONN`, which is right for a stopped mount.
+fn abort_connection(mountpoint: &Path, connection: Option<u32>) {
+    let Some(connection) = connection else {
+        return;
+    };
+    let abort = format!("/sys/fs/fuse/connections/{connection}/abort");
+    let outcome = std::fs::write(&abort, b"1");
+    crate::diag!(
+        crate::diagnostics::Level::Warn,
+        "mount",
+        "busy_mount_aborted",
+        mountpoint = mountpoint.display(),
+        connection = connection,
+        outcome = match &outcome {
+            Ok(()) => "aborted".to_owned(),
+            Err(error) => error.to_string(),
+        },
+    );
 }
 
 impl FuseProjection {
@@ -1706,14 +1788,16 @@ fn source_error(error: MountSourceError) -> NativeMountError {
 
 #[allow(clippy::needless_pass_by_value)]
 fn errno(error: MountSourceError) -> i32 {
-    match error {
+    let code = match &error {
         MountSourceError::NotFound => libc::ENOENT,
         MountSourceError::AlreadyExists => libc::EEXIST,
         MountSourceError::Invalid(_) => libc::EINVAL,
         MountSourceError::Unsupported(_) => libc::EOPNOTSUPP,
-        MountSourceError::Engine(_) => libc::EIO,
+        MountSourceError::Engine(message) => super::engine_errno(message),
         MountSourceError::Stale => libc::ESTALE,
-    }
+    };
+    super::report_callback_error("fuse", &error, code);
+    code
 }
 
 #[cfg(all(test, target_os = "linux"))]

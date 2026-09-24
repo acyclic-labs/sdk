@@ -2,7 +2,10 @@ use super::*;
 use crate::async_storage::poll_ready;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::persistent_diff::ValueChange;
-use crate::kernel::{FileKind, NameEncoding, TreeEntry, TreePage, encode_tree_page, tree_page_id};
+use crate::kernel::{
+    FileKind, FileMetadata, MetadataField, NameEncoding, TreeEntry, TreePage, encode_file_metadata,
+    encode_tree_page, file_metadata_id, tree_page_id,
+};
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, ObjectStore};
 use bytes::Bytes;
@@ -69,6 +72,28 @@ fn directory(file: u8, metadata: u8, link_count: u64, entries: u8) -> FileRecord
         },
         FileKind::Directory,
     )
+}
+
+fn put_metadata(
+    store: &MemoryObjectStore,
+    metadata: FileMetadata,
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    let object = file_metadata_id(metadata)?;
+    ObjectStore::put(
+        store,
+        object,
+        Bytes::from(encode_file_metadata(metadata)?),
+        WorkBudget::UNBOUNDED,
+    )?;
+    Ok(object)
+}
+
+fn timed(modified_ns: i64, posix_mode: u32) -> FileMetadata {
+    FileMetadata {
+        posix_mode: MetadataField::Value(posix_mode),
+        modified_ns: MetadataField::Value(modified_ns),
+        ..FileMetadata::default()
+    }
 }
 
 fn put_tree(
@@ -200,12 +225,17 @@ fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dyn std:
     let cancellation = CancellationToken::new();
     let directory_id = FileId::from_bytes([7; 16]);
 
+    // Authored metadata (the mode) changed differently on each side: a real conflict.
+    let with_metadata = |metadata| FileRecord {
+        metadata,
+        ..directory(7, 1, 1, 8)
+    };
     let metadata_conflict = poll_ready(merge_directory_record_async(
         &store,
         directory_id,
-        directory(7, 1, 1, 8),
-        directory(7, 2, 1, 8),
-        directory(7, 3, 1, 8),
+        with_metadata(put_metadata(&store, timed(1, 0o755))?),
+        with_metadata(put_metadata(&store, timed(1, 0o700))?),
+        with_metadata(put_metadata(&store, timed(1, 0o770))?),
         1,
         1,
         DecodeLimits::default(),
@@ -220,7 +250,6 @@ fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dyn std:
     );
     assert!(!metadata_conflict.value.truncated);
     assert_eq!(metadata_conflict.value.examined_changes, 0);
-    assert_eq!(metadata_conflict.work, WorkCounters::default());
 
     let bounded_link_conflict = poll_ready(merge_directory_record_async(
         &store,
@@ -882,5 +911,138 @@ fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier()
     .err()
     .ok_or("truncated link recount succeeded")?;
     assert!(matches!(failure.error, MergeGenerationError::ChangeLimit));
+    Ok(())
+}
+
+#[allow(clippy::expect_used)]
+#[test]
+fn metadata_timestamps_reconcile_and_authored_fields_conflict() {
+    let base = timed(10, 0o644);
+    // Both sides touched the record: the later time wins, the mode is unchanged.
+    let merged = merge_metadata_fields(base, timed(30, 0o644), timed(20, 0o644))
+        .expect("divergent timestamps reconcile");
+    assert_eq!(merged.modified_ns, MetadataField::Value(30));
+    assert_eq!(merged.posix_mode, MetadataField::Value(0o644));
+    // One side changed the mode, the other only its time: both land.
+    let merged = merge_metadata_fields(base, timed(10, 0o600), timed(50, 0o644))
+        .expect("one-sided mode change reconciles");
+    assert_eq!(merged.posix_mode, MetadataField::Value(0o600));
+    assert_eq!(merged.modified_ns, MetadataField::Value(50));
+    // A time only one side can represent is kept.
+    let mut unavailable = timed(10, 0o644);
+    unavailable.modified_ns = MetadataField::Unavailable;
+    let merged = merge_metadata_fields(base, unavailable, timed(40, 0o644))
+        .expect("unavailable versus value reconciles");
+    assert_eq!(merged.modified_ns, MetadataField::Value(40));
+    // Authored state changed differently on each side conflicts.
+    assert!(merge_metadata_fields(base, timed(10, 0o600), timed(10, 0o700)).is_none());
+    let mut ours = base;
+    ours.posix_uid = MetadataField::Value(1);
+    let mut theirs = base;
+    theirs.posix_uid = MetadataField::Value(2);
+    assert!(merge_metadata_fields(base, ours, theirs).is_none());
+}
+
+/// Two siblings each add an entry to one directory. Both bump its
+/// modification time, which is activity rather than authored state: the
+/// merge keeps both entries and the later time, and a driver that resolves
+/// the directory's record supplies metadata without replacing the entries.
+#[test]
+fn sibling_additions_merge_entries_and_reconcile_directory_times()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let cancellation = CancellationToken::new();
+    let directory_id = FileId::from_bytes([51; 16]);
+    let entry = |name: &'static [u8], file: u8| -> Result<TreeEntry, Box<dyn std::error::Error>> {
+        Ok(TreeEntry {
+            name: LogicalName::new(NameEncoding::Utf8, name.to_vec(), 16)?,
+            file_id: FileId::from_bytes([file; 16]),
+            kind: FileKind::Fifo,
+        })
+    };
+    let a = entry(b"a", 52)?;
+    let b = entry(b"b", 53)?;
+    let empty = put_tree(&store, Vec::new())?;
+    let only_a = put_tree(&store, vec![a.clone()])?;
+    let only_b = put_tree(&store, vec![b.clone()])?;
+    let both = put_tree(&store, vec![a, b])?;
+    let dir = |metadata, entries| FileRecord {
+        file_id: directory_id,
+        kind: FileKind::Directory,
+        link_count: 1,
+        metadata,
+        payload: FilePayload::Directory { entries },
+    };
+    let base = dir(put_metadata(&store, timed(10, 0o755))?, empty);
+    let ours = dir(put_metadata(&store, timed(20, 0o755))?, only_a);
+    let theirs = dir(put_metadata(&store, timed(30, 0o755))?, only_b);
+
+    let merged = poll_ready(merge_directory_record_async(
+        &store,
+        directory_id,
+        base,
+        ours,
+        theirs,
+        8,
+        8,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("sibling directory merge suspended")??;
+    assert!(merged.value.conflicts.is_empty());
+    let record = merged
+        .value
+        .record
+        .ok_or("sibling directory merge produced no record")?;
+    assert_eq!(record.payload, FilePayload::Directory { entries: both });
+    assert_eq!(record.metadata, file_metadata_id(timed(30, 0o755))?);
+
+    // A genuine metadata conflict (mode changed both ways) resolved by a driver
+    // still merges the entries; the resolution contributes metadata only.
+    let ours = dir(put_metadata(&store, timed(20, 0o700))?, only_a);
+    let theirs = dir(put_metadata(&store, timed(30, 0o770))?, only_b);
+    let unresolved = poll_ready(merge_directory_record_async(
+        &store,
+        directory_id,
+        base,
+        ours,
+        theirs,
+        8,
+        8,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("conflicting directory merge suspended")??;
+    assert_eq!(
+        unresolved.value.conflicts,
+        vec![MergeConflict::File(directory_id)]
+    );
+    let chosen = put_metadata(&store, timed(30, 0o770))?;
+    let resolutions = BTreeMap::from([(
+        MergeConflict::File(directory_id),
+        MergeConflictResolution::File(Some(dir(chosen, only_b))),
+    )]);
+    let resolved = poll_ready(merge_directory_record_with_resolutions_async(
+        &store,
+        directory_id,
+        base,
+        ours,
+        theirs,
+        8,
+        8,
+        &resolutions,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("resolved directory merge suspended")??;
+    let record = resolved
+        .value
+        .record
+        .ok_or("resolved directory merge produced no record")?;
+    assert_eq!(record.metadata, chosen);
+    assert_eq!(record.payload, FilePayload::Directory { entries: both });
     Ok(())
 }

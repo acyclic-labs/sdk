@@ -3,11 +3,12 @@
 use super::{
     CanonicalDecodeError, CheckpointError, CheckpointRequest, DecodeLimits, ExtentKind,
     ExtentMutation, ExtentMutationError, ExtentMutationOptions, ExtentRangeRequest,
-    ExtentReadError, ExtentSlice, FilePayload, FileRecord, FileTableMutation,
-    FileTableMutationError, GenerationRoot, LogicalName, PersistentDiffError, TreeMutation,
-    TreeMutationError, apply_extent_mutations_async, apply_file_table_mutations_async,
-    apply_tree_mutations_async, build_checkpoint_async, diff_file_records_async,
-    diff_tree_entries_async, plan_extent_range_async,
+    ExtentReadError, ExtentSlice, FileMetadata, FilePayload, FileRecord, FileTableMutation,
+    FileTableMutationError, GenerationRoot, LogicalName, MetadataField, PersistentDiffError,
+    TreeMutation, TreeMutationError, apply_extent_mutations_async,
+    apply_file_table_mutations_async, apply_tree_mutations_async, build_checkpoint_async,
+    decode_file_metadata, diff_file_records_async, diff_tree_entries_async, encode_file_metadata,
+    plan_extent_range_async,
 };
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::{CancellationError, CancellationToken};
@@ -15,7 +16,8 @@ use crate::foundation::{FileId, GenerationId};
 use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
-use crate::storage::{ByteRange, ObjectId, ObjectStoreError};
+use crate::storage::{ByteRange, ObjectId, ObjectKind, ObjectStoreError, object_digest};
+use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
@@ -238,6 +240,7 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
     let mut resolutions = BTreeMap::new();
     let mut conflicts = Vec::new();
     let mut truncated = false;
+    let mut folds = Vec::new();
     for file_id in identities {
         let base = ours
             .get(&file_id)
@@ -247,6 +250,46 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
         let ours_value = ours.get(&file_id).map_or(base, |change| change.1);
         let theirs_value = theirs.get(&file_id).map_or(base, |change| change.1);
         let mut resolved = resolve_optional(base, ours_value, theirs_value);
+        // Both sides added the same identity (each materialized one shared
+        // source file, say) with identical content: a convergent addition.
+        if matches!(resolved, OptionalResolution::Conflict)
+            && base.is_none()
+            && let (Some(ours_record), Some(theirs_record)) = (ours_value, theirs_value)
+            && ours_record.kind == theirs_record.kind
+            && ours_record.payload == theirs_record.payload
+            && let Some(metadata) = converge_metadata_async(
+                store,
+                ours_record.metadata,
+                theirs_record.metadata,
+                limits,
+                budget,
+                cancellation,
+                &mut work,
+            )
+            .await?
+        {
+            resolved = OptionalResolution::Resolved(Some(FileRecord {
+                metadata,
+                ..ours_record
+            }));
+        }
+        // Both sides added the same directory identity (each promoted one
+        // shared source directory, say) with different entries: merge those
+        // entries against an empty directory.
+        let base = if base.is_none()
+            && matches!(resolved, OptionalResolution::Conflict)
+            && is_directory(ours_value)
+            && is_directory(theirs_value)
+        {
+            let ours_record = ours_value.ok_or_else(|| invalid(work))?;
+            let entries = empty_tree_async(store, limits, budget, cancellation, &mut work).await?;
+            Some(FileRecord {
+                payload: FilePayload::Directory { entries },
+                ..ours_record
+            })
+        } else {
+            base
+        };
         if matches!(resolved, OptionalResolution::Conflict)
             && is_directory(base)
             && is_directory(ours_value)
@@ -281,6 +324,7 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
                 .ok_or_else(|| OperationFailure::new(MergeGenerationError::ChangeLimit, work))?;
             conflicts.extend(directory.value.conflicts);
             truncated |= directory.value.truncated;
+            folds.extend(directory.value.folds);
             let Some(record) = directory.value.record else {
                 continue;
             };
@@ -319,11 +363,17 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
             && ours_value.is_some()
             && theirs_value.is_some()
         {
-            resolved = merge_file_fields(
+            resolved = merge_file_fields_async(
+                store,
                 base.ok_or_else(|| invalid(work))?,
                 ours_value.ok_or_else(|| invalid(work))?,
                 theirs_value.ok_or_else(|| invalid(work))?,
+                limits,
+                budget,
+                cancellation,
+                &mut work,
             )
+            .await?
             .map_or(OptionalResolution::Conflict, |record| {
                 OptionalResolution::Resolved(Some(record))
             });
@@ -354,6 +404,23 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
         };
         resolutions.insert(file_id, (ours_value, resolved));
     }
+    fold_directories(
+        store,
+        folds,
+        &mut resolutions,
+        &mut FoldState {
+            conflicts: &mut conflicts,
+            truncated: &mut truncated,
+            remaining_changes: &mut remaining_changes,
+        },
+        request.maximum_conflicts,
+        &request.resolutions,
+        limits,
+        budget,
+        cancellation,
+        &mut work,
+    )
+    .await?;
     if !conflicts.is_empty() || truncated {
         return Ok(OperationReceipt {
             value: MergeGenerationOutcome::Conflicted {
@@ -489,11 +556,20 @@ async fn merge_regular_record_async<S: AsyncObjectStore>(
             work: WorkCounters::default(),
         });
     };
-    let Some(metadata) = resolve_three(&base.metadata, &ours.metadata, &theirs.metadata) else {
-        return Ok(OperationReceipt {
-            value: None,
-            work: WorkCounters::default(),
-        });
+    let mut work = WorkCounters::default();
+    let Some(metadata) = merge_metadata_async(
+        store,
+        base.metadata,
+        ours.metadata,
+        theirs.metadata,
+        limits,
+        budget,
+        cancellation,
+        &mut work,
+    )
+    .await?
+    else {
+        return Ok(OperationReceipt { value: None, work });
     };
     let (
         FilePayload::Regular {
@@ -510,22 +586,13 @@ async fn merge_regular_record_async<S: AsyncObjectStore>(
         },
     ) = (base.payload, ours.payload, theirs.payload)
     else {
-        return Ok(OperationReceipt {
-            value: None,
-            work: WorkCounters::default(),
-        });
+        return Ok(OperationReceipt { value: None, work });
     };
     let Some(logical_bytes) = resolve_three(&base_bytes, &ours_bytes, &theirs_bytes) else {
-        return Ok(OperationReceipt {
-            value: None,
-            work: WorkCounters::default(),
-        });
+        return Ok(OperationReceipt { value: None, work });
     };
     if base_bytes != ours_bytes || base_bytes != theirs_bytes || logical_bytes == 0 {
-        return Ok(OperationReceipt {
-            value: None,
-            work: WorkCounters::default(),
-        });
+        return Ok(OperationReceipt { value: None, work });
     }
     let request = |root| ExtentRangeRequest {
         root,
@@ -538,7 +605,6 @@ async fn merge_regular_record_async<S: AsyncObjectStore>(
         limits,
         budget,
     };
-    let mut work = WorkCounters::default();
     let base_plan = plan_extent_range_async(store, request(base_root), cancellation)
         .await
         .map_err(|failure| failure.map_with_prior_work(work, MergeGenerationError::ExtentRead))?;
@@ -740,6 +806,17 @@ async fn adjust_link_counts<S: AsyncObjectStore>(
             }
         }
     }
+    // A record only the other side added, whose every binding lost a name
+    // conflict (resolved to our entry), is unreachable: carrying it would
+    // leave a file with no names and a non-zero link count.
+    for (file_id, (ours, resolved)) in resolutions.iter_mut() {
+        if ours.is_none()
+            && resolved.is_some()
+            && deltas.get(file_id).copied().unwrap_or_default() == 0
+        {
+            *resolved = None;
+        }
+    }
     for (file_id, delta) in deltas {
         if delta == 0 {
             continue;
@@ -762,6 +839,9 @@ pub(crate) struct DirectoryMergeResult {
     pub(crate) conflicts: Vec<MergeConflict>,
     pub(crate) truncated: bool,
     pub(crate) examined_changes: u32,
+    /// Names both sides added as directories under different identities:
+    /// `(ours, theirs)`. Ours keeps the name; theirs' entries fold into it.
+    pub(crate) folds: Vec<(FileId, FileId)>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -817,12 +897,44 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
             .collect(),
         truncated: maximum_conflicts == 0,
         examined_changes: 0,
+        folds: Vec::new(),
     };
-    let Some(metadata) = resolve_three(&base.metadata, &ours.metadata, &theirs.metadata) else {
-        return Ok(OperationReceipt {
-            value: conflict(),
-            work,
-        });
+    // A driver resolving this directory's record supplies its metadata only:
+    // the entries below are always merged, never replaced wholesale, so one
+    // side's additions cannot vanish behind the other's metadata.
+    let supplied = match resolutions.get(&MergeConflict::File(directory_id)) {
+        Some(MergeConflictResolution::Select(side)) => Some(select_value(
+            *side,
+            &base.metadata,
+            &ours.metadata,
+            &theirs.metadata,
+        )),
+        Some(MergeConflictResolution::File(Some(record))) if record.file_id == directory_id => {
+            Some(record.metadata)
+        }
+        _ => None,
+    };
+    let metadata = if let Some(metadata) = supplied {
+        metadata
+    } else {
+        let merged = merge_metadata_async(
+            store,
+            base.metadata,
+            ours.metadata,
+            theirs.metadata,
+            limits,
+            budget,
+            cancellation,
+            &mut work,
+        )
+        .await?;
+        let Some(metadata) = merged else {
+            return Ok(OperationReceipt {
+                value: conflict(),
+                work,
+            });
+        };
+        metadata
     };
     let Some(link_count) = resolve_three(&base.link_count, &ours.link_count, &theirs.link_count)
     else {
@@ -895,6 +1007,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
     let mut conflicts = Vec::new();
     let mut truncated = false;
     let mut mutations = Vec::new();
+    let mut folds = Vec::new();
     for name in names {
         let base_value = ours_changes
             .get(&name)
@@ -925,6 +1038,20 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                     MergeConflictResolution::File(_) => None,
                 })
         });
+        // Both sides added a directory under this name with different
+        // identities. Directories merge by path: ours keeps the name and
+        // theirs' entries are folded into it by the caller.
+        let resolved = resolved.or_else(|| match (&base_value, &ours_value, &theirs_value) {
+            (None, Some(ours_entry), Some(theirs_entry))
+                if ours_entry.kind == super::FileKind::Directory
+                    && theirs_entry.kind == super::FileKind::Directory
+                    && ours_entry.file_id != theirs_entry.file_id =>
+            {
+                folds.push((ours_entry.file_id, theirs_entry.file_id));
+                Some(ours_value.clone())
+            }
+            _ => None,
+        });
         let Some(resolved) = resolved else {
             if conflicts.len() < usize::try_from(maximum_conflicts).unwrap_or(usize::MAX) {
                 conflicts.push(MergeConflict::Binding { directory_id, name });
@@ -946,6 +1073,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                 conflicts,
                 truncated,
                 examined_changes,
+                folds,
             },
             work,
         });
@@ -979,6 +1107,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
             conflicts,
             truncated,
             examined_changes,
+            folds,
         },
         work,
     })
@@ -1034,6 +1163,9 @@ pub(crate) fn resolve_three<T: Clone + Eq>(base: &T, ours: &T, theirs: &T) -> Op
     }
 }
 
+/// Field-wise record merge without a store: every field must resolve
+/// three-way. [`merge_file_fields_async`] adds metadata reconciliation.
+#[cfg(test)]
 pub(crate) fn merge_file_fields(
     base: FileRecord,
     ours: FileRecord,
@@ -1045,6 +1177,331 @@ pub(crate) fn merge_file_fields(
         link_count: ours.link_count,
         metadata: resolve_three(&base.metadata, &ours.metadata, &theirs.metadata)?,
         payload: resolve_three(&base.payload, &ours.payload, &theirs.payload)?,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn merge_file_fields_async<S: AsyncObjectStore>(
+    store: &S,
+    base: FileRecord,
+    ours: FileRecord,
+    theirs: FileRecord,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    work: &mut WorkCounters,
+) -> Result<Option<FileRecord>, OperationFailure<MergeGenerationError>> {
+    let (Some(kind), Some(payload)) = (
+        resolve_three(&base.kind, &ours.kind, &theirs.kind),
+        resolve_three(&base.payload, &ours.payload, &theirs.payload),
+    ) else {
+        return Ok(None);
+    };
+    let Some(metadata) = merge_metadata_async(
+        store,
+        base.metadata,
+        ours.metadata,
+        theirs.metadata,
+        limits,
+        budget,
+        cancellation,
+        work,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(FileRecord {
+        file_id: ours.file_id,
+        kind,
+        link_count: ours.link_count,
+        metadata,
+        payload,
+    }))
+}
+
+/// Three-way merge of one record's metadata reference.
+///
+/// Identical or one-sided changes resolve without a read. When both sides
+/// moved the metadata, the records are decoded and merged field by field
+/// (see [`merge_metadata_fields`]); the merged record is stored unless it
+/// already equals one input. `None` is a real conflict.
+#[allow(clippy::too_many_arguments)]
+async fn merge_metadata_async<S: AsyncObjectStore>(
+    store: &S,
+    base: ObjectId,
+    ours: ObjectId,
+    theirs: ObjectId,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    work: &mut WorkCounters,
+) -> Result<Option<ObjectId>, OperationFailure<MergeGenerationError>> {
+    if let Some(resolved) = resolve_three(&base, &ours, &theirs) {
+        return Ok(Some(resolved));
+    }
+    let base_fields = read_metadata(store, base, limits, budget, cancellation, work).await?;
+    let ours_fields = read_metadata(store, ours, limits, budget, cancellation, work).await?;
+    let theirs_fields = read_metadata(store, theirs, limits, budget, cancellation, work).await?;
+    let Some(merged) = merge_metadata_fields(base_fields, ours_fields, theirs_fields) else {
+        return Ok(None);
+    };
+    let bytes =
+        encode_file_metadata(merged).map_err(|error| OperationFailure::new(error.into(), *work))?;
+    let object = ObjectId {
+        kind: ObjectKind::Metadata,
+        digest: object_digest(ObjectKind::Metadata, &bytes),
+    };
+    if object != base && object != ours && object != theirs {
+        let receipt = store
+            .put(
+                object,
+                Bytes::from(bytes),
+                remaining(*work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(*work, MergeGenerationError::Object))?;
+        *work = add(*work, receipt.work)?;
+    }
+    Ok(Some(object))
+}
+
+struct FoldState<'a> {
+    conflicts: &'a mut Vec<MergeConflict>,
+    truncated: &'a mut bool,
+    remaining_changes: &'a mut u32,
+}
+
+/// Folds each directory theirs added under a name ours also added as a
+/// directory: ours keeps its identity and gains theirs' entries (merged
+/// against an empty directory, which may fold further), and theirs' record,
+/// left without a name, is dropped.
+#[allow(clippy::too_many_arguments)]
+async fn fold_directories<S: AsyncObjectStore>(
+    store: &S,
+    mut folds: Vec<(FileId, FileId)>,
+    resolutions: &mut BTreeMap<FileId, RecordChange>,
+    state: &mut FoldState<'_>,
+    maximum_conflicts: u32,
+    requested: &BTreeMap<MergeConflict, MergeConflictResolution>,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    work: &mut WorkCounters,
+) -> Result<(), OperationFailure<MergeGenerationError>> {
+    while let Some((ours_id, theirs_id)) = folds.pop() {
+        let (Some((ours_before, Some(ours_record))), Some((theirs_before, Some(theirs_record)))) = (
+            resolutions.get(&ours_id).copied(),
+            resolutions.get(&theirs_id).copied(),
+        ) else {
+            return Err(invalid(*work));
+        };
+        let entries = empty_tree_async(store, limits, budget, cancellation, work).await?;
+        let empty = FileRecord {
+            payload: FilePayload::Directory { entries },
+            ..ours_record
+        };
+        let directory = merge_directory_record_with_resolutions_async(
+            store,
+            ours_id,
+            empty,
+            ours_record,
+            theirs_record,
+            (*state.remaining_changes).max(1),
+            maximum_conflicts
+                .saturating_sub(u32::try_from(state.conflicts.len()).unwrap_or(u32::MAX)),
+            requested,
+            limits,
+            remaining(*work, budget)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(*work, std::convert::identity))?;
+        *work = add(*work, directory.work)?;
+        *state.remaining_changes = state
+            .remaining_changes
+            .saturating_sub(directory.value.examined_changes);
+        state.conflicts.extend(directory.value.conflicts);
+        *state.truncated |= directory.value.truncated;
+        folds.extend(directory.value.folds);
+        if let Some(record) = directory.value.record {
+            resolutions.insert(ours_id, (ours_before, Some(record)));
+        }
+        resolutions.insert(theirs_id, (theirs_before, None));
+    }
+    Ok(())
+}
+
+/// The canonical empty directory tree, stored if absent.
+async fn empty_tree_async<S: AsyncObjectStore>(
+    store: &S,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    work: &mut WorkCounters,
+) -> Result<ObjectId, OperationFailure<MergeGenerationError>> {
+    let bytes = super::encode_tree_page(
+        &super::TreePage::Leaf(Vec::new()),
+        limits.maximum_page_items,
+    )
+    .map_err(|error| OperationFailure::new(error.into(), *work))?;
+    let object = ObjectId {
+        kind: ObjectKind::TreePage,
+        digest: object_digest(ObjectKind::TreePage, &bytes),
+    };
+    let receipt = store
+        .put(
+            object,
+            Bytes::from(bytes),
+            remaining(*work, budget)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(*work, MergeGenerationError::Object))?;
+    *work = add(*work, receipt.work)?;
+    Ok(object)
+}
+
+async fn read_metadata<S: AsyncObjectStore>(
+    store: &S,
+    object: ObjectId,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    work: &mut WorkCounters,
+) -> Result<FileMetadata, OperationFailure<MergeGenerationError>> {
+    let receipt = store
+        .read(
+            object,
+            limits.maximum_object_bytes,
+            remaining(*work, budget)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(*work, MergeGenerationError::Object))?;
+    *work = add(*work, receipt.work)?;
+    decode_file_metadata(&receipt.value.bytes, limits)
+        .map_err(|error| OperationFailure::new(error.into(), *work))
+}
+
+/// Metadata for one identity both sides added independently: authored fields
+/// must agree, timestamps take the later value. `None` is a real conflict.
+#[allow(clippy::too_many_arguments)]
+async fn converge_metadata_async<S: AsyncObjectStore>(
+    store: &S,
+    ours: ObjectId,
+    theirs: ObjectId,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    work: &mut WorkCounters,
+) -> Result<Option<ObjectId>, OperationFailure<MergeGenerationError>> {
+    if ours == theirs {
+        return Ok(Some(ours));
+    }
+    let ours_fields = read_metadata(store, ours, limits, budget, cancellation, work).await?;
+    let theirs_fields = read_metadata(store, theirs, limits, budget, cancellation, work).await?;
+    // A base equal to neither side's timestamps and to both sides' authored
+    // fields makes the three-way merge exactly "authored must agree, times
+    // take the later value".
+    let mut base = ours_fields;
+    for field in [
+        &mut base.created_ns,
+        &mut base.modified_ns,
+        &mut base.accessed_ns,
+        &mut base.changed_ns,
+    ] {
+        *field = MetadataField::Value(i64::MIN);
+    }
+    if ours_fields.posix_mode != theirs_fields.posix_mode
+        || ours_fields.posix_uid != theirs_fields.posix_uid
+        || ours_fields.posix_gid != theirs_fields.posix_gid
+        || ours_fields.posix_flags != theirs_fields.posix_flags
+        || ours_fields.windows_attributes != theirs_fields.windows_attributes
+        || ours_fields.named_attributes != theirs_fields.named_attributes
+        || ours_fields.acl != theirs_fields.acl
+        || ours_fields.security_descriptor != theirs_fields.security_descriptor
+    {
+        return Ok(None);
+    }
+    let Some(merged) = merge_metadata_fields(base, ours_fields, theirs_fields) else {
+        return Ok(None);
+    };
+    let bytes =
+        encode_file_metadata(merged).map_err(|error| OperationFailure::new(error.into(), *work))?;
+    let object = ObjectId {
+        kind: ObjectKind::Metadata,
+        digest: object_digest(ObjectKind::Metadata, &bytes),
+    };
+    if object != ours && object != theirs {
+        let receipt = store
+            .put(
+                object,
+                Bytes::from(bytes),
+                remaining(*work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(*work, MergeGenerationError::Object))?;
+        *work = add(*work, receipt.work)?;
+    }
+    Ok(Some(object))
+}
+
+/// Field-wise three-way metadata merge.
+///
+/// Timestamps record when something happened to a file, not what anyone
+/// meant it to be: two sides that each touched a record moved its times for
+/// their own reasons, and the later time is the true one. Every other field
+/// (mode, ownership, flags, attributes, ACLs) is authored state and must
+/// resolve three-way, or the record conflicts.
+pub(crate) fn merge_metadata_fields(
+    base: FileMetadata,
+    ours: FileMetadata,
+    theirs: FileMetadata,
+) -> Option<FileMetadata> {
+    fn later(
+        base: &MetadataField<i64>,
+        ours: &MetadataField<i64>,
+        theirs: &MetadataField<i64>,
+    ) -> MetadataField<i64> {
+        resolve_three(base, ours, theirs).unwrap_or(match (ours, theirs) {
+            (MetadataField::Value(ours), MetadataField::Value(theirs)) => {
+                MetadataField::Value(*ours.max(theirs))
+            }
+            (MetadataField::Value(value), MetadataField::Unavailable)
+            | (MetadataField::Unavailable, MetadataField::Value(value)) => {
+                MetadataField::Value(*value)
+            }
+            (MetadataField::Unavailable, MetadataField::Unavailable) => MetadataField::Unavailable,
+        })
+    }
+    Some(FileMetadata {
+        posix_mode: resolve_three(&base.posix_mode, &ours.posix_mode, &theirs.posix_mode)?,
+        posix_uid: resolve_three(&base.posix_uid, &ours.posix_uid, &theirs.posix_uid)?,
+        posix_gid: resolve_three(&base.posix_gid, &ours.posix_gid, &theirs.posix_gid)?,
+        posix_flags: resolve_three(&base.posix_flags, &ours.posix_flags, &theirs.posix_flags)?,
+        windows_attributes: resolve_three(
+            &base.windows_attributes,
+            &ours.windows_attributes,
+            &theirs.windows_attributes,
+        )?,
+        created_ns: later(&base.created_ns, &ours.created_ns, &theirs.created_ns),
+        modified_ns: later(&base.modified_ns, &ours.modified_ns, &theirs.modified_ns),
+        accessed_ns: later(&base.accessed_ns, &ours.accessed_ns, &theirs.accessed_ns),
+        changed_ns: later(&base.changed_ns, &ours.changed_ns, &theirs.changed_ns),
+        named_attributes: resolve_three(
+            &base.named_attributes,
+            &ours.named_attributes,
+            &theirs.named_attributes,
+        )?,
+        acl: resolve_three(&base.acl, &ours.acl, &theirs.acl)?,
+        security_descriptor: resolve_three(
+            &base.security_descriptor,
+            &ours.security_descriptor,
+            &theirs.security_descriptor,
+        )?,
     })
 }
 
