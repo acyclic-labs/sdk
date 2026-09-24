@@ -109,6 +109,7 @@ impl OpenAiCompatibleProvider {
                     status: None,
                     message: format!("stream failed: {}", error.without_url()),
                 });
+            let bytes = idle_limited(bytes, self.config.idle_timeout);
             let decoder = StreamDecoder::new(tool_names)
                 .with_dialect(self.config.dialect)
                 .with_user(self.config.user.clone());
@@ -125,9 +126,11 @@ impl OpenAiCompatibleProvider {
         let mut attempt = 0;
         loop {
             match self.send_once(body).await {
-                Err(error)
-                    if error.is_retryable() && attempt + 1 < self.config.retry.max_attempts =>
-                {
+                Ok(response) => return Ok(response),
+                Err(SendFailure {
+                    error,
+                    retry_safe: true,
+                }) if error.is_retryable() && attempt + 1 < self.config.retry.max_attempts => {
                     let retry_after = match &error {
                         ProviderError::RateLimited { retry_after, .. } => *retry_after,
                         _ => None,
@@ -135,15 +138,18 @@ impl OpenAiCompatibleProvider {
                     tokio::time::sleep(self.config.retry.delay(attempt, retry_after)).await;
                     attempt += 1;
                 }
-                outcome => return outcome,
+                Err(SendFailure { error, .. }) => return Err(error),
             }
         }
     }
 
-    async fn send_once(
-        &self,
-        body: &Value,
-    ) -> std::result::Result<reqwest::Response, ProviderError> {
+    /// Sends the request once.
+    ///
+    /// A failure is `retry_safe` only when the provider cannot have started a
+    /// generation for it: it answered with an error status, or the connection
+    /// was never established. Chat completions carry no idempotency key, so a
+    /// reset or timeout after the body may have been sent is not retried.
+    async fn send_once(&self, body: &Value) -> std::result::Result<reqwest::Response, SendFailure> {
         let mut request = self
             .http
             .post(self.config.completions_url())
@@ -155,13 +161,28 @@ impl OpenAiCompatibleProvider {
                 .header("HTTP-Referer", &app.referer)
                 .header("X-Title", &app.title);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| ProviderError::Unavailable {
-                status: None,
-                message: format!("request failed: {}", error.without_url()),
-            })?;
+        let idle = self.config.idle_timeout;
+        let response = match tokio::time::timeout(idle, request.send()).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                return Err(SendFailure {
+                    retry_safe: error.is_connect(),
+                    error: ProviderError::Unavailable {
+                        status: None,
+                        message: format!("request failed: {}", error.without_url()),
+                    },
+                });
+            }
+            Err(_) => {
+                return Err(SendFailure {
+                    retry_safe: false,
+                    error: ProviderError::Unavailable {
+                        status: None,
+                        message: format!("no response headers within {}s", idle.as_secs_f64()),
+                    },
+                });
+            }
+        };
         let status = response.status();
         if status.is_success() {
             return Ok(response);
@@ -172,14 +193,53 @@ impl OpenAiCompatibleProvider {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.trim().parse::<u64>().ok())
             .map(Duration::from_secs);
-        let body = response.text().await.unwrap_or_default();
-        Err(ProviderError::from_status(
-            self.config.dialect,
-            status.as_u16(),
-            retry_after,
-            &body,
-        ))
+        let body = tokio::time::timeout(idle, response.text())
+            .await
+            .ok()
+            .and_then(std::result::Result::ok)
+            .unwrap_or_default();
+        Err(SendFailure {
+            retry_safe: true,
+            error: ProviderError::from_status(
+                self.config.dialect,
+                status.as_u16(),
+                retry_after,
+                &body,
+            ),
+        })
     }
+}
+
+/// A failed [`OpenAiCompatibleProvider::send_once`].
+struct SendFailure {
+    error: ProviderError,
+    /// Whether resending cannot duplicate a generation the provider started.
+    retry_safe: bool,
+}
+
+/// Fails the stream with [`ProviderError::Unavailable`] when `source` yields
+/// nothing for `idle`, so a stalled connection cannot hang the turn.
+fn idle_limited<'a, S>(
+    source: S,
+    idle: Duration,
+) -> impl Stream<Item = std::result::Result<Bytes, ProviderError>> + Send + 'a
+where
+    S: Stream<Item = std::result::Result<Bytes, ProviderError>> + Send + 'a,
+{
+    futures::stream::unfold(Some(source.boxed()), move |source| async move {
+        let mut source = source?;
+        match tokio::time::timeout(idle, source.next()).await {
+            Ok(Some(item)) => Some((item, Some(source))),
+            Ok(None) => None,
+            Err(_) => Some((
+                Err(ProviderError::Unavailable {
+                    status: None,
+                    message: format!("stream idle for {}s", idle.as_secs_f64()),
+                }),
+                None,
+            )),
+        }
+    })
 }
 
 impl ModelProvider for OpenAiCompatibleProvider {
@@ -394,8 +454,8 @@ pub fn wire_tool_name(name: &str) -> String {
 ///
 /// Every chunk is decoded as it arrives; tool calls and the completion are
 /// emitted as soon as `[DONE]` arrives, without waiting for the body to close.
-/// A body that closes without `[DONE]` is finalised at EOF; one that ends
-/// before the provider reports a finish reason yields an error rather than a
+/// A transcript that ends without both a finish reason and `[DONE]` (so the
+/// trailing usage chunk may be missing too) yields an error rather than a
 /// fabricated completion.
 pub fn decode_sse<'a, S>(
     source: S,
@@ -466,29 +526,51 @@ struct DecodeState<'a> {
 }
 
 /// Splits one complete SSE event (terminated by a blank line) off `buffer`.
+///
+/// Per the SSE grammar each line ends in `\r\n`, `\n`, or `\r`, and they may
+/// be mixed, so an event ends wherever one line terminator is immediately
+/// followed by another (`\n\n`, `\r\n\r\n`, `\n\r\n`, `\r\r`, ...).
 fn take_sse_event(buffer: &mut BytesMut) -> Option<Bytes> {
-    let lf = find(buffer, b"\n\n").map(|index| (index, 2));
-    let crlf = find(buffer, b"\r\n\r\n").map(|index| (index, 4));
-    let (index, terminator) = match (lf, crlf) {
-        (Some(a), Some(b)) => a.min(b),
-        (a, b) => a.or(b)?,
-    };
-    let event = buffer.split_to(index).freeze();
-    buffer.advance(terminator);
+    let (end, consumed) = find_event_end(buffer)?;
+    let event = buffer.split_to(end).freeze();
+    buffer.advance(consumed - end);
     Some(event)
 }
 
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
+/// Returns the index where the first event's content ends and where the blank
+/// line terminating it ends.
+fn find_event_end(bytes: &[u8]) -> Option<(usize, usize)> {
+    let mut index = 0;
+    while index < bytes.len() {
+        let Some(first) = line_terminator(bytes, index) else {
+            index += 1;
+            continue;
+        };
+        if let Some(second) = line_terminator(bytes, index + first) {
+            return Some((index, index + first + second));
+        }
+        index += first;
+    }
+    None
+}
+
+/// Length of the line terminator starting at `index`, if any.
+///
+/// A trailing `\r` counts as a one-byte terminator: if the next chunk opens
+/// with `\n`, that byte is left as an empty line, which decodes to nothing.
+fn line_terminator(bytes: &[u8], index: usize) -> Option<usize> {
+    match (bytes.get(index), bytes.get(index + 1)) {
+        (Some(b'\r'), Some(b'\n')) => Some(2),
+        (Some(b'\r' | b'\n'), _) => Some(1),
+        _ => None,
+    }
 }
 
 /// Joins the `data:` lines of one SSE event; comments such as `OpenRouter`'s
 /// `: OPENROUTER PROCESSING` keep-alives are ignored.
 fn sse_data(frame: &[u8]) -> String {
     String::from_utf8_lossy(frame)
-        .lines()
+        .split(['\r', '\n'])
         .filter_map(|line| line.strip_prefix("data:"))
         .map(|line| line.strip_prefix(' ').unwrap_or(line))
         .collect::<Vec<_>>()
@@ -663,13 +745,19 @@ impl StreamDecoder {
     /// Emits the accumulated tool calls and the completion.
     ///
     /// # Errors
-    /// [`ProviderError::Protocol`] when the transcript ended before a finish
-    /// reason or `[DONE]`; [`ProviderError::Invalid`] when a tool call carries no
-    /// id (the result could never be correlated, so none is fabricated) or its
-    /// arguments are not JSON.
+    /// [`ProviderError::Protocol`] when the transcript ended before `[DONE]`
+    /// (the connection closed early, possibly before the trailing usage chunk)
+    /// or `[DONE]` arrived without any finish reason; [`ProviderError::Invalid`]
+    /// when a tool call carries no id (the result could never be correlated,
+    /// so none is fabricated) or its arguments are not JSON.
     pub fn finish(self) -> std::result::Result<Vec<ModelEvent>, ProviderError> {
-        if !self.done && self.metadata.finish_reason.is_none() {
-            return Err(ProviderError::protocol("stream ended before completion"));
+        if !self.done {
+            return Err(ProviderError::protocol("stream ended before [DONE]"));
+        }
+        if self.metadata.finish_reason.is_none() {
+            return Err(ProviderError::protocol(
+                "stream reached [DONE] without a finish reason",
+            ));
         }
         let mut events = Vec::with_capacity(self.calls.len() + 1);
         for (index, call) in self.calls {

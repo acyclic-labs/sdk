@@ -732,3 +732,222 @@ async fn persistent_429_surfaces_a_retryable_rate_limit_with_retry_after() {
         "bounded by max_attempts"
     );
 }
+
+#[tokio::test]
+async fn mixed_line_endings_split_events_at_every_chunk_size() {
+    // `\n\r\n`, `\r\r`, and `\r\n\n` are all valid blank-line separators.
+    let transcript = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a\"}}]}\n\r\n",
+        ": keep-alive\r\r",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"b\"},\"finish_reason\":\"stop\"}]}\r\n\n",
+        "data: [DONE]\r\r",
+    );
+    for chunk in [1, 2, 3, 7, 1024] {
+        let events = decode(transcript, chunk).await;
+        let events = events
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|error| panic!("chunk {chunk}: {error:?}"));
+        assert_eq!(events.len(), 3, "chunk {chunk}: {events:?}");
+        assert_eq!(events[0], ModelEvent::Content { delta: "a".into() });
+        assert_eq!(events[1], ModelEvent::Content { delta: "b".into() });
+        assert!(matches!(events[2], ModelEvent::Completed { .. }));
+    }
+}
+
+#[tokio::test]
+async fn mixed_separator_yields_the_event_while_the_body_stays_open() {
+    let (mut sender, receiver) = mpsc::channel::<Result<Bytes, ProviderError>>(8);
+    sender
+        .send(Ok(Bytes::from_static(
+            b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\r\n",
+        )))
+        .await
+        .unwrap();
+    let mut events = decode_sse(receiver, StreamDecoder::new(BTreeMap::new()));
+    let first = tokio::time::timeout(Duration::from_secs(5), events.next())
+        .await
+        .expect("event separated by \\n\\r\\n is yielded without more bytes");
+    assert_eq!(
+        first.map(Result::ok),
+        Some(Some(ModelEvent::Content { delta: "hi".into() }))
+    );
+    drop(sender);
+}
+
+#[tokio::test]
+async fn finish_reason_without_done_is_a_protocol_error_not_a_completion() {
+    // The connection closed after the finish chunk but before the trailing
+    // usage chunk and `[DONE]`.
+    let transcript = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"finish_reason\":\"stop\"}]}\n\n";
+    let events = decode(transcript, 8).await;
+    match events.as_slice() {
+        [
+            Ok(ModelEvent::Content { .. }),
+            Err(ProviderError::Protocol { message }),
+        ] => {
+            assert!(message.contains("[DONE]"), "{message}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn done_without_a_finish_reason_is_a_protocol_error_not_a_completion() {
+    let transcript =
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"}}]}\n\ndata: [DONE]\n\n";
+    let events = decode(transcript, 8).await;
+    match events.as_slice() {
+        [
+            Ok(ModelEvent::Content { .. }),
+            Err(ProviderError::Protocol { message }),
+        ] => {
+            assert!(message.contains("finish reason"), "{message}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn completions_url_keeps_the_suffix_in_the_path_before_any_query() {
+    let url = |base: &str| ProviderConfig::new("k", base).completions_url();
+    assert_eq!(
+        url("https://host/v1?token=x"),
+        "https://host/v1/chat/completions?token=x"
+    );
+    assert_eq!(
+        url("https://host/v1/?token=x"),
+        "https://host/v1/chat/completions?token=x"
+    );
+    assert_eq!(url("https://host/v1/"), "https://host/v1/chat/completions");
+    assert_eq!(url("https://host"), "https://host/chat/completions");
+}
+
+fn plain(base_url: String, idle: Duration) -> OpenAiCompatibleProvider {
+    let config = ProviderConfig::new("k", base_url)
+        .with_idle_timeout(idle)
+        .with_retry(RetryPolicy {
+            max_attempts: 3,
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(5),
+        });
+    OpenAiCompatibleProvider::new(config).unwrap()
+}
+
+/// Serves every request with `respond` on an ephemeral port and counts requests.
+async fn serve_with<F, Fut>(respond: F) -> (String, Arc<Mutex<usize>>)
+where
+    F: Fn() -> Fut + Clone + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Response> + Send + 'static,
+{
+    let count = Arc::new(Mutex::new(0_usize));
+    let seen = count.clone();
+    let app = Router::new().fallback(move || {
+        *seen.lock().unwrap() += 1;
+        respond()
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{address}/v1"), count)
+}
+
+#[tokio::test]
+async fn stalled_body_fails_after_the_idle_timeout_instead_of_hanging() {
+    let (base_url, _count) = serve_with(|| async {
+        let first = stream::once(async {
+            Ok::<_, std::io::Error>(Bytes::from_static(
+                b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a\"}}]}\n\n",
+            ))
+        });
+        Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::from_stream(first.chain(stream::pending())))
+            .unwrap()
+    })
+    .await;
+    let provider = plain(base_url, Duration::from_millis(200));
+    let events = tokio::time::timeout(
+        Duration::from_secs(10),
+        provider.stream(&request(Value::Null)).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("idle timeout ends the stream");
+    match events.as_slice() {
+        [
+            Ok(ModelEvent::Content { .. }),
+            Err(ProviderError::Unavailable { message, .. }),
+        ] => {
+            assert!(message.contains("idle"), "{message}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn missing_response_headers_time_out_and_are_not_resent() {
+    let (base_url, count) = serve_with(|| async {
+        futures::future::pending::<()>().await;
+        Response::new(Body::empty())
+    })
+    .await;
+    let provider = plain(base_url, Duration::from_millis(200));
+    let events = tokio::time::timeout(
+        Duration::from_secs(10),
+        provider.stream(&request(Value::Null)).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("header timeout ends the stream");
+    assert!(
+        matches!(events.as_slice(), [Err(ProviderError::Unavailable { .. })]),
+        "{events:?}"
+    );
+    assert_eq!(
+        *count.lock().unwrap(),
+        1,
+        "the provider may already be generating, so the request is not resent"
+    );
+}
+
+#[tokio::test]
+async fn connection_dropped_after_the_request_was_sent_is_not_retried() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let accepted = Arc::new(Mutex::new(0_usize));
+    let counter = accepted.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            *counter.lock().unwrap() += 1;
+            let mut buffer = vec![0_u8; 64 * 1024];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buffer).await;
+            drop(socket);
+        }
+    });
+    let provider = plain(format!("http://{address}/v1"), Duration::from_secs(5));
+    let events = provider
+        .stream(&request(Value::Null))
+        .collect::<Vec<_>>()
+        .await;
+    assert!(
+        matches!(events.as_slice(), [Err(ProviderError::Unavailable { .. })]),
+        "{events:?}"
+    );
+    assert_eq!(*accepted.lock().unwrap(), 1, "no duplicate generation");
+}
+
+#[tokio::test]
+async fn refused_connection_is_retried_because_nothing_was_sent() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let provider = plain(format!("http://{address}/v1"), Duration::from_secs(5));
+    let events = provider
+        .stream(&request(Value::Null))
+        .collect::<Vec<_>>()
+        .await;
+    match events.as_slice() {
+        [Err(error @ ProviderError::Unavailable { .. })] => assert!(error.is_retryable()),
+        other => panic!("unexpected {other:?}"),
+    }
+}
