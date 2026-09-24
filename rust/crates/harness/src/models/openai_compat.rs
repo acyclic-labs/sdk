@@ -193,11 +193,14 @@ impl OpenAiCompatibleProvider {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.trim().parse::<u64>().ok())
             .map(Duration::from_secs);
-        let body = tokio::time::timeout(idle, response.text())
-            .await
-            .ok()
-            .and_then(std::result::Result::ok)
-            .unwrap_or_default();
+        // The status alone still classifies the failure if the body stalls; the
+        // placeholder tells the operator why any body-derived detail (such as an
+        // OpenRouter key-limit 403) is missing instead of hanging the turn.
+        let body = match tokio::time::timeout(idle, response.text()).await {
+            Ok(Ok(body)) => body,
+            Ok(Err(error)) => format!("<error body unreadable: {}>", error.without_url()),
+            Err(_) => format!("<error body not received within {}s>", idle.as_secs_f64()),
+        };
         Err(SendFailure {
             retry_safe: true,
             error: ProviderError::from_status(
