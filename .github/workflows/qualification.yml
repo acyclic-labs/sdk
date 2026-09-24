@@ -19,7 +19,6 @@ env:
   RUSTC_WRAPPER: sccache
   SCCACHE_CACHE_SIZE: 8G
   CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  CI_TARGET_BRANCH: ${{ github.event.pull_request.base.ref || '' }}
 
 jobs:
   change-scope:

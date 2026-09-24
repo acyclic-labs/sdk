@@ -67,9 +67,10 @@ case "$lane" in
     bun run check:generated
     bun scripts/check-boundaries.mjs
     bun scripts/check-metadata.mjs
-    base="${CI_TARGET_BRANCH:-}"
-    if [[ -n "$base" ]]; then
-      bun x buf breaking --against ".git#ref=origin/$base" \
+    if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
+      base="$(jq -er '.pull_request.base.sha' "$GITHUB_EVENT_PATH")"
+      git cat-file -e "$base^{commit}" 2>/dev/null || git fetch --no-tags origin "$base"
+      bun x buf breaking --against ".git#ref=$base" \
         --exclude-path proto/inference/v1/inference.proto \
         --exclude-path proto/filesystem/v1 \
         --exclude-path proto/filesystem/daemon/v2
@@ -107,24 +108,81 @@ case "$lane" in
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
     cargo test -p acyclic-labs-plugin --locked
     cargo clippy -p acyclic-labs-plugin --all-targets --all-features --locked -- -D warnings
-    head="${CI_HEAD_SHA:-$(git rev-parse HEAD)}"
-    if [[ -n "${CI_TARGET_BRANCH:-}" ]]; then
-      branch="$CI_TARGET_BRANCH"
-      git fetch --no-tags origin "$branch"
-      base="$(git merge-base "$head" "origin/$branch")"
+    head="$(git rev-parse HEAD)"
+    allow_webflow=false
+    if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
+      event_head="$(jq -er '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
+      [[ "$head" == "$event_head" ]] || {
+        echo 'checked-out source does not match the pull request head' >&2
+        exit 1
+      }
+      event_base="$(jq -er '.pull_request.base.sha' "$GITHUB_EVENT_PATH")"
+      git cat-file -e "$event_base^{commit}" 2>/dev/null ||
+        git fetch --no-tags origin "$event_base"
+      base="$(git merge-base "$head" "$event_base")"
+      range="$base..$head"
+    elif [[ "${GITHUB_EVENT_NAME:-}" == "push" &&
+            "${GITHUB_REF:-}" == "refs/heads/main" ]]; then
+      event_head="$(jq -er '.after' "$GITHUB_EVENT_PATH")"
+      [[ "$head" == "$event_head" ]] || {
+        echo 'checked-out source does not match the main push head' >&2
+        exit 1
+      }
+      before="$(jq -er '.before' "$GITHUB_EVENT_PATH")"
+      [[ "$before" =~ ^[0-9a-f]{40}$ ]] || {
+        echo 'main push must include its previous commit for signature verification' >&2
+        exit 1
+      }
+      if [[ "$before" == "0000000000000000000000000000000000000000" ]]; then
+        range="$head"
+      else
+        git merge-base --is-ancestor "$before" "$head" || {
+          echo 'main push previous commit is not an ancestor of its head' >&2
+          exit 1
+        }
+        range="$before..$head"
+      fi
+      allow_webflow=true
     else
       base="${head}^"
+      range="$base..$head"
     fi
+    webflow_home=""
     while read -r commit; do
       verification=$(git \
         -c gpg.format=ssh \
         -c "gpg.ssh.allowedSignersFile=$(pwd)/.github/allowed_signers" \
         show --quiet --format='%G?' "$commit")
-      [[ "$verification" == "G" ]] || {
-        echo "Commit $commit lacks an authorized cryptographic signature." >&2
-        exit 1
-      }
-    done < <(git rev-list --reverse "$base..$head")
+      if [[ "$verification" == "G" ]]; then
+        continue
+      fi
+      # GitHub signs squash merges with its web-flow OpenPGP key. Only main
+      # accepts that pinned key; PR commits must still use allowed SSH signers.
+      if [[ "$allow_webflow" == true ]]; then
+        if [[ -z "$webflow_home" ]]; then
+          webflow_home="$(mktemp -d "$SDK_TEMP_DIR/web-flow.XXXXXXXX")"
+          trap 'rm -rf -- "$webflow_home"' EXIT
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --max-time 30 https://github.com/web-flow.gpg \
+            --output "$webflow_home/web-flow.gpg"
+          echo "6e8af687f60cf3f403151c8fb1b26e95e6f9e424ca60cc8f3787bd4466a3ef84  $webflow_home/web-flow.gpg" |
+            sha256sum --check --status
+          GNUPGHOME="$webflow_home" gpg --batch --quiet --import "$webflow_home/web-flow.gpg"
+        fi
+        signature=$(GNUPGHOME="$webflow_home" git -c gpg.format=openpgp \
+          show --quiet --format='%G? %GF' "$commit")
+        if [[ "$signature" == "G 968479A1AFF927E37D1A566BB5690EEEBB952194" ||
+              "$signature" == "U 968479A1AFF927E37D1A566BB5690EEEBB952194" ]]; then
+          continue
+        fi
+      fi
+      echo "Commit $commit lacks an authorized cryptographic signature." >&2
+      exit 1
+    done < <(git rev-list --reverse "$range")
+    if [[ -n "$webflow_home" ]]; then
+      rm -rf -- "$webflow_home"
+      trap - EXIT
+    fi
 
     archive="$TOOLS_DIR/cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz"
     if [[ ! -f "$archive" ]]; then
@@ -150,7 +208,7 @@ case "$lane" in
         "$TOOLS_DIR/gitleaks-8.30.1" gitleaks
     fi
     "$TOOLS_DIR/gitleaks-8.30.1/gitleaks" detect --source . --no-banner --redact \
-      --log-opts "$base..$head"
+      --log-opts "$range"
     ;;
   web)
     bash scripts/ensure-rust-target.sh wasm32-unknown-unknown
