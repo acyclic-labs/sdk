@@ -1,6 +1,6 @@
 {
   "name": "@acyclic-labs/harness",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Generic durable substrate and fully composable agent runtime",
   "repository": { "type": "git", "url": "git+https://github.com/acyclic-labs/sdk.git", "directory": "typescript/packages/harness" },
   "license": "Apache-2.0",

@@ -16,8 +16,8 @@ memory = ["acyclic-fs/memory"]
 local = ["acyclic-fs/local"]
 
 [dependencies]
-acyclic-fs = { version = "=0.1.0", path = "../filesystem", default-features = false }
-acyclic-harness = { version = "0.1.0", path = "../harness", default-features = false }
+acyclic-fs = { version = "=0.1.1", path = "../filesystem", default-features = false }
+acyclic-harness = { version = "=0.1.1", path = "../harness", default-features = false }
 blake3.workspace = true
 bytes.workspace = true
 serde.workspace = true

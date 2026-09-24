@@ -14,7 +14,6 @@ mkdir -p "$target"
 tar --create --file - --directory "$source" \
   --exclude='./node_modules' --exclude='./node_modules/**' \
   --exclude='./*.tgz' . | tar --extract --file - --directory "$target"
-install -m 0644 "$root/CHANGELOG.md" "$target/CHANGELOG.md"
 [[ -f "$target/package.json" && -f "$target/README.md" && -f "$target/CHANGELOG.md" ]] || {
   echo 'staged npm package lacks release metadata' >&2
   exit 2

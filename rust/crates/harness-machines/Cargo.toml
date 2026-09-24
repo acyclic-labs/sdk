@@ -11,8 +11,8 @@ readme = "README.md"
 documentation = "https://docs.rs/acyclic-harness-machines"
 
 [dependencies]
-acyclic-harness = { version = "0.1.0", path = "../harness", default-features = false }
-acyclic-machines = { version = "=0.1.0", path = "../machines" }
+acyclic-harness = { version = "=0.1.1", path = "../harness", default-features = false }
+acyclic-machines = { version = "=0.1.1", path = "../machines" }
 blake3.workspace = true
 uuid.workspace = true
 

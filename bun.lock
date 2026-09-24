@@ -14,7 +14,7 @@
     },
     "typescript/packages/filesystem": {
       "name": "@acyclic-labs/fs",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@bufbuild/protobuf": "2.14.1",
         "@connectrpc/connect": "2.1.1",
@@ -27,7 +27,7 @@
     },
     "typescript/packages/harness": {
       "name": "@acyclic-labs/harness",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@bufbuild/protobuf": "2.14.1",
       },
@@ -39,7 +39,7 @@
     },
     "typescript/packages/inference": {
       "name": "@acyclic-labs/inference",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@bufbuild/protobuf": "2.14.1",
       },
@@ -50,14 +50,14 @@
     },
     "typescript/packages/machines": {
       "name": "@acyclic-labs/machines",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "typescript": "7.0.2",
       },
     },
     "typescript/packages/objects": {
       "name": "@acyclic-labs/objects",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "@types/bun": "1.4.0",
         "typescript": "7.0.2",
@@ -65,14 +65,14 @@
     },
     "typescript/packages/sdk": {
       "name": "@acyclic-labs/sdk",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
-        "@acyclic-labs/fs": "0.1.0",
-        "@acyclic-labs/harness": "0.1.0",
-        "@acyclic-labs/inference": "0.1.0",
-        "@acyclic-labs/machines": "0.1.0",
-        "@acyclic-labs/objects": "0.1.0",
-        "@acyclic-labs/stream": "0.1.0",
+        "@acyclic-labs/fs": "0.1.1",
+        "@acyclic-labs/harness": "0.1.1",
+        "@acyclic-labs/inference": "0.1.1",
+        "@acyclic-labs/machines": "0.1.1",
+        "@acyclic-labs/objects": "0.1.1",
+        "@acyclic-labs/stream": "0.1.1",
       },
       "devDependencies": {
         "typescript": "7.0.2",
@@ -80,7 +80,7 @@
     },
     "typescript/packages/stream": {
       "name": "@acyclic-labs/stream",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "typescript": "7.0.2",
       },

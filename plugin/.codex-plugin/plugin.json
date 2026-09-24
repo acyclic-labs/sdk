@@ -1,6 +1,6 @@
 {
   "name": "acyclic",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Fast recursively isolated workspaces for coding agents, backed by the Acyclic distributed filesystem.",
   "author": {
     "name": "Acyclic Labs"

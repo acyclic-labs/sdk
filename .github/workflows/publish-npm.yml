@@ -91,6 +91,18 @@ jobs:
           cp scripts/plugin-qualification.mjs "$stage/scripts/"
           cp scripts/typescript-qualification.mjs "$stage/scripts/"
           cp release/npm-packages.json "$stage/release/"
+          node - "$stage" <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const stage = process.argv[2];
+          for (const item of JSON.parse(fs.readFileSync('release/npm-packages.json', 'utf8'))) {
+            if (item.source !== 'typescript') continue;
+            const relative = path.join('typescript', 'packages', item.directory, 'package.json');
+            const target = path.join(stage, relative);
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            fs.copyFileSync(relative, target);
+          }
+          NODE
           mkdir -p "$stage/plugin"
           cp plugin/package.json "$stage/plugin/"
 

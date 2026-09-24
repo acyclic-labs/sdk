@@ -1,6 +1,6 @@
 [package]
 name = "acyclic-stream"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 rust-version = "1.92"
 license.workspace = true
@@ -37,7 +37,7 @@ uuid.workspace = true
 libc = { version = "0.2.175", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-acyclic-native-runtime = { version = "=0.1.0", path = "../native-runtime" }
+acyclic-native-runtime = { version = "=0.1.1", path = "../native-runtime" }
 
 [build-dependencies]
 protoc-bin-vendored.workspace = true

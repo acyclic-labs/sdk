@@ -69,6 +69,20 @@ const streamVersion = compatibility.families.stream.version;
 const streamCrateVersion = compatibility.families.stream.crateVersion ?? streamVersion;
 const harnessPackage = await load("typescript/packages/harness/package.json");
 const sdkPackage = await load("typescript/packages/sdk/package.json");
+for (const item of await load("release/npm-packages.json")) {
+  const directory = item.source === "plugin"
+    ? "plugin"
+    : `typescript/packages/${item.directory}`;
+  const manifest = await load(`${directory}/package.json`);
+  if (manifest.name !== item.name || manifest.version !== sdkPackage.version || manifest.private !== false) {
+    throw new Error(`public npm package identity mismatch: ${item.name}`);
+  }
+  const readme = await readFile(new URL(`${directory}/README.md`, root), "utf8");
+  const changelog = await readFile(new URL(`${directory}/CHANGELOG.md`, root), "utf8");
+  if (!readme.startsWith("# ") || !changelog.includes(`## ${manifest.version}`)) {
+    throw new Error(`public npm package documentation mismatch: ${item.name}`);
+  }
+}
 const lock = Bun.JSONC.parse(await readFile(new URL("bun.lock", root), "utf8"));
 for (const [path, locked] of Object.entries(lock.workspaces)) {
   const manifest = await load(path ? `${path}/package.json` : "package.json");

@@ -13,10 +13,10 @@ keywords = ["sdk", "testing", "memory"]
 categories = ["development-tools::testing"]
 
 [dependencies]
-acyclic-fs = { version = "=0.1.0", path = "../filesystem" }
-acyclic-machines = { version = "=0.1.0", path = "../machines" }
-acyclic-objects = { version = "=0.1.0", path = "../objects" }
-acyclic-stream = { version = "=0.1.0", path = "../stream" }
+acyclic-fs = { version = "=0.1.1", path = "../filesystem" }
+acyclic-machines = { version = "=0.1.1", path = "../machines" }
+acyclic-objects = { version = "=0.1.1", path = "../objects" }
+acyclic-stream = { version = "=0.1.1", path = "../stream" }
 
 [dev-dependencies]
 bytes.workspace = true
