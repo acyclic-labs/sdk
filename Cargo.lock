@@ -767,9 +767,9 @@ dependencies = [
 
 [[package]]
 name = "compio-driver"
-version = "0.11.1"
+version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "042d449def75fb78af58e53e865dd1343c36255294466e0abd5464b70a525be4"
+checksum = "74d42d98dc890ee4db00c1e68a723391711aab6d67085880d716b72830f7c715"
 dependencies = [
  "cfg-if",
  "cfg_aliases",

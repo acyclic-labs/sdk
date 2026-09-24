@@ -73,6 +73,8 @@ jobs:
       - name: Build the unified executable
         env:
           CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
+          CC_aarch64_unknown_linux_musl: ${{ matrix.rust_target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.rust_target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
           CC_aarch64_pc_windows_msvc: ${{ matrix.rust_target == 'aarch64-pc-windows-msvc' && format('{0}/llvm/bin/clang.exe', runner.temp) || '' }}
         run: node scripts/build-product.mjs
       - name: Verify release architecture and runtime ABI

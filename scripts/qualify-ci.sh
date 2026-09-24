@@ -77,6 +77,26 @@ case "$lane" in
     fi
     bash -n scripts/check-typescript-packages.sh
     ;;
+  linux-musl|linux-arm64-musl)
+    if [[ "$lane" == linux-musl ]]; then
+      target=x86_64-unknown-linux-musl
+      release_target=linux-x64-musl
+    else
+      target=aarch64-unknown-linux-musl
+      release_target=linux-arm64-musl
+    fi
+    sudo apt-get update -qq
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y musl-tools
+    rustup target add "$target"
+    CC_aarch64_unknown_linux_musl=musl-gcc \
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
+      CARGO_BUILD_TARGET="$target" node scripts/build-product.mjs
+    binary="${CARGO_TARGET_DIR:-target}/$target/release/acyclic"
+    node scripts/verify-release-binary.mjs "$release_target" "$binary"
+    expected="$(cargo metadata --locked --no-deps --format-version 1 |
+      jq -r '.packages[] | select(.name == "acyclic-labs-plugin") | "acyclic \(.version)"')"
+    test "$("$binary" --version)" = "$expected"
+    ;;
   policy)
     bash scripts/test-ensure-rust-target.sh
     bash scripts/test-qualify-gate-rustup.sh
