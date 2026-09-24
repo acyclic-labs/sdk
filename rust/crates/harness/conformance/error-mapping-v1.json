@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "mappings": [
+    { "code": "NOT_FOUND", "http_status": 404, "grpc_code": 5 },
+    { "code": "CONFLICT", "http_status": 409, "grpc_code": 10 },
+    { "code": "UNSUPPORTED", "http_status": 422, "grpc_code": 12 },
+    { "code": "INVALID", "http_status": 400, "grpc_code": 3 },
+    { "code": "UNAUTHORIZED", "http_status": 403, "grpc_code": 7 },
+    { "code": "STORAGE", "http_status": 503, "grpc_code": 14 },
+    { "code": "INDETERMINATE", "http_status": 503, "grpc_code": 14 }
+  ]
+}

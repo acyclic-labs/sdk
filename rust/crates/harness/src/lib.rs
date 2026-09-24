@@ -35,6 +35,8 @@ mod wasm;
 pub mod wire_api;
 #[cfg(any(feature = "host", feature = "wasm"))]
 mod wire_codec;
+#[cfg(feature = "host")]
+pub mod wire_status;
 #[cfg(any(feature = "host", feature = "wasm"))]
 pub use wire_codec::encode_error;
 pub mod workflow;

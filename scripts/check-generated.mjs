@@ -26,6 +26,11 @@ try {
   )) {
     throw new Error("packaged native/WASM conformance vector is stale; run bun run generate");
   }
+  if (!readFileSync(join(root, "conformance/vectors/harness/error-mapping-v1.json")).equals(
+    readFileSync(join(root, "rust/crates/harness/conformance/error-mapping-v1.json")),
+  )) {
+    throw new Error("packaged error-mapping vector is stale; run bun run generate");
+  }
   const harnessSuite = JSON.parse(readFileSync(join(root, "conformance/vectors/core.json"), "utf8"));
   const nativeWasmCase = harnessSuite.cases.find(item => item.name === "native-wasm-replay-is-byte-equivalent");
   const nativeWasmVector = JSON.parse(

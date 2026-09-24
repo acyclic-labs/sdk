@@ -4,6 +4,12 @@ All notable changes to Acyclic are recorded here. Every Rust crate, npm package,
 and coding-agent integration in this repository shares one version and one
 release commit.
 
+## Unreleased
+
+### Added
+
+- Harness transport negotiation: `HandshakeResponse` advertises `TransportBinding`s, HTTP and gRPC adapters can advertise their reachable endpoints, and the shared error-code mapping is bound to `conformance/vectors/harness/error-mapping-v1.json`. TypeScript `connectHarness` resolves gRPC, gRPC-Web, WebSocket, or HTTP/SSE transparently (auto order gRPC > gRPC-Web > WebSocket > HTTP/SSE, or `ACYCLIC_TRANSPORT`).
+
 ## 0.1.0 - 2026-09-21
 
 ### Added

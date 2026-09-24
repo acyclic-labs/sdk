@@ -98,7 +98,29 @@ pub fn negotiate(
     Ok(wire::HandshakeResponse {
         protocol: Some(expected),
         supported: Some(supported.clone()),
+        transports: Vec::new(),
     })
+}
+
+/// Appends reachable wire adapters to a handshake response.
+///
+/// Bindings with an unspecified kind or empty URL are skipped; exact duplicates
+/// are deduplicated.
+#[must_use]
+pub fn advertise(
+    mut response: wire::HandshakeResponse,
+    transports: impl IntoIterator<Item = wire::TransportBinding>,
+) -> wire::HandshakeResponse {
+    for binding in transports {
+        if binding.url.is_empty()
+            || binding.kind == wire::TransportKind::Unspecified as i32
+            || response.transports.contains(&binding)
+        {
+            continue;
+        }
+        response.transports.push(binding);
+    }
+    response
 }
 
 /// Rejects malformed or non-identity-preserving admission results.

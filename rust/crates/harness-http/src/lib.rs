@@ -5,10 +5,11 @@ use acyclic_harness::{
     Error,
     wire::{self, client_frame, server_frame},
     wire_api::{
-        HarnessWireApi, validate_admission, validate_cancel_request, validate_cancel_response,
-        validate_command_protocol, validate_observe_request, validate_operation_status,
-        validate_resume_protocol,
+        HarnessWireApi, advertise, validate_admission, validate_cancel_request,
+        validate_cancel_response, validate_command_protocol, validate_observe_request,
+        validate_operation_status, validate_resume_protocol,
     },
+    wire_status,
 };
 use axum::{
     Router,
@@ -37,17 +38,47 @@ use tokio::sync::mpsc;
 /// Default maximum accepted HTTP or WebSocket message size.
 pub const DEFAULT_MAX_FRAME_BYTES: usize = 1_048_576;
 
+/// Transport bindings reachable on one public HTTP base URL: HTTP/SSE replay
+/// and commands on the base URL plus a WebSocket endpoint under the same path.
+#[must_use]
+pub fn transports_for(base_url: &str) -> Vec<wire::TransportBinding> {
+    let trimmed = base_url.trim_end_matches('/');
+    let (scheme, rest) = trimmed.split_once("://").unwrap_or(("", trimmed));
+    let websocket_scheme = if scheme == "https" { "wss" } else { "ws" };
+    vec![
+        wire::TransportBinding {
+            kind: wire::TransportKind::HttpSse as i32,
+            url: trimmed.to_owned(),
+        },
+        wire::TransportBinding {
+            kind: wire::TransportKind::Websocket as i32,
+            url: format!("{websocket_scheme}://{rest}/v1/harness/ws"),
+        },
+    ]
+}
+
 #[derive(Clone)]
 struct AppState {
     api: Arc<dyn HarnessWireApi>,
     maximum_frame_bytes: usize,
+    advertised: Arc<Vec<wire::TransportBinding>>,
 }
 
 /// Builds all public harness HTTP routes over one transport-neutral implementation.
 pub fn router(api: Arc<dyn HarnessWireApi>, maximum_frame_bytes: usize) -> Router {
+    router_with_transports(api, maximum_frame_bytes, Vec::new())
+}
+
+/// Builds the routes with transport bindings advertised in the handshake.
+pub fn router_with_transports(
+    api: Arc<dyn HarnessWireApi>,
+    maximum_frame_bytes: usize,
+    advertised: Vec<wire::TransportBinding>,
+) -> Router {
     let state = AppState {
         api,
         maximum_frame_bytes: maximum_frame_bytes.max(1),
+        advertised: Arc::new(advertised),
     };
     Router::new()
         .route("/v1/harness/handshake", post(handshake))
@@ -69,7 +100,10 @@ async fn handshake(State(state): State<AppState>, body: Bytes) -> Response {
         Err(error) => return error_response(&error),
     };
     match state.api.handshake(request).await {
-        Ok(response) => message_response("acyclic.harness.v1.HandshakeResponse", &response),
+        Ok(response) => message_response(
+            "acyclic.harness.v1.HandshakeResponse",
+            &advertise(response, state.advertised.iter().cloned()),
+        ),
         Err(error) => error_response(&error),
     }
 }
@@ -148,21 +182,21 @@ async fn observe(State(state): State<AppState>, body: Bytes) -> Response {
         state.maximum_frame_bytes,
     ) {
         Ok(value) => value,
-        Err(error) => return wire_error_response(&error),
+        Err(error) => return error_response(&error),
     };
     let control = match validate_observe_request(&request) {
         Ok(value) => value,
-        Err(error) => return wire_error_response(&error),
+        Err(error) => return error_response(&error),
     };
     if let Err(error) = state.api.authorize_operation_control(&control).await {
-        return wire_error_response(&error);
+        return error_response(&error);
     }
     match state.api.observe(request.clone()).await {
         Ok(status) => match validate_operation_status(&request, &status) {
             Ok(()) => message_response("acyclic.harness.v1.OperationStatus", &status),
-            Err(error) => wire_error_response(&error),
+            Err(error) => error_response(&error),
         },
-        Err(error) => wire_error_response(&error),
+        Err(error) => error_response(&error),
     }
 }
 
@@ -173,21 +207,21 @@ async fn cancel(State(state): State<AppState>, body: Bytes) -> Response {
         state.maximum_frame_bytes,
     ) {
         Ok(value) => value,
-        Err(error) => return wire_error_response(&error),
+        Err(error) => return error_response(&error),
     };
     let (control, _, _) = match validate_cancel_request(&request) {
         Ok(value) => value,
-        Err(error) => return wire_error_response(&error),
+        Err(error) => return error_response(&error),
     };
     if let Err(error) = state.api.authorize_operation_control(&control).await {
-        return wire_error_response(&error);
+        return error_response(&error);
     }
     match state.api.cancel(request.clone()).await {
         Ok(response) => match validate_cancel_response(&request, &response) {
             Ok(()) => message_response("acyclic.harness.v1.CancelResponse", &response),
-            Err(error) => wire_error_response(&error),
+            Err(error) => error_response(&error),
         },
-        Err(error) => wire_error_response(&error),
+        Err(error) => error_response(&error),
     }
 }
 
@@ -522,30 +556,20 @@ fn message_response<M: prost::Message>(name: &str, message: &M) -> Response {
     }
 }
 
-fn error_response(error: &Error) -> Response {
-    let status = error_status(error);
-    (status, error.to_string()).into_response()
+fn error_status(error: &Error) -> StatusCode {
+    StatusCode::from_u16(wire_status::http_status(wire_status::error_code(error)))
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-fn wire_error_response(error: &Error) -> Response {
+/// Every HTTP error carries the canonical wire `Error` body.
+fn error_response(error: &Error) -> Response {
     let status = error_status(error);
     match encode_json(
         "acyclic.harness.v1.Error",
         &acyclic_harness::encode_error(error),
     ) {
         Ok(body) => (status, [(header::CONTENT_TYPE, "application/json")], body).into_response(),
-        Err(encoding) => error_response(&encoding),
-    }
-}
-
-fn error_status(error: &Error) -> StatusCode {
-    match error {
-        Error::Invalid(_) => StatusCode::BAD_REQUEST,
-        Error::Unauthorized(_) => StatusCode::FORBIDDEN,
-        Error::NotFound(_) => StatusCode::NOT_FOUND,
-        Error::Unsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
-        Error::Conflict(_) => StatusCode::CONFLICT,
-        Error::Storage(_) | Error::Indeterminate(_) => StatusCode::SERVICE_UNAVAILABLE,
+        Err(encoding) => (error_status(&encoding), encoding.to_string()).into_response(),
     }
 }
 
@@ -838,6 +862,91 @@ mod tests {
             decode_json("acyclic.harness.v1.Error", &body, DEFAULT_MAX_FRAME_BYTES)?;
         assert_eq!(error.code, wire::ErrorCode::Unauthorized as i32);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn handshake_advertises_the_configured_transports() -> Result<()> {
+        let advertised = transports_for("https://h.example");
+        let app = router_with_transports(
+            Arc::new(FakeApi::default()),
+            DEFAULT_MAX_FRAME_BYTES,
+            advertised.clone(),
+        );
+        let request = wire::HandshakeRequest {
+            protocol: Some(current_protocol()),
+            required: Some(wire::CapabilitySet::default()),
+        };
+        let response = app
+            .oneshot(
+                axum::http::Request::post("/v1/harness/handshake")
+                    .body(Body::from(encode_json(
+                        "acyclic.harness.v1.HandshakeRequest",
+                        &request,
+                    )?))
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            )
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), DEFAULT_MAX_FRAME_BYTES)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let decoded: wire::HandshakeResponse = decode_json(
+            "acyclic.harness.v1.HandshakeResponse",
+            &body,
+            DEFAULT_MAX_FRAME_BYTES,
+        )?;
+        assert_eq!(decoded.transports, advertised);
+        Ok(())
+    }
+
+    #[test]
+    fn transports_for_maps_https_to_wss() {
+        assert_eq!(
+            transports_for("https://h.example/"),
+            vec![
+                wire::TransportBinding {
+                    kind: wire::TransportKind::HttpSse as i32,
+                    url: "https://h.example".into(),
+                },
+                wire::TransportBinding {
+                    kind: wire::TransportKind::Websocket as i32,
+                    url: "wss://h.example/v1/harness/ws".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn advertise_skips_empty_urls_and_unspecified_kinds() {
+        let response = advertise(
+            wire::HandshakeResponse::default(),
+            vec![
+                wire::TransportBinding {
+                    kind: wire::TransportKind::HttpSse as i32,
+                    url: String::new(),
+                },
+                wire::TransportBinding {
+                    kind: wire::TransportKind::Unspecified as i32,
+                    url: "https://h.example".into(),
+                },
+                wire::TransportBinding {
+                    kind: wire::TransportKind::HttpSse as i32,
+                    url: "https://h.example".into(),
+                },
+                wire::TransportBinding {
+                    kind: wire::TransportKind::HttpSse as i32,
+                    url: "https://h.example".into(),
+                },
+            ],
+        );
+        assert_eq!(
+            response.transports,
+            vec![wire::TransportBinding {
+                kind: wire::TransportKind::HttpSse as i32,
+                url: "https://h.example".into(),
+            }]
+        );
     }
 
     fn crate_operation_id() -> String {

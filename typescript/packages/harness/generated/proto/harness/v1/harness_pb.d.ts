@@ -125,6 +125,11 @@ export declare type HandshakeResponse = Message<"acyclic.harness.v1.HandshakeRes
    * @generated from field: acyclic.harness.v1.CapabilitySet supported = 2;
    */
   supported?: CapabilitySet | undefined;
+
+  /**
+   * @generated from field: repeated acyclic.harness.v1.TransportBinding transports = 3;
+   */
+  transports: TransportBinding[];
 };
 
 /**
@@ -132,6 +137,29 @@ export declare type HandshakeResponse = Message<"acyclic.harness.v1.HandshakeRes
  * Use `create(HandshakeResponseSchema)` to create a new message.
  */
 export declare const HandshakeResponseSchema: GenMessage<HandshakeResponse>;
+
+/**
+ * One reachable wire adapter. Consumers pick by kind; url is absolute.
+ *
+ * @generated from message acyclic.harness.v1.TransportBinding
+ */
+export declare type TransportBinding = Message<"acyclic.harness.v1.TransportBinding"> & {
+  /**
+   * @generated from field: acyclic.harness.v1.TransportKind kind = 1;
+   */
+  kind: TransportKind;
+
+  /**
+   * @generated from field: string url = 2;
+   */
+  url: string;
+};
+
+/**
+ * Describes the message acyclic.harness.v1.TransportBinding.
+ * Use `create(TransportBindingSchema)` to create a new message.
+ */
+export declare const TransportBindingSchema: GenMessage<TransportBinding>;
 
 /**
  * @generated from message acyclic.harness.v1.Error
@@ -870,6 +898,48 @@ export declare type SchedulerEventEnvelope = Message<"acyclic.harness.v1.Schedul
  * Use `create(SchedulerEventEnvelopeSchema)` to create a new message.
  */
 export declare const SchedulerEventEnvelopeSchema: GenMessage<SchedulerEventEnvelope>;
+
+/**
+ * Wire adapter kind reachable for the same HarnessWireApi.
+ *
+ * @generated from enum acyclic.harness.v1.TransportKind
+ */
+export enum TransportKind {
+  /**
+   * @generated from enum value: TRANSPORT_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: TRANSPORT_KIND_GRPC = 1;
+   */
+  GRPC = 1,
+
+  /**
+   * @generated from enum value: TRANSPORT_KIND_GRPC_WEB = 2;
+   */
+  GRPC_WEB = 2,
+
+  /**
+   * @generated from enum value: TRANSPORT_KIND_HTTP_SSE = 3;
+   */
+  HTTP_SSE = 3,
+
+  /**
+   * @generated from enum value: TRANSPORT_KIND_WEBSOCKET = 4;
+   */
+  WEBSOCKET = 4,
+
+  /**
+   * @generated from enum value: TRANSPORT_KIND_JSONL_STDIO = 5;
+   */
+  JSONL_STDIO = 5,
+}
+
+/**
+ * Describes the enum acyclic.harness.v1.TransportKind.
+ */
+export declare const TransportKindSchema: GenEnum<TransportKind>;
 
 /**
  * @generated from enum acyclic.harness.v1.ErrorCode

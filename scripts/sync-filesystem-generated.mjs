@@ -16,6 +16,10 @@ const nativeWasmVector = join(root, "conformance/vectors/harness/native-wasm-eve
 const packagedNativeWasmVector = join(root, "rust/crates/harness/conformance/native-wasm-event-v1.json");
 mkdirSync(dirname(packagedNativeWasmVector), { recursive: true });
 copyFileSync(nativeWasmVector, packagedNativeWasmVector);
+copyFileSync(
+  join(root, "conformance/vectors/harness/error-mapping-v1.json"),
+  join(root, "rust/crates/harness/conformance/error-mapping-v1.json"),
+);
 
 const files = [
   ["acyclic/filesystem/v2/acyclic.filesystem.v2.rs", "acyclic.filesystem.v2.tonic.rs"],

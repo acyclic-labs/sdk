@@ -111,6 +111,7 @@ install -m 0644 "$root/scripts/fixtures/installed-harness/src/proto.js" src/prot
 install -m 0644 "$root/scripts/fixtures/installed-harness/test/"*.test.ts test/
 install -m 0644 "$root/typescript/packages/harness/test/"*.test.ts test/
 install -m 0644 "$root/conformance/vectors/harness/native-wasm-event-v1.json" native-wasm-event-v1.json
+install -m 0644 "$root/conformance/vectors/harness/error-mapping-v1.json" error-mapping-v1.json
 install -m 0644 node_modules/@acyclic-labs/harness/generated/wasm/acyclic_harness_wasm_bg.wasm \
   generated/wasm/acyclic_harness_wasm_bg.wasm
 bun test test 2>&1 | tee "$work/typescript-package-test.log"

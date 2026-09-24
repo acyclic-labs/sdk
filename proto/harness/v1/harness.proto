@@ -26,6 +26,23 @@ message HandshakeRequest {
 message HandshakeResponse {
   ProtocolIdentity protocol = 1;
   CapabilitySet supported = 2;
+  repeated TransportBinding transports = 3;
+}
+
+// Wire adapter kind reachable for the same HarnessWireApi.
+enum TransportKind {
+  TRANSPORT_KIND_UNSPECIFIED = 0;
+  TRANSPORT_KIND_GRPC = 1;
+  TRANSPORT_KIND_GRPC_WEB = 2;
+  TRANSPORT_KIND_HTTP_SSE = 3;
+  TRANSPORT_KIND_WEBSOCKET = 4;
+  TRANSPORT_KIND_JSONL_STDIO = 5;
+}
+
+// One reachable wire adapter. Consumers pick by kind; url is absolute.
+message TransportBinding {
+  TransportKind kind = 1;
+  string url = 2;
 }
 
 enum ErrorCode {
