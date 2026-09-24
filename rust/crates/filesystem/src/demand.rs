@@ -1391,7 +1391,11 @@ pub mod native {
         {
             Some(metadata.nlink())
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            cap_primitives::fs::_WindowsByHandle::number_of_links(metadata).map(u64::from)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = metadata;
             None

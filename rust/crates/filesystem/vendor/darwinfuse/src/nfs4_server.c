@@ -454,6 +454,7 @@ darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config,
 
     srv->config = *config;
     atomic_init(&srv->config.namespace_change, 1);
+    arc4random_buf(srv->config.write_verifier, sizeof(srv->config.write_verifier));
     srv->listen_fd = -1;
     srv->wakeup_pipe[0] = -1;
     srv->wakeup_pipe[1] = -1;

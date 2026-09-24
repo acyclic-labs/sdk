@@ -48,6 +48,9 @@ pub use materialize::{
     MaterializeOptions, materialize_checkout, materialize_checkout_host_path,
     materialize_checkout_path, materialize_checkout_paths, restore_checkout_host_path,
 };
+pub(crate) use materialize::{
+    MaterializeMode, materialize_checkout_paths_with_mode, materialize_checkout_with_mode,
+};
 
 mod publication;
 pub use publication::{seal_checkout, seal_checkout_with_permit};
@@ -2421,7 +2424,7 @@ mod tests {
             )?)
         };
         let paths = [path("a")?, path("b")?];
-        crate::native_capture::capture_paths_batched(
+        crate::native_capture::capture_paths_batched_with_baseline(
             &mut checkout,
             &paths,
             &CaptureOptions {
@@ -2433,6 +2436,7 @@ mod tests {
             1,
             WorkBudget::UNBOUNDED,
             &cancellation,
+            None,
         )
         .await?;
         let first = checkout

@@ -1113,6 +1113,88 @@ fn async_and_sync_blob_build_share_exact_results_and_work() -> Result<(), Box<dy
 }
 
 #[test]
+fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct MeasuredSource {
+        returned: bool,
+        work: Option<WorkCounters>,
+    }
+
+    impl AsyncBlobSource for MeasuredSource {
+        async fn read<'a>(
+            &'a mut self,
+            _destination: &'a mut [u8],
+            _cancellation: &'a CancellationToken,
+        ) -> std::io::Result<usize> {
+            Err(std::io::Error::other("owned source should not be copied"))
+        }
+
+        async fn read_owned(
+            &mut self,
+            _maximum: usize,
+            _cancellation: &CancellationToken,
+        ) -> std::io::Result<Option<Bytes>> {
+            if self.returned {
+                self.work = Some(WorkCounters::default());
+                return Ok(Some(Bytes::new()));
+            }
+            self.returned = true;
+            self.work = Some(WorkCounters {
+                source_bytes_read: 3,
+                source_path_components: 7,
+                ..WorkCounters::default()
+            });
+            Ok(Some(Bytes::from_static(b"abc")))
+        }
+
+        fn take_work(&mut self) -> Option<WorkCounters> {
+            self.work.take()
+        }
+    }
+
+    let options = BlobBuildOptions {
+        chunk_bytes: 3,
+        page_items: 2,
+        page_bytes: 127,
+        maximum_blob_bytes: 3,
+    };
+    let mut source = MeasuredSource {
+        returned: false,
+        work: None,
+    };
+    let built = crate::async_storage::poll_ready(build_blob_async(
+        &MemoryObjectStore::default(),
+        &mut source,
+        options,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    ))
+    .ok_or("measured source build blocked")??;
+    assert_eq!(built.work.source_bytes_read, 3);
+    assert_eq!(built.work.source_path_components, 7);
+
+    let mut source = MeasuredSource {
+        returned: false,
+        work: None,
+    };
+    let mut budget = WorkBudget::UNBOUNDED;
+    budget.source_path_components = 6;
+    let failed = crate::async_storage::poll_ready(build_blob_async(
+        &MemoryObjectStore::default(),
+        &mut source,
+        options,
+        budget,
+        &CancellationToken::new(),
+    ))
+    .ok_or("measured source budget check blocked")?
+    .err()
+    .ok_or("underbudgeted measured source unexpectedly built")?;
+    assert!(matches!(failed.error, BlobBuildError::Work(_)));
+    assert_eq!(failed.work.backend_write_operations, 0);
+    Ok(())
+}
+
+#[test]
 fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let options = BlobBuildOptions {

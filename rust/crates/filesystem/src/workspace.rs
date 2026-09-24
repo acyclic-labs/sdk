@@ -878,6 +878,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .await
     }
 
+    pub(crate) async fn begin_pinned_transaction_measured(
+        &self,
+        generation: &Generation<A, O>,
+        idempotency_key: IdempotencyKey,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<Transaction<A, O>>, WorkspaceError> {
+        if generation.workspace.id != self.id {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        self.open_transaction_at_measured(generation, idempotency_key, false, budget, cancellation)
+            .await
+    }
+
     async fn open_transaction_at(
         &self,
         generation: &Generation<A, O>,
@@ -1722,6 +1736,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             .await
     }
 
+    /// Admits a bounded ordered capture as one unpublished candidate update.
+    pub(crate) async fn apply_authored_bulk_measured(
+        &mut self,
+        operations: Vec<AuthoredMutation>,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
+        self.checkout
+            .apply_authored_bulk_transaction(operations, budget, cancellation)
+            .await
+            .map(|receipt| receipt.work)
+            .map_err(|failure| WorkspaceError::from(failure.error))
+    }
+
     pub(crate) async fn create_directory_measured(
         &mut self,
         path: &str,
@@ -1941,15 +1969,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         source: &mut R,
         maximum_source_bytes: u64,
     ) -> Result<crate::StagedContent, WorkspaceError> {
+        self.stage_content_measured(
+            source,
+            maximum_source_bytes,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+    }
+
+    pub(crate) async fn stage_content_measured<R: crate::kernel::AsyncBlobSource>(
+        &self,
+        source: &mut R,
+        maximum_source_bytes: u64,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<crate::StagedContent>, WorkspaceError> {
         self.checkout
-            .stage_content(
-                source,
-                maximum_source_bytes,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .stage_content(source, maximum_source_bytes, budget, cancellation)
             .await
-            .map(|receipt| receipt.value)
+            .map(|receipt| crate::OperationReceipt {
+                value: receipt.value,
+                work: receipt.work,
+            })
             .map_err(WorkspaceError::engine)
     }
 
@@ -4354,13 +4397,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Materializes this immutable generation into an existing empty host
-    /// directory using the SDK's native capability-rooted adapter.
+    /// directory using the SDK's native capability-rooted adapter. Unix ctime
+    /// and Linux birth time are host-generated view-local facts; their exact
+    /// canonical values remain in this generation, not in the host inode.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub async fn materialize(
         &self,
         options: &crate::MaterializeOptions,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
+        self.materialize_with_mode(
+            options,
+            budget,
+            cancellation,
+            crate::native_mount::MaterializeMode::DurableOutput,
+        )
+        .await
+    }
+
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub(crate) async fn materialize_with_mode(
+        &self,
+        options: &crate::MaterializeOptions,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+        mode: crate::native_mount::MaterializeMode,
     ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
         let checkout = self
             .workspace
@@ -4372,7 +4434,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             )
             .await?;
         let mut value = checkout.value;
-        let receipt = crate::materialize_checkout(
+        let receipt = crate::native_mount::materialize_checkout_with_mode(
             &mut value,
             options,
             checkout
@@ -4380,6 +4442,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                 .remaining(budget)
                 .map_err(WorkspaceError::from)?,
             cancellation,
+            mode,
         )
         .await
         .map_err(|failure| WorkspaceError::engine(failure.error))?;
@@ -4397,6 +4460,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
+        self.materialize_path_with_mode(
+            path,
+            options,
+            budget,
+            cancellation,
+            crate::native_mount::MaterializeMode::DurableOutput,
+        )
+        .await
+    }
+
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub(crate) async fn materialize_path_with_mode(
+        &self,
+        path: &str,
+        options: &crate::MaterializeOptions,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+        mode: crate::native_mount::MaterializeMode,
+    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
         let checkout = self
             .workspace
             .engine_checkout_measured(
@@ -4408,15 +4490,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             .await?;
         let mut value = checkout.value;
         let path = customer_path(path, value.volume_config())?;
-        let receipt = crate::materialize_checkout_path(
+        let receipt = crate::native_mount::materialize_checkout_paths_with_mode(
             &mut value,
-            &path,
+            &[path],
             options,
             checkout
                 .work
                 .remaining(budget)
                 .map_err(WorkspaceError::from)?,
             cancellation,
+            mode,
         )
         .await
         .map_err(|failure| WorkspaceError::engine(failure.error))?;

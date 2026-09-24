@@ -1246,6 +1246,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
             path: path("fault-authored-content")?,
             content: staged,
             metadata: empty_metadata(),
+            file_id: None,
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -5557,6 +5558,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
     let source = path("source")?;
     let destination = path("destination")?;
     let streamed = path("streamed")?;
+    let streamed_identity = FileId::from_bytes([199; 16]);
     let hard_link = path("hard-link")?;
     let renamed = path("renamed")?;
     let mut replacement_metadata = empty_metadata();
@@ -5587,6 +5589,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
                 path: streamed.clone(),
                 content: staged_create,
                 metadata: empty_metadata(),
+                file_id: Some(streamed_identity),
             },
             AuthoredMutation::CreateSymbolicLink {
                 path: path("symbolic")?,
@@ -5660,6 +5663,10 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
     .ok_or("complete authored transaction blocked")??;
     assert_eq!(transaction.value.created_file_ids.len(), 17);
     assert_eq!(
+        transaction.value.created_file_ids.get(4),
+        Some(&Some(streamed_identity))
+    );
+    assert_eq!(
         transaction
             .value
             .created_file_ids
@@ -5683,6 +5690,20 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
         .bytes
         .as_ref(),
         b"streamedTAIL"
+    );
+    assert!(
+        poll_ready(checkout.apply_authored_transaction(
+            vec![AuthoredMutation::CreateFileFromContent {
+                path: path("duplicate-source-identity")?,
+                content: staged_create,
+                metadata: empty_metadata(),
+                file_id: Some(streamed_identity),
+            }],
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("duplicate identity transaction blocked")?
+        .is_err()
     );
     assert_eq!(
         poll_ready(checkout.read_file_range(
@@ -8400,7 +8421,7 @@ async fn detached_provider_handles_retain_local_root_ownership()
     )
     .await?;
     let stream = fs.inner.authority.provider();
-    let objects = Arc::clone(fs.inner.objects.inner().provider());
+    let objects = Arc::clone(fs.inner.objects.inner().inner().provider());
     drop(fs);
 
     assert!(

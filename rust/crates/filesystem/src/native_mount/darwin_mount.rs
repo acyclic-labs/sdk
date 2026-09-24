@@ -132,6 +132,7 @@ struct CacheEpochs {
 struct DirectoryHandle {
     path: MountPath,
     binding_epoch: Option<u64>,
+    epochs: Option<CacheEpochs>,
     cursor: Option<Vec<u8>>,
     entries: VecDeque<MountDirectoryEntry>,
     exhausted: bool,
@@ -145,10 +146,11 @@ struct DirectoryCheckpoint {
 }
 
 impl DirectoryHandle {
-    fn new(path: MountPath, binding_epoch: Option<u64>) -> Self {
+    fn new(path: MountPath, binding_epoch: Option<u64>, epochs: Option<CacheEpochs>) -> Self {
         Self {
             path,
             binding_epoch,
+            epochs,
             cursor: None,
             entries: VecDeque::new(),
             exhausted: false,
@@ -163,6 +165,18 @@ impl DirectoryHandle {
         self.exhausted = false;
         self.emitted = 0;
         self.revision = None;
+    }
+
+    fn is_current(&self, source: &dyn MountFilesystem) -> bool {
+        self.matches_epochs(cache_epochs(source))
+    }
+
+    fn matches_epochs(&self, epochs: Option<CacheEpochs>) -> bool {
+        self.epochs == epochs
+    }
+
+    const fn can_reuse_pages(&self) -> bool {
+        self.epochs.is_some()
     }
 }
 
@@ -1154,6 +1168,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
         let context = context(address)?;
         let path = mount_path(path)?;
         let binding_epoch = context.source.binding_epoch();
+        let epochs = cache_epochs(context.source.as_ref());
         let _binding_lease = context
             .source
             .acquire_binding_lease(binding_epoch)
@@ -1161,12 +1176,19 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
         if context.lookup(&path)?.node.kind != MountNodeKind::Directory {
             return Err(libc::ENOTDIR);
         }
+        if epochs.is_some() && cache_epochs(context.source.as_ref()) != epochs {
+            return Err(libc::ESTALE);
+        }
         let allocated = context.allocate_handle()?;
         let mut directories = context.directories.lock().map_err(|_| libc::EIO)?;
         directories.try_reserve(1).map_err(|_| libc::ENOMEM)?;
         directories.insert(
             allocated,
-            Arc::new(Mutex::new(DirectoryHandle::new(path, binding_epoch))),
+            Arc::new(Mutex::new(DirectoryHandle::new(
+                path,
+                binding_epoch,
+                epochs,
+            ))),
         );
         unsafe { handle.write(allocated) };
         Ok(0)
@@ -1196,10 +1218,20 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
             .source
             .acquire_binding_lease(directory.binding_epoch)
             .map_err(|error| errno(&error))?;
+        if !directory.is_current(context.source.as_ref()) {
+            return Err(libc::ESTALE);
+        }
         if offset < 0 {
             return Err(libc::EINVAL);
         }
-        if offset > 0 && directory.emitted == 0 {
+        if !directory.can_reuse_pages() {
+            directory.rewind();
+            context
+                .directory_checkpoints
+                .lock()
+                .map_err(|_| libc::EIO)?
+                .remove(&directory.path);
+        } else if offset > 0 && directory.emitted == 0 {
             let checkpoints = context
                 .directory_checkpoints
                 .lock()
@@ -1207,6 +1239,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
             if let Some(checkpoint) = checkpoints.get(&directory.path)
                 && checkpoint.revision == context.namespace_revision.load(Ordering::Acquire)
                 && checkpoint.handle.emitted == offset
+                && checkpoint.handle.epochs == directory.epochs
             {
                 *directory = checkpoint.handle.clone();
             }
@@ -1228,7 +1261,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
                 )
             };
             if buffer_full != 0 {
-                checkpoint_directory(context, &directory)?;
+                finish_directory_page(context, &directory, true)?;
                 return Ok(0);
             }
             directory.emitted = next;
@@ -1236,6 +1269,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
         loop {
             ensure_directory_page(context, &mut directory)?;
             let Some(entry) = directory.entries.front() else {
+                finish_directory_page(context, &directory, false)?;
                 context
                     .directory_checkpoints
                     .lock()
@@ -1259,13 +1293,30 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
                 )
             };
             if buffer_full != 0 {
-                checkpoint_directory(context, &directory)?;
+                finish_directory_page(context, &directory, true)?;
                 return Ok(0);
             }
             directory.entries.pop_front();
             directory.emitted = next;
         }
     })
+}
+
+fn finish_directory_page(
+    context: &DarwinMountContext,
+    directory: &DirectoryHandle,
+    checkpoint: bool,
+) -> Result<(), i32> {
+    // A mutation can happen after the last page read, while the native filler
+    // copies entries into its buffer. Returning ESTALE discards that buffer
+    // rather than exposing a listing assembled from different view epochs.
+    if directory.can_reuse_pages() && !directory.is_current(context.source.as_ref()) {
+        return Err(libc::ESTALE);
+    }
+    if checkpoint {
+        checkpoint_directory(context, directory)?;
+    }
+    Ok(())
 }
 
 fn advance_directory_to_offset(
@@ -1291,6 +1342,9 @@ fn ensure_directory_page(
     context: &DarwinMountContext,
     directory: &mut DirectoryHandle,
 ) -> Result<(), i32> {
+    if directory.can_reuse_pages() && !directory.is_current(context.source.as_ref()) {
+        return Err(libc::ESTALE);
+    }
     if directory.entries.is_empty() && !directory.exhausted {
         directory
             .revision
@@ -1303,6 +1357,9 @@ fn ensure_directory_page(
                 DIRECTORY_PAGE_SIZE,
             )
             .map_err(|error| errno(&error))?;
+        if directory.can_reuse_pages() && !directory.is_current(context.source.as_ref()) {
+            return Err(libc::ESTALE);
+        }
         if page.entries.is_empty() && page.next_cursor.is_some() {
             return Err(libc::EIO);
         }
@@ -1318,6 +1375,9 @@ fn checkpoint_directory(
     directory: &DirectoryHandle,
 ) -> Result<(), i32> {
     const MAXIMUM_DIRECTORY_CHECKPOINTS: usize = 64;
+    if !directory.can_reuse_pages() {
+        return Ok(());
+    }
     let mut checkpoints = context
         .directory_checkpoints
         .lock()
@@ -1981,6 +2041,95 @@ fn driver_errno(error: i32) -> NativeMountError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_page_rejects_a_native_mutation_between_reads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::Fs;
+        use crate::model::{CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle};
+        use crate::native_mount::{CheckoutMountSource, MountPublication, SharedCheckout};
+
+        let mut config = crate::model::VolumeConfig::portable(Lifecycle::Ephemeral);
+        config.profile = FilesystemProfile::Posix;
+        let fs = Fs::memory();
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let checkout = runtime.block_on(async {
+            let cancellation = crate::CancellationToken::new();
+            let volume = fs
+                .create_volume(config, crate::WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value;
+            volume
+                .checkout(
+                    GenerationSelector::Head,
+                    CheckoutMode::tracking_transaction(),
+                    crate::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map(|receipt| receipt.value)
+        })?;
+        let shared = Arc::new(SharedCheckout::with_publication(
+            checkout,
+            MountPublication::Manual,
+        ));
+        let source = Arc::new(CheckoutMountSource::new(shared, config)?);
+        let root = MountPath::root();
+        let root_id = source.lookup(&root)?.ok_or("root absent")?.node.file_id;
+        let context = DarwinMountContext::new(
+            Arc::clone(&source) as Arc<dyn MountFilesystem>,
+            true,
+            &std::fs::metadata(".")?,
+            root_id,
+        );
+        let mut directory =
+            DirectoryHandle::new(root, source.binding_epoch(), cache_epochs(source.as_ref()));
+        ensure_directory_page(&context, &mut directory)
+            .map_err(std::io::Error::from_raw_os_error)?;
+        source.create_file(
+            &MountPath::root().child(b"after-page".to_vec()),
+            FileMetadata::default(),
+        )?;
+        assert_eq!(
+            finish_directory_page(&context, &directory, false),
+            Err(libc::ESTALE)
+        );
+        assert_eq!(
+            ensure_directory_page(&context, &mut directory),
+            Err(libc::ESTALE)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn directory_continuation_requires_the_same_view_and_binding_epochs() {
+        let directory = DirectoryHandle::new(
+            MountPath::root(),
+            Some(11),
+            Some(CacheEpochs {
+                view: 7,
+                binding: 11,
+            }),
+        );
+        assert!(directory.matches_epochs(Some(CacheEpochs {
+            view: 7,
+            binding: 11,
+        })));
+        assert!(!directory.matches_epochs(Some(CacheEpochs {
+            view: 8,
+            binding: 11,
+        })));
+        assert!(!directory.matches_epochs(Some(CacheEpochs {
+            view: 7,
+            binding: 12,
+        })));
+        assert!(!directory.matches_epochs(None));
+        assert!(directory.can_reuse_pages());
+
+        let epochless = DirectoryHandle::new(MountPath::root(), None, None);
+        assert!(epochless.matches_epochs(None));
+        assert!(!epochless.can_reuse_pages());
+    }
 
     #[test]
     fn stalled_mount_loop_keeps_destination_fenced_until_callbacks_finish() {

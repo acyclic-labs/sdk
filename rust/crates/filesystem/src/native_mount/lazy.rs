@@ -1268,22 +1268,6 @@ where
             .capture_host_paths_with_identity(source_root, paths, expected_root_identity)
     }
 
-    pub(crate) fn capture_host_subtree_with_identity(
-        &self,
-        source_root: &Path,
-        root: &MountPath,
-        expected_root_identity: NativeRootIdentity,
-    ) -> Result<(), MountSourceError> {
-        let _mutation = self.mutation_lease(None)?;
-        self.promote_parents_locked(root)?;
-        match self.promote_locked(root) {
-            Ok(()) | Err(MountSourceError::NotFound) => {}
-            Err(error) => return Err(error),
-        }
-        self.authored
-            .capture_host_subtree_with_identity(source_root, root, expected_root_identity)
-    }
-
     fn bind_open_file(
         &self,
         file: Arc<dyn MountOpenFile>,

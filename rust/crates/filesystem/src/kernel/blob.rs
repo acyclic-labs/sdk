@@ -355,6 +355,13 @@ pub trait AsyncBlobSource {
     ) -> impl Future<Output = std::io::Result<Option<Bytes>>> {
         async { Ok(None) }
     }
+
+    /// Drains exact work performed by the preceding read, when the source
+    /// already measures its own I/O. Returning `Some` replaces the builder's
+    /// inferred source-byte count for that read; `None` retains that count.
+    fn take_work(&mut self) -> Option<WorkCounters> {
+        None
+    }
 }
 
 impl<T: Read> AsyncBlobSource for T {
@@ -421,10 +428,17 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
             .saturating_add(1);
         let allocation = chunk_capacity.min(usize::try_from(detection_bytes).unwrap_or(usize::MAX));
         let retained = batching.retained_bytes();
-        let owned = source
-            .read_owned(allocation, cancellation)
-            .await
-            .map_err(|error| build_failed(BlobBuildError::Source(error), work))?;
+        let owned = source.read_owned(allocation, cancellation).await;
+        let source_work = source.take_work();
+        if let Some(measured) = source_work {
+            work = charge_source_work(
+                work,
+                measured,
+                retained.saturating_add(index.live_allocation_bytes),
+                budget,
+            )?;
+        }
+        let owned = owned.map_err(|error| build_failed(BlobBuildError::Source(error), work))?;
         if let Some(chunk) = owned {
             if chunk.is_empty() {
                 break;
@@ -436,7 +450,7 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
                 chunk,
                 allocation,
                 retained,
-                true,
+                source_work.is_none(),
                 logical_bytes,
                 options.maximum_blob_bytes,
                 budget,
@@ -521,23 +535,49 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
             return Err(build_failed(BlobBuildError::Cancelled, work));
         }
         #[allow(clippy::indexing_slicing, reason = "bounded by while loop above")]
-        match AsyncBlobSource::read(source, &mut bytes[filled..], cancellation).await {
+        let read = AsyncBlobSource::read(source, &mut bytes[filled..], cancellation).await;
+        let measured = source.take_work();
+        if let Some(measured) = measured {
+            work = charge_source_work(work, measured, simultaneous, budget)?;
+        }
+        match read {
             Ok(0) => break,
             Ok(count) => {
+                if count > bytes.len() - filled {
+                    return Err(build_failed(BlobBuildError::TooLarge, work));
+                }
                 filled = filled.saturating_add(count);
-                work = build_add(
-                    work,
-                    WorkCounters {
-                        source_bytes_read: u64::try_from(count).unwrap_or(u64::MAX),
-                        ..WorkCounters::default()
-                    },
-                )?;
+                if measured.is_none() {
+                    work = build_add(
+                        work,
+                        WorkCounters {
+                            source_bytes_read: u64::try_from(count).unwrap_or(u64::MAX),
+                            ..WorkCounters::default()
+                        },
+                    )?;
+                }
                 build_verify(work, budget)?;
             }
             Err(error) => return Err(build_failed(BlobBuildError::Source(error), work)),
         }
     }
     Ok((bytes, filled, retained_capacity, simultaneous, work))
+}
+
+fn charge_source_work(
+    work: WorkCounters,
+    mut measured: WorkCounters,
+    live_bytes: u64,
+    budget: WorkBudget,
+) -> Result<WorkCounters, BlobBuildFailure> {
+    let simultaneous = live_bytes
+        .checked_add(measured.peak_allocation_bytes)
+        .ok_or_else(|| build_failed(BlobBuildError::TooLarge, work))?;
+    measured.peak_allocation_bytes = 0;
+    let mut combined = build_add(work, measured)?;
+    combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(simultaneous);
+    build_verify(combined, budget)?;
+    Ok(combined)
 }
 
 #[allow(clippy::too_many_arguments)]

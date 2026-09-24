@@ -24,6 +24,7 @@ typedef struct {
     gid_t       gid;            /* Owner GID */
     struct dfuse_inode_table_s  *inode_table;  /* dynamic inode table */
     atomic_uint_fast64_t namespace_change; /* conservative directory change id */
+    uint8_t write_verifier[8]; /* unique per mount, including in-process remounts */
 } darwinfuse_config_t;
 
 /* Opaque server state */

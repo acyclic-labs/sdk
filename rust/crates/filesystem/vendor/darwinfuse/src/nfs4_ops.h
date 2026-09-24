@@ -287,5 +287,6 @@ int nfs4_dispatch_compound(const darwinfuse_config_t *config,
 int nfs4_test_exclusive_replay_identity(void);
 int nfs4_test_namedattr_exclusive_replay_identity(void);
 int nfs4_test_readdir_cookie_verifier(void);
+int nfs4_test_sync_acknowledgement(void);
 
 #endif /* DARWINFUSE_NFS4_OPS_H */

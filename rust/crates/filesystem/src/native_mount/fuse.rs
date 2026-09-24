@@ -408,21 +408,6 @@ impl FuseProjectionState {
         Ok(())
     }
 
-    fn flush_handle(&mut self, inode: u64, handle: u64, force: bool) -> Result<(), i32> {
-        let file = self.files.get(&handle).ok_or(libc::ESTALE)?;
-        if file.inode != inode {
-            return Err(libc::ESTALE);
-        }
-        if !file.dirty || (!force && !self.source.flush_on_handle_close()) {
-            return Ok(());
-        }
-        self.source.flush().map_err(errno)?;
-        if let Some(file) = self.files.get_mut(&handle) {
-            file.dirty = false;
-        }
-        Ok(())
-    }
-
     fn open_inode(&self, inode: u64) -> Option<Arc<dyn MountOpenFile>> {
         self.files
             .values()
@@ -1338,13 +1323,39 @@ impl FuseProjection {
             Ok(operation) => operation,
             Err(_) => return reply.error(Errno::EIO),
         };
+        let (source, should_flush) = {
+            let state = match self.state.lock() {
+                Ok(state) => state,
+                Err(_) => return reply.error(Errno::EIO),
+            };
+            if state.reject_stopping() {
+                return reply.error(Errno::ENODEV);
+            }
+            let Some(file) = state.files.get(&handle) else {
+                return reply.error(Errno::ESTALE);
+            };
+            if file.inode != inode || !Arc::ptr_eq(&file.operation, &operation) {
+                return reply.error(Errno::ESTALE);
+            }
+            // fsync is an explicit durability request for the file, including
+            // writes made through other descriptors. A close only flushes when
+            // this handle was dirty and the source requires it.
+            (
+                Arc::clone(&state.source),
+                force || (file.dirty && state.source.flush_on_handle_close()),
+            )
+        };
+        // The per-handle operation gate remains held, but unrelated FUSE
+        // callbacks must not wait on the global state mutex during durable IO.
+        let flushed = if should_flush {
+            source.flush().map_err(errno)
+        } else {
+            Ok(())
+        };
         let mut state = match self.state.lock() {
             Ok(state) => state,
             Err(_) => return reply.error(Errno::EIO),
         };
-        if state.reject_stopping() {
-            return reply.error(Errno::ENODEV);
-        }
         let current = state
             .files
             .get(&handle)
@@ -1352,7 +1363,11 @@ impl FuseProjection {
         if !current {
             return reply.error(Errno::ESTALE);
         }
-        let flushed = state.flush_handle(inode, handle, force);
+        if flushed.is_ok()
+            && let Some(file) = state.files.get_mut(&handle)
+        {
+            file.dirty = false;
+        }
         let result = if release {
             let discarded = state.discard_file_handle(inode, handle);
             flushed.and(discarded)
@@ -1362,6 +1377,28 @@ impl FuseProjection {
         match result {
             Ok(()) => reply.ok(),
             Err(error) => reply.error(Errno::from_i32(error)),
+        }
+    }
+
+    fn fsyncdir_parallel(&self, handle: u64, reply: ReplyEmpty) {
+        let source = {
+            let state = match self.state.lock() {
+                Ok(state) => state,
+                Err(_) => return reply.error(Errno::EIO),
+            };
+            if state.reject_stopping() {
+                return reply.error(Errno::ENODEV);
+            }
+            if !state.directories.contains_key(&handle) {
+                return reply.error(Errno::ESTALE);
+            }
+            Arc::clone(&state.source)
+        };
+        // Directory fsync is an explicit durability boundary too; never hold
+        // the projection's global state mutex across SDK publication.
+        match source.flush() {
+            Ok(()) => reply.ok(),
+            Err(error) => reply.error(Errno::from_i32(errno(error))),
         }
     }
 }
@@ -1622,12 +1659,13 @@ impl Filesystem for FuseProjection {
     fn fsyncdir(
         &self,
         request: &Request,
-        inode: INodeNo,
+        _inode: INodeNo,
         fh: FuseFileHandle,
-        datasync: bool,
+        _datasync: bool,
         reply: ReplyEmpty,
     ) {
-        with_fuse_state!(self, reply, fsyncdir(request, inode.0, fh.0, datasync));
+        let _ = request;
+        self.fsyncdir_parallel(fh.0, reply);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2288,21 +2326,6 @@ impl FuseProjectionState {
         reject_stopping!(self, reply);
         self.directories.remove(&handle);
         reply.ok();
-    }
-
-    fn fsyncdir(
-        &mut self,
-        _request: &Request,
-        _inode: u64,
-        _handle: u64,
-        _datasync: bool,
-        reply: ReplyEmpty,
-    ) {
-        reject_stopping!(self, reply);
-        match self.source.flush() {
-            Ok(()) => reply.ok(),
-            Err(error) => reply.error(Errno::from_i32(errno(error))),
-        }
     }
 
     fn setxattr(

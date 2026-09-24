@@ -146,6 +146,9 @@ pub enum PublicationError {
     /// Whole-generation authentication failed.
     #[error(transparent)]
     Closure(#[from] ClosureError),
+    /// Staged immutable bodies could not be durably admitted before publication.
+    #[error(transparent)]
+    Objects(#[from] crate::storage::ObjectStoreError),
     /// Atomic authority evaluation failed.
     #[error(transparent)]
     Authority(#[from] AuthorityStoreError),
@@ -305,6 +308,20 @@ async fn publish_generation_async_inner<
     let operation_context = permit_context(intent.operation_context, intent.permit);
     let prepared = prepare_publication(proof, request, operation_context, budget)?;
     let mut work = prepared.work;
+    // The authority CAS is the only point at which immutable bodies become
+    // reachable after a crash. Drain any private staged bodies first; a failed
+    // drain leaves no published generation and can be retried idempotently.
+    let drained = objects
+        .flush_before_publish(
+            work.remaining(budget)
+                .map_err(|error| OperationFailure::new(error.into(), work))?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
+    work = work
+        .checked_add(drained.work)
+        .map_err(|error| OperationFailure::new(error.into(), work))?;
     let remaining = work
         .remaining(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))?;

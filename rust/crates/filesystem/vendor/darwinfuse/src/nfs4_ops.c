@@ -38,6 +38,13 @@
 
 /* ---- errno to NFS4 status mapping ---- */
 
+static void encode_write_verifier(const darwinfuse_config_t *config,
+                                  xdr_buf_t *rep)
+{
+    xdr_encode_opaque_fixed(rep, config->write_verifier,
+                            sizeof(config->write_verifier));
+}
+
 static uint32_t errno_to_nfs4(int fuse_rc)
 {
     if (fuse_rc == 0) return NFS4_OK;
@@ -2555,6 +2562,38 @@ static uint32_t handle_read(const darwinfuse_config_t *config,
     return NFS4_OK;
 }
 
+static uint32_t sync_file(const darwinfuse_config_t *config,
+                          const char *path, struct fuse_file_info *fi)
+{
+    if (!config->ops->fsync)
+        return NFS4ERR_IO;
+    return errno_to_nfs4(config->ops->fsync(path, 0, fi));
+}
+
+static int sync_test_success(const char *path, int data_only,
+                             struct fuse_file_info *fi)
+{
+    return strcmp(path, "/sync-test") == 0 && data_only == 0 && fi->fh == 0
+        ? 0 : -EIO;
+}
+
+static int sync_test_failure(const char *path, int data_only,
+                             struct fuse_file_info *fi)
+{
+    (void)path;
+    (void)data_only;
+    (void)fi;
+    return -ENOSPC;
+}
+
+static int sync_test_write(const char *path, const char *data, size_t length,
+                           off_t offset, struct fuse_file_info *fi)
+{
+    return strcmp(path, "/sync-test") == 0 && length == 3 &&
+           memcmp(data, "abc", 3) == 0 && offset == 0 && fi->fh == 0
+        ? (int)length : -EIO;
+}
+
 static uint32_t handle_write(const darwinfuse_config_t *config,
                               nfs4_conn_state_t *conn,
                               nfs4_request_ctx_t *ctx,
@@ -2567,7 +2606,8 @@ static uint32_t handle_write(const darwinfuse_config_t *config,
 
     uint64_t offset = xdr_decode_uint64(req);
     uint32_t stable = xdr_decode_uint32(req);
-    (void)stable;
+    if (req->error || stable > FILE_SYNC4)
+        return NFS4ERR_INVAL;
 
     /* data (opaque) */
     uint32_t data_len_raw = xdr_decode_uint32(req);
@@ -2643,16 +2683,23 @@ static uint32_t handle_write(const darwinfuse_config_t *config,
         int rc = FUSE_SETXATTR(config->ops, file_path, attr_name,
                                new_val, new_size, 0);
         free(new_val);
+        uint32_t sync_status = NFS4_OK;
+        if (rc == 0 && stable != UNSTABLE4) {
+            struct fuse_file_info fi;
+            memset(&fi, 0, sizeof(fi));
+            sync_status = sync_file(config, file_path, &fi);
+        }
         free(file_path);
         free(attr_name);
 
         if (rc != 0)
             return errno_to_nfs4(rc);
+        if (sync_status != NFS4_OK)
+            return sync_status;
 
         xdr_encode_uint32(rep, data_len_raw);
-        xdr_encode_uint32(rep, FILE_SYNC4);
-        uint8_t writeverf[8] = {'D','F','U','S','E','v','0','2'};
-        xdr_encode_opaque_fixed(rep, writeverf, 8);
+        xdr_encode_uint32(rep, stable == UNSTABLE4 ? UNSTABLE4 : FILE_SYNC4);
+        encode_write_verifier(config, rep);
         return NFS4_OK;
     }
 
@@ -2680,13 +2727,16 @@ static uint32_t handle_write(const darwinfuse_config_t *config,
         return errno_to_nfs4(n);
     }
 
+    uint32_t sync_status = NFS4_OK;
+    if (stable != UNSTABLE4)
+        sync_status = sync_file(config, path, &fi);
     free(path);
+    if (sync_status != NFS4_OK)
+        return sync_status;
 
     xdr_encode_uint32(rep, (uint32_t)n);
-    xdr_encode_uint32(rep, FILE_SYNC4);
-
-    uint8_t writeverf[8] = {'D','F','U','S','E','v','0','2'};
-    xdr_encode_opaque_fixed(rep, writeverf, 8);
+    xdr_encode_uint32(rep, stable == UNSTABLE4 ? UNSTABLE4 : FILE_SYNC4);
+    encode_write_verifier(config, rep);
 
     return NFS4_OK;
 }
@@ -2699,21 +2749,104 @@ static uint32_t handle_commit(const darwinfuse_config_t *config,
     /* Decode: offset (uint64), count (uint32) */
     xdr_decode_uint64(req);
     xdr_decode_uint32(req);
+    if (req->error)
+        return NFS4ERR_INVAL;
 
-    /* Call fsync if available */
     char *path = fh_to_path(config, ctx->current_fh, ctx->current_fh_len);
-    if (path && config->ops->fsync) {
-        struct fuse_file_info fi;
-        memset(&fi, 0, sizeof(fi));
-        config->ops->fsync(path, 0, &fi);
-    }
+    if (!path)
+        return NFS4ERR_STALE;
+    struct fuse_file_info fi;
+    memset(&fi, 0, sizeof(fi));
+    uint32_t status = sync_file(config, path, &fi);
     free(path);
+    if (status != NFS4_OK)
+        return status;
 
-    /* Reply: writeverf */
-    uint8_t writeverf[8] = {'D','F','U','S','E','v','0','2'};
-    xdr_encode_opaque_fixed(rep, writeverf, 8);
+    encode_write_verifier(config, rep);
 
     return NFS4_OK;
+}
+
+/* Exercise the actual COMMIT response, not just its fsync callback helper. */
+int nfs4_test_sync_acknowledgement(void)
+{
+    struct fuse_operations ops;
+    darwinfuse_config_t config;
+    nfs4_request_ctx_t ctx;
+    nfs4_conn_state_t conn;
+    uint8_t request_bytes[12] = {0};
+    uint8_t write_bytes[40];
+    uint8_t reply_bytes[16];
+    uint8_t stateid[12] = {0};
+    xdr_buf_t request, write_request, reply;
+    uint32_t status;
+    memset(&ops, 0, sizeof(ops));
+    memset(&config, 0, sizeof(config));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&conn, 0, sizeof(conn));
+    pthread_mutex_init(&conn.lock, NULL);
+    config.ops = &ops;
+    config.inode_table = dfuse_itable_create();
+    if (!config.inode_table)
+        return 1;
+    dfuse_ino_t ino = dfuse_itable_get_or_create(config.inode_table,
+                                                 "/sync-test");
+    if (!ino) {
+        dfuse_itable_destroy(config.inode_table);
+        return 2;
+    }
+    fh_set_ino(ctx.current_fh, &ctx.current_fh_len, ino);
+
+    xdr_init(&request, request_bytes, sizeof(request_bytes));
+    xdr_init(&reply, reply_bytes, sizeof(reply_bytes));
+    if (handle_commit(&config, NULL, &ctx, &request, &reply) != NFS4ERR_IO)
+        status = 3;
+    else {
+        ops.fsync = sync_test_failure;
+        xdr_reset(&request);
+        xdr_reset(&reply);
+        if (handle_commit(&config, NULL, &ctx, &request, &reply) != NFS4ERR_NOSPC)
+            status = 4;
+        else {
+            ops.fsync = sync_test_success;
+            xdr_reset(&request);
+            xdr_reset(&reply);
+            status = handle_commit(&config, NULL, &ctx, &request, &reply) == NFS4_OK
+                     && reply.pos == 8 && !reply.error ? 0 : 5;
+        }
+    }
+
+    if (status == 0) {
+        ops.write = sync_test_write;
+        xdr_init(&write_request, write_bytes, sizeof(write_bytes));
+        xdr_encode_uint32(&write_request, 0);
+        xdr_encode_opaque_fixed(&write_request, stateid, sizeof(stateid));
+        xdr_encode_uint64(&write_request, 0);
+        xdr_encode_uint32(&write_request, FILE_SYNC4);
+        xdr_encode_opaque(&write_request, "abc", 3);
+        xdr_reset(&write_request);
+        xdr_reset(&reply);
+        ops.fsync = sync_test_failure;
+        if (handle_write(&config, &conn, &ctx, &write_request, &reply)
+            != NFS4ERR_NOSPC || reply.pos != 0)
+            status = 6;
+        else {
+            ops.fsync = sync_test_success;
+            xdr_reset(&write_request);
+            xdr_reset(&reply);
+            if (handle_write(&config, &conn, &ctx, &write_request, &reply)
+                != NFS4_OK || reply.pos != 16 || reply.error)
+                status = 7;
+            else {
+                xdr_reset(&reply);
+                status = xdr_decode_uint32(&reply) == 3 &&
+                         xdr_decode_uint32(&reply) == FILE_SYNC4 ? 0 : 8;
+            }
+        }
+    }
+    pthread_mutex_destroy(&conn.lock);
+    dfuse_itable_destroy(config.inode_table);
+    return (int)status;
 }
 
 /* ---- CREATE (non-regular files: mkdir, symlink, mknod) ---- */

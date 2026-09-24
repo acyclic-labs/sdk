@@ -677,8 +677,10 @@ pub type LocalAuthorityBackend =
 
 /// Durable local immutable-object backend with nonblocking native storage dispatch.
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub type LocalObjectBackend = crate::cache::CachedObjectStore<
-    crate::distributed::ProviderObjectStore<acyclic_objects::LocalObjects>,
+pub type LocalObjectBackend = crate::staged_objects::StagedObjects<
+    crate::cache::CachedObjectStore<
+        crate::distributed::ProviderObjectStore<acyclic_objects::LocalObjects>,
+    >,
 >;
 
 /// Durable local filesystem composition with nonblocking native storage dispatch.
@@ -767,6 +769,8 @@ pub enum AuthoredMutation {
         content: StagedContent,
         /// Exact cross-profile metadata.
         metadata: FileMetadata,
+        /// Optional stable source identity; the engine rejects an existing ID.
+        file_id: Option<FileId>,
     },
     /// Creates one empty directory.
     CreateDirectory {
@@ -1505,6 +1509,19 @@ impl<A, S> Fs<A, crate::cache::CachedObjectStore<S>> {
     }
 }
 
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
+    /// Observes the disposable local immutable-object cache.
+    pub fn object_cache_stats(&self) -> Result<crate::cache::ObjectCacheStats, ObjectStoreError> {
+        self.inner.objects.inner().stats()
+    }
+
+    /// Drops cached bytes without changing persistent object storage.
+    pub fn clear_object_cache(&self) -> Result<(), ObjectStoreError> {
+        self.inner.objects.inner().clear()
+    }
+}
+
 #[cfg(all(feature = "memory", feature = "distributed"))]
 impl
     Fs<
@@ -1540,14 +1557,7 @@ impl
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-impl
-    Fs<
-        crate::distributed::StreamAuthorityStore<acyclic_stream::LocalStream>,
-        crate::cache::CachedObjectStore<
-            crate::distributed::ProviderObjectStore<acyclic_objects::LocalObjects>,
-        >,
-    >
-{
+impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     /// Observes release of every provider derived from this local root.
     ///
     /// This is an explicit service-shutdown boundary. The returned barrier does not retain the
@@ -1679,6 +1689,7 @@ impl
             crate::distributed::ProviderObjectStore::new(objects, bucket),
             object_cache,
         )?;
+        let objects = crate::staged_objects::StagedObjects::new(objects);
         Ok(Self::new_with_path_index(
             crate::distributed::StreamAuthorityStore::new(stream),
             objects,
@@ -1898,8 +1909,8 @@ impl
                 cancellation,
             )
             .await?;
-        let provider = self.inner.objects.inner().provider();
-        let bucket = self.inner.objects.inner().bucket().clone();
+        let provider = self.inner.objects.inner().inner().provider();
+        let bucket = self.inner.objects.inner().inner().bucket().clone();
         let mut removed = 0_u64;
         for (object_key, version_id) in candidates {
             cancellation
@@ -1960,8 +1971,8 @@ impl
             .copied()
             .map(crate::distributed::object_key)
             .collect::<BTreeSet<_>>();
-        let provider = self.inner.objects.inner().provider();
-        let bucket = self.inner.objects.inner().bucket().clone();
+        let provider = self.inner.objects.inner().inner().provider();
+        let bucket = self.inner.objects.inner().inner().bucket().clone();
         let mut continuation = None;
         let mut candidates = Vec::new();
         let mut examined = 0_u64;
@@ -2615,6 +2626,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .map_err(crate::workspace::WorkspaceError::engine)?;
         let operation_id = OperationId::from_bytes(authority_id.into_bytes());
         let (commit, _) = creation_commit(operation_id, payload);
+        let drained = self
+            .inner
+            .objects
+            .flush_before_publish(
+                remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
+                cancellation,
+            )
+            .await
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+        work = add(work, drained.work).map_err(crate::workspace::WorkspaceError::engine)?;
         let appended = self
             .inner
             .authority
@@ -3849,6 +3870,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         work = add(work, encoding_work)?;
         work.verify(budget)
             .map_err(|error| OperationFailure::new(error.into(), work))?;
+        let drained = self
+            .inner
+            .objects
+            .flush_before_publish(remaining(work, budget)?, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
+        work = add(work, drained.work)?;
         let appended = self
             .inner
             .authority
@@ -6929,6 +6957,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 path,
                 content,
                 metadata,
+                file_id,
             } => {
                 let metadata = self
                     .stage_authored_metadata(
@@ -6942,7 +6971,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         failure.map_with_prior_work(*work, std::convert::identity)
                     })?;
                 *work = add(*work, metadata.work)?;
-                let file_id = self.authored_file_id(FileKind::Regular, &path);
+                let file_id =
+                    file_id.unwrap_or_else(|| self.authored_file_id(FileKind::Regular, &path));
                 operations.push(Mutation::Create {
                     path: path.clone(),
                     record: FileRecord {
