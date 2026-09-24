@@ -227,6 +227,7 @@ pub struct DaytonaApi {
     base: String,
     api_key: String,
     organization_id: Option<String>,
+    toolbox_proxy_hosts: Vec<String>,
 }
 
 impl std::fmt::Debug for DaytonaApi {
@@ -258,6 +259,7 @@ impl DaytonaApi {
             base: config.api_url.trim_end_matches('/').to_owned(),
             api_key: config.api_key.clone(),
             organization_id: config.organization_id.clone(),
+            toolbox_proxy_hosts: config.toolbox_proxy_hosts.clone(),
         })
     }
 
@@ -504,27 +506,74 @@ impl DaytonaApi {
             .await
     }
 
-    /// Runs one command through the sandbox's toolbox proxy:
+    /// Runs one command through a sandbox's toolbox proxy:
     /// `POST {toolboxProxyUrl}/{sandboxId}/process/execute`. Live-verified.
     ///
+    /// The proxy URL is never taken from the caller: the sandbox is read back by id from this
+    /// client's own API, and its `toolboxProxyUrl` must pass [`Self::check_toolbox_proxy`]
+    /// before the API key is attached to a request to it.
+    ///
     /// # Errors
-    /// Returns [`ProviderError::Rejected`] when the sandbox reports no toolbox proxy URL, and
-    /// maps transport failures and non-2xx statuses to [`ProviderError`].
+    /// Returns [`ProviderError::Rejected`] when the sandbox reports no toolbox proxy URL or one
+    /// outside Daytona's own domains, and maps transport failures and non-2xx statuses to
+    /// [`ProviderError`].
     pub async fn execute(
         &self,
-        sandbox: &Sandbox,
+        sandbox_id: &str,
         request: &ExecuteRequest,
     ) -> Result<ExecuteResponse, ProviderError> {
+        let sandbox = self.get(sandbox_id).await?;
         let proxy = sandbox.toolbox_proxy_url.as_deref().ok_or_else(|| {
             ProviderError::Rejected(format!("sandbox {} has no toolbox proxy URL", sandbox.id))
         })?;
+        let proxy = self.check_toolbox_proxy(proxy)?;
         let url = format!(
             "{}/{}/process/execute",
-            proxy.trim_end_matches('/'),
+            proxy.as_str().trim_end_matches('/'),
             sandbox.id
         );
         self.json(self.authorized(self.http.post(url)).json(request))
             .await
+    }
+
+    /// Accepts a toolbox proxy URL only when it may receive this client's API key: `https`
+    /// (or the API's own scheme), no userinfo, and a host that is the API host, a subdomain of
+    /// it (Daytona serves `proxy.app.daytona.io` for `app.daytona.io`), or one of the
+    /// configured [`crate::DaytonaConfig::toolbox_proxy_hosts`]. A host equal to the API host
+    /// must also use its port.
+    ///
+    /// # Errors
+    /// Returns [`ProviderError::Rejected`] for any other URL.
+    pub fn check_toolbox_proxy(&self, proxy: &str) -> Result<reqwest::Url, ProviderError> {
+        let rejected = || {
+            ProviderError::Rejected(format!(
+                "toolbox proxy URL {proxy:?} is not a Daytona proxy for {}",
+                self.base
+            ))
+        };
+        let base = reqwest::Url::parse(&self.base).map_err(|_| rejected())?;
+        let url = reqwest::Url::parse(proxy).map_err(|_| rejected())?;
+        let (Some(base_host), Some(host)) = (base.host_str(), url.host_str()) else {
+            return Err(rejected());
+        };
+        let host = host.to_ascii_lowercase();
+        let base_host = base_host.to_ascii_lowercase();
+        let scheme_ok = url.scheme() == "https" || url.scheme() == base.scheme();
+        let userinfo = !url.username().is_empty() || url.password().is_some();
+        let host_ok = if host == base_host {
+            url.port_or_known_default() == base.port_or_known_default()
+        } else {
+            host.ends_with(&format!(".{base_host}"))
+                || self
+                    .toolbox_proxy_hosts
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(&host))
+        };
+        if scheme_ok && !userinfo && host_ok {
+            Ok(url)
+        } else {
+            Err(rejected())
+        }
     }
 }
 
@@ -602,6 +651,49 @@ mod tests {
         })
         .unwrap();
         assert_eq!(labels, serde_json::json!({ "labels": { "a": "b" } }));
+    }
+
+    fn client(base: &str, extra_hosts: &[&str]) -> DaytonaApi {
+        let mut config = DaytonaConfig::new("k");
+        config.api_url = base.to_owned();
+        config.toolbox_proxy_hosts = extra_hosts.iter().map(|&h| h.to_owned()).collect();
+        DaytonaApi::new(&config).unwrap()
+    }
+
+    #[test]
+    fn toolbox_proxy_must_be_a_daytona_host() {
+        let api = client(crate::DEFAULT_API_URL, &["toolbox.eu.example"]);
+        for accepted in [
+            "https://proxy.app.daytona.io/toolbox",
+            "https://app.daytona.io/toolbox",
+            "https://toolbox.eu.example/toolbox",
+        ] {
+            assert!(api.check_toolbox_proxy(accepted).is_ok(), "{accepted}");
+        }
+        for rejected in [
+            "https://attacker.example/toolbox",
+            "https://app.daytona.io.attacker.example/",
+            "https://evilapp.daytona.io/",
+            "http://proxy.app.daytona.io/toolbox",
+            "https://user:pw@proxy.app.daytona.io/",
+            "https://app.daytona.io:8443/",
+            "not a url",
+        ] {
+            assert!(
+                matches!(
+                    api.check_toolbox_proxy(rejected),
+                    Err(ProviderError::Rejected(_))
+                ),
+                "{rejected}"
+            );
+        }
+        let local = client("http://127.0.0.1:9000/api", &[]);
+        assert!(local.check_toolbox_proxy("http://127.0.0.1:9000/t").is_ok());
+        assert!(
+            local
+                .check_toolbox_proxy("http://127.0.0.1:9001/t")
+                .is_err()
+        );
     }
 
     #[test]

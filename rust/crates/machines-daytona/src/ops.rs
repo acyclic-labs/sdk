@@ -36,8 +36,12 @@ pub struct OperationRecord {
     pub key: IdempotencyKey,
     /// SHA-256 of the canonical intent encoding, used to detect key rebinding.
     pub intent_digest: [u8; 32],
-    /// Daytona sandbox ids the operation created or acted on, once known.
-    pub sandboxes: Vec<String>,
+    /// Daytona sandbox ids the operation created. Cancelling the operation deletes these.
+    pub created: Vec<String>,
+    /// Existing Daytona sandbox ids the operation acts on (suspend, wake, policy, checkpoint,
+    /// destroy). They belong to the machine, not to the operation, so cancellation never
+    /// deletes them.
+    pub targets: Vec<String>,
     /// Current phase.
     pub phase: OperationPhase,
     /// Terminal outcome when `phase` is `Succeeded`.
@@ -195,7 +199,8 @@ impl OperationRegistry {
                 id,
                 key,
                 intent_digest: digest,
-                sandboxes: Vec::new(),
+                created: Vec::new(),
+                targets: Vec::new(),
                 phase: OperationPhase::Pending,
                 outcome: None,
             },
@@ -204,10 +209,26 @@ impl OperationRegistry {
         Ok(Admission::Fresh(id))
     }
 
-    /// Records a sandbox the pending operation is acting on, so `cancel` can reach it.
-    pub fn bind_sandbox(&self, operation: OperationId, sandbox_id: &str) {
+    /// Records a sandbox the pending operation created, so `cancel` can delete it.
+    ///
+    /// Returns `false`, without recording anything, when the operation is no longer pending
+    /// (it was cancelled while the create or fork request was in flight). The caller then owns
+    /// the orphan and must delete it itself.
+    #[must_use]
+    pub fn bind_created(&self, operation: OperationId, sandbox_id: &str) -> bool {
+        match self.lock().operations.get_mut(&operation) {
+            Some(record) if record.phase == OperationPhase::Pending => {
+                record.created.push(sandbox_id.to_owned());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Records an existing sandbox the pending operation acts on. Cancellation leaves it alone.
+    pub fn bind_target(&self, operation: OperationId, sandbox_id: &str) {
         if let Some(record) = self.lock().operations.get_mut(&operation) {
-            record.sandboxes.push(sandbox_id.to_owned());
+            record.targets.push(sandbox_id.to_owned());
         }
     }
 
@@ -272,15 +293,16 @@ impl OperationRegistry {
             .cloned()
     }
 
-    /// Marks a pending operation cancelled and returns the sandboxes it had bound, which the
-    /// caller deletes best-effort. Terminal operations are returned unchanged.
+    /// Marks a pending operation cancelled and returns the sandboxes it had *created*, which the
+    /// caller deletes best-effort. Sandboxes it merely acted on are never returned. Terminal
+    /// operations are returned unchanged.
     #[must_use]
     pub fn cancel(&self, operation: OperationId) -> Option<(OperationObservation, Vec<String>)> {
         let mut inner = self.lock();
         let record = inner.operations.get_mut(&operation)?;
         if record.phase == OperationPhase::Pending {
             record.phase = OperationPhase::Cancelled;
-            Some((record.observation(), std::mem::take(&mut record.sandboxes)))
+            Some((record.observation(), std::mem::take(&mut record.created)))
         } else {
             Some((record.observation(), Vec::new()))
         }
@@ -451,16 +473,34 @@ mod tests {
         let Admission::Fresh(id) = registry.admit(key(3), &"x").unwrap() else {
             panic!("expected fresh")
         };
-        registry.bind_sandbox(id, "sb-1");
+        assert!(registry.bind_created(id, "sb-1"));
+        registry.bind_target(id, "existing");
         let (observation, sandboxes) = registry.cancel(id).unwrap();
         assert_eq!(observation.phase, OperationPhase::Cancelled);
         assert_eq!(sandboxes, vec!["sb-1".to_owned()]);
         assert!(registry.cancel(id).unwrap().1.is_empty());
+        assert!(
+            !registry.bind_created(id, "sb-late"),
+            "a sandbox created after cancellation is handed back to the caller to delete"
+        );
+        assert_eq!(registry.record(id).unwrap().created, Vec::<String>::new());
         registry.complete(id, MutationOutcome::Woken(MachineId::new()));
         assert_eq!(
             registry.inspect(id).unwrap().phase,
             OperationPhase::Cancelled
         );
+    }
+
+    #[test]
+    fn cancel_never_returns_the_machine_an_operation_acts_on() {
+        let registry = OperationRegistry::default();
+        let Admission::Fresh(id) = registry.admit(key(4), &"suspend").unwrap() else {
+            panic!("expected fresh")
+        };
+        registry.bind_target(id, "existing-machine");
+        let (observation, sandboxes) = registry.cancel(id).unwrap();
+        assert_eq!(observation.phase, OperationPhase::Cancelled);
+        assert!(sandboxes.is_empty(), "{sandboxes:?}");
     }
 
     #[test]

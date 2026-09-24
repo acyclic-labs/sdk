@@ -3,6 +3,13 @@
 
 pub mod api;
 pub mod map;
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "test-only HTTP stand-in; a broken mock should fail the test loudly"
+)]
+mod mock;
 pub mod ops;
 pub mod usage;
 
@@ -44,9 +51,14 @@ pub struct DaytonaConfig {
     /// Snapshot booted when an image digest is not in `snapshots`; `None` makes such images
     /// unsupported. It must be a VM-class snapshot.
     pub default_snapshot: Option<String>,
-    /// Outbound domains allowed from sandboxes (Daytona `domainAllowList`); empty keeps the
-    /// organization default.
-    pub allow_domains: Vec<String>,
+    /// Outbound network policies by network-policy digest (lowercase hex). A create or
+    /// checkpoint fork whose contract commits to a digest missing here is refused; see
+    /// [`map::NetworkPolicy`].
+    pub network_policies: BTreeMap<String, map::NetworkPolicy>,
+    /// Toolbox proxy hosts, besides the API host and its subdomains, that may receive the API
+    /// key; see [`api::DaytonaApi::check_toolbox_proxy`]. Needed only for self-hosted
+    /// deployments that serve the proxy from an unrelated domain.
+    pub toolbox_proxy_hosts: Vec<String>,
     /// Registered image digests (lowercase hex) mapped to Daytona snapshot names.
     pub snapshots: BTreeMap<String, String>,
     /// Tenant recorded in the `acyclic.tenant` label of every sandbox.
@@ -70,7 +82,8 @@ impl DaytonaConfig {
             api_url: DEFAULT_API_URL.to_owned(),
             region: None,
             default_snapshot: None,
-            allow_domains: Vec::new(),
+            network_policies: BTreeMap::new(),
+            toolbox_proxy_hosts: Vec::new(),
             snapshots: BTreeMap::new(),
             tenant: None,
             organization_id: None,
@@ -81,8 +94,8 @@ impl DaytonaConfig {
     }
 
     /// Reads `DAYTONA_API_KEY` (required), `DAYTONA_API_URL`, `DAYTONA_REGION`,
-    /// `DAYTONA_SNAPSHOT`, `DAYTONA_ALLOW_DOMAINS` (comma-separated), `DAYTONA_TENANT`, and
-    /// `DAYTONA_ORGANIZATION_ID`.
+    /// `DAYTONA_SNAPSHOT`, `DAYTONA_TENANT`, and `DAYTONA_ORGANIZATION_ID`. Network policies
+    /// are registered in code with [`Self::register_network_policy`].
     ///
     /// # Errors
     /// Returns [`ProviderError::Invalid`] when `DAYTONA_API_KEY` is unset or empty.
@@ -100,15 +113,6 @@ impl DaytonaConfig {
         }
         config.region = read("DAYTONA_REGION");
         config.default_snapshot = read("DAYTONA_SNAPSHOT");
-        config.allow_domains = read("DAYTONA_ALLOW_DOMAINS")
-            .map(|list| {
-                list.split(',')
-                    .map(str::trim)
-                    .filter(|d| !d.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
         config.tenant = read("DAYTONA_TENANT");
         config.organization_id = read("DAYTONA_ORGANIZATION_ID");
         Ok(config)
@@ -117,6 +121,12 @@ impl DaytonaConfig {
     /// Registers the snapshot that backs one image digest.
     pub fn register_snapshot(&mut self, digest: [u8; 32], snapshot: impl Into<String>) {
         self.snapshots.insert(map::hex(&digest), snapshot.into());
+    }
+
+    /// Registers the outbound policy a network-policy digest commits to. Sandboxes whose
+    /// contract carries `digest` are created with exactly this policy.
+    pub fn register_network_policy(&mut self, digest: [u8; 32], policy: map::NetworkPolicy) {
+        self.network_policies.insert(map::hex(&digest), policy);
     }
 }
 
@@ -128,7 +138,8 @@ impl std::fmt::Debug for DaytonaConfig {
             .field("api_url", &self.api_url)
             .field("region", &self.region)
             .field("default_snapshot", &self.default_snapshot)
-            .field("allow_domains", &self.allow_domains)
+            .field("network_policies", &self.network_policies)
+            .field("toolbox_proxy_hosts", &self.toolbox_proxy_hosts)
             .field("snapshots", &self.snapshots)
             .field("tenant", &self.tenant)
             .field("organization_id", &self.organization_id)
@@ -312,6 +323,10 @@ impl DaytonaProvider {
         Sha256::digest(b"acyclic-machines-daytona-v2").into()
     }
 
+    fn tenant(&self) -> Option<&str> {
+        self.config.tenant.as_deref()
+    }
+
     fn resolve_snapshot(&self, image: &Image) -> Result<String, ProviderError> {
         match image {
             Image::Checkpoint(checkpoint) => Ok(checkpoint.to_string()),
@@ -395,6 +410,11 @@ impl DaytonaProvider {
         fallback: Option<&MachineContract>,
         last_checkpoint: Option<CheckpointId>,
     ) -> Result<MachineObservation, ProviderError> {
+        // A sandbox of another tenant (or not managed by this provider at all) is reported as
+        // absent, so no read path can expose it.
+        if !map::owned_by(sandbox, self.tenant()) {
+            return Err(ProviderError::NotFound(sandbox.id.clone()));
+        }
         let known = map::machine_id(&sandbox.id)
             .ok()
             .and_then(|id| self.ops.machine(id));
@@ -476,20 +496,91 @@ impl DaytonaProvider {
 
     /// Creates a sandbox, or adopts the one an earlier attempt under the same deterministic
     /// name already created.
+    ///
+    /// The name alone proves nothing: in a shared organization another tenant or an unrelated
+    /// workload can hold it. A name holder is adopted only when its provider labels (managed,
+    /// key, kind, fork slot, tenant, and the serialized contract with its image) are exactly the
+    /// ones this request attaches; otherwise the create fails with a conflict.
     async fn create_or_adopt(
         &self,
         body: &api::CreateSandboxRequest,
     ) -> Result<Sandbox, ProviderError> {
         match self.api.create(body).await {
-            Err(ProviderError::Conflict(detail)) => match &body.name {
-                Some(name) => self
+            Err(ProviderError::Conflict(detail)) => {
+                let Some(name) = &body.name else {
+                    return Err(ProviderError::Conflict(detail));
+                };
+                let existing = self
                     .api
                     .get(name)
                     .await
-                    .map_err(|_| ProviderError::Conflict(detail)),
-                None => Err(ProviderError::Conflict(detail)),
-            },
+                    .map_err(|_| ProviderError::Conflict(detail.clone()))?;
+                if map::provider_labels(&existing.labels) == map::provider_labels(&body.labels) {
+                    Ok(existing)
+                } else {
+                    Err(ProviderError::Conflict(format!(
+                        "sandbox {name} exists but was not created by this request: {detail}"
+                    )))
+                }
+            }
             other => other,
+        }
+    }
+
+    /// Records a sandbox the operation created. When the operation was cancelled while the
+    /// create or fork request was in flight, cancellation could not see the sandbox, so it is
+    /// deleted here and the mutation ends as cancelled.
+    async fn claim_created(
+        &self,
+        operation: OperationId,
+        sandbox_id: &str,
+    ) -> Result<(), ProviderError> {
+        if self.ops.bind_created(operation, sandbox_id) {
+            return Ok(());
+        }
+        if let Err(error) = self.api.delete(sandbox_id).await {
+            tracing::warn!(sandbox_id, %error, "best-effort delete of a sandbox created after cancellation failed");
+        }
+        Err(ProviderError::Cancelled)
+    }
+
+    /// Accepts the holder of a native fork child's deterministic name only when it really is a
+    /// fork child of `parent_id` from this request: Daytona must list it among the parent's
+    /// forks, and its provider labels must be either the ones this request attaches (already
+    /// relabelled) or still the parent's own (inherited, relabel pending). Anything else, such
+    /// as another parent's child under a reused key, is a conflict.
+    async fn adopt_fork_child(
+        &self,
+        parent_id: &str,
+        name: &str,
+        ours: &BTreeMap<String, String>,
+        detail: String,
+    ) -> Result<Sandbox, ProviderError> {
+        let conflict = |why: &str| {
+            ProviderError::Conflict(format!(
+                "sandbox {name} is not this request's fork child of {parent_id} ({why}): {detail}"
+            ))
+        };
+        let child = self
+            .api
+            .get(name)
+            .await
+            .map_err(|_| conflict("unreadable"))?;
+        let parent = self.api.get(parent_id).await?;
+        if !self
+            .api
+            .forks(parent_id)
+            .await?
+            .iter()
+            .any(|fork| fork.id == child.id)
+        {
+            return Err(conflict("not a fork of this parent"));
+        }
+        let labels = map::provider_labels(&child.labels);
+        if labels == map::provider_labels(ours) || labels == map::provider_labels(&parent.labels) {
+            Ok(child)
+        } else {
+            Err(conflict("labelled for another request"))
         }
     }
 
@@ -521,7 +612,7 @@ impl DaytonaProvider {
                 let touched = self
                     .ops
                     .record(operation)
-                    .is_some_and(|record| !record.sandboxes.is_empty());
+                    .is_some_and(|record| !record.created.is_empty() || !record.targets.is_empty());
                 let before_side_effect = matches!(
                     error,
                     ProviderError::Invalid(_)
@@ -597,6 +688,12 @@ impl DaytonaProvider {
             let mut ids = Vec::with_capacity(count as usize);
             for index in 0..count {
                 let name = map::sandbox_name(key, Some(index));
+                let ours = map::labels(
+                    key,
+                    Some(map::ForkSlot { index, count }),
+                    self.tenant(),
+                    &contract,
+                );
                 let child = match self
                     .api
                     .fork(
@@ -607,21 +704,13 @@ impl DaytonaProvider {
                     )
                     .await
                 {
-                    Err(ProviderError::Conflict(detail)) => self
-                        .api
-                        .get(&name)
-                        .await
-                        .map_err(|_| ProviderError::Conflict(detail))?,
+                    Err(ProviderError::Conflict(detail)) => {
+                        self.adopt_fork_child(&parent_id, &name, &ours, detail)
+                            .await?
+                    }
                     other => other?,
                 };
-                self.ops.bind_sandbox(operation, &child.id);
-                let ours = map::labels(
-                    key,
-                    map::KIND_FORK,
-                    Some(index),
-                    self.config.tenant.as_deref(),
-                    &contract,
-                );
+                self.claim_created(operation, &child.id).await?;
                 self.api
                     .replace_labels(&child.id, map::relabel(&child.labels, ours))
                     .await?;
@@ -638,7 +727,14 @@ impl DaytonaProvider {
         &self,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let mut sandboxes = self.api.list(Some(&map::key_filter(key))).await?;
+        let tenant = self.tenant();
+        let sandboxes: Vec<Sandbox> = self
+            .api
+            .list(Some(&map::key_filter(key, tenant)))
+            .await?
+            .into_iter()
+            .filter(|sandbox| map::owned_by(sandbox, tenant))
+            .collect();
         let Some(first) = sandboxes.first() else {
             return Err(ProviderError::NotFound(key.to_string()));
         };
@@ -653,15 +749,14 @@ impl DaytonaProvider {
                 _ => Err(ProviderError::Indeterminate(key)),
             },
             map::KIND_FORK => {
-                sandboxes.sort_by_key(|sandbox| {
-                    sandbox
-                        .labels
-                        .get(map::LABEL_INDEX)
-                        .and_then(|index| index.parse::<u32>().ok())
-                        .unwrap_or(u32::MAX)
-                });
-                let children = sandboxes
-                    .iter()
+                // A fork interrupted after some children were created is not a success: the
+                // caller asked for `count` workers. Report it as still indeterminate so the
+                // caller cancels or retries instead of proceeding with fewer.
+                let Some(children) = map::complete_fork(&sandboxes) else {
+                    return Err(ProviderError::Indeterminate(key));
+                };
+                let children = children
+                    .into_iter()
                     .map(|sandbox| self.observe(sandbox, None, None))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(MutationOutcome::Forked(children))
@@ -699,11 +794,11 @@ impl MachinesProvider for DaytonaProvider {
             .apply(key, &intent, async |operation| {
                 let snapshot = self.resolve_snapshot(&request.image)?;
                 let contract = Self::contract(&request)?;
-                self.require_vm_snapshot(&snapshot).await?;
                 let mut body = map::create_request(&self.config, &snapshot, key, None, &contract)?;
+                self.require_vm_snapshot(&snapshot).await?;
                 body.env = self.staged_boot_env(key).unwrap_or_default();
                 let created = self.create_or_adopt(&body).await?;
-                self.ops.bind_sandbox(operation, &created.id);
+                self.claim_created(operation, &created.id).await?;
                 let settled = self.wait_settled(&created.id, key).await?;
                 let observation = self.observe(&settled, Some(&contract), None)?;
                 if observation.state != MachineState::Running {
@@ -746,8 +841,13 @@ impl MachinesProvider for DaytonaProvider {
             .into_iter()
             .map(|value| (value.id, value))
             .collect();
-        for sandbox in self.api.list(Some(&map::managed_filter())).await? {
-            match self.observe(&sandbox, None, None) {
+        let tenant = self.tenant();
+        let listed = self.api.list(Some(&map::managed_filter(tenant))).await?;
+        for sandbox in listed
+            .iter()
+            .filter(|sandbox| map::owned_by(sandbox, tenant))
+        {
+            match self.observe(sandbox, None, None) {
                 Ok(observation) => {
                     merged.insert(observation.id, observation);
                 }
@@ -790,7 +890,7 @@ impl MachinesProvider for DaytonaProvider {
             }
             let id = machine.to_string();
             let name = map::checkpoint_name(key);
-            self.ops.bind_sandbox(operation, &id);
+            self.ops.bind_target(operation, &id);
             let request = CreateSnapshotRequest {
                 name: name.clone(),
                 include_memory: true,
@@ -892,10 +992,11 @@ impl MachinesProvider for DaytonaProvider {
                 let snapshot = checkpoint.to_string();
                 let mut ids = Vec::with_capacity(count as usize);
                 for index in 0..count {
+                    let slot = map::ForkSlot { index, count };
                     let body =
-                        map::create_request(&self.config, &snapshot, key, Some(index), &contract)?;
+                        map::create_request(&self.config, &snapshot, key, Some(slot), &contract)?;
                     let created = self.create_or_adopt(&body).await?;
-                    self.ops.bind_sandbox(operation, &created.id);
+                    self.claim_created(operation, &created.id).await?;
                     ids.push(created.id);
                 }
                 let children = self
@@ -924,7 +1025,7 @@ impl MachinesProvider for DaytonaProvider {
                 }
             }
             let id = machine.to_string();
-            self.ops.bind_sandbox(operation, &id);
+            self.ops.bind_target(operation, &id);
             self.api.pause(&id).await?;
             let settled = self.wait_settled(&id, key).await?;
             if self.observe(&settled, None, None)?.state != MachineState::Suspended {
@@ -952,7 +1053,7 @@ impl MachinesProvider for DaytonaProvider {
                 }
             }
             let id = machine.to_string();
-            self.ops.bind_sandbox(operation, &id);
+            self.ops.bind_target(operation, &id);
             self.api.start(&id).await?;
             let settled = self.wait_settled(&id, key).await?;
             if self.observe(&settled, None, None)?.state != MachineState::Running {
@@ -977,7 +1078,7 @@ impl MachinesProvider for DaytonaProvider {
                 ));
             }
             let id = machine.to_string();
-            self.ops.bind_sandbox(operation, &id);
+            self.ops.bind_target(operation, &id);
             self.api
                 .set_autopause(&id, map::autopause_minutes(policy))
                 .await?;
@@ -1001,7 +1102,7 @@ impl MachinesProvider for DaytonaProvider {
                 return Ok(MutationOutcome::MachineDestroyed(machine));
             }
             let id = machine.to_string();
-            self.ops.bind_sandbox(operation, &id);
+            self.ops.bind_target(operation, &id);
             match self.api.delete(&id).await {
                 Ok(()) | Err(ProviderError::NotFound(_)) => {}
                 Err(error) => return Err(error),
@@ -1157,6 +1258,8 @@ impl MachinesProvider for DaytonaProvider {
     clippy::panic
 )]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -1293,5 +1396,367 @@ mod tests {
             provider.fork_machine(MachineId::new(), too_many, key).await,
             Err(ProviderError::Invalid(_))
         ));
+    }
+
+    const MACHINE: &str = "6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a61";
+    const OTHER: &str = "7a2e3d4c-5b6f-4a71-8c82-9d3e4f5a6b72";
+    const CHILD: &str = "8b3f4e5d-6c7a-4b82-9d93-ae4f5a6b7c83";
+
+    fn test_key(suffix: u8) -> IdempotencyKey {
+        IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000001{suffix:02x}")).unwrap()
+    }
+
+    fn request(key: IdempotencyKey) -> CreateMachine {
+        CreateMachine::new(key, Image::custom([7; 32]).unwrap(), [8; 32])
+    }
+
+    fn contract() -> MachineContract {
+        DaytonaProvider::contract(&request(test_key(0))).unwrap()
+    }
+
+    fn mocked(mock: &mock::Mock, tenant: Option<&str>) -> Arc<DaytonaProvider> {
+        let mut config = DaytonaConfig::new("secret-key");
+        config.api_url = mock.url.clone();
+        config.default_snapshot = Some("base".into());
+        config.tenant = tenant.map(str::to_owned);
+        config.poll_interval = Duration::from_millis(1);
+        config.ready_timeout = Duration::from_secs(5);
+        config.register_network_policy([8; 32], map::NetworkPolicy::BlockAll);
+        Arc::new(DaytonaProvider::new(config).unwrap())
+    }
+
+    fn sandbox(id: &str, state: &str, labels: &BTreeMap<String, String>) -> String {
+        serde_json::json!({ "id": id, "state": state, "labels": labels }).to_string()
+    }
+
+    fn owned_labels(key: IdempotencyKey, tenant: Option<&str>) -> BTreeMap<String, String> {
+        map::labels(key, None, tenant, &contract())
+    }
+
+    fn gate() -> Arc<tokio::sync::Semaphore> {
+        Arc::new(tokio::sync::Semaphore::new(0))
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_operation_on_an_existing_machine_never_deletes_it() {
+        let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let release = gate();
+        let (state, hold) = (Arc::clone(&paused), Arc::clone(&release));
+        let mock = mock::Mock::start(move |request| {
+            let (state, hold) = (Arc::clone(&state), Arc::clone(&hold));
+            async move {
+                if request.is("POST", &format!("/sandbox/{MACHINE}/pause")) {
+                    hold.acquire().await.unwrap().forget();
+                    state.store(true, std::sync::atomic::Ordering::SeqCst);
+                    return (200, String::new());
+                }
+                let now = if state.load(std::sync::atomic::Ordering::SeqCst) {
+                    "paused"
+                } else {
+                    "started"
+                };
+                (200, sandbox(MACHINE, now, &owned_labels(test_key(9), None)))
+            }
+        })
+        .await;
+        let provider = mocked(&mock, None);
+        let machine = MachineId::parse(MACHINE).unwrap();
+        let key = test_key(1);
+        let task = tokio::spawn({
+            let provider = Arc::clone(&provider);
+            async move { provider.suspend(machine, key).await }
+        });
+        mock.wait_for("POST", &format!("/sandbox/{MACHINE}/pause"))
+            .await;
+        let cancelled = provider.cancel(ops::operation_id(key)).await.unwrap();
+        assert_eq!(cancelled.phase, OperationPhase::Cancelled);
+        release.add_permits(1);
+        assert!(matches!(task.await.unwrap(), Err(ProviderError::Cancelled)));
+        assert!(
+            !mock.requests().iter().any(|r| r.method == "DELETE"),
+            "cancelling a suspend must not delete the machine it acts on"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_created_after_cancellation_is_deleted() {
+        let release = gate();
+        let hold = Arc::clone(&release);
+        let mock = mock::Mock::start(move |request| {
+            let hold = Arc::clone(&hold);
+            async move {
+                if request.path.starts_with("/snapshots/") {
+                    return (200, r#"{"id":"s","sandboxClass":"linux-vm"}"#.to_owned());
+                }
+                if request.is("POST", "/sandbox") {
+                    hold.acquire().await.unwrap().forget();
+                    let labels = owned_labels(test_key(2), None);
+                    return (201, sandbox(CHILD, "creating", &labels));
+                }
+                (200, String::new())
+            }
+        })
+        .await;
+        let provider = mocked(&mock, None);
+        let key = test_key(2);
+        let task = tokio::spawn({
+            let provider = Arc::clone(&provider);
+            async move { provider.create(request(key)).await }
+        });
+        mock.wait_for("POST", "/sandbox").await;
+        provider.cancel(ops::operation_id(key)).await.unwrap();
+        release.add_permits(1);
+        assert!(matches!(task.await.unwrap(), Err(ProviderError::Cancelled)));
+        assert!(
+            mock.requests()
+                .iter()
+                .any(|r| r.is("DELETE", &format!("/sandbox/{CHILD}"))),
+            "the sandbox the in-flight create made must not outlive the cancellation"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_adopts_only_its_own_name_holder() {
+        let key = test_key(3);
+        for (holder, adopted) in [
+            (owned_labels(key, Some("other-tenant")), false),
+            (owned_labels(test_key(4), None), false),
+            (BTreeMap::new(), false),
+            (owned_labels(key, None), true),
+        ] {
+            let labels = holder.clone();
+            let mock = mock::Mock::start(move |request| {
+                let labels = labels.clone();
+                async move {
+                    if request.path.starts_with("/snapshots/") {
+                        return (200, r#"{"id":"s","sandboxClass":"linux-vm"}"#.to_owned());
+                    }
+                    if request.is("POST", "/sandbox") {
+                        return (409, "name taken".to_owned());
+                    }
+                    (200, sandbox(OTHER, "started", &labels))
+                }
+            })
+            .await;
+            let outcome = mocked(&mock, None).create(request(key)).await;
+            if adopted {
+                assert!(
+                    matches!(outcome, Ok(MutationOutcome::Created(ref m)) if m.id.to_string() == OTHER),
+                    "{outcome:?}"
+                );
+            } else {
+                assert!(
+                    matches!(outcome, Err(ProviderError::Conflict(_))),
+                    "{holder:?} -> {outcome:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn native_fork_never_adopts_another_request_or_parent_child() {
+        let key = test_key(5);
+        let child_name = map::sandbox_name(key, Some(0));
+        // Child of another parent (not in this parent's forks), and a child of this parent
+        // already relabelled for a different request under the same name.
+        let foreign = map::labels(
+            key,
+            Some(map::ForkSlot { index: 0, count: 2 }),
+            None,
+            &contract(),
+        );
+        for (listed, labels) in [(false, owned_labels(test_key(9), None)), (true, foreign)] {
+            let name = child_name.clone();
+            let mock = mock::Mock::start(move |request| {
+                let (name, labels) = (name.clone(), labels.clone());
+                async move {
+                    if request.is("POST", &format!("/sandbox/{MACHINE}/fork")) {
+                        return (409, "name taken".to_owned());
+                    }
+                    if request.is("GET", &format!("/sandbox/{MACHINE}/forks")) {
+                        let forks = if listed {
+                            format!("[{}]", sandbox(CHILD, "started", &labels))
+                        } else {
+                            "[]".to_owned()
+                        };
+                        return (200, forks);
+                    }
+                    if request.is("GET", &format!("/sandbox/{name}")) {
+                        return (200, sandbox(CHILD, "started", &labels));
+                    }
+                    (
+                        200,
+                        sandbox(MACHINE, "started", &owned_labels(test_key(9), None)),
+                    )
+                }
+            })
+            .await;
+            let provider = mocked(&mock, None);
+            let outcome = provider
+                .fork_machine(
+                    MachineId::parse(MACHINE).unwrap(),
+                    NonZeroU32::new(1).unwrap(),
+                    key,
+                )
+                .await;
+            assert!(
+                matches!(outcome, Err(ProviderError::Conflict(_))),
+                "{outcome:?}"
+            );
+            assert!(
+                !mock.requests().iter().any(|r| r.method == "PUT"),
+                "a foreign child must never be relabelled"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn listing_and_reads_stay_within_the_configured_tenant() {
+        let mock = mock::Mock::start(|request| async move {
+            let ours = sandbox(MACHINE, "started", &owned_labels(test_key(6), Some("a")));
+            let theirs = sandbox(OTHER, "started", &owned_labels(test_key(7), Some("b")));
+            let untenanted = sandbox(CHILD, "started", &owned_labels(test_key(8), None));
+            if request.is("GET", "/sandbox") {
+                return (
+                    200,
+                    format!(r#"{{"items":[{ours},{theirs},{untenanted}]}}"#),
+                );
+            }
+            if request.path.ends_with(OTHER) {
+                return (200, theirs);
+            }
+            (404, String::new())
+        })
+        .await;
+        let provider = mocked(&mock, Some("a"));
+        let page = provider.list_machines(None, 16).await.unwrap();
+        let ids: Vec<String> = page.machines.iter().map(|m| m.id.to_string()).collect();
+        assert_eq!(ids, [MACHINE]);
+        let filter = mock
+            .requests()
+            .into_iter()
+            .find(|r| r.is("GET", "/sandbox"))
+            .and_then(|r| r.query.into_iter().find(|(name, _)| name == "labels"))
+            .unwrap()
+            .1;
+        assert!(filter.contains(r#""acyclic.tenant":"a""#), "{filter}");
+        assert!(matches!(
+            provider
+                .inspect_machine(MachineId::parse(OTHER).unwrap())
+                .await,
+            Err(ProviderError::NotFound(_))
+        ));
+        let page = provider.list_machines(None, 16).await.unwrap();
+        assert_eq!(
+            page.machines.len(),
+            1,
+            "a foreign read must not enter the registry"
+        );
+    }
+
+    #[tokio::test]
+    async fn label_recovery_reports_a_partial_fork_as_indeterminate() {
+        let key = test_key(10);
+        let child = |id: &str, index: u32| {
+            let slot = map::ForkSlot { index, count: 3 };
+            sandbox(
+                id,
+                "started",
+                &map::labels(key, Some(slot), None, &contract()),
+            )
+        };
+        let partial = format!(r#"{{"items":[{},{}]}}"#, child(MACHINE, 0), child(CHILD, 2));
+        let full = format!(
+            r#"{{"items":[{},{},{}]}}"#,
+            child(CHILD, 2),
+            child(MACHINE, 0),
+            child(OTHER, 1)
+        );
+        for (items, complete) in [(partial, false), (full, true)] {
+            let mock = mock::Mock::start(move |_| {
+                let items = items.clone();
+                async move { (200, items) }
+            })
+            .await;
+            let outcome = mocked(&mock, None).recover(key).await;
+            if complete {
+                let Ok(MutationOutcome::Forked(children)) = outcome else {
+                    panic!("{outcome:?}")
+                };
+                let ids: Vec<String> = children.iter().map(|c| c.id.to_string()).collect();
+                assert_eq!(ids, [MACHINE, OTHER, CHILD]);
+            } else {
+                assert!(
+                    matches!(outcome, Err(ProviderError::Indeterminate(k)) if k == key),
+                    "{outcome:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_sends_the_key_only_to_the_proxy_daytona_reports() {
+        for attacker in [true, false] {
+            let own_url = Arc::new(Mutex::new(String::new()));
+            let reported = Arc::clone(&own_url);
+            let mock = mock::Mock::start(move |request| {
+                let reported = Arc::clone(&reported);
+                async move {
+                    if request.method == "POST" {
+                        return (200, r#"{"exitCode":0,"result":"ok"}"#.to_owned());
+                    }
+                    let proxy = if attacker {
+                        "https://attacker.example/toolbox".to_owned()
+                    } else {
+                        format!("{}/toolbox", reported.lock().unwrap())
+                    };
+                    let body = serde_json::json!({ "id": MACHINE, "toolboxProxyUrl": proxy });
+                    (200, body.to_string())
+                }
+            })
+            .await;
+            mock.url.clone_into(&mut own_url.lock().unwrap());
+            let result = mocked(&mock, None)
+                .api()
+                .execute(
+                    MACHINE,
+                    &api::ExecuteRequest {
+                        command: "true".into(),
+                        cwd: None,
+                        timeout: None,
+                    },
+                )
+                .await;
+            let posts: Vec<_> = mock
+                .requests()
+                .into_iter()
+                .filter(|r| r.method == "POST")
+                .collect();
+            if attacker {
+                assert!(
+                    matches!(result, Err(ProviderError::Rejected(_))),
+                    "{result:?}"
+                );
+                assert!(posts.is_empty());
+            } else {
+                assert_eq!(result.unwrap().exit_code, Some(0));
+                assert_eq!(posts.len(), 1);
+                assert_eq!(posts[0].path, format!("/toolbox/{MACHINE}/process/execute"));
+                assert_eq!(posts[0].authorization.as_deref(), Some("Bearer secret-key"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unregistered_network_commitment_is_refused_before_any_request() {
+        let mock = mock::Mock::start(|_| async { (500, String::new()) }).await;
+        let provider = mocked(&mock, None);
+        let mut unknown = request(test_key(11));
+        unknown.network_policy_digest = [3; 32];
+        assert!(matches!(
+            provider.create(unknown).await,
+            Err(ProviderError::Unsupported(_))
+        ));
+        assert!(mock.requests().is_empty(), "{:?}", mock.requests());
     }
 }

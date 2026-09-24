@@ -106,7 +106,7 @@ async fn exercise(api: &DaytonaApi, id: &str) -> Result<(), String> {
     let started = Instant::now();
     let output = api
         .execute(
-            &sandbox,
+            id,
             &ExecuteRequest {
                 command: "echo acyclic-$((6*7))".into(),
                 cwd: None,
@@ -133,7 +133,9 @@ async fn exercise(api: &DaytonaApi, id: &str) -> Result<(), String> {
 #[tokio::test]
 #[ignore = "needs DAYTONA_API_KEY, a Linux VM snapshot, and creates billable sandboxes"]
 async fn conformance_suite_against_linux_vms() {
-    let config = DaytonaConfig::from_env().expect("DAYTONA_API_KEY must be set");
+    let mut config = DaytonaConfig::from_env().expect("DAYTONA_API_KEY must be set");
+    // The suite commits every machine to network policy `[8; 32]`; run it with no egress.
+    config.register_network_policy([8; 32], map::NetworkPolicy::BlockAll);
     assert!(
         config.default_snapshot.is_some(),
         "DAYTONA_SNAPSHOT must name a registered Linux VM snapshot"

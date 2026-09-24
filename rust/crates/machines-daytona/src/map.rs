@@ -24,6 +24,9 @@ pub const LABEL_KEY: &str = "acyclic.key";
 pub const LABEL_KIND: &str = "acyclic.kind";
 /// Label holding the child index within a fork.
 pub const LABEL_INDEX: &str = "acyclic.index";
+/// Label holding the number of children the fork requested, so label recovery can tell a
+/// complete fork from a partial one.
+pub const LABEL_COUNT: &str = "acyclic.count";
 /// Label holding the tenant the sandbox was created for.
 pub const LABEL_TENANT: &str = "acyclic.tenant";
 /// Label holding the serialized [`MachineContract`].
@@ -219,21 +222,35 @@ pub fn checkpoint_name(key: IdempotencyKey) -> String {
     format!("acyclic-ckpt-{key}")
 }
 
-/// Builds the labels attached to a sandbox created or forked under `key`.
+/// Position of one child within a fork of `count` children.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ForkSlot {
+    /// Zero-based child index.
+    pub index: u32,
+    /// Number of children the fork requested.
+    pub count: u32,
+}
+
+/// Builds the labels attached to a sandbox created (`slot` `None`) or forked under `key`.
 #[must_use]
 pub fn labels(
     key: IdempotencyKey,
-    kind: &str,
-    index: Option<u32>,
+    slot: Option<ForkSlot>,
     tenant: Option<&str>,
     contract: &MachineContract,
 ) -> BTreeMap<String, String> {
     let mut labels = BTreeMap::new();
     labels.insert(LABEL_MANAGED.to_owned(), "true".to_owned());
     labels.insert(LABEL_KEY.to_owned(), key.to_string());
+    let kind = if slot.is_some() {
+        KIND_FORK
+    } else {
+        KIND_CREATE
+    };
     labels.insert(LABEL_KIND.to_owned(), kind.to_owned());
-    if let Some(index) = index {
-        labels.insert(LABEL_INDEX.to_owned(), index.to_string());
+    if let Some(slot) = slot {
+        labels.insert(LABEL_INDEX.to_owned(), slot.index.to_string());
+        labels.insert(LABEL_COUNT.to_owned(), slot.count.to_string());
     }
     if let Some(tenant) = tenant {
         labels.insert(LABEL_TENANT.to_owned(), tenant.to_owned());
@@ -260,6 +277,56 @@ pub fn relabel(
     labels
 }
 
+/// The provider-owned (`acyclic.*`) subset of a label map.
+#[must_use]
+pub fn provider_labels(labels: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
+    labels
+        .iter()
+        .filter(|(name, _)| name.starts_with("acyclic."))
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect()
+}
+
+/// Whether a sandbox is managed by this provider *for `tenant`*: it carries the managed label
+/// and exactly the configured tenant label (none when no tenant is configured). Sandboxes of
+/// other tenants in a shared organization are invisible to this provider.
+#[must_use]
+pub fn owned_by(sandbox: &Sandbox, tenant: Option<&str>) -> bool {
+    sandbox
+        .labels
+        .get(LABEL_MANAGED)
+        .is_some_and(|value| value == "true")
+        && sandbox.labels.get(LABEL_TENANT).map(String::as_str) == tenant
+}
+
+/// The children of one fork in index order, only when they form the complete fork: every
+/// sandbox is a fork child recording the same requested count, and their indices are exactly
+/// `0..count`. `None` for a partial or inconsistent set.
+#[must_use]
+pub fn complete_fork(sandboxes: &[Sandbox]) -> Option<Vec<&Sandbox>> {
+    let parse = |sandbox: &Sandbox, label: &str| {
+        sandbox
+            .labels
+            .get(label)
+            .and_then(|value| value.parse::<u32>().ok())
+    };
+    let count = parse(sandboxes.first()?, LABEL_COUNT)?;
+    let mut slots = BTreeMap::new();
+    for sandbox in sandboxes {
+        if sandbox.labels.get(LABEL_KIND).map(String::as_str) != Some(KIND_FORK)
+            || parse(sandbox, LABEL_COUNT) != Some(count)
+        {
+            return None;
+        }
+        let index = parse(sandbox, LABEL_INDEX).filter(|index| *index < count)?;
+        if slots.insert(index, sandbox).is_some() {
+            return None;
+        }
+    }
+    let complete = u32::try_from(slots.len()).ok()? == count;
+    complete.then(|| slots.into_values().collect())
+}
+
 /// Reads the contract stored by [`labels`], if present and well-formed.
 #[must_use]
 pub fn contract_from_labels(labels: &BTreeMap<String, String>) -> Option<MachineContract> {
@@ -268,59 +335,110 @@ pub fn contract_from_labels(labels: &BTreeMap<String, String>) -> Option<Machine
         .and_then(|encoded| serde_json::from_str(encoded).ok())
 }
 
-/// Label filter selecting every sandbox created or forked under `key`.
+/// Label filter selecting every sandbox created or forked under `key` for `tenant`.
+///
+/// Daytona cannot filter on a label's absence, so callers still check [`owned_by`].
 #[must_use]
-pub fn key_filter(key: IdempotencyKey) -> BTreeMap<String, String> {
-    BTreeMap::from([
-        (LABEL_MANAGED.to_owned(), "true".to_owned()),
-        (LABEL_KEY.to_owned(), key.to_string()),
-    ])
+pub fn key_filter(key: IdempotencyKey, tenant: Option<&str>) -> BTreeMap<String, String> {
+    let mut filter = managed_filter(tenant);
+    filter.insert(LABEL_KEY.to_owned(), key.to_string());
+    filter
 }
 
-/// Label filter selecting every sandbox this provider manages.
+/// Label filter selecting every sandbox this provider manages for `tenant`.
+///
+/// Daytona cannot filter on a label's absence, so callers still check [`owned_by`].
 #[must_use]
-pub fn managed_filter() -> BTreeMap<String, String> {
-    BTreeMap::from([(LABEL_MANAGED.to_owned(), "true".to_owned())])
+pub fn managed_filter(tenant: Option<&str>) -> BTreeMap<String, String> {
+    let mut filter = BTreeMap::from([(LABEL_MANAGED.to_owned(), "true".to_owned())]);
+    if let Some(tenant) = tenant {
+        filter.insert(LABEL_TENANT.to_owned(), tenant.to_owned());
+    }
+    filter
 }
 
-/// Daytona `domainAllowList` for the configured outbound domains; `None` leaves the
-/// organization default in place.
-#[must_use]
-pub fn domain_allow_list(allow_domains: &[String]) -> Option<String> {
-    (!allow_domains.is_empty()).then(|| allow_domains.join(","))
+/// Outbound network policy a sandbox is created with. The SDK request carries only a digest
+/// committing to a separately authorized policy; the host registers the policy each digest
+/// stands for (see [`DaytonaConfig::register_network_policy`]) and this provider refuses a
+/// digest it cannot map to a policy Daytona enforces.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NetworkPolicy {
+    /// No outbound traffic (Daytona `networkBlockAll`).
+    BlockAll,
+    /// Outbound traffic only to these domains (Daytona `domainAllowList`).
+    AllowDomains(Vec<String>),
+}
+
+/// Daytona `(domainAllowList, networkBlockAll)` for the policy committed to by `digest`.
+///
+/// # Errors
+/// Returns [`ProviderError::Unsupported`] when no policy is registered for `digest`, and
+/// [`ProviderError::Invalid`] when the registered policy cannot be expressed exactly (an
+/// empty allow list or a malformed domain).
+pub fn network_fields(
+    config: &DaytonaConfig,
+    digest: &[u8; 32],
+) -> Result<(Option<String>, Option<bool>), ProviderError> {
+    let key = hex(digest);
+    let policy = config.network_policies.get(&key).ok_or_else(|| {
+        ProviderError::Unsupported(format!(
+            "network policy {key} is not registered with this Daytona provider; it cannot enforce an unknown policy"
+        ))
+    })?;
+    match policy {
+        NetworkPolicy::BlockAll => Ok((None, Some(true))),
+        NetworkPolicy::AllowDomains(domains) => {
+            if domains.is_empty() {
+                return Err(ProviderError::Invalid(format!(
+                    "network policy {key} allows no domains; register it as BlockAll"
+                )));
+            }
+            if let Some(bad) = domains.iter().find(|domain| {
+                domain.is_empty()
+                    || !domain
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '*'))
+            }) {
+                return Err(ProviderError::Invalid(format!(
+                    "network policy {key} has an unexpressible domain {bad:?}"
+                )));
+            }
+            Ok((Some(domains.join(",")), Some(false)))
+        }
+    }
 }
 
 /// Builds the Daytona create body for a sandbox booted from `snapshot`.
 ///
-/// `index` is `None` for a plain create and the child index for a checkpoint restore.
+/// `slot` is `None` for a plain create and the child slot for a checkpoint restore. The
+/// outbound network settings are derived from the contract's network-policy commitment.
 ///
 /// # Errors
-/// Returns [`ProviderError::Unsupported`] when the expiration policy cannot be expressed.
+/// Returns [`ProviderError::Unsupported`] when the expiration policy or the committed network
+/// policy cannot be expressed, and [`ProviderError::Invalid`] for a malformed registered
+/// network policy.
 pub fn create_request(
     config: &DaytonaConfig,
     snapshot: &str,
     key: IdempotencyKey,
-    index: Option<u32>,
+    slot: Option<ForkSlot>,
     contract: &MachineContract,
 ) -> Result<CreateSandboxRequest, ProviderError> {
     let (auto_delete_interval, ttl_minutes) = lifetime_fields(contract.expiration)?;
-    let kind = if index.is_some() {
-        KIND_FORK
-    } else {
-        KIND_CREATE
-    };
+    let (domain_allow_list, network_block_all) =
+        network_fields(config, &contract.network_policy_digest)?;
     Ok(CreateSandboxRequest {
-        name: Some(sandbox_name(key, index)),
+        name: Some(sandbox_name(key, slot.map(|slot| slot.index))),
         snapshot: snapshot.to_owned(),
         target: config.region.clone(),
         env: BTreeMap::new(),
-        labels: labels(key, kind, index, config.tenant.as_deref(), contract),
+        labels: labels(key, slot, config.tenant.as_deref(), contract),
         auto_stop_interval: Some(INTERVAL_DISABLED),
         auto_pause_interval: Some(autopause_minutes(contract.suspension)),
         auto_delete_interval: Some(auto_delete_interval),
         ttl_minutes,
-        domain_allow_list: domain_allow_list(&config.allow_domains),
-        network_block_all: None,
+        domain_allow_list,
+        network_block_all,
     })
 }
 
@@ -540,10 +658,12 @@ mod tests {
 
     #[test]
     fn labels_carry_the_contract_and_come_back_identical() {
-        let labels = labels(key(1), KIND_FORK, Some(3), Some("org-demo"), &contract());
+        let slot = ForkSlot { index: 3, count: 4 };
+        let labels = labels(key(1), Some(slot), Some("org-demo"), &contract());
         assert_eq!(labels[LABEL_KEY], key(1).to_string());
         assert_eq!(labels[LABEL_KIND], KIND_FORK);
         assert_eq!(labels[LABEL_INDEX], "3");
+        assert_eq!(labels[LABEL_COUNT], "4");
         assert_eq!(labels[LABEL_TENANT], "org-demo");
         assert_eq!(contract_from_labels(&labels).unwrap(), contract());
     }
@@ -557,7 +677,12 @@ mod tests {
         ]);
         let child = relabel(
             &inherited,
-            labels(key(2), KIND_FORK, Some(0), None, &contract()),
+            labels(
+                key(2),
+                Some(ForkSlot { index: 0, count: 1 }),
+                None,
+                &contract(),
+            ),
         );
         assert_eq!(child["team"], "a");
         assert_eq!(child[LABEL_KEY], key(2).to_string());
@@ -568,7 +693,10 @@ mod tests {
     #[test]
     fn create_request_serializes_to_the_specified_shape() {
         let mut config = DaytonaConfig::new("k");
-        config.allow_domains = vec!["api.anthropic.com".into(), "github.com".into()];
+        config.register_network_policy(
+            [8; 32],
+            NetworkPolicy::AllowDomains(vec!["api.anthropic.com".into(), "github.com".into()]),
+        );
         config.region = Some("us".into());
         let body =
             create_request(&config, "acyclic-worker-base", key(1), None, &contract()).unwrap();
@@ -589,17 +717,19 @@ mod tests {
             json.get("networkAllowList").is_none(),
             "that field takes CIDRs, not domains"
         );
-        assert!(
-            json.get("networkBlockAll").is_none(),
-            "block-all excludes an allow list"
+        assert_eq!(
+            json["networkBlockAll"], false,
+            "an allow list is explicit, not the organization default"
         );
         assert_eq!(json["labels"][LABEL_KIND], KIND_CREATE);
-        let restore = create_request(&config, "ckpt", key(2), Some(4), &contract()).unwrap();
+        let slot = ForkSlot { index: 4, count: 5 };
+        let restore = create_request(&config, "ckpt", key(2), Some(slot), &contract()).unwrap();
         assert_eq!(
             restore.name.as_deref(),
             Some("acyclic-00000000-0000-0000-0000-000000000002-4")
         );
         assert_eq!(restore.labels[LABEL_KIND], KIND_FORK);
+        assert_eq!(restore.labels[LABEL_COUNT], "5");
         let mut aged = contract();
         aged.expiration = ExpirationPolicy::MaxAge(Duration::from_secs(90));
         let body = create_request(&config, "s", key(1), None, &aged).unwrap();
@@ -609,6 +739,84 @@ mod tests {
             create_request(&config, "s", key(1), None, &aged),
             Err(ProviderError::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn network_commitment_decides_the_sandbox_egress() {
+        let mut config = DaytonaConfig::new("k");
+        // An unregistered commitment is refused rather than silently falling back to the
+        // organization default, which may be broader than the committed policy.
+        assert!(matches!(
+            create_request(&config, "s", key(1), None, &contract()),
+            Err(ProviderError::Unsupported(_))
+        ));
+        config.register_network_policy([8; 32], NetworkPolicy::BlockAll);
+        let body = create_request(&config, "s", key(1), None, &contract()).unwrap();
+        assert_eq!(body.network_block_all, Some(true));
+        assert_eq!(body.domain_allow_list, None);
+        let mut other = contract();
+        other.network_policy_digest = [9; 32];
+        assert!(
+            create_request(&config, "s", key(1), None, &other).is_err(),
+            "the registered policy applies only to its own digest"
+        );
+        config.register_network_policy([9; 32], NetworkPolicy::AllowDomains(Vec::new()));
+        assert!(matches!(
+            create_request(&config, "s", key(1), None, &other),
+            Err(ProviderError::Invalid(_))
+        ));
+        config.register_network_policy(
+            [9; 32],
+            NetworkPolicy::AllowDomains(vec!["a.com,b.com".into()]),
+        );
+        assert!(matches!(
+            create_request(&config, "s", key(1), None, &other),
+            Err(ProviderError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn only_a_complete_fork_is_recovered() {
+        let child = |index: u32, count: u32| Sandbox {
+            id: format!("child-{index}"),
+            labels: labels(key(1), Some(ForkSlot { index, count }), None, &contract()),
+            ..Sandbox::default()
+        };
+        let full = [child(2, 3), child(0, 3), child(1, 3)];
+        let ordered = complete_fork(&full).unwrap();
+        let ids: Vec<&str> = ordered.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["child-0", "child-1", "child-2"]);
+        assert!(
+            complete_fork(&[child(0, 3), child(2, 3)]).is_none(),
+            "missing index"
+        );
+        assert!(
+            complete_fork(&[child(0, 2), child(0, 2)]).is_none(),
+            "duplicate index"
+        );
+        assert!(
+            complete_fork(&[child(0, 1), child(1, 2)]).is_none(),
+            "mixed counts"
+        );
+        assert!(complete_fork(&[]).is_none());
+        let mut legacy = child(0, 1);
+        legacy.labels.remove(LABEL_COUNT);
+        assert!(complete_fork(&[legacy]).is_none(), "count unknown");
+    }
+
+    #[test]
+    fn ownership_requires_the_configured_tenant() {
+        let mut sandbox = Sandbox::default();
+        assert!(!owned_by(&sandbox, None));
+        sandbox.labels = labels(key(1), None, Some("a"), &contract());
+        assert!(owned_by(&sandbox, Some("a")));
+        assert!(!owned_by(&sandbox, Some("b")));
+        assert!(!owned_by(&sandbox, None));
+        sandbox.labels = labels(key(1), None, None, &contract());
+        assert!(owned_by(&sandbox, None));
+        assert!(!owned_by(&sandbox, Some("a")));
+        assert_eq!(managed_filter(Some("a"))[LABEL_TENANT], "a");
+        assert_eq!(key_filter(key(1), Some("a"))[LABEL_KEY], key(1).to_string());
     }
 
     #[test]

@@ -25,6 +25,25 @@ refuses to delete a parent while it has live fork children.
 The sandbox class comes from the snapshot, never from the create request. Container snapshots
 are rejected because they have no pause, memory snapshot, or fork.
 
+Safety rules the provider enforces:
+
+- **Network commitment.** A request's `network_policy_digest` must be registered with
+  `DaytonaConfig::register_network_policy` (`BlockAll` or `AllowDomains`); the sandbox is created
+  with exactly that policy (`networkBlockAll` / `domainAllowList`). An unregistered digest is
+  refused instead of falling back to the organization default.
+- **Tenancy.** Every sandbox carries `acyclic.tenant` (or none when no tenant is configured);
+  listing, reads, and label recovery ignore sandboxes of any other tenant.
+- **Adoption.** A replayed create or fork adopts the holder of its deterministic name only when
+  the holder carries exactly this request's provider labels (key, kind, fork slot, tenant,
+  contract); a native fork child must also be listed among the parent's forks.
+- **Cancellation.** `cancel` deletes only sandboxes the operation created, including one whose
+  create returned after the cancellation, never the machine a suspend, wake, policy change,
+  checkpoint, or destroy acts on.
+- **Recovery.** Fork children record the requested count; label recovery returns a fork only
+  when every index is present and reports a partial one as indeterminate.
+- **Toolbox.** `DaytonaApi::execute` reads the sandbox by id and sends the API key only to a
+  toolbox proxy on the API host or its subdomains (or `toolbox_proxy_hosts`).
+
 Live checks, both ignored by default and gated on `DAYTONA_API_KEY`:
 
 ```sh
