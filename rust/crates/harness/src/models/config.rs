@@ -28,7 +28,13 @@ pub struct AppAttribution {
 /// Bounded retry of rate-limited or transiently failed requests.
 ///
 /// Retries happen only before any response byte is decoded, so no model event
-/// has been emitted and the Harness still observes exactly one attempt.
+/// has been emitted and the Harness still observes exactly one attempt. A
+/// request is retried only when the provider provably did not start a
+/// generation: it answered with a rate-limit or server-error status, or the
+/// connection could not be established. A transport failure after the request
+/// may have been sent (a reset or a missing response) is never retried, because
+/// chat completions carry no idempotency key and the provider may already be
+/// generating (and billing) the first attempt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RetryPolicy {
     /// Total attempts including the first; `1` disables retries.
@@ -48,6 +54,9 @@ impl Default for RetryPolicy {
         }
     }
 }
+
+/// Default [`ProviderConfig::idle_timeout`].
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 impl RetryPolicy {
     /// A policy that never retries.
@@ -85,6 +94,11 @@ pub struct ProviderConfig {
     pub app: Option<AppAttribution>,
     /// Retry of rate-limited or transient failures before streaming begins.
     pub retry: RetryPolicy,
+    /// Longest silence tolerated while waiting for response headers or for the
+    /// next body chunk (SSE keep-alive comments count as traffic). A stalled
+    /// stream fails with [`ProviderError::Unavailable`](super::ProviderError::Unavailable)
+    /// instead of hanging the turn.
+    pub idle_timeout: Duration,
 }
 
 impl fmt::Debug for ProviderConfig {
@@ -97,6 +111,7 @@ impl fmt::Debug for ProviderConfig {
             .field("user", &self.user)
             .field("app", &self.app)
             .field("retry", &self.retry)
+            .field("idle_timeout", &self.idle_timeout)
             .finish()
     }
 }
@@ -112,6 +127,7 @@ impl ProviderConfig {
             user: None,
             app: None,
             retry: RetryPolicy::default(),
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
         }
     }
 
@@ -155,10 +171,29 @@ impl ProviderConfig {
         self
     }
 
+    /// Replaces the idle timeout on response headers and body chunks.
+    #[must_use]
+    pub fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
+        self.idle_timeout = idle_timeout;
+        self
+    }
+
     /// Full chat completions endpoint.
+    ///
+    /// `/chat/completions` is appended to the base URL's path, so a query
+    /// string or fragment on the base URL (for example a gateway token) is
+    /// preserved rather than swallowing the suffix. A base URL that does not
+    /// parse is suffixed textually and rejected by the HTTP client on send.
     #[must_use]
     pub fn completions_url(&self) -> String {
-        format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
+        match reqwest::Url::parse(&self.base_url) {
+            Ok(mut url) if !url.cannot_be_a_base() => {
+                let path = format!("{}/chat/completions", url.path().trim_end_matches('/'));
+                url.set_path(&path);
+                url.into()
+            }
+            _ => format!("{}/chat/completions", self.base_url.trim_end_matches('/')),
+        }
     }
 
     /// Scheme, host, and non-default port of the base URL, safe to log.
