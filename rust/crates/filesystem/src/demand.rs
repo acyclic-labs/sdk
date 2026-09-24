@@ -93,8 +93,8 @@ pub struct SourceNode {
 pub struct SourceDirectoryEntry {
     /// Lossless host component encoding.
     pub name: crate::kernel::LogicalName,
-    /// Entry kind, observed without reading its body.
-    pub kind: SourceNodeKind,
+    /// The entry's node, exactly as a lookup of its path would report it.
+    pub node: SourceNode,
 }
 
 /// Cursor bound to one directory and one source epoch.
@@ -939,12 +939,16 @@ pub mod native {
             })
         }
 
+        /// Converts one enumerated entry, reading its node exactly as a lookup
+        /// would. `None` means the entry vanished after enumeration.
         fn next_entry(
             &self,
+            directory: &Path,
             entry: &cap_std::fs::DirEntry,
-        ) -> Result<SourceDirectoryEntry, DemandError> {
+        ) -> Result<Option<SourceDirectoryEntry>, DemandError> {
+            let file_name = entry.file_name();
             let (encoding, bytes) = crate::native_name::host_name_bytes(
-                &entry.file_name(),
+                &file_name,
                 self.inner.profile,
                 self.inner.limits.maximum_component_bytes,
             )
@@ -955,8 +959,18 @@ pub mod native {
                 self.inner.limits.maximum_component_bytes,
             )
             .map_err(|_| DemandError::InvalidRequest)?;
-            let kind = node_kind(entry.file_type()?);
-            Ok(SourceDirectoryEntry { name, kind })
+            match self
+                .inner
+                .root
+                .symlink_metadata(&directory.join(&file_name))
+            {
+                Ok(metadata) => Ok(Some(SourceDirectoryEntry {
+                    name,
+                    node: Self::node(&metadata),
+                })),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error.into()),
+            }
         }
 
         fn page_entries(
@@ -969,6 +983,7 @@ pub mod native {
         ) -> Result<Vec<SourceDirectoryEntry>, DemandError> {
             let mut entries = Vec::with_capacity(maximum_entries as usize);
             let result = (|| {
+                let directory = self.relative(&state.directory)?;
                 while entries.len() < maximum_entries as usize {
                     if cancellation.is_cancelled() {
                         return Err(DemandError::Cancelled);
@@ -988,8 +1003,8 @@ pub mod native {
                     };
                     let Some(entry) = next else { break };
                     let entry = entry?;
-                    match self.next_entry(&entry) {
-                        Ok(converted) => entries.push(converted),
+                    match self.next_entry(&directory, &entry) {
+                        Ok(converted) => entries.extend(converted),
                         Err(error) => {
                             state.pending = Some(entry);
                             return Err(error);
@@ -1664,6 +1679,38 @@ mod tests {
             .await?;
         assert_eq!(second.value.entries.len(), 1);
         assert!(second.work.source_entries_visited <= 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn listed_nodes_are_exactly_what_lookups_report() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("directory"))?;
+        std::fs::write(root.path().join("file"), b"body")?;
+        std::fs::hard_link(root.path().join("file"), root.path().join("alias"))?;
+        let source = NativeDemandSource::open(
+            root.path(),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        )
+        .await?;
+        let provider: &dyn DemandSource = &source;
+        let reference = provider.reference();
+        let cancellation = CancellationToken::new();
+        let page = provider
+            .list_page(reference, &path("/")?, None, 16, &cancellation)
+            .await?;
+        assert_eq!(page.value.entries.len(), 3);
+        for entry in page.value.entries {
+            let name = entry
+                .name
+                .unicode_text()
+                .ok_or("listed name is not Unicode")?;
+            let looked_up = provider
+                .lookup(reference, &path(&format!("/{name}"))?, &cancellation)
+                .await?;
+            assert_eq!(looked_up.value, Some(entry.node), "{name}");
+        }
         Ok(())
     }
 

@@ -1643,7 +1643,21 @@ where
             })?;
             let name = super::adapter::native_mount_name(&entry.name)?;
             let mounted_child = path.child(name.clone());
-            let lookup = if let Some(authored) = self.authored.lookup(&mounted_child)? {
+            let lookup = if let Some(node) = entry.source {
+                self.wait(|| async {
+                    let lookup = self
+                        .lazy
+                        .inspect_listed(&state, &child, node)
+                        .await
+                        .map_err(lazy_error)?;
+                    let file_id = self
+                        .lazy
+                        .stable_file_id_for_lookup(&child, &lookup)
+                        .await
+                        .map_err(lazy_error)?;
+                    Ok(mount_lookup(lookup, file_id))
+                })?
+            } else if let Some(authored) = self.authored.lookup(&mounted_child)? {
                 if self.removed_identity(&child, authored.node.file_id)? {
                     continue;
                 }

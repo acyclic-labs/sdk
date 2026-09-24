@@ -1003,6 +1003,19 @@ impl<S: LazyWorkspaceStore> ImmutableTreap for ShadowTreap<'_, S> {
     }
 }
 
+/// Facts an inspection's caller already established, so it need not repeat them.
+#[derive(Clone, Copy, Default)]
+struct InspectBasis<'a> {
+    /// State the caller read; otherwise the current state is loaded.
+    state: Option<&'a LazyWorkspaceState>,
+    /// The caller's authored view already lacks the path.
+    authored_absent: bool,
+    /// Node a listing observed for the path after excluding tombstones.
+    listed: Option<SourceNode>,
+    /// Keep an observation pinned to an earlier source epoch.
+    retain_pinned_observation: bool,
+}
+
 /// A source-backed workspace whose unresolved paths remain outside its authored generation.
 pub struct LazyWorkspace<A, O, D, S> {
     workspace: Workspace<A, O>,
@@ -1154,6 +1167,8 @@ pub struct LazyDirectoryEntry {
     pub kind: SourceNodeKind,
     /// Whether the authored checkout overrides the source.
     pub authored: bool,
+    /// The source node observed while listing, for entries the source supplies.
+    pub source: Option<SourceNode>,
 }
 
 /// Opaque bounded continuation for a merged source/authored directory scan.
@@ -1804,7 +1819,7 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        self.inspect_with_observation_policy(path, None, budget, cancellation, false, false)
+        self.inspect_with(path, InspectBasis::default(), budget, cancellation)
             .await
     }
 
@@ -1814,8 +1829,11 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        self.inspect_with_observation_policy(path, None, budget, cancellation, true, false)
-            .await
+        let basis = InspectBasis {
+            retain_pinned_observation: true,
+            ..InspectBasis::default()
+        };
+        self.inspect_with(path, basis, budget, cancellation).await
     }
 
     async fn inspect_snapshot_after_authored_absence(
@@ -1824,8 +1842,12 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        self.inspect_with_observation_policy(path, None, budget, cancellation, true, true)
-            .await
+        let basis = InspectBasis {
+            retain_pinned_observation: true,
+            authored_absent: true,
+            ..InspectBasis::default()
+        };
+        self.inspect_with(path, basis, budget, cancellation).await
     }
 
     /// Resolves `path` for a mount whose own checkout already lacks it.
@@ -1839,29 +1861,114 @@ where
         path: &str,
         state: Option<&LazyWorkspaceState>,
     ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        self.inspect_with_observation_policy(
-            path,
+        let basis = InspectBasis {
             state,
+            authored_absent: true,
+            ..InspectBasis::default()
+        };
+        self.inspect_with(
+            path,
+            basis,
             WorkBudget::UNBOUNDED,
-            &cancellation,
-            false,
-            true,
+            &CancellationToken::new(),
         )
         .await
         .map(|receipt| (receipt.value.lookup, receipt.value.source))
     }
 
-    async fn inspect_with_observation_policy(
+    /// Resolves a source entry of a page listed against `state`, reusing the
+    /// node the listing observed. The listing already excluded tombstoned and
+    /// authored names, so neither the source nor the tombstones are consulted.
+    #[cfg(feature = "native-mount")]
+    pub(crate) async fn inspect_listed(
         &self,
+        state: &LazyWorkspaceState,
         path: &str,
-        pinned: Option<&LazyWorkspaceState>,
+        node: SourceNode,
+    ) -> Result<LazyLookup, LazyWorkspaceError> {
+        let basis = InspectBasis {
+            state: Some(state),
+            authored_absent: true,
+            listed: Some(node),
+            ..InspectBasis::default()
+        };
+        self.inspect_with(
+            path,
+            basis,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value.lookup)
+    }
+
+    /// The source node `path` names in `state`: a pinned observation, the node
+    /// a listing supplied, or a fresh source lookup, never a tombstoned path.
+    async fn source_node_in(
+        &self,
+        state: &LazyWorkspaceState,
+        path: &str,
+        basis: InspectBasis<'_>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-        retain_pinned_observation: bool,
-        authored_absent: bool,
+    ) -> Result<OperationReceipt<(SourceReference, SourceNode)>, LazyWorkspaceError> {
+        let fact = self
+            .overlay_fact_measured(state.overlay, path, budget, cancellation)
+            .await?;
+        let mut work = fact.work;
+        let observed = match fact.value {
+            Some(LazyOverlayChange::Tombstone) => return Err(LazyWorkspaceError::NotFound),
+            Some(LazyOverlayChange::Observe { source, node })
+                if basis.retain_pinned_observation || source == state.source =>
+            {
+                Some((source, node))
+            }
+            Some(LazyOverlayChange::Observe { .. }) | None => None,
+        };
+        let (source, node) = if let Some(observed) = observed {
+            observed
+        } else if let Some(node) = basis.listed {
+            (state.source, node)
+        } else {
+            let receipt = self
+                .source
+                .lookup(state.source, &self.namespace_path(path)?, cancellation)
+                .await
+                .map_err(|failure| LazyWorkspaceError::from(failure.error))?;
+            work = account_work(work, receipt.work, budget)?;
+            (
+                state.source,
+                receipt.value.ok_or(LazyWorkspaceError::NotFound)?,
+            )
+        };
+        if basis.listed.is_none() {
+            let tombstoned = self
+                .tombstoned_measured(
+                    state.overlay,
+                    path,
+                    remaining_work(work, budget)?,
+                    cancellation,
+                )
+                .await?;
+            work = account_work(work, tombstoned.work, budget)?;
+            if tombstoned.value {
+                return Err(LazyWorkspaceError::NotFound);
+            }
+        }
+        Ok(OperationReceipt {
+            value: (source, node),
+            work,
+        })
+    }
+
+    async fn inspect_with(
+        &self,
+        path: &str,
+        basis: InspectBasis<'_>,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        let authored = if authored_absent {
+        let authored = if basis.authored_absent {
             OperationReceipt {
                 value: None,
                 work: WorkCounters::default(),
@@ -1885,7 +1992,7 @@ where
                 work,
             });
         }
-        let state = if let Some(state) = pinned {
+        let state = if let Some(state) = basis.state {
             state.clone()
         } else {
             let receipt = self
@@ -1894,50 +2001,17 @@ where
             work = account_work(work, receipt.work, budget)?;
             receipt.value
         };
-        let fact = self
-            .overlay_fact_measured(
-                state.overlay,
+        let resolved = self
+            .source_node_in(
+                &state,
                 path,
+                basis,
                 remaining_work(work, budget)?,
                 cancellation,
             )
             .await?;
-        work = account_work(work, fact.work, budget)?;
-        let observed = match fact.value {
-            Some(LazyOverlayChange::Tombstone) => return Err(LazyWorkspaceError::NotFound),
-            Some(LazyOverlayChange::Observe { source, node })
-                if retain_pinned_observation || source == state.source =>
-            {
-                Some((source, node))
-            }
-            Some(LazyOverlayChange::Observe { .. }) | None => None,
-        };
-        let (source, node) = if let Some(observed) = observed {
-            observed
-        } else {
-            let receipt = self
-                .source
-                .lookup(state.source, &self.namespace_path(path)?, cancellation)
-                .await
-                .map_err(|failure| LazyWorkspaceError::from(failure.error))?;
-            work = account_work(work, receipt.work, budget)?;
-            (
-                state.source,
-                receipt.value.ok_or(LazyWorkspaceError::NotFound)?,
-            )
-        };
-        let tombstoned = self
-            .tombstoned_measured(
-                state.overlay,
-                path,
-                remaining_work(work, budget)?,
-                cancellation,
-            )
-            .await?;
-        work = account_work(work, tombstoned.work, budget)?;
-        if tombstoned.value {
-            return Err(LazyWorkspaceError::NotFound);
-        }
+        work = account_work(work, resolved.work, budget)?;
+        let (source, node) = resolved.value;
         let authored = self
             .authored_alias_measured(&node, remaining_work(work, budget)?, cancellation)
             .await?;
@@ -3348,8 +3422,9 @@ where
                         }
                         entries.push(LazyDirectoryEntry {
                             name: entry.name,
-                            kind: entry.kind,
+                            kind: entry.node.kind,
                             authored: false,
+                            source: Some(entry.node),
                         });
                     }
                     let next = Some(LazyDirectoryCursor {
@@ -4818,6 +4893,7 @@ fn authored_entry(entry: WorkspaceDirectoryEntry) -> LazyDirectoryEntry {
         name: entry.name,
         kind: source_kind(entry.kind),
         authored: true,
+        source: None,
     }
 }
 
@@ -5369,17 +5445,17 @@ mod tests {
                 cancellation.cancel();
                 return Err(OperationFailure::before_work(DemandError::Cancelled));
             }
-            if self.versioned_node(source).is_none() {
-                return Err(OperationFailure::before_work(DemandError::StaleSource));
-            }
             if cursor.is_some() {
                 return Err(OperationFailure::before_work(DemandError::StaleCursor));
             }
+            let Some(node) = self.versioned_node(source) else {
+                return Err(OperationFailure::before_work(DemandError::StaleSource));
+            };
             let entries = if self.directory_entries == 1 {
                 vec![SourceDirectoryEntry {
                     name: LogicalName::new(NameEncoding::Utf8, b"file.txt".to_vec(), 255)
                         .expect("name"),
-                    kind: SourceNodeKind::RegularFile,
+                    node,
                 }]
             } else {
                 (0..self.directory_entries)
@@ -5390,7 +5466,7 @@ mod tests {
                             255,
                         )
                         .expect("name"),
-                        kind: SourceNodeKind::RegularFile,
+                        node,
                     })
                     .collect()
             };
