@@ -1610,7 +1610,7 @@ where
         );
         let cursor = self.take_cursor(generation, cursor)?;
         let page_path = text.clone();
-        let page = self.wait(|| async move {
+        let (page, state) = self.wait(|| async move {
             let mut checkout = self.authored.shared_checkout().lock().await;
             checkout.ensure_publication_resolved()?;
             self.lazy
@@ -1640,7 +1640,11 @@ where
                 authored
             } else {
                 self.wait(|| async {
-                    let lookup = self.lazy.inspect(&child).await.map_err(lazy_error)?;
+                    let lookup = self
+                        .lazy
+                        .inspect_in(&state, &child)
+                        .await
+                        .map_err(lazy_error)?;
                     let file_id = self
                         .lazy
                         .stable_file_id_for_lookup(&child, &lookup)

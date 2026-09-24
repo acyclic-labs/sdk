@@ -22,9 +22,10 @@ use crate::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::convert::Infallible;
 use std::future::Future;
+use std::hash::Hash;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -695,6 +696,189 @@ async fn immutable_treap_value<T: ImmutableTreap>(
     }
 }
 
+/// Entries retained per cache generation before the older generation is dropped.
+const NODE_CACHE_GENERATION: usize = 16_384;
+
+/// Two-generation bounded memo: an entry read since the last rotation
+/// survives the next one, so hot treap spines stay resident.
+struct Generations<K, V> {
+    current: HashMap<K, V>,
+    previous: HashMap<K, V>,
+}
+
+impl<K: Copy + Eq + Hash, V: Clone> Generations<K, V> {
+    fn new() -> Self {
+        Self {
+            current: HashMap::new(),
+            previous: HashMap::new(),
+        }
+    }
+
+    fn get(&mut self, key: &K) -> Option<V> {
+        if let Some(value) = self.current.get(key) {
+            return Some(value.clone());
+        }
+        let value = self.previous.remove(key)?;
+        self.insert(*key, value.clone());
+        Some(value)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        if self.current.len() >= NODE_CACHE_GENERATION {
+            self.previous = std::mem::take(&mut self.current);
+        }
+        self.current.insert(key, value);
+    }
+}
+
+/// Immutable overlay and shadow nodes shared by related lazy workspaces.
+///
+/// A node's identifier is the digest of its encoding, so a cached node can
+/// never be stale: eviction only costs a reload.
+struct NodeCache {
+    overlays: Mutex<Generations<LazyOverlayId, LazyOverlay>>,
+    shadows: Mutex<Generations<LazyShadowId, LazyShadow>>,
+}
+
+/// A lazy store whose immutable nodes are served from memory after first use.
+///
+/// Mutable bindings always reach the backing store. Measured node loads keep
+/// charging their logical read, so work budgets are independent of caching.
+struct NodeCached<S> {
+    store: S,
+    nodes: Arc<NodeCache>,
+}
+
+impl<S> NodeCached<S> {
+    fn new(store: S) -> Self {
+        Self {
+            store,
+            nodes: Arc::new(NodeCache {
+                overlays: Mutex::new(Generations::new()),
+                shadows: Mutex::new(Generations::new()),
+            }),
+        }
+    }
+}
+
+impl<S: Clone> Clone for NodeCached<S> {
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+            nodes: Arc::clone(&self.nodes),
+        }
+    }
+}
+
+fn cached<K: Copy + Eq + Hash, V: Clone>(
+    generations: &Mutex<Generations<K, V>>,
+) -> std::sync::MutexGuard<'_, Generations<K, V>> {
+    generations
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[async_trait]
+impl<S: LazyWorkspaceStore> LazyWorkspaceStore for NodeCached<S> {
+    type Error = S::Error;
+
+    async fn load_lazy_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Option<LazyWorkspaceState>, Self::Error> {
+        self.store.load_lazy_workspace(workspace_id).await
+    }
+
+    async fn load_lazy_workspace_measured(
+        &self,
+        workspace_id: WorkspaceId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<OperationReceipt<Option<LazyWorkspaceState>>, LazyWorkspaceError> {
+        self.store
+            .load_lazy_workspace_measured(workspace_id, budget, cancellation)
+            .await
+    }
+
+    async fn compare_and_swap_lazy_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+        expected_revision: u64,
+        replacement: LazyWorkspaceState,
+    ) -> Result<bool, Self::Error> {
+        self.store
+            .compare_and_swap_lazy_workspace(workspace_id, expected_revision, replacement)
+            .await
+    }
+
+    async fn compare_and_swap_lazy_workspace_measured(
+        &self,
+        workspace_id: WorkspaceId,
+        expected_revision: u64,
+        replacement: LazyWorkspaceState,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<OperationReceipt<bool>, LazyWorkspaceError> {
+        self.store
+            .compare_and_swap_lazy_workspace_measured(
+                workspace_id,
+                expected_revision,
+                replacement,
+                budget,
+                cancellation,
+            )
+            .await
+    }
+
+    async fn load_lazy_overlay(
+        &self,
+        overlay: LazyOverlayId,
+    ) -> Result<Option<LazyOverlay>, Self::Error> {
+        if let Some(value) = cached(&self.nodes.overlays).get(&overlay) {
+            return Ok(Some(value));
+        }
+        let value = self.store.load_lazy_overlay(overlay).await?;
+        if let Some(value) = &value {
+            cached(&self.nodes.overlays).insert(overlay, value.clone());
+        }
+        Ok(value)
+    }
+
+    async fn put_lazy_overlay(
+        &self,
+        overlay: LazyOverlayId,
+        value: LazyOverlay,
+    ) -> Result<(), Self::Error> {
+        self.store.put_lazy_overlay(overlay, value.clone()).await?;
+        cached(&self.nodes.overlays).insert(overlay, value);
+        Ok(())
+    }
+
+    async fn load_lazy_shadow(
+        &self,
+        shadow: LazyShadowId,
+    ) -> Result<Option<LazyShadow>, Self::Error> {
+        if let Some(value) = cached(&self.nodes.shadows).get(&shadow) {
+            return Ok(Some(value));
+        }
+        let value = self.store.load_lazy_shadow(shadow).await?;
+        if let Some(value) = &value {
+            cached(&self.nodes.shadows).insert(shadow, value.clone());
+        }
+        Ok(value)
+    }
+
+    async fn put_lazy_shadow(
+        &self,
+        shadow: LazyShadowId,
+        value: LazyShadow,
+    ) -> Result<(), Self::Error> {
+        self.store.put_lazy_shadow(shadow, value.clone()).await?;
+        cached(&self.nodes.shadows).insert(shadow, value);
+        Ok(())
+    }
+}
+
 struct OverlayTreap<'a, S>(&'a S);
 
 #[async_trait]
@@ -823,7 +1007,7 @@ impl<S: LazyWorkspaceStore> ImmutableTreap for ShadowTreap<'_, S> {
 pub struct LazyWorkspace<A, O, D, S> {
     workspace: Workspace<A, O>,
     source: Arc<D>,
-    store: S,
+    store: NodeCached<S>,
 }
 
 impl<A, O, D, S> Clone for LazyWorkspace<A, O, D, S>
@@ -1168,7 +1352,7 @@ where
         let lazy = Self {
             workspace,
             source,
-            store,
+            store: NodeCached::new(store),
         };
         lazy.recover_pending_remove().await?;
         Ok(lazy)
@@ -1179,6 +1363,14 @@ where
         workspace: Workspace<A, O>,
         source: Arc<D>,
         store: S,
+    ) -> Result<Self, LazyWorkspaceError> {
+        Self::open_with(workspace, source, NodeCached::new(store)).await
+    }
+
+    async fn open_with(
+        workspace: Workspace<A, O>,
+        source: Arc<D>,
+        store: NodeCached<S>,
     ) -> Result<Self, LazyWorkspaceError> {
         let state = store
             .load_lazy_workspace(workspace.id())
@@ -1235,7 +1427,7 @@ where
     where
         S: Clone,
     {
-        Self::open(workspace, Arc::clone(&self.source), self.store.clone()).await
+        Self::open_with(workspace, Arc::clone(&self.source), self.store.clone()).await
     }
 
     /// Captures the complete logical lazy-tree identity without enumeration.
@@ -1623,7 +1815,7 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        self.inspect_with_observation_policy(path, budget, cancellation, false, false)
+        self.inspect_with_observation_policy(path, None, budget, cancellation, false, false)
             .await
     }
 
@@ -1633,7 +1825,7 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        self.inspect_with_observation_policy(path, budget, cancellation, true, false)
+        self.inspect_with_observation_policy(path, None, budget, cancellation, true, false)
             .await
     }
 
@@ -1643,13 +1835,35 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        self.inspect_with_observation_policy(path, budget, cancellation, true, true)
+        self.inspect_with_observation_policy(path, None, budget, cancellation, true, true)
             .await
+    }
+
+    /// Resolves `path` against a state already read by the caller, so a
+    /// directory page and its entries describe one snapshot.
+    #[cfg(feature = "native-mount")]
+    pub(crate) async fn inspect_in(
+        &self,
+        state: &LazyWorkspaceState,
+        path: &str,
+    ) -> Result<LazyLookup, LazyWorkspaceError> {
+        let cancellation = CancellationToken::new();
+        self.inspect_with_observation_policy(
+            path,
+            Some(state),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            false,
+            false,
+        )
+        .await
+        .map(|receipt| receipt.value.lookup)
     }
 
     async fn inspect_with_observation_policy(
         &self,
         path: &str,
+        pinned: Option<&LazyWorkspaceState>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
         retain_pinned_observation: bool,
@@ -1679,11 +1893,15 @@ where
                 work,
             });
         }
-        let state_receipt = self
-            .state_measured(remaining_work(work, budget)?, cancellation)
-            .await?;
-        work = account_work(work, state_receipt.work, budget)?;
-        let state = state_receipt.value;
+        let state = if let Some(state) = pinned {
+            state.clone()
+        } else {
+            let receipt = self
+                .state_measured(remaining_work(work, budget)?, cancellation)
+                .await?;
+            work = account_work(work, receipt.work, budget)?;
+            receipt.value
+        };
         let fact = self
             .overlay_fact_measured(
                 state.overlay,
@@ -2771,6 +2989,9 @@ where
     /// Reads the same merged sparse directory against an unpublished mounted
     /// checkout candidate instead of the workspace's last committed head.
     #[cfg(feature = "native-mount")]
+    ///
+    /// Returns the state the page was listed against, so callers resolve its
+    /// entries with [`Self::inspect_in`] from the same snapshot.
     pub(crate) async fn list_directory_in_checkout(
         &self,
         checkout: &mut crate::Checkout<A, O>,
@@ -2778,19 +2999,23 @@ where
         cursor: Option<LazyDirectoryCursor>,
         maximum_entries: u32,
         mounted_mask: Option<(&[String], bool)>,
-    ) -> Result<LazyDirectoryPage, LazyWorkspaceError> {
+    ) -> Result<(LazyDirectoryPage, LazyWorkspaceState), LazyWorkspaceError> {
         let cancellation = CancellationToken::new();
-        self.list_directory_measured(
-            path,
-            cursor,
-            maximum_entries,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            Some(checkout),
-            mounted_mask,
-        )
-        .await
-        .map(|receipt| receipt.value)
+        let state = self.state().await?;
+        let page = self
+            .list_directory_at(
+                &state,
+                WorkCounters::default(),
+                path,
+                cursor,
+                maximum_entries,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+                Some(checkout),
+                mounted_mask,
+            )
+            .await?;
+        Ok((page.value, state))
     }
 
     /// A mounted replacement must not inherit entries from an unrelated
@@ -2834,13 +3059,41 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn list_directory_measured(
+        &self,
+        path: &str,
+        cursor: Option<LazyDirectoryCursor>,
+        maximum_entries: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+        mounted: Option<&mut crate::Checkout<A, O>>,
+        mounted_mask: Option<(&[String], bool)>,
+    ) -> Result<OperationReceipt<LazyDirectoryPage>, LazyWorkspaceError> {
+        let state = self.state_measured(budget, cancellation).await?;
+        self.list_directory_at(
+            &state.value,
+            state.work,
+            path,
+            cursor,
+            maximum_entries,
+            budget,
+            cancellation,
+            mounted,
+            mounted_mask,
+        )
+        .await
+    }
+
     #[allow(
         clippy::too_many_lines,
         clippy::too_many_arguments,
         clippy::cognitive_complexity
     )]
-    async fn list_directory_measured(
+    async fn list_directory_at(
         &self,
+        state: &LazyWorkspaceState,
+        mut work: WorkCounters,
         path: &str,
         cursor: Option<LazyDirectoryCursor>,
         maximum_entries: u32,
@@ -2852,9 +3105,6 @@ where
         if maximum_entries == 0 {
             return Err(LazyWorkspaceError::InvalidPageBound);
         }
-        let state = self.state_measured(budget, cancellation).await?;
-        let mut work = state.work;
-        let state = state.value;
         let directory = self.namespace_path(path)?;
         let mut phase = match cursor {
             Some(cursor)
@@ -4903,6 +5153,51 @@ fn exactify_batch_key(snapshot_id: LazySnapshotId, root: &str, index: u64) -> Id
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
+
+    #[tokio::test]
+    async fn immutable_nodes_are_served_from_memory_after_first_use() {
+        let cached = NodeCached::new(MemoryLazyWorkspaceStore::default());
+        let overlay = LazyOverlay::Empty;
+        let overlay_id = overlay.id().expect("overlay id");
+        let shadow = LazyShadow::Empty;
+        let shadow_id = shadow.id().expect("shadow id");
+        cached
+            .put_lazy_overlay(overlay_id, overlay.clone())
+            .await
+            .expect("put overlay");
+        cached
+            .put_lazy_shadow(shadow_id, shadow.clone())
+            .await
+            .expect("put shadow");
+        let detached = NodeCached {
+            store: MemoryLazyWorkspaceStore::default(),
+            nodes: Arc::clone(&cached.nodes),
+        };
+        assert_eq!(
+            detached.load_lazy_overlay(overlay_id).await,
+            Ok(Some(overlay))
+        );
+        assert_eq!(detached.load_lazy_shadow(shadow_id).await, Ok(Some(shadow)));
+    }
+
+    #[test]
+    fn node_cache_rotation_keeps_recently_used_entries() {
+        let mut generations = Generations::new();
+        for key in 0..NODE_CACHE_GENERATION {
+            generations.insert(key, key);
+        }
+        generations.insert(NODE_CACHE_GENERATION, NODE_CACHE_GENERATION);
+        assert_eq!(generations.get(&0), Some(0));
+        for key in NODE_CACHE_GENERATION + 1..2 * NODE_CACHE_GENERATION {
+            generations.insert(key, key);
+        }
+        assert_eq!(
+            generations.get(&0),
+            Some(0),
+            "a promoted entry survives rotation"
+        );
+        assert_eq!(generations.get(&1), None, "an unused entry is evicted");
+    }
     use super::*;
     use crate::demand::{
         DemandResult, SourceCursor, SourceDirectoryEntry, SourceDirectoryPage, SourceMetadata,
@@ -5599,12 +5894,14 @@ mod tests {
         let source_page = root
             .list_directory_in_checkout(&mut checkout, "/", None, 16, None)
             .await
+            .map(|(page, _)| page)
             .expect("source page");
         assert_eq!(source_page.entries.len(), 1);
         assert!(!source_page.entries[0].authored);
         let authored_page = root
             .list_directory_in_checkout(&mut checkout, "/", source_page.next, 16, None)
             .await
+            .map(|(page, _)| page)
             .expect("authored page");
         assert_eq!(authored_page.entries.len(), 1);
         assert!(authored_page.entries[0].authored);
@@ -5655,6 +5952,7 @@ mod tests {
             root.list_directory_in_checkout(&mut checkout, "/d", None, 16, None)
                 .await
                 .expect("source directory")
+                .0
                 .entries
                 .len(),
             1
@@ -5673,6 +5971,7 @@ mod tests {
         let page = root
             .list_directory_in_checkout(&mut checkout, "/d", None, 16, None)
             .await
+            .map(|(page, _)| page)
             .expect("replacement directory");
         assert!(page.entries.is_empty());
         assert!(page.next.is_none());
