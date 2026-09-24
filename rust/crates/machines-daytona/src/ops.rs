@@ -225,6 +225,20 @@ impl OperationRegistry {
         }
     }
 
+    /// Records a sandbox the pending operation adopted from an earlier attempt under its key,
+    /// as a target that cancellation and rollback leave alone. Returns `false`, without
+    /// recording anything, when the operation is no longer pending.
+    #[must_use]
+    pub fn bind_adopted(&self, operation: OperationId, sandbox_id: &str) -> bool {
+        match self.lock().operations.get_mut(&operation) {
+            Some(record) if record.phase == OperationPhase::Pending => {
+                record.targets.push(sandbox_id.to_owned());
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Records an existing sandbox the pending operation acts on. Cancellation leaves it alone.
     pub fn bind_target(&self, operation: OperationId, sandbox_id: &str) {
         if let Some(record) = self.lock().operations.get_mut(&operation) {
