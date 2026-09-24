@@ -40,6 +40,7 @@ pub(super) fn is_command(command: &str) -> bool {
             | "mount-smoke2"
             | "mount-hold"
             | "source-probe"
+            | "mount-bench"
     )
 }
 
@@ -55,9 +56,11 @@ pub(super) fn run() {
         Some("mount-smoke2") => mount_smoke2(&args[1..]),
         Some("mount-hold") => mount_hold(&args[1..]),
         Some("source-probe") => source_probe(&args[1..]),
+        Some("mount-bench") => mount_bench(&args[1..]),
         _ => Err(
             "usage: qualify fixture <dir> [--with-fifo] | roundtrip <src> <work> \
-             | corpus <dir> <files> <mb> | bench <src> <work> [rounds]"
+             | corpus <dir> <files> <mb> | bench <src> <work> [rounds] \
+             | mount-bench <work> [files] [file-bytes]"
                 .into(),
         ),
     };
@@ -711,25 +714,190 @@ fn corpus(args: &[String]) -> Result<(), Failure> {
     let files: u64 = args.get(1).ok_or("corpus: missing <files>")?.parse()?;
     let total_mb: u64 = args.get(2).ok_or("corpus: missing <mb>")?.parse()?;
     let bytes_per_file = (total_mb * 1024 * 1024) / files.max(1);
-    let mut payload = Vec::with_capacity(bytes_per_file as usize);
-    let mut state: u32 = 0x1234_5678;
-    while (payload.len() as u64) < bytes_per_file {
-        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        payload.extend_from_slice(&state.to_le_bytes());
-    }
     let started = Instant::now();
-    for index in 0..files {
-        let dir = root.join(format!("dir-{:05}", index / 100));
-        if index % 100 == 0 {
-            fs::create_dir_all(&dir)?;
-        }
-        fs::write(dir.join(format!("file-{index:07}.dat")), &payload)?;
-    }
+    write_corpus(&root, files, bytes_per_file)?;
     println!(
         "corpus: {files} files x {bytes_per_file} bytes in {:?}",
         started.elapsed()
     );
     Ok(())
+}
+
+fn write_corpus(root: &Path, files: u64, bytes_per_file: u64) -> Result<(), Failure> {
+    let payload = corpus_payload(bytes_per_file);
+    for index in 0..files {
+        if index % 100 == 0 {
+            fs::create_dir_all(root.join(corpus_directory(index / 100)))?;
+        }
+        fs::write(root.join(corpus_file(index)), &payload)?;
+    }
+    Ok(())
+}
+
+fn corpus_payload(bytes: u64) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(bytes as usize);
+    let mut state: u32 = 0x1234_5678;
+    while (payload.len() as u64) < bytes {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        payload.extend_from_slice(&state.to_le_bytes());
+    }
+    payload.truncate(bytes as usize);
+    payload
+}
+
+fn corpus_directory(directory: u64) -> String {
+    format!("dir-{directory:05}")
+}
+
+fn corpus_file(index: u64) -> PathBuf {
+    Path::new(&corpus_directory(index / 100)).join(format!("file-{index:07}.dat"))
+}
+
+// ---------------------------------------------------------------------------
+// mount-bench: the plugin's lazy mount of a physical root versus the same
+// operations on the root itself
+// ---------------------------------------------------------------------------
+
+fn mount_bench(args: &[String]) -> Result<(), Failure> {
+    use acyclic_fs::demand::native::NativeDemandSource;
+    use acyclic_fs::model::VolumeLimits;
+    use acyclic_fs::native_mount::MountOptions;
+    use acyclic_fs::{DistributedFs, LocalCoreStateStore, MountPublication};
+    use std::sync::Arc;
+
+    let work = PathBuf::from(args.first().ok_or("mount-bench: missing <work>")?);
+    let files: u64 = args.get(1).map_or(Ok(2_000), |value| value.parse())?;
+    let file_bytes: u64 = args.get(2).map_or(Ok(4_096), |value| value.parse())?;
+    let source = work.join("src");
+    let native_writes = work.join("native-writes");
+    let mount_dir = work.join("mnt");
+    for directory in [&source, &native_writes, &mount_dir] {
+        fs::create_dir_all(directory)?;
+    }
+    write_corpus(&source, files, file_bytes)?;
+    let source = source.canonicalize()?;
+    let profile = if cfg!(windows) {
+        FilesystemProfile::Windows
+    } else {
+        FilesystemProfile::Posix
+    };
+    let runtime = tokio::runtime::Runtime::new()?;
+    let mount = runtime.block_on(async {
+        let engine = LocalFs::local(local_options(work.join("store"))?)
+            .await
+            .map_err(engine_err("open store"))?;
+        let distributed =
+            DistributedFs::new(engine, LocalCoreStateStore::new(work.join("core-state")));
+        let demand = NativeDemandSource::open(&source, profile, VolumeLimits::default())
+            .await
+            .map_err(engine_err("open source"))?;
+        let workspace = distributed
+            .attach_lazy_with_config(
+                "mount-bench",
+                Arc::new(demand),
+                VolumeConfig::native(Lifecycle::Durable),
+            )
+            .await
+            .map_err(engine_err("attach source"))?;
+        workspace
+            .mount(
+                &mount_dir,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await
+            .map_err(engine_err("mount"))
+    })?;
+    // Nothing below may leave the mount attached.
+    let measured = (|| -> Result<_, Failure> {
+        let payload = corpus_payload(file_bytes);
+        let native = workload(&source, &native_writes, files, &payload)?;
+        let cold = workload(&mount_dir, &mount_dir.join("writes-cold"), files, &payload)?;
+        let warm = workload(&mount_dir, &mount_dir.join("writes-warm"), files, &payload)?;
+        Ok((native, cold, warm))
+    })();
+    let unmounted = runtime
+        .block_on(mount.unmount())
+        .map_err(engine_err("unmount"));
+    let (native, cold, warm) = measured?;
+    unmounted?;
+    let phases = ["list", "stat", "read", "write"]
+        .into_iter()
+        .zip(native.into_iter().zip(cold).zip(warm))
+        .map(|(phase, ((native, cold), warm))| {
+            (
+                phase.to_owned(),
+                serde_json::json!({
+                    "nativeMicrosPerOp": native,
+                    "mountColdMicrosPerOp": cold,
+                    "mountWarmMicrosPerOp": warm,
+                    "coldRatio": cold / native,
+                    "warmRatio": warm / native,
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    println!(
+        "{}",
+        serde_json::json!({
+            "platform": std::env::consts::OS,
+            "files": files,
+            "fileBytes": file_bytes,
+            "phases": phases,
+        })
+    );
+    Ok(())
+}
+
+/// Times directory listing, stat, full reads, and fresh writes over the
+/// corpus under `root`, returning microseconds per operation for each phase.
+fn workload(root: &Path, writes: &Path, files: u64, payload: &[u8]) -> Result<[f64; 4], Failure> {
+    let per_op = |started: Instant, operations: u64| {
+        started.elapsed().as_secs_f64() * 1e6 / operations.max(1) as f64
+    };
+    let directories = files.div_ceil(100);
+    let started = Instant::now();
+    let mut listed = 0;
+    for directory in 0..directories {
+        let path = root.join(corpus_directory(directory));
+        listed += fs::read_dir(&path).map_err(io_at("list", &path))?.count() as u64;
+    }
+    if listed != files {
+        return Err(format!(
+            "listed {listed} of {files} corpus files under {}",
+            root.display()
+        )
+        .into());
+    }
+    let list = per_op(started, directories);
+    let started = Instant::now();
+    for index in 0..files {
+        let path = root.join(corpus_file(index));
+        if fs::metadata(&path).map_err(io_at("stat", &path))?.len() != payload.len() as u64 {
+            return Err(format!("corpus file {index} has the wrong length").into());
+        }
+    }
+    let stat = per_op(started, files);
+    let started = Instant::now();
+    for index in 0..files {
+        let path = root.join(corpus_file(index));
+        if fs::read(&path).map_err(io_at("read", &path))? != payload {
+            return Err(format!("corpus file {index} differs from its payload").into());
+        }
+    }
+    let read = per_op(started, files);
+    let written = files.min(500);
+    fs::create_dir_all(writes).map_err(io_at("create", writes))?;
+    let started = Instant::now();
+    for index in 0..written {
+        let path = writes.join(format!("file-{index:07}.dat"));
+        fs::write(&path, payload).map_err(io_at("write", &path))?;
+    }
+    let write = per_op(started, written);
+    Ok([list, stat, read, write])
+}
+
+fn io_at<'a>(operation: &'a str, path: &'a Path) -> impl FnOnce(std::io::Error) -> Failure + 'a {
+    move |error| format!("{operation} {}: {error}", path.display()).into()
 }
 
 // ---------------------------------------------------------------------------
