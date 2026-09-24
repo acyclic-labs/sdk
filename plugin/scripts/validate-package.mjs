@@ -43,9 +43,13 @@ if (targetSchema.version !== 1 || !targetSchema.targets || Array.isArray(targetS
   fail("unsupported Acyclic target schema");
 }
 const SUPPORTED_TARGETS = new Set(Object.keys(targetSchema.targets));
+const packageManifest = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
 const changelog = join(plugin, "CHANGELOG.md");
-if (!existsSync(changelog) || !statSync(changelog).isFile()
-  || readFileSync(changelog, "utf8").split(/\r?\n/, 1)[0].trim() !== "# Changelog") {
+const changelogText = existsSync(changelog) && statSync(changelog).isFile()
+  ? readFileSync(changelog, "utf8")
+  : "";
+if (changelogText.split(/\r?\n/, 1)[0].trim() !== `# ${packageManifest.name} changelog`
+  || !changelogText.split(/\r?\n/).some(line => line.startsWith(`## ${packageManifest.version} `))) {
   fail(`missing or invalid package changelog: ${changelog}`);
 }
 for (const path of [
@@ -71,7 +75,7 @@ if (args.require_universal && (targets.size !== SUPPORTED_TARGETS.size || [...SU
   fail(`universal target mismatch; missing=${JSON.stringify(missing)}, extra=${JSON.stringify(extra)}`);
 }
 if (args.require_universal) {
-  const version = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8")).version;
+  const version = packageManifest.version;
   const receipts = [
     ["linux-x64-gnu", "linux", "x86_64", "linux-fuse"],
     ["darwin-arm64", "macos", "aarch64", "macos-nfs"],
