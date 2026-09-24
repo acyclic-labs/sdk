@@ -7128,7 +7128,7 @@ async fn handle_linux_mailbox_request(
     control: Arc<impl ConcurrentControlRequestDispatcher>,
     ledger: Arc<ControlLedger>,
 ) -> Result<(), String> {
-    let response = match read_linux_control_file_at(&exchange, "processing").await {
+    let response = match read_linux_control_file_at(&exchange, "processing") {
         Ok(request) if request.len() <= MAXIMUM_CONTROL_MESSAGE_BYTES => {
             match serde_json::from_slice::<ControlEnvelope<ControlRequest>>(&request) {
                 Ok(envelope) => dispatch_control_envelope(&control, &ledger, envelope).await,
@@ -7152,20 +7152,20 @@ async fn handle_linux_mailbox_request(
     ) else {
         return Ok(());
     };
-    let mut response_file = tokio::fs::File::from_std(std::fs::File::from(response_file));
-    if response_file.write_all(&encoded).await.is_err() || response_file.flush().await.is_err() {
+    if std::fs::File::from(response_file)
+        .write_all(&encoded)
+        .is_err()
+    {
         return Ok(());
     }
-    drop(response_file);
     let _ = rustix::fs::renameat(&*exchange, "response.pending", &*exchange, "response");
     Ok(())
 }
 
+/// Exchange files are bounded and live in a private runtime directory, so
+/// reading one directly is cheaper than a hop through the blocking pool.
 #[cfg(target_os = "linux")]
-async fn read_linux_control_file_at(
-    directory: &rustix::fd::OwnedFd,
-    name: &str,
-) -> io::Result<Vec<u8>> {
+fn read_linux_control_file_at(directory: &rustix::fd::OwnedFd, name: &str) -> io::Result<Vec<u8>> {
     let file = rustix::fs::openat(
         directory,
         name,
@@ -7183,15 +7183,14 @@ async fn read_linux_control_file_at(
             "Acyclic control message is not a regular file",
         ));
     }
-    let file = tokio::fs::File::from_std(std::fs::File::from(file));
+    let file = std::fs::File::from(file);
     let mut request = Vec::with_capacity(MAXIMUM_CONTROL_MESSAGE_BYTES.min(64 * 1024));
     file.take(
         u64::try_from(MAXIMUM_CONTROL_MESSAGE_BYTES)
             .unwrap_or(u64::MAX)
             .saturating_add(1),
     )
-    .read_to_end(&mut request)
-    .await?;
+    .read_to_end(&mut request)?;
     Ok(request)
 }
 
@@ -11270,16 +11269,9 @@ async fn send_linux_mailbox_request(
             rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
         )
         .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        let mut request_file = tokio::fs::File::from_std(std::fs::File::from(request_file));
-        request_file
+        std::fs::File::from(request_file)
             .write_all(encoded)
-            .await
             .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        request_file
-            .flush()
-            .await
-            .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        drop(request_file);
         rustix::fs::renameat(
             &*exchange_directory,
             "request.pending",
@@ -11287,24 +11279,41 @@ async fn send_linux_mailbox_request(
             "request",
         )
         .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+        // The service publishes its response by renaming it into the exchange.
+        // Each check for the response follows the watch, so none is missed.
+        let published = rustix::fs::inotify::init(
+            rustix::fs::inotify::CreateFlags::CLOEXEC | rustix::fs::inotify::CreateFlags::NONBLOCK,
+        )
+        .and_then(|published| {
+            rustix::fs::inotify::add_watch(
+                &published,
+                mailbox.join(&exchange_name),
+                rustix::fs::inotify::WatchFlags::MOVED_TO
+                    | rustix::fs::inotify::WatchFlags::ONLYDIR
+                    | rustix::fs::inotify::WatchFlags::DONT_FOLLOW,
+            )?;
+            Ok(published)
+        })
+        .map_err(errno_to_io)
+        .and_then(tokio::io::unix::AsyncFd::new)
+        .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
         let response = loop {
-            match read_linux_control_file_at(&exchange_directory, "response").await {
+            match read_linux_control_file_at(&exchange_directory, "response") {
                 Ok(response) if response.len() <= MAXIMUM_CONTROL_MESSAGE_BYTES => break response,
                 Ok(_) => {
                     return Err(ControlRequestError::Indeterminate(
                         "Acyclic control response exceeds the 4 MiB bound".to_owned(),
                     ));
                 }
-                Err(error)
-                    if error.kind() == io::ErrorKind::NotFound
-                        && tokio::time::Instant::now() < deadline =>
-                {
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    return Err(ControlRequestError::Indeterminate(
-                        "Acyclic service did not answer the filesystem control request".to_owned(),
-                    ));
+                    let mut ready = published
+                        .readable()
+                        .await
+                        .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+                    let mut events = [0_u8; 4096];
+                    while let Ok(Ok(_)) = ready.try_io(|published| {
+                        rustix::io::read(published.get_ref(), &mut events).map_err(errno_to_io)
+                    }) {}
                 }
                 Err(error) => return Err(ControlRequestError::Indeterminate(error.to_string())),
             }
@@ -11317,7 +11326,7 @@ async fn send_linux_mailbox_request(
         .ok()
         .and_then(|mut slot| slot.take());
     if let Some(exchange) = exchange {
-        tokio::task::spawn_blocking(move || remove_linux_mailbox_exchange(&exchange));
+        remove_linux_mailbox_exchange(&exchange);
     }
     match result {
         Ok(result) => result,
