@@ -16,7 +16,7 @@ export type Image =
   | { readonly kind: "custom"; readonly digestHex: string }
   | { readonly kind: "checkpoint"; readonly checkpointId: CheckpointId };
 
-export type Capability = "elastic-cpu" | "elastic-memory" | "live-checkpoint" | "live-fork" | "suspend-resume" | "live-movement";
+export type Capability = "elastic-cpu" | "elastic-memory" | "live-checkpoint" | "live-fork" | "suspend-resume" | "live-movement" | "disk-fork";
 export type CompatibilityPolicy = { readonly kind: "best-effort" } | { readonly kind: "require"; readonly capabilities: readonly Capability[] };
 export type Performance = "elastic" | "dedicated";
 export type SuspensionPolicy = { readonly kind: "manual" } | { readonly kind: "after-idle"; readonly milliseconds: number };

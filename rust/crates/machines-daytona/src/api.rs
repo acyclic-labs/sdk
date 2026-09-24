@@ -526,6 +526,92 @@ impl DaytonaApi {
         self.json(self.authorized(self.http.post(url)).json(request))
             .await
     }
+
+    fn toolbox_url(sandbox: &Sandbox, route: &str) -> Result<String, ProviderError> {
+        let proxy = sandbox.toolbox_proxy_url.as_deref().ok_or_else(|| {
+            ProviderError::Rejected(format!("sandbox {} has no toolbox proxy URL", sandbox.id))
+        })?;
+        Ok(format!(
+            "{}/{}/{route}",
+            proxy.trim_end_matches('/'),
+            sandbox.id
+        ))
+    }
+
+    /// Reads one file through the sandbox's toolbox proxy:
+    /// `GET {toolboxProxyUrl}/{sandboxId}/files/download?path={path}`.
+    ///
+    /// # Errors
+    /// Returns [`ProviderError::Rejected`] when the sandbox reports no toolbox proxy URL, and
+    /// maps transport failures and non-2xx statuses to [`ProviderError`].
+    pub async fn download_file(
+        &self,
+        sandbox: &Sandbox,
+        path: &str,
+    ) -> Result<Vec<u8>, ProviderError> {
+        let url = Self::toolbox_url(sandbox, "files/download")?;
+        let response = self
+            .authorized(self.http.get(url).query(&[("path", path)]))
+            .send()
+            .await
+            .map_err(|error| transport_error(&error))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|error| transport_error(&error))?;
+        if status.is_success() {
+            Ok(body.to_vec())
+        } else {
+            Err(status_error(status, &String::from_utf8_lossy(&body)))
+        }
+    }
+
+    /// Writes one file through the sandbox's toolbox proxy:
+    /// `POST {toolboxProxyUrl}/{sandboxId}/files/upload?path={path}` with a
+    /// `multipart/form-data` body whose `file` part holds `contents`.
+    ///
+    /// # Errors
+    /// Returns [`ProviderError::Rejected`] when the sandbox reports no toolbox proxy URL, and
+    /// maps transport failures and non-2xx statuses to [`ProviderError`].
+    pub async fn upload_file(
+        &self,
+        sandbox: &Sandbox,
+        path: &str,
+        contents: &[u8],
+    ) -> Result<(), ProviderError> {
+        let url = Self::toolbox_url(sandbox, "files/upload")?;
+        let (content_type, body) = multipart_file(contents);
+        self.empty(
+            self.authorized(self.http.post(url).query(&[("path", path)]))
+                .header(reqwest::header::CONTENT_TYPE, content_type)
+                .body(body),
+        )
+        .await
+    }
+}
+
+/// One-part `multipart/form-data` body carrying `contents` as the `file` field. The boundary
+/// is fixed and long; a collision would need the archive to contain it verbatim, which the
+/// check below turns into a different boundary.
+fn multipart_file(contents: &[u8]) -> (String, Vec<u8>) {
+    let mut boundary = "acyclic-machines-daytona-7f3c9a1e5b2d4086".to_owned();
+    while contents
+        .windows(boundary.len())
+        .any(|window| window == boundary.as_bytes())
+    {
+        boundary.push('x');
+    }
+    let mut body = Vec::with_capacity(contents.len() + 256);
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"archive\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(contents);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
 }
 
 fn transport_error(error: &reqwest::Error) -> ProviderError {
@@ -602,6 +688,19 @@ mod tests {
         })
         .unwrap();
         assert_eq!(labels, serde_json::json!({ "labels": { "a": "b" } }));
+    }
+
+    #[test]
+    fn multipart_body_frames_the_file_part() {
+        let (content_type, body) = multipart_file(b"payload");
+        let boundary = content_type.split("boundary=").nth(1).unwrap();
+        let text = String::from_utf8(body).unwrap();
+        assert!(text.starts_with(&format!("--{boundary}\r\n")));
+        assert!(text.contains("name=\"file\""));
+        assert!(text.contains("\r\n\r\npayload\r\n"));
+        assert!(text.ends_with(&format!("--{boundary}--\r\n")));
+        let (content_type, _) = multipart_file(boundary.as_bytes());
+        assert!(!content_type.ends_with(&format!("={boundary}")));
     }
 
     #[test]

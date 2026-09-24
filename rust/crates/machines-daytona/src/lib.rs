@@ -15,21 +15,24 @@ use std::{
 
 use acyclic_machines::{
     Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy, CreateMachine, EventPage,
-    IdempotencyKey, Image, ImageQualification, MAX_EVENT_PAGE_SIZE, MAX_FORK_CHILDREN,
-    MAX_PAGE_SIZE, MachineContract, MachineId, MachineObservation, MachinePage, MachineState,
-    MachinesProvider, MutationOutcome, OperationId, OperationObservation, OperationPhase,
-    OperationStream, Performance, ProviderAssurance, ProviderError, SuspensionPolicy, UsageReceipt,
+    ForkFidelity, IdempotencyKey, Image, ImageQualification, MAX_EVENT_PAGE_SIZE,
+    MAX_FORK_CHILDREN, MAX_PAGE_SIZE, MachineContract, MachineId, MachineObservation, MachinePage,
+    MachineState, MachinesProvider, MutationOutcome, OperationId, OperationObservation,
+    OperationPhase, OperationStream, Performance, ProviderAssurance, ProviderError,
+    SuspensionPolicy, UsageReceipt,
 };
 use async_trait::async_trait;
 use futures::StreamExt as _;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use api::{CreateSnapshotRequest, DaytonaApi, ForkRequest, Sandbox, Snapshot};
+use api::{CreateSnapshotRequest, DaytonaApi, ExecuteRequest, ForkRequest, Sandbox, Snapshot};
 use ops::{Admission, OperationRegistry};
 
 /// Default Daytona API base URL.
 pub const DEFAULT_API_URL: &str = "https://app.daytona.io/api";
+/// Default directory a container disk fork copies into its children.
+pub const DEFAULT_WORKSPACE_DIR: &str = "/home/daytona/workspace";
 
 /// Provider configuration.
 #[derive(Clone)]
@@ -59,6 +62,9 @@ pub struct DaytonaConfig {
     pub ready_timeout: Duration,
     /// Per-request HTTP timeout.
     pub request_timeout: Duration,
+    /// Absolute directory a container disk fork (`Capability::DiskFork`) copies from the
+    /// source into each child; everything outside it comes from the source's snapshot.
+    pub workspace_dir: String,
 }
 
 impl DaytonaConfig {
@@ -77,12 +83,13 @@ impl DaytonaConfig {
             poll_interval: Duration::from_millis(500),
             ready_timeout: Duration::from_secs(180),
             request_timeout: Duration::from_secs(60),
+            workspace_dir: DEFAULT_WORKSPACE_DIR.to_owned(),
         }
     }
 
     /// Reads `DAYTONA_API_KEY` (required), `DAYTONA_API_URL`, `DAYTONA_REGION`,
-    /// `DAYTONA_SNAPSHOT`, `DAYTONA_ALLOW_DOMAINS` (comma-separated), `DAYTONA_TENANT`, and
-    /// `DAYTONA_ORGANIZATION_ID`.
+    /// `DAYTONA_SNAPSHOT`, `DAYTONA_ALLOW_DOMAINS` (comma-separated), `DAYTONA_TENANT`,
+    /// `DAYTONA_ORGANIZATION_ID`, and `DAYTONA_WORKSPACE_DIR`.
     ///
     /// # Errors
     /// Returns [`ProviderError::Invalid`] when `DAYTONA_API_KEY` is unset or empty.
@@ -111,6 +118,9 @@ impl DaytonaConfig {
             .unwrap_or_default();
         config.tenant = read("DAYTONA_TENANT");
         config.organization_id = read("DAYTONA_ORGANIZATION_ID");
+        if let Some(dir) = read("DAYTONA_WORKSPACE_DIR") {
+            config.workspace_dir = dir;
+        }
         Ok(config)
     }
 
@@ -132,6 +142,7 @@ impl std::fmt::Debug for DaytonaConfig {
             .field("snapshots", &self.snapshots)
             .field("tenant", &self.tenant)
             .field("organization_id", &self.organization_id)
+            .field("workspace_dir", &self.workspace_dir)
             .finish_non_exhaustive()
     }
 }
@@ -147,7 +158,8 @@ pub enum Assurance {
     Provisional,
 }
 
-/// Feature declaration of this provider for VM-class sandboxes.
+/// Feature declaration of this provider. VM-class features apply to `linux-vm` and `windows`
+/// sandboxes; container-class sandboxes offer only [`Self::container_disk_fork`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DaytonaCapabilities {
     /// Checkpoints capture VM memory (hot snapshot, `includeMemory`).
@@ -155,6 +167,9 @@ pub struct DaytonaCapabilities {
     /// Native fork copies a running VM's memory and disk (`POST /sandbox/{id}/fork`), at any
     /// time, without an intermediate checkpoint.
     pub live_fork_memory: Assurance,
+    /// Container disk fork: fresh sandboxes from the source's snapshot, with the source's
+    /// workspace directory copied in through the toolbox. No process or memory state.
+    pub container_disk_fork: Assurance,
     /// A suspended machine keeps its memory (pause, not stop) and frees CPU and memory quota.
     pub suspend_keeps_memory: Assurance,
     /// Outbound domain policy is enforced. Only Daytona tiers 3 and 4 honour a per-sandbox
@@ -170,6 +185,7 @@ pub struct DaytonaCapabilities {
 pub const CAPABILITIES: DaytonaCapabilities = DaytonaCapabilities {
     checkpoint_memory: Assurance::Yes,
     live_fork_memory: Assurance::Yes,
+    container_disk_fork: Assurance::Yes,
     suspend_keeps_memory: Assurance::Yes,
     network_policy: Assurance::Provisional,
     usage_receipts: Assurance::Provisional,
@@ -182,7 +198,7 @@ enum Intent {
     Create(CreateMachine),
     Checkpoint(MachineId),
     Fork(CheckpointId, u32, Performance),
-    LiveFork(MachineId, u32),
+    ForkMachine(MachineId, u32),
     Suspend(MachineId),
     Wake(MachineId),
     Policy(MachineId, SuspensionPolicy),
@@ -197,7 +213,8 @@ enum Intent {
 /// one-time boot token) so the entrypoint can fetch its sealed inputs. Staging is in-memory and
 /// cleared by the matching `create` however it ends; a key that never creates leaks nothing but
 /// a map entry. Native fork children inherit their parent's environment and memory, so they
-/// share its credentials.
+/// share its credentials; container disk-fork children receive the environment Daytona
+/// reports for their source.
 pub trait BootEnvironment: Send + Sync {
     /// Records `env` for the sandbox that `create` with `key` will make. A second call for
     /// the same key replaces the first.
@@ -295,17 +312,6 @@ impl DaytonaProvider {
         &self.ops
     }
 
-    /// Image capabilities every qualified (VM-class) image receives: memory checkpoint, fork,
-    /// and suspend/resume. No elastic sizing and no live movement.
-    #[must_use]
-    pub fn capabilities() -> BTreeSet<Capability> {
-        BTreeSet::from([
-            Capability::LiveCheckpoint,
-            Capability::LiveFork,
-            Capability::SuspendResume,
-        ])
-    }
-
     /// Opaque compatibility revision of this provider build.
     #[must_use]
     pub fn revision() -> [u8; 32] {
@@ -326,10 +332,13 @@ impl DaytonaProvider {
         }
     }
 
-    /// Rejects snapshots that do not boot a VM class. The sandbox class is a property of the
-    /// snapshot; containers have no pause, memory snapshot, or fork, so they cannot honour the
-    /// capabilities this provider declares.
-    async fn require_vm_snapshot(&self, snapshot: &str) -> Result<(), ProviderError> {
+    /// Capabilities of the sandboxes `snapshot` boots, from its class (see
+    /// [`map::capabilities_for_class`]). The class is a property of the snapshot, never of the
+    /// create request.
+    async fn snapshot_capabilities(
+        &self,
+        snapshot: &str,
+    ) -> Result<BTreeSet<Capability>, ProviderError> {
         let cached = self
             .snapshot_classes
             .lock()
@@ -351,37 +360,49 @@ impl DaytonaProvider {
                 .insert(snapshot.to_owned(), snapshot_class.clone());
             snapshot_class
         };
-        if map::is_vm_class(Some(&class)) {
-            Ok(())
-        } else {
-            Err(ProviderError::Unsupported(format!(
-                "Daytona snapshot {snapshot} boots class {class:?}; this provider needs a VM class for pause, memory checkpoints, and fork"
-            )))
-        }
+        map::capabilities_for_class(Some(&class)).ok_or_else(|| {
+            ProviderError::Unsupported(format!(
+                "Daytona snapshot {snapshot} boots class {class:?}; this provider admits VM and container classes only"
+            ))
+        })
     }
 
-    fn contract(request: &CreateMachine) -> Result<MachineContract, ProviderError> {
-        let capabilities = Self::capabilities();
-        if let CompatibilityPolicy::Require(required) = &request.compatibility
-            && (required.is_empty() || !required.is_subset(&capabilities))
-        {
-            return Err(ProviderError::Unsupported(
-                "Daytona offers live checkpoint, live fork, and suspend/resume only".into(),
-            ));
-        }
+    /// Request checks that need no Daytona call.
+    fn check_request(request: &CreateMachine) -> Result<(), ProviderError> {
         if request.budgets.spend_micros != 0 || request.budgets.concurrency != 0 {
             return Err(ProviderError::Unsupported(
                 "Daytona cannot enforce per-machine spend or concurrency budgets; leave budgets zero".into(),
             ));
         }
-        map::lifetime_fields(request.expiration)?;
+        map::lifetime_fields(request.expiration).map(|_| ())
+    }
+
+    fn contract(
+        request: &CreateMachine,
+        capabilities: BTreeSet<Capability>,
+    ) -> Result<MachineContract, ProviderError> {
+        Self::check_request(request)?;
+        if let CompatibilityPolicy::Require(required) = &request.compatibility
+            && (required.is_empty() || !required.is_subset(&capabilities))
+        {
+            return Err(ProviderError::Unsupported(format!(
+                "this Daytona snapshot class offers only {capabilities:?}"
+            )));
+        }
+        // A class without pause never suspends on its own; say so rather than retain a
+        // policy nothing enforces.
+        let suspension = if capabilities.contains(&Capability::SuspendResume) {
+            request.suspension
+        } else {
+            SuspensionPolicy::Manual
+        };
         Ok(MachineContract {
             image: request.image.clone(),
             capabilities,
             compatibility: request.compatibility.clone(),
             compatibility_revision: Self::revision(),
             performance: request.performance,
-            suspension: request.suspension,
+            suspension,
             expiration: request.expiration,
             network_policy_digest: request.network_policy_digest,
             budgets: request.budgets,
@@ -560,78 +581,165 @@ impl DaytonaProvider {
         Ok(children)
     }
 
-    /// Forks a running machine, memory and disk, into `count` new machines with Daytona's
-    /// native VM fork, without taking a checkpoint first.
-    ///
-    /// This is the fast path for fork-join: it can run at any point in the parent's life and
-    /// each child resumes exactly where the parent was, sharing its environment and
-    /// credentials. Children are forked one after another (the parent passes through
-    /// `forking` each time), named deterministically from `key`, and relabelled as this
-    /// provider's fork children. Daytona keeps the parent/child relation in its fork tree and
-    /// refuses to delete a parent while it has live fork children, so join (destroy) children
-    /// before their parent.
-    ///
-    /// # Errors
-    /// [`ProviderError::Invalid`] for a count above [`MAX_FORK_CHILDREN`],
-    /// [`ProviderError::Conflict`] when the parent is not running, and otherwise the same
-    /// failures as the trait mutations.
-    pub async fn fork_machine(
+    /// Native VM fork (`POST /sandbox/{id}/fork`): each child copies the running parent's
+    /// memory and disk. Children are forked one after another (the parent passes through
+    /// `forking` each time), named deterministically from `key`, and relabelled as live-fork
+    /// children of `parent`. Daytona keeps the relation in its fork tree and refuses to delete
+    /// a parent with live fork children.
+    async fn native_fork(
         &self,
-        machine: MachineId,
-        count: NonZeroU32,
+        operation: OperationId,
+        parent: &MachineObservation,
+        count: u32,
         key: IdempotencyKey,
-    ) -> Result<MutationOutcome, ProviderError> {
-        let count = count.get();
-        if count > MAX_FORK_CHILDREN {
-            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-        }
-        self.apply(key, &Intent::LiveFork(machine, count), async |operation| {
-            let parent = self.fetch_machine(machine).await?;
-            if parent.state != MachineState::Running {
-                return Err(ProviderError::Conflict(
-                    "only a running machine can be forked".into(),
-                ));
-            }
-            let parent_id = machine.to_string();
-            let contract = parent.contract;
-            let mut ids = Vec::with_capacity(count as usize);
-            for index in 0..count {
-                let name = map::sandbox_name(key, Some(index));
-                let child = match self
+    ) -> Result<Vec<MachineObservation>, ProviderError> {
+        let parent_id = parent.id.to_string();
+        let mut ids = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            let name = map::sandbox_name(key, Some(index));
+            let child = match self
+                .api
+                .fork(
+                    &parent_id,
+                    &ForkRequest {
+                        name: Some(name.clone()),
+                    },
+                )
+                .await
+            {
+                Err(ProviderError::Conflict(detail)) => self
                     .api
-                    .fork(
-                        &parent_id,
-                        &ForkRequest {
-                            name: Some(name.clone()),
-                        },
-                    )
+                    .get(&name)
                     .await
-                {
-                    Err(ProviderError::Conflict(detail)) => self
-                        .api
-                        .get(&name)
-                        .await
-                        .map_err(|_| ProviderError::Conflict(detail))?,
-                    other => other?,
-                };
-                self.ops.bind_sandbox(operation, &child.id);
-                let ours = map::labels(
-                    key,
-                    map::KIND_FORK,
-                    Some(index),
-                    self.config.tenant.as_deref(),
-                    &contract,
-                );
-                self.api
-                    .replace_labels(&child.id, map::relabel(&child.labels, ours))
-                    .await?;
-                ids.push(child.id);
-                self.wait_settled(&parent_id, key).await?;
+                    .map_err(|_| ProviderError::Conflict(detail))?,
+                other => other?,
+            };
+            self.ops.bind_sandbox(operation, &child.id);
+            self.api
+                .replace_labels(
+                    &child.id,
+                    map::relabel(&child.labels, self.live_fork_labels(key, index, parent)),
+                )
+                .await?;
+            ids.push(child.id);
+            self.wait_settled(&parent_id, key).await?;
+        }
+        self.settle_children(ids, key, &parent.contract, None).await
+    }
+
+    /// Container disk fork: archives the parent's workspace directory once (the fork instant),
+    /// creates each child from the parent's snapshot with the parent's lifecycle settings,
+    /// environment, and foreign labels, and unpacks the archive into it. Processes and memory
+    /// are not inherited. The copy is only as consistent as `tar` over a directory the parent
+    /// may still be writing.
+    async fn disk_fork(
+        &self,
+        operation: OperationId,
+        parent: &MachineObservation,
+        count: u32,
+        key: IdempotencyKey,
+    ) -> Result<Vec<MachineObservation>, ProviderError> {
+        let source = self.api.get(&parent.id.to_string()).await?;
+        let snapshot = source.snapshot.clone().ok_or_else(|| {
+            ProviderError::Rejected(format!("sandbox {} reports no snapshot", source.id))
+        })?;
+        let archive_path = format!("/tmp/acyclic-fork-{key}.tgz");
+        let workspace = shell_quote(&self.config.workspace_dir);
+        let archive_quoted = shell_quote(&archive_path);
+        run(
+            &self.api,
+            &source,
+            format!("mkdir -p {workspace} && tar -C {workspace} -czf {archive_quoted} ."),
+        )
+        .await?;
+        let archive = self.api.download_file(&source, &archive_path).await;
+        if let Err(error) = run(&self.api, &source, format!("rm -f {archive_quoted}")).await {
+            tracing::warn!(%error, "best-effort removal of the fork archive in the parent failed");
+        }
+        let archive = archive?;
+        let mut ids = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            let mut body =
+                map::create_request(&self.config, &snapshot, key, Some(index), &parent.contract)?;
+            body.labels = map::relabel(&source.labels, self.live_fork_labels(key, index, parent));
+            if let Some(minutes) = source
+                .auto_stop_interval
+                .and_then(|value| u32::try_from(value).ok())
+            {
+                body.auto_stop_interval = Some(minutes);
             }
-            let children = self.settle_children(ids, key, &contract, None).await?;
-            Ok(MutationOutcome::Forked(children))
-        })
-        .await
+            if let Some(minutes) = source.auto_delete_interval {
+                body.auto_delete_interval = Some(minutes);
+            }
+            body.env = inherited_env(&source);
+            let child = self.create_or_adopt(&body).await?;
+            self.ops.bind_sandbox(operation, &child.id);
+            ids.push(child.id);
+        }
+        let mut children = Vec::with_capacity(ids.len());
+        for id in ids {
+            let settled = self.wait_settled(&id, key).await?;
+            self.api
+                .upload_file(&settled, &archive_path, &archive)
+                .await?;
+            run(
+                &self.api,
+                &settled,
+                format!(
+                    "mkdir -p {workspace} && tar -C {workspace} -xzf {archive_quoted} && rm -f {archive_quoted}"
+                ),
+            )
+            .await?;
+            let observation = self.observe(&settled, Some(&parent.contract), None)?;
+            if observation.state != MachineState::Running {
+                return Err(ProviderError::Failed);
+            }
+            children.push(observation);
+        }
+        Ok(children)
+    }
+
+    fn live_fork_labels(
+        &self,
+        key: IdempotencyKey,
+        index: u32,
+        parent: &MachineObservation,
+    ) -> BTreeMap<String, String> {
+        let mut labels = map::labels(
+            key,
+            map::KIND_LIVE_FORK,
+            Some(index),
+            self.config.tenant.as_deref(),
+            &parent.contract,
+        );
+        labels.insert(map::LABEL_PARENT.to_owned(), parent.id.to_string());
+        labels
+    }
+
+    /// Refuses to destroy a VM whose native fork children are still alive: Daytona would
+    /// refuse too, but with an unspecified status. Disk-fork children are independent sandboxes
+    /// and never block their source.
+    async fn require_no_live_fork_children(
+        &self,
+        machine: &MachineObservation,
+    ) -> Result<(), ProviderError> {
+        if machine.contract.fork_fidelity() != Some(ForkFidelity::MemoryAndDisk) {
+            return Ok(());
+        }
+        let live = self
+            .api
+            .forks(&machine.id.to_string())
+            .await?
+            .into_iter()
+            .filter(|child| map::machine_state(child.state.as_deref()) != MachineState::Destroyed)
+            .count();
+        if live == 0 {
+            Ok(())
+        } else {
+            Err(ProviderError::Conflict(format!(
+                "machine has {live} live fork children; destroy them first"
+            )))
+        }
     }
 
     async fn recover_by_label(
@@ -652,7 +760,7 @@ impl DaytonaProvider {
                 [only] => Ok(MutationOutcome::Created(self.observe(only, None, None)?)),
                 _ => Err(ProviderError::Indeterminate(key)),
             },
-            map::KIND_FORK => {
+            map::KIND_FORK | map::KIND_LIVE_FORK => {
                 sandboxes.sort_by_key(|sandbox| {
                     sandbox
                         .labels
@@ -664,7 +772,24 @@ impl DaytonaProvider {
                     .iter()
                     .map(|sandbox| self.observe(sandbox, None, None))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(MutationOutcome::Forked(children))
+                if kind != map::KIND_LIVE_FORK {
+                    return Ok(MutationOutcome::Forked(children));
+                }
+                let source = sandboxes
+                    .first()
+                    .and_then(|sandbox| sandbox.labels.get(map::LABEL_PARENT))
+                    .map(|parent| map::machine_id(parent))
+                    .transpose()?
+                    .ok_or(ProviderError::Indeterminate(key))?;
+                let fidelity = children
+                    .first()
+                    .and_then(|child| child.contract.fork_fidelity())
+                    .ok_or(ProviderError::Indeterminate(key))?;
+                Ok(MutationOutcome::MachineForked {
+                    source,
+                    fidelity,
+                    children,
+                })
             }
             other => Err(ProviderError::Rejected(format!(
                 "sandbox under key {key} has unknown kind {other:?}"
@@ -684,10 +809,10 @@ impl MachinesProvider for DaytonaProvider {
 
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
         let snapshot = self.resolve_snapshot(&image)?;
-        self.require_vm_snapshot(&snapshot).await?;
+        let capabilities = self.snapshot_capabilities(&snapshot).await?;
         Ok(ImageQualification {
             image,
-            capabilities: Self::capabilities(),
+            capabilities,
             compatibility_revision: Self::revision(),
         })
     }
@@ -698,8 +823,10 @@ impl MachinesProvider for DaytonaProvider {
         let outcome = self
             .apply(key, &intent, async |operation| {
                 let snapshot = self.resolve_snapshot(&request.image)?;
-                let contract = Self::contract(&request)?;
-                self.require_vm_snapshot(&snapshot).await?;
+                // Everything checkable offline fails before the snapshot lookup.
+                Self::check_request(&request)?;
+                let capabilities = self.snapshot_capabilities(&snapshot).await?;
+                let contract = Self::contract(&request, capabilities)?;
                 let mut body = map::create_request(&self.config, &snapshot, key, None, &contract)?;
                 body.env = self.staged_boot_env(key).unwrap_or_default();
                 let created = self.create_or_adopt(&body).await?;
@@ -783,6 +910,7 @@ impl MachinesProvider for DaytonaProvider {
     ) -> Result<MutationOutcome, ProviderError> {
         self.apply(key, &Intent::Checkpoint(machine), async |operation| {
             let source = self.fetch_machine(machine).await?;
+            require_capability(&source, Capability::LiveCheckpoint)?;
             if source.state != MachineState::Running {
                 return Err(ProviderError::Conflict(
                     "Daytona memory snapshots require a started sandbox".into(),
@@ -864,7 +992,7 @@ impl MachinesProvider for DaytonaProvider {
 
     /// Restores a checkpoint into `count` new sandboxes by creating each from the hot
     /// snapshot. To fork a *running* machine without a checkpoint, use
-    /// [`DaytonaProvider::fork_machine`].
+    /// [`MachinesProvider::fork_machine`].
     async fn fork(
         &self,
         checkpoint: CheckpointId,
@@ -907,6 +1035,50 @@ impl MachinesProvider for DaytonaProvider {
         .await
     }
 
+    /// Native VM fork for machines declaring [`Capability::LiveFork`] (memory and disk), and
+    /// a workspace-copying disk fork for containers declaring [`Capability::DiskFork`]; see
+    /// the crate README. Children are labelled with their source (`acyclic.parent`).
+    async fn fork_machine(
+        &self,
+        machine: MachineId,
+        count: NonZeroU32,
+        key: IdempotencyKey,
+    ) -> Result<MutationOutcome, ProviderError> {
+        let count = count.get();
+        if count > MAX_FORK_CHILDREN {
+            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
+        }
+        self.apply(
+            key,
+            &Intent::ForkMachine(machine, count),
+            async |operation| {
+                let parent = self.fetch_machine(machine).await?;
+                let fidelity = parent.contract.fork_fidelity().ok_or_else(|| {
+                    ProviderError::Unsupported("machine contract does not declare live fork".into())
+                })?;
+                if parent.state != MachineState::Running {
+                    return Err(ProviderError::Conflict(
+                        "only a running machine can be forked".into(),
+                    ));
+                }
+                let children = match fidelity {
+                    ForkFidelity::MemoryAndDisk => {
+                        self.native_fork(operation, &parent, count, key).await?
+                    }
+                    ForkFidelity::DiskOnly => {
+                        self.disk_fork(operation, &parent, count, key).await?
+                    }
+                };
+                Ok(MutationOutcome::MachineForked {
+                    source: machine,
+                    fidelity,
+                    children,
+                })
+            },
+        )
+        .await
+    }
+
     async fn suspend(
         &self,
         machine: MachineId,
@@ -914,6 +1086,7 @@ impl MachinesProvider for DaytonaProvider {
     ) -> Result<MutationOutcome, ProviderError> {
         self.apply(key, &Intent::Suspend(machine), async |operation| {
             let current = self.fetch_machine(machine).await?;
+            require_capability(&current, Capability::SuspendResume)?;
             match current.state {
                 MachineState::Suspended => return Ok(MutationOutcome::Suspended(machine)),
                 MachineState::Running => {}
@@ -942,6 +1115,7 @@ impl MachinesProvider for DaytonaProvider {
     ) -> Result<MutationOutcome, ProviderError> {
         self.apply(key, &Intent::Wake(machine), async |operation| {
             let current = self.fetch_machine(machine).await?;
+            require_capability(&current, Capability::SuspendResume)?;
             match current.state {
                 MachineState::Running => return Ok(MutationOutcome::Woken(machine)),
                 MachineState::Suspended => {}
@@ -971,6 +1145,7 @@ impl MachinesProvider for DaytonaProvider {
     ) -> Result<MutationOutcome, ProviderError> {
         self.apply(key, &Intent::Policy(machine, policy), async |operation| {
             let mut current = self.fetch_machine(machine).await?;
+            require_capability(&current, Capability::SuspendResume)?;
             if current.state == MachineState::Destroyed {
                 return Err(ProviderError::Conflict(
                     "destroyed machine cannot change policy".into(),
@@ -1000,6 +1175,7 @@ impl MachinesProvider for DaytonaProvider {
             if current.state == MachineState::Destroyed {
                 return Ok(MutationOutcome::MachineDestroyed(machine));
             }
+            self.require_no_live_fork_children(&current).await?;
             let id = machine.to_string();
             self.ops.bind_sandbox(operation, &id);
             match self.api.delete(&id).await {
@@ -1149,6 +1325,58 @@ impl MachinesProvider for DaytonaProvider {
     }
 }
 
+fn require_capability(
+    machine: &MachineObservation,
+    capability: Capability,
+) -> Result<(), ProviderError> {
+    if machine.contract.capabilities.contains(&capability) {
+        Ok(())
+    } else {
+        Err(ProviderError::Unsupported(format!(
+            "machine contract does not declare {capability:?}"
+        )))
+    }
+}
+
+/// Runs `command` in `sandbox` through the toolbox and requires exit code zero.
+async fn run(api: &DaytonaApi, sandbox: &Sandbox, command: String) -> Result<(), ProviderError> {
+    let output = api
+        .execute(
+            sandbox,
+            &ExecuteRequest {
+                command: format!("sh -c {}", shell_quote(&command)),
+                cwd: None,
+                timeout: Some(300),
+            },
+        )
+        .await?;
+    if output.exit_code == Some(0) {
+        Ok(())
+    } else {
+        tracing::error!(sandbox = sandbox.id, exit = ?output.exit_code, output = ?output.result, "toolbox command failed");
+        Err(ProviderError::Failed)
+    }
+}
+
+/// POSIX single-quoted shell word.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Environment Daytona reports for `sandbox` (`env`), as string pairs.
+fn inherited_env(sandbox: &Sandbox) -> BTreeMap<String, String> {
+    sandbox
+        .extra
+        .get("env")
+        .and_then(serde_json::Value::as_object)
+        .map(|env| {
+            env.iter()
+                .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -1292,6 +1520,62 @@ mod tests {
         assert!(matches!(
             provider.fork_machine(MachineId::new(), too_many, key).await,
             Err(ProviderError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn shell_words_and_inherited_environment() {
+        assert_eq!(
+            shell_quote("/home/daytona/work space"),
+            "'/home/daytona/work space'"
+        );
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+        let sandbox: Sandbox = serde_json::from_value(serde_json::json!({
+            "id": "6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a61",
+            "env": { "ACYCLIC_HOST": "h", "NUMBER": 7 }
+        }))
+        .unwrap();
+        assert_eq!(
+            inherited_env(&sandbox),
+            BTreeMap::from([("ACYCLIC_HOST".to_owned(), "h".to_owned())])
+        );
+    }
+
+    #[test]
+    fn container_contracts_declare_disk_fork_and_never_auto_suspend() {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000005").unwrap();
+        let request = CreateMachine::new(key, Image::custom([7; 32]).unwrap(), [8; 32]);
+        let container = DaytonaProvider::contract(
+            &request,
+            map::capabilities_for_class(Some("container")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(container.fork_fidelity(), Some(ForkFidelity::DiskOnly));
+        assert_eq!(container.suspension, SuspensionPolicy::Manual);
+        let body =
+            map::create_request(&DaytonaConfig::new("k"), "s", key, None, &container).unwrap();
+        assert!(
+            serde_json::to_value(&body)
+                .unwrap()
+                .get("autoPauseInterval")
+                .is_none()
+        );
+        let vm = DaytonaProvider::contract(
+            &request,
+            map::capabilities_for_class(Some("linux-vm")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(vm.fork_fidelity(), Some(ForkFidelity::MemoryAndDisk));
+        assert_eq!(vm.suspension, request.suspension);
+        let mut require = request;
+        require.compatibility =
+            CompatibilityPolicy::Require(BTreeSet::from([Capability::LiveFork]));
+        assert!(matches!(
+            DaytonaProvider::contract(
+                &require,
+                map::capabilities_for_class(Some("container")).unwrap()
+            ),
+            Err(ProviderError::Unsupported(_))
         ));
     }
 }

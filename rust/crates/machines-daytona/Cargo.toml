@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 # Not released until the provider passes the live conformance suite on Linux VMs.
 publish = false
-description = "Machines provider over Daytona Linux VM sandboxes"
+description = "Machines provider over Daytona VM and container sandboxes"
 readme = "README.md"
 keywords = ["machines", "daytona", "sandbox"]
 categories = ["api-bindings"]
