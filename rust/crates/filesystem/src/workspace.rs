@@ -1658,6 +1658,24 @@ pub struct Transaction<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
+    /// Reuses the workspace transaction compiler against a private checkout
+    /// candidate without publishing a second workspace head.
+    pub(crate) fn for_checkout_candidate(
+        workspace: &Workspace<A, O>,
+        checkout: Checkout<A, O>,
+    ) -> Self {
+        Self {
+            workspace: workspace.clone(),
+            checkout,
+            idempotency_key: IdempotencyKey::new(),
+            requires_rebase: false,
+        }
+    }
+
+    pub(crate) fn into_checkout_candidate(self) -> Checkout<A, O> {
+        self.checkout
+    }
+
     pub(crate) fn workspace_id(&self) -> WorkspaceId {
         self.workspace.id()
     }
@@ -2942,7 +2960,7 @@ pub struct WorkspaceMetadata {
 }
 
 impl WorkspaceMetadata {
-    fn from_engine(metadata: FileMetadata) -> Self {
+    pub(crate) fn from_engine(metadata: FileMetadata) -> Self {
         Self {
             posix_mode: metadata_value(metadata.posix_mode),
             posix_uid: metadata_value(metadata.posix_uid),

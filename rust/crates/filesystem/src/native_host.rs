@@ -5,6 +5,7 @@ use cap_fs_ext::DirExt as _;
 use cap_std::fs::{Dir, Metadata, OpenOptions, Permissions, ReadDir};
 #[cfg(unix)]
 use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io;
 use std::path::Path;
@@ -72,6 +73,63 @@ pub struct HostDataRange {
 pub struct HostRoot {
     directory: Dir,
     identity: crate::NativeRootIdentity,
+}
+
+pub(crate) struct HostDirectoryEntry {
+    pub(crate) name: OsString,
+    pub(crate) is_dir: bool,
+}
+
+pub(crate) enum HostReadDir<'a> {
+    #[cfg(target_os = "linux")]
+    Linux {
+        entries: rustix::fs::Dir,
+        held: &'a Dir,
+    },
+    #[cfg(not(target_os = "linux"))]
+    Native(ReadDir, std::marker::PhantomData<&'a Dir>),
+}
+
+impl Iterator for HostReadDir<'_> {
+    type Item = io::Result<HostDirectoryEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::Linux { entries, held } => loop {
+                let entry = match entries.next()? {
+                    Ok(entry) => entry,
+                    Err(error) => return Some(Err(error.into())),
+                };
+                use std::os::unix::ffi::OsStrExt as _;
+                let name = OsStr::from_bytes(entry.file_name().to_bytes());
+                if name == "." || name == ".." {
+                    continue;
+                }
+                let is_dir = match entry.file_type() {
+                    rustix::fs::FileType::Directory => true,
+                    rustix::fs::FileType::Unknown => match held.symlink_metadata(name) {
+                        Ok(metadata) => metadata.is_dir(),
+                        Err(error) => return Some(Err(error)),
+                    },
+                    _ => false,
+                };
+                return Some(Ok(HostDirectoryEntry {
+                    name: name.to_os_string(),
+                    is_dir,
+                }));
+            },
+            #[cfg(not(target_os = "linux"))]
+            Self::Native(entries, _) => entries.next().map(|entry| {
+                let entry = entry?;
+                let file_type = entry.file_type()?;
+                Ok(HostDirectoryEntry {
+                    name: entry.file_name(),
+                    is_dir: file_type.is_dir() && !file_type.is_symlink(),
+                })
+            }),
+        }
+    }
 }
 
 /// A held directory capability for race-free leaf operations.
@@ -413,7 +471,7 @@ impl HostRoot {
 
     /// Enumerates through held directory capabilities without following any
     /// intermediate symlink or reparse point.
-    pub fn read_dir_held(&self, path: &Path) -> io::Result<ReadDir> {
+    pub fn open_dir_held(&self, path: &Path) -> io::Result<Dir> {
         let mut current = self.directory.try_clone()?;
         for component in path.components() {
             let std::path::Component::Normal(name) = component else {
@@ -422,9 +480,47 @@ impl HostRoot {
                     "invalid directory path",
                 ));
             };
-            current = current.open_dir_nofollow(name)?;
+            #[cfg(target_os = "linux")]
+            {
+                use cap_std::fs::OpenOptionsExt as _;
+
+                let mut options = OpenOptions::new();
+                options
+                    .read(true)
+                    .custom_flags(libc::O_DIRECTORY | libc::O_NOATIME);
+                options._cap_fs_ext_follow(cap_primitives::fs::FollowSymlinks::No);
+                current = match current.open_with(name, &options) {
+                    Ok(file) => Dir::from_std_file(file.into_std()),
+                    Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                        current.open_dir_nofollow(name)?
+                    }
+                    Err(error) => return Err(error),
+                };
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                current = current.open_dir_nofollow(name)?;
+            }
         }
-        current.entries()
+        Ok(current)
+    }
+
+    pub(crate) fn scan_held_dir(directory: &Dir) -> io::Result<HostReadDir<'_>> {
+        #[cfg(target_os = "linux")]
+        {
+            let entries = rustix::fs::Dir::read_from(directory)?;
+            Ok(HostReadDir::Linux {
+                entries,
+                held: directory,
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(HostReadDir::Native(
+                directory.entries()?,
+                std::marker::PhantomData,
+            ))
+        }
     }
 
     pub fn symlink_metadata(&self, path: &Path) -> io::Result<Metadata> {
@@ -465,6 +561,19 @@ impl HostRoot {
         options
             .read(true)
             ._cap_fs_ext_follow(cap_primitives::fs::FollowSymlinks::No);
+        #[cfg(target_os = "linux")]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+
+            options.custom_flags(libc::O_NOATIME);
+            match self.directory.open_with(path, &options) {
+                Ok(file) => return Ok(file),
+                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                    options.custom_flags(0);
+                }
+                Err(error) => return Err(error),
+            }
+        }
         self.directory.open_with(path, &options)
     }
 
@@ -1976,6 +2085,17 @@ fn open_root_directory(path: &Path) -> io::Result<File> {
     options
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
+    #[cfg(target_os = "linux")]
+    {
+        options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NOATIME);
+        match options.open(path) {
+            Ok(directory) => return Ok(directory),
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
+            }
+            Err(error) => return Err(error),
+        }
+    }
     options.open(path)
 }
 
@@ -2246,6 +2366,38 @@ mod tests {
     use super::HostRoot;
     use std::io::Read;
     use std::path::Path;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn capability_reads_do_not_change_owned_access_times() -> std::io::Result<()> {
+        use std::os::unix::fs::MetadataExt as _;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let temporary = tempfile::tempdir()?;
+        let root_path = temporary.path().to_path_buf();
+        let directory = temporary.path().join("directory");
+        std::fs::create_dir(&directory)?;
+        let file = directory.join("file");
+        std::fs::write(&file, b"body")?;
+        let old = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        for path in [&file, &directory, &root_path] {
+            std::fs::File::open(path)?.set_times(std::fs::FileTimes::new().set_accessed(old))?;
+        }
+
+        let root = HostRoot::open(temporary.path())?;
+        let mut body = String::new();
+        root.open_file(Path::new("directory/file"))?
+            .read_to_string(&mut body)?;
+        assert_eq!(body, "body");
+        let held = root.open_dir_held(Path::new("directory"))?;
+        assert_eq!(HostRoot::scan_held_dir(&held)?.count(), 1);
+        let root_directory = root.open_dir_held(Path::new(""))?;
+        assert_eq!(HostRoot::scan_held_dir(&root_directory)?.count(), 1);
+        for path in [&file, &directory, &root_path] {
+            assert_eq!(std::fs::metadata(path)?.atime(), 1_700_000_000);
+        }
+        Ok(())
+    }
 
     #[test]
     fn held_root_rejects_intermediate_symlink_escape_for_reads_and_writes() -> std::io::Result<()> {

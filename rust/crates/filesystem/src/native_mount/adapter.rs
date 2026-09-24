@@ -180,9 +180,10 @@ impl CallbackRuntime {
 struct DetachedMountState<A, O> {
     file: DetachedFile<A, O>,
     metadata: FileMetadata,
+    mutation_epoch: u64,
 }
 
-struct CheckoutDetachedFile<A, O> {
+pub(super) struct CheckoutDetachedFile<A, O> {
     state: tokio::sync::Mutex<DetachedMountState<A, O>>,
     runtime: CallbackRuntime,
     cancellation: CancellationToken,
@@ -267,7 +268,7 @@ impl<A, O> SharedCheckout<A, O> {
         Ok(SharedCheckoutReadGuard { _view: view, state })
     }
 
-    fn view_epoch(&self) -> u64 {
+    pub(super) fn view_epoch(&self) -> u64 {
         self.view_epoch.load(Ordering::Acquire)
     }
 }
@@ -314,8 +315,13 @@ impl<A, O> SharedCheckoutState<A, O> {
             cancellation,
         )
         .await;
-        if result.is_ok() {
+        if result.is_ok()
+            || (matches!(result, Err(MountSourceError::Stale))
+                && self.checkout.mode().mutations == crate::model::MutationMode::PrivateOverlay)
+        {
             self.clear_retained_operation(operation_id);
+        }
+        if result.is_ok() {
             self.view_epoch.fetch_add(1, Ordering::AcqRel);
         }
         result
@@ -324,6 +330,7 @@ impl<A, O> SharedCheckoutState<A, O> {
     async fn seal_with_permit(
         &mut self,
         permit: crate::PublicationPermit,
+        force: bool,
         cancellation: &CancellationToken,
     ) -> Result<(), MountSourceError>
     where
@@ -331,22 +338,38 @@ impl<A, O> SharedCheckoutState<A, O> {
         O: AsyncObjectStore,
     {
         let operation_id = self.retained_operation_id();
-        let result = super::seal_checkout_with_permit(
-            &mut self.checkout,
-            operation_id,
-            permit,
-            boundary_budget(),
-            cancellation,
-        )
-        .await;
-        if result.is_ok() {
+        let result = if force {
+            super::publication::seal_checkout_with_permit_force(
+                &mut self.checkout,
+                operation_id,
+                permit,
+                boundary_budget(),
+                cancellation,
+            )
+            .await
+        } else {
+            super::seal_checkout_with_permit(
+                &mut self.checkout,
+                operation_id,
+                permit,
+                boundary_budget(),
+                cancellation,
+            )
+            .await
+        };
+        if result.is_ok()
+            || (matches!(result, Err(MountSourceError::Stale))
+                && self.checkout.mode().mutations == crate::model::MutationMode::PrivateOverlay)
+        {
             self.clear_retained_operation(operation_id);
+        }
+        if result.is_ok() {
             self.view_epoch.fetch_add(1, Ordering::AcqRel);
         }
         result
     }
 
-    async fn publish_after_mutation(
+    pub(super) async fn publish_after_mutation(
         &mut self,
         cancellation: &CancellationToken,
     ) -> Result<(), MountSourceError>
@@ -394,6 +417,10 @@ impl<A, O> SharedCheckoutState<A, O> {
             .get_or_insert_with(OperationId::new)
     }
 
+    pub(super) fn has_retained_operation(&self) -> bool {
+        self.publication_operation.is_some()
+    }
+
     /// Retains a caller-selected operation identity, or rejects a conflicting
     /// unresolved publication from another surface sharing this checkout.
     ///
@@ -414,11 +441,19 @@ impl<A, O> SharedCheckoutState<A, O> {
         }
     }
 
-    /// Clears only the operation that reached a known terminal success.
+    /// Clears only an operation with a known terminal publication outcome.
     pub fn clear_retained_operation(&mut self, operation_id: OperationId) {
         if self.publication_operation == Some(operation_id) {
             self.publication_operation = None;
         }
+    }
+
+    pub(super) fn view_epoch(&self) -> u64 {
+        self.view_epoch.load(Ordering::Acquire)
+    }
+
+    pub(super) fn install_candidate(&mut self, candidate: Checkout<A, O>) {
+        self.checkout = candidate;
     }
 }
 
@@ -449,6 +484,17 @@ impl<A, O> CheckoutDetachedFile<A, O> {
             self.limits.maximum_component_bytes,
         )
         .map_err(engine_error)
+    }
+
+    pub(super) fn snapshot(&self) -> Result<(FileRecord, FileMetadata, u64), MountSourceError>
+    where
+        A: AsyncAuthorityStore + Send + Sync,
+        O: AsyncObjectStore + Send + Sync,
+    {
+        self.runtime.wait(|| async {
+            let state = self.state.lock().await;
+            Ok((state.file.record(), state.metadata, state.mutation_epoch))
+        })
     }
 }
 
@@ -544,7 +590,12 @@ where
                 .write_range(offset, bytes, boundary_budget(), &self.cancellation)
                 .await
                 .map(|_| ())
-                .map_err(engine_error)
+                .map_err(engine_error)?;
+            state.mutation_epoch = state
+                .mutation_epoch
+                .checked_add(1)
+                .ok_or(MountSourceError::Stale)?;
+            Ok(())
         })
     }
 
@@ -556,7 +607,12 @@ where
                 .resize(logical_bytes, boundary_budget(), &self.cancellation)
                 .await
                 .map(|_| ())
-                .map_err(engine_error)
+                .map_err(engine_error)?;
+            state.mutation_epoch = state
+                .mutation_epoch
+                .checked_add(1)
+                .ok_or(MountSourceError::Stale)?;
+            Ok(())
         })
     }
 
@@ -590,7 +646,12 @@ where
                 }
             }
             .map(|_| ())
-            .map_err(engine_error)
+            .map_err(engine_error)?;
+            state.mutation_epoch = state
+                .mutation_epoch
+                .checked_add(1)
+                .ok_or(MountSourceError::Stale)?;
+            Ok(())
         })
     }
 
@@ -612,6 +673,10 @@ where
                 .await
                 .map_err(engine_error)?;
             state.metadata = metadata;
+            state.mutation_epoch = state
+                .mutation_epoch
+                .checked_add(1)
+                .ok_or(MountSourceError::Stale)?;
             Ok(())
         })
     }
@@ -686,6 +751,10 @@ where
                 .await
                 .map_err(facade_error)?;
             state.metadata = receipt.value;
+            state.mutation_epoch = state
+                .mutation_epoch
+                .checked_add(1)
+                .ok_or(MountSourceError::Stale)?;
             Ok(())
         })
     }
@@ -700,6 +769,10 @@ where
                 .await
                 .map_err(facade_error)?;
             state.metadata = receipt.value;
+            state.mutation_epoch = state
+                .mutation_epoch
+                .checked_add(1)
+                .ok_or(MountSourceError::Stale)?;
             Ok(())
         })
     }
@@ -1021,6 +1094,91 @@ where
 }
 
 impl<A, O> CheckoutMountSource<A, O> {
+    pub(super) fn shared_checkout(&self) -> &SharedCheckout<A, O> {
+        &self.checkout
+    }
+
+    pub(super) fn cancellation(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+
+    /// Binds an existing source handle to the same stable identity once a
+    /// peer stages that identity in the mounted checkout candidate.
+    pub(super) fn attached_file_by_id(
+        &self,
+        file_id: FileId,
+    ) -> Result<Option<Arc<dyn MountOpenFile>>, MountSourceError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        let owner = ViewGate::callback_owner();
+        let present = self.runtime.wait(|| async {
+            let mut checkout = self.checkout.read_lock(owner).await?;
+            match checkout
+                .read_file_record_by_id(file_id, boundary_budget(), &self.cancellation)
+                .await
+            {
+                Ok(record) if record.value.kind == FileKind::Regular => Ok(true),
+                Ok(_) => Err(MountSourceError::Stale),
+                Err(failure) if matches!(failure.error, FsError::NotFound) => Ok(false),
+                Err(failure) => Err(engine_error(failure)),
+            }
+        })?;
+        Ok(present.then(|| {
+            Arc::new(CheckoutAttachedFile {
+                checkout: Arc::clone(&self.checkout),
+                file_id,
+                runtime: self.runtime.clone(),
+                cancellation: self.cancellation.clone(),
+                profile: self.profile,
+                limits: self.limits,
+            }) as Arc<dyn MountOpenFile>
+        }))
+    }
+
+    pub(super) fn record_by_id(&self, file_id: FileId) -> Result<FileRecord, MountSourceError>
+    where
+        A: AsyncAuthorityStore + Send + Sync,
+        O: AsyncObjectStore + Send + Sync,
+    {
+        self.runtime.wait(|| async {
+            let mut checkout = self.checkout.lock().await;
+            checkout.ensure_publication_resolved()?;
+            checkout
+                .read_file_record_by_id(file_id, boundary_budget(), &self.cancellation)
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(engine_error)
+        })
+    }
+
+    pub(super) fn detached_file_from_record(
+        &self,
+        record: FileRecord,
+        metadata: FileMetadata,
+    ) -> Result<Arc<CheckoutDetachedFile<A, O>>, MountSourceError>
+    where
+        A: AsyncAuthorityStore + Send + Sync,
+        O: AsyncObjectStore + Send + Sync,
+    {
+        let file = self.runtime.wait(|| async {
+            let checkout = self.checkout.lock().await;
+            Ok(checkout.detached_from_record(record))
+        })?;
+        Ok(Arc::new(CheckoutDetachedFile {
+            state: tokio::sync::Mutex::new(DetachedMountState {
+                file,
+                metadata,
+                mutation_epoch: 0,
+            }),
+            runtime: self.runtime.clone(),
+            cancellation: self.cancellation.clone(),
+            profile: self.profile,
+            limits: self.limits,
+        }))
+    }
+
     /// Creates an independently cancellable adapter using the shared callback runtime.
     ///
     /// # Errors
@@ -1152,7 +1310,23 @@ impl<A, O> CheckoutMountSource<A, O> {
         O: AsyncObjectStore,
     {
         let mut checkout = self.checkout.lock().await;
-        checkout.seal_with_permit(permit, &self.cancellation).await
+        checkout
+            .seal_with_permit(permit, false, &self.cancellation)
+            .await
+    }
+
+    pub(super) async fn sync_async_with_permit_force(
+        &self,
+        permit: crate::PublicationPermit,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let mut checkout = self.checkout.lock().await;
+        checkout
+            .seal_with_permit(permit, true, &self.cancellation)
+            .await
     }
 
     /// Safely advances a clean mounted checkout to the workspace head.
@@ -1690,7 +1864,11 @@ where
             Ok((file, lookup.metadata))
         })?;
         Ok(Arc::new(CheckoutDetachedFile {
-            state: tokio::sync::Mutex::new(DetachedMountState { file, metadata }),
+            state: tokio::sync::Mutex::new(DetachedMountState {
+                file,
+                metadata,
+                mutation_epoch: 0,
+            }),
             runtime: self.runtime.clone(),
             cancellation: self.cancellation.clone(),
             profile: self.profile,
@@ -2901,6 +3079,8 @@ mod tests {
         assert_eq!(open.read_up_to(1, 1)?.as_ref(), b"b");
         assert!(open.read_up_to(3, 128)?.is_empty());
         assert!(open.read_up_to(u64::MAX, 128)?.is_empty());
+        source.write_range(&path, 0, Bytes::from_static(b"xyz"))?;
+        assert_eq!(open.read_up_to(0, 128)?.as_ref(), b"xyz");
         Ok(())
     }
 
@@ -3643,6 +3823,8 @@ mod tests {
     #[ignore = "mounts a live FUSE session; requires the host's native mount capability"]
     fn linux_negative_lookup_clears_on_create_and_invalidation()
     -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::{Read as _, Seek as _, SeekFrom};
+
         let source = Arc::new(source(FilesystemProfile::Posix)?);
         let temporary = tempfile::tempdir()?;
         let mut mount = crate::mount_native(
@@ -3698,6 +3880,21 @@ mod tests {
             nested_external.is_file(),
             "nested invalidation must evict a negative dentry"
         );
+
+        let data_path = MountPath::root().child(b"changed-by-source".to_vec());
+        source.create_file(&data_path, metadata())?;
+        source.write_range(&data_path, 0, Bytes::from_static(b"before"))?;
+        mount.invalidate(b"/changed-by-source")?;
+        let mut opened = std::fs::File::open(temporary.path().join("changed-by-source"))?;
+        let mut body = [0_u8; 6];
+        opened.read_exact(&mut body)?;
+        assert_eq!(&body, b"before");
+        source.write_range(&data_path, 0, Bytes::from_static(b"after!"))?;
+        mount.invalidate(b"/changed-by-source")?;
+        opened.seek(SeekFrom::Start(0))?;
+        opened.read_exact(&mut body)?;
+        assert_eq!(&body, b"after!");
+        drop(opened);
 
         assert!(mount.stop()?);
         Ok(())

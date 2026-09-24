@@ -985,7 +985,8 @@ impl NativeMountSession {
     }
 
     /// Drops the kernel's cached entry/attributes for one mount-relative
-    /// path (leading `/` optional), making a projection change — such as a
+    /// path (leading `/` optional). Linux FUSE also invalidates resident
+    /// file data. This makes a projection change — such as a
     /// removed route — visible immediately instead of after a cache timeout.
     /// Linux FUSE supports nested entries when the parent directory has a
     /// cached inode; otherwise the entry becomes visible at cache expiry.

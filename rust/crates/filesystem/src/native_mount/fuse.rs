@@ -191,22 +191,30 @@ impl FuseSession {
                 "FUSE invalidation requires a canonical non-root path".to_owned(),
             ));
         };
-        let parent_inode = self
-            .state
-            .lock()
-            .map_err(|_| NativeMountError::Driver("FUSE projection state is poisoned".to_owned()))?
-            .inode_by_path
-            .get(&parent)
-            .copied()
-            .ok_or_else(|| {
+        let (parent_inode, file_inode) = {
+            let state = self.state.lock().map_err(|_| {
+                NativeMountError::Driver("FUSE projection state is poisoned".to_owned())
+            })?;
+            let parent_inode = state.inode_by_path.get(&parent).copied().ok_or_else(|| {
                 NativeMountError::Driver("FUSE invalidation parent is not cached".to_owned())
             })?;
+            let file_inode = state
+                .inode_by_path
+                .get(&parent.child(name.to_vec()))
+                .copied();
+            (parent_inode, file_inode)
+        };
         let session = self
             .session
             .as_ref()
             .ok_or_else(|| NativeMountError::Driver("session is stopped".to_owned()))?;
-        session
-            .notifier()
+        let notifier = session.notifier();
+        if let Some(file_inode) = file_inode {
+            notifier
+                .inval_inode(INodeNo(file_inode), 0, 0)
+                .map_err(|error| NativeMountError::Driver(error.to_string()))?;
+        }
+        notifier
             .inval_entry(INodeNo(parent_inode), OsStr::from_bytes(name))
             .map_err(|error| NativeMountError::Driver(error.to_string()))
     }
@@ -1002,6 +1010,15 @@ impl FuseProjection {
                 match state.open_handle(inode, handle) {
                     Ok(open) => Refresh::Handle(open),
                     Err(error) => return reply.error(Errno::from_i32(error)),
+                }
+            } else if state
+                .by_inode
+                .get(&inode)
+                .is_some_and(|entry| entry.bindings.is_empty() && entry.open_handles != 0)
+            {
+                match state.open_inode(inode) {
+                    Some(open) => Refresh::Handle(open),
+                    None => return reply.error(Errno::ESTALE),
                 }
             } else {
                 let epoch =

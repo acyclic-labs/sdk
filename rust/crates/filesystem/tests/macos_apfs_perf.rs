@@ -20,6 +20,128 @@ fn component(value: &str) -> Vec<u8> {
 }
 
 #[tokio::test]
+#[ignore = "local-only APFS watcher to canonical checkout rename diagnostic"]
+async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_fs::model::{
+        AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
+        VolumeConfig,
+    };
+    use acyclic_fs::{
+        CaptureOptions, NativeWatch, NativeWatchOptions, WatchBatch, WatchChange, capture_baseline,
+        capture_root_identity, capture_watch_batch, host_path_to_namespace,
+    };
+    use std::time::Duration;
+
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir_all(root.path().join("before/nested"))?;
+    std::fs::write(root.path().join("before/nested/file.txt"), b"payload")?;
+    let fs = Fs::memory();
+    let config = VolumeConfig::portable(Lifecycle::Ephemeral);
+    let volume = fs
+        .create_volume(config, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    let mut checkout = volume
+        .checkout(
+            GenerationSelector::Head,
+            CheckoutMode {
+                access: AccessMode::ReadWrite,
+                consistency: ConsistencyMode::Pinned,
+                mutations: MutationMode::PrivateOverlay,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value;
+    let options = CaptureOptions {
+        expected_root_identity: capture_root_identity(root.path())?,
+        source_root: root.path().to_owned(),
+        maximum_paths: 128,
+        maximum_extent_spans: 128,
+    };
+    capture_baseline(
+        &mut checkout,
+        &options,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
+    let mut watch = NativeWatch::open_with_profile(
+        root.path(),
+        FilesystemProfile::Portable,
+        NativeWatchOptions::new(config.limits),
+    )?;
+    watch.accept_lazy_baseline()?;
+    std::fs::rename(root.path().join("before"), root.path().join("after"))?;
+    let destination = host_path_to_namespace(
+        std::path::Path::new("after"),
+        FilesystemProfile::Portable,
+        config.limits,
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let batch = watch
+            .poll(128, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value;
+        let saw_destination = match &batch {
+            WatchBatch::Changes { changes, .. } => changes.iter().any(
+                |change| matches!(change, WatchChange::Modified(path) if path == &destination),
+            ),
+            WatchBatch::RescanRequired { reason, .. } => {
+                return Err(format!("watcher invalidated: {reason}").into());
+            }
+        };
+        capture_watch_batch(
+            &mut checkout,
+            batch,
+            &options,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+        if saw_destination {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err("destination hint timed out".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let nested = host_path_to_namespace(
+        std::path::Path::new("after/nested/file.txt"),
+        FilesystemProfile::Portable,
+        config.limits,
+    )?;
+    let lookup = checkout
+        .lookup_no_follow(&nested, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?;
+    assert!(
+        lookup.value.record.is_some(),
+        "renamed directory descendant missing from checkout"
+    );
+    let old_nested = host_path_to_namespace(
+        std::path::Path::new("before/nested/file.txt"),
+        FilesystemProfile::Portable,
+        config.limits,
+    )?;
+    assert!(
+        checkout
+            .lookup_no_follow(
+                &old_nested,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await?
+            .value
+            .record
+            .is_none(),
+        "old directory descendant still present in checkout"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "local-only 10k-path APFS working-set qualification"]
 #[allow(
     clippy::too_many_lines,
