@@ -162,8 +162,7 @@ impl LocalCoreStateStore {
         family: &str,
         workspace_id: WorkspaceId,
     ) -> Result<Option<T>, LocalCoreStateStoreError> {
-        let paths = RecordPaths::new(&self.root, family, workspace_id);
-        with_lock(&paths, || read_recoverable(&paths))
+        read_locked(&RecordPaths::new(&self.root, family, workspace_id))
     }
 
     fn compare_and_swap_record<T: DeserializeOwned + Serialize>(
@@ -283,8 +282,37 @@ impl RecordPaths {
     }
 }
 
+#[derive(Clone, Copy)]
+enum LockMode {
+    Shared,
+    Exclusive,
+}
+
 fn with_lock<T>(
     paths: &RecordPaths,
+    action: impl FnOnce() -> Result<T, LocalCoreStateStoreError>,
+) -> Result<T, LocalCoreStateStoreError> {
+    with_lock_mode(paths, LockMode::Exclusive, action)
+}
+
+/// Reads one record. A readable current record needs no recovery, so readers
+/// share the lock; only a missing or torn current record takes the exclusive
+/// recovery path, which may promote the previous record.
+fn read_locked<T: DeserializeOwned>(
+    paths: &RecordPaths,
+) -> Result<Option<T>, LocalCoreStateStoreError> {
+    let current = with_lock_mode(paths, LockMode::Shared, || {
+        Ok(read_json(&paths.current).ok().flatten())
+    })?;
+    match current {
+        Some(value) => Ok(Some(value)),
+        None => with_lock(paths, || read_recoverable(paths)),
+    }
+}
+
+fn with_lock_mode<T>(
+    paths: &RecordPaths,
+    mode: LockMode,
     action: impl FnOnce() -> Result<T, LocalCoreStateStoreError>,
 ) -> Result<T, LocalCoreStateStoreError> {
     std::fs::create_dir_all(&paths.directory)?;
@@ -296,7 +324,11 @@ fn with_lock<T>(
         .open(&paths.lock)?;
     let deadline = Instant::now() + RECORD_LOCK_DEADLINE;
     loop {
-        match lock.try_lock_exclusive() {
+        let locked = match mode {
+            LockMode::Shared => FileExt::try_lock_shared(&lock),
+            LockMode::Exclusive => lock.try_lock_exclusive(),
+        };
+        match locked {
             Ok(()) => break,
             Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
                 if Instant::now() >= deadline {
@@ -1278,16 +1310,14 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         let root = self.root.clone();
         run_local_transaction(move || {
             let paths = RecordPaths::new_key(&root, "lazy-overlays", &overlay.into_bytes());
-            with_lock(&paths, || {
-                let Some(value) = read_recoverable(&paths)? else {
-                    return Ok(None);
-                };
-                let encoded = serde_json::to_vec(&value)?;
-                if blake3::hash(&encoded).as_bytes() != &overlay.into_bytes() {
-                    return Err(LocalCoreStateStoreError::Integrity);
-                }
-                Ok(Some(value))
-            })
+            let Some(value) = read_locked(&paths)? else {
+                return Ok(None);
+            };
+            let encoded = serde_json::to_vec(&value)?;
+            if blake3::hash(&encoded).as_bytes() != &overlay.into_bytes() {
+                return Err(LocalCoreStateStoreError::Integrity);
+            }
+            Ok(Some(value))
         })
         .await
     }
@@ -1325,16 +1355,14 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         let root = self.root.clone();
         run_local_transaction(move || {
             let paths = RecordPaths::new_key(&root, "lazy-shadows-v1", &shadow.into_bytes());
-            with_lock(&paths, || {
-                let Some(value) = read_recoverable(&paths)? else {
-                    return Ok(None);
-                };
-                let encoded = serde_json::to_vec(&value)?;
-                if blake3::hash(&encoded).as_bytes() != &shadow.into_bytes() {
-                    return Err(LocalCoreStateStoreError::Integrity);
-                }
-                Ok(Some(value))
-            })
+            let Some(value) = read_locked(&paths)? else {
+                return Ok(None);
+            };
+            let encoded = serde_json::to_vec(&value)?;
+            if blake3::hash(&encoded).as_bytes() != &shadow.into_bytes() {
+                return Err(LocalCoreStateStoreError::Integrity);
+            }
+            Ok(Some(value))
         })
         .await
     }
