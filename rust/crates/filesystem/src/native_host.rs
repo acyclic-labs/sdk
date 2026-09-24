@@ -48,6 +48,7 @@ pub(crate) struct WindowsMetadataTarget {
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, thiserror::Error)]
+#[cfg(any(feature = "native-mount", test))]
 pub(crate) enum MacMetadataError {
     #[error("macOS native metadata cannot represent {0}")]
     Unsupported(&'static str),
@@ -57,6 +58,7 @@ pub(crate) enum MacMetadataError {
 
 /// An exact, no-follow target pinned before metadata work is deferred.
 #[cfg(target_os = "macos")]
+#[cfg(any(feature = "native-mount", test))]
 pub(crate) enum MacMetadataTarget {
     Held(File),
     Noop {
@@ -825,6 +827,7 @@ impl HostRoot {
 
     /// Pins one ordinary macOS inode before an offloaded metadata mutation.
     #[cfg(target_os = "macos")]
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn open_macos_metadata_target(
         &self,
         path: &Path,
@@ -956,6 +959,7 @@ impl HostRoot {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(any(feature = "native-mount", test))]
 fn open_macos_metadata_target(
     root: &Dir,
     path: &Path,
@@ -1008,6 +1012,7 @@ fn open_macos_metadata_target(
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
+#[cfg(any(feature = "native-mount", test))]
 impl MacMetadataTarget {
     /// Applies representable metadata to the held inode and reads it back.
     /// Canonical ctime requires a durable native-view baseline first.
@@ -1085,6 +1090,7 @@ impl MacMetadataTarget {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(any(feature = "native-mount", test))]
 fn validate_macos_metadata_fields(
     metadata: crate::kernel::FileMetadata,
 ) -> Result<(), MacMetadataError> {
@@ -1122,6 +1128,7 @@ fn validate_macos_metadata_fields(
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
+#[cfg(any(feature = "native-mount", test))]
 fn apply_macos_timestamp_metadata(
     fd: libc::c_int,
     metadata: crate::kernel::FileMetadata,
@@ -1179,11 +1186,13 @@ fn apply_macos_timestamp_metadata(
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(any(feature = "native-mount", test))]
 fn macos_mismatch<T: Copy + Eq>(field: crate::kernel::MetadataField<T>, observed: T) -> bool {
     matches!(field, crate::kernel::MetadataField::Value(expected) if expected != observed)
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(any(feature = "native-mount", test))]
 fn macos_timespec(value: i64) -> libc::timespec {
     libc::timespec {
         tv_sec: value.div_euclid(1_000_000_000),
@@ -1192,6 +1201,7 @@ fn macos_timespec(value: i64) -> libc::timespec {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(any(feature = "native-mount", test))]
 fn macos_nanos(seconds: libc::time_t, nanoseconds: libc::c_long) -> Option<i64> {
     let nanos = i128::from(seconds) * 1_000_000_000 + i128::from(nanoseconds);
     i64::try_from(nanos).ok()
@@ -1199,6 +1209,7 @@ fn macos_nanos(seconds: libc::time_t, nanoseconds: libc::c_long) -> Option<i64> 
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
+#[cfg(any(feature = "native-mount", test))]
 fn macos_fstat(fd: std::os::fd::RawFd) -> io::Result<libc::stat> {
     let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
     // SAFETY: fstat initializes the whole result on success.
