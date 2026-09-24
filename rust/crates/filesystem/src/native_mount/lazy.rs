@@ -6,15 +6,13 @@ use super::view_gate::{
     ViewWriteLease as SourceMutationLease,
 };
 use super::{
-    CheckoutMountSource, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
-    MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
-    MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
-    MountViewLease, capture_root_identity,
+    CheckoutMountSource, MountAttributePage, MountAttributeWriteMode, MountContentPin,
+    MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLookup, MountNode,
+    MountNodeKind, MountOpenFile, MountPath, MountPublication, MountRangeAllocation,
+    MountSeekTarget, MountSourceError, MountViewLease, capture_root_identity,
 };
 use crate::LazySeekTarget;
-#[cfg(unix)]
-use crate::demand::DemandFile;
-use crate::demand::{DemandSource, SourceNode, SourceNodeKind};
+use crate::demand::{DemandFile, DemandSource, SourceNode, SourceNodeKind, SourceReference};
 use crate::kernel::{
     FileKind, FileMetadata, FileMutation, FilePayload, FileRecord, MetadataField, Mutation,
 };
@@ -894,9 +892,7 @@ struct LazyOpenFile<A, O, D, S> {
     expected_source: FileId,
     /// The source file, held open and version-proven since the mount opened
     /// it; unpromoted reads are served only through it.
-    #[cfg(unix)]
     source_file: Box<dyn DemandFile>,
-    #[cfg(unix)]
     source_node: SourceNode,
     source_generation: u64,
     source_view: Arc<SourceViewGate>,
@@ -1102,7 +1098,6 @@ where
         Ok(None)
     }
 
-    #[cfg(unix)]
     fn read_source(&self, offset: u64, length: u64) -> Result<Bytes, MountSourceError> {
         self.source_file
             .read_range(offset, length, &crate::CancellationToken::new())
@@ -1158,21 +1153,8 @@ where
         if let Some(file) = self.current_authored()? {
             return file.lookup();
         }
-        #[cfg(unix)]
-        {
-            let file_id = self.lazy.source_file_id(&self.source_node);
-            Ok(mount_lookup(LazyLookup::Source(self.source_node), file_id))
-        }
-        #[cfg(not(unix))]
-        self.runtime.wait(|| async {
-            let lookup = self.lazy.lookup(&self.path).await.map_err(lazy_error)?;
-            let file_id = self
-                .lazy
-                .stable_file_id_for_lookup(&self.path, &lookup)
-                .await
-                .map_err(lazy_error)?;
-            Ok(mount_lookup(lookup, file_id))
-        })
+        let file_id = self.lazy.source_file_id(&self.source_node);
+        Ok(mount_lookup(LazyLookup::Source(self.source_node), file_id))
     }
 
     fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
@@ -1180,17 +1162,7 @@ where
         if let Some(file) = self.current_authored()? {
             return file.read_range(offset, length);
         }
-        #[cfg(unix)]
-        {
-            self.read_source(offset, u64::from(length))
-        }
-        #[cfg(not(unix))]
-        self.runtime.wait(|| async {
-            self.lazy
-                .read_range(&self.path, offset, u64::from(length))
-                .await
-                .map_err(lazy_error)
-        })
+        self.read_source(offset, u64::from(length))
     }
 
     fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
@@ -1198,45 +1170,16 @@ where
         if let Some(file) = self.current_authored()? {
             return file.read_up_to(offset, maximum_bytes);
         }
-        #[cfg(unix)]
-        {
-            let length = self
-                .source_node
-                .logical_bytes
-                .ok_or_else(|| MountSourceError::Invalid("source is not regular".to_owned()))?
-                .saturating_sub(offset)
-                .min(u64::from(maximum_bytes));
-            if length == 0 {
-                return Ok(Bytes::new());
-            }
-            self.read_source(offset, length)
+        let length = self
+            .source_node
+            .logical_bytes
+            .ok_or_else(|| MountSourceError::Invalid("source is not regular".to_owned()))?
+            .saturating_sub(offset)
+            .min(u64::from(maximum_bytes));
+        if length == 0 {
+            return Ok(Bytes::new());
         }
-        #[cfg(not(unix))]
-        self.runtime.wait(|| async {
-            let lookup = self.lazy.lookup(&self.path).await.map_err(lazy_error)?;
-            let logical_bytes = match lookup {
-                LazyLookup::Authored { stat, .. } => stat.logical_bytes,
-                LazyLookup::Shadow { record, .. } => match record.payload {
-                    FilePayload::InlineRegular(data) => {
-                        Some(u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX))
-                    }
-                    FilePayload::Regular { logical_bytes, .. } => Some(logical_bytes),
-                    _ => None,
-                },
-                LazyLookup::Source(node) => node.logical_bytes,
-            }
-            .ok_or_else(|| MountSourceError::Invalid("source is not regular".to_owned()))?;
-            let length = logical_bytes
-                .saturating_sub(offset)
-                .min(u64::from(maximum_bytes));
-            if length == 0 {
-                return Ok(Bytes::new());
-            }
-            self.lazy
-                .read_range(&self.path, offset, length)
-                .await
-                .map_err(lazy_error)
-        })
+        self.read_source(offset, length)
     }
 
     fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
@@ -1244,33 +1187,17 @@ where
         if let Some(file) = self.current_authored()? {
             return file.seek(offset, target);
         }
-        #[cfg(unix)]
-        {
-            let length = self.source_node.logical_bytes.ok_or_else(|| {
-                MountSourceError::Invalid("seek requires a regular file".to_owned())
-            })?;
-            if offset >= length {
-                return Ok(None);
-            }
-            Ok(Some(match target {
-                MountSeekTarget::Data => offset,
-                MountSeekTarget::Hole => length,
-            }))
+        let length = self
+            .source_node
+            .logical_bytes
+            .ok_or_else(|| MountSourceError::Invalid("seek requires a regular file".to_owned()))?;
+        if offset >= length {
+            return Ok(None);
         }
-        #[cfg(not(unix))]
-        self.runtime.wait(|| async {
-            self.lazy
-                .seek(
-                    &self.path,
-                    offset,
-                    match target {
-                        MountSeekTarget::Data => LazySeekTarget::Data,
-                        MountSeekTarget::Hole => LazySeekTarget::Hole,
-                    },
-                )
-                .await
-                .map_err(lazy_error)
-        })
+        Ok(Some(match target {
+            MountSeekTarget::Data => offset,
+            MountSeekTarget::Hole => length,
+        }))
     }
 
     fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
@@ -1371,6 +1298,13 @@ where
     }
 
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
+        Ok(self.lookup_pinned(path)?.map(|(lookup, _)| lookup))
+    }
+
+    fn lookup_pinned(
+        &self,
+        path: &MountPath,
+    ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError> {
         let _lease = self.view_lease(None)?;
         // Newly authored objects are visible before the operation barrier has
         // published them into the lazy view. This is required for NFS CREATE
@@ -1383,40 +1317,42 @@ where
             if let Some(file) = self.detached_by_id(lookup.node.file_id)? {
                 let mut current = file.lookup()?;
                 current.node.link_count = lookup.node.link_count;
-                return Ok(Some(current));
+                return Ok(Some((current, None)));
             }
-            return Ok(Some(lookup));
+            return Ok(Some((lookup, None)));
         }
         if self.is_removed(&path_text)? {
             return Ok(None);
         }
         self.wait(|| async move {
-            #[cfg(unix)]
-            let lookup = self
-                .lazy
-                .inspect_unauthored(&path_text, None)
-                .await
-                .map(|(lookup, _)| lookup);
-            #[cfg(not(unix))]
-            let lookup = self.lazy.lookup(&path_text).await;
-            match lookup {
-                Ok(lookup) => {
-                    let file_id = self
-                        .lazy
-                        .stable_file_id_for_lookup(&path_text, &lookup)
-                        .await
-                        .map_err(lazy_error)?;
-                    let projected = mount_lookup(lookup, file_id);
-                    if let Some(file) = self.detached_by_id(file_id)? {
-                        let mut current = file.lookup()?;
-                        current.node.link_count = projected.node.link_count;
-                        return Ok(Some(current));
-                    }
-                    Ok(Some(projected))
+            // Inspection never extends the durable observation index. A
+            // caller that must later reproduce this exact content keeps the
+            // returned pin instead.
+            let (lookup, source) = match self.lazy.inspect_unauthored(&path_text, None).await {
+                Ok(resolved) => resolved,
+                Err(LazyWorkspaceError::NotFound) => return Ok(None),
+                Err(error) => return Err(lazy_error(error)),
+            };
+            let pin = match (&lookup, source) {
+                (LazyLookup::Source(node), Some(source))
+                    if node.kind == SourceNodeKind::RegularFile =>
+                {
+                    Some(source_content_pin(source, node))
                 }
-                Err(LazyWorkspaceError::NotFound) => Ok(None),
-                Err(error) => Err(lazy_error(error)),
+                _ => None,
+            };
+            let file_id = self
+                .lazy
+                .stable_file_id_for_lookup(&path_text, &lookup)
+                .await
+                .map_err(lazy_error)?;
+            let projected = mount_lookup(lookup, file_id);
+            if let Some(file) = self.detached_by_id(file_id)? {
+                let mut current = file.lookup()?;
+                current.node.link_count = projected.node.link_count;
+                return Ok(Some((current, None)));
             }
+            Ok(Some((projected, pin)))
         })
     }
 
@@ -1441,17 +1377,9 @@ where
             return Err(MountSourceError::NotFound);
         }
         let lookup_path = path_text.clone();
-        #[cfg(unix)]
         let (lookup, source) = self.wait(|| async move {
             self.lazy
                 .inspect_unauthored(&lookup_path, None)
-                .await
-                .map_err(lazy_error)
-        })?;
-        #[cfg(not(unix))]
-        let (lookup, source) = self.wait(|| async move {
-            self.lazy
-                .lookup_resolved(&lookup_path)
                 .await
                 .map_err(lazy_error)
         })?;
@@ -1484,11 +1412,10 @@ where
                 })
             }
             LazyLookup::Source(node) if node.kind == SourceNodeKind::RegularFile => {
-                let _source = source.ok_or(MountSourceError::Stale)?;
-                #[cfg(unix)]
+                let source = source.ok_or(MountSourceError::Stale)?;
                 let source_file = self.wait(|| async {
                     self.lazy
-                        .open_source_file(&path_text, _source, node)
+                        .open_source_file(&path_text, source, node)
                         .await
                         .map_err(lazy_error)
                 })?;
@@ -1500,9 +1427,7 @@ where
                     path: path_text,
                     mount_path: path.clone(),
                     expected_source,
-                    #[cfg(unix)]
                     source_file,
-                    #[cfg(unix)]
                     source_node: node,
                     source_generation,
                     source_view: Arc::clone(&self.source_view),
@@ -1553,23 +1478,17 @@ where
         offset: u64,
         length: u32,
     ) -> Result<Bytes, MountSourceError> {
-        let _lease = self.view_lease(None)?;
-        if let Some(file) = self.detached_for_path(path)? {
-            return file.read_range(offset, length);
-        }
-        if self.authored.lookup(path)?.is_some() {
-            return self.authored.read_range(path, offset, length);
-        }
-        let path = self.path(path)?;
-        if self.is_removed(&path)? {
-            return Err(MountSourceError::NotFound);
-        }
-        self.wait(|| async move {
-            self.lazy
-                .read_range(&path, offset, u64::from(length))
-                .await
-                .map_err(lazy_error)
-        })
+        self.read_content(path, None, offset, length)
+    }
+
+    fn read_pinned(
+        &self,
+        path: &MountPath,
+        pin: MountContentPin,
+        offset: u64,
+        length: u32,
+    ) -> Result<Bytes, MountSourceError> {
+        self.read_content(path, Some(pin), offset, length)
     }
 
     fn seek(
@@ -2187,6 +2106,70 @@ where
         self.wait(|| async move { self.promote(&text).await })?;
         Ok(())
     }
+
+    /// Reads one range of a path's current content. A pin additionally
+    /// requires still source-backed content to be exactly the pinned
+    /// version; content authored through the mount since is its newer state.
+    fn read_content(
+        &self,
+        path: &MountPath,
+        pin: Option<MountContentPin>,
+        offset: u64,
+        length: u32,
+    ) -> Result<Bytes, MountSourceError> {
+        let _lease = self.view_lease(None)?;
+        if let Some(file) = self.detached_for_path(path)? {
+            return file.read_range(offset, length);
+        }
+        if self.authored.lookup(path)?.is_some() {
+            return self.authored.read_range(path, offset, length);
+        }
+        let path = self.path(path)?;
+        if self.is_removed(&path)? {
+            return Err(MountSourceError::NotFound);
+        }
+        self.wait(|| async move {
+            let (lookup, source) = self
+                .lazy
+                .inspect_unauthored(&path, None)
+                .await
+                .map_err(lazy_error)?;
+            match (lookup, source) {
+                (LazyLookup::Source(node), Some(source)) => {
+                    if pin.is_some_and(|pin| pin != source_content_pin(source, &node)) {
+                        return Err(MountSourceError::Stale);
+                    }
+                    self.lazy
+                        .open_source_file(&path, source, node)
+                        .await
+                        .and_then(|file| {
+                            file.read_range(
+                                offset,
+                                u64::from(length),
+                                &crate::CancellationToken::new(),
+                            )
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| failure.error.into())
+                        })
+                }
+                _ => self.lazy.read_range(&path, offset, u64::from(length)).await,
+            }
+            .map_err(lazy_error)
+        })
+    }
+}
+
+/// Binds one source node's exact content version into an opaque pin.
+///
+/// The source epoch is deliberately excluded: a rebind that leaves a file's
+/// version unchanged leaves its content, and every promise about it, intact.
+fn source_content_pin(source: SourceReference, node: &SourceNode) -> MountContentPin {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"acyclic-fs-lazy-content-pin-v1\0");
+    hasher.update(&source.identity);
+    hasher.update(&node.file_identity);
+    hasher.update(&node.version.0);
+    MountContentPin(*hasher.finalize().as_bytes())
 }
 
 fn mount_lookup(lookup: LazyLookup, file_id: FileId) -> MountLookup {

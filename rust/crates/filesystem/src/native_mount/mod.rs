@@ -172,6 +172,14 @@ pub struct MountLookup {
     pub metadata: FileMetadata,
 }
 
+/// Opaque evidence of the exact external content one lookup observed.
+///
+/// Only the issuing source interprets it. A driver whose projected metadata
+/// outlives the callback that produced it (a `ProjFS` placeholder) stores the
+/// pin with that metadata and later reads exactly the promised content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MountContentPin(pub [u8; 32]);
+
 /// Namespace kinds representable by native projections.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MountNodeKind {
@@ -606,6 +614,39 @@ pub trait MountFilesystem: Send + Sync + 'static {
     ///
     /// Returns a typed source failure without changing checkout state.
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError>;
+    /// Looks up one path like [`Self::lookup`], also pinning the exact
+    /// external content a regular file's later [`Self::read_pinned`] must
+    /// reproduce.
+    ///
+    /// Sources whose file content changes only through their own mutation
+    /// methods have nothing external to pin and return `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed source failure without changing checkout state.
+    fn lookup_pinned(
+        &self,
+        path: &MountPath,
+    ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError> {
+        Ok(self.lookup(path)?.map(|lookup| (lookup, None)))
+    }
+    /// Reads one exact range of the content a [`Self::lookup_pinned`] pin
+    /// promised for `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Stale` when that exact content is no longer available, or
+    /// another typed source failure without partial output.
+    fn read_pinned(
+        &self,
+        path: &MountPath,
+        pin: MountContentPin,
+        offset: u64,
+        length: u32,
+    ) -> Result<Bytes, MountSourceError> {
+        let _ = (path, pin, offset, length);
+        Err(MountSourceError::Stale)
+    }
     /// Opens one regular file as an attached path-independent handle.
     ///
     /// # Errors
@@ -986,9 +1027,10 @@ impl NativeMountSession {
 
     /// Drops the kernel's cached entry/attributes for one mount-relative
     /// path (leading `/` optional). Linux FUSE also invalidates resident
-    /// file data and the parent's cached listing, and retains all of these
-    /// until invalidated: a change made to the source around the mount —
-    /// such as a removed route — becomes visible through this call.
+    /// file data and the parent's cached listing; Windows `ProjFS` drops an
+    /// unmodified projected placeholder and every cached absence. A change made
+    /// to the source around the mount, such as a removed route, becomes
+    /// visible through this call.
     /// Linux FUSE supports nested entries when the parent directory has a
     /// cached inode.
     ///
@@ -1001,24 +1043,25 @@ impl NativeMountSession {
             Some(DriverSession::Fuse(session)) => session.invalidate(path),
             #[cfg(target_os = "macos")]
             Some(DriverSession::DarwinMount(session)) => session.invalidate(path),
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            Some(_) => {
+            #[cfg(target_os = "windows")]
+            Some(DriverSession::ProjFs(session)) => session.invalidate(path),
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+            Some(DriverSession::Unsupported) => {
                 let _ = path;
-                Err(NativeMountError::Driver(
-                    "invalidation is not implemented for this transport".to_owned(),
-                ))
+                Err(NativeMountError::UnsupportedTarget)
             }
             None => Err(NativeMountError::Driver("session is stopped".to_owned())),
         }
     }
 
-    /// Brings kernel caches in line with a rebound source.
+    /// Brings kernel caches in line with a changed source view.
     ///
-    /// Linux FUSE retains entries, attributes, and file data until they are
-    /// invalidated. A mount owner that rebinds its source (for example by
-    /// advancing to a new head) calls this before exposing the new view; it
-    /// drops everything derived from the superseded binding and is a no-op
-    /// when the binding is unchanged. It is a no-op on other transports.
+    /// A mount owner that rebinds or advances its source calls this before
+    /// exposing the new view, even when the advance failed part way. Linux
+    /// FUSE retains entries, attributes, and file data until invalidated and
+    /// drops everything derived from the superseded binding; Windows `ProjFS`
+    /// forgets the absences it caches without expiry. macOS attribute caches
+    /// expire on their own. Unchanged views make this a no-op.
     ///
     /// # Errors
     ///
@@ -1027,8 +1070,12 @@ impl NativeMountSession {
         match &self.driver {
             #[cfg(target_os = "linux")]
             Some(DriverSession::Fuse(session)) => session.revalidate(),
-            #[cfg(not(target_os = "linux"))]
-            Some(_) => Ok(()),
+            #[cfg(target_os = "windows")]
+            Some(DriverSession::ProjFs(session)) => session.revalidate(),
+            #[cfg(target_os = "macos")]
+            Some(DriverSession::DarwinMount(_)) => Ok(()),
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+            Some(DriverSession::Unsupported) => Ok(()),
             None => Err(NativeMountError::Driver("session is stopped".to_owned())),
         }
     }

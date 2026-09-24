@@ -3649,6 +3649,8 @@ mod tests {
             .env("ACYCLIC_FS_TEST_PATH", destination.join(first_name))
             .status()?;
         assert!(write_status.success());
+        // Captures of external operations are deferred until callbacks flush.
+        session.flush_callbacks()?;
         let first = windows_path(first_name);
         assert_eq!(source.read_range(&first, 0, 9)?.as_ref(), b"projected");
 
@@ -3663,6 +3665,7 @@ mod tests {
             .env("ACYCLIC_FS_TEST_DESTINATION", destination.join(second_name))
             .status()?;
         assert!(rename_status.success());
+        session.flush_callbacks()?;
         let second = windows_path(second_name);
         assert_eq!(source.lookup(&first)?, None);
         assert!(source.lookup(&second)?.is_some());
@@ -3678,6 +3681,7 @@ mod tests {
             .env("ACYCLIC_FS_TEST_DESTINATION", destination.join(linked_name))
             .status()?;
         assert!(link_status.success());
+        session.flush_callbacks()?;
         let linked = windows_path(linked_name);
         let second_id = source
             .lookup(&second)?
@@ -3703,6 +3707,7 @@ mod tests {
             .env("ACYCLIC_FS_TEST_PATH", destination.join(second_name))
             .status()?;
         assert!(delete_status.success());
+        session.flush_callbacks()?;
         assert_eq!(source.lookup(&second)?, None);
         assert!(source.lookup(&linked)?.is_some());
         assert!(session.stop()?);

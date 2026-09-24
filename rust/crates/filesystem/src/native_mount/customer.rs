@@ -295,11 +295,10 @@ where
     /// Returns a typed conflict or storage failure without changing the
     /// mounted generation.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
-        self.source
-            .advance_to_head_async()
-            .await
-            .map_err(MountLifecycleError::Source)?;
-        revalidate_session(&self.session)
+        let advanced = self.source.advance_to_head_async().await;
+        // Even a failed advance may have moved part of the view.
+        revalidate_session(&self.session)?;
+        advanced.map_err(MountLifecycleError::Source)
     }
 
     /// Publishes all pending effects on the source's dedicated callback runtime.
@@ -392,11 +391,10 @@ where
 
     /// Advances an already-clean checkout to workspace head.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
-        self.source
-            .advance_to_head_async()
-            .await
-            .map_err(MountLifecycleError::Source)?;
-        revalidate_session(&self.session)
+        let advanced = self.source.advance_to_head_async().await;
+        // Even a failed advance may have moved part of the view.
+        revalidate_session(&self.session)?;
+        advanced.map_err(MountLifecycleError::Source)
     }
 
     /// Publishes pending effects on the source callback runtime.

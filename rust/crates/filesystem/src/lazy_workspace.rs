@@ -1725,17 +1725,6 @@ where
             .map(|receipt| receipt.value.lookup)
     }
 
-    #[cfg(all(feature = "native-mount", not(unix)))]
-    pub(crate) async fn lookup_resolved(
-        &self,
-        path: &str,
-    ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        self.lookup_measured(path, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map(|receipt| (receipt.value.lookup, receipt.value.source))
-    }
-
     async fn lookup_measured(
         &self,
         path: &str,
@@ -2174,7 +2163,7 @@ where
 
     /// Opens the inspected regular source file for repeated reads, each of
     /// which proves `node` is still the file's current version.
-    #[cfg(any(unix, test))]
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) async fn open_source_file(
         &self,
         path: &str,

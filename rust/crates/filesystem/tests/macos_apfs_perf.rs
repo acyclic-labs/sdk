@@ -19,6 +19,28 @@ fn component(value: &str) -> Vec<u8> {
     value.as_bytes().to_vec()
 }
 
+type MemoryCheckout =
+    acyclic_fs::Checkout<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
+
+/// Whether the portable host path `path` names a record in `checkout`.
+async fn has_record(
+    checkout: &mut MemoryCheckout,
+    path: &str,
+    limits: VolumeLimits,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let path = acyclic_fs::host_path_to_namespace(
+        std::path::Path::new(path),
+        FilesystemProfile::Portable,
+        limits,
+    )?;
+    Ok(checkout
+        .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value
+        .record
+        .is_some())
+}
+
 #[tokio::test]
 #[ignore = "local-only APFS watcher to canonical checkout rename diagnostic"]
 async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::error::Error>> {
@@ -108,34 +130,12 @@ async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::erro
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    let nested = host_path_to_namespace(
-        std::path::Path::new("after/nested/file.txt"),
-        FilesystemProfile::Portable,
-        config.limits,
-    )?;
-    let lookup = checkout
-        .lookup_no_follow(&nested, WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await?;
     assert!(
-        lookup.value.record.is_some(),
+        has_record(&mut checkout, "after/nested/file.txt", config.limits).await?,
         "renamed directory descendant missing from checkout"
     );
-    let old_nested = host_path_to_namespace(
-        std::path::Path::new("before/nested/file.txt"),
-        FilesystemProfile::Portable,
-        config.limits,
-    )?;
     assert!(
-        checkout
-            .lookup_no_follow(
-                &old_nested,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await?
-            .value
-            .record
-            .is_none(),
+        !has_record(&mut checkout, "before/nested/file.txt", config.limits).await?,
         "old directory descendant still present in checkout"
     );
     Ok(())
