@@ -500,11 +500,12 @@ impl DaytonaProvider {
     /// The name alone proves nothing: in a shared organization another tenant or an unrelated
     /// workload can hold it. A name holder is adopted only when its provider labels (managed,
     /// key, kind, fork slot, tenant, and the serialized contract with its image) are exactly the
-    /// ones this request attaches; otherwise the create fails with a conflict.
+    /// ones this request attaches; otherwise the create fails with a conflict. The flag is
+    /// `true` for an adopted sandbox (see [`Self::claim`]).
     async fn create_or_adopt(
         &self,
         body: &api::CreateSandboxRequest,
-    ) -> Result<Sandbox, ProviderError> {
+    ) -> Result<(Sandbox, bool), ProviderError> {
         match self.api.create(body).await {
             Err(ProviderError::Conflict(detail)) => {
                 let Some(name) = &body.name else {
@@ -516,14 +517,35 @@ impl DaytonaProvider {
                     .await
                     .map_err(|_| ProviderError::Conflict(detail.clone()))?;
                 if map::provider_labels(&existing.labels) == map::provider_labels(&body.labels) {
-                    Ok(existing)
+                    Ok((existing, true))
                 } else {
                     Err(ProviderError::Conflict(format!(
                         "sandbox {name} exists but was not created by this request: {detail}"
                     )))
                 }
             }
-            other => other,
+            other => other.map(|created| (created, false)),
+        }
+    }
+
+    /// Records a sandbox this attempt produced: [`Self::claim_created`] for one it created, and
+    /// for one it `adopted` from an earlier attempt under the same key a binding that
+    /// cancellation and rollback never delete. An adopted sandbox may already have been
+    /// reported to the caller as that key's successful outcome (for example before a provider
+    /// restart), so undoing this attempt must not destroy it.
+    async fn claim(
+        &self,
+        operation: OperationId,
+        sandbox_id: &str,
+        adopted: bool,
+    ) -> Result<(), ProviderError> {
+        if !adopted {
+            return self.claim_created(operation, sandbox_id).await;
+        }
+        if self.ops.bind_adopted(operation, sandbox_id) {
+            Ok(())
+        } else {
+            Err(ProviderError::Cancelled)
         }
     }
 
@@ -694,7 +716,7 @@ impl DaytonaProvider {
                     self.tenant(),
                     &contract,
                 );
-                let child = match self
+                let (child, adopted) = match self
                     .api
                     .fork(
                         &parent_id,
@@ -704,13 +726,14 @@ impl DaytonaProvider {
                     )
                     .await
                 {
-                    Err(ProviderError::Conflict(detail)) => {
+                    Err(ProviderError::Conflict(detail)) => (
                         self.adopt_fork_child(&parent_id, &name, &ours, detail)
-                            .await?
-                    }
-                    other => other?,
+                            .await?,
+                        true,
+                    ),
+                    other => (other?, false),
                 };
-                self.claim_created(operation, &child.id).await?;
+                self.claim(operation, &child.id, adopted).await?;
                 self.api
                     .replace_labels(&child.id, map::relabel(&child.labels, ours))
                     .await?;
@@ -797,8 +820,8 @@ impl MachinesProvider for DaytonaProvider {
                 let mut body = map::create_request(&self.config, &snapshot, key, None, &contract)?;
                 self.require_vm_snapshot(&snapshot).await?;
                 body.env = self.staged_boot_env(key).unwrap_or_default();
-                let created = self.create_or_adopt(&body).await?;
-                self.claim_created(operation, &created.id).await?;
+                let (created, adopted) = self.create_or_adopt(&body).await?;
+                self.claim(operation, &created.id, adopted).await?;
                 let settled = self.wait_settled(&created.id, key).await?;
                 let observation = self.observe(&settled, Some(&contract), None)?;
                 if observation.state != MachineState::Running {
@@ -995,8 +1018,8 @@ impl MachinesProvider for DaytonaProvider {
                     let slot = map::ForkSlot { index, count };
                     let body =
                         map::create_request(&self.config, &snapshot, key, Some(slot), &contract)?;
-                    let created = self.create_or_adopt(&body).await?;
-                    self.claim_created(operation, &created.id).await?;
+                    let (created, adopted) = self.create_or_adopt(&body).await?;
+                    self.claim(operation, &created.id, adopted).await?;
                     ids.push(created.id);
                 }
                 let children = self
@@ -1758,5 +1781,44 @@ mod tests {
             Err(ProviderError::Unsupported(_))
         ));
         assert!(mock.requests().is_empty(), "{:?}", mock.requests());
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_replay_never_deletes_the_sandbox_it_adopted() {
+        // After a restart the registry is empty, so a replayed create adopts the sandbox an
+        // earlier (possibly reported-successful) attempt made. Cancelling the replay must not
+        // destroy it.
+        let key = test_key(16);
+        let release = gate();
+        let hold = Arc::clone(&release);
+        let mock = mock::Mock::start(move |request| {
+            let hold = Arc::clone(&hold);
+            async move {
+                if request.path.starts_with("/snapshots/") {
+                    return (200, r#"{"id":"s","sandboxClass":"linux-vm"}"#.to_owned());
+                }
+                if request.is("POST", "/sandbox") {
+                    return (409, "name taken".to_owned());
+                }
+                if request.is("GET", &format!("/sandbox/{OTHER}")) {
+                    hold.acquire().await.unwrap().forget();
+                }
+                (200, sandbox(OTHER, "started", &owned_labels(key, None)))
+            }
+        })
+        .await;
+        let provider = mocked(&mock, None);
+        let task = tokio::spawn({
+            let provider = Arc::clone(&provider);
+            async move { provider.create(request(key)).await }
+        });
+        mock.wait_for("GET", &format!("/sandbox/{OTHER}")).await;
+        provider.cancel(ops::operation_id(key)).await.unwrap();
+        release.add_permits(1);
+        assert!(matches!(task.await.unwrap(), Err(ProviderError::Cancelled)));
+        assert!(
+            !mock.requests().iter().any(|r| r.method == "DELETE"),
+            "an adopted sandbox belongs to the key's outcome, not to the cancelled replay"
+        );
     }
 }
