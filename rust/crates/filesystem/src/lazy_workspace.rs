@@ -1798,17 +1798,6 @@ where
             .map(|receipt| receipt.value.lookup)
     }
 
-    #[cfg(any(unix, test))]
-    pub(crate) async fn inspect_resolved(
-        &self,
-        path: &str,
-    ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        self.inspect_measured(path, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map(|receipt| (receipt.value.lookup, receipt.value.source))
-    }
-
     async fn inspect_measured(
         &self,
         path: &str,
@@ -1839,25 +1828,28 @@ where
             .await
     }
 
-    /// Resolves `path` against a state already read by the caller, so a
-    /// directory page and its entries describe one snapshot.
-    #[cfg(feature = "native-mount")]
-    pub(crate) async fn inspect_in(
+    /// Resolves `path` for a mount whose own checkout already lacks it.
+    ///
+    /// The mount's checkout, not the published head, is its authored view, so
+    /// the head is not consulted again. `state` pins the snapshot a directory
+    /// page was listed against; otherwise the current state is read.
+    #[cfg(any(feature = "native-mount", test))]
+    pub(crate) async fn inspect_unauthored(
         &self,
-        state: &LazyWorkspaceState,
         path: &str,
-    ) -> Result<LazyLookup, LazyWorkspaceError> {
+        state: Option<&LazyWorkspaceState>,
+    ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
         let cancellation = CancellationToken::new();
         self.inspect_with_observation_policy(
             path,
-            Some(state),
+            state,
             WorkBudget::UNBOUNDED,
             &cancellation,
             false,
-            false,
+            true,
         )
         .await
-        .map(|receipt| receipt.value.lookup)
+        .map(|receipt| (receipt.value.lookup, receipt.value.source))
     }
 
     async fn inspect_with_observation_policy(
@@ -2991,7 +2983,7 @@ where
     #[cfg(feature = "native-mount")]
     ///
     /// Returns the state the page was listed against, so callers resolve its
-    /// entries with [`Self::inspect_in`] from the same snapshot.
+    /// entries with [`Self::inspect_unauthored`] from the same snapshot.
     pub(crate) async fn list_directory_in_checkout(
         &self,
         checkout: &mut crate::Checkout<A, O>,
@@ -6111,7 +6103,7 @@ mod tests {
         let before = root.state().await.expect("state before inspection");
 
         let (lookup, source_reference) = root
-            .inspect_resolved("/file.txt")
+            .inspect_unauthored("/file.txt", None)
             .await
             .expect("inspect source file");
         let LazyLookup::Source(node) = lookup else {

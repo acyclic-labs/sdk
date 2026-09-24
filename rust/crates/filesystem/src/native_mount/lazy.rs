@@ -1393,7 +1393,11 @@ where
         }
         self.wait(|| async move {
             #[cfg(unix)]
-            let lookup = self.lazy.inspect(&path_text).await;
+            let lookup = self
+                .lazy
+                .inspect_unauthored(&path_text, None)
+                .await
+                .map(|(lookup, _)| lookup);
             #[cfg(not(unix))]
             let lookup = self.lazy.lookup(&path_text).await;
             match lookup {
@@ -1441,7 +1445,7 @@ where
         #[cfg(unix)]
         let (lookup, source) = self.wait(|| async move {
             self.lazy
-                .inspect_resolved(&lookup_path)
+                .inspect_unauthored(&lookup_path, None)
                 .await
                 .map_err(lazy_error)
         })?;
@@ -1642,9 +1646,10 @@ where
                 self.wait(|| async {
                     let lookup = self
                         .lazy
-                        .inspect_in(&state, &child)
+                        .inspect_unauthored(&child, Some(&state))
                         .await
-                        .map_err(lazy_error)?;
+                        .map_err(lazy_error)?
+                        .0;
                     let file_id = self
                         .lazy
                         .stable_file_id_for_lookup(&child, &lookup)
