@@ -905,22 +905,7 @@ async fn report_linux_working_set_costs() -> Result<(), Box<dyn std::error::Erro
     working_set.validate_for_presentation().await?;
     let activation_us = started.elapsed().as_micros();
 
-    let mut changed = Vec::with_capacity(CHANGES);
-    for index in 0..CHANGES {
-        let directory = index % DIRECTORIES;
-        let file = index / DIRECTORIES;
-        std::fs::write(
-            view.path()
-                .join("hot")
-                .join(format!("d{directory:03}/f{file:03}.txt")),
-            format!("changed-{index}\n"),
-        )?;
-        changed.push(
-            MountPath::root()
-                .child(component(&format!("d{directory:03}")))
-                .child(component(&format!("f{file:03}.txt"))),
-        );
-    }
+    let changed = write_changed_working_set_files(view.path(), DIRECTORIES, CHANGES)?;
     let started = Instant::now();
     working_set.capture_host_paths(&changed).await?;
     let capture_us = started.elapsed().as_micros();
@@ -965,6 +950,29 @@ async fn report_linux_working_set_costs() -> Result<(), Box<dyn std::error::Erro
         })
     );
     Ok(())
+}
+
+fn write_changed_working_set_files(
+    view: &Path,
+    directories: usize,
+    changes: usize,
+) -> Result<Vec<MountPath>, Box<dyn std::error::Error>> {
+    let mut changed = Vec::with_capacity(changes);
+    for index in 0..changes {
+        let directory = index % directories;
+        let file = index / directories;
+        std::fs::write(
+            view.join("hot")
+                .join(format!("d{directory:03}/f{file:03}.txt")),
+            format!("changed-{index}\n"),
+        )?;
+        changed.push(
+            MountPath::root()
+                .child(component(&format!("d{directory:03}")))
+                .child(component(&format!("f{file:03}.txt"))),
+        );
+    }
+    Ok(changed)
 }
 
 #[tokio::test]

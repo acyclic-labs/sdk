@@ -3841,18 +3841,7 @@ where
         path: &str,
         expected: Option<FileId>,
     ) -> Result<(), LazyWorkspaceError> {
-        self.remove_if_with_effect(path, expected).await.map(|_| ())
-    }
-
-    /// Returns whether removal published an authored generation that a mount
-    /// must adopt. Source-only tombstoning changes no authored checkout head.
-    #[cfg(feature = "native-mount")]
-    pub(crate) async fn remove_if_with_effect(
-        &self,
-        path: &str,
-        expected: Option<FileId>,
-    ) -> Result<bool, LazyWorkspaceError> {
-        self.remove_if_inner(path, expected).await
+        self.remove_if_inner(path, expected).await.map(|_| ())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -5655,7 +5644,7 @@ mod tests {
         };
         assert!(
             !root
-                .remove_if_with_effect("/file.txt", Some(root.source_file_id(&node)))
+                .remove_if_inner("/file.txt", Some(root.source_file_id(&node)))
                 .await
                 .expect("source-only tombstone")
         );

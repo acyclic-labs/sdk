@@ -1056,6 +1056,7 @@ impl MacMetadataTarget {
         if macos_mismatch(metadata.posix_uid, observed.st_uid)
             || macos_mismatch(metadata.posix_gid, observed.st_gid)
             || matches!(metadata.posix_mode, MetadataField::Value(value) if u32::from(observed.st_mode) & 0o7777 != value & 0o7777)
+            || matches!(metadata.posix_flags, MetadataField::Value(0) if observed.st_flags != 0)
             || matches!(metadata.created_ns, MetadataField::Value(value) if macos_nanos(observed.st_birthtime, observed.st_birthtime_nsec) != Some(value))
             || matches!(metadata.accessed_ns, MetadataField::Value(value) if macos_nanos(observed.st_atime, observed.st_atime_nsec) != Some(value))
             || matches!(metadata.modified_ns, MetadataField::Value(value) if macos_nanos(observed.st_mtime, observed.st_mtime_nsec) != Some(value))
@@ -1074,7 +1075,7 @@ fn validate_macos_metadata_fields(
 
     for (present, field) in [
         (
-            matches!(metadata.posix_flags, MetadataField::Value(_)),
+            matches!(metadata.posix_flags, MetadataField::Value(value) if value != 0),
             "posix_flags",
         ),
         (
@@ -2219,6 +2220,11 @@ mod macos_metadata_tests {
                 .is_err()
         );
         assert_eq!(std::fs::read(outside)?, b"untouched");
+        root.open_macos_metadata_target(Path::new("file"))?
+            .apply(FileMetadata {
+                posix_flags: MetadataField::Value(0),
+                ..FileMetadata::default()
+            })?;
         assert!(matches!(
             root.open_macos_metadata_target(Path::new("file"))?
                 .apply(FileMetadata {
