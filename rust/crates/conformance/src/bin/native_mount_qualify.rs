@@ -1309,10 +1309,10 @@ fn parallel_io_child(mount: &Path, index: usize, count: usize) -> Result<(), Fai
         .map_err(|error| format!("parallel client {index} publish own file: {error}"))?;
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let entries = fs::read_dir(&directory)
-            .map_err(|error| format!("parallel client {index} open directory: {error}"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| format!("parallel client {index} list directory: {error}"))?;
+        let entries = retry_nfs_directory_listing(deadline, || {
+            fs::read_dir(&directory).and_then(Iterator::collect::<Result<Vec<_>, _>>)
+        })
+        .map_err(|error| format!("parallel client {index} list directory: {error}"))?;
         if entries.len() == count {
             break;
         }
@@ -1340,6 +1340,90 @@ fn parallel_io_child(mount: &Path, index: usize, count: usize) -> Result<(), Fai
         }
     }
     Ok(())
+}
+
+fn retry_nfs_directory_listing<T>(
+    deadline: Instant,
+    mut list: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    loop {
+        match list() {
+            Ok(entries) => return Ok(entries),
+            Err(error) if retryable_nfs_directory_error(&error) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn retryable_nfs_directory_error(error: &std::io::Error) -> bool {
+    const MACOS_EIO: i32 = 5;
+    error.kind() == std::io::ErrorKind::StaleNetworkFileHandle
+        // macOS NFS also reports a concurrently invalidated directory page as EIO.
+        || (cfg!(target_os = "macos") && error.raw_os_error() == Some(MACOS_EIO))
+}
+
+#[cfg(test)]
+mod parallel_io_tests {
+    use super::{retry_nfs_directory_listing, retryable_nfs_directory_error};
+    use std::io::{Error, ErrorKind};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn retries_only_transient_nfs_directory_errors() {
+        assert!(retryable_nfs_directory_error(&Error::from(
+            ErrorKind::StaleNetworkFileHandle
+        )));
+        assert!(!retryable_nfs_directory_error(&Error::from(
+            ErrorKind::PermissionDenied
+        )));
+        assert_eq!(
+            retryable_nfs_directory_error(&Error::from_raw_os_error(5)),
+            cfg!(target_os = "macos")
+        );
+    }
+
+    #[test]
+    fn retries_a_transient_listing_then_uses_the_complete_result() {
+        let mut attempts = 0;
+        let entries = retry_nfs_directory_listing(Instant::now() + Duration::from_secs(1), || {
+            attempts += 1;
+            if attempts == 1 {
+                Err(Error::from(ErrorKind::StaleNetworkFileHandle))
+            } else {
+                Ok(vec!["peer-0", "peer-1"])
+            }
+        })
+        .expect("a complete retry should succeed");
+        assert_eq!(attempts, 2);
+        assert_eq!(entries, ["peer-0", "peer-1"]);
+    }
+
+    #[test]
+    fn stops_retrying_after_the_deadline() {
+        let mut attempts = 0;
+        let error = retry_nfs_directory_listing::<()>(Instant::now(), || {
+            attempts += 1;
+            Err(Error::from(ErrorKind::StaleNetworkFileHandle))
+        })
+        .expect_err("an expired deadline must fail");
+        assert_eq!(attempts, 1);
+        assert_eq!(error.kind(), ErrorKind::StaleNetworkFileHandle);
+    }
+
+    #[test]
+    fn fails_immediately_on_an_unrelated_error() {
+        let mut attempts = 0;
+        let error =
+            retry_nfs_directory_listing::<()>(Instant::now() + Duration::from_secs(1), || {
+                attempts += 1;
+                Err(Error::from(ErrorKind::PermissionDenied))
+            })
+            .expect_err("permission errors must remain fatal");
+        assert_eq!(attempts, 1);
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+    }
 }
 
 fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> Result<(), Failure> {
