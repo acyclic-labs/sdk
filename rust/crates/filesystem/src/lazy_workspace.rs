@@ -1888,25 +1888,23 @@ where
             .map(|receipt| receipt.value)
     }
 
+    /// Opens the inspected regular source file for repeated reads, each of
+    /// which proves `node` is still the file's current version.
     #[cfg(any(unix, test))]
-    pub(crate) async fn read_source_range(
+    pub(crate) async fn open_source_file(
         &self,
         path: &str,
         source: SourceReference,
         node: SourceNode,
-        offset: u64,
-        length: u64,
-    ) -> Result<Bytes, LazyWorkspaceError> {
+    ) -> Result<Box<dyn crate::demand::DemandFile>, LazyWorkspaceError> {
         if node.kind != SourceNodeKind::RegularFile {
             return Err(LazyWorkspaceError::NotRegularFile);
         }
         self.source
-            .read_range(
+            .open_file(
                 source,
                 &self.namespace_path(path)?,
                 node.version,
-                offset,
-                length,
                 &CancellationToken::new(),
             )
             .await
@@ -4905,8 +4903,8 @@ fn exactify_batch_key(snapshot_id: LazySnapshotId, root: &str, index: u64) -> Id
 mod tests {
     use super::*;
     use crate::demand::{
-        DemandResult, SourceCursor, SourceDirectoryEntry, SourceDirectoryPage, SourceMetadata,
-        SourceVersion,
+        DemandFile, DemandResult, SourceCursor, SourceDirectoryEntry, SourceDirectoryPage,
+        SourceMetadata, SourceVersion,
     };
     use crate::kernel::NameEncoding;
     use crate::performance::{OperationFailure, OperationReceipt, WorkCounters};
@@ -4979,6 +4977,25 @@ mod tests {
                 .insert(epoch, bytes);
         }
 
+        fn pinned(
+            &self,
+            source: SourceReference,
+            expected: SourceVersion,
+        ) -> Result<Bytes, OperationFailure<DemandError>> {
+            let Some(node) = self.versioned_node(source) else {
+                return Err(OperationFailure::before_work(DemandError::StaleSource));
+            };
+            if expected != node.version {
+                return Err(OperationFailure::before_work(DemandError::StaleVersion));
+            }
+            self.versions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&source.epoch)
+                .cloned()
+                .ok_or_else(|| OperationFailure::before_work(DemandError::StaleSource))
+        }
+
         fn versioned_node(&self, source: SourceReference) -> Option<SourceNode> {
             if source.identity != self.identity {
                 return None;
@@ -5006,6 +5023,26 @@ mod tests {
 
         fn cancel_next_range(&self) {
             self.cancel_on_range.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// One source version's bytes, pinned when the file was opened.
+    struct PinnedFile(Bytes);
+
+    impl DemandFile for PinnedFile {
+        fn read_range(
+            &self,
+            offset: u64,
+            length: u64,
+            _cancellation: &CancellationToken,
+        ) -> DemandResult<Bytes> {
+            let start = usize::try_from(offset)
+                .unwrap_or(usize::MAX)
+                .min(self.0.len());
+            let end = start
+                .saturating_add(usize::try_from(length).unwrap_or(usize::MAX))
+                .min(self.0.len());
+            CountingSource::receipt(self.0.slice(start..end))
         }
     }
 
@@ -5089,26 +5126,17 @@ mod tests {
             if self.cancel_on_range.swap(false, Ordering::Relaxed) {
                 cancellation.cancel();
             }
-            let Some(node) = self.versioned_node(source) else {
-                return Err(OperationFailure::before_work(DemandError::StaleSource));
-            };
-            if expected != node.version {
-                return Err(OperationFailure::before_work(DemandError::StaleVersion));
-            }
-            let versions = self
-                .versions
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let bytes = versions
-                .get(&source.epoch)
-                .ok_or_else(|| OperationFailure::before_work(DemandError::StaleSource))?;
-            let start = usize::try_from(offset)
-                .unwrap_or(usize::MAX)
-                .min(bytes.len());
-            let end = start
-                .saturating_add(usize::try_from(length).unwrap_or(usize::MAX))
-                .min(bytes.len());
-            Self::receipt(bytes.slice(start..end))
+            PinnedFile(self.pinned(source, expected)?).read_range(offset, length, cancellation)
+        }
+
+        async fn open_file(
+            &self,
+            source: SourceReference,
+            _path: &NamespacePath,
+            expected: SourceVersion,
+            _cancellation: &CancellationToken,
+        ) -> DemandResult<Box<dyn DemandFile>> {
+            Self::receipt(Box::new(PinnedFile(self.pinned(source, expected)?)))
         }
 
         async fn read_link(
@@ -5822,15 +5850,16 @@ mod tests {
 
         source.replace(Bytes::from_static(b"after"));
         assert_eq!(
-            root.read_source_range(
+            root.open_source_file(
                 "/file.txt",
                 source_reference.expect("source reference"),
                 node,
-                0,
-                6,
             )
             .await
-            .expect("read pinned version"),
+            .expect("open pinned version")
+            .read_range(0, 6, &CancellationToken::new())
+            .expect("read pinned version")
+            .value,
             Bytes::from_static(b"before")
         );
 
