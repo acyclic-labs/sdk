@@ -1203,7 +1203,7 @@ fn observe_host_path(
     source_root: &HostRoot,
     host_path: &Path,
 ) -> Result<Option<HostObservation>, CaptureError> {
-    classify_host_observation(source_root.symlink_metadata(host_path))
+    classify_host_observation(source_root.symlink_metadata_held(host_path))
 }
 
 fn classify_host_observation(
@@ -1241,6 +1241,25 @@ mod host_observation_tests {
         std::fs::write(directory.path().join("file"), b"body")?;
         let source_root = HostRoot::open(directory.path())?;
         assert!(observe_host_path(&source_root, Path::new("file/child"))?.is_none());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn subtree_walk_rejects_intermediate_symlinks() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        std::fs::write(outside.path().join("private"), b"outside")?;
+        symlink(outside.path(), directory.path().join("alias"))?;
+        let source_root = HostRoot::open(directory.path())?;
+        assert!(source_root.read_dir_held(Path::new("alias")).is_err());
+        assert!(
+            source_root
+                .symlink_metadata_held(Path::new("alias/private"))
+                .is_err()
+        );
         Ok(())
     }
 }
@@ -1547,7 +1566,7 @@ fn collect_host_observations(
             OperationFailure::new(CaptureError::Engine(error.to_string()), *work)
         })?;
         for entry in root
-            .read_dir(&host_parent)
+            .read_dir_held(&host_parent)
             .map_err(|error| OperationFailure::new(error.into(), *work))?
         {
             let entry = entry.map_err(|error| OperationFailure::new(error.into(), *work))?;
@@ -1563,7 +1582,7 @@ fn collect_host_observations(
             }
             let host_child = host_parent.join(entry.file_name());
             let metadata = root
-                .symlink_metadata(&host_child)
+                .symlink_metadata_held(&host_child)
                 .map_err(|error| OperationFailure::new(error.into(), *work))?;
             let file_type = metadata.file_type();
             insert_host_observation(
@@ -1661,7 +1680,7 @@ fn collect_host_subtree_roots(
 ) -> Result<(), OperationFailure<CaptureError>> {
     for root in roots {
         let host_root = namespace_to_host_path(root).map_err(OperationFailure::before_work)?;
-        match source_root.symlink_metadata(&host_root) {
+        match source_root.symlink_metadata_held(&host_root) {
             Ok(metadata) => {
                 let file_type = metadata.file_type();
                 insert_host_observation(observed, root.clone(), metadata, maximum, work, budget)?;
@@ -1708,7 +1727,7 @@ fn collect_host_subtree_observations(
             OperationFailure::new(CaptureError::Engine(error.to_string()), *work)
         })?;
         for entry in root
-            .read_dir(&host_parent)
+            .read_dir_held(&host_parent)
             .map_err(|error| OperationFailure::new(error.into(), *work))?
         {
             let entry = entry.map_err(|error| OperationFailure::new(error.into(), *work))?;
@@ -1724,7 +1743,7 @@ fn collect_host_subtree_observations(
             }
             let host_child = host_parent.join(entry.file_name());
             let metadata = root
-                .symlink_metadata(&host_child)
+                .symlink_metadata_held(&host_child)
                 .map_err(|error| OperationFailure::new(error.into(), *work))?;
             let file_type = metadata.file_type();
             insert_host_observation(observed, child.clone(), metadata, maximum, work, budget)?;
@@ -1756,7 +1775,7 @@ fn collect_host_subtree_paths<P: ScannedPaths>(
             OperationFailure::new(CaptureError::Engine(error.to_string()), *work)
         })?;
         let entries = root
-            .read_dir(&host_parent)
+            .read_dir_held(&host_parent)
             .map_err(|error| OperationFailure::new(error.into(), *work))?;
         for entry in entries {
             let entry = entry.map_err(|error| OperationFailure::new(error.into(), *work))?;
@@ -2743,7 +2762,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let metadata = observation.map_or_else(
         || {
             source_root
-                .symlink_metadata(&host_path)
+                .symlink_metadata_held(&host_path)
                 .map(HostObservation::from_metadata)
         },
         Ok,
@@ -3553,7 +3572,7 @@ fn ensure_current_host_node(
     host_path: &Path,
     expected: &HostSnapshot,
 ) -> Result<(), CaptureError> {
-    let observed = source_root.symlink_metadata(host_path)?;
+    let observed = source_root.symlink_metadata_held(host_path)?;
     ensure_same_host_node(expected, &observed)
 }
 
