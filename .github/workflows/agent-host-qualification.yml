@@ -5,9 +5,13 @@ on:
   pull_request:
     paths:
       - ".github/workflows/agent-host-qualification.yml"
+      - ".github/actions/rust-build-cache/action.yml"
       - "Cargo.lock"
       - "Cargo.toml"
       - "plugin/**"
+      - "!plugin/**/README.md"
+      - "!plugin/**/CHANGELOG.md"
+      - "!plugin/scripts/validate-package.mjs"
       - "rust/crates/filesystem/**"
       - "rust/crates/native-runtime/**"
 
@@ -48,6 +52,19 @@ jobs:
         with:
           toolchain: 1.94.0
 
+      - name: Restore Rust build cache
+        uses: ./.github/actions/rust-build-cache
+        with:
+          scope: host-${{ matrix.platform.name }}
+
+      - name: Restore host npm downloads
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ runner.temp }}/npm-cache
+          key: host-npm-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('plugin/tests/hosts/package-lock.json') }}
+          restore-keys: |
+            host-npm-v1-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Install Linux native-mount prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends fuse3 libfuse3-dev
@@ -66,6 +83,8 @@ jobs:
 
       - name: Install locked host binary
         id: host
+        env:
+          npm_config_cache: ${{ runner.temp }}/npm-cache
         run: |
           npm ci --prefix plugin/tests/hosts --ignore-scripts
           node plugin/scripts/resolve-qualification-host.mjs ${{ matrix.host }}

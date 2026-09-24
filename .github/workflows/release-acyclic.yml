@@ -55,6 +55,10 @@ jobs:
         with:
           toolchain: 1.94.0
           targets: ${{ matrix.rust_target }}
+      - name: Restore Rust build cache
+        uses: ./.github/actions/rust-build-cache
+        with:
+          scope: release-${{ matrix.rust_target }}
       - name: Install Windows ARM64 compiler
         if: matrix.rust_target == 'aarch64-pc-windows-msvc'
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
