@@ -1,0 +1,33 @@
+{
+  "id": "6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a61",
+  "organizationId": "0f0e0d0c-0b0a-4908-8706-050403020100",
+  "snapshot": "acyclic-worker-base",
+  "user": "daytona",
+  "env": {},
+  "labels": {
+    "acyclic.managed": "true",
+    "acyclic.key": "00000000-0000-0000-0000-000000000001",
+    "acyclic.kind": "create",
+    "acyclic.tenant": "org-demo",
+    "acyclic.contract": "{\"image\":{\"Custom\":[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7]},\"capabilities\":[\"LiveCheckpoint\",\"LiveFork\",\"SuspendResume\"],\"compatibility\":\"BestEffort\",\"compatibility_revision\":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],\"performance\":\"Elastic\",\"suspension\":{\"AfterIdle\":{\"secs\":15,\"nanos\":0}},\"expiration\":\"Never\",\"network_policy_digest\":[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],\"budgets\":{\"spend_micros\":0,\"concurrency\":0}}"
+  },
+  "public": false,
+  "target": "us",
+  "cpu": 2,
+  "gpu": 0,
+  "memory": 4,
+  "disk": 10,
+  "state": "started",
+  "errorReason": null,
+  "autoStopInterval": 0,
+  "autoArchiveInterval": 10080,
+  "autoDeleteInterval": -1,
+  "createdAt": "2026-09-11T10:15:30.250Z",
+  "updatedAt": "2026-09-11T10:16:02Z",
+  "sandboxClass": "linux-vm",
+  "name": "acyclic-00000000-0000-0000-0000-000000000001",
+  "autoPauseInterval": 1,
+  "networkBlockAll": false,
+  "toolboxProxyUrl": "https://proxy.app.daytona.io/toolbox",
+  "runnerId": "29ad2ffd-7b46-4905-bfea-82eb3494b4d5"
+}

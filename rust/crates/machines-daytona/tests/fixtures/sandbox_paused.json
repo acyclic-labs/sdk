@@ -1,0 +1,16 @@
+{
+  "id": "6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a61",
+  "snapshot": "acyclic-worker-base",
+  "labels": {
+    "acyclic.managed": "true",
+    "acyclic.key": "00000000-0000-0000-0000-000000000001",
+    "acyclic.kind": "create"
+  },
+  "state": "paused",
+  "autoStopInterval": 0,
+  "createdAt": "2026-09-11T10:15:30Z",
+  "updatedAt": "2026-09-11T10:20:00Z",
+  "sandboxClass": "linux-vm",
+  "autoPauseInterval": 0,
+  "toolboxProxyUrl": "https://proxy.app.daytona.io/toolbox"
+}
