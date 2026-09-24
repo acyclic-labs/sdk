@@ -1351,6 +1351,9 @@ fn retry_nfs_directory_listing<T>(
             Ok(entries) => return Ok(entries),
             Err(error) if retryable_nfs_directory_error(&error) && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(25));
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
             }
             Err(error) => return Err(error),
         }
@@ -1899,6 +1902,12 @@ mod parallel_io_tests {
             retryable_nfs_directory_error(&Error::from_raw_os_error(5)),
             cfg!(target_os = "macos")
         );
+        #[cfg(target_os = "macos")]
+        assert!(retryable_nfs_directory_error(&Error::from_raw_os_error(70)));
+        #[cfg(target_os = "linux")]
+        assert!(retryable_nfs_directory_error(&Error::from_raw_os_error(
+            116
+        )));
     }
 
     #[test]
@@ -1919,10 +1928,11 @@ mod parallel_io_tests {
     #[test]
     fn stops_retrying_after_the_deadline() {
         let mut attempts = 0;
-        let result = retry_nfs_directory_listing::<()>(Instant::now(), || {
-            attempts += 1;
-            Err(Error::from(ErrorKind::StaleNetworkFileHandle))
-        });
+        let result =
+            retry_nfs_directory_listing::<()>(Instant::now() + Duration::from_millis(1), || {
+                attempts += 1;
+                Err(Error::from(ErrorKind::StaleNetworkFileHandle))
+            });
         assert_eq!(attempts, 1);
         assert!(matches!(result, Err(error) if error.kind() == ErrorKind::StaleNetworkFileHandle));
     }

@@ -67,9 +67,10 @@ case "$lane" in
     bun run check:generated
     bun scripts/check-boundaries.mjs
     bun scripts/check-metadata.mjs
-    base="${CI_TARGET_BRANCH:-}"
-    if [[ -n "$base" ]]; then
-      bun x buf breaking --against ".git#ref=origin/$base" \
+    if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
+      base="$(jq -er '.pull_request.base.sha' "$GITHUB_EVENT_PATH")"
+      git cat-file -e "$base^{commit}" 2>/dev/null || git fetch --no-tags origin "$base"
+      bun x buf breaking --against ".git#ref=$base" \
         --exclude-path proto/inference/v1/inference.proto \
         --exclude-path proto/filesystem/v1 \
         --exclude-path proto/filesystem/daemon/v2
@@ -107,20 +108,27 @@ case "$lane" in
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
     cargo test -p acyclic-labs-plugin --locked
     cargo clippy -p acyclic-labs-plugin --all-targets --all-features --locked -- -D warnings
-    head="${CI_HEAD_SHA:-$(git rev-parse HEAD)}"
+    head="$(git rev-parse HEAD)"
     allow_webflow=false
     if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
-      [[ -n "${CI_TARGET_BRANCH:-}" ]] || {
-        echo 'pull request target branch is required for signature verification' >&2
+      event_head="$(jq -er '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
+      [[ "$head" == "$event_head" ]] || {
+        echo 'checked-out source does not match the pull request head' >&2
         exit 1
       }
-      branch="$CI_TARGET_BRANCH"
-      git fetch --no-tags origin "$branch"
-      base="$(git merge-base "$head" "origin/$branch")"
+      event_base="$(jq -er '.pull_request.base.sha' "$GITHUB_EVENT_PATH")"
+      git cat-file -e "$event_base^{commit}" 2>/dev/null ||
+        git fetch --no-tags origin "$event_base"
+      base="$(git merge-base "$head" "$event_base")"
       range="$base..$head"
     elif [[ "${GITHUB_EVENT_NAME:-}" == "push" &&
             "${GITHUB_REF:-}" == "refs/heads/main" ]]; then
-      before="${CI_BEFORE_SHA:-}"
+      event_head="$(jq -er '.after' "$GITHUB_EVENT_PATH")"
+      [[ "$head" == "$event_head" ]] || {
+        echo 'checked-out source does not match the main push head' >&2
+        exit 1
+      }
+      before="$(jq -er '.before' "$GITHUB_EVENT_PATH")"
       [[ "$before" =~ ^[0-9a-f]{40}$ ]] || {
         echo 'main push must include its previous commit for signature verification' >&2
         exit 1
@@ -200,7 +208,7 @@ case "$lane" in
         "$TOOLS_DIR/gitleaks-8.30.1" gitleaks
     fi
     "$TOOLS_DIR/gitleaks-8.30.1/gitleaks" detect --source . --no-banner --redact \
-      --log-opts "$base..$head"
+      --log-opts "$range"
     ;;
   web)
     bash scripts/ensure-rust-target.sh wasm32-unknown-unknown
