@@ -50,7 +50,7 @@ use std::sync::{Arc, Mutex, Weak};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
-use acyclic_native_runtime::{RenameMode, durable_rename};
+use acyclic_native_runtime::{Durability, RenameMode, durable_rename, sync_file, sync_parent};
 use control_protocol::{ControlEnvelope, ControlLedger, LedgerDecision};
 use fs2::FileExt as _;
 #[cfg(target_os = "linux")]
@@ -6360,90 +6360,146 @@ const MAXIMUM_ADAPTER_PENDING: usize = 4_096;
 const MAXIMUM_ADAPTER_LEASES: usize = 16_384;
 const MAXIMUM_ADAPTER_DISCARDS: usize = 4_096;
 
+/// Adapter state alternates between two self-validating slots, each rewritten
+/// in place under a single flush. A save only ever overwrites the slot that
+/// does not hold the newest completed save, so a torn write can damage nothing
+/// but itself and loading always yields the last completed save.
+const ADAPTER_STATE_SLOTS: [&str; 2] = ["adapter-state.a", "adapter-state.b"];
+const ADAPTER_STATE_MAGIC: [u8; 8] = *b"ACYSTAT1";
+/// Magic, little-endian generation, then the digest of generation and payload.
+const ADAPTER_STATE_HEADER_BYTES: usize = 8 + 8 + 32;
+
+enum StateSlot {
+    Missing,
+    Torn,
+    Saved { generation: u64, payload: Vec<u8> },
+}
+
+impl StateSlot {
+    const fn generation(&self) -> Option<u64> {
+        match self {
+            Self::Saved { generation, .. } => Some(*generation),
+            Self::Missing | Self::Torn => None,
+        }
+    }
+}
+
+fn state_digest(generation: u64, payload: &[u8]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&generation.to_le_bytes());
+    hasher.update(payload);
+    *hasher.finalize().as_bytes()
+}
+
+fn read_state_slot(path: &Path) -> Result<StateSlot, String> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(StateSlot::Missing),
+        Err(error) => return Err(display(error)),
+    };
+    let bound = MAXIMUM_ADAPTER_STATE_BYTES + ADAPTER_STATE_HEADER_BYTES as u64;
+    let mut bytes = Vec::new();
+    file.take(bound + 1)
+        .read_to_end(&mut bytes)
+        .map_err(display)?;
+    if bytes.len() as u64 > bound {
+        return Err(format!(
+            "adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound"
+        ));
+    }
+    let parsed = bytes.split_first_chunk::<8>().and_then(|(magic, rest)| {
+        let (generation, rest) = rest.split_first_chunk::<8>()?;
+        let (digest, payload) = rest.split_first_chunk::<32>()?;
+        Some((magic, u64::from_le_bytes(*generation), digest, payload))
+    });
+    Ok(match parsed {
+        Some((magic, generation, digest, payload))
+            if *magic == ADAPTER_STATE_MAGIC && *digest == state_digest(generation, payload) =>
+        {
+            StateSlot::Saved {
+                generation,
+                payload: payload.to_vec(),
+            }
+        }
+        _ => StateSlot::Torn,
+    })
+}
+
+/// Reads both slots as `[newest completed save, slot the next save overwrites]`.
+fn ordered_state_slots(data: &Path) -> Result<[(&'static str, StateSlot); 2], String> {
+    let [first, second] =
+        ADAPTER_STATE_SLOTS.map(|name| read_state_slot(&data.join(name)).map(|slot| (name, slot)));
+    let (first, second) = (first?, second?);
+    Ok(if second.1.generation() > first.1.generation() {
+        [second, first]
+    } else {
+        [first, second]
+    })
+}
+
 fn load_state(data: &Path) -> Result<AdapterState, String> {
-    let path = data.join("adapter-state.json");
-    let previous = data.join("adapter-state.previous.json");
-    match read_state(&path) {
-        Ok(Some(state)) => Ok(state),
-        Ok(None) => match read_state(&previous) {
-            Ok(Some(state)) => Ok(state),
-            Ok(None) => Ok(AdapterState {
-                version: ADAPTER_STATE_VERSION,
-                ..AdapterState::default()
-            }),
-            Err(error) => Err(error),
-        },
-        Err(current_error) => match read_state(&previous) {
-            Ok(Some(state)) => Ok(state),
-            Ok(None) => Err(current_error),
-            Err(previous_error) => Err(format!(
-                "current adapter state is invalid: {current_error}; previous adapter state is invalid: {previous_error}"
-            )),
-        },
+    match ordered_state_slots(data)? {
+        [(_, StateSlot::Saved { payload, .. }), _] => {
+            let state = serde_json::from_slice(&payload).map_err(display)?;
+            validate_state_version(&state)?;
+            validate_state_bounds(&state)?;
+            Ok(state)
+        }
+        [(_, StateSlot::Missing), (_, StateSlot::Missing)] => Ok(AdapterState {
+            version: ADAPTER_STATE_VERSION,
+            ..AdapterState::default()
+        }),
+        _ => Err("adapter state holds no completed save".to_owned()),
     }
 }
 
 fn save_state(data: &Path, state: &AdapterState) -> Result<(), String> {
-    save_state_with_rename(data, state, durable_rename)
-}
-
-fn save_state_with_rename(
-    data: &Path,
-    state: &AdapterState,
-    mut rename: impl FnMut(&Path, &Path, RenameMode) -> io::Result<()>,
-) -> Result<(), String> {
     validate_state_version(state)?;
     validate_state_bounds(state)?;
     let mut serialized = BoundedJsonBuffer::new();
-    serde_json::to_writer(&mut serialized, state).map_err(|_| {
-        format!("adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound")
-    })?;
-    let path = data.join("adapter-state.json");
-    let previous = data.join("adapter-state.previous.json");
-    let next = data.join("adapter-state.next.json");
+    serde_json::to_writer(&mut serialized, state)
+        .ok()
+        .filter(|()| serialized.bytes.len() as u64 <= MAXIMUM_ADAPTER_STATE_BYTES)
+        .ok_or_else(|| {
+            format!("adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound")
+        })?;
+    let [(_, newest), (target_name, target)] = ordered_state_slots(data)?;
+    let generation = newest
+        .generation()
+        .map_or(Some(1), |generation| generation.checked_add(1))
+        .ok_or("adapter state generation is exhausted")?;
+    let mut bytes = Vec::with_capacity(ADAPTER_STATE_HEADER_BYTES + serialized.bytes.len());
+    bytes.extend_from_slice(&ADAPTER_STATE_MAGIC);
+    bytes.extend_from_slice(&generation.to_le_bytes());
+    bytes.extend_from_slice(&state_digest(generation, &serialized.bytes));
+    bytes.extend_from_slice(&serialized.bytes);
     let mut file = fs::OpenOptions::new()
         .create(true)
-        .truncate(true)
+        .truncate(false)
         .write(true)
-        .open(&next)
+        .open(data.join(target_name))
         .map_err(display)?;
-    file.write_all(&serialized.bytes).map_err(display)?;
-    file.sync_all().map_err(display)?;
-    drop(file);
-    if path.exists() {
-        rename(&path, &previous, RenameMode::Replace).map_err(display)?;
+    file.write_all(&bytes).map_err(display)?;
+    file.set_len(bytes.len() as u64).map_err(display)?;
+    sync_file(&file, Durability::Full).map_err(display)?;
+    if matches!(target, StateSlot::Missing) {
+        sync_parent(data, Durability::Full).map_err(display)?;
     }
-    rename(&next, &path, RenameMode::Replace).map_err(display)
+    Ok(())
 }
 
-fn read_state(path: &Path) -> Result<Option<AdapterState>, String> {
-    match fs::File::open(path) {
-        Ok(file) => {
-            let length = file.metadata().map_err(display)?.len();
-            if length > MAXIMUM_ADAPTER_STATE_BYTES {
-                return Err(format!(
-                    "adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound"
-                ));
-            }
-            let capacity = usize::try_from(length)
-                .map_err(|_| "adapter state length does not fit this platform".to_owned())?;
-            let mut bytes = Vec::with_capacity(capacity);
-            file.take(MAXIMUM_ADAPTER_STATE_BYTES + 1)
-                .read_to_end(&mut bytes)
-                .map_err(display)?;
-            if bytes.len() as u64 > MAXIMUM_ADAPTER_STATE_BYTES {
-                return Err(format!(
-                    "adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound"
-                ));
-            }
-            let state = serde_json::from_slice(&bytes).map_err(display)?;
-            validate_state_version(&state)?;
-            validate_state_bounds(&state)?;
-            Ok(Some(state))
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(display(error)),
-    }
+/// When the session last completed a save, for newest-first recovery order.
+fn state_modified(data: &Path) -> std::time::SystemTime {
+    ADAPTER_STATE_SLOTS
+        .iter()
+        .filter_map(|slot| {
+            data.join(slot)
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+        })
+        .max()
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
 }
 
 fn validate_state_version(state: &AdapterState) -> Result<(), String> {
@@ -7615,14 +7671,8 @@ impl ServiceResources {
             .collect::<Result<Vec<_>, _>>()
             .map_err(display)?;
         entries.sort_by(|left, right| {
-            let modified = |path: &Path| {
-                path.join("adapter-state.json")
-                    .metadata()
-                    .and_then(|metadata| metadata.modified())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-            };
-            modified(right)
-                .cmp(&modified(left))
+            state_modified(right)
+                .cmp(&state_modified(left))
                 .then_with(|| right.cmp(left))
         });
         let mut sessions = BTreeMap::new();
@@ -19060,13 +19110,14 @@ mod tests {
     #[test]
     fn adapter_state_loading_is_byte_and_structure_bounded() {
         let temporary = tempfile::tempdir().expect("temporary directory");
-        let oversized = temporary.path().join("oversized.json");
+        let oversized = temporary.path().join("oversized");
         let file = fs::File::create(&oversized).expect("oversized state");
-        file.set_len(MAXIMUM_ADAPTER_STATE_BYTES + 1)
+        file.set_len(MAXIMUM_ADAPTER_STATE_BYTES + ADAPTER_STATE_HEADER_BYTES as u64 + 1)
             .expect("extend oversized state");
         assert!(
-            read_state(&oversized)
-                .expect_err("oversized state must fail")
+            read_state_slot(&oversized)
+                .err()
+                .expect("oversized state must fail")
                 .contains("byte bound")
         );
 
@@ -19116,7 +19167,11 @@ mod tests {
                 .expect_err("oversized state persistence must fail")
                 .contains("byte bound")
         );
-        assert!(!temporary.path().join("adapter-state.json").exists());
+        assert!(
+            ADAPTER_STATE_SLOTS
+                .iter()
+                .all(|slot| !temporary.path().join(slot).exists())
+        );
     }
 
     #[test]
@@ -19147,84 +19202,46 @@ mod tests {
     }
 
     #[test]
-    fn adapter_state_recovers_only_from_a_valid_bounded_previous_snapshot() {
+    fn adapter_state_loads_the_last_completed_save_despite_any_torn_write() {
         let temporary = tempfile::tempdir().expect("temporary directory");
-        fs::write(temporary.path().join("adapter-state.json"), b"not json")
-            .expect("corrupt current state");
-        let previous = AdapterState {
+        let data = temporary.path();
+        let named = |name: &str| AdapterState {
             version: ADAPTER_STATE_VERSION,
-            root_session_id: "previous".to_owned(),
+            root_session_id: name.to_owned(),
             ..AdapterState::default()
         };
-        fs::write(
-            temporary.path().join("adapter-state.previous.json"),
-            serde_json::to_vec(&previous).expect("previous state JSON"),
-        )
-        .expect("previous state");
-        assert_eq!(
-            load_state(temporary.path())
-                .expect("recovered state")
-                .root_session_id,
-            "previous"
-        );
-
-        fs::remove_file(temporary.path().join("adapter-state.previous.json"))
-            .expect("remove previous state");
+        let loaded = || load_state(data).map(|state| state.root_session_id);
+        assert_eq!(loaded(), Ok(String::new()));
+        for name in ["first", "second", "third", "fourth"] {
+            save_state(data, &named(name)).expect("adapter state save");
+            assert_eq!(loaded().as_deref(), Ok(name));
+        }
+        let target = data.join(ADAPTER_STATE_SLOTS[0]);
+        let written = fs::read(&target).expect("newest slot");
+        let mut flipped = written.clone();
+        *flipped.last_mut().expect("payload byte") ^= 1;
+        let mut stale_tail = written.clone();
+        stale_tail.extend_from_slice(b"}}");
+        let prefixes = [
+            0,
+            1,
+            ADAPTER_STATE_HEADER_BYTES - 1,
+            ADAPTER_STATE_HEADER_BYTES,
+            written.len() - 1,
+        ]
+        .map(|length| written[..length].to_vec());
+        for torn in prefixes.into_iter().chain([flipped, stale_tail]) {
+            fs::write(&target, torn).expect("torn slot");
+            assert_eq!(loaded().as_deref(), Ok("third"));
+            save_state(data, &named("fifth")).expect("save over the torn slot");
+            assert_eq!(loaded().as_deref(), Ok("fifth"));
+        }
+        for slot in ADAPTER_STATE_SLOTS {
+            fs::write(data.join(slot), b"torn").expect("torn slot");
+        }
         assert!(
-            load_state(temporary.path()).is_err(),
-            "corrupt current state without a valid recovery snapshot must fail closed"
-        );
-    }
-
-    #[test]
-    fn adapter_state_rename_failures_keep_a_loadable_generation() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let mut state = AdapterState {
-            version: ADAPTER_STATE_VERSION,
-            root_session_id: "first".to_owned(),
-            ..AdapterState::default()
-        };
-        save_state(temporary.path(), &state).expect("initial state");
-
-        state.root_session_id = "second".to_owned();
-        let mut calls = 0;
-        assert!(
-            save_state_with_rename(temporary.path(), &state, |from, to, mode| {
-                calls += 1;
-                if calls == 1 {
-                    Err(io::Error::other("injected first rename failure"))
-                } else {
-                    durable_rename(from, to, mode)
-                }
-            })
-            .is_err()
-        );
-        assert_eq!(
-            load_state(temporary.path())
-                .expect("current state")
-                .root_session_id,
-            "first"
-        );
-
-        save_state(temporary.path(), &state).expect("second state");
-        state.root_session_id = "third".to_owned();
-        let mut calls = 0;
-        assert!(
-            save_state_with_rename(temporary.path(), &state, |from, to, mode| {
-                calls += 1;
-                if calls == 2 {
-                    Err(io::Error::other("injected second rename failure"))
-                } else {
-                    durable_rename(from, to, mode)
-                }
-            })
-            .is_err()
-        );
-        assert_eq!(
-            load_state(temporary.path())
-                .expect("previous state after publication failure")
-                .root_session_id,
-            "second"
+            loaded().is_err(),
+            "state without a completed save must fail closed"
         );
     }
 
