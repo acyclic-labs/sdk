@@ -694,6 +694,65 @@ pub(super) fn recover_cache_only_destination(
     }
 }
 
+pub(super) fn quarantine_crashed_destination(
+    destination: &std::path::Path,
+) -> Result<Option<std::path::PathBuf>, NativeMountError> {
+    let metadata = match std::fs::symlink_metadata(destination) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(NativeMountError::Driver(error.to_string())),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(NativeMountError::InvalidDestination);
+    }
+    let (tag, expected_identity) = reparse_tag(destination)?;
+    match tag {
+        Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS) => {}
+        Some(tag) => {
+            return Err(NativeMountError::Driver(format!(
+                "destination has non-ProjFS reparse tag 0x{tag:08x}"
+            )));
+        }
+        None => {
+            let mut entries = std::fs::read_dir(destination)
+                .map_err(|error| NativeMountError::Driver(error.to_string()))?;
+            if entries.next().is_none() {
+                return Ok(None);
+            }
+        }
+    }
+
+    let parent = destination
+        .parent()
+        .ok_or(NativeMountError::InvalidDestination)?;
+    let preserved = parent.join(format!(
+        ".acyclic-residue-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    if preserved
+        .try_exists()
+        .map_err(|error| NativeMountError::Driver(error.to_string()))?
+    {
+        return Err(NativeMountError::Driver(
+            "native recovery residue name collided; retry recovery".to_owned(),
+        ));
+    }
+    std::fs::rename(destination, &preserved).map_err(|error| {
+        NativeMountError::Driver(format!(
+            "cannot preserve crashed ProjFS destination {}: {error}",
+            destination.display()
+        ))
+    })?;
+    let (_, moved_identity) = reparse_tag(&preserved)?;
+    if moved_identity != expected_identity {
+        return Err(NativeMountError::Driver(format!(
+            "recovered ProjFS root identity changed; residue retained at {}",
+            preserved.display()
+        )));
+    }
+    Ok(Some(preserved))
+}
+
 fn remove_authenticated_destination(
     destination: &std::path::Path,
     expected_identity: crate::NativeRootIdentity,

@@ -103,8 +103,8 @@ test("installer publishes the exact release certification receipt", () => {
     const installed = install(value.bin, null, null, environment);
     assert.equal(installed.status, 0, installed.stderr);
     const destination = process.platform === "win32"
-      ? join(state, "Acyclic", "state-v4", "certification", name)
-      : join(state, "acyclic", "state-v4", "certification", name);
+      ? join(state, "Acyclic", "state-v5", "certification", name)
+      : join(state, "acyclic", "state-v5", "certification", name);
     assert.deepEqual(JSON.parse(readFileSync(destination, "utf8")), receipt);
   } finally {
     rmSync(value.root, { recursive: true, force: true });

@@ -1302,6 +1302,36 @@ pub fn recover_native_mount_destination(destination: &Path) -> Result<(), Native
     guard.release()
 }
 
+/// Reclaims a Windows provider's dead mount path without deleting authored residue.
+///
+/// The caller must own this implementation-managed destination. A stale `ProjFS`
+/// cache, or an ordinary nonempty directory left by fail-open tools, is moved
+/// to a unique sibling before the destination is reused. The returned path is
+/// the preserved residue; `None` means the destination was already empty or
+/// absent. A live provider remains fenced and cannot be recovered.
+///
+/// # Errors
+///
+/// Rejects a live owner, an unexpected reparse point, or a failed quarantine.
+#[cfg(windows)]
+pub fn recover_native_mount_destination_preserving_residue(
+    destination: &Path,
+) -> Result<Option<PathBuf>, NativeMountError> {
+    let name = destination
+        .file_name()
+        .ok_or(NativeMountError::InvalidDestination)?;
+    let parent = destination
+        .parent()
+        .ok_or(NativeMountError::InvalidDestination)?
+        .canonicalize()
+        .map_err(|_| NativeMountError::InvalidDestination)?;
+    let destination = parent.join(name);
+    let mut guard = MountDestinationGuard::acquire_for_recovery(&destination)?;
+    let preserved = projfs::quarantine_crashed_destination(&destination)?;
+    guard.release()?;
+    Ok(preserved)
+}
+
 /// Detaches and unfences one crash-left native destination while retaining its
 /// underlying directory and authored host residue for an explicit caller
 /// decision.
@@ -1956,6 +1986,29 @@ mod tests {
             .filter(|name| name != ".acyclic-fs-mount-registry.lock")
             .collect::<Vec<_>>();
         assert!(residue.is_empty());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn preserving_recovery_fences_live_owner_and_retains_ordinary_residue()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempfile::tempdir()?;
+        let destination = parent.path().join("mount");
+        std::fs::create_dir(&destination)?;
+        let live_guard = MountDestinationGuard::acquire(&destination)?;
+        assert!(matches!(
+            recover_native_mount_destination_preserving_residue(&destination),
+            Err(NativeMountError::DestinationBusy)
+        ));
+        drop(live_guard);
+
+        std::fs::write(destination.join("authored.txt"), b"retain")?;
+        let preserved = recover_native_mount_destination_preserving_residue(&destination)?
+            .ok_or("nonempty destination was not preserved")?;
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read(preserved.join("authored.txt"))?, b"retain");
+        assert!(recover_native_mount_destination_preserving_residue(&destination)?.is_none());
         Ok(())
     }
 

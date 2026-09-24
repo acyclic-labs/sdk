@@ -8,10 +8,10 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-#[cfg(windows)]
-use acyclic_fs::detach_native_mount_destination_after_crash;
 use acyclic_fs::kernel::FileMetadata;
 use acyclic_fs::model::{Lifecycle, VolumeConfig};
+#[cfg(windows)]
+use acyclic_fs::recover_native_mount_destination_preserving_residue;
 use acyclic_fs::{
     Fs, LocalOptions, MountOptions, NativeMountKind, TransactionCommit, probe_native_mount,
     recover_native_mount_destination,
@@ -1598,8 +1598,9 @@ fn crash_recovery() -> Result<(), Failure> {
     fs::create_dir(&mount)?;
     let qualification = crash_recovery_inner(&crash_root, &mount, &ready);
     #[cfg(windows)]
-    // The Windows crash child leaves an empty test-owned reparse root. Remove
-    // that root itself without enumerating through a dead ProjFS provider.
+    // The recovered path becomes an ordinary directory after the resumed
+    // provider stops. The preserved residue lives under the same temporary
+    // parent and is removed only when this isolated fixture is dropped.
     let cleanup = fs::remove_dir(&mount).map_err(Failure::from);
     #[cfg(not(windows))]
     let cleanup = recover_with_retry(&mount);
@@ -1650,17 +1651,23 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
     eprintln!("qualification phase: crash child terminated; recovery starting");
     #[cfg(windows)]
     {
-        // Generic recovery must preserve a crashed writable ProjFS root: it
-        // cannot prove the cache contains no unpublished authored changes.
+        // Generic disposable recovery must still reject a stale writable
+        // ProjFS cache. The explicit preserving operation moves it aside.
         if recover_native_mount_destination(mount).is_ok() {
             return Err("generic recovery discarded a stale ProjFS root".into());
         }
-        detach_native_mount_destination_after_crash(mount)?;
-        if !mount.is_dir() {
-            return Err("crash detach discarded the stale ProjFS root".into());
+        let preserved = recover_native_mount_destination_preserving_residue(mount)?
+            .ok_or("crash recovery failed to preserve the stale ProjFS root")?;
+        if !preserved.is_dir() || mount.exists() {
+            return Err("crash recovery did not move the stale root aside".into());
         }
-        let replacement = mount.with_file_name("replacement");
-        fs::create_dir(&replacement)?;
+        if fs::read(preserved.join("unpublished.txt"))? != b"unpublished" {
+            return Err("crash recovery lost unpublished authored residue".into());
+        }
+        if recover_native_mount_destination_preserving_residue(mount)?.is_some() {
+            return Err("crash recovery was not idempotent".into());
+        }
+        fs::create_dir(mount)?;
         let runtime = tokio::runtime::Runtime::new()?;
         runtime.block_on(async {
             eprintln!("qualification phase: reopening durable crash workspace");
@@ -1669,34 +1676,20 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
             if workspace.read("/alive.txt", 16).await?.as_ref() != b"alive" {
                 return Err::<(), Failure>("durable workspace lost crash fixture".into());
             }
-            eprintln!("qualification phase: rejecting stale ProjFS destination");
-            if workspace
-                .mount(mount, MountOptions::read_write())
-                .await
-                .is_ok()
-            {
-                return Err::<(), Failure>(
-                    "crash-left ProjFS root was mounted without authenticated recovery".into(),
-                );
-            }
-            if !mount.is_dir() {
-                return Err::<(), Failure>(
-                    "rejected stale ProjFS mount removed the recovery root".into(),
-                );
-            }
-            eprintln!("qualification phase: mounting fresh ProjFS destination");
-            let resumed = workspace
-                .mount(&replacement, MountOptions::read_write())
-                .await?;
+            eprintln!("qualification phase: remounting the original ProjFS destination");
+            let resumed = workspace.mount(mount, MountOptions::read_write()).await?;
             eprintln!("qualification phase: reading durable ProjFS content");
-            let contents = fs::read(replacement.join("alive.txt"))?;
+            let contents = fs::read(mount.join("alive.txt"))?;
             resumed.unmount().await?;
             if contents != b"alive" {
-                return Err::<(), Failure>("replacement mount lost the durable workspace".into());
+                return Err::<(), Failure>("recovered mount lost the durable workspace".into());
             }
             Ok::<(), Failure>(())
         })?;
-        eprintln!("qualification phase: preserved stale root and resumed on replacement");
+        if !preserved.is_dir() {
+            return Err("recovered mount discarded the preserved residue".into());
+        }
+        eprintln!("qualification phase: preserved stale root and resumed at original path");
         Ok(())
     }
     #[cfg(not(windows))]
@@ -1740,6 +1733,8 @@ fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Result<(), Fail
             .await?;
         workspace.write_text("/alive.txt", "alive").await?;
         let _mount = workspace.mount(&mount, MountOptions::read_write()).await?;
+        #[cfg(windows)]
+        fs::write(mount.join("unpublished.txt"), b"unpublished")?;
         #[cfg(not(windows))]
         {
             if fs::read(mount.join("alive.txt"))? != b"alive" {

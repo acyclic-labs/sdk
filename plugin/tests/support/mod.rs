@@ -321,9 +321,9 @@ fn service_status(home: &Path) -> Result<Value, String> {
 
 fn service_data(home: &Path) -> PathBuf {
     if cfg!(windows) {
-        home.join("local").join("Acyclic").join("state-v4")
+        home.join("local").join("Acyclic").join("state-v5")
     } else {
-        home.join("state").join("acyclic").join("state-v4")
+        home.join("state").join("acyclic").join("state-v5")
     }
 }
 

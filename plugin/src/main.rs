@@ -2638,6 +2638,19 @@ impl ControlPlane {
             if route.lifecycle.needs_mount() || discarding_agents.contains(&route.agent_id) {
                 self.validate_route_paths(&route)?;
                 fs::create_dir_all(&route.mount_path).map_err(display)?;
+                #[cfg(windows)]
+                for root in route.roots.values() {
+                    let path = route.mount_path.join(root.mount_name());
+                    if let Some(preserved) =
+                        acyclic_fs::recover_native_mount_destination_preserving_residue(&path)
+                            .map_err(display)?
+                    {
+                        eprintln!(
+                            "Acyclic preserved unpublished crash residue at {}; the workspace resumes from its last durable generation",
+                            preserved.display()
+                        );
+                    }
+                }
                 let mount = self.mount_route(&route).await?;
                 self.mounts.insert(route.agent_id.clone(), mount);
                 if route.lifecycle == RouteLifecycle::Mounting {
@@ -9775,11 +9788,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 fn default_data_directory() -> PathBuf {
     #[cfg(windows)]
     if let Some(root) = env::var_os("LOCALAPPDATA") {
-        return PathBuf::from(root).join("Acyclic").join("state-v4");
+        return PathBuf::from(root).join("Acyclic").join("state-v5");
     }
     #[cfg(not(windows))]
     if let Some(root) = env::var_os("XDG_STATE_HOME") {
-        return PathBuf::from(root).join("acyclic").join("state-v4");
+        return PathBuf::from(root).join("acyclic").join("state-v5");
     }
     #[cfg(not(windows))]
     if let Some(root) = env::var_os("HOME") {
@@ -9787,9 +9800,9 @@ fn default_data_directory() -> PathBuf {
             .join(".local")
             .join("state")
             .join("acyclic")
-            .join("state-v4");
+            .join("state-v5");
     }
-    env::temp_dir().join("acyclic-state-v4")
+    env::temp_dir().join("acyclic-state-v5")
 }
 
 fn service_identity() -> Result<String, String> {

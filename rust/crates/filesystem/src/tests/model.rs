@@ -58,3 +58,13 @@ fn default_limits_are_valid() {
         Err(VolumeConfigError::ComponentExceedsPath)
     );
 }
+
+#[test]
+fn native_component_limit_matches_host_encoding() {
+    let native = VolumeConfig::native(Lifecycle::Durable);
+    assert_eq!(native.validate(), Ok(native));
+    #[cfg(windows)]
+    assert_eq!(native.limits.maximum_component_bytes, 510);
+    #[cfg(not(windows))]
+    assert_eq!(native.limits.maximum_component_bytes, 255);
+}

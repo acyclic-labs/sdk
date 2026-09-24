@@ -83,7 +83,7 @@ resolved path with `acyclic git add <path>`, and run
 exact pre-merge workspace. Non-text conflicts are reported with typed paths and
 kinds rather than being flattened into text and must likewise be declared.
 
-The current release uses the fresh `state-v4` per-user namespace. It neither
+The current release uses the fresh `state-v5` per-user namespace. It neither
 migrates nor deletes prior plugin state. Remove an older `state-v*` directory
 manually only after confirming that no older Acyclic installation still needs
 it.

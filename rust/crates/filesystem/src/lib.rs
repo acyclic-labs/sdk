@@ -258,6 +258,8 @@ pub use native_exchange::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_identity::NativeRootIdentity;
+#[cfg(all(feature = "native-mount", windows))]
+pub use native_mount::recover_native_mount_destination_preserving_residue;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub use native_mount::{
     CheckoutMountSource, HostPathReplacement, HostPathRestore, LazyMount, LazyWorkingSet,

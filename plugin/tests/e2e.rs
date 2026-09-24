@@ -512,9 +512,9 @@ fn persist_local_eval_artifacts(
     fs::write(directory.join("trace.jsonl"), stdout).expect("persist local eval trace");
     fs::write(directory.join("stderr.log"), stderr).expect("persist local eval stderr");
     let state = if cfg!(windows) {
-        isolated_home.join("local/Acyclic/state-v4")
+        isolated_home.join("local/Acyclic/state-v5")
     } else {
-        isolated_home.join("state/acyclic/state-v4")
+        isolated_home.join("state/acyclic/state-v5")
     };
     copy_local_eval_tree(&state, &directory.join("state"));
     for name in ["sessions", "log"] {

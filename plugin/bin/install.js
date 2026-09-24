@@ -63,16 +63,16 @@ function readJson(path) {
 
 function durableStateDirectory() {
   if (process.platform === "win32" && process.env.LOCALAPPDATA) {
-    return join(process.env.LOCALAPPDATA, "Acyclic", "state-v4");
+    return join(process.env.LOCALAPPDATA, "Acyclic", "state-v5");
   }
   if (process.platform !== "win32" && process.env.XDG_STATE_HOME) {
-    return join(process.env.XDG_STATE_HOME, "acyclic", "state-v4");
+    return join(process.env.XDG_STATE_HOME, "acyclic", "state-v5");
   }
   const home = process.env.HOME || homedir();
   if (process.platform !== "win32" && home) {
-    return join(home, ".local", "state", "acyclic", "state-v4");
+    return join(home, ".local", "state", "acyclic", "state-v5");
   }
-  return join(tmpdir(), "acyclic-state-v4");
+  return join(tmpdir(), "acyclic-state-v5");
 }
 
 function installCertification(packageVersion, helper) {

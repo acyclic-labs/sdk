@@ -1890,6 +1890,38 @@ mod tests {
         .await
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn native_lookup_accepts_windows_names_longer_than_127_code_units()
+    -> Result<(), Box<dyn Error>> {
+        use crate::kernel::{LogicalName, NameEncoding};
+
+        let host_name = "x".repeat(200);
+        let limits = crate::model::VolumeConfig::native(crate::model::Lifecycle::Durable).limits;
+        let raw = host_name
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let name = LogicalName::new(
+            NameEncoding::WindowsUtf16Le,
+            raw,
+            limits.maximum_component_bytes,
+        )?;
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join(&host_name), b"data")?;
+        let source =
+            NativeDemandSource::open(root.path(), FilesystemProfile::Windows, limits).await?;
+        let exact = NamespacePath::new(vec![name], limits)?;
+        assert!(
+            source
+                .lookup(source.reference(), &exact, &CancellationToken::new())
+                .await?
+                .value
+                .is_some()
+        );
+        Ok(())
+    }
+
     #[cfg(any(target_os = "linux", windows))]
     async fn assert_lossless_name(
         profile: FilesystemProfile,
