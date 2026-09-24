@@ -146,6 +146,12 @@ pub enum Mutation {
 /// One ordered mutation of an existing path-independent file record.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileMutation {
+    /// Replaces one authenticated file record without changing its live bindings.
+    /// The current identity and link count remain authoritative.
+    ReplaceRecord {
+        /// Complete replacement record for the same file identity and kind.
+        record: FileRecord,
+    },
     /// Replaces the complete canonical metadata object.
     SetMetadata {
         /// Authenticated metadata object.
@@ -234,6 +240,12 @@ impl Mutation {
             {
                 Err(MutationPlanError::InvalidInitialRecord)
             }
+            Self::File {
+                file_id,
+                mutation: FileMutation::ReplaceRecord { record },
+            } if record.validate().is_err() || record.file_id != *file_id => {
+                Err(MutationPlanError::InvalidInitialRecord)
+            }
             Self::Rename {
                 source,
                 destination,
@@ -309,6 +321,7 @@ impl Mutation {
             | Self::File {
                 mutation:
                     FileMutation::SetMetadata { .. }
+                    | FileMutation::ReplaceRecord { .. }
                     | FileMutation::ValidateRegular
                     | FileMutation::Resize { .. },
                 ..

@@ -92,6 +92,7 @@ struct Runtime {
     renamed_hydration_files: Arc<Mutex<HashMap<u128, RenamedHydrationFile>>>,
     renamed_paths: Arc<Mutex<HashMap<u128, Option<MountPath>>>>,
     metadata_baselines: Arc<Mutex<HashMap<u128, OpenMetadataState>>>,
+    read_only_bindings: Arc<Mutex<ReadOnlyBindings>>,
     metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
     post_operation_failure: Arc<Mutex<PostOperationFailures>>,
     callbacks: CallbackGate,
@@ -340,6 +341,35 @@ fn defer_host_capture(failure: &Mutex<PostOperationFailures>, path: MountPath) {
     lock_recover(failure).queue_capture(path, "host capture pending".to_owned());
 }
 
+struct ReadOnlyBindings {
+    generation: Option<u64>,
+    entries: HashMap<MountPath, ReadOnlyBinding>,
+}
+
+impl Default for ReadOnlyBindings {
+    fn default() -> Self {
+        Self {
+            generation: Some(0),
+            entries: HashMap::new(),
+        }
+    }
+}
+
+impl ReadOnlyBindings {
+    fn invalidate(&mut self) {
+        self.generation = self.generation.and_then(|value| value.checked_add(1));
+        self.entries.clear();
+    }
+}
+
+fn has_pending_capture(failure: &Mutex<PostOperationFailures>, path: &MountPath) -> bool {
+    let failure = lock_recover(failure);
+    failure.unreplayable.is_some()
+        || failure.pending_captures.iter().any(|(pending, capture)| {
+            pending == path || capture.subtree && projfs_path_suffix(path, pending).is_some()
+        })
+}
+
 /// One process-owned `ProjFS` virtualization context.
 pub(super) struct ProjFsSession {
     context: Option<PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT>,
@@ -393,6 +423,7 @@ impl ProjFsSession {
             renamed_hydration_files: Arc::new(Mutex::new(HashMap::new())),
             renamed_paths: Arc::new(Mutex::new(HashMap::new())),
             metadata_baselines: Arc::new(Mutex::new(HashMap::new())),
+            read_only_bindings: Arc::new(Mutex::new(ReadOnlyBindings::default())),
             metadata_probes: Arc::new(Mutex::new(HashMap::new())),
             post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
             callbacks: callback_gate,
@@ -948,9 +979,19 @@ fn decode_utf16_name(bytes: &[u8]) -> Option<Vec<u16>> {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct HostWindowsMetadata {
+    identity: crate::NativeRootIdentity,
+    links: Option<u32>,
+    size: u64,
     attributes: u32,
     created: i64,
     modified: i64,
+}
+
+#[derive(Clone, Copy)]
+struct ReadOnlyBinding {
+    host: HostWindowsMetadata,
+    view_epoch: u64,
+    binding_epoch: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -975,6 +1016,10 @@ fn host_windows_metadata(
         .symlink_metadata_held(&host_path)
         .map_err(|error| super::MountSourceError::Engine(error.to_string()))?;
     Ok(HostWindowsMetadata {
+        identity: crate::NativeRootIdentity::from_metadata(&metadata)
+            .map_err(|error| super::MountSourceError::Engine(error.to_string()))?,
+        links: cap_primitives::fs::_WindowsByHandle::number_of_links(&metadata),
+        size: metadata.len(),
         attributes: metadata.file_attributes(),
         created: i64::try_from(metadata.creation_time()).map_err(|_| {
             super::MountSourceError::Invalid("Windows creation time exceeds i64".to_owned())
@@ -1127,6 +1172,7 @@ fn metadata_changed_since_open(
         baseline.attributes != current.attributes
     };
     attributes_changed
+        || baseline.identity != current.identity
         || baseline.created != current.created
         || baseline.modified != current.modified
 }
@@ -1657,6 +1703,11 @@ unsafe extern "system" fn notification(
         return HR_OK;
     }
     let file_id = file_id(data);
+    if notification != PRJ_NOTIFICATION_FILE_OPENED
+        && notification != PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
+    {
+        lock_recover(runtime.read_only_bindings.as_ref()).invalidate();
+    }
     let source_is_external = unsafe { empty_destination(data.FilePathName) };
     let destination_is_external = unsafe { empty_destination(destination_filename) };
     if notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
@@ -1722,6 +1773,7 @@ unsafe extern "system" fn notification(
     }
     let source = Arc::clone(&runtime.source);
     let metadata_baselines = Arc::clone(&runtime.metadata_baselines);
+    let read_only_bindings = Arc::clone(&runtime.read_only_bindings);
     let metadata_probes = Arc::clone(&runtime.metadata_probes);
     let renamed_hydration_files = Arc::clone(&runtime.renamed_hydration_files);
     let renamed_paths = Arc::clone(&runtime.renamed_paths);
@@ -1831,9 +1883,47 @@ unsafe extern "system" fn notification(
                 &capture_path,
                 metadata_probes.as_ref(),
             )?;
-            match source.lookup(&capture_path) {
+            if let Some(baseline) = baseline {
+                if baseline.identity != host.identity
+                    || baseline.links != host.links
+                    || baseline.size != host.size
+                {
+                    lock_recover(read_only_bindings.as_ref())
+                        .entries
+                        .remove(&capture_path);
+                    defer_host_capture(operation_failures.as_ref(), capture_path);
+                    return Ok(());
+                }
+                let (cached_binding, cache_generation) = {
+                    let bindings = lock_recover(read_only_bindings.as_ref());
+                    (
+                        bindings.entries.get(&capture_path).copied(),
+                        bindings.generation,
+                    )
+                };
+                if !metadata_changed_since_open(baseline, host)
+                    && !has_pending_capture(operation_failures.as_ref(), &capture_path)
+                    && let Some(binding) = cached_binding
+                    && cache_generation.is_some()
+                    && binding.host == host
+                    && host.links == Some(1)
+                    && let Ok(_view_lease) = source.acquire_view_lease(Some(binding.view_epoch))
+                    && source.binding_epoch() == Some(binding.binding_epoch)
+                    && lock_recover(read_only_bindings.as_ref()).generation == cache_generation
+                {
+                    return Ok(());
+                }
+            }
+            let stable_before = source.view_is_stable();
+            let epochs_before = (source.view_epoch(), source.binding_epoch());
+            let cache_generation = lock_recover(read_only_bindings.as_ref()).generation;
+            let lookup = source.lookup(&capture_path);
+            match lookup {
                 Ok(Some(lookup)) => match baseline {
                     Some(baseline) if metadata_changed_since_open(baseline, host) => {
+                        lock_recover(read_only_bindings.as_ref())
+                            .entries
+                            .remove(&capture_path);
                         capture_changed_windows_metadata(
                             source.as_ref(),
                             &capture_path,
@@ -1842,9 +1932,42 @@ unsafe extern "system" fn notification(
                             host,
                         )
                     }
-                    _ => Ok(()),
+                    Some(_) => {
+                        if let (Some(view_epoch), Some(binding_epoch), Some(generation)) =
+                            (epochs_before.0, epochs_before.1, cache_generation)
+                            && stable_before
+                            && source.view_is_stable()
+                            && source.view_epoch() == Some(view_epoch)
+                            && source.binding_epoch() == Some(binding_epoch)
+                            && !has_pending_capture(operation_failures.as_ref(), &capture_path)
+                            && host.links == Some(1)
+                        {
+                            let mut bindings = lock_recover(read_only_bindings.as_ref());
+                            if bindings.generation != Some(generation) {
+                                return Ok(());
+                            }
+                            if bindings.entries.len() >= 16_384 {
+                                bindings.invalidate();
+                            }
+                            if bindings.generation.is_some() {
+                                bindings.entries.insert(
+                                    capture_path,
+                                    ReadOnlyBinding {
+                                        host,
+                                        view_epoch,
+                                        binding_epoch,
+                                    },
+                                );
+                            }
+                        }
+                        Ok(())
+                    }
+                    None => Ok(()),
                 },
                 Ok(None) => {
+                    lock_recover(read_only_bindings.as_ref())
+                        .entries
+                        .remove(&capture_path);
                     defer_host_capture(operation_failures.as_ref(), capture_path);
                     Ok(())
                 }
@@ -2345,7 +2468,9 @@ mod tests {
             )
             .await?;
         let projected = first.join("metadata.txt");
-        assert_eq!(std::fs::read(&projected)?, b"unchanged contents");
+        for _ in 0..3 {
+            assert_eq!(std::fs::read(&projected)?, b"unchanged contents");
+        }
         let status = tokio::task::spawn_blocking(move || {
             std::process::Command::new("attrib")
                 .arg("+R")
@@ -2372,6 +2497,163 @@ mod tests {
             "metadata-only edits must survive synchronization and remount"
         );
         remount.unmount().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn projected_file_rename_and_replacement_survive_remount()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
+        let workspace = engine.create_workspace("replace-projfs").await?;
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        transaction
+            .create_file(
+                "/original.txt",
+                Bytes::from_static(b"original"),
+                crate::kernel::FileMetadata::default(),
+            )
+            .await?;
+        transaction.commit().await?;
+
+        let first = root.path().join("first-mount");
+        std::fs::create_dir(&first)?;
+        let mount = workspace
+            .mount(
+                &first,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        let original = first.join("original.txt");
+        for _ in 0..3 {
+            assert_eq!(std::fs::read(&original)?, b"original");
+        }
+        std::fs::rename(&original, first.join("renamed.txt")).expect("rename projected file");
+        std::fs::write(&original, b"replacement").expect("replace projected path");
+        mount.sync().await?;
+        mount.unmount().await?;
+
+        let second = root.path().join("second-mount");
+        std::fs::create_dir(&second)?;
+        let remount = workspace
+            .mount(
+                &second,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        assert_eq!(
+            std::fs::read(second.join("renamed.txt")).expect("renamed path after remount"),
+            b"original"
+        );
+        assert_eq!(
+            std::fs::read(second.join("original.txt")).expect("replacement after remount"),
+            b"replacement"
+        );
+        remount.unmount().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn native_watcher_observes_both_projected_rename_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::watch::{NativeWatch, NativeWatchOptions, WatchBatch, WatchChange};
+        use std::time::{Duration, Instant};
+
+        let root = tempfile::tempdir()?;
+        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
+        let workspace = engine.create_workspace("watch-projfs").await?;
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        transaction
+            .create_file(
+                "/original.txt",
+                Bytes::from_static(b"original"),
+                crate::kernel::FileMetadata::default(),
+            )
+            .await?;
+        transaction.commit().await?;
+
+        let destination = root.path().join("projection");
+        std::fs::create_dir(&destination)?;
+        let mount = workspace
+            .mount(
+                &destination,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        let original = destination.join("original.txt");
+        assert_eq!(std::fs::read(&original)?, b"original");
+        let mut watcher = NativeWatch::open(
+            &destination,
+            NativeWatchOptions::new(crate::model::VolumeLimits::default()),
+        )?;
+        watcher.begin_rescan()?;
+        assert!(matches!(
+            watcher.finish_rescan()?,
+            WatchBatch::Changes { .. }
+        ));
+
+        let external = std::process::Command::new("cmd.exe")
+            .arg("/D")
+            .arg("/C")
+            .arg("ren original.txt renamed.txt && echo replacement> original.txt")
+            .current_dir(&destination)
+            .output()?;
+        assert!(
+            external.status.success(),
+            "external projected rename failed: {}",
+            String::from_utf8_lossy(&external.stderr)
+        );
+        let limits = crate::model::VolumeLimits::default();
+        let expected_path =
+            |path| -> Result<crate::kernel::NamespacePath, Box<dyn std::error::Error>> {
+                let portable = crate::path::PortablePath::parse(path, limits)?;
+                crate::kernel::NamespacePath::from_portable_in_profile(
+                    &portable,
+                    crate::model::FilesystemProfile::Windows,
+                    limits,
+                )
+                .map_err(Into::into)
+            };
+        let original_path = expected_path("/original.txt")?;
+        let renamed_path = expected_path("/renamed.txt")?;
+        let mut seen = std::collections::BTreeSet::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match watcher
+                .poll(128, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+                .value
+            {
+                WatchBatch::Changes { changes, .. } => {
+                    for change in changes {
+                        match change {
+                            WatchChange::Created(path)
+                            | WatchChange::Modified(path)
+                            | WatchChange::MetadataChanged(path)
+                            | WatchChange::Removed(path) => {
+                                seen.insert(path);
+                            }
+                            WatchChange::Renamed { from, to } => {
+                                seen.insert(from);
+                                seen.insert(to);
+                            }
+                        }
+                    }
+                }
+                WatchBatch::RescanRequired { reason, .. } => {
+                    return Err(format!("watcher invalidated: {reason}").into());
+                }
+            }
+            if seen.contains(&original_path) && seen.contains(&renamed_path) {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("watcher missed a projected rename path: {seen:?}").into());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        mount.unmount().await?;
         Ok(())
     }
 

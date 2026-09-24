@@ -676,6 +676,12 @@ where
         destination: impl Into<PathBuf>,
         options: MountOptions,
     ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
+        if options.writable && options.publication == MountPublication::PerMutation {
+            return Err(MountLifecycleError::Source(MountSourceError::Unsupported(
+                "lazy source whiteouts publish with a checkout boundary, not per callback"
+                    .to_owned(),
+            )));
+        }
         let (authored, volume_id, _, root_text) =
             self.prepare_authored_mount_source(&options, None).await?;
         let source = Arc::new(LazyMountSource::new(
@@ -878,6 +884,11 @@ mod tests {
         } else {
             b"file.txt".to_vec()
         };
+        let unchanged_head = lazy.workspace().head().await?.id();
+        working_set
+            .sync_with_permit(PublicationPermit::Unrestricted)
+            .await?;
+        assert_eq!(lazy.workspace().head().await?.id(), unchanged_head);
         #[cfg(unix)]
         let canonical_before = lazy
             .workspace()
@@ -904,6 +915,23 @@ mod tests {
             assert_eq!(canonical_after.changed_ns, canonical_before.changed_ns);
             #[cfg(target_os = "linux")]
             assert_eq!(canonical_after.created_ns, canonical_before.created_ns);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let accessed = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+            std::fs::File::open(working.join("hot/file.txt"))?
+                .set_times(std::fs::FileTimes::new().set_accessed(accessed))?;
+            working_set
+                .sync_with_permit(PublicationPermit::Unrestricted)
+                .await?;
+            let canonical = lazy
+                .workspace()
+                .head()
+                .await?
+                .stat("/hot/file.txt")
+                .await?
+                .metadata;
+            assert_eq!(canonical.accessed_ns, Some(1_700_000_000_000_000_000));
         }
         std::fs::write(working.join("hot/file.txt"), b"native-edit")?;
         working_set

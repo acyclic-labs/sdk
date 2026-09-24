@@ -926,6 +926,20 @@ impl TransactionState {
                     .await?;
                 }
                 Mutation::File { file_id, mutation } => match mutation {
+                    FileMutation::ReplaceRecord { record } => {
+                        let binding = self.identity_binding(*file_id)?;
+                        if binding.kind != record.kind || binding.kind == FileKind::Directory {
+                            return Err(failed(
+                                GenerationMutationError::InconsistentState,
+                                self.work,
+                            ));
+                        }
+                        let link_count = self.record(*file_id)?.working.link_count;
+                        self.record_mut(*file_id)?.working = FileRecord {
+                            link_count,
+                            ..*record
+                        };
+                    }
                     FileMutation::SetMetadata { metadata } => {
                         self.identity_binding(*file_id)?;
                         self.record_mut(*file_id)?.working.metadata = *metadata;

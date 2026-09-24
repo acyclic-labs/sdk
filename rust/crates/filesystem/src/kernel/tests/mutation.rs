@@ -88,6 +88,47 @@ fn identity_only_batch_retains_no_path_plan_or_namespace_work()
 }
 
 #[test]
+fn identity_record_replacement_rejects_mismatched_or_invalid_records()
+-> Result<(), Box<dyn std::error::Error>> {
+    let file_id = FileId::from_bytes([7; 16]);
+    let record = FileRecord {
+        file_id,
+        kind: FileKind::Regular,
+        link_count: 2,
+        metadata: object(ObjectKind::Metadata, 1),
+        payload: FilePayload::Regular {
+            logical_bytes: 6,
+            extents: object(ObjectKind::ExtentPage, 2),
+        },
+    };
+    let valid = Mutation::File {
+        file_id,
+        mutation: FileMutation::ReplaceRecord { record },
+    };
+    let plan = MutationPlan::compile(vec![valid], VolumeLimits::default(), WorkBudget::UNBOUNDED)?;
+    assert_eq!(plan.ordered_paths().count(), 0);
+    assert_rejected(
+        Mutation::File {
+            file_id: FileId::from_bytes([8; 16]),
+            mutation: FileMutation::ReplaceRecord { record },
+        },
+        MutationPlanError::InvalidInitialRecord,
+    )?;
+    assert_rejected(
+        Mutation::File {
+            file_id,
+            mutation: FileMutation::ReplaceRecord {
+                record: FileRecord {
+                    link_count: 0,
+                    ..record
+                },
+            },
+        },
+        MutationPlanError::InvalidInitialRecord,
+    )
+}
+
+#[test]
 fn malformed_ranges_and_root_mutation_fail_before_external_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = MutationPlan::compile(

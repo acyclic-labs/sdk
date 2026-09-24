@@ -3666,8 +3666,17 @@ mod tests {
         assert_eq!(reads.len(), BLOCKS);
         assert!(reads.iter().all(|bytes| bytes == &payload));
         let native_elapsed = native_start.elapsed();
+        let serial_start = Instant::now();
+        for block in 0..BLOCKS {
+            let read = complete_read(native.read_batch_async(vec![OwnedRead {
+                offset: (block * BLOCK_BYTES) as u64,
+                length: BLOCK_BYTES,
+            }]))?;
+            assert_eq!(read.as_slice(), std::slice::from_ref(&payload));
+        }
+        let native_serial_read = serial_start.elapsed();
         eprintln!(
-            "owned-io-baseline os={} arch={} bytes={} copy_us={} baseline_us={}/{}/{} native_us={}/{}/{}",
+            "owned-io-baseline os={} arch={} bytes={} copy_us={} baseline_us={}/{}/{} native_us={}/{}/{} native_serial_read_us={}",
             std::env::consts::OS,
             std::env::consts::ARCH,
             BLOCKS * BLOCK_BYTES * 2,
@@ -3678,6 +3687,7 @@ mod tests {
             native_write.as_micros(),
             native_sync.as_micros() - native_write.as_micros(),
             native_elapsed.as_micros() - native_sync.as_micros(),
+            native_serial_read.as_micros(),
         );
         Ok(())
     }

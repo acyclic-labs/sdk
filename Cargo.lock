@@ -69,6 +69,7 @@ dependencies = [
  "prost",
  "prost-types",
  "rcgen",
+ "rustix",
  "s3s",
  "serde",
  "serde_json",

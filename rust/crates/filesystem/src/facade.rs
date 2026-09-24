@@ -8056,6 +8056,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         })
     }
 
+    pub(crate) fn detached_from_record(&self, record: FileRecord) -> DetachedFile<A, O> {
+        DetachedFile::from_record(self.volume.clone(), record)
+    }
+
     /// Reads one authenticated candidate file record by stable identity.
     ///
     /// Tracking modes retain a complete file-record dependency. More precise
@@ -9337,6 +9341,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
         }
         self.publish_pending_with_permit(operation_id, None, permit, budget, cancellation)
+            .await
+    }
+
+    /// Anchors a separately journaled lazy overlay to an exact checkout
+    /// publication, even when the checkout's authored root is unchanged.
+    pub(crate) async fn commit_with_permit_even_if_clean(
+        &mut self,
+        operation_id: OperationId,
+        permit: PublicationPermit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<CheckoutCommitOutcome> {
+        if self.mode.access != AccessMode::ReadWrite
+            || self.mode.mutations != MutationMode::PrivateOverlay
+        {
+            return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
+        }
+        let expected = self
+            .authority_head
+            .ok_or_else(|| OperationFailure::before_work(FsError::WritableCheckoutRequiresHead))?;
+        self.publish_pending_against(operation_id, None, permit, expected, budget, cancellation)
             .await
     }
 
@@ -11022,6 +11047,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         Self { volume, record }
     }
 
+    pub(crate) const fn record(&self) -> FileRecord {
+        self.record
+    }
+
     pub(crate) async fn read_symbolic_link(
         &self,
         budget: WorkBudget,
@@ -11830,7 +11859,9 @@ fn exact_mutation_regions(
             FileMutation::Preallocate { .. } => {
                 regions[0] = Some((first, DependencyRegion::FileLength(*file_id)));
             }
-            FileMutation::ValidateRegular | FileMutation::Resize { .. } => {
+            FileMutation::ReplaceRecord { .. }
+            | FileMutation::ValidateRegular
+            | FileMutation::Resize { .. } => {
                 regions[0] = Some((first, DependencyRegion::FileRecord(*file_id)));
             }
         },

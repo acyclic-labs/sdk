@@ -397,6 +397,9 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     working_set.capture_host_paths(&changed).await?;
     let capture_us = started.elapsed().as_micros();
     let started = Instant::now();
+    working_set.capture_host_subtree(&MountPath::root()).await?;
+    let subtree_capture_us = started.elapsed().as_micros();
+    let started = Instant::now();
     working_set
         .sync_with_permit(PublicationPermit::Unrestricted)
         .await?;
@@ -458,6 +461,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
             "activation_p50_us": activation_p50_us,
             "activation_p95_us": activation_p95_us,
             "capture_us": capture_us,
+            "subtree_capture_us": subtree_capture_us,
             "sync_us": sync_us,
         })
     );

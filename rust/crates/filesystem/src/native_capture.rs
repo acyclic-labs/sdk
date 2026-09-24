@@ -974,7 +974,6 @@ pub(crate) async fn capture_subtrees_with_policy_and_baseline<
     if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
         return Err(OperationFailure::before_work(CaptureError::InvalidOptions));
     }
-    let source_root = open_source_root(options).map_err(OperationFailure::before_work)?;
     cancellation
         .check()
         .map_err(|error| OperationFailure::before_work(CaptureError::Engine(error.to_string())))?;
@@ -989,21 +988,36 @@ pub(crate) async fn capture_subtrees_with_policy_and_baseline<
     let maximum = usize::try_from(options.maximum_paths)
         .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
     let profile = checkout.volume_config().profile;
-    let mut observed = BTreeMap::new();
     let mut paths = canonical.clone();
-    let mut work = WorkCounters::default();
-    collect_host_subtree_roots(
-        &source_root,
-        profile,
-        limits,
-        maximum,
-        &canonical,
-        policy,
-        &mut observed,
-        &mut work,
-        budget,
-        cancellation,
-    )?;
+    let source_path = options.source_root.clone();
+    let expected_identity = options.expected_root_identity;
+    let host_roots = canonical.clone();
+    let host_policy = policy.clone();
+    let host_cancellation = cancellation.clone();
+    let (source_root, observed, mut work) = acyclic_native_runtime::run_blocking_io(move || {
+        let source_root = HostRoot::open(&source_path)
+            .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
+        if source_root.identity() != expected_identity {
+            return Err(OperationFailure::before_work(CaptureError::RootChanged));
+        }
+        let mut observed = BTreeMap::new();
+        let mut work = WorkCounters::default();
+        collect_host_subtree_roots(
+            &source_root,
+            profile,
+            limits,
+            maximum,
+            &host_roots,
+            &host_policy,
+            &mut observed,
+            &mut work,
+            budget,
+            &host_cancellation,
+        )?;
+        Ok((source_root, observed, work))
+    })
+    .await
+    .map_err(|error| OperationFailure::before_work(CaptureError::Engine(error.to_string())))??;
     let remaining = work
         .remaining(budget)
         .map_err(|error| OperationFailure::new(CaptureError::Work(error), work))?;
@@ -1254,7 +1268,7 @@ mod host_observation_tests {
         std::fs::write(outside.path().join("private"), b"outside")?;
         symlink(outside.path(), directory.path().join("alias"))?;
         let source_root = HostRoot::open(directory.path())?;
-        assert!(source_root.read_dir_held(Path::new("alias")).is_err());
+        assert!(source_root.open_dir_held(Path::new("alias")).is_err());
         assert!(
             source_root
                 .symlink_metadata_held(Path::new("alias/private"))
@@ -1456,7 +1470,10 @@ fn sort_capture_states(states: &mut [CapturePathState]) {
 /// admitted before descendants and removals are applied deepest-first. Native
 /// links are never followed. Callers bracket this operation with
 /// [`crate::NativeWatch::begin_rescan`] and `finish_rescan`; events arriving
-/// during the scan then form the next exact delta interval.
+/// during the scan remain change hints for the next observation interval.
+/// Native notifications alone do not prove that a later tool boundary has
+/// captured every write, so callers without complete change evidence must
+/// reconcile the subtree before publication.
 ///
 /// # Errors
 ///
@@ -1560,44 +1577,19 @@ fn collect_host_observations(
     let mut observed = BTreeMap::new();
     let volume_root = NamespacePath::new(Vec::new(), limits)
         .map_err(|error| OperationFailure::before_work(CaptureError::Engine(error.to_string())))?;
-    let mut pending = vec![(PathBuf::new(), volume_root)];
-    while let Some((host_parent, volume_parent)) = pending.pop() {
-        cancellation.check().map_err(|error| {
-            OperationFailure::new(CaptureError::Engine(error.to_string()), *work)
-        })?;
-        for entry in root
-            .read_dir_held(&host_parent)
-            .map_err(|error| OperationFailure::new(error.into(), *work))?
-        {
-            let entry = entry.map_err(|error| OperationFailure::new(error.into(), *work))?;
-            let child = append_path(
-                &volume_parent,
-                logical_host_name(&entry.file_name(), profile, limits)
-                    .map_err(|error| OperationFailure::new(error, *work))?,
-                limits,
-            )
-            .map_err(|error| OperationFailure::new(error, *work))?;
-            if policy.excludes(&child) {
-                continue;
-            }
-            let host_child = host_parent.join(entry.file_name());
-            let metadata = root
-                .symlink_metadata_held(&host_child)
-                .map_err(|error| OperationFailure::new(error.into(), *work))?;
-            let file_type = metadata.file_type();
-            insert_host_observation(
-                &mut observed,
-                child.clone(),
-                metadata,
-                maximum,
-                work,
-                budget,
-            )?;
-            if file_type.is_dir() && !file_type.is_symlink() {
-                pending.push((host_child, child));
-            }
-        }
-    }
+    collect_host_subtree_observations(
+        root,
+        profile,
+        limits,
+        maximum,
+        PathBuf::new(),
+        volume_root,
+        policy,
+        &mut observed,
+        work,
+        budget,
+        cancellation,
+    )?;
     Ok(observed)
 }
 
@@ -1726,14 +1718,17 @@ fn collect_host_subtree_observations(
         cancellation.check().map_err(|error| {
             OperationFailure::new(CaptureError::Engine(error.to_string()), *work)
         })?;
-        for entry in root
-            .read_dir_held(&host_parent)
-            .map_err(|error| OperationFailure::new(error.into(), *work))?
-        {
+        let directory = root
+            .open_dir_held(&host_parent)
+            .map_err(|error| OperationFailure::new(error.into(), *work))?;
+        let entries = HostRoot::scan_held_dir(&directory)
+            .map_err(|error| OperationFailure::new(error.into(), *work))?;
+        for entry in entries {
             let entry = entry.map_err(|error| OperationFailure::new(error.into(), *work))?;
+            let name = entry.name;
             let child = append_path(
                 &volume_parent,
-                logical_host_name(&entry.file_name(), profile, limits)
+                logical_host_name(&name, profile, limits)
                     .map_err(|error| OperationFailure::new(error, *work))?,
                 limits,
             )
@@ -1741,14 +1736,13 @@ fn collect_host_subtree_observations(
             if policy.excludes(&child) {
                 continue;
             }
-            let host_child = host_parent.join(entry.file_name());
-            let metadata = root
-                .symlink_metadata_held(&host_child)
+            let metadata = directory
+                .symlink_metadata(&name)
                 .map_err(|error| OperationFailure::new(error.into(), *work))?;
             let file_type = metadata.file_type();
             insert_host_observation(observed, child.clone(), metadata, maximum, work, budget)?;
             if file_type.is_dir() && !file_type.is_symlink() {
-                pending.push((host_child, child));
+                pending.push((host_parent.join(name), child));
             }
         }
     }
@@ -1774,12 +1768,14 @@ fn collect_host_subtree_paths<P: ScannedPaths>(
         cancellation.check().map_err(|error| {
             OperationFailure::new(CaptureError::Engine(error.to_string()), *work)
         })?;
-        let entries = root
-            .read_dir_held(&host_parent)
+        let directory = root
+            .open_dir_held(&host_parent)
+            .map_err(|error| OperationFailure::new(error.into(), *work))?;
+        let entries = HostRoot::scan_held_dir(&directory)
             .map_err(|error| OperationFailure::new(error.into(), *work))?;
         for entry in entries {
             let entry = entry.map_err(|error| OperationFailure::new(error.into(), *work))?;
-            let name = logical_host_name(&entry.file_name(), profile, limits)
+            let name = logical_host_name(&entry.name, profile, limits)
                 .map_err(|error| OperationFailure::new(error, *work))?;
             let child = append_path(&volume_parent, name, limits)
                 .map_err(|error| OperationFailure::new(error, *work))?;
@@ -1787,14 +1783,10 @@ fn collect_host_subtree_paths<P: ScannedPaths>(
                 continue;
             }
             append_scanned_path(paths, child.clone(), maximum, work, budget)?;
-            let host_child = host_parent.join(entry.file_name());
-            // Directory enumeration already supplies a no-follow file kind.
-            // Capture later reopens and validates every selected path; this
-            // probe only decides which descendants need enumeration.
-            let file_type = entry
-                .file_type()
-                .map_err(|error| OperationFailure::new(error.into(), *work))?;
-            if file_type.is_dir() && !file_type.is_symlink() {
+            let host_child = host_parent.join(entry.name);
+            // Enumeration never follows the leaf. Capture reopens and validates
+            // every selected path; this only identifies descendants to scan.
+            if entry.is_dir {
                 pending.push((host_child, child));
             }
         }
@@ -2121,44 +2113,17 @@ async fn capture_watch_batch_with_policy_inner<A: AsyncAuthorityStore, O: AsyncO
     }) {
         match change {
             WatchChange::Created(path) => {
-                let current = rename_records.get(&path).copied().map_or_else(
-                    || {
-                        if moved_away.contains(&path) {
-                            CurrentRecord::Known(None)
-                        } else {
-                            CurrentRecord::Lookup
-                        }
-                    },
-                    |record| CurrentRecord::Known(Some(record)),
-                );
+                let current = current_record(&rename_records, &moved_away, &path);
                 ordinary.insert(path, (current, CaptureIntent::Replace));
             }
             WatchChange::Modified(path) | WatchChange::Removed(path) => {
-                let current = rename_records.get(&path).copied().map_or_else(
-                    || {
-                        if moved_away.contains(&path) {
-                            CurrentRecord::Known(None)
-                        } else {
-                            CurrentRecord::Lookup
-                        }
-                    },
-                    |record| CurrentRecord::Known(Some(record)),
-                );
+                let current = current_record(&rename_records, &moved_away, &path);
                 ordinary
                     .entry(path)
                     .or_insert((current, CaptureIntent::Complete));
             }
             WatchChange::MetadataChanged(path) => {
-                let current = rename_records.get(&path).copied().map_or_else(
-                    || {
-                        if moved_away.contains(&path) {
-                            CurrentRecord::Known(None)
-                        } else {
-                            CurrentRecord::Lookup
-                        }
-                    },
-                    |record| CurrentRecord::Known(Some(record)),
-                );
+                let current = current_record(&rename_records, &moved_away, &path);
                 ordinary
                     .entry(path)
                     .or_insert((current, CaptureIntent::MetadataOnly));
@@ -2462,6 +2427,20 @@ async fn capture_watch_batch_with_policy_inner<A: AsyncAuthorityStore, O: AsyncO
 enum CurrentRecord {
     Lookup,
     Known(Option<FileRecord>),
+}
+
+/// What a hinted path held before this batch: a renamed record, nothing if
+/// it was moved away, or the checkout's current binding.
+fn current_record(
+    rename_records: &BTreeMap<NamespacePath, FileRecord>,
+    moved_away: &BTreeSet<NamespacePath>,
+    path: &NamespacePath,
+) -> CurrentRecord {
+    match rename_records.get(path) {
+        Some(record) => CurrentRecord::Known(Some(*record)),
+        None if moved_away.contains(path) => CurrentRecord::Known(None),
+        None => CurrentRecord::Lookup,
+    }
 }
 
 fn watch_ancestor_candidates<'a>(
