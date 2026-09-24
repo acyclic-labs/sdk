@@ -204,16 +204,28 @@ where
 fn flush_session_callbacks(
     session: &Mutex<Option<NativeMountSession>>,
 ) -> Result<(), MountLifecycleError> {
+    with_live_session(session, NativeMountSession::flush_callbacks)
+}
+
+/// Drops kernel caches derived from the binding a rebind just superseded.
+fn revalidate_session(
+    session: &Mutex<Option<NativeMountSession>>,
+) -> Result<(), MountLifecycleError> {
+    with_live_session(session, NativeMountSession::revalidate)
+}
+
+fn with_live_session(
+    session: &Mutex<Option<NativeMountSession>>,
+    operation: impl FnOnce(&NativeMountSession) -> Result<(), NativeMountError>,
+) -> Result<(), MountLifecycleError> {
     let owner = match session.lock() {
         Ok(owner) => owner,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if let Some(session) = owner.as_ref() {
-        session
-            .flush_callbacks()
-            .map_err(MountLifecycleError::Native)?;
-    }
-    Ok(())
+    owner
+        .as_ref()
+        .map_or(Ok(()), operation)
+        .map_err(MountLifecycleError::Native)
 }
 
 impl<A, O, D, S> LazyMount<A, O, D, S> {
@@ -286,7 +298,8 @@ where
         self.source
             .advance_to_head_async()
             .await
-            .map_err(MountLifecycleError::Source)
+            .map_err(MountLifecycleError::Source)?;
+        revalidate_session(&self.session)
     }
 
     /// Publishes all pending effects on the source's dedicated callback runtime.
@@ -382,7 +395,8 @@ where
         self.source
             .advance_to_head_async()
             .await
-            .map_err(MountLifecycleError::Source)
+            .map_err(MountLifecycleError::Source)?;
+        revalidate_session(&self.session)
     }
 
     /// Publishes pending effects on the source callback runtime.
