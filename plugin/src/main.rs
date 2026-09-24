@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, Read, Seek, Write};
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
@@ -7627,7 +7627,7 @@ impl ServiceResources {
         let fs = LocalFs::local(LocalOptions::new(data.join("filesystem")))
             .await
             .map_err(display)?;
-        let binary_identity = service_identity()?;
+        let binary_identity = service_identity(&data)?;
         let resources = Self {
             store: LocalCoreStateStore::open_owned(data.join("core-state")).map_err(display)?,
             shared_roots: SharedRootRegistry::default(),
@@ -9852,12 +9852,142 @@ fn default_data_directory() -> PathBuf {
     env::temp_dir().join("acyclic-state-v5")
 }
 
-fn service_identity() -> Result<String, String> {
-    service_identity_for(&env::current_exe().map_err(display)?)
+fn service_identity(data: &Path) -> Result<String, String> {
+    service_identity_for(data, &env::current_exe().map_err(display)?)
 }
 
-fn service_identity_for(executable: &Path) -> Result<String, String> {
-    Ok(service_identity_from_digest(&blake3_file(executable)?))
+/// The identity of an executable's artifact bytes. Hashing tens of megabytes
+/// on every session start is avoidable: the identity is cached under the
+/// file's fingerprint, which every rewrite or replacement of the file changes.
+fn service_identity_for(data: &Path, executable: &Path) -> Result<String, String> {
+    let cache = data.join("executable-identity");
+    let file = fs::File::open(executable).map_err(display)?;
+    let (fingerprint, changed) = executable_fingerprint(&file)?;
+    if let Some(identity) = fs::read(&cache)
+        .ok()
+        .and_then(|cached| cached_identity(&cached, &fingerprint))
+    {
+        return Ok(identity);
+    }
+    let mut hasher = blake3::Hasher::new();
+    read_executable(&file, |bytes| {
+        hasher.update(bytes);
+    })?;
+    let identity = service_identity_from_digest(&hasher.finalize().to_hex());
+    // Cache only a hash of bytes that did not change while they were read and
+    // whose last change is older than any timestamp granularity: a later write
+    // in the same clock tick could otherwise keep the fingerprint (the racy
+    // timestamp problem Git's index solves the same way). A cache that cannot
+    // be written, or is lost, only costs the next caller one hash.
+    let settled = std::time::SystemTime::now()
+        .duration_since(changed)
+        .is_ok_and(|age| age > SETTLED_EXECUTABLE_AGE);
+    if settled && executable_fingerprint(&file)?.0 == fingerprint {
+        let staged = data.join(format!("executable-identity.{}", std::process::id()));
+        let entry = format!("{}\n{identity}", hex::encode(fingerprint));
+        if fs::write(&staged, entry)
+            .and_then(|()| fs::rename(&staged, &cache))
+            .is_err()
+        {
+            let _ = fs::remove_file(&staged);
+        }
+    }
+    Ok(identity)
+}
+
+fn cached_identity(cached: &[u8], fingerprint: &[u8; 32]) -> Option<String> {
+    let (cached_fingerprint, identity) = std::str::from_utf8(cached).ok()?.split_once('\n')?;
+    (cached_fingerprint == hex::encode(fingerprint)
+        && identity.len() == 64
+        && identity
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+    .then(|| identity.to_owned())
+}
+
+/// An executable changed longer ago than this has timestamps that any later
+/// write must advance.
+const SETTLED_EXECUTABLE_AGE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Digest of the file's identity, size, and modification and change times,
+/// with the change time. The change time cannot be set by callers, so no write
+/// can preserve it.
+#[cfg(unix)]
+fn executable_fingerprint(file: &fs::File) -> Result<([u8; 32], std::time::SystemTime), String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = file.metadata().map_err(display)?;
+    let mut hasher = blake3::Hasher::new();
+    for field in [
+        metadata.dev(),
+        metadata.ino(),
+        metadata.size(),
+        metadata.mtime().cast_unsigned(),
+        metadata.mtime_nsec().cast_unsigned(),
+        metadata.ctime().cast_unsigned(),
+        metadata.ctime_nsec().cast_unsigned(),
+    ] {
+        hasher.update(&field.to_le_bytes());
+    }
+    let changed = std::time::UNIX_EPOCH
+        .checked_add(std::time::Duration::new(
+            metadata.ctime().try_into().unwrap_or_default(),
+            metadata.ctime_nsec().try_into().unwrap_or_default(),
+        ))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    Ok((*hasher.finalize().as_bytes(), changed))
+}
+
+/// Digest of the file's volume and identity, size, and write and change
+/// times, with the change time. The change time cannot be set by callers, so
+/// no write can preserve it.
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "GetFileInformationByHandleEx fills fixed-size structures for a live handle"
+)]
+fn executable_fingerprint(file: &fs::File) -> Result<([u8; 32], std::time::SystemTime), String> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_BASIC_INFO, FILE_ID_INFO, FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx,
+    };
+    fn query<T>(file: &fs::File, class: i32) -> Result<T, String> {
+        let mut information = std::mem::MaybeUninit::<T>::zeroed();
+        let size = u32::try_from(std::mem::size_of::<T>()).map_err(display)?;
+        // SAFETY: the handle is live for the call and the buffer is exactly
+        // `size` writable bytes of the structure this class returns.
+        if unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                class,
+                information.as_mut_ptr().cast(),
+                size,
+            )
+        } == 0
+        {
+            return Err(display(io::Error::last_os_error()));
+        }
+        // SAFETY: the call succeeded, so it initialized the structure.
+        Ok(unsafe { information.assume_init() })
+    }
+    let identity = query::<FILE_ID_INFO>(file, FileIdInfo)?;
+    let basic = query::<FILE_BASIC_INFO>(file, FileBasicInfo)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&identity.VolumeSerialNumber.to_le_bytes());
+    hasher.update(&identity.FileId.Identifier);
+    hasher.update(&file.metadata().map_err(display)?.len().to_le_bytes());
+    for time in [basic.CreationTime, basic.LastWriteTime, basic.ChangeTime] {
+        hasher.update(&time.to_le_bytes());
+    }
+    // FILETIME counts 100 ns intervals from 1601; Unix time starts 11,644,473,600 s later.
+    let changed = u64::try_from(basic.ChangeTime)
+        .ok()
+        .and_then(|ticks| ticks.checked_sub(116_444_736_000_000_000))
+        .and_then(|ticks| {
+            std::time::UNIX_EPOCH
+                .checked_add(std::time::Duration::from_nanos(ticks.saturating_mul(100)))
+        })
+        .unwrap_or(std::time::UNIX_EPOCH);
+    Ok((*hasher.finalize().as_bytes(), changed))
 }
 
 fn service_identity_from_digest(digest: &str) -> String {
@@ -9866,8 +9996,8 @@ fn service_identity_from_digest(digest: &str) -> String {
         .to_string()
 }
 
-fn read_executable(executable: &Path, mut update: impl FnMut(&[u8])) -> Result<(), String> {
-    let mut file = fs::File::open(executable).map_err(display)?;
+fn read_executable(mut file: &fs::File, mut update: impl FnMut(&[u8])) -> Result<(), String> {
+    file.rewind().map_err(display)?;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         let read = file.read(&mut buffer).map_err(display)?;
@@ -9904,7 +10034,7 @@ fn executable_digests_for(executable: &Path) -> Result<ExecutableDigests, String
     // identical clients to continuously drain and replace each other's service.
     let mut sha256 = Sha256::new();
     let mut blake3 = blake3::Hasher::new();
-    read_executable(executable, |chunk| {
+    read_executable(&fs::File::open(executable).map_err(display)?, |chunk| {
         sha256.update(chunk);
         blake3.update(chunk);
     })?;
@@ -9919,7 +10049,7 @@ fn executable_digests_for(executable: &Path) -> Result<ExecutableDigests, String
 
 fn blake3_file(path: &Path) -> Result<String, String> {
     let mut hasher = blake3::Hasher::new();
-    read_executable(path, |bytes| {
+    read_executable(&fs::File::open(path).map_err(display)?, |bytes| {
         hasher.update(bytes);
     })?;
     Ok(hasher.finalize().to_hex().to_string())
@@ -10668,7 +10798,7 @@ fn clear_obsolete_runtime_state(data: &Path) -> Result<(), String> {
 
 async fn ensure_service(data: &Path) -> Result<(), String> {
     fs::create_dir_all(data).map_err(display)?;
-    let identity = service_identity()?;
+    let identity = service_identity(data)?;
     if service_is_ready_for_identity(data, &identity).await? {
         return Ok(());
     }
@@ -10709,7 +10839,7 @@ fn ping_request() -> Result<ControlRequest, String> {
 }
 
 async fn send_cli_control_request(data: &Path, request: &ControlRequest) -> Result<Value, String> {
-    let identity = service_identity()?;
+    let identity = service_identity(data)?;
     // Sandboxed hosts may expose the already-running local endpoint while denying the client's
     // direct view of per-user state. Probe that endpoint before attempting a filesystem-backed
     // cold start. The published marker is an instance nonce, not a binary compatibility identity.
@@ -15251,27 +15381,72 @@ mod tests {
     #[test]
     fn service_identity_follows_artifact_bytes_not_launcher_path() {
         let temporary = tempfile::tempdir().expect("temporary directory");
-        let launcher = temporary.path().join("launcher");
-        let plugin_cache = temporary.path().join("plugin-cache");
+        let data = temporary.path();
+        let launcher = data.join("launcher");
+        let plugin_cache = data.join("plugin-cache");
         fs::write(&launcher, b"same signed artifact").expect("launcher artifact");
         fs::write(&plugin_cache, b"same signed artifact").expect("cached artifact");
+        let identity = |path: &Path| service_identity_for(data, path).expect("identity");
 
+        assert_eq!(identity(&launcher), identity(&plugin_cache));
         assert_eq!(
-            service_identity_for(&launcher).expect("launcher identity"),
-            service_identity_for(&plugin_cache).expect("cached identity")
-        );
-        assert_eq!(
-            service_identity_for(&launcher).expect("launcher identity"),
+            identity(&launcher),
             executable_digests_for(&launcher)
                 .expect("full launcher digests")
                 .service_identity
         );
 
         fs::write(&plugin_cache, b"replacement artifact").expect("replacement artifact");
-        assert_ne!(
-            service_identity_for(&launcher).expect("launcher identity"),
-            service_identity_for(&plugin_cache).expect("replacement identity")
+        assert_ne!(identity(&launcher), identity(&plugin_cache));
+    }
+
+    #[test]
+    fn cached_service_identity_is_keyed_by_the_file_fingerprint() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path();
+        let executable = data.join("acyclic");
+        fs::write(&executable, b"first artifact").expect("artifact");
+        let identity = service_identity_for(data, &executable).expect("identity");
+        let cache = data.join("executable-identity");
+        assert!(
+            !cache.exists(),
+            "a just-written executable could change again within its timestamp tick"
         );
+        std::thread::sleep(SETTLED_EXECUTABLE_AGE + std::time::Duration::from_millis(100));
+        assert_eq!(
+            service_identity_for(data, &executable).expect("settled identity"),
+            identity
+        );
+        let entry = fs::read_to_string(&cache).expect("cached identity");
+        assert!(entry.ends_with(&identity));
+
+        // A hit returns the cached value without hashing the bytes again.
+        let (fingerprint, _) = entry.split_once('\n').expect("cache entry");
+        let marker = "0".repeat(64);
+        fs::write(&cache, format!("{fingerprint}\n{marker}")).expect("marked cache");
+        assert_eq!(
+            service_identity_for(data, &executable).expect("cached identity"),
+            marker
+        );
+
+        // Any rewrite changes the fingerprint, even to bytes of equal length.
+        fs::write(&executable, b"other artifact").expect("rewritten artifact");
+        let rewritten = service_identity_for(data, &executable).expect("rewritten identity");
+        assert_ne!(rewritten, marker);
+        assert_eq!(
+            rewritten,
+            executable_digests_for(&executable)
+                .expect("rewritten digests")
+                .service_identity
+        );
+
+        for torn in [b"".as_slice(), b"torn", entry.as_bytes().split_at(70).0] {
+            fs::write(&cache, torn).expect("torn cache");
+            assert_eq!(
+                service_identity_for(data, &executable).expect("identity despite torn cache"),
+                rewritten
+            );
+        }
     }
 
     #[test]
