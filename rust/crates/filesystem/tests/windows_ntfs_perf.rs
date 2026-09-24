@@ -1,3 +1,4 @@
+#![cfg_attr(not(windows), allow(missing_docs))]
 #![cfg(windows)]
 
 //! Local NTFS qualification for pinned, no-driver SDK working sets.

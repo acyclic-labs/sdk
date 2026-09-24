@@ -21,6 +21,10 @@ fn component(value: &str) -> Vec<u8> {
 
 #[tokio::test]
 #[ignore = "local-only 10k-path APFS working-set qualification"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one measured scenario shares a single fixture"
+)]
 async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error>> {
     const FILES_PER_DIRECTORY: usize = 100;
     const CHANGES: usize = 100;

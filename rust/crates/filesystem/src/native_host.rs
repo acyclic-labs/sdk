@@ -2175,7 +2175,7 @@ mod macos_metadata_tests {
         let (release_tx, release_rx) = mpsc::channel();
         let worker = tokio::spawn(async move {
             acyclic_native_runtime::run_blocking_io(move || {
-                started_tx.send(()).expect("test receiver remains live");
+                assert!(started_tx.send(()).is_ok(), "test receiver remains live");
                 let executor_progressed = release_rx.recv_timeout(Duration::from_secs(2)).is_ok();
                 target.apply(FileMetadata::default())?;
                 Ok::<_, MacMetadataError>(executor_progressed)
