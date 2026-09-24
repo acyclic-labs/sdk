@@ -216,12 +216,34 @@ impl CheckoutDependencies {
         )
     }
 
-    pub(crate) fn extend_mutations(
-        &mut self,
+    /// Validates mutation preconditions without applying them, so a caller
+    /// commits them only once its mutation has succeeded.
+    pub(crate) fn prepare_mutations(
+        &self,
         dependencies: Vec<Dependency>,
         maximum_dependencies: u32,
-    ) -> Result<(), DependencyError> {
-        self.extend(dependencies, maximum_dependencies, DependencyUse::Mutation)
+    ) -> Result<DependencyExtension, DependencyError> {
+        self.prepare(dependencies, maximum_dependencies, DependencyUse::Mutation)
+    }
+
+    /// Applies an extension prepared against this unchanged proof.
+    pub(crate) fn commit(&mut self, extension: DependencyExtension) {
+        let DependencyExtension { staged, usage } = extension;
+        for (region, expected) in staged {
+            match self.captured.get_mut(&region) {
+                Some(existing) => {
+                    if existing.usage != usage
+                        && existing.usage != DependencyUse::ObservationAndMutation
+                    {
+                        existing.usage = DependencyUse::ObservationAndMutation;
+                    }
+                }
+                None => {
+                    self.captured
+                        .insert(region, CapturedState { expected, usage });
+                }
+            }
+        }
     }
 
     fn extend(
@@ -230,6 +252,17 @@ impl CheckoutDependencies {
         maximum_dependencies: u32,
         usage: DependencyUse,
     ) -> Result<(), DependencyError> {
+        let extension = self.prepare(dependencies, maximum_dependencies, usage)?;
+        self.commit(extension);
+        Ok(())
+    }
+
+    fn prepare(
+        &self,
+        dependencies: Vec<Dependency>,
+        maximum_dependencies: u32,
+        usage: DependencyUse,
+    ) -> Result<DependencyExtension, DependencyError> {
         if maximum_dependencies == 0 {
             return Err(DependencyError::ZeroLimit);
         }
@@ -262,23 +295,15 @@ impl CheckoutDependencies {
                 maximum: maximum_dependencies,
             });
         }
-        for (region, expected) in staged {
-            match self.captured.get_mut(&region) {
-                Some(existing) => {
-                    if existing.usage != usage
-                        && existing.usage != DependencyUse::ObservationAndMutation
-                    {
-                        existing.usage = DependencyUse::ObservationAndMutation;
-                    }
-                }
-                None => {
-                    self.captured
-                        .insert(region, CapturedState { expected, usage });
-                }
-            }
-        }
-        Ok(())
+        Ok(DependencyExtension { staged, usage })
     }
+}
+
+/// Dependencies validated against a proof but not yet applied to it.
+#[must_use]
+pub(crate) struct DependencyExtension {
+    staged: BTreeMap<DependencyRegion, DependencyState>,
+    usage: DependencyUse,
 }
 
 /// Backend-independent exact-region resolver.
