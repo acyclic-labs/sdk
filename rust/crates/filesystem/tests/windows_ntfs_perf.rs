@@ -467,3 +467,34 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn native_lazy_workspace_lists_windows_source_directories()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = tempfile::tempdir()?;
+    let store = tempfile::tempdir()?;
+    std::fs::create_dir(source.path().join("dir"))?;
+    std::fs::write(source.path().join("dir").join("file"), b"file")?;
+    let fs = Fs::local(LocalOptions::new(store.path())).await?;
+    let demand = Arc::new(
+        NativeDemandSource::open(
+            source.path(),
+            FilesystemProfile::Windows,
+            VolumeLimits::default(),
+        )
+        .await?,
+    );
+    let lazy = LazyWorkspace::attach_with_config(
+        &fs,
+        "ntfs-native-listing",
+        demand,
+        MemoryLazyWorkspaceStore::default(),
+        VolumeConfig::native(Lifecycle::Durable),
+    )
+    .await?;
+    for directory in ["/", "/dir"] {
+        let page = lazy.list_directory(directory, None, 64).await?;
+        assert_eq!(page.entries.len(), 1, "{directory}");
+    }
+    Ok(())
+}

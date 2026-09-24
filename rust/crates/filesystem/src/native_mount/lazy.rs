@@ -18,6 +18,7 @@ use crate::demand::{DemandSource, SourceNode, SourceNodeKind};
 use crate::kernel::{
     FileKind, FileMetadata, FileMutation, FilePayload, FileRecord, MetadataField, Mutation,
 };
+use crate::lazy_workspace::logical_child_path;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, FileId, IdempotencyKey, LazyDirectoryCursor, LazyLookup,
     LazyWorkspace, LazyWorkspaceError, LazyWorkspaceStore, NativeRootIdentity, WorkspaceMetadata,
@@ -816,32 +817,6 @@ where
             self.cursors.clear();
         }
         Ok(())
-    }
-
-    fn native_name(name: &crate::kernel::LogicalName) -> Result<Vec<u8>, MountSourceError> {
-        let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
-            MountSourceError::Unsupported(
-                "lazy portable mount cannot project a non-UTF-8 name".to_owned(),
-            )
-        })?;
-        if cfg!(target_os = "windows") {
-            Ok(text.encode_utf16().flat_map(u16::to_le_bytes).collect())
-        } else {
-            Ok(text.as_bytes().to_vec())
-        }
-    }
-
-    fn child(parent: &str, name: &crate::kernel::LogicalName) -> Result<String, MountSourceError> {
-        let name = std::str::from_utf8(name.as_bytes()).map_err(|_| {
-            MountSourceError::Unsupported(
-                "lazy portable mount cannot address a non-UTF-8 name".to_owned(),
-            )
-        })?;
-        Ok(if parent == "/" {
-            format!("/{name}")
-        } else {
-            format!("{parent}/{name}")
-        })
     }
 
     async fn promote(&self, path: &str) -> Result<(), MountSourceError>
@@ -1651,8 +1626,12 @@ where
         })?;
         let mut entries = Vec::with_capacity(page.entries.len());
         for entry in page.entries {
-            let child = Self::child(&text, &entry.name)?;
-            let name = Self::native_name(&entry.name)?;
+            let child = logical_child_path(&text, &entry.name).ok_or_else(|| {
+                MountSourceError::Unsupported(
+                    "lazy mount cannot address a non-Unicode name".to_owned(),
+                )
+            })?;
+            let name = super::adapter::native_mount_name(&entry.name)?;
             let mounted_child = path.child(name.clone());
             let lookup = if let Some(authored) = self.authored.lookup(&mounted_child)? {
                 if self.removed_identity(&child, authored.node.file_id)? {
@@ -2333,6 +2312,37 @@ fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listed_names_are_decoded_by_their_declared_encoding()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::kernel::{LogicalName, NameEncoding};
+
+        let text = "dir-\u{e9}";
+        let utf16 = text
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let windows = LogicalName::new(NameEncoding::WindowsUtf16Le, utf16.clone(), 510)?;
+        let portable = LogicalName::new(NameEncoding::Utf8, text.as_bytes().to_vec(), 255)?;
+        for name in [&windows, &portable] {
+            assert_eq!(
+                logical_child_path("/parent", name).as_deref(),
+                Some("/parent/dir-\u{e9}")
+            );
+        }
+        if cfg!(windows) {
+            for name in [&windows, &portable] {
+                assert_eq!(super::super::adapter::native_mount_name(name)?, utf16);
+            }
+        } else {
+            assert_eq!(
+                super::super::adapter::native_mount_name(&portable)?,
+                text.as_bytes()
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn rebound_prunes_only_unreferenced_removed_identities()

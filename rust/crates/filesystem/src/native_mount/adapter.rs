@@ -1093,6 +1093,25 @@ where
     }
 }
 
+/// Encodes one authenticated name as this host's native mount component.
+pub(super) fn native_mount_name(name: &LogicalName) -> Result<Vec<u8>, MountSourceError> {
+    match (name.encoding(), std::env::consts::OS) {
+        (NameEncoding::Utf8 | NameEncoding::PosixBytes, "linux" | "macos") => {
+            Ok(name.as_bytes().to_vec())
+        }
+        (NameEncoding::WindowsUtf16Le, "windows") => Ok(name.as_bytes().to_vec()),
+        (NameEncoding::Utf8, "windows") => {
+            let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
+                MountSourceError::Invalid("authenticated UTF-8 name is malformed".to_owned())
+            })?;
+            Ok(text.encode_utf16().flat_map(u16::to_le_bytes).collect())
+        }
+        _ => Err(MountSourceError::Unsupported(
+            "authenticated name encoding is incompatible with this native mount".to_owned(),
+        )),
+    }
+}
+
 impl<A, O> CheckoutMountSource<A, O> {
     pub(super) fn shared_checkout(&self) -> &SharedCheckout<A, O> {
         &self.checkout
@@ -1449,24 +1468,6 @@ impl<A, O> CheckoutMountSource<A, O> {
             self.limits.maximum_component_bytes,
         )
         .map_err(engine_error)
-    }
-
-    fn native_name(name: &LogicalName) -> Result<Vec<u8>, MountSourceError> {
-        match (name.encoding(), std::env::consts::OS) {
-            (NameEncoding::Utf8 | NameEncoding::PosixBytes, "linux" | "macos") => {
-                Ok(name.as_bytes().to_vec())
-            }
-            (NameEncoding::WindowsUtf16Le, "windows") => Ok(name.as_bytes().to_vec()),
-            (NameEncoding::Utf8, "windows") => {
-                let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
-                    MountSourceError::Invalid("authenticated UTF-8 name is malformed".to_owned())
-                })?;
-                Ok(text.encode_utf16().flat_map(u16::to_le_bytes).collect())
-            }
-            _ => Err(MountSourceError::Unsupported(
-                "authenticated name encoding is incompatible with this native mount".to_owned(),
-            )),
-        }
     }
 
     pub(crate) fn capture_host_paths_with_identity(
@@ -1970,7 +1971,7 @@ where
                 .into_iter()
                 .map(|entry| {
                     Ok(MountDirectoryEntry {
-                        name: Self::native_name(&entry.name)?,
+                        name: native_mount_name(&entry.name)?,
                         node: mount_node(entry.record),
                         metadata: entry.metadata,
                     })

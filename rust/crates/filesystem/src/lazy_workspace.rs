@@ -9,8 +9,7 @@ use crate::demand::{
     SourceReference, SourceVersion,
 };
 use crate::kernel::{
-    FileKind, FileMetadata, FilePayload, FileRecord, LogicalName, MetadataField, NameEncoding,
-    NamespacePath,
+    FileKind, FileMetadata, FilePayload, FileRecord, LogicalName, MetadataField, NamespacePath,
 };
 use crate::model::VolumeConfig;
 use crate::path::PortablePath;
@@ -4582,21 +4581,9 @@ fn authored_entry(entry: WorkspaceDirectoryEntry) -> LazyDirectoryEntry {
     }
 }
 
-fn logical_child_path(parent: &str, name: &LogicalName) -> Option<String> {
-    let component = match name.encoding() {
-        NameEncoding::Utf8 | NameEncoding::PosixBytes => {
-            std::str::from_utf8(name.as_bytes()).ok()?.to_owned()
-        }
-        NameEncoding::WindowsUtf16Le => {
-            let units = name
-                .as_bytes()
-                .chunks_exact(2)
-                .filter_map(|pair| pair.try_into().ok().map(u16::from_le_bytes));
-            char::decode_utf16(units)
-                .collect::<Result<String, _>>()
-                .ok()?
-        }
-    };
+/// Joins `name`, decoded by its declared encoding, onto a portable parent path.
+pub(crate) fn logical_child_path(parent: &str, name: &LogicalName) -> Option<String> {
+    let component = name.unicode_text()?;
     Some(if parent == "/" {
         format!("/{component}")
     } else {
@@ -4921,6 +4908,7 @@ mod tests {
         DemandResult, SourceCursor, SourceDirectoryEntry, SourceDirectoryPage, SourceMetadata,
         SourceVersion,
     };
+    use crate::kernel::NameEncoding;
     use crate::performance::{OperationFailure, OperationReceipt, WorkCounters};
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
