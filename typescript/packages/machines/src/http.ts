@@ -53,7 +53,7 @@ function bytes(value: Uint8Array): string { let binary = ""; for (const byte of 
 function fromBytes(value: string): Uint8Array { return Uint8Array.from(atob(value), character => character.charCodeAt(0)); }
 type Decoder<Value> = (value: unknown) => Value;
 const states = ["starting", "running", "suspending", "suspended", "waking", "destroying", "destroyed", "failed", "indeterminate"] as const;
-const capabilities = ["elastic-cpu", "elastic-memory", "live-checkpoint", "live-fork", "suspend-resume", "live-movement"] as const;
+const capabilities = ["elastic-cpu", "elastic-memory", "live-checkpoint", "live-fork", "suspend-resume", "live-movement", "disk-fork"] as const;
 function record(value: unknown): Record<string, unknown> { if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("expected object"); return value as Record<string, unknown>; }
 function text(value: unknown, name: string): string { if (typeof value !== "string" || !value) throw new TypeError(`${name} must be a non-empty string`); return value; }
 function integer(value: unknown, name: string): number { if (!Number.isSafeInteger(value)) throw new TypeError(`${name} must be a safe integer`); return value as number; }

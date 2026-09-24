@@ -4,10 +4,13 @@
 //! provider stores the serialized [`MachineContract`] in a sandbox label at creation and reads
 //! it back on every observation. Everything here is a pure function over wire structs.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 use acyclic_machines::{
-    CheckpointId, CheckpointObservation, Endpoint, ExpirationPolicy, IdempotencyKey,
+    Capability, CheckpointId, CheckpointObservation, Endpoint, ExpirationPolicy, IdempotencyKey,
     MachineContract, MachineId, MachineObservation, MachineState, ProviderError, SuspensionPolicy,
 };
 
@@ -32,10 +35,16 @@ pub const LABEL_CONTRACT: &str = "acyclic.contract";
 pub const KIND_CREATE: &str = "create";
 /// Value of [`LABEL_KIND`] for `fork`.
 pub const KIND_FORK: &str = "fork";
+/// Value of [`LABEL_KIND`] for `fork_machine` (live fork of a running machine).
+pub const KIND_LIVE_FORK: &str = "live-fork";
+/// Label holding the source machine of a live-fork child.
+pub const LABEL_PARENT: &str = "acyclic.parent";
 /// Name of the single stable endpoint exposed per machine.
 pub const ENDPOINT_NAME: &str = "toolbox";
 /// Sandbox classes with pause/resume, memory snapshots, and native fork.
 pub const VM_CLASSES: [&str; 2] = ["linux-vm", "windows"];
+/// Container sandbox class: no pause, memory snapshot, or native fork.
+pub const CONTAINER_CLASS: &str = "container";
 
 /// Auto-delete value that disables automatic deletion.
 const AUTO_DELETE_DISABLED: i64 = -1;
@@ -85,6 +94,27 @@ pub fn is_settled(daytona: Option<&str>) -> bool {
 #[must_use]
 pub fn is_vm_class(class: Option<&str>) -> bool {
     class.is_some_and(|class| VM_CLASSES.iter().any(|vm| vm.eq_ignore_ascii_case(class)))
+}
+
+/// Capabilities this provider declares for sandboxes of `class`, or `None` for a class it
+/// does not admit.
+///
+/// VM classes get memory checkpoints, native memory-and-disk live fork, and pause/resume.
+/// Containers get only disk fork: the provider copies the workspace into fresh sandboxes
+/// booted from the parent's snapshot, and no process state is inherited.
+#[must_use]
+pub fn capabilities_for_class(class: Option<&str>) -> Option<BTreeSet<Capability>> {
+    if is_vm_class(class) {
+        Some(BTreeSet::from([
+            Capability::LiveCheckpoint,
+            Capability::LiveFork,
+            Capability::SuspendResume,
+        ]))
+    } else if class.is_some_and(|class| class.eq_ignore_ascii_case(CONTAINER_CLASS)) {
+        Some(BTreeSet::from([Capability::DiskFork]))
+    } else {
+        None
+    }
 }
 
 /// Parses `YYYY-MM-DDTHH:MM:SS[.fff][Z|+00:00]` into Unix milliseconds.
@@ -316,7 +346,11 @@ pub fn create_request(
         env: BTreeMap::new(),
         labels: labels(key, kind, index, config.tenant.as_deref(), contract),
         auto_stop_interval: Some(INTERVAL_DISABLED),
-        auto_pause_interval: Some(autopause_minutes(contract.suspension)),
+        // Containers cannot pause; their contracts never declare suspend/resume.
+        auto_pause_interval: contract
+            .capabilities
+            .contains(&Capability::SuspendResume)
+            .then(|| autopause_minutes(contract.suspension)),
         auto_delete_interval: Some(auto_delete_interval),
         ttl_minutes,
         domain_allow_list: domain_allow_list(&config.allow_domains),
@@ -522,6 +556,20 @@ mod tests {
         assert_eq!(sandbox.sandbox_class.as_deref(), Some("linux-vm"));
         assert!(is_vm_class(sandbox.sandbox_class.as_deref()));
         assert!(!is_vm_class(Some("container")));
+        assert_eq!(
+            capabilities_for_class(Some("linux-vm")),
+            Some(BTreeSet::from([
+                Capability::LiveCheckpoint,
+                Capability::LiveFork,
+                Capability::SuspendResume
+            ]))
+        );
+        assert_eq!(
+            capabilities_for_class(Some("container")),
+            Some(BTreeSet::from([Capability::DiskFork]))
+        );
+        assert_eq!(capabilities_for_class(Some("android")), None);
+        assert_eq!(capabilities_for_class(None), None);
         // The unmodelled fields survive in `extra` rather than being dropped.
         assert_eq!(sandbox.extra.get("gpu"), Some(&serde_json::json!(0)));
         let reencoded: Sandbox =
