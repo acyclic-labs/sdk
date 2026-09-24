@@ -8,9 +8,9 @@
 //! `mount_native`/unmount cycle.
 
 use super::{
-    MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry, MountDirectoryPage,
-    MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountPath,
-    MountRangeAllocation, MountSeekTarget, MountSourceError, MountViewLease,
+    MountAttributePage, MountAttributeWriteMode, MountContentPin, MountDirectoryEntry,
+    MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
+    MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError, MountViewLease,
 };
 use crate::FileId;
 use crate::kernel::FileMetadata;
@@ -39,14 +39,27 @@ fn next_route_tag(name: &[u8]) -> [u8; 16] {
     tag
 }
 
-/// XORs one [`FileId`] with a route tag. Self-inverse: applying it twice
-/// with the same tag returns the original identity.
-fn remap_file_id(id: FileId, tag: [u8; 16]) -> FileId {
-    let mut bytes = id.into_bytes();
+/// XORs a route tag into leading identity bytes. Self-inverse: applying it
+/// twice with the same tag returns the original bytes.
+fn xor_route_tag(bytes: &mut [u8], tag: [u8; 16]) {
     for (byte, tag_byte) in bytes.iter_mut().zip(tag) {
         *byte ^= tag_byte;
     }
+}
+
+/// Binds one child [`FileId`] to its route.
+fn remap_file_id(id: FileId, tag: [u8; 16]) -> FileId {
+    let mut bytes = id.into_bytes();
+    xor_route_tag(&mut bytes, tag);
     FileId::from_bytes(bytes)
+}
+
+/// Binds one child content pin to its route, so a pin issued by a removed
+/// route never validates against a re-added one.
+fn remap_content_pin(pin: MountContentPin, tag: [u8; 16]) -> MountContentPin {
+    let mut bytes = pin.0;
+    xor_route_tag(&mut bytes, tag);
+    MountContentPin(bytes)
 }
 
 fn cross_route_error() -> MountSourceError {
@@ -586,6 +599,22 @@ impl MountFilesystem for RoutedMountSource {
         Ok(result.map(|lookup| self.remap_lookup(lookup, routed.tag, &routed.name)))
     }
 
+    fn lookup_pinned(
+        &self,
+        path: &MountPath,
+    ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError> {
+        let Some(routed) = self.route(path)? else {
+            return Ok(Some((self.synthetic_root_lookup(), None)));
+        };
+        let result = routed.source.lookup_pinned(&routed.sub_path)?;
+        Ok(result.map(|(lookup, pin)| {
+            (
+                self.remap_lookup(lookup, routed.tag, &routed.name),
+                pin.map(|pin| remap_content_pin(pin, routed.tag)),
+            )
+        }))
+    }
+
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
         let Some(routed) = self.route(path)? else {
             return Err(MountSourceError::Invalid(
@@ -633,6 +662,26 @@ impl MountFilesystem for RoutedMountSource {
             ));
         };
         routed.source.read_range(&routed.sub_path, offset, length)
+    }
+
+    fn read_pinned(
+        &self,
+        path: &MountPath,
+        pin: MountContentPin,
+        offset: u64,
+        length: u32,
+    ) -> Result<Bytes, MountSourceError> {
+        let Some(routed) = self.route(path)? else {
+            return Err(MountSourceError::Invalid(
+                "the synthetic mount root has no content".to_owned(),
+            ));
+        };
+        routed.source.read_pinned(
+            &routed.sub_path,
+            remap_content_pin(pin, routed.tag),
+            offset,
+            length,
+        )
     }
 
     fn seek(

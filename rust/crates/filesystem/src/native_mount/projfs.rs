@@ -8,12 +8,12 @@
 #![allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 
 use super::{
-    DriverStartFailure, MountFilesystem, MountNode, MountNodeKind, MountPath, NativeMountError,
-    NativeMountRequest,
+    DriverStartFailure, MountContentPin, MountFilesystem, MountLookup, MountNode, MountNodeKind,
+    MountPath, MountSourceError, NativeMountError, NativeMountRequest,
 };
 use crate::kernel::{FileMetadata, MetadataField};
 use crate::native_host::HostRoot;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -26,24 +26,24 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_CALLBACK_DATA, PRJ_CALLBACKS, PRJ_CB_DATA_FLAG_ENUM_RESTART_SCAN,
     PRJ_DIR_ENTRY_BUFFER_HANDLE, PRJ_EXT_INFO_TYPE_SYMLINK, PRJ_EXTENDED_INFO, PRJ_EXTENDED_INFO_0,
-    PRJ_EXTENDED_INFO_0_0, PRJ_FILE_BASIC_INFO, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
-    PRJ_NOTIFICATION, PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED,
+    PRJ_EXTENDED_INFO_0_0, PRJ_FILE_BASIC_INFO, PRJ_FLAG_USE_NEGATIVE_PATH_CACHE,
+    PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, PRJ_NOTIFICATION,
+    PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED,
     PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
     PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION, PRJ_NOTIFICATION_FILE_OPENED,
     PRJ_NOTIFICATION_FILE_OVERWRITTEN, PRJ_NOTIFICATION_FILE_RENAMED,
     PRJ_NOTIFICATION_HARDLINK_CREATED, PRJ_NOTIFICATION_MAPPING, PRJ_NOTIFICATION_NEW_FILE_CREATED,
-    PRJ_NOTIFICATION_PARAMETERS, PRJ_NOTIFICATION_PRE_DELETE, PRJ_NOTIFICATION_PRE_RENAME,
-    PRJ_NOTIFICATION_PRE_SET_HARDLINK, PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED,
-    PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED, PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION,
-    PRJ_NOTIFY_FILE_OPENED, PRJ_NOTIFY_FILE_OVERWRITTEN, PRJ_NOTIFY_FILE_RENAMED,
-    PRJ_NOTIFY_HARDLINK_CREATED, PRJ_NOTIFY_NEW_FILE_CREATED, PRJ_NOTIFY_PRE_DELETE,
-    PRJ_NOTIFY_PRE_RENAME, PRJ_NOTIFY_PRE_SET_HARDLINK, PRJ_PLACEHOLDER_INFO,
-    PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_ALLOW_DIRTY_DATA, PRJ_UPDATE_ALLOW_DIRTY_METADATA,
-    PRJ_UPDATE_ALLOW_READ_ONLY, PRJ_UPDATE_ALLOW_TOMBSTONE, PrjAllocateAlignedBuffer,
-    PrjDeleteFile, PrjFileNameCompare, PrjFileNameMatch, PrjFillDirEntryBuffer,
-    PrjFillDirEntryBuffer2, PrjFreeAlignedBuffer, PrjMarkDirectoryAsPlaceholder,
-    PrjStartVirtualizing, PrjStopVirtualizing, PrjUpdateFileIfNeeded, PrjWriteFileData,
-    PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
+    PRJ_NOTIFICATION_PARAMETERS, PRJ_NOTIFICATION_PRE_RENAME, PRJ_NOTIFICATION_PRE_SET_HARDLINK,
+    PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED, PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED,
+    PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION, PRJ_NOTIFY_FILE_OPENED,
+    PRJ_NOTIFY_FILE_OVERWRITTEN, PRJ_NOTIFY_FILE_RENAMED, PRJ_NOTIFY_HARDLINK_CREATED,
+    PRJ_NOTIFY_NEW_FILE_CREATED, PRJ_NOTIFY_PRE_RENAME, PRJ_NOTIFY_PRE_SET_HARDLINK,
+    PRJ_PLACEHOLDER_INFO, PRJ_PLACEHOLDER_VERSION_INFO, PRJ_STARTVIRTUALIZING_OPTIONS,
+    PRJ_UPDATE_ALLOW_DIRTY_DATA, PRJ_UPDATE_ALLOW_DIRTY_METADATA, PRJ_UPDATE_ALLOW_READ_ONLY,
+    PRJ_UPDATE_ALLOW_TOMBSTONE, PrjAllocateAlignedBuffer, PrjClearNegativePathCache, PrjDeleteFile,
+    PrjFileNameCompare, PrjFileNameMatch, PrjFillDirEntryBuffer, PrjFillDirEntryBuffer2,
+    PrjFreeAlignedBuffer, PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
+    PrjUpdateFileIfNeeded, PrjWriteFileData, PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
 };
 use windows::core::{GUID, HRESULT, HSTRING, PCWSTR};
 
@@ -57,15 +57,27 @@ const HR_NOT_SUPPORTED: HRESULT = HRESULT(0x8007_0032_u32.cast_signed());
 const HR_OUT_OF_MEMORY: HRESULT = HRESULT(0x8007_000e_u32.cast_signed());
 const HR_UNEXPECTED: HRESULT = HRESULT(0x8000_ffff_u32.cast_signed());
 const HR_INSUFFICIENT_BUFFER: HRESULT = HRESULT(0x8007_007a_u32.cast_signed());
+const HR_FILE_INVALID: HRESULT = HRESULT(0x8007_03ee_u32.cast_signed());
+const HR_IO_DEVICE: HRESULT = HRESULT(0x8007_045d_u32.cast_signed());
+const HR_VIRTUALIZATION_INVALID_OPERATION: HRESULT = HRESULT(0x8007_0181_u32.cast_signed());
 
 const DIRECTORY_PAGE_SIZE: u32 = 256;
 const NOTIFICATION_ROOT: [u16; 1] = [0];
+/// Largest hydration unit. A multiple of every sector size, so each chunk
+/// but the last keeps `PrjWriteFileData` aligned; bounds peak memory.
+const HYDRATION_CHUNK_BYTES: u32 = 1 << 20;
+/// Bounds the provider's memo of read-only close bindings.
+const MAXIMUM_CACHED_BINDINGS: usize = 16_384;
+/// Bounds the directory entries memoized across all cached directories.
+const MAXIMUM_CACHED_DIRECTORY_ENTRIES: usize = 65_536;
+/// Marks a placeholder whose `ContentID` carries a [`MountContentPin`].
+const CONTENT_PIN_PROVIDER: &[u8; 16] = b"acyclic-fs-pin-1";
 
 struct EnumState {
     path: MountPath,
     ended: bool,
-    entries: VecDeque<ProjectedEntry>,
-    snapshot_ready: bool,
+    snapshot: Option<Arc<[ProjectedEntry]>>,
+    next: usize,
     search_expression: Option<HSTRING>,
     search_expression_captured: bool,
 }
@@ -92,7 +104,10 @@ struct Runtime {
     renamed_hydration_files: Arc<Mutex<HashMap<u128, RenamedHydrationFile>>>,
     renamed_paths: Arc<Mutex<HashMap<u128, Option<MountPath>>>>,
     metadata_baselines: Arc<Mutex<HashMap<u128, OpenMetadataState>>>,
-    read_only_bindings: Arc<Mutex<ReadOnlyBindings>>,
+    projection: Arc<Mutex<ProjectionCache>>,
+    /// Source epochs under which every absence `ProjFS` holds in its negative
+    /// path cache was reported; `None` once that cache must be cleared.
+    negative_paths: Option<Mutex<Option<SourceEpochs>>>,
     metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
     post_operation_failure: Arc<Mutex<PostOperationFailures>>,
     callbacks: CallbackGate,
@@ -267,7 +282,7 @@ impl CallbackGate {
 fn flush_callback_gate(
     callbacks: &CallbackGate,
     failure: Arc<Mutex<PostOperationFailures>>,
-    capture: impl Fn(&[(MountPath, bool)]) -> Result<(), super::MountSourceError>,
+    capture: impl Fn(&[(MountPath, bool)]) -> Result<(), MountSourceError>,
 ) -> Result<(), NativeMountError> {
     let pending_failure = Arc::clone(&failure);
     let pending = callbacks
@@ -341,24 +356,110 @@ fn defer_host_capture(failure: &Mutex<PostOperationFailures>, path: MountPath) {
     lock_recover(failure).queue_capture(path, "host capture pending".to_owned());
 }
 
-struct ReadOnlyBindings {
-    generation: Option<u64>,
-    entries: HashMap<MountPath, ReadOnlyBinding>,
+/// One coherent source view: stable, with both epochs known.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SourceEpochs {
+    view: u64,
+    binding: u64,
 }
 
-impl Default for ReadOnlyBindings {
+fn source_epochs(source: &dyn MountFilesystem) -> Option<SourceEpochs> {
+    if !source.view_is_stable() {
+        return None;
+    }
+    Some(SourceEpochs {
+        view: source.view_epoch()?,
+        binding: source.binding_epoch()?,
+    })
+}
+
+/// Source facts the provider memoizes between callbacks.
+///
+/// Each fact is valid only in the source view it was read in, and only
+/// until the provider itself next mutates the source: every such mutation
+/// completes before [`Self::invalidate`] advances `generation`. A reader
+/// samples `generation` before consulting the source and may remember its
+/// result only while the generation is unchanged, so nothing read before a
+/// concurrent provider mutation finished is ever retained.
+struct ProjectionCache {
+    /// `None` once the counter is exhausted; nothing is cached after that.
+    generation: Option<u64>,
+    bindings: HashMap<MountPath, ReadOnlyBinding>,
+    /// The single view every entry of `directories` was enumerated in.
+    directories_epochs: Option<SourceEpochs>,
+    directories: HashMap<MountPath, Arc<[ProjectedEntry]>>,
+    directory_entries: usize,
+}
+
+impl Default for ProjectionCache {
     fn default() -> Self {
         Self {
             generation: Some(0),
-            entries: HashMap::new(),
+            bindings: HashMap::new(),
+            directories_epochs: None,
+            directories: HashMap::new(),
+            directory_entries: 0,
         }
     }
 }
 
-impl ReadOnlyBindings {
+impl ProjectionCache {
     fn invalidate(&mut self) {
         self.generation = self.generation.and_then(|value| value.checked_add(1));
-        self.entries.clear();
+        self.bindings.clear();
+        self.clear_directories();
+    }
+
+    fn clear_directories(&mut self) {
+        self.directories_epochs = None;
+        self.directories.clear();
+        self.directory_entries = 0;
+    }
+
+    fn directory(&self, path: &MountPath, epochs: SourceEpochs) -> Option<Arc<[ProjectedEntry]>> {
+        (self.directories_epochs == Some(epochs))
+            .then(|| self.directories.get(path).cloned())
+            .flatten()
+    }
+
+    fn remember_directory(
+        &mut self,
+        generation: Option<u64>,
+        epochs: SourceEpochs,
+        path: MountPath,
+        entries: Arc<[ProjectedEntry]>,
+    ) {
+        if generation.is_none()
+            || self.generation != generation
+            || entries.len() > MAXIMUM_CACHED_DIRECTORY_ENTRIES
+        {
+            return;
+        }
+        if self.directories_epochs != Some(epochs)
+            || self.directory_entries + entries.len() > MAXIMUM_CACHED_DIRECTORY_ENTRIES
+        {
+            self.clear_directories();
+            self.directories_epochs = Some(epochs);
+        }
+        self.directory_entries += entries.len();
+        if let Some(replaced) = self.directories.insert(path, entries) {
+            self.directory_entries -= replaced.len();
+        }
+    }
+
+    fn remember_binding(
+        &mut self,
+        generation: Option<u64>,
+        path: MountPath,
+        binding: ReadOnlyBinding,
+    ) {
+        if generation.is_none() || self.generation != generation {
+            return;
+        }
+        if self.bindings.len() >= MAXIMUM_CACHED_BINDINGS {
+            self.bindings.clear();
+        }
+        self.bindings.insert(path, binding);
     }
 }
 
@@ -393,16 +494,7 @@ impl ProjFsSession {
         );
         let root = HSTRING::from(request.destination.as_os_str());
         let root_ptr = PCWSTR::from_raw(root.as_ptr());
-        let bytes = request.mount_id.into_bytes();
-        let guid = GUID::from_values(
-            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            u16::from_le_bytes([bytes[4], bytes[5]]),
-            u16::from_le_bytes([bytes[6], bytes[7]]),
-            [
-                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
-                bytes[15],
-            ],
-        );
+        let guid = guid_from_key(u128::from_le_bytes(request.mount_id.into_bytes()));
         // SAFETY: the destination was admitted as an existing empty directory;
         // all pointers remain valid for this synchronous call.
         unsafe { PrjMarkDirectoryAsPlaceholder(root_ptr, PCWSTR::null(), None, &raw const guid) }
@@ -414,6 +506,9 @@ impl ProjFsSession {
             ))
         })?;
 
+        // An absence can be cached only by a source that versions its view;
+        // any later change of that view clears the cache before new lookups.
+        let negative_paths = source.view_epoch().map(|_| Mutex::new(None));
         let mut runtime = Box::new(Runtime {
             source,
             root: request.destination.clone(),
@@ -423,13 +518,16 @@ impl ProjFsSession {
             renamed_hydration_files: Arc::new(Mutex::new(HashMap::new())),
             renamed_paths: Arc::new(Mutex::new(HashMap::new())),
             metadata_baselines: Arc::new(Mutex::new(HashMap::new())),
-            read_only_bindings: Arc::new(Mutex::new(ReadOnlyBindings::default())),
+            projection: Arc::new(Mutex::new(ProjectionCache::default())),
+            negative_paths,
             metadata_probes: Arc::new(Mutex::new(HashMap::new())),
             post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
             callbacks: callback_gate,
         });
         let context_ptr = (&raw mut *runtime).cast::<c_void>();
         let callbacks = callbacks();
+        // Only pre-operation callbacks that can veto are subscribed: a delete
+        // is never refused, and it is captured when its handle closes.
         let mut notification_mapping = PRJ_NOTIFICATION_MAPPING {
             NotificationBitMask: PRJ_NOTIFY_NEW_FILE_CREATED
                 | PRJ_NOTIFY_FILE_OVERWRITTEN
@@ -437,7 +535,6 @@ impl ProjFsSession {
                 | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED
                 | PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION
                 | PRJ_NOTIFY_FILE_OPENED
-                | PRJ_NOTIFY_PRE_DELETE
                 | PRJ_NOTIFY_PRE_RENAME
                 | PRJ_NOTIFY_FILE_RENAMED
                 | PRJ_NOTIFY_PRE_SET_HARDLINK
@@ -448,6 +545,9 @@ impl ProjFsSession {
             NotificationRoot: PCWSTR::from_raw(NOTIFICATION_ROOT.as_ptr()),
         };
         let mut options = PRJ_STARTVIRTUALIZING_OPTIONS::default();
+        if runtime.negative_paths.is_some() {
+            options.Flags = PRJ_FLAG_USE_NEGATIVE_PATH_CACHE;
+        }
         if request.writable {
             options.NotificationMappings = &raw mut notification_mapping;
             options.NotificationMappingsCount = 1;
@@ -526,6 +626,7 @@ impl ProjFsSession {
         let root = runtime.root.clone();
         let host_root = Arc::clone(&runtime.metadata_root);
         let probes = Arc::clone(&runtime.metadata_probes);
+        let projection = Arc::clone(&runtime.projection);
         let context = self.context;
         runtime
             .callbacks
@@ -535,6 +636,11 @@ impl ProjFsSession {
             &runtime.callbacks,
             Arc::clone(&runtime.post_operation_failure),
             move |paths| {
+                if paths.is_empty() {
+                    return Ok(());
+                }
+                // Capture mutates the source whether or not it completes.
+                let _invalidate = InvalidateOnDrop(projection.as_ref());
                 // Host capture reads through this projection. Suppress only
                 // those provider-owned metadata probes; external opens retain
                 // their per-handle baselines.
@@ -559,7 +665,7 @@ impl ProjFsSession {
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                             match source.lookup(path) {
-                                Err(super::MountSourceError::NotFound) | Ok(None) => {
+                                Err(MountSourceError::NotFound) | Ok(None) => {
                                     // A host-created temporary that vanished
                                     // before the boundary has no state to join.
                                 }
@@ -573,7 +679,7 @@ impl ProjFsSession {
                             }
                         }
                         Err(error) => {
-                            return Err(super::MountSourceError::Engine(error.to_string()));
+                            return Err(MountSourceError::Engine(error.to_string()));
                         }
                     }
                 }
@@ -590,20 +696,184 @@ impl ProjFsSession {
             },
         )
     }
+
+    /// Makes a source-side change at one mount-relative path (leading `/`
+    /// optional) visible now: the provider forgets memoized source facts,
+    /// `ProjFS` forgets cached absences, and an unmodified projected
+    /// placeholder at `path` is dropped so its next access re-reads the
+    /// source. Locally modified state at `path` is authored and stays.
+    pub(super) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
+        let (runtime, context) = self.live()?;
+        let text = std::str::from_utf8(path)
+            .map_err(|_| NativeMountError::Driver("invalidation path is not UTF-8".to_owned()))?;
+        let relative = text
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .collect::<PathBuf>();
+        lock_recover(runtime.projection.as_ref()).invalidate();
+        forget_negative_paths(runtime, context)?;
+        if relative.as_os_str().is_empty() {
+            return Ok(());
+        }
+        let relative = HSTRING::from(relative.as_os_str());
+        // SAFETY: the relative UTF-16 name remains live for this synchronous
+        // call and the context belongs to this mounted runtime.
+        match unsafe { PrjDeleteFile(context, &relative, None, None) } {
+            Err(error)
+                if ![
+                    HR_FILE_NOT_FOUND,
+                    HR_PATH_NOT_FOUND,
+                    HR_VIRTUALIZATION_INVALID_OPERATION,
+                ]
+                .contains(&error.code()) =>
+            {
+                Err(driver_error(&error))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Forgets `ProjFS`'s cached absences after the source view advanced,
+    /// so paths the new view adds become visible.
+    pub(super) fn source_view_changed(&self) -> Result<(), NativeMountError> {
+        let (runtime, context) = self.live()?;
+        forget_negative_paths(runtime, context)
+    }
+
+    fn live(&self) -> Result<(&Runtime, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT), NativeMountError> {
+        self.runtime
+            .as_deref()
+            .zip(self.context)
+            .ok_or_else(|| NativeMountError::Driver("ProjFS session is stopped".to_owned()))
+    }
+}
+
+/// Clears `ProjFS`'s negative path cache and records that no absence is
+/// cached, so the next placeholder callback re-establishes the view.
+fn forget_negative_paths(
+    runtime: &Runtime,
+    context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+) -> Result<(), NativeMountError> {
+    let Some(negative_paths) = runtime.negative_paths.as_ref() else {
+        return Ok(());
+    };
+    let mut view = lock_recover(negative_paths);
+    // SAFETY: the context belongs to this live mounted runtime.
+    unsafe { PrjClearNegativePathCache(context, None) }.map_err(|error| driver_error(&error))?;
+    *view = None;
+    Ok(())
+}
+
+/// How one placeholder lookup may report an absence.
+enum AbsenceReport {
+    /// `ProjFS` caches no absences for this source.
+    Uncached,
+    /// Cacheable only if the source is still in this view after the lookup.
+    CachedIn(Option<SourceEpochs>),
+}
+
+impl AbsenceReport {
+    /// `ProjFS` caches `FILE_NOT_FOUND` as a negative path. An absence seen
+    /// while the view was moving belongs to no current view, so it is
+    /// reported as the equally absent but uncached `PATH_NOT_FOUND`.
+    fn report(&self, epochs_after: Option<SourceEpochs>) -> HRESULT {
+        match self {
+            Self::CachedIn(epochs) if epochs.is_none() || *epochs != epochs_after => {
+                HR_PATH_NOT_FOUND
+            }
+            Self::Uncached | Self::CachedIn(_) => HR_FILE_NOT_FOUND,
+        }
+    }
+}
+
+/// Admits the current source view for new cached absences, first clearing
+/// every absence `ProjFS` cached under an earlier view.
+fn admit_negative_paths(
+    runtime: &Runtime,
+    context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+) -> Result<AbsenceReport, HRESULT> {
+    let Some(negative_paths) = runtime.negative_paths.as_ref() else {
+        return Ok(AbsenceReport::Uncached);
+    };
+    let current = source_epochs(runtime.source.as_ref());
+    let mut cached = lock_recover(negative_paths);
+    if *cached != current || current.is_none() {
+        // SAFETY: the context belongs to this live mounted runtime.
+        unsafe { PrjClearNegativePathCache(context, None) }.map_err(|error| error.code())?;
+        *cached = current;
+    }
+    Ok(AbsenceReport::CachedIn(current))
+}
+
+/// Invalidates the provider's memo when a source mutation ends, however it
+/// ends.
+struct InvalidateOnDrop<'a>(&'a Mutex<ProjectionCache>);
+
+impl Drop for InvalidateOnDrop<'_> {
+    fn drop(&mut self) {
+        lock_recover(self.0).invalidate();
+    }
+}
+
+/// Reports one typed source failure as its distinct Win32 status. Only the
+/// failure class crosses the `ProjFS` boundary; engine detail stays inside.
+fn source_hresult(error: &MountSourceError) -> HRESULT {
+    match error {
+        MountSourceError::NotFound => HR_FILE_NOT_FOUND,
+        MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
+        MountSourceError::Invalid(_) => HR_INVALID_DATA,
+        MountSourceError::Unsupported(_) => HR_NOT_SUPPORTED,
+        MountSourceError::Engine(_) => HR_IO_DEVICE,
+        MountSourceError::Stale => HR_FILE_INVALID,
+    }
+}
+
+/// Builds the placeholder `ProjFS` persists for one source lookup. A pinned
+/// placeholder records exactly which content its hydration must return.
+fn placeholder_info(
+    lookup: &MountLookup,
+    pin: Option<MountContentPin>,
+) -> Option<PRJ_PLACEHOLDER_INFO> {
+    let mut version = PRJ_PLACEHOLDER_VERSION_INFO::default();
+    if let Some(pin) = pin {
+        *version.ProviderID.first_chunk_mut()? = *CONTENT_PIN_PROVIDER;
+        *version.ContentID.first_chunk_mut()? = pin.0;
+    }
+    Some(PRJ_PLACEHOLDER_INFO {
+        FileBasicInfo: basic(lookup.node, Some(lookup.metadata))?,
+        VersionInfo: version,
+        ..PRJ_PLACEHOLDER_INFO::default()
+    })
+}
+
+/// Recovers the content pin a placeholder was written with.
+fn placeholder_pin(data: &PRJ_CALLBACK_DATA) -> Option<MountContentPin> {
+    // SAFETY: ProjFS supplies either null or the placeholder's version
+    // information for the duration of this callback.
+    let version = unsafe { data.VersionInfo.as_ref() }?;
+    let (tag, rest) = version.ProviderID.split_first_chunk()?;
+    if tag != CONTENT_PIN_PROVIDER || rest.iter().any(|byte| *byte != 0) {
+        return None;
+    }
+    version
+        .ContentID
+        .first_chunk()
+        .copied()
+        .map(MountContentPin)
 }
 
 fn normalize_cache_path(
     context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
     source: &dyn MountFilesystem,
     path: &MountPath,
-) -> Result<(), super::MountSourceError> {
+) -> Result<(), MountSourceError> {
     let relative = host_relative_path(path)?;
     let relative = HSTRING::from(relative.as_os_str());
     let update_flags = PRJ_UPDATE_ALLOW_DIRTY_METADATA
         | PRJ_UPDATE_ALLOW_DIRTY_DATA
         | PRJ_UPDATE_ALLOW_TOMBSTONE
         | PRJ_UPDATE_ALLOW_READ_ONLY;
-    let Some(node) = source.lookup(path)? else {
+    let Some((node, pin)) = source.lookup_pinned(path)? else {
         // SAFETY: the relative UTF-16 name remains live for this synchronous
         // call and the context belongs to this mounted runtime.
         let result = unsafe {
@@ -621,9 +891,7 @@ fn normalize_cache_path(
             {
                 Ok(())
             }
-            Err(error) => Err(super::MountSourceError::Engine(
-                driver_error(&error).to_string(),
-            )),
+            Err(error) => Err(MountSourceError::Engine(driver_error(&error).to_string())),
         };
     };
     if matches!(
@@ -635,13 +903,9 @@ fn normalize_cache_path(
         // already captured; retaining the cache entry is harmless.
         return Ok(());
     }
-    let info = basic(node.node, Some(node.metadata)).ok_or_else(|| {
-        super::MountSourceError::Unsupported("node cannot be represented by ProjFS".to_owned())
+    let placeholder = placeholder_info(&node, pin).ok_or_else(|| {
+        MountSourceError::Unsupported("node cannot be represented by ProjFS".to_owned())
     })?;
-    let placeholder = PRJ_PLACEHOLDER_INFO {
-        FileBasicInfo: info,
-        ..PRJ_PLACEHOLDER_INFO::default()
-    };
     // SAFETY: every pointer refers to stack/owned data that remains live for
     // this synchronous call and the context belongs to this mounted runtime.
     let result = unsafe {
@@ -659,9 +923,7 @@ fn normalize_cache_path(
         Err(error) if error.code() == HR_FILE_NOT_FOUND || error.code() == HR_PATH_NOT_FOUND => {
             Ok(())
         }
-        Err(error) => Err(super::MountSourceError::Engine(
-            driver_error(&error).to_string(),
-        )),
+        Err(error) => Err(MountSourceError::Engine(driver_error(&error).to_string())),
     }
 }
 
@@ -817,11 +1079,17 @@ fn remove_authenticated_destination(
         }
         None => return Ok(()),
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+    // After PrjStopVirtualizing, ProjFS rejects the first delete of each
+    // emptied placeholder directory as temporarily unavailable and admits
+    // the next, so one removal pass clears at most one such directory.
+    // Retry for as long as passes make progress; give up only after the
+    // filter stops admitting deletes altogether.
+    let patience = std::time::Duration::from_millis(250);
+    let mut deadline = std::time::Instant::now() + patience;
+    let mut remaining = usize::MAX;
     loop {
-        // ProjFS may briefly reject removal after PrjStopVirtualizing. Every
-        // attempt must reauthenticate the directory, because the path can be
-        // replaced while the filter is draining.
+        // Every attempt must reauthenticate the directory, because the path
+        // can be replaced while the filter is draining.
         let (current_tag, current_identity) = reparse_tag(destination)?;
         if current_tag != Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS)
             || current_identity != expected_identity
@@ -833,10 +1101,18 @@ fn remove_authenticated_destination(
         }
         match std::fs::remove_dir_all(destination) {
             Ok(()) => return Ok(()),
-            Err(error)
-                if matches!(error.raw_os_error(), Some(145 | 369))
-                    && std::time::Instant::now() < deadline =>
-            {
+            Err(error) if matches!(error.raw_os_error(), Some(145 | 369)) => {
+                let now = std::time::Instant::now();
+                let left = descendant_count(destination);
+                if left < remaining {
+                    remaining = left;
+                    deadline = now + patience;
+                } else if now >= deadline {
+                    return Err(NativeMountError::Driver(format!(
+                        "authenticated ProjFS root removal failed for {}: {error}",
+                        destination.display()
+                    )));
+                }
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
             Err(error) => {
@@ -847,6 +1123,22 @@ fn remove_authenticated_destination(
             }
         }
     }
+}
+
+/// Counts every entry below `directory` without following links; an
+/// unreadable subtree counts as unbounded, so it never looks like progress.
+fn descendant_count(directory: &std::path::Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return usize::MAX;
+    };
+    entries.fold(0_usize, |count, entry| {
+        let nested = match entry.and_then(|entry| Ok((entry.file_type()?, entry.path()))) {
+            Ok((kind, path)) if kind.is_dir() => descendant_count(&path),
+            Ok(_) => 0,
+            Err(_) => usize::MAX,
+        };
+        count.saturating_add(1).saturating_add(nested)
+    })
 }
 
 #[allow(unsafe_code)]
@@ -990,8 +1282,7 @@ struct HostWindowsMetadata {
 #[derive(Clone, Copy)]
 struct ReadOnlyBinding {
     host: HostWindowsMetadata,
-    view_epoch: u64,
-    binding_epoch: u64,
+    epochs: SourceEpochs,
 }
 
 #[derive(Clone, Copy)]
@@ -1008,33 +1299,32 @@ enum MetadataClose {
 fn host_windows_metadata(
     root: &HostRoot,
     path: &MountPath,
-) -> Result<HostWindowsMetadata, super::MountSourceError> {
+) -> Result<HostWindowsMetadata, MountSourceError> {
     use cap_std::fs::MetadataExt as _;
 
     let host_path = host_relative_path(path)?;
     let metadata = root
         .symlink_metadata_held(&host_path)
-        .map_err(|error| super::MountSourceError::Engine(error.to_string()))?;
+        .map_err(|error| MountSourceError::Engine(error.to_string()))?;
     Ok(HostWindowsMetadata {
         identity: crate::NativeRootIdentity::from_metadata(&metadata)
-            .map_err(|error| super::MountSourceError::Engine(error.to_string()))?,
+            .map_err(|error| MountSourceError::Engine(error.to_string()))?,
         links: cap_primitives::fs::_WindowsByHandle::number_of_links(&metadata),
         size: metadata.len(),
         attributes: metadata.file_attributes(),
         created: i64::try_from(metadata.creation_time()).map_err(|_| {
-            super::MountSourceError::Invalid("Windows creation time exceeds i64".to_owned())
+            MountSourceError::Invalid("Windows creation time exceeds i64".to_owned())
         })?,
-        modified: i64::try_from(metadata.last_write_time()).map_err(|_| {
-            super::MountSourceError::Invalid("Windows write time exceeds i64".to_owned())
-        })?,
+        modified: i64::try_from(metadata.last_write_time())
+            .map_err(|_| MountSourceError::Invalid("Windows write time exceeds i64".to_owned()))?,
     })
 }
 
-fn host_relative_path(path: &MountPath) -> Result<PathBuf, super::MountSourceError> {
+fn host_relative_path(path: &MountPath) -> Result<PathBuf, MountSourceError> {
     let mut host_path = PathBuf::new();
     for component in path.components() {
         let name = decode_utf16_name(component).ok_or_else(|| {
-            super::MountSourceError::Invalid("ProjFS path component is malformed".to_owned())
+            MountSourceError::Invalid("ProjFS path component is malformed".to_owned())
         })?;
         host_path.push(std::ffi::OsString::from_wide(&name));
     }
@@ -1045,7 +1335,7 @@ fn capture_missing_host_ancestors(
     source: &dyn MountFilesystem,
     root: &std::path::Path,
     path: &MountPath,
-) -> Result<(), super::MountSourceError> {
+) -> Result<(), MountSourceError> {
     let mut parent = MountPath::root();
     for component in path
         .components()
@@ -1099,7 +1389,7 @@ fn probe_host_windows_metadata(
     root: &HostRoot,
     path: &MountPath,
     probes: &Mutex<HashMap<MountPath, usize>>,
-) -> Result<HostWindowsMetadata, super::MountSourceError> {
+) -> Result<HostWindowsMetadata, MountSourceError> {
     let _guard = MetadataProbeGuard::enter(probes, path);
     host_windows_metadata(root, path)
 }
@@ -1124,14 +1414,14 @@ fn record_metadata_open(
     baselines: &Mutex<HashMap<u128, OpenMetadataState>>,
     file_id: u128,
     baseline: HostWindowsMetadata,
-) -> Result<(), super::MountSourceError> {
+) -> Result<(), MountSourceError> {
     let mut baselines = lock_recover(baselines);
     if let Some(state) = baselines.get_mut(&file_id) {
         if state.open_handles == 0 {
             state.open_handles = 1;
         } else {
             state.open_handles = state.open_handles.checked_add(1).ok_or_else(|| {
-                super::MountSourceError::Invalid("ProjFS open-handle count overflow".to_owned())
+                MountSourceError::Invalid("ProjFS open-handle count overflow".to_owned())
             })?;
         }
     } else {
@@ -1183,7 +1473,7 @@ fn capture_changed_windows_metadata(
     mut metadata: FileMetadata,
     baseline: HostWindowsMetadata,
     current: HostWindowsMetadata,
-) -> Result<(), super::MountSourceError> {
+) -> Result<(), MountSourceError> {
     let hydration_mask = FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 | FILE_ATTRIBUTE_ARCHIVE.0;
     let attributes_changed = if baseline.attributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 != 0 {
         baseline.attributes & !hydration_mask != current.attributes & !hydration_mask
@@ -1204,25 +1494,36 @@ fn capture_changed_windows_metadata(
         .and_then(|()| source.flush())
 }
 
-fn enum_id(pointer: *const GUID) -> Option<u128> {
-    // SAFETY: callback ABI supplies a GUID pointer for the callback duration.
-    let guid = unsafe { pointer.as_ref()? };
-    let mut bytes = [0_u8; 16];
-    bytes[0..4].copy_from_slice(&guid.data1.to_le_bytes());
-    bytes[4..6].copy_from_slice(&guid.data2.to_le_bytes());
-    bytes[6..8].copy_from_slice(&guid.data3.to_le_bytes());
-    bytes[8..16].copy_from_slice(&guid.data4);
-    Some(u128::from_le_bytes(bytes))
-}
-
-fn file_id(data: &PRJ_CALLBACK_DATA) -> u128 {
-    let guid = &data.FileId;
+/// Keys one GUID by its little-endian wire bytes.
+fn guid_key(guid: &GUID) -> u128 {
     let mut bytes = [0_u8; 16];
     bytes[0..4].copy_from_slice(&guid.data1.to_le_bytes());
     bytes[4..6].copy_from_slice(&guid.data2.to_le_bytes());
     bytes[6..8].copy_from_slice(&guid.data3.to_le_bytes());
     bytes[8..16].copy_from_slice(&guid.data4);
     u128::from_le_bytes(bytes)
+}
+
+/// Inverse of [`guid_key`].
+fn guid_from_key(key: u128) -> GUID {
+    let bytes = key.to_le_bytes();
+    GUID::from_values(
+        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        u16::from_le_bytes([bytes[4], bytes[5]]),
+        u16::from_le_bytes([bytes[6], bytes[7]]),
+        [
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        ],
+    )
+}
+
+fn enum_id(pointer: *const GUID) -> Option<u128> {
+    // SAFETY: callback ABI supplies a GUID pointer for the callback duration.
+    unsafe { pointer.as_ref() }.map(guid_key)
+}
+
+fn file_id(data: &PRJ_CALLBACK_DATA) -> u128 {
+    guid_key(&data.FileId)
 }
 
 fn basic(node: MountNode, metadata: Option<FileMetadata>) -> Option<PRJ_FILE_BASIC_INFO> {
@@ -1268,7 +1569,7 @@ fn basic(node: MountNode, metadata: Option<FileMetadata>) -> Option<PRJ_FILE_BAS
     })
 }
 
-fn unix_nanoseconds(windows_ticks: i64) -> Result<i64, super::MountSourceError> {
+fn unix_nanoseconds(windows_ticks: i64) -> Result<i64, MountSourceError> {
     const WINDOWS_EPOCH_OFFSET_SECONDS: i128 = 11_644_473_600;
     const HUNDRED_NANOSECONDS_PER_SECOND: i128 = 10_000_000;
     i128::from(windows_ticks)
@@ -1276,13 +1577,13 @@ fn unix_nanoseconds(windows_ticks: i64) -> Result<i64, super::MountSourceError> 
             WINDOWS_EPOCH_OFFSET_SECONDS
                 .checked_mul(HUNDRED_NANOSECONDS_PER_SECOND)
                 .ok_or_else(|| {
-                    super::MountSourceError::Invalid("Windows epoch conversion overflow".to_owned())
+                    MountSourceError::Invalid("Windows epoch conversion overflow".to_owned())
                 })?,
         )
         .and_then(|ticks| ticks.checked_mul(100))
         .and_then(|nanoseconds| i64::try_from(nanoseconds).ok())
         .ok_or_else(|| {
-            super::MountSourceError::Invalid("Windows timestamp exceeds i64 nanoseconds".to_owned())
+            MountSourceError::Invalid("Windows timestamp exceeds i64 nanoseconds".to_owned())
         })
 }
 
@@ -1325,13 +1626,18 @@ unsafe extern "system" fn start_directory(
     let Some(id) = enum_id(enumeration_id) else {
         return HR_INVALID_DATA;
     };
+    // A listing of a newer view must not coexist with absences cached under
+    // an older one, or a listed name could fail to open.
+    if let Err(error) = admit_negative_paths(runtime, data.NamespaceVirtualizationContext) {
+        return error;
+    }
     lock_recover(&runtime.enumerations).insert(
         id,
         Arc::new(Mutex::new(EnumState {
             path,
             ended: false,
-            entries: VecDeque::new(),
-            snapshot_ready: false,
+            snapshot: None,
+            next: 0,
             search_expression: None,
             search_expression_captured: false,
         })),
@@ -1339,23 +1645,50 @@ unsafe extern "system" fn start_directory(
     HR_OK
 }
 
+/// Returns one directory's projected entries, sharing a snapshot across
+/// enumerations for as long as the source view it was read in is current.
+fn directory_entries(
+    runtime: &Runtime,
+    path: &MountPath,
+) -> Result<Arc<[ProjectedEntry]>, HRESULT> {
+    let source = runtime.source.as_ref();
+    let epochs = source_epochs(source);
+    let generation = {
+        let projection = lock_recover(runtime.projection.as_ref());
+        if let Some(entries) = epochs.and_then(|epochs| projection.directory(path, epochs)) {
+            return Ok(entries);
+        }
+        projection.generation
+    };
+    let entries = Arc::<[ProjectedEntry]>::from(directory_snapshot(source, path)?);
+    if let Some(epochs) = epochs {
+        lock_recover(runtime.projection.as_ref()).remember_directory(
+            generation,
+            epochs,
+            path.clone(),
+            Arc::clone(&entries),
+        );
+    }
+    Ok(entries)
+}
+
 fn directory_snapshot(
     source: &dyn MountFilesystem,
     path: &MountPath,
-) -> Result<VecDeque<ProjectedEntry>, HRESULT> {
+) -> Result<Vec<ProjectedEntry>, HRESULT> {
     // Pin only while building the snapshot. Holding this lease for the native
     // directory handle's lifetime would block unrelated authored writes.
     let epoch = source.view_epoch();
     let lease = source
         .acquire_view_lease(epoch)
-        .map_err(|_| HR_UNEXPECTED)?;
+        .map_err(|error| source_hresult(&error))?;
     let mut cursor = None;
     let mut seen_cursors = HashSet::new();
     let mut entries = Vec::new();
     loop {
         let page = source
             .read_directory(path, cursor.as_deref(), DIRECTORY_PAGE_SIZE)
-            .map_err(|_| HR_UNEXPECTED)?;
+            .map_err(|error| source_hresult(&error))?;
         entries
             .try_reserve(page.entries.len())
             .map_err(|_| HR_OUT_OF_MEMORY)?;
@@ -1369,7 +1702,7 @@ fn directory_snapshot(
             let symlink_target = if entry.node.kind == MountNodeKind::SymbolicLink {
                 let target = source
                     .read_link(&path.child(entry.name.clone()))
-                    .map_err(|_| HR_UNEXPECTED)?;
+                    .map_err(|error| source_hresult(&error))?;
                 symlink_extended(&target).ok_or(HR_INVALID_DATA)?;
                 Some(target)
             } else {
@@ -1413,7 +1746,7 @@ fn directory_snapshot(
         // A case-fold collision cannot be projected as two distinct names.
         return Err(HR_INVALID_DATA);
     }
-    Ok(entries.into())
+    Ok(entries)
 }
 
 unsafe extern "system" fn end_directory(
@@ -1468,20 +1801,20 @@ unsafe extern "system" fn get_directory(
         state.search_expression = expression;
         state.search_expression_captured = true;
     }
-    if !state.snapshot_ready || restart {
-        state.snapshot_ready = false;
-        state.entries.clear();
-        state.entries = match directory_snapshot(runtime.source.as_ref(), &state.path) {
-            Ok(entries) => entries,
-            Err(error) => return error,
-        };
-        state.snapshot_ready = true;
-    }
+    let entries = match state.snapshot.as_ref() {
+        Some(entries) if !restart => Arc::clone(entries),
+        _ => {
+            let entries = match directory_entries(runtime, &state.path) {
+                Ok(entries) => entries,
+                Err(error) => return error,
+            };
+            state.snapshot = Some(Arc::clone(&entries));
+            state.next = 0;
+            entries
+        }
+    };
     let mut emitted = false;
-    loop {
-        let Some(entry) = state.entries.front() else {
-            return HR_OK;
-        };
+    while let Some(entry) = entries.get(state.next) {
         let Some((&0, name)) = entry.name.split_last() else {
             return HR_INVALID_DATA;
         };
@@ -1491,7 +1824,7 @@ unsafe extern "system" fn get_directory(
             unsafe { PrjFileNameMatch(&entry_name, expression) }
         });
         if !matches {
-            state.entries.pop_front();
+            state.next += 1;
             continue;
         }
         let symlink = entry.symlink_target.as_deref().and_then(symlink_extended);
@@ -1511,7 +1844,7 @@ unsafe extern "system" fn get_directory(
         };
         match result {
             Ok(()) => {
-                state.entries.pop_front();
+                state.next += 1;
                 emitted = true;
             }
             Err(error) if error.code() == HR_INSUFFICIENT_BUFFER => {
@@ -1524,6 +1857,7 @@ unsafe extern "system" fn get_directory(
             Err(error) => return error.code(),
         }
     }
+    HR_OK
 }
 
 unsafe extern "system" fn placeholder(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
@@ -1533,23 +1867,24 @@ unsafe extern "system" fn placeholder(callback_data: *const PRJ_CALLBACK_DATA) -
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
-    let node = match runtime.source.lookup(&path) {
-        Ok(Some(node)) => node,
-        Ok(None) | Err(super::MountSourceError::NotFound) => return HR_FILE_NOT_FOUND,
-        Err(_) => return HR_UNEXPECTED,
+    let absence = match admit_negative_paths(runtime, data.NamespaceVirtualizationContext) {
+        Ok(absence) => absence,
+        Err(error) => return error,
     };
-    let Some(info) = basic(node.node, Some(node.metadata)) else {
+    let (node, pin) = match runtime.source.lookup_pinned(&path) {
+        Ok(Some(found)) => found,
+        Ok(None) | Err(MountSourceError::NotFound) => {
+            return absence.report(source_epochs(runtime.source.as_ref()));
+        }
+        Err(error) => return source_hresult(&error),
+    };
+    let Some(placeholder) = placeholder_info(&node, pin) else {
         return HR_NOT_SUPPORTED;
-    };
-    let placeholder = PRJ_PLACEHOLDER_INFO {
-        FileBasicInfo: info,
-        ..PRJ_PLACEHOLDER_INFO::default()
     };
     let symlink = if node.node.kind == MountNodeKind::SymbolicLink {
         let target = match runtime.source.read_link(&path) {
             Ok(target) => target,
-            Err(super::MountSourceError::NotFound) => return HR_FILE_NOT_FOUND,
-            Err(_) => return HR_UNEXPECTED,
+            Err(error) => return source_hresult(&error),
         };
         let Some(target) = symlink_extended(&target) else {
             return HR_INVALID_DATA;
@@ -1591,37 +1926,53 @@ unsafe extern "system" fn file_data(
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
-    let source_path = path;
     let renamed_file = lock_recover(&runtime.renamed_hydration_files)
         .get(&file_id(data))
-        .cloned();
+        .map(|renamed| Arc::clone(&renamed.file));
+    let pin = placeholder_pin(data);
     // Immutable hydration reads take the source's own read gate. Keeping them
     // off the mutation callback queue lets concurrent compiler reads proceed.
-    let bytes = match renamed_file.map_or_else(
-        || runtime.source.read_range(&source_path, byte_offset, length),
-        |renamed| renamed.file.read_range(byte_offset, length),
-    ) {
-        Ok(bytes) if bytes.len() == length as usize => bytes,
-        Ok(_) => return HR_INVALID_DATA,
-        Err(super::MountSourceError::NotFound) => return HR_FILE_NOT_FOUND,
-        Err(_) => return HR_UNEXPECTED,
+    let read = |offset, length| match (&renamed_file, pin) {
+        (Some(file), _) => file.read_range(offset, length),
+        (None, Some(pin)) => runtime.source.read_pinned(&path, pin, offset, length),
+        (None, None) => runtime.source.read_range(&path, offset, length),
     };
-    let buffer = PrjAllocateAlignedBuffer(data.NamespaceVirtualizationContext, bytes.len());
+    let chunk = length.min(HYDRATION_CHUNK_BYTES);
+    let buffer = PrjAllocateAlignedBuffer(data.NamespaceVirtualizationContext, chunk as usize);
     if buffer.is_null() {
         return HR_OUT_OF_MEMORY;
     }
-    // SAFETY: ProjFS allocated `bytes.len()` aligned bytes and both buffers are
-    // live and non-overlapping for the synchronous write.
-    std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast::<u8>(), bytes.len());
-    let result = PrjWriteFileData(
-        data.NamespaceVirtualizationContext,
-        &raw const data.DataStreamId,
-        buffer,
-        byte_offset,
-        length,
-    );
+    let mut written = 0_u32;
+    let result = loop {
+        let remaining = length - written;
+        if remaining == 0 {
+            break HR_OK;
+        }
+        let count = remaining.min(chunk);
+        let Some(offset) = byte_offset.checked_add(u64::from(written)) else {
+            break HR_INVALID_DATA;
+        };
+        let bytes = match read(offset, count) {
+            Ok(bytes) if bytes.len() == count as usize => bytes,
+            Ok(_) => break HR_INVALID_DATA,
+            Err(error) => break source_hresult(&error),
+        };
+        // SAFETY: ProjFS allocated `chunk >= count` aligned bytes and both
+        // buffers are live and non-overlapping for the synchronous write.
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast::<u8>(), bytes.len());
+        if let Err(error) = PrjWriteFileData(
+            data.NamespaceVirtualizationContext,
+            &raw const data.DataStreamId,
+            buffer,
+            offset,
+            count,
+        ) {
+            break error.code();
+        }
+        written += count;
+    };
     PrjFreeAlignedBuffer(buffer);
-    result.map_or_else(|error| error.code(), |()| HR_OK)
+    result
 }
 
 unsafe extern "system" fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
@@ -1633,8 +1984,8 @@ unsafe extern "system" fn query_name(callback_data: *const PRJ_CALLBACK_DATA) ->
     };
     match runtime.source.lookup(&path) {
         Ok(Some(_)) => HR_OK,
-        Ok(None) | Err(super::MountSourceError::NotFound) => HR_FILE_NOT_FOUND,
-        Err(_) => HR_UNEXPECTED,
+        Ok(None) => HR_FILE_NOT_FOUND,
+        Err(error) => source_hresult(&error),
     }
 }
 
@@ -1643,7 +1994,7 @@ fn record_post_operation_failure(
     notification: PRJ_NOTIFICATION,
     path: &MountPath,
     retry_path: Option<&MountPath>,
-    result: &Result<(), super::MountSourceError>,
+    result: &Result<(), MountSourceError>,
 ) {
     if !matches!(
         notification,
@@ -1703,11 +2054,6 @@ unsafe extern "system" fn notification(
         return HR_OK;
     }
     let file_id = file_id(data);
-    if notification != PRJ_NOTIFICATION_FILE_OPENED
-        && notification != PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
-    {
-        lock_recover(runtime.read_only_bindings.as_ref()).invalidate();
-    }
     let source_is_external = unsafe { empty_destination(data.FilePathName) };
     let destination_is_external = unsafe { empty_destination(destination_filename) };
     if notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
@@ -1728,8 +2074,7 @@ unsafe extern "system" fn notification(
         // provider can prove that boundary instead of admitting a partial tree.
         return HR_NOT_SAME_DEVICE;
     }
-    if notification == PRJ_NOTIFICATION_PRE_DELETE
-        || notification == PRJ_NOTIFICATION_PRE_RENAME
+    if notification == PRJ_NOTIFICATION_PRE_RENAME
         || notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
     {
         return HR_OK;
@@ -1773,7 +2118,7 @@ unsafe extern "system" fn notification(
     }
     let source = Arc::clone(&runtime.source);
     let metadata_baselines = Arc::clone(&runtime.metadata_baselines);
-    let read_only_bindings = Arc::clone(&runtime.read_only_bindings);
+    let projection = Arc::clone(&runtime.projection);
     let metadata_probes = Arc::clone(&runtime.metadata_probes);
     let renamed_hydration_files = Arc::clone(&runtime.renamed_hydration_files);
     let renamed_paths = Arc::clone(&runtime.renamed_paths);
@@ -1843,7 +2188,10 @@ unsafe extern "system" fn notification(
                         .remove(path);
                     *lock_recover(operation_retry_path.as_ref()) = Some(path.clone());
                     match source.lookup(path)? {
-                        Some(_) => source.remove(path, None),
+                        Some(_) => {
+                            let _invalidate = InvalidateOnDrop(projection.as_ref());
+                            source.remove(path, None)
+                        }
                         None => Ok(()),
                     }
                 } else {
@@ -1888,17 +2236,17 @@ unsafe extern "system" fn notification(
                     || baseline.links != host.links
                     || baseline.size != host.size
                 {
-                    lock_recover(read_only_bindings.as_ref())
-                        .entries
+                    lock_recover(projection.as_ref())
+                        .bindings
                         .remove(&capture_path);
                     defer_host_capture(operation_failures.as_ref(), capture_path);
                     return Ok(());
                 }
                 let (cached_binding, cache_generation) = {
-                    let bindings = lock_recover(read_only_bindings.as_ref());
+                    let projection = lock_recover(projection.as_ref());
                     (
-                        bindings.entries.get(&capture_path).copied(),
-                        bindings.generation,
+                        projection.bindings.get(&capture_path).copied(),
+                        projection.generation,
                     )
                 };
                 if !metadata_changed_since_open(baseline, host)
@@ -1907,23 +2255,20 @@ unsafe extern "system" fn notification(
                     && cache_generation.is_some()
                     && binding.host == host
                     && host.links == Some(1)
-                    && let Ok(_view_lease) = source.acquire_view_lease(Some(binding.view_epoch))
-                    && source.binding_epoch() == Some(binding.binding_epoch)
-                    && lock_recover(read_only_bindings.as_ref()).generation == cache_generation
+                    && let Ok(_view_lease) = source.acquire_view_lease(Some(binding.epochs.view))
+                    && source.binding_epoch() == Some(binding.epochs.binding)
+                    && lock_recover(projection.as_ref()).generation == cache_generation
                 {
                     return Ok(());
                 }
             }
-            let stable_before = source.view_is_stable();
-            let epochs_before = (source.view_epoch(), source.binding_epoch());
-            let cache_generation = lock_recover(read_only_bindings.as_ref()).generation;
+            let epochs_before = source_epochs(source.as_ref());
+            let cache_generation = lock_recover(projection.as_ref()).generation;
             let lookup = source.lookup(&capture_path);
             match lookup {
                 Ok(Some(lookup)) => match baseline {
                     Some(baseline) if metadata_changed_since_open(baseline, host) => {
-                        lock_recover(read_only_bindings.as_ref())
-                            .entries
-                            .remove(&capture_path);
+                        let _invalidate = InvalidateOnDrop(projection.as_ref());
                         capture_changed_windows_metadata(
                             source.as_ref(),
                             &capture_path,
@@ -1933,40 +2278,24 @@ unsafe extern "system" fn notification(
                         )
                     }
                     Some(_) => {
-                        if let (Some(view_epoch), Some(binding_epoch), Some(generation)) =
-                            (epochs_before.0, epochs_before.1, cache_generation)
-                            && stable_before
-                            && source.view_is_stable()
-                            && source.view_epoch() == Some(view_epoch)
-                            && source.binding_epoch() == Some(binding_epoch)
+                        if let Some(epochs) = epochs_before
+                            && source_epochs(source.as_ref()) == Some(epochs)
                             && !has_pending_capture(operation_failures.as_ref(), &capture_path)
                             && host.links == Some(1)
                         {
-                            let mut bindings = lock_recover(read_only_bindings.as_ref());
-                            if bindings.generation != Some(generation) {
-                                return Ok(());
-                            }
-                            if bindings.entries.len() >= 16_384 {
-                                bindings.invalidate();
-                            }
-                            if bindings.generation.is_some() {
-                                bindings.entries.insert(
-                                    capture_path,
-                                    ReadOnlyBinding {
-                                        host,
-                                        view_epoch,
-                                        binding_epoch,
-                                    },
-                                );
-                            }
+                            lock_recover(projection.as_ref()).remember_binding(
+                                cache_generation,
+                                capture_path,
+                                ReadOnlyBinding { host, epochs },
+                            );
                         }
                         Ok(())
                     }
                     None => Ok(()),
                 },
                 Ok(None) => {
-                    lock_recover(read_only_bindings.as_ref())
-                        .entries
+                    lock_recover(projection.as_ref())
+                        .bindings
                         .remove(&capture_path);
                     defer_host_capture(operation_failures.as_ref(), capture_path);
                     Ok(())
@@ -1979,6 +2308,7 @@ unsafe extern "system" fn notification(
             } else {
                 destination.clone()
             };
+            let _invalidate = InvalidateOnDrop(projection.as_ref());
             let result = handle_rename_source(
                 source.as_ref(),
                 &path,
@@ -1998,13 +2328,8 @@ unsafe extern "system" fn notification(
                 lock_recover(renamed_paths.as_ref()).insert(file_id, renamed_path);
             }
             result
-        } else if notification == PRJ_NOTIFICATION_PRE_DELETE
-            || notification == PRJ_NOTIFICATION_PRE_RENAME
-            || notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
-        {
-            Ok(())
         } else {
-            Err(super::MountSourceError::Unsupported(
+            Err(MountSourceError::Unsupported(
                 "ProjFS emitted an unadmitted write notification".to_owned(),
             ))
         }
@@ -2033,13 +2358,8 @@ unsafe extern "system" fn notification(
     }
     match result {
         Some(Ok(())) => HR_OK,
-        Some(Err(super::MountSourceError::NotFound)) => HR_FILE_NOT_FOUND,
-        Some(Err(super::MountSourceError::AlreadyExists)) => HR_ALREADY_EXISTS,
-        Some(Err(super::MountSourceError::Invalid(_))) => HR_INVALID_DATA,
-        Some(Err(super::MountSourceError::Unsupported(_))) => HR_NOT_SUPPORTED,
-        Some(Err(super::MountSourceError::Engine(_) | super::MountSourceError::Stale)) | None => {
-            HR_UNEXPECTED
-        }
+        Some(Err(error)) => source_hresult(&error),
+        None => HR_UNEXPECTED,
     }
 }
 
@@ -2064,7 +2384,6 @@ fn set_post_create_notification_mask(
                 | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED
                 | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED
                 | PRJ_NOTIFY_FILE_OPENED
-                | PRJ_NOTIFY_PRE_DELETE
                 | topology_mask
         };
     }
@@ -2100,11 +2419,10 @@ fn handle_rename_source(
     file_id: u128,
     renamed_hydration_files: &Mutex<HashMap<u128, RenamedHydrationFile>>,
     post_operation_failures: &Mutex<PostOperationFailures>,
-) -> Result<(), super::MountSourceError> {
+) -> Result<(), MountSourceError> {
     if source_is_external {
-        let destination = destination.ok_or_else(|| {
-            super::MountSourceError::Invalid("rename destination is invalid".to_owned())
-        })?;
+        let destination = destination
+            .ok_or_else(|| MountSourceError::Invalid("rename destination is invalid".to_owned()))?;
         lock_recover(renamed_hydration_files)
             .retain(|_, renamed| renamed.destination != destination);
         if is_directory {
@@ -2123,9 +2441,8 @@ fn handle_rename_source(
         defer_host_capture(post_operation_failures, source.clone());
         return Ok(());
     }
-    let destination = destination.ok_or_else(|| {
-        super::MountSourceError::Invalid("rename destination is invalid".to_owned())
-    })?;
+    let destination = destination
+        .ok_or_else(|| MountSourceError::Invalid("rename destination is invalid".to_owned()))?;
     if source_fs.lookup(source)?.is_none() {
         // A full file created inside ProjFS can be renamed before its final
         // close notification has captured it into the SDK. The host rename
@@ -2194,16 +2511,21 @@ fn callbacks() -> PRJ_CALLBACKS {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::{
-        CallbackGate, PostOperationFailures, finish_cleanup, flush_callback_gate,
-        record_post_operation_failure, recover_cache_only_destination,
-        remove_authenticated_destination,
+        CONTENT_PIN_PROVIDER, CallbackGate, PostOperationFailures, ProjectedEntry, ProjectionCache,
+        ReadOnlyBinding, SourceEpochs, finish_cleanup, flush_callback_gate, placeholder_info,
+        placeholder_pin, record_post_operation_failure, recover_cache_only_destination,
+        remove_authenticated_destination, source_hresult,
     };
+    use crate::kernel::FileMetadata;
     use crate::model::{
         AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
         VolumeConfig,
     };
     use crate::native_mount::adapter::{CheckoutMountSource, SharedCheckout};
-    use crate::native_mount::{MountFilesystem, MountPath, MountSourceError};
+    use crate::native_mount::{
+        MountContentPin, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountPath,
+        MountSourceError,
+    };
     use crate::{
         CancellationToken, Fs, IdempotencyKey, LocalOptions, MountOptions, MountPublication,
         WorkBudget,
@@ -2212,20 +2534,16 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::{Arc, Barrier, Mutex};
     use windows::Win32::Storage::ProjectedFileSystem::{
-        PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED, PRJ_NOTIFICATION_PRE_DELETE,
-        PRJ_VIRTUALIZATION_INSTANCE_INFO, PrjGetVirtualizationInstanceInfo,
-        PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
+        PRJ_CALLBACK_DATA, PRJ_FILE_BASIC_INFO, PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
+        PRJ_NOTIFICATION_PRE_DELETE, PRJ_VIRTUALIZATION_INSTANCE_INFO,
+        PrjGetVirtualizationInstanceInfo, PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing,
+        PrjStopVirtualizing,
     };
     use windows::core::{GUID, HSTRING, PCWSTR};
 
     #[test]
     fn projfs_name_order_differs_from_sdk_cursor_order() {
-        let name = |value: &str| {
-            value
-                .encode_utf16()
-                .flat_map(u16::to_le_bytes)
-                .collect::<Vec<_>>()
-        };
+        let name = windows_name;
         assert_eq!(
             super::compare_projfs_name(&name("Alpha"), &name("alpha")),
             Some(0)
@@ -2247,14 +2565,21 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn stopped_projection_cannot_publish_a_late_open_writer()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use std::io::{Seek as _, Write as _};
-        use std::os::windows::fs::OpenOptionsExt as _;
-        use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+    type MemorySource = CheckoutMountSource<
+        crate::facade::MemoryAuthorityBackend,
+        crate::facade::MemoryObjectBackend,
+    >;
 
+    fn windows_name(name: &str) -> Vec<u8> {
+        name.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    fn windows_path(name: &str) -> MountPath {
+        MountPath::root().child(windows_name(name))
+    }
+
+    /// One writable Windows-profile checkout, not yet mounted.
+    async fn windows_checkout_source() -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
         let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
         config.profile = crate::model::FilesystemProfile::Windows;
         let fs = Fs::memory();
@@ -2276,31 +2601,59 @@ mod tests {
             )
             .await?
             .value;
-        let source = Arc::new(CheckoutMountSource::new(
+        Ok(Arc::new(CheckoutMountSource::new(
             Arc::new(SharedCheckout::new(checkout)),
             config,
-        )?);
-        let seed = MountPath::root().child(
-            "seed.txt"
-                .encode_utf16()
-                .flat_map(u16::to_le_bytes)
-                .collect(),
-        );
-        source.create_file(&seed, crate::kernel::FileMetadata::default())?;
-        source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
+        )?))
+    }
 
+    /// Mounts `source` writable at a fresh destination.
+    fn mount_source(
+        source: &Arc<MemorySource>,
+    ) -> Result<
+        (
+            tempfile::TempDir,
+            std::path::PathBuf,
+            crate::NativeMountSession,
+        ),
+        Box<dyn std::error::Error>,
+    > {
         let root = tempfile::tempdir()?;
         let destination = root.path().join("projection");
         std::fs::create_dir(&destination)?;
-        let mut session = crate::mount_native(
+        let session = crate::mount_native(
             crate::NativeMountRequest {
                 mount_id: crate::MountId::new(),
                 volume_id: source.volume_id()?,
                 destination: destination.clone(),
                 writable: true,
             },
-            Arc::clone(&source) as Arc<dyn MountFilesystem>,
+            Arc::clone(source) as Arc<dyn MountFilesystem>,
         )?;
+        Ok((root, destination, session))
+    }
+
+    fn sorted_names(directory: &std::path::Path) -> std::io::Result<Vec<String>> {
+        let mut names = std::fs::read_dir(directory)?
+            .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        names.sort();
+        Ok(names)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn stopped_projection_cannot_publish_a_late_open_writer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::{Seek as _, Write as _};
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let source = windows_checkout_source().await?;
+        let seed = windows_path("seed.txt");
+        source.create_file(&seed, FileMetadata::default())?;
+        source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
+        let (_root, destination, mut session) = mount_source(&source)?;
         let projected = destination.join("seed.txt");
         assert_eq!(std::fs::read(&projected)?, b"seed");
 
@@ -2332,6 +2685,285 @@ mod tests {
         assert_eq!(source.read_range(&seed, 0, 4)?, b"seed"[..]);
         session.stop()?;
         Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn cached_enumeration_follows_source_and_mount_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        source.create_file(&windows_path("a.txt"), FileMetadata::default())?;
+        let (_root, destination, mut session) = mount_source(&source)?;
+        assert_eq!(sorted_names(&destination)?, ["a.txt"]);
+        assert_eq!(sorted_names(&destination)?, ["a.txt"]);
+
+        // A source-side create advances the source view; the listing cached
+        // for the earlier view must not answer for the new one.
+        source.create_file(&windows_path("b.txt"), FileMetadata::default())?;
+        assert_eq!(sorted_names(&destination)?, ["a.txt", "b.txt"]);
+
+        // Creates and removals through the mount stay exact before and after
+        // the provider captures them into the source. ProjFS notifies the
+        // provider only of other processes' I/O.
+        let external = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "echo c> c.txt && del b.txt"])
+            .current_dir(&destination)
+            .output()?;
+        assert!(
+            external.status.success(),
+            "external edit failed: {external:?}"
+        );
+        assert_eq!(sorted_names(&destination)?, ["a.txt", "c.txt"]);
+        session.flush_callbacks()?;
+        assert_eq!(sorted_names(&destination)?, ["a.txt", "c.txt"]);
+        assert!(source.lookup(&windows_path("b.txt"))?.is_none());
+        assert!(source.lookup(&windows_path("c.txt"))?.is_some());
+        session.stop()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn cached_absence_clears_when_the_source_view_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        let (_root, destination, mut session) = mount_source(&source)?;
+        let absent = |name: &str| {
+            std::fs::metadata(destination.join(name))
+                .err()
+                .map(|error| error.kind())
+        };
+
+        assert_eq!(absent("listed.txt"), Some(std::io::ErrorKind::NotFound));
+        source.create_file(&windows_path("listed.txt"), FileMetadata::default())?;
+        source.write_range(
+            &windows_path("listed.txt"),
+            0,
+            Bytes::from_static(b"listed"),
+        )?;
+        // Listing the newer view clears absences cached under the older one,
+        // so a listed name also opens.
+        assert_eq!(sorted_names(&destination)?, ["listed.txt"]);
+        assert_eq!(std::fs::read(destination.join("listed.txt"))?, b"listed");
+
+        assert_eq!(
+            absent("invalidated.txt"),
+            Some(std::io::ErrorKind::NotFound)
+        );
+        source.create_file(&windows_path("invalidated.txt"), FileMetadata::default())?;
+        session.invalidate(b"/invalidated.txt")?;
+        assert_eq!(
+            std::fs::metadata(destination.join("invalidated.txt"))?.len(),
+            0
+        );
+        session.stop()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn advanced_view_reveals_a_path_absent_before() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
+        let workspace = engine.create_workspace("advance-projfs").await?;
+        let path = root.path().join("mount");
+        std::fs::create_dir(&path)?;
+        let mount = workspace
+            .mount(
+                &path,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        let added = path.join("added.txt");
+        assert_eq!(
+            std::fs::metadata(&added).err().map(|error| error.kind()),
+            Some(std::io::ErrorKind::NotFound)
+        );
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        transaction
+            .create_file(
+                "/added.txt",
+                Bytes::from_static(b"added"),
+                FileMetadata::default(),
+            )
+            .await?;
+        transaction.commit().await?;
+        mount.advance_to_head().await?;
+        assert_eq!(std::fs::read(&added)?, b"added");
+        mount.unmount().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn placeholder_hydrates_only_the_source_content_it_promised()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::demand::native::NativeDemandSource;
+        use std::io::Write as _;
+
+        let root = tempfile::tempdir()?;
+        let source_root = root.path().join("source");
+        std::fs::create_dir(&source_root)?;
+        std::fs::write(source_root.join("changed.txt"), b"before")?;
+        std::fs::write(source_root.join("stable.txt"), b"stable")?;
+        let demand = NativeDemandSource::open(
+            &source_root,
+            crate::model::FilesystemProfile::Windows,
+            crate::model::VolumeLimits::default(),
+        )
+        .await?;
+        let lazy = crate::LazyWorkspace::attach_with_config(
+            &Fs::memory(),
+            "pinned-projfs",
+            Arc::new(demand),
+            crate::MemoryLazyWorkspaceStore::default(),
+            VolumeConfig::native(Lifecycle::Ephemeral),
+        )
+        .await?;
+        let destination = root.path().join("mount");
+        std::fs::create_dir(&destination)?;
+        let mount = lazy
+            .mount(
+                &destination,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        // Stat writes both placeholders without hydrating either.
+        assert_eq!(std::fs::metadata(destination.join("changed.txt"))?.len(), 6);
+        assert_eq!(std::fs::metadata(destination.join("stable.txt"))?.len(), 6);
+
+        // Same length, new version: only the pin can tell the bytes apart.
+        let mut changed = std::fs::OpenOptions::new()
+            .write(true)
+            .open(source_root.join("changed.txt"))?;
+        changed.write_all(b"after!")?;
+        changed.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1 << 30))?;
+        drop(changed);
+
+        let stale = std::fs::read(destination.join("changed.txt"));
+        assert!(
+            stale.is_err(),
+            "a placeholder hydrated content it never promised: {stale:?}"
+        );
+        assert_eq!(std::fs::read(destination.join("stable.txt"))?, b"stable");
+        mount.unmount().await?;
+        Ok(())
+    }
+
+    #[test]
+    fn projection_cache_retains_only_results_of_the_current_view_and_generation() {
+        let path = windows_path("directory");
+        let entries = Arc::<[ProjectedEntry]>::from(vec![ProjectedEntry {
+            name: vec![u16::from(b'a'), 0],
+            info: PRJ_FILE_BASIC_INFO::default(),
+            symlink_target: None,
+        }]);
+        let first = SourceEpochs {
+            view: 1,
+            binding: 1,
+        };
+        let next = SourceEpochs {
+            view: 2,
+            binding: 1,
+        };
+        let mut cache = ProjectionCache::default();
+
+        let generation = cache.generation;
+        cache.remember_directory(generation, first, path.clone(), Arc::clone(&entries));
+        assert!(cache.directory(&path, first).is_some());
+        assert!(cache.directory(&path, next).is_none());
+
+        // A snapshot read before a provider mutation finished is never kept.
+        let stale_generation = cache.generation;
+        cache.invalidate();
+        assert!(cache.directory(&path, first).is_none());
+        cache.remember_directory(stale_generation, first, path.clone(), Arc::clone(&entries));
+        assert!(cache.directory(&path, first).is_none());
+        let binding = ReadOnlyBinding {
+            host: super::HostWindowsMetadata {
+                identity: crate::NativeRootIdentity::from_bytes([1; 16]),
+                links: Some(1),
+                size: 0,
+                attributes: 0,
+                created: 0,
+                modified: 0,
+            },
+            epochs: first,
+        };
+        cache.remember_binding(stale_generation, path.clone(), binding);
+        assert!(cache.bindings.is_empty());
+
+        // Remembering in a newer view drops every snapshot of the older one.
+        let generation = cache.generation;
+        cache.remember_directory(generation, first, path.clone(), Arc::clone(&entries));
+        cache.remember_directory(
+            generation,
+            next,
+            windows_path("other"),
+            Arc::clone(&entries),
+        );
+        assert!(cache.directory(&path, first).is_none());
+        assert!(cache.directory(&windows_path("other"), next).is_some());
+        assert_eq!(cache.directory_entries, 1);
+
+        // An exhausted generation disables caching for good.
+        cache.generation = Some(u64::MAX);
+        cache.invalidate();
+        cache.remember_directory(cache.generation, next, path.clone(), entries);
+        assert!(cache.directory(&path, next).is_none());
+    }
+
+    #[test]
+    fn placeholder_version_carries_exactly_the_issued_pin() {
+        let lookup = MountLookup {
+            node: MountNode {
+                file_id: crate::FileId::new(),
+                kind: MountNodeKind::Regular,
+                logical_bytes: 6,
+                link_count: 1,
+                device: None,
+            },
+            metadata: FileMetadata::default(),
+        };
+        let pin = MountContentPin([7; 32]);
+        let mut callback = PRJ_CALLBACK_DATA::default();
+        assert_eq!(placeholder_pin(&callback), None);
+
+        let mut pinned = placeholder_info(&lookup, Some(pin))
+            .expect("regular file placeholder")
+            .VersionInfo;
+        callback.VersionInfo = &raw mut pinned;
+        assert_eq!(placeholder_pin(&callback), Some(pin));
+
+        let mut unpinned = placeholder_info(&lookup, None)
+            .expect("regular file placeholder")
+            .VersionInfo;
+        callback.VersionInfo = &raw mut unpinned;
+        assert_eq!(placeholder_pin(&callback), None);
+
+        // Another provider's version information is never read as a pin.
+        let mut foreign = pinned;
+        foreign.ProviderID[CONTENT_PIN_PROVIDER.len()] = 1;
+        callback.VersionInfo = &raw mut foreign;
+        assert_eq!(placeholder_pin(&callback), None);
+    }
+
+    #[test]
+    fn source_failures_keep_distinct_statuses() {
+        let statuses = [
+            MountSourceError::NotFound,
+            MountSourceError::AlreadyExists,
+            MountSourceError::Invalid(String::new()),
+            MountSourceError::Unsupported(String::new()),
+            MountSourceError::Engine(String::new()),
+            MountSourceError::Stale,
+        ]
+        .iter()
+        .map(source_hresult)
+        .collect::<HashSet<_>>();
+        assert_eq!(statuses.len(), 6);
+        assert!(!statuses.contains(&super::HR_UNEXPECTED));
     }
 
     #[test]
@@ -2529,8 +3161,19 @@ mod tests {
         for _ in 0..3 {
             assert_eq!(std::fs::read(&original)?, b"original");
         }
-        std::fs::rename(&original, first.join("renamed.txt")).expect("rename projected file");
-        std::fs::write(&original, b"replacement").expect("replace projected path");
+        // ProjFS notifies the provider only of other processes' I/O.
+        let external = std::process::Command::new("cmd.exe")
+            .args([
+                "/D",
+                "/C",
+                "ren original.txt renamed.txt && echo replacement> original.txt",
+            ])
+            .current_dir(&first)
+            .output()?;
+        assert!(
+            external.status.success(),
+            "external edit failed: {external:?}"
+        );
         mount.sync().await?;
         mount.unmount().await?;
 
@@ -2548,7 +3191,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read(second.join("original.txt")).expect("replacement after remount"),
-            b"replacement"
+            b"replacement\r\n"
         );
         remount.unmount().await?;
         Ok(())
@@ -2997,14 +3640,9 @@ mod tests {
 
     #[test]
     fn rename_matches_windows_case_spelling() {
-        let component = |name: &str| {
-            name.encode_utf16()
-                .flat_map(u16::to_le_bytes)
-                .collect::<Vec<_>>()
-        };
-        let source = MountPath::root().child(component("Old"));
-        let callback_source = MountPath::root().child(component("old"));
-        let destination = MountPath::root().child(component("New"));
+        let source = windows_path("Old");
+        let callback_source = windows_path("old");
+        let destination = windows_path("New");
         let mut failures = PostOperationFailures::default();
         failures.queue_capture(source.clone(), "capture failed".to_owned());
         failures.rename_pending_captures(&callback_source, &destination);

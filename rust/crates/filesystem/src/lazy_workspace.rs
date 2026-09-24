@@ -1518,17 +1518,6 @@ where
             .map(|receipt| receipt.value.lookup)
     }
 
-    #[cfg(all(feature = "native-mount", not(unix)))]
-    pub(crate) async fn lookup_resolved(
-        &self,
-        path: &str,
-    ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        self.lookup_measured(path, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map(|receipt| (receipt.value.lookup, receipt.value.source))
-    }
-
     async fn lookup_measured(
         &self,
         path: &str,
@@ -1606,7 +1595,7 @@ where
             .map(|receipt| receipt.value.lookup)
     }
 
-    #[cfg(any(unix, test))]
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) async fn inspect_resolved(
         &self,
         path: &str,
@@ -1888,7 +1877,7 @@ where
             .map(|receipt| receipt.value)
     }
 
-    #[cfg(any(unix, test))]
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) async fn read_source_range(
         &self,
         path: &str,
