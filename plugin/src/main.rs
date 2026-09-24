@@ -9749,6 +9749,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         } else {
             match send_control_envelope_once(&data, &envelope).await {
                 Ok(response) => response,
+                // An unavailable service never received the envelope, so this
+                // is the only retransmission, and no deadline applies to it.
                 Err(ControlRequestError::Unavailable(_)) => {
                     ensure_service(&data).await.map_err(io::Error::other)?;
                     send_control_envelope(&data, &envelope)
