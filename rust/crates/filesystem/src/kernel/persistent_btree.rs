@@ -850,30 +850,17 @@ where
         &mut self,
         entries: &[F::Value],
     ) -> Result<Vec<Summary<F::Key>>, Error<M::Error>> {
+        let (mut chunks, examined) =
+            PageChunks::new(entries, self.limits, F::leaf_item_encoded_length)?;
+        self.charge_items(examined)?;
         let mut result = Vec::new();
-        let mut start = 0_usize;
-        while start < entries.len() {
-            let (end, examined) =
-                page_chunk_end(entries, start, self.limits, F::leaf_item_encoded_length)?;
+        while let Some((chunk, examined)) = chunks.next()? {
             self.charge_items(examined)?;
-            // `page_chunk_end` only returns `Ok((end, _))` with `start < end
-            // <= entries.len()` (it errors with `PageItemTooLarge` instead
-            // of returning `end == start`), so this slice is in bounds and
-            // non-empty.
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "page_chunk_end guarantees start < end <= entries.len() on its Ok path"
-            )]
-            let chunk = &entries[start..end];
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "chunk is non-empty per page_chunk_end's Ok-path guarantee (start < end)"
-            )]
+            let first = chunk.first().ok_or(Error::MutationContract)?;
             result.push(Summary {
-                first: F::key(&chunk[0]).clone(),
+                first: F::key(first).clone(),
                 page: self.write_page(&PageRef::<F>::Leaf(chunk)).await?,
             });
-            start = end;
         }
         Ok(result)
     }
@@ -882,42 +869,27 @@ where
         &mut self,
         children: &[Summary<F::Key>],
     ) -> Result<Vec<Summary<F::Key>>, Error<M::Error>> {
-        let mut cursor = 0_usize;
-        let mut chunks = 0_usize;
-        while cursor < children.len() {
-            let (end, examined) = page_chunk_end(children, cursor, self.limits, |child| {
-                F::internal_item_encoded_length(&child.first)
-            })?;
+        let child_length = |child: &Summary<F::Key>| F::internal_item_encoded_length(&child.first);
+        let (mut counted, examined) = PageChunks::new(children, self.limits, child_length)?;
+        self.charge_items(examined)?;
+        let mut pages = 0_usize;
+        while let Some((_, examined)) = counted.next()? {
             self.charge_items(examined)?;
-            chunks += 1;
-            cursor = end;
+            pages += 1;
         }
-        if children.len() > 1 && chunks >= children.len() {
+        if children.len() > 1 && pages >= children.len() {
             return Err(Error::PageItemTooLarge);
         }
+        let (mut chunks, examined) = PageChunks::new(children, self.limits, child_length)?;
+        self.charge_items(examined)?;
         let mut result = Vec::new();
-        let mut start = 0_usize;
-        while start < children.len() {
-            let (end, examined) = page_chunk_end(children, start, self.limits, |child| {
-                F::internal_item_encoded_length(&child.first)
-            })?;
+        while let Some((chunk, examined)) = chunks.next()? {
             self.charge_items(examined)?;
-            // Same page_chunk_end guarantee as in write_leaf_chunks: `start
-            // < end <= children.len()` on the Ok path.
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "page_chunk_end guarantees start < end <= children.len() on its Ok path"
-            )]
-            let chunk = &children[start..end];
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "chunk is non-empty per page_chunk_end's Ok-path guarantee (start < end)"
-            )]
+            let first = chunk.first().ok_or(Error::MutationContract)?;
             result.push(Summary {
-                first: chunk[0].first.clone(),
+                first: first.first.clone(),
                 page: self.write_page(&PageRef::<F>::Internal(chunk)).await?,
             });
-            start = end;
         }
         Ok(result)
     }
@@ -942,7 +914,7 @@ where
         // `write_internal_chunks` only while `summaries.len() > 1`
         // (i.e. non-empty input), which itself never returns an empty
         // result for non-empty input (its two internal chunking loops each
-        // make at least one `page_chunk_end`-bounded step and push at
+        // cut at least one non-empty `PageChunks` page and push at
         // least one summary). So the loop can only terminate with
         // `summaries.len() == 1`.
         #[allow(
@@ -1050,44 +1022,96 @@ fn map_io<E: std::error::Error>(error: persistent_io::Error) -> Error<E> {
     }
 }
 
-fn page_chunk_end<T, E: std::error::Error>(
-    items: &[T],
+/// Soft encoded size of every rewritten page.
+///
+/// Readers admit any page within [`DecodeLimits`]. Writers instead split each
+/// rewritten run into balanced pages near this size, so a point mutation
+/// re-encodes, re-hashes, and stages a bounded page however many items the
+/// tree holds, and a split leaves room on both sides for later inserts.
+pub(crate) const TARGET_PAGE_BYTES: usize = 2 * 1024;
+const PAGE_HEADER_BYTES: usize = 8 + 2 + 1 + 4;
+
+/// Balanced page boundaries over one ordered run of page items.
+///
+/// Each page is cut once it reaches an equal share of the remaining bytes,
+/// recomputed per page, and never above the hard item and byte limits. A page
+/// closes on the soft target only after holding two items, so internal levels
+/// always shrink unless a single item alone reaches the hard limits.
+struct PageChunks<'a, T, L> {
+    items: &'a [T],
+    encoded_length: L,
     start: usize,
-    limits: DecodeLimits,
-    encoded_length: impl Fn(&T) -> Result<usize, CanonicalDecodeError>,
-) -> Result<(usize, u64), Error<E>> {
-    const PAGE_HEADER_BYTES: usize = 8 + 2 + 1 + 4;
-    let maximum_items =
-        usize::try_from(limits.maximum_page_items).map_err(|_| Error::InvalidLimits)?;
-    let maximum_bytes =
-        usize::try_from(limits.maximum_page_bytes).map_err(|_| Error::InvalidLimits)?;
-    let mut end = start;
-    let mut bytes = PAGE_HEADER_BYTES;
-    let mut examined = 0_u64;
-    while end < items.len() && end - start < maximum_items {
-        examined = examined.saturating_add(1);
-        // Guarded by the loop condition's `end < items.len()` conjunct.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "the enclosing while condition already established end < items.len()"
-        )]
-        let item_bytes = encoded_length(&items[end])?;
-        let next = bytes
-            .checked_add(item_bytes)
-            .ok_or(Error::PageItemTooLarge)?;
-        if next > maximum_bytes {
-            if end == start {
-                return Err(Error::PageItemTooLarge);
-            }
-            break;
+    remaining_bytes: usize,
+    maximum_items: usize,
+    maximum_bytes: usize,
+}
+
+impl<'a, T, L> PageChunks<'a, T, L>
+where
+    L: Fn(&T) -> Result<usize, CanonicalDecodeError>,
+{
+    fn new<E: std::error::Error>(
+        items: &'a [T],
+        limits: DecodeLimits,
+        encoded_length: L,
+    ) -> Result<(Self, u64), Error<E>> {
+        let mut remaining_bytes = 0_usize;
+        for item in items {
+            remaining_bytes = remaining_bytes
+                .checked_add(encoded_length(item)?)
+                .ok_or(Error::PageItemTooLarge)?;
         }
-        bytes = next;
-        end += 1;
+        Ok((
+            Self {
+                items,
+                encoded_length,
+                start: 0,
+                remaining_bytes,
+                maximum_items: usize::try_from(limits.maximum_page_items)
+                    .map_err(|_| Error::InvalidLimits)?,
+                maximum_bytes: usize::try_from(limits.maximum_page_bytes)
+                    .map_err(|_| Error::InvalidLimits)?,
+            },
+            crate::foundation::usize_to_u64(items.len()),
+        ))
     }
-    if end == start {
-        return Err(Error::PageItemTooLarge);
+
+    /// Returns the next non-empty page and the items examined to cut it.
+    fn next<E: std::error::Error>(&mut self) -> Result<Option<(&'a [T], u64)>, Error<E>> {
+        let items = self.items;
+        let Some(rest) = items.get(self.start..).filter(|rest| !rest.is_empty()) else {
+            return Ok(None);
+        };
+        let pages = self
+            .remaining_bytes
+            .div_ceil(TARGET_PAGE_BYTES)
+            .max(rest.len().div_ceil(self.maximum_items.max(1)))
+            .max(1);
+        let share = self.remaining_bytes.div_ceil(pages);
+        let mut count = 0_usize;
+        let mut payload = 0_usize;
+        for item in rest {
+            if count == self.maximum_items || (count >= 2 && payload >= share) {
+                break;
+            }
+            let item_bytes = (self.encoded_length)(item)?;
+            let next = payload
+                .checked_add(item_bytes)
+                .ok_or(Error::PageItemTooLarge)?;
+            if next.saturating_add(PAGE_HEADER_BYTES) > self.maximum_bytes {
+                break;
+            }
+            payload = next;
+            count += 1;
+        }
+        let page = rest
+            .get(..count)
+            .filter(|page| !page.is_empty())
+            .ok_or(Error::PageItemTooLarge)?;
+        self.start += count;
+        self.remaining_bytes = self.remaining_bytes.saturating_sub(payload);
+        Ok(Some((page, crate::foundation::usize_to_u64(count))))
     }
-    Ok((end, examined))
 }
 
 fn search<F: Format>(entries: &[F::Value], key: &F::Key) -> (Result<usize, usize>, u64) {
