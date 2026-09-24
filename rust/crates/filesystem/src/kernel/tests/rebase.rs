@@ -270,7 +270,7 @@ fn dependency_bounds_and_extensions_are_atomic() -> Result<(), Box<dyn std::erro
         expected: DependencyState::Present(Digest::from_bytes([23; 32])),
     };
     assert!(matches!(
-        dependencies.extend_mutations(vec![contradictory], 2),
+        dependencies.prepare_mutations(vec![contradictory], 2),
         Err(DependencyError::ContradictoryState)
     ));
     assert_eq!(dependencies, original);
@@ -290,7 +290,9 @@ fn dependency_bounds_and_extensions_are_atomic() -> Result<(), Box<dyn std::erro
     ));
     assert_eq!(dependencies, original);
 
-    dependencies.extend_mutations(vec![first.clone()], 2)?;
+    let extension = dependencies.prepare_mutations(vec![first.clone()], 2)?;
+    assert_eq!(dependencies, original, "preparing never changes the proof");
+    dependencies.commit(extension);
     assert!(matches!(
         dependencies
             .captured

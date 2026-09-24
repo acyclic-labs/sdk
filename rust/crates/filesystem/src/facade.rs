@@ -6155,11 +6155,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let captured =
             Box::pin(self.capture_mutation_dependencies(&operations, budget, cancellation)).await?;
         let dependency_work = add(admitted.work, captured.work)?;
-        let mutation_dependencies = captured.value;
-        let mut next_dependencies = self.dependencies.clone();
-        next_dependencies
-            .extend_mutations(
-                mutation_dependencies,
+        // Validate against the proof now and apply only after the mutation
+        // lands; `&mut self` keeps the proof unchanged in between.
+        let extension = self
+            .dependencies
+            .prepare_mutations(
+                captured.value,
                 self.volume.config.limits.maximum_checkout_dependencies,
             )
             .map_err(|error| OperationFailure::new(error.into(), dependency_work))?;
@@ -6177,9 +6178,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let work = add(dependency_work, receipt.work)?;
         if receipt.root.file_table != prior_file_table {
             if receipt.root.file_table == self.base_file_table {
-                next_dependencies.clear_mutations();
+                self.dependencies.clear_mutations();
+            } else {
+                self.dependencies.commit(extension);
             }
-            self.dependencies = next_dependencies;
             self.root = receipt.root;
         }
         Ok(FsReceipt { value: (), work })
