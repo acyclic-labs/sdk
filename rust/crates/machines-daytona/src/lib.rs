@@ -1531,11 +1531,21 @@ impl MachinesProvider for DaytonaProvider {
             .ops
             .cancel(operation)
             .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
-        for sandbox in sandboxes {
-            if let Err(error) = self.api.delete(&sandbox).await {
-                tracing::warn!(sandbox, %error, "best-effort delete of a cancelled operation's sandbox failed");
+        // Newest first: a fork child's own fork children were created after it, and Daytona
+        // refuses to delete a sandbox that still has live fork children. Anything that cannot
+        // be deleted stays recorded, so cancelling again retries it.
+        let mut remaining = Vec::new();
+        for sandbox in sandboxes.into_iter().rev() {
+            match self.api.delete(&sandbox).await {
+                Ok(()) | Err(ProviderError::NotFound(_)) => {}
+                Err(error) => {
+                    tracing::warn!(sandbox, %error, "delete of a cancelled operation's sandbox failed; cancel again to retry");
+                    remaining.push(sandbox);
+                }
             }
         }
+        remaining.reverse();
+        self.ops.restore_created(operation, remaining);
         Ok(observation)
     }
 
@@ -2619,6 +2629,63 @@ mod tests {
         assert!(
             !mock.requests().iter().any(|r| r.method == "DELETE"),
             "an adopted sandbox belongs to the key's outcome, not to the cancelled replay"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_deletes_fork_descendants_first_and_can_be_retried() {
+        let refused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let once = Arc::clone(&refused);
+        let mock = mock::Mock::start(move |request| {
+            let once = Arc::clone(&once);
+            async move {
+                // Daytona refuses to delete a sandbox with live fork children; refuse once.
+                if request.is("DELETE", "/sandbox/a")
+                    && !once.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    return (409, "sandbox has fork children".to_owned());
+                }
+                (200, String::new())
+            }
+        })
+        .await;
+        let provider = mocked(&mock, None);
+        let key = test_key(17);
+        let ops::Admission::Fresh(operation) = provider.registry().admit(key, &"fork").unwrap()
+        else {
+            panic!("expected fresh")
+        };
+        for id in ["a", "b", "c"] {
+            assert!(provider.registry().bind_created(operation, id));
+        }
+        provider
+            .registry()
+            .fail(operation, &ProviderError::Indeterminate(key));
+        provider.cancel(operation).await.unwrap();
+        let deletes = |mock: &mock::Mock| -> Vec<String> {
+            mock.requests()
+                .into_iter()
+                .filter(|r| r.method == "DELETE")
+                .map(|r| r.path)
+                .collect()
+        };
+        assert_eq!(deletes(&mock), ["/sandbox/c", "/sandbox/b", "/sandbox/a"]);
+        assert_eq!(
+            provider.registry().record(operation).unwrap().created,
+            ["a"]
+        );
+        provider.cancel(operation).await.unwrap();
+        assert_eq!(
+            deletes(&mock).last().map(String::as_str),
+            Some("/sandbox/a")
+        );
+        assert!(
+            provider
+                .registry()
+                .record(operation)
+                .unwrap()
+                .created
+                .is_empty()
         );
     }
 }

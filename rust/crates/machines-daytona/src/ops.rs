@@ -310,10 +310,10 @@ impl OperationRegistry {
     /// Cancels an operation and returns the sandboxes it had *created*, which the caller deletes
     /// best-effort. Sandboxes it merely acted on are never returned.
     ///
-    /// A pending or indeterminate operation becomes cancelled. A failed one stays failed but
-    /// still hands back any created sandbox its rollback could not delete, so cancel always
-    /// finishes undoing a mutation that did not succeed. Succeeded and already-cancelled
-    /// operations are returned unchanged.
+    /// A pending or indeterminate operation becomes cancelled. A failed or already-cancelled
+    /// one keeps its phase but still hands back any created sandbox an earlier rollback or
+    /// cancel could not delete, so cancelling again finishes undoing a mutation that did not
+    /// succeed. A succeeded operation is returned unchanged.
     #[must_use]
     pub fn cancel(&self, operation: OperationId) -> Option<(OperationObservation, Vec<String>)> {
         let mut inner = self.lock();
@@ -323,12 +323,10 @@ impl OperationRegistry {
                 record.phase = OperationPhase::Cancelled;
                 Some((record.observation(), std::mem::take(&mut record.created)))
             }
-            OperationPhase::Failed => {
+            OperationPhase::Failed | OperationPhase::Cancelled => {
                 Some((record.observation(), std::mem::take(&mut record.created)))
             }
-            OperationPhase::Succeeded | OperationPhase::Cancelled => {
-                Some((record.observation(), Vec::new()))
-            }
+            OperationPhase::Succeeded => Some((record.observation(), Vec::new())),
         }
     }
 
