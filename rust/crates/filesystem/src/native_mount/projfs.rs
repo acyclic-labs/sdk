@@ -39,11 +39,12 @@ use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION, PRJ_NOTIFY_FILE_OPENED,
     PRJ_NOTIFY_FILE_OVERWRITTEN, PRJ_NOTIFY_FILE_RENAMED, PRJ_NOTIFY_HARDLINK_CREATED,
     PRJ_NOTIFY_NEW_FILE_CREATED, PRJ_NOTIFY_PRE_RENAME, PRJ_NOTIFY_PRE_SET_HARDLINK,
-    PRJ_PLACEHOLDER_INFO, PRJ_PLACEHOLDER_VERSION_INFO, PRJ_STARTVIRTUALIZING_OPTIONS,
-    PRJ_UPDATE_ALLOW_DIRTY_DATA, PRJ_UPDATE_ALLOW_DIRTY_METADATA, PRJ_UPDATE_ALLOW_READ_ONLY,
-    PRJ_UPDATE_ALLOW_TOMBSTONE, PrjAllocateAlignedBuffer, PrjClearNegativePathCache, PrjDeleteFile,
-    PrjFileNameCompare, PrjFileNameMatch, PrjFillDirEntryBuffer, PrjFillDirEntryBuffer2,
-    PrjFreeAlignedBuffer, PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
+    PRJ_NOTIFY_TYPES, PRJ_PLACEHOLDER_INFO, PRJ_PLACEHOLDER_VERSION_INFO,
+    PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_ALLOW_DIRTY_DATA, PRJ_UPDATE_ALLOW_DIRTY_METADATA,
+    PRJ_UPDATE_ALLOW_READ_ONLY, PRJ_UPDATE_ALLOW_TOMBSTONE, PrjAllocateAlignedBuffer,
+    PrjClearNegativePathCache, PrjDeleteFile, PrjFileNameCompare, PrjFileNameMatch,
+    PrjFillDirEntryBuffer, PrjFillDirEntryBuffer2, PrjFreeAlignedBuffer,
+    PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
     PrjUpdateFileIfNeeded, PrjWriteFileData, PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
 };
 use windows::core::{GUID, HRESULT, HSTRING, PCWSTR};
@@ -63,6 +64,22 @@ const HR_IO_DEVICE: HRESULT = HRESULT(0x8007_045d_u32.cast_signed());
 const HR_VIRTUALIZATION_INVALID_OPERATION: HRESULT = HRESULT(0x8007_0181_u32.cast_signed());
 
 const DIRECTORY_PAGE_SIZE: u32 = 256;
+/// Every notification the provider observes, for every file, for its whole
+/// life. A file created or renamed through the mount keeps this exact set:
+/// narrowing it would hide a later write, metadata edit, or delete of that
+/// name once its first capture had completed.
+const FILE_NOTIFICATIONS: PRJ_NOTIFY_TYPES = PRJ_NOTIFY_TYPES(
+    PRJ_NOTIFY_NEW_FILE_CREATED.0
+        | PRJ_NOTIFY_FILE_OVERWRITTEN.0
+        | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED.0
+        | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED.0
+        | PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION.0
+        | PRJ_NOTIFY_FILE_OPENED.0
+        | PRJ_NOTIFY_PRE_RENAME.0
+        | PRJ_NOTIFY_FILE_RENAMED.0
+        | PRJ_NOTIFY_PRE_SET_HARDLINK.0
+        | PRJ_NOTIFY_HARDLINK_CREATED.0,
+);
 const NOTIFICATION_ROOT: [u16; 1] = [0];
 /// Largest hydration unit. A multiple of every sector size, so each chunk
 /// but the last keeps `PrjWriteFileData` aligned; bounds peak memory.
@@ -531,16 +548,7 @@ impl ProjFsSession {
         // Only pre-operation callbacks that can veto are subscribed: a delete
         // is never refused, and it is captured when its handle closes.
         let mut notification_mapping = PRJ_NOTIFICATION_MAPPING {
-            NotificationBitMask: PRJ_NOTIFY_NEW_FILE_CREATED
-                | PRJ_NOTIFY_FILE_OVERWRITTEN
-                | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED
-                | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED
-                | PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION
-                | PRJ_NOTIFY_FILE_OPENED
-                | PRJ_NOTIFY_PRE_RENAME
-                | PRJ_NOTIFY_FILE_RENAMED
-                | PRJ_NOTIFY_PRE_SET_HARDLINK
-                | PRJ_NOTIFY_HARDLINK_CREATED,
+            NotificationBitMask: FILE_NOTIFICATIONS,
             // ProjFS requires a pointer to an empty UTF-16 string for the
             // virtualization root. An empty HSTRING may be represented by a
             // null handle, which is not the same contract as `L""`.
@@ -2079,23 +2087,30 @@ unsafe extern "system" fn notification(
     if notification == PRJ_NOTIFICATION_PRE_RENAME
         || notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
     {
-        return HR_OK;
+        if is_directory || source_is_external {
+            return HR_OK;
+        }
+        return match hydrate_before_rebinding(&runtime.metadata_root, &path) {
+            Ok(()) => HR_OK,
+            Err(error) => source_hresult(&error),
+        };
     }
     if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED {
         // The physical file is already present. One final-state capture at
-        // the operation boundary covers every later write and metadata edit;
-        // only topology changes need further per-file notifications.
+        // the next operation boundary covers every write before it; the file
+        // keeps every notification, because a later boundary must still see
+        // its writes, metadata edits, and deletion.
         if is_directory {
             lock_recover(runtime.post_operation_failure.as_ref())
                 .queue_subtree(&path, "new directory awaiting capture".to_owned());
         } else {
             defer_host_capture(runtime.post_operation_failure.as_ref(), path);
         }
-        set_post_create_notification_mask(operation_parameters, true);
+        keep_file_notifications(notification, operation_parameters);
         return HR_OK;
     }
     if !is_directory && notification == PRJ_NOTIFICATION_FILE_OVERWRITTEN {
-        set_post_create_notification_mask(operation_parameters, false);
+        keep_file_notifications(notification, operation_parameters);
         return HR_OK;
     }
     let destination = (!destination_is_external)
@@ -2358,16 +2373,7 @@ unsafe extern "system" fn notification(
                 result,
             );
         });
-    if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED
-        || notification == PRJ_NOTIFICATION_FILE_OVERWRITTEN
-    {
-        set_post_create_notification_mask(
-            operation_parameters,
-            notification == PRJ_NOTIFICATION_NEW_FILE_CREATED,
-        );
-    } else if notification == PRJ_NOTIFICATION_FILE_RENAMED && matches!(&result, Some(Ok(()))) {
-        set_post_rename_notification_mask(operation_parameters);
-    }
+    keep_file_notifications(notification, operation_parameters);
     match result {
         Some(Ok(())) => HR_OK,
         Some(Err(error)) => source_hresult(&error),
@@ -2375,45 +2381,53 @@ unsafe extern "system" fn notification(
     }
 }
 
-fn set_post_create_notification_mask(
+/// Hydrates a still-virtual placeholder before it is renamed or linked.
+///
+/// `ProjFS` hydrates a placeholder by the path it was projected at, whatever
+/// name later reads it through. After a rename, or after a hard link whose
+/// original name is then deleted, that path no longer resolves to this
+/// content. Reading the file now, while its projected path still does,
+/// stores the content in the file itself for every later name.
+fn hydrate_before_rebinding(root: &HostRoot, path: &MountPath) -> Result<(), MountSourceError> {
+    let host_path = host_relative_path(path)?;
+    let engine = |error: std::io::Error| MountSourceError::Engine(error.to_string());
+    let attributes = {
+        use cap_std::fs::MetadataExt as _;
+        root.symlink_metadata_held(&host_path)
+            .map_err(engine)?
+            .file_attributes()
+    };
+    if attributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 == 0 {
+        return Ok(());
+    }
+    // The provider's own reads raise no notifications; they are served by
+    // GetFileData on another callback thread.
+    let mut file = root.open_file(&host_path).map_err(engine)?;
+    std::io::copy(&mut file, &mut std::io::sink()).map_err(engine)?;
+    Ok(())
+}
+
+/// Keeps [`FILE_NOTIFICATIONS`] for a file whose notification set `ProjFS`
+/// lets the provider replace on this callback.
+fn keep_file_notifications(
+    notification: PRJ_NOTIFICATION,
     operation_parameters: *mut PRJ_NOTIFICATION_PARAMETERS,
-    new_regular_file: bool,
 ) {
     if operation_parameters.is_null() {
         return;
     }
-    // SAFETY: ProjFS supplies a writable notification-parameter union for
-    // NEW_FILE_CREATED and FILE_OVERWRITTEN callbacks.
+    // SAFETY: ProjFS supplies the writable union member matching each of
+    // these notifications for the callback's duration.
     unsafe {
-        let topology_mask = PRJ_NOTIFY_PRE_RENAME
-            | PRJ_NOTIFY_FILE_RENAMED
-            | PRJ_NOTIFY_PRE_SET_HARDLINK
-            | PRJ_NOTIFY_HARDLINK_CREATED;
-        (*operation_parameters).PostCreate.NotificationMask = if new_regular_file {
-            topology_mask
-        } else {
-            PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION
-                | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED
-                | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED
-                | PRJ_NOTIFY_FILE_OPENED
-                | topology_mask
-        };
-    }
-}
-
-fn set_post_rename_notification_mask(operation_parameters: *mut PRJ_NOTIFICATION_PARAMETERS) {
-    if operation_parameters.is_null() {
-        return;
-    }
-    // SAFETY: ProjFS supplies the writable renamed-file union member for the
-    // FILE_RENAMED callback. Only renamed placeholders need open callbacks to
-    // bridge a possible FileId change during deferred hydration.
-    unsafe {
-        (*operation_parameters).FileRenamed.NotificationMask = PRJ_NOTIFY_FILE_OPENED
-            | PRJ_NOTIFY_PRE_RENAME
-            | PRJ_NOTIFY_FILE_RENAMED
-            | PRJ_NOTIFY_PRE_SET_HARDLINK
-            | PRJ_NOTIFY_HARDLINK_CREATED;
+        match notification {
+            PRJ_NOTIFICATION_NEW_FILE_CREATED | PRJ_NOTIFICATION_FILE_OVERWRITTEN => {
+                (*operation_parameters).PostCreate.NotificationMask = FILE_NOTIFICATIONS;
+            }
+            PRJ_NOTIFICATION_FILE_RENAMED => {
+                (*operation_parameters).FileRenamed.NotificationMask = FILE_NOTIFICATIONS;
+            }
+            _ => {}
+        }
     }
 }
 
@@ -2695,6 +2709,53 @@ mod tests {
         // publish this write. A later physical view must quarantine the old
         // epoch rather than pretending that the late write joined the SDK.
         assert_eq!(source.read_range(&seed, 0, 4)?, b"seed"[..]);
+        session.stop()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn created_and_renamed_files_stay_observed_after_capture()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        let (_root, destination, mut session) = mount_source(&source)?;
+        // ProjFS notifies the provider only of other processes' I/O.
+        let external = |command: &str| -> Result<(), Box<dyn std::error::Error>> {
+            let output = std::process::Command::new("cmd.exe")
+                .args(["/D", "/C", command])
+                .current_dir(&destination)
+                .output()?;
+            assert!(output.status.success(), "{command} failed: {output:?}");
+            Ok(())
+        };
+        let content = |name: &str| -> Result<Vec<u8>, MountSourceError> {
+            let path = windows_path(name);
+            let length = source.lookup(&path)?.ok_or(MountSourceError::NotFound)?;
+            let length = u32::try_from(length.node.logical_bytes)
+                .map_err(|_| MountSourceError::Invalid("test file too large".to_owned()))?;
+            Ok(source.read_range(&path, 0, length)?.to_vec())
+        };
+
+        external("echo first> created.txt")?;
+        session.flush_callbacks()?;
+        assert_eq!(content("created.txt")?, b"first\r\n");
+        // Each change after the first capture is its own later boundary.
+        external("echo second> created.txt")?;
+        session.flush_callbacks()?;
+        assert_eq!(content("created.txt")?, b"second\r\n");
+        external("ren created.txt renamed.txt")?;
+        session.flush_callbacks()?;
+        external("echo third> renamed.txt")?;
+        session.flush_callbacks()?;
+        assert_eq!(content("renamed.txt")?, b"third\r\n");
+        external("mklink /H linked.txt renamed.txt > nul && del renamed.txt")?;
+        session.flush_callbacks()?;
+        assert!(source.lookup(&windows_path("created.txt"))?.is_none());
+        assert!(source.lookup(&windows_path("renamed.txt"))?.is_none());
+        assert_eq!(content("linked.txt")?, b"third\r\n");
+        external("del linked.txt")?;
+        session.flush_callbacks()?;
+        assert!(source.lookup(&windows_path("linked.txt"))?.is_none());
         session.stop()?;
         Ok(())
     }
