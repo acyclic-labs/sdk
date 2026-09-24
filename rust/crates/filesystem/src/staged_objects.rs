@@ -4,6 +4,11 @@
 //! crash-durable until `flush_before_publish` has admitted them through the
 //! underlying durable batch provider. A crash may orphan or lose unreferenced
 //! staged bytes, but cannot publish an authority head referring to them.
+//!
+//! Staged bytes beyond the resident memory window spill to an unlinked private
+//! file without any durability barrier, so authoring never waits on the
+//! durable provider. The one durable drain runs at the publication barrier,
+//! the only point at which staged bytes become reachable.
 
 use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
@@ -14,69 +19,286 @@ use crate::storage::{
     ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt,
     ObjectResult, ObjectStoreError, ObjectWrite, object_digest,
 };
+use acyclic_native_runtime::{NativeFile, OwnedRead, OwnedWrite};
 use bytes::Bytes;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use tokio::sync::Mutex;
 
-// The local provider stores one batch in a bounded segment. Keep the SDK
-// staging window no larger than that segment, regardless of source tree size.
-const MAXIMUM_STAGED_BYTES: u64 = 4 * 1_024 * 1_024;
+// The local provider stores one batch in a bounded segment. Every durable
+// drain batch stays within that segment regardless of source tree size, and a
+// single larger object is admitted directly instead of staged.
+const MAXIMUM_DRAIN_BYTES: u64 = 4 * 1_024 * 1_024;
+// Staged bytes held in memory before the window spills to the private file.
+const MAXIMUM_RESIDENT_BYTES: u64 = 4 * 1_024 * 1_024;
+
+enum Staged {
+    /// Held in memory; `recency` is this object's key in `Pending::recency`.
+    Resident {
+        bytes: Bytes,
+        recency: u64,
+    },
+    Spilled {
+        offset: u64,
+        length: u64,
+    },
+}
+
+impl Staged {
+    fn length(&self) -> u64 {
+        match self {
+            Self::Resident { bytes, .. } => byte_length(bytes),
+            Self::Spilled { length, .. } => *length,
+        }
+    }
+}
 
 #[derive(Default)]
 struct Pending {
-    objects: BTreeMap<ObjectId, Bytes>,
-    bytes: u64,
+    objects: BTreeMap<ObjectId, Staged>,
+    // Resident identities from least to most recently staged or read. The
+    // window spills from the front, so pages the current candidate keeps
+    // reading stay in memory while superseded ones leave it.
+    recency: BTreeMap<u64, ObjectId>,
+    clock: u64,
+    resident_bytes: u64,
+    spilled_bytes: u64,
+}
+
+impl Pending {
+    /// Holds `bytes` in memory as the most recently used object, replacing a
+    /// spilled copy of the same identity.
+    fn insert_resident(&mut self, object_id: ObjectId, bytes: Bytes) {
+        let recency = self.next_recency();
+        self.resident_bytes = self.resident_bytes.saturating_add(byte_length(&bytes));
+        self.recency.insert(recency, object_id);
+        self.objects
+            .insert(object_id, Staged::Resident { bytes, recency });
+    }
+
+    /// Marks one resident object as the most recently used.
+    fn touch(&mut self, object_id: ObjectId) {
+        let recency = self.next_recency();
+        if let Some(Staged::Resident {
+            recency: current, ..
+        }) = self.objects.get_mut(&object_id)
+        {
+            self.recency.remove(current);
+            *current = recency;
+            self.recency.insert(recency, object_id);
+        }
+    }
+
+    fn remove(&mut self, object_id: ObjectId) {
+        if let Some(Staged::Resident { bytes, recency }) = self.objects.remove(&object_id) {
+            self.recency.remove(&recency);
+            self.resident_bytes = self.resident_bytes.saturating_sub(byte_length(&bytes));
+        }
+    }
+
+    fn next_recency(&mut self) -> u64 {
+        let recency = self.clock;
+        self.clock = self.clock.wrapping_add(1);
+        recency
+    }
 }
 
 /// One private local object admission buffer. Remote and memory providers keep
 /// their existing direct semantics; only the local filesystem opts into this.
 pub struct StagedObjects<S> {
     inner: S,
+    spill: NativeFile,
     pending: Mutex<Pending>,
 }
 
 impl<S> StagedObjects<S> {
-    /// Wraps a durable local provider with bounded pre-publication staging.
-    pub fn new(inner: S) -> Self {
-        Self {
+    /// Wraps a durable local provider with bounded pre-publication staging
+    /// whose overflow spills to an unlinked file in `spill_directory`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the host error if the private spill file cannot be created.
+    pub async fn open(inner: S, spill_directory: PathBuf) -> std::io::Result<Self> {
+        let spill = acyclic_native_runtime::run_blocking_io(move || create_spill(&spill_directory))
+            .await??;
+        Ok(Self {
             inner,
+            spill: NativeFile::from_file(spill)?,
             pending: Mutex::new(Pending::default()),
-        }
+        })
     }
 
     pub(crate) fn inner(&self) -> &S {
         &self.inner
     }
+
+    /// Admits `bytes` into the resident window, first spilling the least
+    /// recently used objects when it would overflow.
+    async fn admit_locked(
+        &self,
+        pending: &mut Pending,
+        object_id: ObjectId,
+        bytes: Bytes,
+        budget: WorkBudget,
+    ) -> ObjectResult<()> {
+        let mut work = WorkCounters::default();
+        if pending.resident_bytes.saturating_add(byte_length(&bytes)) > MAXIMUM_RESIDENT_BYTES {
+            work = self.spill_locked(pending, budget).await?.work;
+        }
+        pending.insert_resident(object_id, bytes);
+        Ok(ObjectReceipt { value: (), work })
+    }
+
+    /// Moves the least recently used resident objects, down to half the
+    /// window, to the end of the spill file with one unsynchronized write.
+    /// Objects are re-indexed only after the write completes, so a failed
+    /// spill leaves staging unchanged.
+    async fn spill_locked(&self, pending: &mut Pending, budget: WorkBudget) -> ObjectResult<()> {
+        let mut victims = Vec::new();
+        let mut spilled = 0_u64;
+        for (&recency, object_id) in &pending.recency {
+            if pending.resident_bytes.saturating_sub(spilled) <= MAXIMUM_RESIDENT_BYTES / 2 {
+                break;
+            }
+            if let Some(Staged::Resident { bytes, .. }) = pending.objects.get(object_id) {
+                spilled = spilled.saturating_add(byte_length(bytes));
+                victims.push((recency, *object_id, bytes.clone()));
+            }
+        }
+        let work = WorkCounters {
+            backend_write_operations: 1,
+            object_bytes_written: spilled,
+            bytes_copied: spilled,
+            allocation_operations: 1,
+            peak_allocation_bytes: spilled,
+            ..WorkCounters::default()
+        };
+        work.verify(budget)
+            .map_err(|error| ObjectFailure::before_work(error.into()))?;
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(usize::try_from(spilled).unwrap_or(usize::MAX))
+            .map_err(|_| {
+                ObjectFailure::before_work(ObjectStoreError::Rejected(
+                    "staged spill allocation failed".to_owned(),
+                ))
+            })?;
+        for (_, _, bytes) in &victims {
+            buffer.extend_from_slice(bytes);
+        }
+        self.spill
+            .write_all_batch_async(vec![OwnedWrite {
+                offset: pending.spilled_bytes,
+                bytes: Bytes::from(buffer),
+            }])
+            .await
+            .map_err(|error| ObjectFailure::new(error.into(), work))?;
+        for (recency, object_id, bytes) in victims {
+            let length = byte_length(&bytes);
+            pending.recency.remove(&recency);
+            pending.objects.insert(
+                object_id,
+                Staged::Spilled {
+                    offset: pending.spilled_bytes,
+                    length,
+                },
+            );
+            pending.spilled_bytes = pending.spilled_bytes.saturating_add(length);
+            pending.resident_bytes = pending.resident_bytes.saturating_sub(length);
+        }
+        Ok(ObjectReceipt { value: (), work })
+    }
+
+    /// Reads spilled bytes back and authenticates them against their identity.
+    async fn read_spilled(
+        &self,
+        object_id: ObjectId,
+        offset: u64,
+        length: u64,
+    ) -> Result<Bytes, ObjectStoreError> {
+        let length = usize::try_from(length).map_err(|_| ObjectStoreError::Corrupt)?;
+        let bytes = self
+            .spill
+            .read_batch_async(vec![OwnedRead { offset, length }])
+            .await?
+            .pop()
+            .ok_or(ObjectStoreError::Corrupt)?;
+        if bytes.len() != length || object_digest(object_id.kind, &bytes) != object_id.digest {
+            return Err(ObjectStoreError::Corrupt);
+        }
+        Ok(bytes)
+    }
 }
 
 impl<S: AsyncObjectStore> StagedObjects<S> {
+    /// Durably admits every staged object in segment-bounded batches. A batch
+    /// leaves staging only once the provider acknowledges it, so a failed
+    /// drain keeps the remainder private and retryable.
     async fn flush_locked(
         &self,
         pending: &mut Pending,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
-        if pending.objects.is_empty() {
-            return Ok(ObjectReceipt {
-                value: (),
-                work: WorkCounters::default(),
-            });
+        let mut work = WorkCounters::default();
+        while !pending.objects.is_empty() {
+            cancellation
+                .check()
+                .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
+            let mut batch_bytes = 0_u64;
+            let mut writes = Vec::new();
+            for (&object_id, staged) in &pending.objects {
+                let length = staged.length();
+                if !writes.is_empty() && batch_bytes.saturating_add(length) > MAXIMUM_DRAIN_BYTES {
+                    break;
+                }
+                batch_bytes = batch_bytes.saturating_add(length);
+                let bytes = match *staged {
+                    Staged::Resident { ref bytes, .. } => bytes.clone(),
+                    Staged::Spilled { offset, length } => {
+                        let read = WorkCounters {
+                            backend_read_operations: 1,
+                            object_bytes_read: length,
+                            bytes_hashed: length,
+                            ..WorkCounters::default()
+                        };
+                        work = work
+                            .checked_add(read)
+                            .map_err(|error| ObjectFailure::new(error.into(), work))?;
+                        work.verify(budget)
+                            .map_err(|error| ObjectFailure::new(error.into(), work))?;
+                        self.read_spilled(object_id, offset, length)
+                            .await
+                            .map_err(|error| ObjectFailure::new(error, work))?
+                    }
+                };
+                writes.push(ObjectWrite { object_id, bytes });
+            }
+            let receipt = self
+                .inner
+                .put_many(
+                    &writes,
+                    work.remaining(budget)
+                        .map_err(|error| ObjectFailure::new(error.into(), work))?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = work
+                .checked_add(receipt.work)
+                .map_err(|error| ObjectFailure::new(error.into(), work))?;
+            for write in &writes {
+                pending.remove(write.object_id);
+            }
         }
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let writes = pending
-            .objects
-            .iter()
-            .map(|(&object_id, bytes)| ObjectWrite {
-                object_id,
-                bytes: bytes.clone(),
-            })
-            .collect::<Vec<_>>();
-        let receipt = self.inner.put_many(&writes, budget, cancellation).await?;
-        pending.objects.clear();
-        pending.bytes = 0;
-        Ok(receipt)
+        if pending.spilled_bytes != 0 {
+            self.spill
+                .set_len_async(0)
+                .await
+                .map_err(|error| ObjectFailure::new(error.into(), work))?;
+            pending.spilled_bytes = 0;
+        }
+        Ok(ObjectReceipt { value: (), work })
     }
 }
 
@@ -106,7 +328,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let byte_count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let byte_count = byte_length(&bytes);
         let verified = WorkCounters {
             bytes_hashed: byte_count,
             ..WorkCounters::default()
@@ -120,21 +342,12 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
                 verified,
             ));
         }
-        let mut pending = self.pending.lock().await;
-        if let Some(existing) = pending.objects.get(&object_id) {
-            return if existing == &bytes {
-                Ok(ObjectReceipt {
-                    value: (),
-                    work: verified,
-                })
-            } else {
-                Err(ObjectFailure::new(ObjectStoreError::Corrupt, verified))
-            };
-        }
-        if byte_count > MAXIMUM_STAGED_BYTES {
-            let flushed = self
-                .flush_locked(
-                    &mut pending,
+        if byte_count > MAXIMUM_DRAIN_BYTES {
+            let written = self
+                .inner
+                .put(
+                    object_id,
+                    bytes,
                     verified
                         .remaining(budget)
                         .map_err(|error| ObjectFailure::new(error.into(), verified))?,
@@ -142,46 +355,39 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
                 )
                 .await
                 .map_err(|failure| failure.map_with_prior_work(verified, std::convert::identity))?;
-            let prior = verified
-                .checked_add(flushed.work)
-                .map_err(|error| ObjectFailure::new(error.into(), verified))?;
-            let written = self
-                .inner
-                .put(
-                    object_id,
-                    bytes,
-                    prior
-                        .remaining(budget)
-                        .map_err(|error| ObjectFailure::new(error.into(), prior))?,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
             return Ok(ObjectReceipt {
                 value: (),
-                work: prior
+                work: verified
                     .checked_add(written.work)
-                    .map_err(|error| ObjectFailure::new(error.into(), prior))?,
+                    .map_err(|error| ObjectFailure::new(error.into(), verified))?,
             });
         }
-        let mut work = verified;
-        if pending.bytes.saturating_add(byte_count) > MAXIMUM_STAGED_BYTES {
-            let flushed = self
-                .flush_locked(
-                    &mut pending,
-                    work.remaining(budget)
-                        .map_err(|error| ObjectFailure::new(error.into(), work))?,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-            work = work
-                .checked_add(flushed.work)
-                .map_err(|error| ObjectFailure::new(error.into(), work))?;
+        let mut pending = self.pending.lock().await;
+        // The verified digest is the object's identity: an equal identity
+        // already staged holds these exact bytes.
+        if pending.objects.contains_key(&object_id) {
+            return Ok(ObjectReceipt {
+                value: (),
+                work: verified,
+            });
         }
-        pending.bytes = pending.bytes.saturating_add(byte_count);
-        pending.objects.insert(object_id, bytes);
-        Ok(ObjectReceipt { value: (), work })
+        let admitted = self
+            .admit_locked(
+                &mut pending,
+                object_id,
+                bytes,
+                verified
+                    .remaining(budget)
+                    .map_err(|error| ObjectFailure::new(error.into(), verified))?,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(verified, std::convert::identity))?;
+        Ok(ObjectReceipt {
+            value: (),
+            work: verified
+                .checked_add(admitted.work)
+                .map_err(|error| ObjectFailure::new(error.into(), verified))?,
+        })
     }
 
     async fn put_many(
@@ -233,31 +439,73 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        if let Some(bytes) = self.pending.lock().await.objects.get(&object_id).cloned() {
-            let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-            if length > maximum_bytes {
-                return Err(ObjectFailure::before_work(ObjectStoreError::TooLarge {
-                    observed: length,
-                    maximum: maximum_bytes,
-                }));
-            }
-            let work = WorkCounters {
-                object_bytes_read: length,
-                ..WorkCounters::default()
-            };
-            work.verify(budget)
-                .map_err(|error| ObjectFailure::before_work(error.into()))?;
-            return Ok(ObjectReceipt {
-                value: ObjectRead {
-                    bytes,
-                    retention: ObjectReadRetention::Shared,
-                },
-                work,
-            });
+        // Holding the window across a spilled read keeps a concurrent drain
+        // from truncating the spill file underneath it.
+        let mut pending = self.pending.lock().await;
+        let Some(staged) = pending.objects.get(&object_id) else {
+            drop(pending);
+            return self
+                .inner
+                .read(object_id, maximum_bytes, budget, cancellation)
+                .await;
+        };
+        let length = staged.length();
+        if length > maximum_bytes {
+            return Err(ObjectFailure::before_work(ObjectStoreError::TooLarge {
+                observed: length,
+                maximum: maximum_bytes,
+            }));
         }
-        self.inner
-            .read(object_id, maximum_bytes, budget, cancellation)
-            .await
+        let (bytes, work) = match *staged {
+            Staged::Resident { ref bytes, .. } => {
+                let work = WorkCounters {
+                    object_bytes_read: length,
+                    ..WorkCounters::default()
+                };
+                work.verify(budget)
+                    .map_err(|error| ObjectFailure::before_work(error.into()))?;
+                let bytes = bytes.clone();
+                pending.touch(object_id);
+                (bytes, work)
+            }
+            Staged::Spilled { offset, length } => {
+                // A spilled object that is read again is live; it returns to
+                // the resident window as the most recently used.
+                let read = WorkCounters {
+                    backend_read_operations: 1,
+                    object_bytes_read: length,
+                    bytes_hashed: length,
+                    ..WorkCounters::default()
+                };
+                read.verify(budget)
+                    .map_err(|error| ObjectFailure::before_work(error.into()))?;
+                let bytes = self
+                    .read_spilled(object_id, offset, length)
+                    .await
+                    .map_err(|error| ObjectFailure::new(error, read))?;
+                let admitted = self
+                    .admit_locked(
+                        &mut pending,
+                        object_id,
+                        bytes.clone(),
+                        read.remaining(budget)
+                            .map_err(|error| ObjectFailure::new(error.into(), read))?,
+                    )
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(read, std::convert::identity))?;
+                let work = read
+                    .checked_add(admitted.work)
+                    .map_err(|error| ObjectFailure::new(error.into(), read))?;
+                (bytes, work)
+            }
+        };
+        Ok(ObjectReceipt {
+            value: ObjectRead {
+                bytes,
+                retention: ObjectReadRetention::Shared,
+            },
+            work,
+        })
     }
 
     async fn read_many(
@@ -288,6 +536,40 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
     }
 }
 
+/// Creates a spill file no other handle names, which the host removes once
+/// its last handle closes, including after a crash.
+#[cfg(unix)]
+fn create_spill(directory: &Path) -> std::io::Result<std::fs::File> {
+    tempfile::tempfile_in(directory)
+}
+
+/// Creates a spill file no other handle names, which the host removes once
+/// its last handle closes, including after a crash. The native runtime
+/// reopens the handle for overlapped I/O, so the file admits shared access.
+#[cfg(windows)]
+fn create_spill(directory: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_TEMPORARY, FILE_FLAG_DELETE_ON_CLOSE, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
+    };
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
+        .attributes(FILE_ATTRIBUTE_TEMPORARY.0)
+        .custom_flags(FILE_FLAG_DELETE_ON_CLOSE.0)
+        .open(directory.join(format!(
+            ".acyclic-staging-{}",
+            uuid::Uuid::new_v4().simple()
+        )))
+}
+
+fn byte_length(bytes: &Bytes) -> u64 {
+    u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,13 +578,14 @@ mod tests {
     use acyclic_objects::ObjectsProvider as _;
     use std::sync::Arc;
 
-    #[tokio::test]
-    async fn failed_drain_keeps_objects_private_until_a_durable_retry()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+    type LocalStaged = StagedObjects<ProviderObjectStore<acyclic_objects::LocalObjects>>;
+
+    async fn open_staged(
+        directory: &Path,
+    ) -> Result<(LocalStaged, Arc<acyclic_objects::LocalObjects>), Box<dyn std::error::Error>> {
         let provider = Arc::new(
             acyclic_objects::LocalObjects::open(
-                directory.path(),
+                directory.join("objects"),
                 acyclic_objects::LocalObjectsLimits::default(),
             )
             .await?,
@@ -312,12 +595,55 @@ mod tests {
             .await?
             .bucket
             .ok_or("bucket creation returned no bucket")?;
-        let store = StagedObjects::new(ProviderObjectStore::new(Arc::clone(&provider), bucket));
-        let bytes = Bytes::from_static(b"staged immutable body");
+        let store = StagedObjects::open(
+            ProviderObjectStore::new(Arc::clone(&provider), bucket),
+            directory.to_path_buf(),
+        )
+        .await?;
+        Ok((store, provider))
+    }
+
+    async fn reopen_contains(
+        directory: &Path,
+        objects: &[ObjectId],
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let reopened = acyclic_objects::LocalObjects::open(
+            directory.join("objects"),
+            acyclic_objects::LocalObjectsLimits::default(),
+        )
+        .await?;
+        let bucket = reopened
+            .bucket_named("staged-test")
+            .await?
+            .ok_or("missing bucket")?;
+        let reopened = ProviderObjectStore::new(Arc::new(reopened), bucket);
+        let token = CancellationToken::new();
+        for &object_id in objects {
+            if !reopened
+                .contains(object_id, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn blob(bytes: Bytes) -> (ObjectId, Bytes) {
         let object_id = ObjectId {
             kind: ObjectKind::Blob,
             digest: object_digest(ObjectKind::Blob, &bytes),
         };
+        (object_id, bytes)
+    }
+
+    #[tokio::test]
+    async fn failed_drain_keeps_objects_private_until_a_durable_retry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (store, provider) = open_staged(directory.path()).await?;
+        let (object_id, bytes) = blob(Bytes::from_static(b"staged immutable body"));
         let token = CancellationToken::new();
         store
             .put(object_id, bytes.clone(), WorkBudget::UNBOUNDED, &token)
@@ -370,22 +696,64 @@ mod tests {
         );
         drop(store);
         drop(provider);
-        let reopened = acyclic_objects::LocalObjects::open(
-            directory.path(),
-            acyclic_objects::LocalObjectsLimits::default(),
-        )
-        .await?;
-        let bucket = reopened
-            .bucket_named("staged-test")
-            .await?
-            .ok_or("missing bucket")?;
-        let reopened = ProviderObjectStore::new(Arc::new(reopened), bucket);
-        assert!(
-            reopened
-                .contains(object_id, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
-        );
+        assert!(reopen_contains(directory.path(), &[object_id]).await?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn overflow_spills_privately_until_the_publication_drain()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (store, provider) = open_staged(directory.path()).await?;
+        let token = CancellationToken::new();
+        // Three windows of distinct bodies force repeated spills, and the
+        // drain must split them across several segment-bounded batches.
+        let body_bytes = 256 * 1_024;
+        let count = 3 * usize::try_from(MAXIMUM_RESIDENT_BYTES)? / body_bytes;
+        let objects = (0..count)
+            .map(|index| {
+                blob(Bytes::from(vec![
+                    u8::try_from(index % 251).unwrap_or(0);
+                    body_bytes
+                ]))
+            })
+            .collect::<Vec<_>>();
+        for (object_id, bytes) in &objects {
+            store
+                .put(*object_id, bytes.clone(), WorkBudget::UNBOUNDED, &token)
+                .await?;
+        }
+        for (object_id, bytes) in &objects {
+            assert!(
+                !store
+                    .inner()
+                    .contains(*object_id, WorkBudget::UNBOUNDED, &token)
+                    .await?
+                    .value,
+                "overflow must not make staged bytes durable"
+            );
+            let read = store
+                .read(*object_id, u64::MAX, WorkBudget::UNBOUNDED, &token)
+                .await?;
+            assert_eq!(&read.value.bytes, bytes);
+        }
+        store
+            .flush_before_publish(WorkBudget::UNBOUNDED, &token)
+            .await?;
+        for (object_id, bytes) in &objects {
+            let read = store
+                .read(*object_id, u64::MAX, WorkBudget::UNBOUNDED, &token)
+                .await?;
+            assert_eq!(&read.value.bytes, bytes);
+        }
+        assert_eq!(store.pending.lock().await.spilled_bytes, 0);
+        let identities = objects
+            .iter()
+            .map(|(object_id, _)| *object_id)
+            .collect::<Vec<_>>();
+        drop(store);
+        drop(provider);
+        assert!(reopen_contains(directory.path(), &identities).await?);
         Ok(())
     }
 }

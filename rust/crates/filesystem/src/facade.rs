@@ -1276,6 +1276,10 @@ pub enum FsError {
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[error("local filesystem root setup failed: {0}")]
     LocalRoot(std::io::Error),
+    /// The private spill file for pre-publication staging could not be created.
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[error("local staging spill file setup failed: {0}")]
+    LocalStaging(std::io::Error),
     /// A live process-local engine already owns this root with different limits.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[error("local filesystem root is already open with different options")]
@@ -1755,7 +1759,9 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             crate::distributed::ProviderObjectStore::new(objects, bucket),
             object_cache,
         )?;
-        let objects = crate::staged_objects::StagedObjects::new(objects);
+        let objects = crate::staged_objects::StagedObjects::open(objects, root.clone())
+            .await
+            .map_err(FsError::LocalStaging)?;
         Ok(Self::new_with_path_index(
             crate::distributed::StreamAuthorityStore::new(stream),
             objects,
