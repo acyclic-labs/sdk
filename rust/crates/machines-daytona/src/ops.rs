@@ -307,18 +307,45 @@ impl OperationRegistry {
             .cloned()
     }
 
-    /// Marks a pending operation cancelled and returns the sandboxes it had *created*, which the
-    /// caller deletes best-effort. Sandboxes it merely acted on are never returned. Terminal
+    /// Cancels an operation and returns the sandboxes it had *created*, which the caller deletes
+    /// best-effort. Sandboxes it merely acted on are never returned.
+    ///
+    /// A pending or indeterminate operation becomes cancelled. A failed one stays failed but
+    /// still hands back any created sandbox its rollback could not delete, so cancel always
+    /// finishes undoing a mutation that did not succeed. Succeeded and already-cancelled
     /// operations are returned unchanged.
     #[must_use]
     pub fn cancel(&self, operation: OperationId) -> Option<(OperationObservation, Vec<String>)> {
         let mut inner = self.lock();
         let record = inner.operations.get_mut(&operation)?;
-        if record.phase == OperationPhase::Pending {
-            record.phase = OperationPhase::Cancelled;
-            Some((record.observation(), std::mem::take(&mut record.created)))
-        } else {
-            Some((record.observation(), Vec::new()))
+        match record.phase {
+            OperationPhase::Pending | OperationPhase::Indeterminate => {
+                record.phase = OperationPhase::Cancelled;
+                Some((record.observation(), std::mem::take(&mut record.created)))
+            }
+            OperationPhase::Failed => {
+                Some((record.observation(), std::mem::take(&mut record.created)))
+            }
+            OperationPhase::Succeeded | OperationPhase::Cancelled => {
+                Some((record.observation(), Vec::new()))
+            }
+        }
+    }
+
+    /// Takes the created sandboxes of a failed operation for rollback.
+    #[must_use]
+    pub fn take_created(&self, operation: OperationId) -> Vec<String> {
+        self.lock()
+            .operations
+            .get_mut(&operation)
+            .map(|record| std::mem::take(&mut record.created))
+            .unwrap_or_default()
+    }
+
+    /// Hands back created sandboxes a rollback could not delete, so a later `cancel` retries.
+    pub fn restore_created(&self, operation: OperationId, sandboxes: Vec<String>) {
+        if let Some(record) = self.lock().operations.get_mut(&operation) {
+            record.created.extend(sandboxes);
         }
     }
 
@@ -503,6 +530,31 @@ mod tests {
             registry.inspect(id).unwrap().phase,
             OperationPhase::Cancelled
         );
+    }
+
+    #[test]
+    fn cancel_finishes_undoing_indeterminate_and_failed_operations() {
+        let registry = OperationRegistry::default();
+        let Admission::Fresh(id) = registry.admit(key(5), &"fork").unwrap() else {
+            panic!("expected fresh")
+        };
+        assert!(registry.bind_created(id, "child-0"));
+        registry.fail(id, &ProviderError::Unavailable);
+        let (observation, sandboxes) = registry.cancel(id).unwrap();
+        assert_eq!(observation.phase, OperationPhase::Cancelled);
+        assert_eq!(sandboxes, ["child-0"]);
+
+        let Admission::Fresh(id) = registry.admit(key(6), &"fork").unwrap() else {
+            panic!("expected fresh")
+        };
+        assert!(registry.bind_created(id, "child-1"));
+        registry.fail(id, &ProviderError::Failed);
+        assert_eq!(registry.take_created(id), ["child-1"]);
+        registry.restore_created(id, vec!["child-1".to_owned()]);
+        let (observation, sandboxes) = registry.cancel(id).unwrap();
+        assert_eq!(observation.phase, OperationPhase::Failed);
+        assert_eq!(sandboxes, ["child-1"]);
+        assert!(registry.cancel(id).unwrap().1.is_empty());
     }
 
     #[test]

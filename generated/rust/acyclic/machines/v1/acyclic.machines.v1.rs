@@ -504,8 +504,9 @@ pub enum Capability {
     LiveFork = 4,
     SuspendResume = 5,
     LiveMovement = 6,
-    /// ForkMachine copies a running machine's disk, but not its memory or processes, into
-    /// fresh children. CAPABILITY_LIVE_FORK is the memory-and-disk form and takes precedence
+    /// ForkMachine copies a running machine's persistent disk, but not its memory or processes,
+    /// into fresh children. Which paths are persistent is provider-defined: a provider whose
+    /// machines boot from an immutable image may copy only its declared data directory. CAPABILITY_LIVE_FORK is the memory-and-disk form and takes precedence
     /// when both are declared.
     DiskFork = 7,
 }
@@ -728,7 +729,8 @@ pub enum ForkFidelity {
     Unspecified = 0,
     /// Children resume from the source's memory, processes, and disk at the fork instant.
     MemoryAndDisk = 1,
-    /// Children boot fresh over a copy of the source's disk; no process state is inherited.
+    /// Children boot fresh over a copy of the source's persistent disk (provider-defined; see
+    /// CAPABILITY_DISK_FORK) taken at one consistent instant; no process state is inherited.
     DiskOnly = 2,
 }
 impl ForkFidelity {

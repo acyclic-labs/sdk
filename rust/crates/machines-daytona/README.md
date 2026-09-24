@@ -25,20 +25,37 @@ from the machine contract or the outcome, never from the provider type:
 
 - **VM classes** declare `LiveFork`. Daytona's native fork copies the running sandbox's memory
   and disk into each child without a checkpoint (`ForkFidelity::MemoryAndDisk`). Children
-  share the parent's environment and credentials. Daytona refuses to delete a parent with live
-  fork children, so `destroy_machine` checks `GET /sandbox/{id}/forks` first and returns
-  `ProviderError::Conflict` until the children are gone.
+  share the parent's environment and credentials. A VM runs one fork at a time (it is
+  `forking` for several seconds and refuses another fork with 400 until `started`), so the
+  provider fans out as a doubling tree: every node that exists forks once per round (parent;
+  then parent and child 0; then parent and children 0-2; ...), so 15 children take four rounds
+  and 16 take five. Each fork waits for its source to be started and retries the state refusal
+  with backoff. Children forked from earlier children inherit what those executed since their
+  own fork, so the set is memory-identical only if the workload holds still during the fork.
+  Daytona refuses to delete a sandbox with live fork children, so `destroy_machine` checks
+  `GET /sandbox/{id}/forks` first and returns `ProviderError::Conflict` until the children are
+  gone; destroy children in reverse index order (a source always has a lower index than the
+  children forked from it), then the parent.
 - **Containers** declare only `DiskFork` (`ForkFidelity::DiskOnly`). The provider archives
   `DaytonaConfig::workspace_dir` (default `/home/daytona/workspace`, env
   `DAYTONA_WORKSPACE_DIR`) in the parent once, creates each child from the parent's snapshot
   with its lifecycle intervals, environment, and non-provider labels, and unpacks the archive
   into it through the toolbox files API. Processes and memory are not inherited: the caller
-  restarts its workload in each child from durable history. The copy is as consistent as `tar`
-  over a directory the parent may still be writing. Children never block deleting the parent.
+  restarts its workload in each child from durable history. The workspace is the provider's
+  declared persistent disk (`ForkFidelity::DiskOnly` copies provider-declared persistent data);
+  writes outside it are not copied, so keep durable state in the workspace. The archive is kept
+  only when two consecutive reads of the workspace agree, so it reflects one quiescent instant;
+  a workspace that keeps changing across five attempts fails the fork with
+  `ProviderError::Conflict` before any child exists. A child gets `acyclic.ready=true` only
+  after its workspace is unpacked. A fork that fails definitively deletes the children it
+  created; an indeterminate one keeps them for `recover`, and `cancel` deletes them. Children
+  never block deleting the parent.
   Measured on `daytona-small` (eu): a 4 MiB workspace forked into two children in about 7 s.
 
-Every live-fork child carries `acyclic.kind=live-fork` and `acyclic.parent=<source id>`, so
-`recover` rebuilds the outcome after a restart. Containers cannot pause, checkpoint memory, or
+Every live-fork child carries `acyclic.kind=live-fork`, `acyclic.parent=<requested machine>`,
+`acyclic.fork_source=<sandbox it was forked from>`, its index and the requested count, and
+`acyclic.ready=true` once complete, so `recover` rebuilds the outcome after a restart and
+reports a partial or unfinished fork as indeterminate. Containers cannot pause, checkpoint memory, or
 auto-suspend: their contracts carry `SuspensionPolicy::Manual`, and `suspend`, `wake`,
 `set_suspension_policy`, and `checkpoint` return `ProviderError::Unsupported`.
 
