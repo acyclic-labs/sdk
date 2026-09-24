@@ -1203,9 +1203,6 @@ export interface WasmBindings {
   readonly BrowserWorkspaceContextRegistry: {
     new(): WasmRawWorkspaceContextRegistry;
   };
-  readonly BrowserOperationWindowCoordinator: {
-    new(): WasmRawOperationWindowCoordinator;
-  };
   encodeMergePlanJson(valueJson: string): string;
   decodeMergePlanJson(valueJson: string): string;
   encodeMergeCandidateJson(valueJson: string): string;
@@ -1225,6 +1222,8 @@ export interface WasmRawWorkspaceContextRegistry {
     parentContextId: Uint8Array,
     rootsJson: string,
   ): Promise<string>;
+  adoptRootJson(contextId: Uint8Array, rootJson: string): Promise<string>;
+  removeRootJson(contextId: Uint8Array, rootId: Uint8Array): Promise<string>;
   resolveJson(contextId: Uint8Array): Promise<string>;
   setActiveJson(contextId: Uint8Array, active: boolean): Promise<string>;
   setWorkspaceJson(
@@ -1239,19 +1238,6 @@ export interface WasmRawWorkspaceContextRegistry {
     childContextId: Uint8Array,
     maximum: number,
   ): Promise<string>;
-}
-
-export interface WasmRawOperationWindowCoordinator {
-  beginJson(
-    workspaceId: Uint8Array,
-    parent: Uint8Array,
-    owner: string,
-    nowMillis: bigint,
-    expiresAtMillis: bigint,
-  ): Promise<string>;
-  observeParent(workspaceId: Uint8Array, parent: Uint8Array): Promise<boolean>;
-  finishJson(leaseJson: string, nowMillis: bigint): Promise<string>;
-  inspectJson(workspaceId: Uint8Array): Promise<string>;
 }
 
 export interface WasmRawFs {
@@ -1679,9 +1665,6 @@ export interface NativeBindings {
   readonly NativeWorkspaceContextRegistry: {
     open(stateRoot: string): NativeRawWorkspaceContextRegistry;
   };
-  readonly NativeOperationWindowCoordinator: {
-    open(stateRoot: string): NativeRawOperationWindowCoordinator;
-  };
 }
 
 export interface NativeRawWorkspaceContextRegistry {
@@ -1691,6 +1674,8 @@ export interface NativeRawWorkspaceContextRegistry {
     parentContextId: Uint8Array,
     rootsJson: string,
   ): Promise<string>;
+  adoptRootJson(contextId: Uint8Array, rootJson: string): Promise<string>;
+  removeRootJson(contextId: Uint8Array, rootId: Uint8Array): Promise<string>;
   resolveJson(contextId: Uint8Array): Promise<string>;
   setActiveJson(contextId: Uint8Array, active: boolean): Promise<string>;
   setWorkspaceJson(
@@ -2216,6 +2201,7 @@ export interface NativeRawFs {
     cancel(): void;
     objectCacheStats(): ObjectCacheStats;
     clearObjectCache(): void;
+    operationWindows(): NativeRawOperationWindowCoordinator;
     createWorkspace(name: string): Promise<NativeRawWorkspace>;
     openWorkspace(name: string): Promise<NativeRawWorkspace>;
     attachDirectory(

@@ -9,15 +9,23 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use acyclic_fs::kernel::FileMetadata;
+use acyclic_fs::model::{Lifecycle, VolumeConfig};
+#[cfg(windows)]
+use acyclic_fs::recover_native_mount_destination_preserving_residue;
 use acyclic_fs::{
     Fs, LocalOptions, MountOptions, NativeMountKind, TransactionCommit, probe_native_mount,
     recover_native_mount_destination,
 };
+use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
 use bytes::Bytes;
 use notify::{RecursiveMode, Watcher as _};
 use serde::{Deserialize, Serialize};
 
 type Failure = Box<dyn std::error::Error + Send + Sync>;
+type LocalTransaction =
+    acyclic_fs::Transaction<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
+type LocalWorkspace =
+    acyclic_fs::Workspace<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
 
 #[derive(Serialize)]
 struct Case {
@@ -62,6 +70,9 @@ struct ReceiptCapability {
     kind: Option<String>,
     available: bool,
     writable: bool,
+    provider_process_io_observable: bool,
+    session_isolation: String,
+    unavailable_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -82,7 +93,9 @@ const COVERAGE: &[&str] = &[
     "create-read-write",
     "atomic-save",
     "rename-delete",
+    "rename-before-hydration",
     "nested-paths",
+    "large-directory-paging",
     "concurrent-handles",
     "watchers",
     "crash-detach-recovery",
@@ -95,8 +108,11 @@ const COVERAGE: &[&str] = &[
     "root-checkout-untouched",
     "git-administration-untouched",
 ];
+const MACOS_NFS_PARALLEL_CLIENTS: usize = 4;
+const MACOS_NFS_LARGE_TREE_ENTRIES: usize = 512;
 #[cfg(windows)]
 const QUALIFICATION_MODIFIED_NS: i64 = 1_700_000_000_000_000_000;
+const MAX_CHILD_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, Eq, PartialEq)]
 struct CheckoutSnapshot {
@@ -131,23 +147,43 @@ fn dispatch() -> Result<(), Failure> {
     let args = std::env::args_os().collect::<Vec<_>>();
     match args.get(1).and_then(|value| value.to_str()) {
         Some("--io-child") => io_child(&required_path(&args, 2, "mount path")?),
+        Some("--rename-hydration-child") => {
+            rename_hydration_child(&required_path(&args, 2, "mount path")?)
+        }
+        Some("--parallel-io-child") => parallel_io_child(
+            &required_path(&args, 2, "mount path")?,
+            required_usize(&args, 3, "client index")?,
+            required_usize(&args, 4, "client count")?,
+        ),
         Some("--crash-child") => crash_child(
             required_path(&args, 2, "crash root")?,
             required_path(&args, 3, "mount path")?,
             required_path(&args, 4, "ready path")?,
         ),
+        Some("--qualification-case-worker") => {
+            let case = args
+                .get(2)
+                .and_then(|value| value.to_str())
+                .ok_or("--qualification-case-worker requires a case name")?;
+            run_on_qualification_thread(|| qualification_case_worker(case))
+        }
         Some("--verify-receipt") => verify_receipt(args.get(1..).unwrap_or_default()),
-        _ => std::thread::scope(|scope| {
-            let qualification_args = args.get(1..).unwrap_or_default();
-            std::thread::Builder::new()
-                .name("native-mount-qualify".into())
-                .stack_size(32 * 1024 * 1024)
-                .spawn_scoped(scope, || qualify(qualification_args))
-                .map_err(Failure::from)?
-                .join()
-                .map_err(|_| -> Failure { "qualification worker panicked".into() })?
-        }),
+        _ => run_on_qualification_thread(|| qualify(args.get(1..).unwrap_or_default())),
     }
+}
+
+fn run_on_qualification_thread(
+    action: impl FnOnce() -> Result<(), Failure> + Send,
+) -> Result<(), Failure> {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("native-mount-qualify".into())
+            .stack_size(32 * 1024 * 1024)
+            .spawn_scoped(scope, action)
+            .map_err(Failure::from)?
+            .join()
+            .map_err(|_| -> Failure { "qualification worker panicked".into() })?
+    })
 }
 
 fn verify_receipt(args: &[std::ffi::OsString]) -> Result<(), Failure> {
@@ -161,12 +197,13 @@ fn verify_receipt(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         option(args, "--require-kind").ok_or("--verify-receipt requires --require-kind")?;
     let release_version =
         option(args, "--release-version").ok_or("--verify-receipt requires --release-version")?;
-    let (expected_os, expected_arch) = match required_kind.as_str() {
-        "linux-fuse" => ("linux", "x86_64"),
-        "macos-nfs" => ("macos", "aarch64"),
-        "windows-projfs" => ("windows", "x86_64"),
+    let (expected_os, provider_process_io_observable) = match required_kind.as_str() {
+        "linux-fuse" => ("linux", true),
+        "macos-nfs" => ("macos", true),
+        "windows-projfs" => ("windows", false),
         _ => return Err(format!("unsupported receipt backend: {required_kind}").into()),
     };
+    let expected_arch = std::env::consts::ARCH;
     let report: ReceiptReport = serde_json::from_slice(&fs::read(receipt_path)?)?;
     let digest = file_blake3(&executable)?;
     if report.schema != "acyclic-native-mount-qualification-v2"
@@ -184,6 +221,9 @@ fn verify_receipt(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         || report.capability.kind.as_deref() != Some(required_kind.as_str())
         || !report.capability.available
         || !report.capability.writable
+        || report.capability.provider_process_io_observable != provider_process_io_observable
+        || report.capability.session_isolation != "SharedProcess"
+        || report.capability.unavailable_reason.is_some()
         || report.cases.len() != 3
         || !report
             .cases
@@ -210,6 +250,14 @@ fn required_path(
         .ok_or_else(|| format!("missing {name}").into())
 }
 
+fn required_usize(args: &[std::ffi::OsString], index: usize, name: &str) -> Result<usize, Failure> {
+    args.get(index)
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| -> Failure { format!("missing {name}").into() })?
+        .parse()
+        .map_err(|error| format!("invalid {name}: {error}").into())
+}
+
 fn kind_name(kind: NativeMountKind) -> &'static str {
     match kind {
         NativeMountKind::LinuxFuse => "linux-fuse",
@@ -227,9 +275,14 @@ fn option(args: &[std::ffi::OsString], name: &str) -> Option<String> {
     })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "qualification admission, case selection, and receipt emission form one CLI transaction"
+)]
 fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
     let output = option(args, "--output").map(PathBuf::from);
     let checkout_root = option(args, "--checkout-root").map(PathBuf::from);
+    let only_case = option(args, "--only-case");
     reject_output_inside_checkout(output.as_deref(), checkout_root.as_deref())?;
     let required_kind = option(args, "--require-kind");
     let release_executable = option(args, "--release-executable").map(PathBuf::from);
@@ -306,20 +359,52 @@ fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         .as_deref()
         .map(snapshot_checkout)
         .transpose()?;
-    run_case(&mut report, "real-mount-mutation-matrix", || {
-        let runtime = tokio::runtime::Runtime::new()?;
-        runtime.block_on(mutation_matrix(observed_kind.ok_or("backend kind absent")?))
-    });
-    run_case(&mut report, "crash-detach-recovery", crash_recovery);
-    run_case(&mut report, "checkout-and-git-untouched", || {
-        if let (Some(root), Some(before)) = (checkout_root.as_deref(), snapshot.as_ref()) {
-            let after = snapshot_checkout(root)?;
-            if &after != before {
-                return Err("root checkout or Git administrative state changed".into());
+    if only_case
+        .as_deref()
+        .is_none_or(|case| case == "real-mount-mutation-matrix")
+    {
+        run_case(&mut report, "real-mount-mutation-matrix", || {
+            // The matrix includes a 10-second I/O-child deadline followed by
+            // a 30-second parallel-client deadline and mount teardown.
+            run_supervised_case("real-mount-mutation-matrix", Duration::from_secs(45))
+        });
+    }
+    if only_case
+        .as_deref()
+        .is_none_or(|case| case == "crash-detach-recovery")
+    {
+        run_case(&mut report, "crash-detach-recovery", || {
+            // The recovery path itself permits a 30-second detach; the outer
+            // supervisor must not kill it before that bound can report why.
+            run_supervised_case("crash-detach-recovery", Duration::from_secs(35))
+        });
+    }
+    if only_case
+        .as_deref()
+        .is_none_or(|case| case == "checkout-and-git-untouched")
+    {
+        run_case(&mut report, "checkout-and-git-untouched", || {
+            if let (Some(root), Some(before)) = (checkout_root.as_deref(), snapshot.as_ref()) {
+                let after = snapshot_checkout(root)?;
+                if &after != before {
+                    return Err("root checkout or Git administrative state changed".into());
+                }
             }
-        }
-        Ok(())
-    });
+            Ok(())
+        });
+    }
+    if only_case.as_deref() == Some("rename-before-hydration") {
+        run_case(&mut report, "rename-before-hydration", || {
+            run_supervised_case("rename-before-hydration", Duration::from_secs(15))
+        });
+    }
+    if report.cases.is_empty() {
+        return Err(format!(
+            "unknown --only-case value: {}",
+            only_case.as_deref().unwrap_or_default()
+        )
+        .into());
+    }
     report.passed = report.cases.iter().all(|case| case.status == "passed");
     emit_report(&report, output.as_deref())?;
     if report.passed {
@@ -327,6 +412,277 @@ fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
     } else {
         Err("one or more qualification cases failed".into())
     }
+}
+
+fn qualification_case_worker(case: &str) -> Result<(), Failure> {
+    match case {
+        "real-mount-mutation-matrix" => {
+            let kind = probe_native_mount()
+                .kind
+                .map(kind_name)
+                .ok_or("backend kind absent")?;
+            tokio::runtime::Runtime::new()?.block_on(mutation_matrix(kind))
+        }
+        "crash-detach-recovery" => crash_recovery(),
+        "rename-before-hydration" => {
+            tokio::runtime::Runtime::new()?.block_on(rename_hydration_case())
+        }
+        _ => Err(format!("unknown qualification worker case: {case}").into()),
+    }
+}
+
+fn run_supervised_case(case: &str, timeout: Duration) -> Result<(), Failure> {
+    let child = spawn_captured_child(
+        Command::new(std::env::current_exe()?)
+            .arg("--qualification-case-worker")
+            .arg(case),
+    )?;
+    let output = wait_for_child(child, timeout)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "qualification worker {case} failed ({}): {}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into())
+    }
+}
+
+async fn rename_hydration_case() -> Result<(), Failure> {
+    const RENAME_REPETITIONS: usize = 16;
+    let root = tempfile::tempdir()?;
+    let mount_path = root.path().join("mount");
+    fs::create_dir(&mount_path)?;
+    let engine = Fs::local(LocalOptions::new(root.path().join("store"))).await?;
+    let workspace = engine
+        .create_workspace_with_config("rename-hydration", VolumeConfig::native(Lifecycle::Durable))
+        .await?;
+    let mut fixture = workspace
+        .begin_transaction(acyclic_fs::IdempotencyKey::new())
+        .await?;
+    for index in 0..RENAME_REPETITIONS {
+        fixture
+            .create_file(
+                &format!("/before-{index}.txt"),
+                Bytes::from(format!("renamed-before-hydration-{index}")),
+                FileMetadata::default(),
+            )
+            .await?;
+    }
+    match fixture.commit().await? {
+        TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_) => {}
+        _ => return Err("rename hydration fixture transaction was not committed".into()),
+    }
+    let mount = workspace
+        .mount(&mount_path, MountOptions::read_write())
+        .await?;
+    let child = spawn_captured_child(
+        Command::new(std::env::current_exe()?)
+            .arg("--rename-hydration-child")
+            .arg(&mount_path),
+    )?;
+    let child_result = wait_for_child(child, Duration::from_secs(10));
+    let synced = mount.sync().await.map_err(Failure::from);
+    let unmounted = mount.unmount().await.map_err(Failure::from);
+    finish_mounted_child(
+        "rename hydration child",
+        child_result,
+        Ok(()),
+        synced,
+        unmounted,
+        &mount_path,
+    )?;
+    for index in 0..RENAME_REPETITIONS {
+        let renamed = format!("/after-{index}.txt");
+        let replacement = format!("/replacement-{index}.txt");
+        if workspace.read(&renamed, 64).await?.as_ref()
+            != format!("renamed-before-hydration-{index}").as_bytes()
+        {
+            return Err(format!("renamed content {index} was not published").into());
+        }
+        if workspace.read(&replacement, 64).await?.as_ref()
+            != format!("replacement-content-{index}").as_bytes()
+        {
+            return Err(format!("replacement content {index} was not published").into());
+        }
+        #[cfg(windows)]
+        if !matches!(
+            workspace.stat(&renamed).await?.metadata.windows_attributes,
+            Some(attributes) if attributes & 1 != 0
+        ) {
+            return Err(format!("renamed metadata {index} was not published").into());
+        }
+    }
+    Ok(())
+}
+
+struct CapturedChild {
+    process: ProcessTree,
+    stdout: File,
+    stderr: File,
+}
+
+fn spawn_captured_child(command: &mut Command) -> Result<CapturedChild, Failure> {
+    let stdout = tempfile::tempfile()?;
+    let stderr = tempfile::tempfile()?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout.try_clone()?))
+        .stderr(Stdio::from(stderr.try_clone()?));
+    Ok(CapturedChild {
+        process: spawn_process_tree(command)?,
+        stdout,
+        stderr,
+    })
+}
+
+fn wait_for_child(
+    mut child: CapturedChild,
+    timeout: Duration,
+) -> Result<std::process::Output, Failure> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if captured_child_output_exceeds_limit(&child)? {
+            child.process.terminate_descendants()?;
+            let _ = child.process.wait();
+            return Err(format!("child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into());
+        }
+        if let Some(status) = child.process.try_wait()? {
+            return captured_child_output(status, &mut child.stdout, &mut child.stderr);
+        }
+        if Instant::now() >= deadline {
+            child.process.terminate_descendants()?;
+            let status = child.process.wait()?;
+            let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
+            return Err(format!(
+                "child process exceeded {} ms: stdout={} stderr={}",
+                timeout.as_millis(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn captured_child_output(
+    status: std::process::ExitStatus,
+    stdout: &mut File,
+    stderr: &mut File,
+) -> Result<std::process::Output, Failure> {
+    if stdout
+        .metadata()?
+        .len()
+        .saturating_add(stderr.metadata()?.len())
+        > MAX_CHILD_OUTPUT_BYTES
+    {
+        return Err(format!("child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into());
+    }
+    fn read(file: &mut File) -> Result<Vec<u8>, Failure> {
+        file.seek(SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        file.take(MAX_CHILD_OUTPUT_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_CHILD_OUTPUT_BYTES {
+            return Err(format!("child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into());
+        }
+        Ok(bytes)
+    }
+    Ok(std::process::Output {
+        status,
+        stdout: read(stdout)?,
+        stderr: read(stderr)?,
+    })
+}
+
+fn captured_child_output_exceeds_limit(child: &CapturedChild) -> Result<bool, Failure> {
+    Ok(child
+        .stdout
+        .metadata()?
+        .len()
+        .saturating_add(child.stderr.metadata()?.len())
+        > MAX_CHILD_OUTPUT_BYTES)
+}
+
+fn append_child_failure(
+    failures: &mut Vec<String>,
+    label: &str,
+    result: Result<std::process::Output, Failure>,
+) {
+    match result {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => failures.push(format!(
+            "{label} failed ({}): {}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )),
+        Err(error) => failures.push(format!("{label} failed: {error}")),
+    }
+}
+
+fn verify_empty_mount_directory(mount: &Path) -> Result<(), Failure> {
+    if !mount.is_dir() || fs::read_dir(mount)?.next().is_some() {
+        return Err("orderly detach did not restore the empty mount directory".into());
+    }
+    Ok(())
+}
+
+fn finish_mounted_child(
+    label: &str,
+    child: Result<std::process::Output, Failure>,
+    observed: Result<(), Failure>,
+    synced: Result<(), Failure>,
+    detached: Result<(), Failure>,
+    mount: &Path,
+) -> Result<(), Failure> {
+    let mut failures = Vec::new();
+    append_child_failure(&mut failures, label, child);
+    if let Err(error) = observed {
+        failures.push(format!("watch verification failed: {error}"));
+    }
+    if let Err(error) = synced {
+        failures.push(format!("mount sync failed: {error}"));
+    }
+    if let Err(error) = detached {
+        failures.push(format!("mount detach failed: {error}"));
+    }
+    if let Err(error) = verify_empty_mount_directory(mount) {
+        failures.push(error.to_string());
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; ").into())
+    }
+}
+
+fn rename_hydration_child(mount: &Path) -> Result<(), Failure> {
+    for index in 0..16 {
+        let source = mount.join(format!("before-{index}.txt"));
+        let renamed = mount.join(format!("after-{index}.txt"));
+        let replacement = mount.join(format!("replacement-{index}.txt"));
+        fs::rename(&source, &renamed)?;
+        #[cfg(windows)]
+        mutate_default_metadata(&renamed)?;
+        fs::write(&source, format!("replacement-content-{index}"))?;
+        fs::rename(&source, &replacement)?;
+        if fs::read(&renamed)? != format!("renamed-before-hydration-{index}").as_bytes() {
+            return Err(
+                format!("renamed placeholder {index} returned stale or missing content").into(),
+            );
+        }
+        if fs::read(&replacement)? != format!("replacement-content-{index}").as_bytes() {
+            return Err(
+                format!("replacement path {index} returned stale or missing content").into(),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn release_identity(executable: &Path) -> Result<(String, String), Failure> {
@@ -442,7 +798,9 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     fs::create_dir(&mount_path)?;
     fs::write(root.path().join("outside-guard"), b"outside-safe")?;
     let engine = Fs::local(LocalOptions::new(&store)).await?;
-    let workspace = engine.create_workspace("native-matrix").await?;
+    let workspace = engine
+        .create_workspace_with_config("native-matrix", VolumeConfig::native(Lifecycle::Durable))
+        .await?;
     let mut transaction = workspace
         .begin_transaction(acyclic_fs::IdempotencyKey::new())
         .await?;
@@ -469,6 +827,13 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
         )
         .await?;
     transaction
+        .create_file(
+            "/seed/nested/rename-before-read.txt",
+            Bytes::from_static(b"renamed-before-hydration"),
+            FileMetadata::default(),
+        )
+        .await?;
+    transaction
         .hard_link(
             "/seed/nested/original.txt",
             "/seed/nested/original-hard.txt",
@@ -480,6 +845,19 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
             native_link_bytes("original.txt"),
         )
         .await?;
+    add_large_windows_fixture(kind, &mut transaction).await?;
+    if kind == "macos-nfs" {
+        transaction.create_dir_all("/large-tree").await?;
+        for index in 0..MACOS_NFS_LARGE_TREE_ENTRIES {
+            transaction
+                .create_file(
+                    &format!("/large-tree/entry-{index:04}.txt"),
+                    Bytes::from_static(b"large-tree"),
+                    FileMetadata::default(),
+                )
+                .await?;
+        }
+    }
     match transaction.commit().await? {
         TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_) => {}
         _ => return Err("fixture transaction was not committed".into()),
@@ -507,66 +885,39 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
         .mount(&mount_path, MountOptions::read_write())
         .await?;
     watcher.watch(&mount_path)?;
-    let child = Command::new(std::env::current_exe()?)
-        .arg("--io-child")
-        .arg(&mount_path)
-        .env("ACYCLIC_EXPECTED_NATIVE_KIND", kind)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()?;
-    let child_error = (!child.status.success()).then(|| {
-        format!(
-            "I/O child failed ({}): {}{}",
-            child.status,
-            String::from_utf8_lossy(&child.stdout),
-            String::from_utf8_lossy(&child.stderr)
-        )
-    });
-    let watched = wait_for_watch(&watch_rx, &mount_path.join("nested/watch-sentinel.txt"));
+    let child = spawn_captured_child(
+        Command::new(std::env::current_exe()?)
+            .arg("--io-child")
+            .arg(&mount_path)
+            .env("ACYCLIC_EXPECTED_NATIVE_KIND", kind),
+    )?;
+    let child_result = wait_for_child(child, Duration::from_secs(10));
+    let watched = wait_for_watch_after_child(
+        &watch_rx,
+        &mount_path.join("nested/watch-sentinel.txt"),
+        &child_result,
+    );
+    eprintln!("qualification phase: I/O child finished; parallel clients starting");
+    let parallel = if kind == "macos-nfs" {
+        run_parallel_io_children(&mount_path, MACOS_NFS_PARALLEL_CLIENTS)
+    } else {
+        Ok(())
+    };
+    eprintln!("qualification phase: parallel clients finished; mount sync starting");
     let synced = mount.sync().await.map_err(Failure::from);
+    eprintln!("qualification phase: mount sync finished; unmount starting");
     let detached = mount.unmount().await.map_err(Failure::from);
-    if let Some(error) = child_error {
-        return Err(error.into());
-    }
-    watched?;
-    synced?;
-    detached?;
-    if !mount_path.is_dir() || fs::read_dir(&mount_path)?.next().is_some() {
-        return Err("orderly detach did not restore the empty mount directory".into());
-    }
-    if fs::read(root.path().join("outside-guard"))? != b"outside-safe" {
-        return Err("escape probe changed content outside the mount".into());
-    }
-    let escaped = root.path().join("escape-attempt.txt");
-    if fs::read(&escaped)? != b"host-only" {
-        return Err("traversal mutation did not remain in the temporary host parent".into());
-    }
-    if workspace.stat("/escape-attempt.txt").await.is_ok() {
-        return Err("traversal mutation escaped into workspace state".into());
-    }
-    fs::remove_file(escaped)?;
-    if workspace.read("/nested/created.txt", 64).await?.as_ref() != b"created-v2" {
-        return Err("created content was not published".into());
-    }
-    if workspace.read("/nested/atomic.txt", 64).await?.as_ref() != b"atomic-new" {
-        return Err("atomic save was not published".into());
-    }
-    if workspace.read("/nested/renamed.txt", 64).await?.as_ref() != b"rename-me" {
-        return Err("rename was not published".into());
-    }
-    if workspace.stat("/nested/delete-me.txt").await.is_ok() {
-        return Err("delete was not published".into());
-    }
-    let original = workspace.stat("/nested/hard-source.txt").await?;
-    let linked = workspace.stat("/nested/hard-link.txt").await?;
-    if original.file_id != linked.file_id || original.link_count < 2 {
-        return Err("hard-link identity was not preserved".into());
-    }
-    if workspace.read_symbolic_link("/nested/symbolic.txt").await?
-        != native_link_bytes("created.txt")
-    {
-        return Err("symbolic-link target was not published".into());
-    }
+    eprintln!("qualification phase: unmount finished");
+    finish_mounted_child(
+        "I/O child",
+        child_result,
+        watched,
+        synced,
+        detached,
+        &mount_path,
+    )?;
+    parallel?;
+    verify_published_mutations(&workspace, root.path()).await?;
     let metadata = workspace.stat("/nested/metadata.txt").await?.metadata;
     #[cfg(windows)]
     {
@@ -610,6 +961,70 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     if metadata.posix_mode.is_none_or(|mode| mode & 0o777 != 0o640) {
         return Err("POSIX mode metadata was not published".into());
     }
+    if kind == "macos-nfs" {
+        macos_nfs_handoff_and_mount_loss(&workspace, root.path()).await?;
+    }
+    Ok(())
+}
+
+async fn verify_published_mutations(
+    workspace: &LocalWorkspace,
+    root: &Path,
+) -> Result<(), Failure> {
+    if fs::read(root.join("outside-guard"))? != b"outside-safe" {
+        return Err("escape probe changed content outside the mount".into());
+    }
+    let escaped = root.join("escape-attempt.txt");
+    if fs::read(&escaped)? != b"host-only" {
+        return Err("traversal mutation did not remain in the temporary host parent".into());
+    }
+    if workspace.stat("/escape-attempt.txt").await.is_ok() {
+        return Err("traversal mutation escaped into workspace state".into());
+    }
+    fs::remove_file(escaped)?;
+    if workspace.read("/nested/created.txt", 64).await?.as_ref() != b"created-v2" {
+        return Err("created content was not published".into());
+    }
+    if workspace.read("/nested/atomic.txt", 64).await?.as_ref() != b"atomic-new" {
+        return Err("atomic save was not published".into());
+    }
+    if workspace.read("/nested/renamed.txt", 64).await?.as_ref() != b"rename-me" {
+        return Err("rename was not published".into());
+    }
+    if workspace.stat("/nested/delete-me.txt").await.is_ok() {
+        return Err("delete was not published".into());
+    }
+    let original = workspace.stat("/nested/hard-source.txt").await?;
+    let linked = workspace.stat("/nested/hard-link.txt").await?;
+    if original.file_id != linked.file_id || original.link_count < 2 {
+        return Err("hard-link identity was not preserved".into());
+    }
+    if workspace.read_symbolic_link("/nested/symbolic.txt").await?
+        != native_link_bytes("created.txt")
+    {
+        return Err("symbolic-link target was not published".into());
+    }
+    Ok(())
+}
+
+async fn add_large_windows_fixture(
+    kind: &str,
+    transaction: &mut LocalTransaction,
+) -> Result<(), Failure> {
+    if kind != "windows-projfs" {
+        return Ok(());
+    }
+    transaction.create_dir_all("/large").await?;
+    for ordinal in 0..300_u16 {
+        let extension = if ordinal % 10 == 0 { "rs" } else { "txt" };
+        transaction
+            .create_file(
+                &format!("/large/entry-{ordinal:04}.{extension}"),
+                Bytes::from(format!("entry-{ordinal}")),
+                FileMetadata::default(),
+            )
+            .await?;
+    }
     Ok(())
 }
 
@@ -639,23 +1054,44 @@ fn wait_for_watch(
         .into())
 }
 
+fn wait_for_watch_after_child(
+    receiver: &mpsc::Receiver<notify::Result<notify::Event>>,
+    sentinel: &Path,
+    child: &Result<std::process::Output, Failure>,
+) -> Result<(), Failure> {
+    match child {
+        Ok(output) if output.status.success() => wait_for_watch(receiver, sentinel),
+        _ => Ok(()),
+    }
+}
+
+fn verify_large_windows_directory(mount: &Path) -> Result<(), Failure> {
+    let large = mount.join("large");
+    if fs::read_dir(&large)?.count() != 300
+        || fs::read(large.join("entry-0000.rs"))? != b"entry-0"
+        || fs::read(large.join("entry-0299.txt"))? != b"entry-299"
+    {
+        return Err("large projected directory was incomplete or corrupt".into());
+    }
+    let wildcard = Command::new("cmd")
+        .current_dir(&large)
+        .args(["/D", "/Q", "/C", "dir", "/B", "/A:-D", "/ON", "*.rs"])
+        .output()?;
+    let wildcard_output = String::from_utf8_lossy(&wildcard.stdout);
+    let wildcard_count = wildcard_output.lines().count();
+    if !wildcard.status.success() || wildcard_count != 30 {
+        return Err(format!(
+            "wildcard enumeration failed (status {}, count {wildcard_count}): stdout={wildcard_output:?}, stderr={:?}",
+            wildcard.status,
+            String::from_utf8_lossy(&wildcard.stderr)
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn io_child(mount: &Path) -> Result<(), Failure> {
-    if fs::read(mount.join("seed/nested/original.txt"))? != b"seed" {
-        return Err("projected regular file differs through real mount".into());
-    }
-    if fs::read(mount.join("seed/nested/original-hard.txt"))? != b"seed" {
-        return Err("projected hard link differs through real mount".into());
-    }
-    let projected_link = fs::read_link(mount.join("seed/nested/original-link.txt"))?;
-    if projected_link != Path::new("original.txt") {
-        return Err(format!("projected symbolic link target differs: {projected_link:?}").into());
-    }
-    #[cfg(windows)]
-    mutate_default_metadata(&mount.join("seed/nested/default-metadata.txt"))?;
-    #[cfg(windows)]
-    if fs::read(mount.join("seed/nested/default-read.txt"))? != b"read-only-observation" {
-        return Err("default-metadata read fixture differs".into());
-    }
+    verify_projected_seed(mount)?;
     fs::create_dir_all(mount.join("nested/deeper"))?;
     let created = mount.join("nested/created.txt");
     fs::write(&created, b"created-v1")?;
@@ -701,6 +1137,28 @@ fn io_child(mount: &Path) -> Result<(), Failure> {
     create_symlink(Path::new("created.txt"), &mount.join("nested/symbolic.txt"))?;
     let metadata = mount.join("nested/metadata.txt");
     create_metadata_file(&metadata)?;
+    if std::env::var("ACYCLIC_EXPECTED_NATIVE_KIND").as_deref() == Ok("macos-nfs") {
+        macos_nfs_xattrs_and_toolchain(mount, &metadata)?;
+        let entries = fs::read_dir(mount.join("large-tree"))?.collect::<Result<Vec<_>, _>>()?;
+        if entries.len() != MACOS_NFS_LARGE_TREE_ENTRIES {
+            return Err(format!(
+                "large-tree readdir returned {} of {} entries",
+                entries.len(),
+                MACOS_NFS_LARGE_TREE_ENTRIES
+            )
+            .into());
+        }
+        for index in [
+            0,
+            MACOS_NFS_LARGE_TREE_ENTRIES / 2,
+            MACOS_NFS_LARGE_TREE_ENTRIES - 1,
+        ] {
+            let path = mount.join(format!("large-tree/entry-{index:04}.txt"));
+            if fs::metadata(&path)?.len() != 10 || fs::read(path)? != b"large-tree" {
+                return Err(format!("large-tree entry {index} was incoherent").into());
+            }
+        }
+    }
     #[cfg(windows)]
     create_timestamp_file(&mount.join("nested/timestamps.txt"))?;
     case_behavior(mount)?;
@@ -720,6 +1178,305 @@ fn io_child(mount: &Path) -> Result<(), Failure> {
     fs::write(traversal_write, b"host-only")?;
     fs::write(mount.join("nested/watch-sentinel.txt"), b"watch-me")?;
     println!("native mount I/O matrix passed");
+    Ok(())
+}
+
+fn verify_projected_seed(mount: &Path) -> Result<(), Failure> {
+    let renamed_before_read = mount.join("seed/nested/rename-before-read.txt");
+    let renamed_before_read_destination = mount.join("seed/nested/renamed-before-read.txt");
+    fs::rename(&renamed_before_read, &renamed_before_read_destination)?;
+    if fs::read(&renamed_before_read_destination)? != b"renamed-before-hydration" {
+        return Err("rename-before-hydration returned stale or missing content".into());
+    }
+    if fs::read(mount.join("seed/nested/original.txt"))? != b"seed" {
+        return Err("projected regular file differs through real mount".into());
+    }
+    if fs::read(mount.join("seed/nested/original-hard.txt"))? != b"seed" {
+        return Err("projected hard link differs through real mount".into());
+    }
+    if std::env::var("ACYCLIC_EXPECTED_NATIVE_KIND")? == "windows-projfs" {
+        verify_large_windows_directory(mount)?;
+    }
+    let projected_link = fs::read_link(mount.join("seed/nested/original-link.txt"))?;
+    if projected_link != Path::new("original.txt") {
+        return Err(format!("projected symbolic link target differs: {projected_link:?}").into());
+    }
+    #[cfg(windows)]
+    mutate_default_metadata(&mount.join("seed/nested/default-metadata.txt"))?;
+    #[cfg(windows)]
+    if fs::read(mount.join("seed/nested/default-read.txt"))? != b"read-only-observation" {
+        return Err("default-metadata read fixture differs".into());
+    }
+    Ok(())
+}
+
+fn run_parallel_io_children(mount: &Path, count: usize) -> Result<(), Failure> {
+    let executable = std::env::current_exe()?;
+    let mut children = Vec::with_capacity(count);
+    for index in 0..count {
+        let child = spawn_captured_child(
+            Command::new(&executable)
+                .arg("--parallel-io-child")
+                .arg(mount)
+                .arg(index.to_string())
+                .arg(count.to_string()),
+        );
+        match child {
+            Ok(child) => children.push(Some(child)),
+            Err(error) => {
+                let cleanup = terminate_captured_children(&mut children);
+                return Err(
+                    format!("parallel I/O child {index} did not start: {error}{cleanup}").into(),
+                );
+            }
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut remaining = count;
+    while remaining != 0 {
+        for index in 0..children.len() {
+            let Some(child) = children.get_mut(index).and_then(Option::as_mut) else {
+                continue;
+            };
+            if captured_child_output_exceeds_limit(child)? {
+                let cleanup = terminate_captured_children(&mut children);
+                return Err(format!(
+                    "parallel I/O child {index} output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes{cleanup}"
+                )
+                .into());
+            }
+            let Some(status) = child.process.try_wait()? else {
+                continue;
+            };
+            let mut child = children
+                .get_mut(index)
+                .and_then(Option::take)
+                .ok_or("parallel child disappeared")?;
+            let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
+            remaining -= 1;
+            if !output.status.success() {
+                let cleanup = terminate_captured_children(&mut children);
+                return Err(format!(
+                    "parallel I/O child {index} failed ({}): {}{}{cleanup}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )
+                .into());
+            }
+        }
+        if remaining != 0 && Instant::now() >= deadline {
+            let cleanup = terminate_captured_children(&mut children);
+            return Err(format!("parallel I/O children exceeded 30 seconds{cleanup}").into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+fn terminate_captured_children(children: &mut [Option<CapturedChild>]) -> String {
+    let mut failures = Vec::new();
+    for (index, child) in children.iter_mut().enumerate() {
+        let Some(mut child) = child.take() else {
+            continue;
+        };
+        if let Err(error) = child.process.terminate() {
+            failures.push(format!("child {index}: {error}"));
+        }
+    }
+    if failures.is_empty() {
+        String::new()
+    } else {
+        format!("; cleanup failed: {}", failures.join(", "))
+    }
+}
+
+fn parallel_io_child(mount: &Path, index: usize, count: usize) -> Result<(), Failure> {
+    if count == 0 || index >= count {
+        return Err("invalid parallel client identity".into());
+    }
+    let directory = mount.join("parallel-clients");
+    let staging = mount.join("parallel-staging");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("parallel client {index} create directory: {error}"))?;
+    fs::create_dir_all(&staging)
+        .map_err(|error| format!("parallel client {index} create staging: {error}"))?;
+    let body = format!("client-{index}");
+    let staged = staging.join(format!("client-{index}.tmp"));
+    fs::write(&staged, body.as_bytes())
+        .map_err(|error| format!("parallel client {index} write own file: {error}"))?;
+    fs::rename(&staged, directory.join(format!("client-{index}.txt")))
+        .map_err(|error| format!("parallel client {index} publish own file: {error}"))?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let entries = fs::read_dir(&directory)
+            .map_err(|error| format!("parallel client {index} open directory: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("parallel client {index} list directory: {error}"))?;
+        if entries.len() == count {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "parallel client {index} observed {} of {count} peers",
+                entries.len()
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    for peer in 0..count {
+        let path = directory.join(format!("client-{peer}.txt"));
+        let expected = format!("client-{peer}");
+        if fs::metadata(&path)
+            .map_err(|error| format!("parallel client {index} stat peer {peer}: {error}"))?
+            .len()
+            != u64::try_from(expected.len())?
+            || fs::read(&path)
+                .map_err(|error| format!("parallel client {index} read peer {peer}: {error}"))?
+                != expected.as_bytes()
+        {
+            return Err(format!("parallel client {index} saw incoherent peer {peer}").into());
+        }
+    }
+    Ok(())
+}
+
+fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> Result<(), Failure> {
+    #[cfg(target_os = "macos")]
+    {
+        let write = Command::new("/usr/bin/xattr")
+            .args(["-w", "com.acyclic.qualifier", "xattr-value"])
+            .arg(metadata)
+            .output()?;
+        if !write.status.success() {
+            return Err(format!(
+                "xattr write failed: {}",
+                String::from_utf8_lossy(&write.stderr)
+            )
+            .into());
+        }
+        let read = Command::new("/usr/bin/xattr")
+            .args(["-px", "com.acyclic.qualifier"])
+            .arg(metadata)
+            .output()?;
+        let encoded = String::from_utf8_lossy(&read.stdout)
+            .replace([' ', '\n'], "")
+            .to_ascii_lowercase();
+        if !read.status.success() || encoded != "78617474722d76616c7565" {
+            return Err(format!(
+                "xattr round trip through NFS was not exact: status={} hex={encoded:?} stderr={}",
+                read.status,
+                String::from_utf8_lossy(&read.stderr)
+            )
+            .into());
+        }
+        let resource = Command::new("/usr/bin/xattr")
+            .args([
+                "-wx",
+                "com.apple.ResourceFork",
+                "7265736f757263652d666f726b",
+            ])
+            .arg(metadata)
+            .output()?;
+        if !resource.status.success() {
+            return Err(format!(
+                "resource fork write failed: {}",
+                String::from_utf8_lossy(&resource.stderr)
+            )
+            .into());
+        }
+        let read = Command::new("/usr/bin/xattr")
+            .args(["-px", "com.apple.ResourceFork"])
+            .arg(metadata)
+            .output()?;
+        let encoded = String::from_utf8_lossy(&read.stdout)
+            .replace([' ', '\n'], "")
+            .to_ascii_lowercase();
+        if !read.status.success() || encoded != "7265736f757263652d666f726b" {
+            let listed = Command::new("/usr/bin/xattr")
+                .args(["-l"])
+                .arg(metadata)
+                .output()?;
+            let sidecar = metadata.with_file_name("._metadata.txt");
+            let sidecar_bytes = fs::read(&sidecar).ok();
+            let sidecar_payload_offset = sidecar_bytes.as_ref().and_then(|bytes| {
+                bytes
+                    .windows(b"resource-fork".len())
+                    .position(|window| window == b"resource-fork")
+            });
+            return Err(format!(
+                "resource fork round trip through NFS was not exact: status={} hex={encoded:?} stderr={} listed={} sidecar_bytes={:?} sidecar_header={:?} sidecar_payload_offset={sidecar_payload_offset:?}",
+                read.status,
+                String::from_utf8_lossy(&read.stderr),
+                String::from_utf8_lossy(&listed.stdout),
+                sidecar_bytes.as_ref().map(Vec::len),
+                sidecar_bytes.as_ref().map(|bytes| &bytes[..bytes.len().min(16)])
+            )
+            .into());
+        }
+        let source = mount.join("nested/toolchain.c");
+        let binary = mount.join("nested/toolchain");
+        fs::write(&source, b"int main(void) { return 0; }\n")?;
+        let compiled = Command::new("/usr/bin/clang")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()?;
+        if !compiled.status.success() {
+            return Err(format!(
+                "clang over NFS failed: {}",
+                String::from_utf8_lossy(&compiled.stderr)
+            )
+            .into());
+        }
+        if !Command::new(&binary).status()?.success() {
+            return Err("compiled NFS subprocess failed".into());
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (mount, metadata);
+        Err("macOS NFS qualification ran on a non-macOS target".into())
+    }
+    #[cfg(target_os = "macos")]
+    Ok(())
+}
+
+async fn macos_nfs_handoff_and_mount_loss<A, O>(
+    workspace: &acyclic_fs::Workspace<A, O>,
+    root: &Path,
+) -> Result<(), Failure>
+where
+    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+{
+    let destination = root.join("handoff-mount");
+    fs::create_dir(&destination)?;
+    let remount = workspace
+        .mount(&destination, MountOptions::read_write())
+        .await?;
+    if fs::read(destination.join("nested/created.txt"))? != b"created-v2" {
+        return Err("service handoff remount did not expose the published generation".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let detached = Command::new("/sbin/umount")
+            .arg("-f")
+            .arg(&destination)
+            .output()?;
+        if !detached.status.success() {
+            return Err(format!(
+                "forced mount-loss detach failed: {}",
+                String::from_utf8_lossy(&detached.stderr)
+            )
+            .into());
+        }
+    }
+    remount.unmount().await?;
+    if !destination.is_dir() || fs::read_dir(&destination)?.next().is_some() {
+        return Err("mount-loss cleanup did not restore an empty directory".into());
+    }
     Ok(())
 }
 
@@ -840,6 +1597,12 @@ fn crash_recovery() -> Result<(), Failure> {
     let ready = root.path().join("ready");
     fs::create_dir(&mount)?;
     let qualification = crash_recovery_inner(&crash_root, &mount, &ready);
+    #[cfg(windows)]
+    // The recovered path becomes an ordinary directory after the resumed
+    // provider stops. The preserved residue lives under the same temporary
+    // parent and is removed only when this isolated fixture is dropped.
+    let cleanup = fs::remove_dir(&mount).map_err(Failure::from);
+    #[cfg(not(windows))]
     let cleanup = recover_with_retry(&mount);
     match (qualification, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
@@ -852,38 +1615,98 @@ fn crash_recovery() -> Result<(), Failure> {
 }
 
 fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result<(), Failure> {
-    let mut child = Command::new(std::env::current_exe()?)
-        .arg("--crash-child")
-        .arg(crash_root)
-        .arg(mount)
-        .arg(ready)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let mut child = spawn_captured_child(
+        Command::new(std::env::current_exe()?)
+            .arg("--crash-child")
+            .arg(crash_root)
+            .arg(mount)
+            .arg(ready),
+    )?;
     let deadline = Instant::now() + Duration::from_secs(30);
     while !ready.exists() && Instant::now() < deadline {
-        if let Some(status) = child.try_wait()? {
-            return Err(format!("crash child exited before readiness: {status}").into());
+        if captured_child_output_exceeds_limit(&child)? {
+            child.process.terminate()?;
+            return Err(
+                format!("crash child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into(),
+            );
         }
-        std::thread::sleep(Duration::from_millis(100));
+        if let Some(status) = child.process.try_wait()? {
+            let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
+            return Err(format!(
+                "crash child exited before readiness ({}): {}{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
     if !ready.exists() {
-        child.kill()?;
-        let _ = child.wait()?;
+        child.process.terminate()?;
         return Err("crash child did not mount within 30 seconds".into());
     }
-    child.kill()?;
-    let _ = child.wait()?;
-    recover_with_retry(mount)?;
-    if mount.exists() && (!mount.is_dir() || fs::read_dir(mount)?.next().is_some()) {
-        return Err("crash recovery did not restore an empty ordinary directory".into());
+    eprintln!("qualification phase: crash child ready; termination starting");
+    child.process.terminate()?;
+    eprintln!("qualification phase: crash child terminated; recovery starting");
+    #[cfg(windows)]
+    {
+        // Generic disposable recovery must still reject a stale writable
+        // ProjFS cache. The explicit preserving operation moves it aside.
+        if recover_native_mount_destination(mount).is_ok() {
+            return Err("generic recovery discarded a stale ProjFS root".into());
+        }
+        let preserved = recover_native_mount_destination_preserving_residue(mount)?
+            .ok_or("crash recovery failed to preserve the stale ProjFS root")?;
+        if !preserved.is_dir() || mount.exists() {
+            return Err("crash recovery did not move the stale root aside".into());
+        }
+        if fs::read(preserved.join("unpublished.txt"))? != b"unpublished" {
+            return Err("crash recovery lost unpublished authored residue".into());
+        }
+        if recover_native_mount_destination_preserving_residue(mount)?.is_some() {
+            return Err("crash recovery was not idempotent".into());
+        }
+        fs::create_dir(mount)?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async {
+            eprintln!("qualification phase: reopening durable crash workspace");
+            let engine = Fs::local(LocalOptions::new(crash_root.join("store"))).await?;
+            let workspace = engine.open_workspace("crash-owner").await?;
+            if workspace.read("/alive.txt", 16).await?.as_ref() != b"alive" {
+                return Err::<(), Failure>("durable workspace lost crash fixture".into());
+            }
+            eprintln!("qualification phase: remounting the original ProjFS destination");
+            let resumed = workspace.mount(mount, MountOptions::read_write()).await?;
+            eprintln!("qualification phase: reading durable ProjFS content");
+            let contents = fs::read(mount.join("alive.txt"))?;
+            resumed.unmount().await?;
+            if contents != b"alive" {
+                return Err::<(), Failure>("recovered mount lost the durable workspace".into());
+            }
+            Ok::<(), Failure>(())
+        })?;
+        if !preserved.is_dir() {
+            return Err("recovered mount discarded the preserved residue".into());
+        }
+        eprintln!("qualification phase: preserved stale root and resumed at original path");
+        Ok(())
     }
-    fs::create_dir_all(mount)?;
-    fs::write(mount.join("restored.txt"), b"ordinary")?;
-    fs::remove_file(mount.join("restored.txt"))?;
-    Ok(())
+    #[cfg(not(windows))]
+    {
+        recover_with_retry(mount)?;
+        eprintln!("qualification phase: crash recovery finished");
+        if mount.exists() && (!mount.is_dir() || fs::read_dir(mount)?.next().is_some()) {
+            return Err("crash recovery did not restore an empty ordinary directory".into());
+        }
+        fs::create_dir_all(mount)?;
+        fs::write(mount.join("restored.txt"), b"ordinary")?;
+        fs::remove_file(mount.join("restored.txt"))?;
+        Ok(())
+    }
 }
 
+#[cfg(not(windows))]
 fn recover_with_retry(mount: &Path) -> Result<(), Failure> {
     let mut recovery_error = None;
     for attempt in 0..2 {
@@ -905,9 +1728,20 @@ fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Result<(), Fail
     runtime.block_on(async move {
         fs::create_dir_all(&root)?;
         let engine = Fs::local(LocalOptions::new(root.join("store"))).await?;
-        let workspace = engine.create_workspace("crash-owner").await?;
+        let workspace = engine
+            .create_workspace_with_config("crash-owner", VolumeConfig::native(Lifecycle::Durable))
+            .await?;
         workspace.write_text("/alive.txt", "alive").await?;
         let _mount = workspace.mount(&mount, MountOptions::read_write()).await?;
+        #[cfg(windows)]
+        fs::write(mount.join("unpublished.txt"), b"unpublished")?;
+        #[cfg(not(windows))]
+        {
+            if fs::read(mount.join("alive.txt"))? != b"alive" {
+                return Err("crash fixture did not hydrate projected content".into());
+            }
+            let _open_hydrated_file = File::open(mount.join("alive.txt"))?;
+        }
         fs::write(ready, b"ready")?;
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -928,8 +1762,8 @@ fn snapshot_checkout(root: &Path) -> Result<CheckoutSnapshot, Failure> {
     Ok(CheckoutSnapshot {
         head,
         status,
-        checkout: tree_digest(&root, Some(OsStr::new(".git")))?,
-        git_admin: tree_digest(&git_dir, None)?,
+        checkout: tree_digest(&root, &[OsStr::new(".git"), OsStr::new("target")])?,
+        git_admin: tree_digest(&git_dir, &[])?,
     })
 }
 
@@ -957,9 +1791,9 @@ fn git_output(root: &Path, args: &[&str]) -> Result<Vec<u8>, Failure> {
     Ok(output.stdout)
 }
 
-fn tree_digest(root: &Path, excluded_root_name: Option<&OsStr>) -> Result<blake3::Hash, Failure> {
+fn tree_digest(root: &Path, excluded_root_names: &[&OsStr]) -> Result<blake3::Hash, Failure> {
     let mut paths = Vec::new();
-    collect_paths(root, root, excluded_root_name, &mut paths)?;
+    collect_paths(root, root, excluded_root_names, &mut paths)?;
     paths.sort();
     let mut digest = blake3::Hasher::new();
     for relative in paths {
@@ -1003,19 +1837,23 @@ fn update_stable_metadata(digest: &mut blake3::Hasher, metadata: &fs::Metadata) 
 fn collect_paths(
     root: &Path,
     directory: &Path,
-    excluded_root_name: Option<&OsStr>,
+    excluded_root_names: &[&OsStr],
     paths: &mut Vec<PathBuf>,
 ) -> Result<(), Failure> {
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
-        if directory == root && excluded_root_name == Some(entry.file_name().as_os_str()) {
+        if directory == root
+            && excluded_root_names
+                .iter()
+                .any(|excluded| *excluded == entry.file_name().as_os_str())
+        {
             continue;
         }
         let path = entry.path();
         let relative = path.strip_prefix(root)?.to_path_buf();
         paths.push(relative);
         if entry.file_type()?.is_dir() {
-            collect_paths(root, &path, excluded_root_name, paths)?;
+            collect_paths(root, &path, excluded_root_names, paths)?;
         }
     }
     Ok(())

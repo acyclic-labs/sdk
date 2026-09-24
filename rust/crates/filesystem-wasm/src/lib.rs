@@ -35,11 +35,9 @@ mod bindings {
         Checkout, CheckoutCommitOutcome, Digest, EmbeddedCapabilities, FileCloneRequest, FileId,
         ForkOptions, Fs, Generation, GenerationExportManifest, GitCommand, GitCompatRepository,
         IdempotencyKey, JoinHistory, JoinOutcome, JoinPlan, LiveMutationOutcome,
-        MemoryGitCompatStore, MemoryOperationWindowStore, MemoryWorkspaceContextStore,
-        MergeConflict, MergePreparation, NamedAttributeWriteMode, ObjectCacheOptions, ObjectId,
-        ObjectKind, ObjectReadRequest, ObjectResidency, OperationId, OperationLeaseId,
-        OperationWindowCoordinator, OperationWindowFinish, OperationWindowLease,
-        OperationWindowPhase, PromotionAdmission, PromotionDestination, PromotionRejection,
+        MemoryGitCompatStore, MemoryWorkspaceContextStore, MergeConflict, MergePreparation,
+        NamedAttributeWriteMode, ObjectCacheOptions, ObjectId, ObjectKind, ObjectReadRequest,
+        ObjectResidency, OperationId, PromotionAdmission, PromotionDestination, PromotionRejection,
         PromotionSpeculatorOptions, ProviderObjectStore, ResidencyAdmission, ResidencyHint,
         ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions, ResolvedFile,
         SpeculationController, SpeculationOptions, StorageLocationId, StorageTier,
@@ -209,59 +207,6 @@ mod bindings {
         inner: WorkspaceContextRegistry<MemoryWorkspaceContextStore>,
     }
 
-    /// Browser-safe overlapping-operation coordinator over process-local state.
-    #[wasm_bindgen]
-    pub struct BrowserOperationWindowCoordinator {
-        inner: OperationWindowCoordinator<MemoryOperationWindowStore>,
-    }
-
-    #[derive(Deserialize, Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct BrowserOperationWindowLease {
-        workspace_id: Vec<u8>,
-        lease_id: Vec<u8>,
-        pinned_parent: Vec<u8>,
-        expires_at_millis: String,
-    }
-
-    #[derive(Serialize)]
-    #[serde(
-        tag = "kind",
-        rename_all = "kebab-case",
-        rename_all_fields = "camelCase"
-    )]
-    enum BrowserOperationWindowPhase {
-        Idle,
-        Active {
-            pinned_parent: Vec<u8>,
-            pending_parent: Option<Vec<u8>>,
-            active_lease_count: usize,
-        },
-        Reconciling {
-            ticket: Vec<u8>,
-            pinned_parent: Vec<u8>,
-            pending_parent: Option<Vec<u8>>,
-        },
-    }
-
-    #[derive(Serialize)]
-    #[serde(
-        tag = "kind",
-        rename_all = "kebab-case",
-        rename_all_fields = "camelCase"
-    )]
-    enum BrowserOperationWindowFinish {
-        StillActive {
-            remaining: u32,
-        },
-        Reconcile {
-            ticket: Vec<u8>,
-            pinned_parent: Vec<u8>,
-            pending_parent: Option<Vec<u8>>,
-        },
-        AlreadyClosed,
-    }
-
     /// Browser owner of one volume generation's residency and promotion engines.
     #[wasm_bindgen]
     pub struct BrowserSpeculation {
@@ -274,6 +219,7 @@ mod bindings {
     #[wasm_bindgen]
     pub struct BrowserVolume {
         engine: BrowserVolumeEngine,
+        profile: FilesystemProfile,
         limits: VolumeLimits,
         acquisition_work: acyclic_fs::WorkCounters,
     }
@@ -282,6 +228,7 @@ mod bindings {
     #[wasm_bindgen]
     pub struct BrowserCheckout {
         engine: BrowserCheckoutEngine,
+        profile: FilesystemProfile,
         limits: VolumeLimits,
         acquisition_work: acyclic_fs::WorkCounters,
     }
@@ -2695,6 +2642,40 @@ mod bindings {
             workspace_context_json(&context)
         }
 
+        /// Adopts one parent-authorized root without enumerating its contents.
+        #[wasm_bindgen(js_name = adoptRootJson)]
+        pub async fn adopt_root_json(
+            &self,
+            context_id: Vec<u8>,
+            root_json: String,
+        ) -> Result<String, JsValue> {
+            let root: WorkspaceContextRoot = serde_json::from_str(&root_json).map_err(js_error)?;
+            let context = self
+                .inner
+                .adopt_root(WorkspaceContextId::from_bytes(fixed_16(&context_id)?), root)
+                .await
+                .map_err(js_error)?;
+            workspace_context_json(&context)
+        }
+
+        /// Releases one root after callers have settled its filesystem changes.
+        #[wasm_bindgen(js_name = removeRootJson)]
+        pub async fn remove_root_json(
+            &self,
+            context_id: Vec<u8>,
+            root_id: Vec<u8>,
+        ) -> Result<String, JsValue> {
+            let context = self
+                .inner
+                .remove_root(
+                    WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
+                    WorkspaceRootId::from_bytes(fixed_16(&root_id)?),
+                )
+                .await
+                .map_err(js_error)?;
+            workspace_context_json(&context)
+        }
+
         /// Resolves one context as stable JSON.
         #[wasm_bindgen(js_name = resolveJson)]
         pub async fn resolve_json(&self, context_id: Vec<u8>) -> Result<String, JsValue> {
@@ -2770,91 +2751,6 @@ mod bindings {
                 .await
                 .map_err(js_error)?;
             serde_json::to_string(&discarded).map_err(js_error)
-        }
-    }
-
-    #[wasm_bindgen]
-    impl BrowserOperationWindowCoordinator {
-        /// Creates one process-local deterministic coordinator.
-        #[wasm_bindgen(constructor)]
-        pub fn new() -> BrowserOperationWindowCoordinator {
-            Self {
-                inner: OperationWindowCoordinator::new(MemoryOperationWindowStore::new()),
-            }
-        }
-
-        /// Begins an overlapping operation lease.
-        #[wasm_bindgen(js_name = beginJson)]
-        pub async fn begin_json(
-            &self,
-            workspace_id: Vec<u8>,
-            parent: Vec<u8>,
-            owner: String,
-            now_millis: u64,
-            expires_at_millis: u64,
-        ) -> Result<String, JsValue> {
-            let lease = self
-                .inner
-                .begin(
-                    WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
-                    acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                        &parent,
-                        "parent generation",
-                    )?)),
-                    owner,
-                    now_millis,
-                    expires_at_millis,
-                )
-                .await
-                .map_err(js_error)?;
-            serde_json::to_string(&browser_operation_window_lease(&lease)).map_err(js_error)
-        }
-
-        /// Coalesces a newer parent while operations remain active.
-        #[wasm_bindgen(js_name = observeParent)]
-        pub async fn observe_parent(
-            &self,
-            workspace_id: Vec<u8>,
-            parent: Vec<u8>,
-        ) -> Result<bool, JsValue> {
-            self.inner
-                .observe_parent(
-                    WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
-                    acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                        &parent,
-                        "parent generation",
-                    )?)),
-                )
-                .await
-                .map_err(js_error)
-        }
-
-        /// Finishes one lease and returns the final-close reconciliation ticket.
-        #[wasm_bindgen(js_name = finishJson)]
-        pub async fn finish_json(
-            &self,
-            lease_json: String,
-            now_millis: u64,
-        ) -> Result<String, JsValue> {
-            let lease: BrowserOperationWindowLease =
-                serde_json::from_str(&lease_json).map_err(js_error)?;
-            let finish = self
-                .inner
-                .finish(&operation_window_lease(lease)?, now_millis)
-                .await
-                .map_err(js_error)?;
-            serde_json::to_string(&browser_operation_window_finish(finish)).map_err(js_error)
-        }
-
-        /// Inspects the current durable phase.
-        #[wasm_bindgen(js_name = inspectJson)]
-        pub async fn inspect_json(&self, workspace_id: Vec<u8>) -> Result<String, JsValue> {
-            let snapshot = self
-                .inner
-                .inspect(WorkspaceId::from_bytes(fixed_16(&workspace_id)?))
-                .await
-                .map_err(js_error)?;
-            serde_json::to_string(&browser_operation_window_phase(snapshot.phase)).map_err(js_error)
         }
     }
 
@@ -3160,6 +3056,7 @@ mod bindings {
             };
             Ok(BrowserVolume {
                 engine,
+                profile: config.profile,
                 limits: config.limits,
                 acquisition_work,
             })
@@ -3208,6 +3105,7 @@ mod bindings {
             };
             Ok(BrowserVolume {
                 engine,
+                profile: config.profile,
                 limits: config.limits,
                 acquisition_work,
             })
@@ -3461,6 +3359,7 @@ mod bindings {
             };
             Ok(BrowserVolume {
                 engine,
+                profile: config.profile,
                 limits: config.limits,
                 acquisition_work,
             })
@@ -3835,6 +3734,7 @@ mod bindings {
             };
             Ok(BrowserCheckout {
                 engine,
+                profile: self.profile,
                 limits: self.limits,
                 acquisition_work,
             })
@@ -3974,7 +3874,7 @@ mod bindings {
         /// cancellation, storage, or bounded-work failure.
         #[wasm_bindgen(js_name = applyTransaction)]
         pub async fn apply_transaction(&mut self, operations: JsValue) -> Result<JsValue, JsValue> {
-            let authored = decode_authored_transactions(operations, self.limits)?;
+            let authored = decode_authored_transactions(operations, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
@@ -4159,7 +4059,9 @@ mod bindings {
         #[wasm_bindgen(js_name = lookupNoFollow)]
         pub async fn lookup_no_follow(&mut self, path: String) -> Result<JsValue, JsValue> {
             let portable = PortablePath::parse(&path, self.limits).map_err(js_error)?;
-            let path = NamespacePath::from_portable(&portable, self.limits).map_err(js_error)?;
+            let path =
+                NamespacePath::from_portable_in_profile(&portable, self.profile, self.limits)
+                    .map_err(js_error)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -4209,7 +4111,7 @@ mod bindings {
             }
             let paths = decoded
                 .iter()
-                .map(|path| browser_path(path, self.limits))
+                .map(|path| browser_path(path, self.profile, self.limits))
                 .collect::<Result<Vec<_>, _>>()?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4246,7 +4148,7 @@ mod bindings {
         /// authentication, cancellation, encoding, or bounded-work failure.
         #[wasm_bindgen(js_name = statNoFollow)]
         pub async fn stat_no_follow(&mut self, path: String) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
@@ -4303,7 +4205,7 @@ mod bindings {
         /// Returns a JavaScript error for path, storage, codec, cancellation, or work failure.
         #[wasm_bindgen(js_name = readMetadata)]
         pub async fn read_metadata(&mut self, path: String) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
@@ -4352,7 +4254,7 @@ mod bindings {
             path: String,
             canonical_bytes: Vec<u8>,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let metadata =
                 decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
                     .map_err(js_error)?;
@@ -4409,7 +4311,7 @@ mod bindings {
             canonical_bytes: Vec<u8>,
             logical_bytes: Option<u64>,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let metadata =
                 decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
                     .map_err(js_error)?;
@@ -4474,7 +4376,7 @@ mod bindings {
             attribute_class: String,
             name: Vec<u8>,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let name = browser_attribute_name(&attribute_class, name, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4504,7 +4406,7 @@ mod bindings {
             after_name: Option<Vec<u8>>,
             maximum_entries: u32,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let after = match (after_class, after_name) {
                 (None, None) => None,
                 (Some(class), Some(name)) => {
@@ -4555,7 +4457,7 @@ mod bindings {
             bytes: Vec<u8>,
             mode: String,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let name = browser_attribute_name(&attribute_class, name, self.limits)?;
             let mode = browser_attribute_write_mode(&mode)?;
             let cancellation = CancellationToken::default();
@@ -4591,7 +4493,7 @@ mod bindings {
             attribute_class: String,
             name: Vec<u8>,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let name = browser_attribute_name(&attribute_class, name, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4634,7 +4536,7 @@ mod bindings {
                 .try_reserve_exact(paths.len())
                 .map_err(|error| js_error(error.to_string()))?;
             for path in paths {
-                parsed.push(browser_path(&path, self.limits)?);
+                parsed.push(browser_path(&path, self.profile, self.limits)?);
             }
             let cancellation = CancellationToken::default();
             let (files, work) = match &mut self.engine {
@@ -4713,7 +4615,9 @@ mod bindings {
             length: u64,
         ) -> Result<JsValue, JsValue> {
             let portable = PortablePath::parse(&path, self.limits).map_err(js_error)?;
-            let path = NamespacePath::from_portable(&portable, self.limits).map_err(js_error)?;
+            let path =
+                NamespacePath::from_portable_in_profile(&portable, self.profile, self.limits)
+                    .map_err(js_error)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -4798,7 +4702,7 @@ mod bindings {
             length: u64,
             maximum_spans: u32,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
@@ -4875,7 +4779,7 @@ mod bindings {
             offset: u64,
             target: String,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let target = extent_seek_target(&target)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4934,7 +4838,7 @@ mod bindings {
         /// corruption, cancellation, storage, or bounded work.
         #[wasm_bindgen(js_name = readSymbolicLink)]
         pub async fn read_symbolic_link(&mut self, path: String) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -4965,7 +4869,7 @@ mod bindings {
         /// storage, cancellation, authentication, or bounded work.
         #[wasm_bindgen(js_name = readReparsePoint)]
         pub async fn read_reparse_point(&mut self, path: String) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
@@ -4994,17 +4898,13 @@ mod bindings {
             maximum_entries: u32,
         ) -> Result<JsValue, JsValue> {
             let portable = PortablePath::parse(&path, self.limits).map_err(js_error)?;
-            let path = NamespacePath::from_portable(&portable, self.limits).map_err(js_error)?;
+            let path =
+                NamespacePath::from_portable_in_profile(&portable, self.profile, self.limits)
+                    .map_err(js_error)?;
             let after = after
-                .map(|value| {
-                    LogicalName::new(
-                        NameEncoding::Utf8,
-                        value.into_bytes(),
-                        self.limits.maximum_component_bytes,
-                    )
-                })
-                .transpose()
-                .map_err(js_error)?;
+                .as_deref()
+                .map(|value| browser_name(value, self.profile, self.limits))
+                .transpose()?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -5069,17 +4969,11 @@ mod bindings {
             after: Option<String>,
             maximum_entries: u32,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let after = after
-                .map(|value| {
-                    LogicalName::new(
-                        NameEncoding::Utf8,
-                        value.into_bytes(),
-                        self.limits.maximum_component_bytes,
-                    )
-                })
-                .transpose()
-                .map_err(js_error)?;
+                .as_deref()
+                .map(|value| browser_name(value, self.profile, self.limits))
+                .transpose()?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
@@ -5126,7 +5020,7 @@ mod bindings {
             path: String,
             bytes: Vec<u8>,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let bytes = bytes::Bytes::from(bytes);
             let receipt = match &mut self.engine {
@@ -5158,7 +5052,7 @@ mod bindings {
         /// cancellation, storage, allocation, or bounded work.
         #[wasm_bindgen(js_name = createDirectory)]
         pub async fn create_directory(&mut self, path: String) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -5193,7 +5087,7 @@ mod bindings {
             path: String,
             target: Vec<u8>,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let target = bytes::Bytes::from(target);
             let receipt = match &mut self.engine {
@@ -5229,7 +5123,7 @@ mod bindings {
             path: String,
             kind: String,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let kind = empty_special_kind(&kind)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
@@ -5263,7 +5157,7 @@ mod bindings {
             major: u32,
             minor: u32,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let kind = device_kind(&kind)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
@@ -5295,7 +5189,7 @@ mod bindings {
             path: String,
             payload: Vec<u8>,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -5342,7 +5236,7 @@ mod bindings {
             offset: u64,
             bytes: Vec<u8>,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let bytes = bytes::Bytes::from(bytes);
             let receipt = match &mut self.engine {
@@ -5402,7 +5296,7 @@ mod bindings {
             path: String,
             expected_file_id: Option<Vec<u8>>,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let expected = expected_file_id
                 .as_deref()
                 .map(fixed_16)
@@ -5438,8 +5332,8 @@ mod bindings {
             destination: String,
             replace: bool,
         ) -> Result<JsValue, JsValue> {
-            let source = browser_path(&source, self.limits)?;
-            let destination = browser_path(&destination, self.limits)?;
+            let source = browser_path(&source, self.profile, self.limits)?;
+            let destination = browser_path(&destination, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -5488,8 +5382,8 @@ mod bindings {
             source: String,
             destination: String,
         ) -> Result<JsValue, JsValue> {
-            let source = browser_path(&source, self.limits)?;
-            let destination = browser_path(&destination, self.limits)?;
+            let source = browser_path(&source, self.profile, self.limits)?;
+            let destination = browser_path(&destination, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -5520,7 +5414,7 @@ mod bindings {
             path: String,
             logical_bytes: u64,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -5577,7 +5471,7 @@ mod bindings {
             allocated: bool,
             extend: bool,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -5664,7 +5558,7 @@ mod bindings {
             length: u64,
             keep_size: bool,
         ) -> Result<JsValue, JsValue> {
-            let path = browser_path(&path, self.limits)?;
+            let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -5748,9 +5642,9 @@ mod bindings {
             length: u64,
         ) -> Result<JsValue, JsValue> {
             let request = FileCloneRequest {
-                source: browser_path(&source, self.limits)?,
+                source: browser_path(&source, self.profile, self.limits)?,
                 source_offset,
-                destination: browser_path(&destination, self.limits)?,
+                destination: browser_path(&destination, self.profile, self.limits)?,
                 destination_offset,
                 length,
             };
@@ -5848,7 +5742,7 @@ mod bindings {
             maximum_attempts: u32,
             maximum_conflicts: u32,
         ) -> Result<JsValue, JsValue> {
-            let authored = decode_authored_transactions(operations, self.limits)?;
+            let authored = decode_authored_transactions(operations, self.profile, self.limits)?;
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -6330,9 +6224,25 @@ mod bindings {
         }
     }
 
-    fn browser_path(path: &str, limits: VolumeLimits) -> Result<NamespacePath, JsValue> {
+    fn browser_path(
+        path: &str,
+        profile: FilesystemProfile,
+        limits: VolumeLimits,
+    ) -> Result<NamespacePath, JsValue> {
         let portable = PortablePath::parse(path, limits).map_err(js_error)?;
-        NamespacePath::from_portable(&portable, limits).map_err(js_error)
+        NamespacePath::from_portable_in_profile(&portable, profile, limits).map_err(js_error)
+    }
+
+    fn browser_name(
+        name: &str,
+        profile: FilesystemProfile,
+        limits: VolumeLimits,
+    ) -> Result<LogicalName, JsValue> {
+        let path = browser_path(&format!("/{name}"), profile, limits)?;
+        match path.components() {
+            [name] => Ok(name.clone()),
+            _ => Err(js_error("invalid directory cursor")),
+        }
     }
 
     fn browser_decode_limits(limits: VolumeLimits) -> DecodeLimits {
@@ -6388,6 +6298,7 @@ mod bindings {
 
     fn decode_authored_transactions(
         operations: JsValue,
+        profile: FilesystemProfile,
         limits: VolumeLimits,
     ) -> Result<Vec<AuthoredMutation>, JsValue> {
         if !js_sys::Array::is_array(&operations) {
@@ -6408,36 +6319,37 @@ mod bindings {
         }
         decoded
             .into_iter()
-            .map(|operation| authored_transaction(operation, limits))
+            .map(|operation| authored_transaction(operation, profile, limits))
             .collect()
     }
 
     #[allow(clippy::too_many_lines)]
     fn authored_transaction(
         operation: TransactionOperation,
+        profile: FilesystemProfile,
         limits: VolumeLimits,
     ) -> Result<AuthoredMutation, JsValue> {
         let metadata = FileMetadata::default();
         Ok(match operation {
             TransactionOperation::CreateFile { path, bytes } => AuthoredMutation::CreateFile {
-                path: browser_path(&path, limits)?,
+                path: browser_path(&path, profile, limits)?,
                 bytes: bytes::Bytes::from(bytes.into_vec()),
                 metadata,
             },
             TransactionOperation::CreateDirectory { path } => AuthoredMutation::CreateDirectory {
-                path: browser_path(&path, limits)?,
+                path: browser_path(&path, profile, limits)?,
                 metadata,
             },
             TransactionOperation::CreateSymbolicLink { path, target } => {
                 AuthoredMutation::CreateSymbolicLink {
-                    path: browser_path(&path, limits)?,
+                    path: browser_path(&path, profile, limits)?,
                     target: bytes::Bytes::from(target.into_vec()),
                     metadata,
                 }
             }
             TransactionOperation::CreateSpecial { path, file_kind } => {
                 AuthoredMutation::CreateEmptySpecial {
-                    path: browser_path(&path, limits)?,
+                    path: browser_path(&path, profile, limits)?,
                     kind: empty_special_kind(&file_kind)?,
                     metadata,
                 }
@@ -6448,7 +6360,7 @@ mod bindings {
                 major,
                 minor,
             } => AuthoredMutation::CreateDevice {
-                path: browser_path(&path, limits)?,
+                path: browser_path(&path, profile, limits)?,
                 kind: device_kind(&file_kind)?,
                 major,
                 minor,
@@ -6456,7 +6368,7 @@ mod bindings {
             },
             TransactionOperation::CreateReparsePoint { path, payload } => {
                 AuthoredMutation::CreateReparsePoint {
-                    path: browser_path(&path, limits)?,
+                    path: browser_path(&path, profile, limits)?,
                     payload: bytes::Bytes::from(payload.into_vec()),
                     metadata,
                 }
@@ -6465,7 +6377,7 @@ mod bindings {
                 path,
                 expected_file_id,
             } => AuthoredMutation::Remove {
-                path: browser_path(&path, limits)?,
+                path: browser_path(&path, profile, limits)?,
                 expected_file_id: expected_file_id
                     .as_ref()
                     .map(serde_bytes::ByteBuf::as_ref)
@@ -6478,23 +6390,23 @@ mod bindings {
                 destination,
                 replace,
             } => AuthoredMutation::Rename {
-                source: browser_path(&source, limits)?,
-                destination: browser_path(&destination, limits)?,
+                source: browser_path(&source, profile, limits)?,
+                destination: browser_path(&destination, profile, limits)?,
                 replace,
             },
             TransactionOperation::HardLink {
                 source,
                 destination,
             } => AuthoredMutation::HardLink {
-                source: browser_path(&source, limits)?,
-                destination: browser_path(&destination, limits)?,
+                source: browser_path(&source, profile, limits)?,
+                destination: browser_path(&destination, profile, limits)?,
             },
             TransactionOperation::Write {
                 path,
                 offset,
                 bytes,
             } => AuthoredMutation::Write {
-                path: browser_path(&path, limits)?,
+                path: browser_path(&path, profile, limits)?,
                 offset,
                 bytes: bytes::Bytes::from(bytes.into_vec()),
             },
@@ -6502,7 +6414,7 @@ mod bindings {
                 path,
                 canonical_bytes,
             } => AuthoredMutation::SetMetadata {
-                path: browser_path(&path, limits)?,
+                path: browser_path(&path, profile, limits)?,
                 metadata: decode_file_metadata(
                     canonical_bytes.as_ref(),
                     browser_decode_limits(limits),
@@ -6513,7 +6425,7 @@ mod bindings {
                 path,
                 logical_bytes,
             } => AuthoredMutation::Resize {
-                path: browser_path(&path, limits)?,
+                path: browser_path(&path, profile, limits)?,
                 logical_bytes,
             },
             TransactionOperation::ZeroRange {
@@ -6523,7 +6435,7 @@ mod bindings {
                 allocated,
                 extend,
             } => AuthoredMutation::ZeroRange {
-                path: browser_path(&path, limits)?,
+                path: browser_path(&path, profile, limits)?,
                 range: ByteRange { offset, length },
                 allocated,
                 extend,
@@ -6534,7 +6446,7 @@ mod bindings {
                 length,
                 keep_size,
             } => AuthoredMutation::Preallocate {
-                path: browser_path(&path, limits)?,
+                path: browser_path(&path, profile, limits)?,
                 range: ByteRange { offset, length },
                 keep_size,
             },
@@ -6545,37 +6457,12 @@ mod bindings {
                 destination_offset,
                 length,
             } => AuthoredMutation::CloneRange(FileCloneRequest {
-                source: browser_path(&source, limits)?,
+                source: browser_path(&source, profile, limits)?,
                 source_offset,
-                destination: browser_path(&destination, limits)?,
+                destination: browser_path(&destination, profile, limits)?,
                 destination_offset,
                 length,
             }),
-        })
-    }
-
-    fn browser_operation_window_lease(lease: &OperationWindowLease) -> BrowserOperationWindowLease {
-        BrowserOperationWindowLease {
-            workspace_id: lease.workspace_id.into_bytes().to_vec(),
-            lease_id: lease.lease_id.into_bytes().to_vec(),
-            pinned_parent: lease.pinned_parent.digest().as_bytes().to_vec(),
-            expires_at_millis: lease.expires_at_millis.to_string(),
-        }
-    }
-
-    fn operation_window_lease(
-        lease: BrowserOperationWindowLease,
-    ) -> Result<OperationWindowLease, JsValue> {
-        Ok(OperationWindowLease {
-            workspace_id: WorkspaceId::from_bytes(fixed_16(&lease.workspace_id)?),
-            lease_id: OperationLeaseId::from_bytes(fixed_16(&lease.lease_id)?),
-            pinned_parent: acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                &lease.pinned_parent,
-                "pinned parent generation",
-            )?)),
-            expires_at_millis: lease.expires_at_millis.parse().map_err(|_| {
-                JsValue::from_str("lease expiry must be an unsigned decimal integer")
-            })?,
         })
     }
 
@@ -6593,53 +6480,6 @@ mod bindings {
                 serde_json::Value::String(revision.to_string()),
             );
         serde_json::to_string(&value).map_err(js_error)
-    }
-
-    fn browser_operation_window_phase(phase: OperationWindowPhase) -> BrowserOperationWindowPhase {
-        match phase {
-            OperationWindowPhase::Idle => BrowserOperationWindowPhase::Idle,
-            OperationWindowPhase::Active {
-                pinned_parent,
-                leases,
-                pending_parent,
-            } => BrowserOperationWindowPhase::Active {
-                pinned_parent: pinned_parent.digest().as_bytes().to_vec(),
-                pending_parent: pending_parent
-                    .map(|generation| generation.digest().as_bytes().to_vec()),
-                active_lease_count: leases.len(),
-            },
-            OperationWindowPhase::Reconciling {
-                ticket,
-                pinned_parent,
-                pending_parent,
-                ..
-            } => BrowserOperationWindowPhase::Reconciling {
-                ticket: ticket.into_bytes().to_vec(),
-                pinned_parent: pinned_parent.digest().as_bytes().to_vec(),
-                pending_parent: pending_parent
-                    .map(|generation| generation.digest().as_bytes().to_vec()),
-            },
-        }
-    }
-
-    fn browser_operation_window_finish(
-        finish: OperationWindowFinish,
-    ) -> BrowserOperationWindowFinish {
-        match finish {
-            OperationWindowFinish::StillActive { remaining } => {
-                BrowserOperationWindowFinish::StillActive { remaining }
-            }
-            OperationWindowFinish::AlreadyClosed => BrowserOperationWindowFinish::AlreadyClosed,
-            OperationWindowFinish::Reconcile(reconcile) => {
-                BrowserOperationWindowFinish::Reconcile {
-                    ticket: reconcile.ticket.into_bytes().to_vec(),
-                    pinned_parent: reconcile.pinned_parent.digest().as_bytes().to_vec(),
-                    pending_parent: reconcile
-                        .pending_parent
-                        .map(|generation| generation.digest().as_bytes().to_vec()),
-                }
-            }
-        }
     }
 
     fn fixed_16(bytes: &[u8]) -> Result<[u8; 16], JsValue> {
@@ -7624,10 +7464,9 @@ mod bindings {
 
 #[cfg(target_arch = "wasm32")]
 pub use bindings::{
-    BrowserCheckout, BrowserFs, BrowserGitCompatRepository, BrowserOperationWindowCoordinator,
-    BrowserVolume, BrowserWorkspaceContextRegistry, decode_merge_candidate_json,
-    decode_merge_plan_json, decode_multi_root_candidate_json, decode_multi_root_plan_json,
-    decode_publication_json, encode_merge_candidate_json, encode_merge_plan_json,
-    encode_multi_root_candidate_json, encode_multi_root_plan_json, encode_publication_json,
-    open_browser_fs, open_memory_fs,
+    BrowserCheckout, BrowserFs, BrowserGitCompatRepository, BrowserVolume,
+    BrowserWorkspaceContextRegistry, decode_merge_candidate_json, decode_merge_plan_json,
+    decode_multi_root_candidate_json, decode_multi_root_plan_json, decode_publication_json,
+    encode_merge_candidate_json, encode_merge_plan_json, encode_multi_root_candidate_json,
+    encode_multi_root_plan_json, encode_publication_json, open_browser_fs, open_memory_fs,
 };

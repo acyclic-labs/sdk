@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import {
@@ -25,7 +24,7 @@ function contains(parent, child) {
 }
 
 const require = createRequire(import.meta.url);
-const { hostTarget } = require("../bin/verify.js");
+const { hostTarget, sha256File } = require("../bin/verify.js");
 
 function targetPath(value) {
   const separator = value.indexOf("=");
@@ -105,7 +104,7 @@ for (const [platformTarget, binary] of args.binary.map(targetPath)) {
   copyFileSync(binary, target);
   const entry = {
     path: `${platformTarget}/${executable}`,
-    sha256: createHash("sha256").update(readFileSync(target)).digest("hex"),
+    sha256: sha256File(target),
   };
   manifest.targets[platformTarget] = entry;
 }

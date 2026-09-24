@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, openSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -96,7 +96,7 @@ const binary =
         "bin",
         platform === "win32" ? "codex.exe" : "codex",
       );
-readFileSync(binary);
+closeSync(openSync(binary, "r"));
 
 const outputs = {
   binary,

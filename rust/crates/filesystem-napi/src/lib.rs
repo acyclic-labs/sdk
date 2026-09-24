@@ -17,10 +17,10 @@ use acyclic_fs::{
     GenerationExportManifest, GenerationId, GitCommand, GitCommitId, GitCompatRepository,
     GitFilesystemResult, GitTransitionId, GitTreeRef, IdempotencyKey, JoinHistory, JoinOutcome,
     JoinPlan, LiveMutationOutcome, LocalAuthorityBackend, LocalCoreStateStore, LocalFs,
-    LocalObjectBackend, LocalOptions, LocalVolume, MergeConflict, MergePreparation,
-    NamedAttributeWriteMode, NativeWatch as FsNativeWatch, NativeWatchOptions, ObjectCacheOptions,
-    ObjectId, ObjectKind, ObjectReadRequest, ObjectResidency, OperationId, OperationLeaseId,
-    OperationReconcileLimits, OperationWindowCoordinator, OperationWindowFinish,
+    LocalObjectBackend, LocalOperationWindowStore, LocalOptions, LocalVolume, MergeConflict,
+    MergePreparation, NamedAttributeWriteMode, NativeWatch as FsNativeWatch, NativeWatchOptions,
+    ObjectCacheOptions, ObjectId, ObjectKind, ObjectReadRequest, ObjectResidency, OperationId,
+    OperationLeaseId, OperationReconcileLimits, OperationWindowCoordinator, OperationWindowFinish,
     OperationWindowLease, OperationWindowPhase, PromotionAdmission, PromotionDestination,
     PromotionRejection, PromotionSpeculatorOptions, ResidencyAdmission, ResidencyHint,
     ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions, ResolvedFile,
@@ -1340,6 +1340,15 @@ pub struct NativeGitCompatRepository {
     workspace_id: WorkspaceId,
 }
 
+fn reject_unverified_git_capture(result: &GitFilesystemResult) -> Result<()> {
+    if matches!(result, GitFilesystemResult::Captured { proof: Some(_), .. }) {
+        return Err(Error::from_reason(
+            "filtered Git captures require an SDK-authenticated filesystem executor; JSON cannot supply capture authority",
+        ));
+    }
+    Ok(())
+}
+
 /// Native recursive-workspace graph backed by the shared core-state namespace.
 #[napi]
 pub struct NativeWorkspaceGraph {
@@ -1352,10 +1361,11 @@ pub struct NativeWorkspaceContextRegistry {
     inner: WorkspaceContextRegistry<LocalCoreStateStore>,
 }
 
-/// Native durable operation-window coordinator backed by shared core state.
+/// Native durable operation-window coordinator bound to one filesystem's
+/// generation-authority stream.
 #[napi]
 pub struct NativeOperationWindowCoordinator {
-    inner: OperationWindowCoordinator<LocalCoreStateStore>,
+    inner: OperationWindowCoordinator<LocalOperationWindowStore>,
 }
 
 /// One durable workspace-lineage record.
@@ -3183,6 +3193,7 @@ impl NativeGitCompatRepository {
         result_json: String,
     ) -> Result<String> {
         let result: GitFilesystemResult = serde_json::from_str(&result_json).map_err(napi_error)?;
+        reject_unverified_git_capture(&result)?;
         let output = self
             .inner
             .complete_transition_result(
@@ -3304,6 +3315,32 @@ impl NativeWorkspaceContextRegistry {
                 WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
                 WorkspaceContextId::from_bytes(fixed_16(&parent_context_id)?),
                 roots,
+            )
+            .await
+            .map_err(napi_error)?;
+        workspace_context_json(&context)
+    }
+
+    /// Adopts one parent-authorized root without enumerating its contents.
+    #[napi]
+    pub async fn adopt_root_json(&self, context_id: Buffer, root_json: String) -> Result<String> {
+        let root: WorkspaceContextRoot = serde_json::from_str(&root_json).map_err(napi_error)?;
+        let context = self
+            .inner
+            .adopt_root(WorkspaceContextId::from_bytes(fixed_16(&context_id)?), root)
+            .await
+            .map_err(napi_error)?;
+        workspace_context_json(&context)
+    }
+
+    /// Releases one root after callers have settled its filesystem changes.
+    #[napi]
+    pub async fn remove_root_json(&self, context_id: Buffer, root_id: Buffer) -> Result<String> {
+        let context = self
+            .inner
+            .remove_root(
+                WorkspaceContextId::from_bytes(fixed_16(&context_id)?),
+                WorkspaceRootId::from_bytes(fixed_16(&root_id)?),
             )
             .await
             .map_err(napi_error)?;
@@ -3465,14 +3502,6 @@ impl NativeWorkspaceGraph {
 
 #[napi]
 impl NativeOperationWindowCoordinator {
-    /// Opens durable operation-window state in the shared private namespace.
-    #[napi(factory)]
-    pub fn open(state_root: String) -> Self {
-        Self {
-            inner: OperationWindowCoordinator::new(LocalCoreStateStore::new(state_root)),
-        }
-    }
-
     /// Opens one overlapping tool lease, pinning the first observed parent.
     #[napi]
     pub async fn begin(
@@ -3589,6 +3618,15 @@ impl NativeFs {
             inner: Arc::new(inner),
             cancellation: CancellationToken::new(),
         })
+    }
+
+    /// Opens operation windows on this exact filesystem authority. The bound
+    /// handle cannot manufacture leases for an unrelated local deployment.
+    #[napi]
+    pub fn operation_windows(&self) -> NativeOperationWindowCoordinator {
+        NativeOperationWindowCoordinator {
+            inner: OperationWindowCoordinator::new(self.inner.operation_window_store()),
+        }
     }
 
     /// Returns compile-time capability evidence without probing user paths.
@@ -4142,7 +4180,7 @@ impl NativeCheckout {
         }
         let authored = operations
             .into_iter()
-            .map(|operation| native_authored_transaction(operation, self.config.limits))
+            .map(|operation| native_authored_transaction(operation, self.config))
             .collect::<Result<Vec<_>>>()?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
@@ -4345,7 +4383,7 @@ impl NativeCheckout {
         let expected_root_identity = capture_root_identity(&source_root).map_err(napi_error)?;
         let paths = paths
             .iter()
-            .map(|path| native_path(path, self.config.limits))
+            .map(|path| native_path(path, self.config))
             .collect::<Result<Vec<_>>>()?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
@@ -4458,8 +4496,12 @@ impl NativeCheckout {
     #[napi]
     pub async fn lookup_no_follow(&self, path: String) -> Result<NativeLookup> {
         let portable = PortablePath::parse(&path, self.config.limits).map_err(napi_error)?;
-        let path =
-            NamespacePath::from_portable(&portable, self.config.limits).map_err(napi_error)?;
+        let path = NamespacePath::from_portable_in_profile(
+            &portable,
+            self.config.profile,
+            self.config.limits,
+        )
+        .map_err(napi_error)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
             .lookup_no_follow(&path, boundary_budget(), &self.cancellation)
@@ -4495,7 +4537,7 @@ impl NativeCheckout {
         }
         let paths = paths
             .iter()
-            .map(|path| native_path(path, self.config.limits))
+            .map(|path| native_path(path, self.config))
             .collect::<Result<Vec<_>>>()?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
@@ -4531,7 +4573,7 @@ impl NativeCheckout {
     /// failure, cancellation, serialization, or bounded-work exhaustion.
     #[napi]
     pub async fn stat_no_follow(&self, path: String) -> Result<NativeStat> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
             .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
@@ -4582,7 +4624,7 @@ impl NativeCheckout {
     /// Returns a JavaScript error for path, storage, codec, cancellation, or work failure.
     #[napi]
     pub async fn read_metadata(&self, path: String) -> Result<NativeMetadataResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
             .read_metadata(&path, boundary_budget(), &self.cancellation)
@@ -4625,7 +4667,7 @@ impl NativeCheckout {
         path: String,
         canonical_bytes: Buffer,
     ) -> Result<NativeMutationResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let metadata = decode_file_metadata(
             canonical_bytes.as_ref(),
             native_decode_limits(self.config.limits),
@@ -4680,7 +4722,7 @@ impl NativeCheckout {
         canonical_bytes: Buffer,
         logical_bytes: Option<BigInt>,
     ) -> Result<NativeMutationResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let metadata = decode_file_metadata(
             canonical_bytes.as_ref(),
             native_decode_limits(self.config.limits),
@@ -4749,7 +4791,7 @@ impl NativeCheckout {
         attribute_class: String,
         name: Buffer,
     ) -> Result<NativeNamedAttributeResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let name = native_attribute_name(&attribute_class, name.to_vec(), self.config.limits)?;
         let mut checkout = self.inner.lock().await;
         let receipt = Box::pin(checkout.read_named_attribute(
@@ -4780,7 +4822,7 @@ impl NativeCheckout {
         after_name: Option<Buffer>,
         maximum_entries: u32,
     ) -> Result<NativeNamedAttributePage> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let after = match (after_class, after_name) {
             (None, None) => None,
             (Some(class), Some(name)) => Some(native_attribute_name(
@@ -4834,7 +4876,7 @@ impl NativeCheckout {
         bytes: Buffer,
         mode: String,
     ) -> Result<NativeMutationResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let name = native_attribute_name(&attribute_class, name.to_vec(), self.config.limits)?;
         let mode = native_attribute_write_mode(&mode)?;
         let mut checkout = self.inner.lock().await;
@@ -4864,7 +4906,7 @@ impl NativeCheckout {
         attribute_class: String,
         name: Buffer,
     ) -> Result<NativeMutationResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let name = native_attribute_name(&attribute_class, name.to_vec(), self.config.limits)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
@@ -4908,7 +4950,7 @@ impl NativeCheckout {
                 let path = paths.get::<String>(index)?.ok_or_else(|| {
                     Error::new(Status::InvalidArg, "resolved file paths must be strings")
                 })?;
-                parsed.push(native_path(&path, self.config.limits)?);
+                parsed.push(native_path(&path, self.config)?);
             }
             Ok(parsed)
         })();
@@ -4956,8 +4998,12 @@ impl NativeCheckout {
         length: BigInt,
     ) -> Result<NativeFileRead> {
         let portable = PortablePath::parse(&path, self.config.limits).map_err(napi_error)?;
-        let path =
-            NamespacePath::from_portable(&portable, self.config.limits).map_err(napi_error)?;
+        let path = NamespacePath::from_portable_in_profile(
+            &portable,
+            self.config.profile,
+            self.config.limits,
+        )
+        .map_err(napi_error)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
             .read_file_range(
@@ -5024,7 +5070,7 @@ impl NativeCheckout {
         length: BigInt,
         maximum_spans: u32,
     ) -> Result<NativeExtentPlan> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
             .plan_file_extents(
@@ -5087,7 +5133,7 @@ impl NativeCheckout {
         offset: BigInt,
         target: String,
     ) -> Result<NativeExtentSeek> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let target = extent_seek_target(&target)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
@@ -5146,7 +5192,7 @@ impl NativeCheckout {
     /// cancellation, storage failure, or bounded-work exhaustion.
     #[napi]
     pub async fn read_symbolic_link(&self, path: String) -> Result<NativeFileRead> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
             .read_symbolic_link(&path, boundary_budget(), &self.cancellation)
@@ -5166,7 +5212,7 @@ impl NativeCheckout {
     /// corruption, cancellation, storage failure, or bounded-work exhaustion.
     #[napi]
     pub async fn read_reparse_point(&self, path: String) -> Result<NativeFileRead> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
             .read_reparse_point(&path, boundary_budget(), &self.cancellation)
@@ -5192,18 +5238,16 @@ impl NativeCheckout {
         maximum_entries: u32,
     ) -> Result<NativeDirectoryPage> {
         let portable = PortablePath::parse(&path, self.config.limits).map_err(napi_error)?;
-        let path =
-            NamespacePath::from_portable(&portable, self.config.limits).map_err(napi_error)?;
+        let path = NamespacePath::from_portable_in_profile(
+            &portable,
+            self.config.profile,
+            self.config.limits,
+        )
+        .map_err(napi_error)?;
         let after = after
-            .map(|value| {
-                LogicalName::new(
-                    NameEncoding::Utf8,
-                    value.into_bytes(),
-                    self.config.limits.maximum_component_bytes,
-                )
-            })
-            .transpose()
-            .map_err(napi_error)?;
+            .as_deref()
+            .map(|value| native_name(value, self.config))
+            .transpose()?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
             .list_directory(
@@ -5246,17 +5290,11 @@ impl NativeCheckout {
         after: Option<String>,
         maximum_entries: u32,
     ) -> Result<NativeDirectoryRecordPage> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let after = after
-            .map(|value| {
-                LogicalName::new(
-                    NameEncoding::Utf8,
-                    value.into_bytes(),
-                    self.config.limits.maximum_component_bytes,
-                )
-            })
-            .transpose()
-            .map_err(napi_error)?;
+            .as_deref()
+            .map(|value| native_name(value, self.config))
+            .transpose()?;
         let mut checkout = self.inner.lock().await;
         let receipt = Box::pin(checkout.list_directory_records(
             &path,
@@ -5296,7 +5334,7 @@ impl NativeCheckout {
     /// state, excessive content, cancellation, storage, or bounded work.
     #[napi]
     pub async fn create_file(&self, path: String, bytes: Buffer) -> Result<NativeMutationResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
@@ -5322,7 +5360,7 @@ impl NativeCheckout {
     /// state, cancellation, storage, or bounded work.
     #[napi]
     pub async fn create_directory(&self, path: String) -> Result<NativeMutationResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
@@ -5347,7 +5385,7 @@ impl NativeCheckout {
         path: String,
         target: Buffer,
     ) -> Result<NativeMutationResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
@@ -5373,7 +5411,7 @@ impl NativeCheckout {
     /// path, conflict, storage failure, cancellation, or bounded work.
     #[napi]
     pub async fn create_special(&self, path: String, kind: String) -> Result<NativeMutationResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let kind = empty_special_kind(&kind)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
@@ -5398,7 +5436,7 @@ impl NativeCheckout {
         major: u32,
         minor: u32,
     ) -> Result<NativeMutationResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let kind = device_kind(&kind)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
@@ -5428,7 +5466,7 @@ impl NativeCheckout {
         path: String,
         payload: Buffer,
     ) -> Result<NativeMutationResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
@@ -5456,7 +5494,7 @@ impl NativeCheckout {
         offset: BigInt,
         bytes: Buffer,
     ) -> Result<NativeMutationResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
@@ -5525,7 +5563,7 @@ impl NativeCheckout {
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .remove(
-                native_path(&path, self.config.limits)?,
+                native_path(&path, self.config)?,
                 expected,
                 boundary_budget(),
                 &self.cancellation,
@@ -5548,8 +5586,8 @@ impl NativeCheckout {
         destination: String,
         replace: bool,
     ) -> Result<NativeMutationResult> {
-        let source = native_path(&source, self.config.limits)?;
-        let destination = native_path(&destination, self.config.limits)?;
+        let source = native_path(&source, self.config)?;
+        let destination = native_path(&destination, self.config)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
@@ -5577,8 +5615,8 @@ impl NativeCheckout {
         source: String,
         destination: String,
     ) -> Result<NativeMutationResult> {
-        let source = native_path(&source, self.config.limits)?;
-        let destination = native_path(&destination, self.config.limits)?;
+        let source = native_path(&source, self.config)?;
+        let destination = native_path(&destination, self.config)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
@@ -5600,7 +5638,7 @@ impl NativeCheckout {
         path: String,
         logical_bytes: BigInt,
     ) -> Result<NativeMutationResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
@@ -5657,7 +5695,7 @@ impl NativeCheckout {
         allocated: bool,
         extend: bool,
     ) -> Result<NativeMutationResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
@@ -5726,7 +5764,7 @@ impl NativeCheckout {
         length: BigInt,
         keep_size: bool,
     ) -> Result<NativeMutationResult> {
-        let path = native_path(&path, self.config.limits)?;
+        let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
@@ -5794,9 +5832,9 @@ impl NativeCheckout {
         length: BigInt,
     ) -> Result<NativeMutationResult> {
         let request = FileCloneRequest {
-            source: native_path(&source, self.config.limits)?,
+            source: native_path(&source, self.config)?,
             source_offset: bigint_u64(&source_offset)?,
-            destination: native_path(&destination, self.config.limits)?,
+            destination: native_path(&destination, self.config)?,
             destination_offset: bigint_u64(&destination_offset)?,
             length: bigint_u64(&length)?,
         };
@@ -5893,7 +5931,7 @@ impl NativeCheckout {
         }
         let authored = operations
             .into_iter()
-            .map(|operation| native_authored_transaction(operation, self.config.limits))
+            .map(|operation| native_authored_transaction(operation, self.config))
             .collect::<Result<Vec<_>>>()?;
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
         let mut checkout = self.inner.lock().await;
@@ -7108,15 +7146,24 @@ fn watch_reason(reason: WatchInvalidationReason) -> &'static str {
     }
 }
 
-fn native_path(path: &str, limits: VolumeLimits) -> Result<NamespacePath> {
-    let portable = PortablePath::parse(path, limits).map_err(napi_error)?;
-    NamespacePath::from_portable(&portable, limits).map_err(napi_error)
+fn native_path(path: &str, config: VolumeConfig) -> Result<NamespacePath> {
+    let portable = PortablePath::parse(path, config.limits).map_err(napi_error)?;
+    NamespacePath::from_portable_in_profile(&portable, config.profile, config.limits)
+        .map_err(napi_error)
+}
+
+fn native_name(name: &str, config: VolumeConfig) -> Result<LogicalName> {
+    let path = native_path(&format!("/{name}"), config)?;
+    match path.components() {
+        [name] => Ok(name.clone()),
+        _ => Err(Error::new(Status::InvalidArg, "invalid directory cursor")),
+    }
 }
 
 #[allow(clippy::too_many_lines)]
 fn native_authored_transaction(
     operation: NativeTransactionOperation,
-    limits: VolumeLimits,
+    config: VolumeConfig,
 ) -> Result<AuthoredMutation> {
     let NativeTransactionOperation {
         kind,
@@ -7141,41 +7188,42 @@ fn native_authored_transaction(
         keep_size,
         canonical_bytes,
     } = operation;
+    let limits = config.limits;
     let metadata = FileMetadata::default();
     Ok(match kind.as_str() {
         "create-file" => AuthoredMutation::CreateFile {
-            path: native_path(&required(path, "path")?, limits)?,
+            path: native_path(&required(path, "path")?, config)?,
             bytes: bytes::Bytes::from(required(bytes, "bytes")?.to_vec()),
             metadata,
         },
         "create-directory" => AuthoredMutation::CreateDirectory {
-            path: native_path(&required(path, "path")?, limits)?,
+            path: native_path(&required(path, "path")?, config)?,
             metadata,
         },
         "create-symbolic-link" => AuthoredMutation::CreateSymbolicLink {
-            path: native_path(&required(path, "path")?, limits)?,
+            path: native_path(&required(path, "path")?, config)?,
             target: bytes::Bytes::from(required(target, "target")?.to_vec()),
             metadata,
         },
         "create-special" => AuthoredMutation::CreateEmptySpecial {
-            path: native_path(&required(path, "path")?, limits)?,
+            path: native_path(&required(path, "path")?, config)?,
             kind: empty_special_kind(&required(file_kind, "fileKind")?)?,
             metadata,
         },
         "create-device" => AuthoredMutation::CreateDevice {
-            path: native_path(&required(path, "path")?, limits)?,
+            path: native_path(&required(path, "path")?, config)?,
             kind: device_kind(&required(file_kind, "fileKind")?)?,
             major: required(major, "major")?,
             minor: required(minor, "minor")?,
             metadata,
         },
         "create-reparse-point" => AuthoredMutation::CreateReparsePoint {
-            path: native_path(&required(path, "path")?, limits)?,
+            path: native_path(&required(path, "path")?, config)?,
             payload: bytes::Bytes::from(required(payload, "payload")?.to_vec()),
             metadata,
         },
         "remove" => AuthoredMutation::Remove {
-            path: native_path(&required(path, "path")?, limits)?,
+            path: native_path(&required(path, "path")?, config)?,
             expected_file_id: expected_file_id
                 .as_deref()
                 .map(fixed_16)
@@ -7183,21 +7231,21 @@ fn native_authored_transaction(
                 .map(FileId::from_bytes),
         },
         "rename" => AuthoredMutation::Rename {
-            source: native_path(&required(source, "source")?, limits)?,
-            destination: native_path(&required(destination, "destination")?, limits)?,
+            source: native_path(&required(source, "source")?, config)?,
+            destination: native_path(&required(destination, "destination")?, config)?,
             replace: required(replace, "replace")?,
         },
         "hard-link" => AuthoredMutation::HardLink {
-            source: native_path(&required(source, "source")?, limits)?,
-            destination: native_path(&required(destination, "destination")?, limits)?,
+            source: native_path(&required(source, "source")?, config)?,
+            destination: native_path(&required(destination, "destination")?, config)?,
         },
         "write" => AuthoredMutation::Write {
-            path: native_path(&required(path, "path")?, limits)?,
+            path: native_path(&required(path, "path")?, config)?,
             offset: required_bigint(offset, "offset")?,
             bytes: bytes::Bytes::from(required(bytes, "bytes")?.to_vec()),
         },
         "set-metadata" => AuthoredMutation::SetMetadata {
-            path: native_path(&required(path, "path")?, limits)?,
+            path: native_path(&required(path, "path")?, config)?,
             metadata: decode_file_metadata(
                 &required(canonical_bytes, "canonicalBytes")?,
                 native_decode_limits(limits),
@@ -7205,11 +7253,11 @@ fn native_authored_transaction(
             .map_err(napi_error)?,
         },
         "resize" => AuthoredMutation::Resize {
-            path: native_path(&required(path, "path")?, limits)?,
+            path: native_path(&required(path, "path")?, config)?,
             logical_bytes: required_bigint(logical_bytes, "logicalBytes")?,
         },
         "zero-range" => AuthoredMutation::ZeroRange {
-            path: native_path(&required(path, "path")?, limits)?,
+            path: native_path(&required(path, "path")?, config)?,
             range: ByteRange {
                 offset: required_bigint(offset, "offset")?,
                 length: required_bigint(length, "length")?,
@@ -7218,7 +7266,7 @@ fn native_authored_transaction(
             extend: required(extend, "extend")?,
         },
         "preallocate" => AuthoredMutation::Preallocate {
-            path: native_path(&required(path, "path")?, limits)?,
+            path: native_path(&required(path, "path")?, config)?,
             range: ByteRange {
                 offset: required_bigint(offset, "offset")?,
                 length: required_bigint(length, "length")?,
@@ -7226,9 +7274,9 @@ fn native_authored_transaction(
             keep_size: required(keep_size, "keepSize")?,
         },
         "clone-range" => AuthoredMutation::CloneRange(FileCloneRequest {
-            source: native_path(&required(source, "source")?, limits)?,
+            source: native_path(&required(source, "source")?, config)?,
             source_offset: required_bigint(source_offset, "sourceOffset")?,
-            destination: native_path(&required(destination, "destination")?, limits)?,
+            destination: native_path(&required(destination, "destination")?, config)?,
             destination_offset: required_bigint(destination_offset, "destinationOffset")?,
             length: required_bigint(length, "length")?,
         }),
@@ -7742,6 +7790,38 @@ fn boundary_budget() -> WorkBudget {
 mod tests {
     use super::*;
 
+    #[test]
+    #[allow(clippy::expect_used, reason = "fixed test fixture must deserialize")]
+    fn git_json_boundary_rejects_deserialized_capture_authority() {
+        let tree = serde_json::json!({
+            "kind": "exact",
+            "workspace_id": vec![0u8; 16],
+            "generation": vec![0u8; 32],
+        });
+        let result: GitFilesystemResult = serde_json::from_value(serde_json::json!({
+            "Captured": {
+                "tree": tree,
+                "tracked_paths": [],
+                "proof": {
+                    "fork_parent": tree,
+                    "initial_generation": vec![0u8; 32],
+                    "operation_id": "00000000-0000-0000-0000-000000000000",
+                },
+            },
+        }))
+        .expect("deserialize externally supplied proof");
+        assert!(reject_unverified_git_capture(&result).is_err());
+        let unfiltered = GitFilesystemResult::Captured {
+            tree: GitTreeRef::exact(
+                WorkspaceId::from_bytes([0; 16]),
+                GenerationId::new(Digest::from_bytes([0; 32])),
+            ),
+            tracked_paths: Default::default(),
+            proof: None,
+        };
+        assert!(reject_unverified_git_capture(&unfiltered).is_ok());
+    }
+
     fn test_config() -> VolumeConfig {
         VolumeConfig {
             profile: FilesystemProfile::Portable,
@@ -7754,6 +7834,20 @@ mod tests {
             sparse_files: true,
             limits: VolumeLimits::default(),
         }
+    }
+
+    #[test]
+    fn string_paths_and_directory_cursors_use_native_profile() -> Result<()> {
+        let mut config = test_config();
+        config.profile = FilesystemProfile::Windows;
+        let path = native_path("/é.txt", config)?;
+        let cursor = native_name("é.txt", config)?;
+        assert_eq!(path.components(), &[cursor]);
+        assert_eq!(
+            path.components().first().map(LogicalName::encoding),
+            Some(NameEncoding::WindowsUtf16Le)
+        );
+        Ok(())
     }
 
     #[test]
@@ -8305,6 +8399,75 @@ mod tests {
             main.read("/second".to_owned(), bigint(8)).await?.as_ref(),
             &[3]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn napi_operation_windows_share_the_native_authority_fence()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let fs = NativeFs::open(
+            root.path().to_string_lossy().into_owned(),
+            NativeObjectCacheOptions {
+                maximum_entries: 32,
+                maximum_bytes: bigint(1024 * 1024),
+                maximum_in_flight: 4,
+                maximum_waiters_per_object: 4,
+            },
+        )
+        .await?;
+        let workspace = fs.create_workspace("leased".to_owned()).await?;
+        let coordinator = fs.operation_windows();
+        let parent = workspace.inner.head().await?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis()
+            .try_into()?;
+        let lease = coordinator
+            .inner
+            .begin(workspace.inner.id(), parent.id(), "tool", now, u64::MAX)
+            .await?;
+        let mut transaction = workspace
+            .inner
+            .begin_transaction(IdempotencyKey::from_bytes([0x71; 16]))
+            .await?;
+        transaction.write_text("/accepted", "yes").await?;
+        assert!(matches!(
+            transaction
+                .commit_with_permit(lease.publication_permit())
+                .await?,
+            TransactionCommit::Committed(_)
+        ));
+
+        let parent = workspace.inner.head().await?;
+        let expired = coordinator
+            .inner
+            .begin(
+                workspace.inner.id(),
+                parent.id(),
+                "expired",
+                now,
+                now.saturating_add(1),
+            )
+            .await?;
+        assert!(matches!(
+            coordinator
+                .inner
+                .finish(&expired, now.saturating_add(2))
+                .await?,
+            OperationWindowFinish::AlreadyClosed
+        ));
+        let mut rejected = workspace
+            .inner
+            .begin_transaction(IdempotencyKey::from_bytes([0x72; 16]))
+            .await?;
+        rejected.write_text("/rejected", "no").await?;
+        assert!(matches!(
+            rejected
+                .commit_with_permit(expired.publication_permit())
+                .await?,
+            TransactionCommit::Fenced
+        ));
         Ok(())
     }
 

@@ -346,6 +346,23 @@ pub trait AsyncObjectStore: StorageProvider {
         }
     }
 
+    /// Makes every previously admitted immutable object crash-durable before
+    /// an authority record may reference it. Ordinary stores already provide
+    /// that guarantee from `put`/`put_many`; a bounded staging adapter overrides
+    /// this boundary to group physical writes without changing publication.
+    fn flush_before_publish(
+        &self,
+        _budget: WorkBudget,
+        _cancellation: &CancellationToken,
+    ) -> impl Future<Output = ObjectResult<()>> + StorageFuture {
+        async {
+            Ok(crate::storage::ObjectReceipt {
+                value: (),
+                work: crate::WorkCounters::default(),
+            })
+        }
+    }
+
     /// Asynchronously reads one complete bounded object.
     fn read(
         &self,

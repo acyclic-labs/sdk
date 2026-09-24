@@ -116,6 +116,9 @@ pub mod simulation;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod source;
 pub mod speculation;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub mod staged_objects;
 pub mod storage;
 pub mod streams_record;
 #[cfg(all(test, feature = "memory"))]
@@ -157,8 +160,8 @@ pub use facade::{
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use facade::{
-    LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend, LocalOptions,
-    LocalVolume,
+    LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend,
+    LocalOperationWindowStore, LocalOptions, LocalVolume,
 };
 #[cfg(all(feature = "memory", feature = "distributed"))]
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
@@ -168,16 +171,17 @@ pub use foundation::{
     authority_commit_digest,
 };
 pub use git_compat::{
-    GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureError,
-    GitCapturedGeneration, GitCommand, GitCommandOutput, GitCommit, GitCommitId, GitCompatError,
-    GitCompatRepository, GitCompatRunError, GitCompatState, GitCompatStore, GitDirtyState,
-    GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitGenerationRef,
-    GitGrepMatch, GitGrepResult, GitIgnorePolicy, GitObjectName, GitPatchError, GitPendingMutation,
-    GitPendingTransition, GitPublicationRecord, GitResetMode, GitStatus, GitTransitionId,
-    GitTreeEntry, GitTreeRef, IntoGitTreeRef, MemoryGitCompatStore, apply_git_patch,
-    apply_git_patch_with_permit, blame_git_generations, capture_git_compatible_generation,
-    capture_git_compatible_generation_at, capture_git_compatible_generation_incremental,
-    grep_git_generation, walk_git_tree,
+    GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureAuthenticationError,
+    GitCaptureError, GitCaptureProof, GitCapturedGeneration, GitCommand, GitCommandOutput,
+    GitCommit, GitCommitId, GitCompatError, GitCompatRepository, GitCompatRunError, GitCompatState,
+    GitCompatStore, GitDiffCounts, GitDirtyState, GitFilesystemAction, GitFilesystemExecutor,
+    GitFilesystemResult, GitGenerationRef, GitGrepMatch, GitGrepResult, GitIgnorePolicy,
+    GitObjectName, GitPatchError, GitPendingMutation, GitPendingTransition, GitPublicationRecord,
+    GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef, IntoGitTreeRef,
+    MemoryGitCompatStore, apply_git_patch, apply_git_patch_with_permit, blame_git_generations,
+    capture_git_compatible_generation, capture_git_compatible_generation_at,
+    capture_git_compatible_generation_incremental, git_compatible_diff_counts, grep_git_generation,
+    walk_git_tree,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use hosted::{
@@ -206,8 +210,6 @@ pub use materializer::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use materializer::{NativeTreeMaterializationBackend, NativeTreeMaterializationError};
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub use materializer::{NativeTreePublicationError, publish_native_tree};
 #[cfg(all(
     feature = "local",
     feature = "native-mount",
@@ -256,18 +258,21 @@ pub use native_exchange::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_identity::NativeRootIdentity;
+#[cfg(all(feature = "native-mount", windows))]
+pub use native_mount::recover_native_mount_destination_preserving_residue;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub use native_mount::{
-    CheckoutMountSource, HostPathReplacement, HostPathRestore, LazyMount, MaterializationReceipt,
-    MaterializeError, MaterializeOptions, Mount, MountAttributePage, MountDirectoryEntry,
-    MountDirectoryPage, MountFilesystem, MountLifecycleError, MountLookup, MountNode,
-    MountNodeKind, MountOpenFile, MountOptions, MountPath, MountPublication, MountRangeAllocation,
-    MountSeekTarget, MountSourceError, MountSparseRange, MountSparseSpan,
-    NativeBlockCloneAccelerationEvidence, NativeMountCapabilities, NativeMountError,
-    NativeMountKind, NativeMountRequest, NativeMountSession, NativeMountSessionIsolation,
-    NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
+    CheckoutMountSource, HostPathReplacement, HostPathRestore, LazyMount, LazyWorkingSet,
+    MaterializationReceipt, MaterializeError, MaterializeOptions, Mount, MountAttributePage,
+    MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLifecycleError, MountLookup,
+    MountNode, MountNodeKind, MountOpenFile, MountOptions, MountPath, MountPublication,
+    MountRangeAllocation, MountSeekTarget, MountSourceError, MountSparseRange, MountSparseSpan,
+    MountViewLease, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
+    NativeMountError, NativeMountKind, NativeMountRequest, NativeMountSession,
+    NativeMountSessionIsolation, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
-    RoutedMountSource, SharedCheckout, SharedCheckoutState, materialize_checkout,
+    RoutedMountSource, SharedCheckout, SharedCheckoutState,
+    detach_native_mount_destination_after_crash, materialize_checkout,
     materialize_checkout_host_path, materialize_checkout_path, materialize_checkout_paths,
     mount_native, mount_native_over_existing, probe_native_mount,
     probe_native_storage_accelerations, probe_native_storage_capabilities,

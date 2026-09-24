@@ -13,9 +13,9 @@ use crate::workspace_context::{
 use crate::{
     GitCompatState, GitCompatStore, LazyOverlay, LazyOverlayId, LazyWorkspaceState,
     LazyWorkspaceStore, MaterializationJournal, MaterializationJournalStore, MultiRootPublication,
-    MultiRootPublicationStore, OperationId, OperationWindowSnapshot, OperationWindowStore,
-    WorkspaceContext, WorkspaceContextDiscardOutcome, WorkspaceContextId, WorkspaceContextStore,
-    WorkspaceId, WorkspaceLineageRecord, WorkspaceLineageStore,
+    MultiRootPublicationStore, OperationId, WorkspaceContext, WorkspaceContextDiscardOutcome,
+    WorkspaceContextId, WorkspaceContextStore, WorkspaceId, WorkspaceLineageRecord,
+    WorkspaceLineageStore,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -23,7 +23,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use thiserror::Error;
+
+const RECORD_LOCK_DEADLINE: Duration = Duration::from_secs(5);
+const RECORD_LOCK_RETRY: Duration = Duration::from_millis(5);
+const GIT_COMPAT_NAMESPACE: &str = "git-compat-v9";
+
+// Journal locks, directory enumeration, and namespace mutations have no
+// portable native completion path. Bound entire transactions, not individual
+// syscalls, so cancellation cannot split a lock/CAS/durability sequence.
+async fn run_local_transaction<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, LocalCoreStateStoreError> + Send + 'static,
+) -> Result<T, LocalCoreStateStoreError> {
+    acyclic_native_runtime::run_blocking_io(operation).await?
+}
 
 /// One journaled private namespace shared by core control-plane state.
 #[derive(Clone, Debug)]
@@ -56,12 +70,22 @@ impl LocalCoreStateStore {
     ///
     /// Only canonical journal names are returned. Temporary, previous, and
     /// lock files remain internal recovery details.
-    pub fn materialization_operations(&self) -> Result<Vec<OperationId>, LocalCoreStateStoreError> {
+    pub(crate) fn materialization_operations(
+        &self,
+    ) -> Result<Vec<OperationId>, LocalCoreStateStoreError> {
         self.operation_records("materialization")
     }
 
+    /// Lists durable materialization journals without blocking an async executor.
+    pub async fn materialization_operations_async(
+        &self,
+    ) -> Result<Vec<OperationId>, LocalCoreStateStoreError> {
+        let store = self.clone();
+        run_local_transaction(move || store.materialization_operations()).await
+    }
+
     /// Lists multi-root publications with durable recovery state.
-    pub fn multi_root_publication_operations(
+    pub(crate) fn multi_root_publication_operations(
         &self,
     ) -> Result<Vec<OperationId>, LocalCoreStateStoreError> {
         self.operation_records("multi-root-publications")
@@ -101,7 +125,7 @@ impl LocalCoreStateStore {
     }
 
     /// Removes a terminal materialization journal and its recovery copies.
-    pub fn remove_materialization(
+    pub(crate) fn remove_materialization(
         &self,
         operation_id: OperationId,
     ) -> Result<(), LocalCoreStateStoreError> {
@@ -122,6 +146,15 @@ impl LocalCoreStateStore {
             sync_directory(&paths.directory)?;
             Ok(())
         })
+    }
+
+    /// Removes a terminal journal without blocking an async executor.
+    pub async fn remove_materialization_async(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<(), LocalCoreStateStoreError> {
+        let store = self.clone();
+        run_local_transaction(move || store.remove_materialization(operation_id)).await
     }
 
     fn load_record<T: DeserializeOwned>(
@@ -261,7 +294,19 @@ fn with_lock<T>(
         .read(true)
         .write(true)
         .open(&paths.lock)?;
-    lock.lock_exclusive()?;
+    let deadline = Instant::now() + RECORD_LOCK_DEADLINE;
+    loop {
+        match lock.try_lock_exclusive() {
+            Ok(()) => break,
+            Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
+                if Instant::now() >= deadline {
+                    return Err(LocalCoreStateStoreError::LockTimeout(paths.lock.clone()));
+                }
+                std::thread::sleep(RECORD_LOCK_RETRY);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
     let result = action();
     FileExt::unlock(&lock)?;
     result
@@ -452,6 +497,9 @@ pub enum LocalCoreStateStoreError {
     /// Native filesystem operation failed.
     #[error("core state I/O failed: {0}")]
     Io(#[from] std::io::Error),
+    /// Another owner held a record lock beyond the bounded transaction deadline.
+    #[error("core state record lock timed out: {}", .0.display())]
+    LockTimeout(PathBuf),
     /// A persisted record was malformed or incompatible with its schema.
     #[error("core state serialization failed: {0}")]
     Json(#[from] serde_json::Error),
@@ -473,7 +521,8 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         &self,
         workspace_id: WorkspaceId,
     ) -> Result<Option<WorkspaceLineageRecord>, Self::Error> {
-        self.load_record("lineage", workspace_id)
+        let store = self.clone();
+        run_local_transaction(move || store.load_record("lineage", workspace_id)).await
     }
 
     async fn compare_and_swap(
@@ -482,13 +531,17 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         expected_revision: u64,
         replacement: WorkspaceLineageRecord,
     ) -> Result<bool, Self::Error> {
-        self.compare_and_swap_record(
-            "lineage",
-            workspace_id,
-            expected_revision,
-            &replacement,
-            |record| record.revision,
-        )
+        let store = self.clone();
+        run_local_transaction(move || {
+            store.compare_and_swap_record(
+                "lineage",
+                workspace_id,
+                expected_revision,
+                &replacement,
+                |record| record.revision,
+            )
+        })
+        .await
     }
 }
 
@@ -499,23 +552,31 @@ impl WorkspaceContextStore for LocalCoreStateStore {
         &self,
         context_id: WorkspaceContextId,
     ) -> Result<Option<WorkspaceContext>, Self::Error> {
-        let transaction = context_transaction_paths(&self.root);
-        with_lock(&transaction, || {
-            recover_context_transaction(&self.root, &transaction)?;
-            read_recoverable(&context_record_paths(&self.root, context_id))
+        let root = self.root.clone();
+        run_local_transaction(move || {
+            let transaction = context_transaction_paths(&root);
+            with_lock(&transaction, || {
+                recover_context_transaction(&root, &transaction)?;
+                read_recoverable(&context_record_paths(&root, context_id))
+            })
         })
+        .await
     }
 
     async fn list(&self) -> Result<Vec<WorkspaceContext>, Self::Error> {
-        let transaction = context_transaction_paths(&self.root);
-        with_lock(&transaction, || {
-            recover_context_transaction(&self.root, &transaction)?;
-            let contexts = load_all_contexts(&self.root)?;
-            if !context_children_index_ready(&self.root)? {
-                install_context_children_index(&self.root, contexts.iter().cloned())?;
-            }
-            Ok(contexts)
+        let root = self.root.clone();
+        run_local_transaction(move || {
+            let transaction = context_transaction_paths(&root);
+            with_lock(&transaction, || {
+                recover_context_transaction(&root, &transaction)?;
+                let contexts = load_all_contexts(&root)?;
+                if !context_children_index_ready(&root)? {
+                    install_context_children_index(&root, contexts.iter().cloned())?;
+                }
+                Ok(contexts)
+            })
         })
+        .await
     }
 
     async fn compare_and_swap(
@@ -538,76 +599,79 @@ impl WorkspaceContextStore for LocalCoreStateStore {
         replacements: Vec<WorkspaceContext>,
         require_exact_set: bool,
     ) -> Result<bool, Self::Error> {
-        let transaction = context_transaction_paths(&self.root);
-        with_lock(&transaction, || {
-            recover_context_transaction(&self.root, &transaction)?;
-            if require_exact_set
-                && context_record_ids(&self.root)?.len() != expected_revisions.len()
-            {
-                return Ok(false);
-            }
-            let mut before = BTreeMap::new();
-            for (context_id, expected) in &expected_revisions {
-                let current: Option<WorkspaceContext> =
-                    read_recoverable(&context_record_paths(&self.root, *context_id))?;
-                if current.as_ref().map_or(0, |record| record.revision) != *expected {
+        let root = self.root.clone();
+        run_local_transaction(move || {
+            let transaction = context_transaction_paths(&root);
+            with_lock(&transaction, || {
+                recover_context_transaction(&root, &transaction)?;
+                if require_exact_set && context_record_ids(&root)?.len() != expected_revisions.len()
+                {
                     return Ok(false);
                 }
-                before.insert(*context_id, current);
-            }
-            let after = replacements
-                .into_iter()
-                .map(|replacement| (replacement.context_id, replacement))
-                .collect::<BTreeMap<_, _>>();
-            if after
-                .keys()
-                .any(|context_id| !expected_revisions.contains_key(context_id))
-            {
-                return Ok(false);
-            }
-            ensure_context_children_index(&self.root)?;
-            let affected_parents = before
-                .values()
-                .filter_map(|record| record.as_ref()?.parent_context_id)
-                .chain(after.values().filter_map(|record| record.parent_context_id))
-                .collect::<BTreeSet<_>>();
-            let mut before_children = BTreeMap::new();
-            let mut after_children = WorkspaceContextChildren::new();
-            for parent in affected_parents {
-                let current = read_recoverable(&context_children_paths(&self.root, parent))?;
-                after_children.insert(parent, current.clone().unwrap_or_default());
-                before_children.insert(parent, current);
-            }
-            for (context_id, replacement) in &after {
-                update_context_children(
-                    &mut after_children,
-                    before.get(context_id).and_then(Option::as_ref),
-                    Some(replacement),
-                );
-            }
-            let journal = ContextTransaction {
-                version: 2,
-                phase: ContextTransactionPhase::Prepared,
-                before: before
+                let mut before = BTreeMap::new();
+                for (context_id, expected) in &expected_revisions {
+                    let current: Option<WorkspaceContext> =
+                        read_recoverable(&context_record_paths(&root, *context_id))?;
+                    if current.as_ref().map_or(0, |record| record.revision) != *expected {
+                        return Ok(false);
+                    }
+                    before.insert(*context_id, current);
+                }
+                let after = replacements
                     .into_iter()
-                    .filter(|(context_id, _)| after.contains_key(context_id))
-                    .collect(),
-                after,
-                before_children,
-                after_children,
-            };
-            write_journaled(&transaction, &journal)?;
-            apply_context_transaction(&self.root, &journal)?;
-            write_journaled(
-                &transaction,
-                &ContextTransaction {
-                    phase: ContextTransactionPhase::Committed,
-                    ..journal
-                },
-            )?;
-            recover_context_transaction(&self.root, &transaction)?;
-            Ok(true)
+                    .map(|replacement| (replacement.context_id, replacement))
+                    .collect::<BTreeMap<_, _>>();
+                if after
+                    .keys()
+                    .any(|context_id| !expected_revisions.contains_key(context_id))
+                {
+                    return Ok(false);
+                }
+                ensure_context_children_index(&root)?;
+                let affected_parents = before
+                    .values()
+                    .filter_map(|record| record.as_ref()?.parent_context_id)
+                    .chain(after.values().filter_map(|record| record.parent_context_id))
+                    .collect::<BTreeSet<_>>();
+                let mut before_children = BTreeMap::new();
+                let mut after_children = WorkspaceContextChildren::new();
+                for parent in affected_parents {
+                    let current = read_recoverable(&context_children_paths(&root, parent))?;
+                    after_children.insert(parent, current.clone().unwrap_or_default());
+                    before_children.insert(parent, current);
+                }
+                for (context_id, replacement) in &after {
+                    update_context_children(
+                        &mut after_children,
+                        before.get(context_id).and_then(Option::as_ref),
+                        Some(replacement),
+                    );
+                }
+                let journal = ContextTransaction {
+                    version: 2,
+                    phase: ContextTransactionPhase::Prepared,
+                    before: before
+                        .into_iter()
+                        .filter(|(context_id, _)| after.contains_key(context_id))
+                        .collect(),
+                    after,
+                    before_children,
+                    after_children,
+                };
+                write_journaled(&transaction, &journal)?;
+                apply_context_transaction(&root, &journal)?;
+                write_journaled(
+                    &transaction,
+                    &ContextTransaction {
+                        phase: ContextTransactionPhase::Committed,
+                        ..journal
+                    },
+                )?;
+                recover_context_transaction(&root, &transaction)?;
+                Ok(true)
+            })
         })
+        .await
     }
 
     async fn discard_subtree(
@@ -616,82 +680,92 @@ impl WorkspaceContextStore for LocalCoreStateStore {
         child: WorkspaceContextId,
         maximum: u32,
     ) -> Result<WorkspaceContextDiscardOutcome, Self::Error> {
-        let transaction = context_transaction_paths(&self.root);
-        with_lock(&transaction, || {
-            recover_context_transaction(&self.root, &transaction)?;
-            if !context_children_index_ready(&self.root)? {
-                return Ok(WorkspaceContextDiscardOutcome::IncompatibleState);
-            }
-            let root: Option<WorkspaceContext> =
-                read_recoverable(&context_record_paths(&self.root, child))?;
-            let discarded = match plan_local_context_subtree_discard(
-                &self.root,
-                root.as_ref(),
-                parent,
-                child,
-                maximum,
-            )? {
-                Ok(discarded) => discarded,
-                Err(outcome) => return Ok(outcome),
-            };
-            let mut records = BTreeMap::from_iter(root.map(|record| (child, record)));
-            for context_id in discarded.iter().copied().filter(|id| *id != child) {
-                let Some(record) = read_recoverable(&context_record_paths(&self.root, context_id))?
-                else {
+        let root_path = self.root.clone();
+        run_local_transaction(move || {
+            let transaction = context_transaction_paths(&root_path);
+            with_lock(&transaction, || {
+                recover_context_transaction(&root_path, &transaction)?;
+                if !context_children_index_ready(&root_path)? {
                     return Ok(WorkspaceContextDiscardOutcome::IncompatibleState);
+                }
+                let root: Option<WorkspaceContext> =
+                    read_recoverable(&context_record_paths(&root_path, child))?;
+                let discarded = match plan_local_context_subtree_discard(
+                    &root_path,
+                    root.as_ref(),
+                    parent,
+                    child,
+                    maximum,
+                )? {
+                    Ok(discarded) => discarded,
+                    Err(outcome) => return Ok(outcome),
                 };
-                records.insert(context_id, record);
-            }
-            let selected_children = context_children(records.values().cloned());
-            let outcome =
-                discard_context_subtree(&mut records, &selected_children, parent, child, maximum);
-            if !matches!(
-                &outcome,
-                WorkspaceContextDiscardOutcome::Discarded(actual) if actual == &discarded
-            ) {
-                return Ok(match outcome {
-                    WorkspaceContextDiscardOutcome::Discarded(_) => {
-                        WorkspaceContextDiscardOutcome::IncompatibleState
-                    }
-                    outcome => outcome,
-                });
-            }
-            let WorkspaceContextDiscardOutcome::Discarded(discarded) = &outcome else {
-                return Ok(outcome);
-            };
-            let mut before = BTreeMap::new();
-            let mut after = BTreeMap::new();
-            for context_id in discarded {
-                let current: Option<WorkspaceContext> =
-                    read_recoverable(&context_record_paths(&self.root, *context_id))?;
-                before.insert(*context_id, current);
-                let replacement = records.get(context_id).cloned().ok_or_else(|| {
-                    LocalCoreStateStoreError::ContextTransaction(
-                        "discarded context replacement is absent".to_owned(),
-                    )
-                })?;
-                after.insert(*context_id, replacement);
-            }
-            let journal = ContextTransaction {
-                version: 1,
-                phase: ContextTransactionPhase::Prepared,
-                before,
-                after,
-                before_children: BTreeMap::new(),
-                after_children: WorkspaceContextChildren::new(),
-            };
-            write_journaled(&transaction, &journal)?;
-            apply_context_records(&self.root, &journal.after)?;
-            write_journaled(
-                &transaction,
-                &ContextTransaction {
-                    phase: ContextTransactionPhase::Committed,
-                    ..journal
-                },
-            )?;
-            recover_context_transaction(&self.root, &transaction)?;
-            Ok(outcome)
+                let mut records = BTreeMap::from_iter(root.map(|record| (child, record)));
+                for context_id in discarded.iter().copied().filter(|id| *id != child) {
+                    let Some(record) =
+                        read_recoverable(&context_record_paths(&root_path, context_id))?
+                    else {
+                        return Ok(WorkspaceContextDiscardOutcome::IncompatibleState);
+                    };
+                    records.insert(context_id, record);
+                }
+                let selected_children = context_children(records.values().cloned());
+                let outcome = discard_context_subtree(
+                    &mut records,
+                    &selected_children,
+                    parent,
+                    child,
+                    maximum,
+                );
+                if !matches!(
+                    &outcome,
+                    WorkspaceContextDiscardOutcome::Discarded(actual) if actual == &discarded
+                ) {
+                    return Ok(match outcome {
+                        WorkspaceContextDiscardOutcome::Discarded(_) => {
+                            WorkspaceContextDiscardOutcome::IncompatibleState
+                        }
+                        outcome => outcome,
+                    });
+                }
+                let WorkspaceContextDiscardOutcome::Discarded(discarded) = &outcome else {
+                    return Ok(outcome);
+                };
+                let mut before = BTreeMap::new();
+                let mut after = BTreeMap::new();
+                for context_id in discarded {
+                    let current: Option<WorkspaceContext> =
+                        read_recoverable(&context_record_paths(&root_path, *context_id))?;
+                    before.insert(*context_id, current);
+                    let replacement = records.get(context_id).cloned().ok_or_else(|| {
+                        LocalCoreStateStoreError::ContextTransaction(
+                            "discarded context replacement is absent".to_owned(),
+                        )
+                    })?;
+                    after.insert(*context_id, replacement);
+                }
+                let journal = ContextTransaction {
+                    version: 1,
+                    phase: ContextTransactionPhase::Prepared,
+                    before,
+                    after,
+                    before_children: BTreeMap::new(),
+                    after_children: WorkspaceContextChildren::new(),
+                };
+                write_journaled(&transaction, &journal)?;
+                apply_context_records(&root_path, &journal.after)?;
+                write_journaled(
+                    &transaction,
+                    &ContextTransaction {
+                        phase: ContextTransactionPhase::Committed,
+                        ..journal
+                    },
+                )?;
+                recover_context_transaction(&root_path, &transaction)?;
+                Ok(outcome)
+            })
         })
+        .await
     }
 }
 
@@ -975,37 +1049,12 @@ fn recover_context_transaction(
     Ok(())
 }
 
-impl OperationWindowStore for LocalCoreStateStore {
-    type Error = LocalCoreStateStoreError;
-
-    async fn load(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Result<Option<OperationWindowSnapshot>, Self::Error> {
-        self.load_record("operation-windows", workspace_id)
-    }
-
-    async fn compare_and_swap(
-        &self,
-        workspace_id: WorkspaceId,
-        expected_revision: u64,
-        replacement: OperationWindowSnapshot,
-    ) -> Result<bool, Self::Error> {
-        self.compare_and_swap_record(
-            "operation-windows",
-            workspace_id,
-            expected_revision,
-            &replacement,
-            |record| record.revision,
-        )
-    }
-}
-
 impl GitCompatStore for LocalCoreStateStore {
     type Error = LocalCoreStateStoreError;
 
     async fn load(&self, workspace_id: WorkspaceId) -> Result<Option<GitCompatState>, Self::Error> {
-        self.load_record("git-compat", workspace_id)
+        let store = self.clone();
+        run_local_transaction(move || store.load_record(GIT_COMPAT_NAMESPACE, workspace_id)).await
     }
 
     async fn compare_and_swap(
@@ -1014,13 +1063,17 @@ impl GitCompatStore for LocalCoreStateStore {
         expected_revision: u64,
         replacement: GitCompatState,
     ) -> Result<bool, Self::Error> {
-        self.compare_and_swap_record(
-            "git-compat",
-            workspace_id,
-            expected_revision,
-            &replacement,
-            |record| record.revision,
-        )
+        let store = self.clone();
+        run_local_transaction(move || {
+            store.compare_and_swap_record(
+                GIT_COMPAT_NAMESPACE,
+                workspace_id,
+                expected_revision,
+                &replacement,
+                |record| record.revision,
+            )
+        })
+        .await
     }
 
     async fn compare_and_delete(
@@ -1028,12 +1081,16 @@ impl GitCompatStore for LocalCoreStateStore {
         workspace_id: WorkspaceId,
         expected_revision: u64,
     ) -> Result<bool, Self::Error> {
-        self.compare_and_delete_record::<GitCompatState>(
-            "git-compat",
-            workspace_id,
-            expected_revision,
-            |record| record.revision,
-        )
+        let store = self.clone();
+        run_local_transaction(move || {
+            store.compare_and_delete_record::<GitCompatState>(
+                GIT_COMPAT_NAMESPACE,
+                workspace_id,
+                expected_revision,
+                |record| record.revision,
+            )
+        })
+        .await
     }
 }
 
@@ -1044,7 +1101,9 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         &self,
         operation_id: OperationId,
     ) -> Result<Option<MaterializationJournal>, Self::Error> {
-        self.load_operation_record("materialization", operation_id)
+        let store = self.clone();
+        run_local_transaction(move || store.load_operation_record("materialization", operation_id))
+            .await
     }
 
     async fn compare_and_swap(
@@ -1053,13 +1112,17 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         expected_revision: u64,
         replacement: MaterializationJournal,
     ) -> Result<bool, Self::Error> {
-        self.compare_and_swap_operation_record(
-            "materialization",
-            operation_id,
-            expected_revision,
-            &replacement,
-            |journal| journal.revision,
-        )
+        let store = self.clone();
+        run_local_transaction(move || {
+            store.compare_and_swap_operation_record(
+                "materialization",
+                operation_id,
+                expected_revision,
+                &replacement,
+                |journal| journal.revision,
+            )
+        })
+        .await
     }
 }
 
@@ -1070,7 +1133,11 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
         &self,
         operation_id: OperationId,
     ) -> Result<Option<MultiRootPublication>, Self::Error> {
-        self.load_operation_record("multi-root-publications", operation_id)
+        let store = self.clone();
+        run_local_transaction(move || {
+            store.load_operation_record("multi-root-publications", operation_id)
+        })
+        .await
     }
 
     async fn compare_and_swap(
@@ -1079,17 +1146,22 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
         expected_revision: u64,
         replacement: MultiRootPublication,
     ) -> Result<bool, Self::Error> {
-        self.compare_and_swap_operation_record(
-            "multi-root-publications",
-            operation_id,
-            expected_revision,
-            &replacement,
-            |publication| publication.revision,
-        )
+        let store = self.clone();
+        run_local_transaction(move || {
+            store.compare_and_swap_operation_record(
+                "multi-root-publications",
+                operation_id,
+                expected_revision,
+                &replacement,
+                |publication| publication.revision,
+            )
+        })
+        .await
     }
 
     async fn list_operations(&self) -> Result<Vec<OperationId>, Self::Error> {
-        self.multi_root_publication_operations()
+        let store = self.clone();
+        run_local_transaction(move || store.multi_root_publication_operations()).await
     }
 
     async fn compare_and_delete(
@@ -1097,12 +1169,16 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
         operation_id: OperationId,
         expected_revision: u64,
     ) -> Result<bool, Self::Error> {
-        self.compare_and_delete_operation_record::<MultiRootPublication>(
-            "multi-root-publications",
-            operation_id,
-            expected_revision,
-            |publication| publication.revision,
-        )
+        let store = self.clone();
+        run_local_transaction(move || {
+            store.compare_and_delete_operation_record::<MultiRootPublication>(
+                "multi-root-publications",
+                operation_id,
+                expected_revision,
+                |publication| publication.revision,
+            )
+        })
+        .await
     }
 
     async fn claim_parent(
@@ -1110,27 +1186,31 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
         parent_context_id: WorkspaceContextId,
         operation_id: OperationId,
     ) -> Result<bool, Self::Error> {
-        let key = WorkspaceId::from_bytes(parent_context_id.into_bytes());
-        for _ in 0..2 {
-            if let Some(claim) =
-                self.load_record::<MultiRootParentClaim>("multi-root-parent-claims", key)?
-            {
-                return Ok(claim.operation_id == operation_id);
+        let store = self.clone();
+        run_local_transaction(move || {
+            let key = WorkspaceId::from_bytes(parent_context_id.into_bytes());
+            for _ in 0..2 {
+                if let Some(claim) =
+                    store.load_record::<MultiRootParentClaim>("multi-root-parent-claims", key)?
+                {
+                    return Ok(claim.operation_id == operation_id);
+                }
+                if store.compare_and_swap_record(
+                    "multi-root-parent-claims",
+                    key,
+                    0,
+                    &MultiRootParentClaim {
+                        revision: 1,
+                        operation_id,
+                    },
+                    |claim| claim.revision,
+                )? {
+                    return Ok(true);
+                }
             }
-            if self.compare_and_swap_record(
-                "multi-root-parent-claims",
-                key,
-                0,
-                &MultiRootParentClaim {
-                    revision: 1,
-                    operation_id,
-                },
-                |claim| claim.revision,
-            )? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+            Ok(false)
+        })
+        .await
     }
 
     async fn release_parent(
@@ -1138,21 +1218,25 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
         parent_context_id: WorkspaceContextId,
         operation_id: OperationId,
     ) -> Result<bool, Self::Error> {
-        let key = WorkspaceId::from_bytes(parent_context_id.into_bytes());
-        let Some(claim) =
-            self.load_record::<MultiRootParentClaim>("multi-root-parent-claims", key)?
-        else {
-            return Ok(true);
-        };
-        if claim.operation_id != operation_id {
-            return Ok(true);
-        }
-        self.compare_and_delete_record::<MultiRootParentClaim>(
-            "multi-root-parent-claims",
-            key,
-            claim.revision,
-            |claim| claim.revision,
-        )
+        let store = self.clone();
+        run_local_transaction(move || {
+            let key = WorkspaceId::from_bytes(parent_context_id.into_bytes());
+            let Some(claim) =
+                store.load_record::<MultiRootParentClaim>("multi-root-parent-claims", key)?
+            else {
+                return Ok(true);
+            };
+            if claim.operation_id != operation_id {
+                return Ok(true);
+            }
+            store.compare_and_delete_record::<MultiRootParentClaim>(
+                "multi-root-parent-claims",
+                key,
+                claim.revision,
+                |claim| claim.revision,
+            )
+        })
+        .await
     }
 }
 
@@ -1164,7 +1248,8 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         &self,
         workspace_id: WorkspaceId,
     ) -> Result<Option<LazyWorkspaceState>, Self::Error> {
-        self.load_record("lazy-workspaces", workspace_id)
+        let store = self.clone();
+        run_local_transaction(move || store.load_record("lazy-workspaces", workspace_id)).await
     }
 
     async fn compare_and_swap_lazy_workspace(
@@ -1173,30 +1258,38 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         expected_revision: u64,
         replacement: LazyWorkspaceState,
     ) -> Result<bool, Self::Error> {
-        self.compare_and_swap_record(
-            "lazy-workspaces",
-            workspace_id,
-            expected_revision,
-            &replacement,
-            |state| state.revision,
-        )
+        let store = self.clone();
+        run_local_transaction(move || {
+            store.compare_and_swap_record(
+                "lazy-workspaces",
+                workspace_id,
+                expected_revision,
+                &replacement,
+                |state| state.revision,
+            )
+        })
+        .await
     }
 
     async fn load_lazy_overlay(
         &self,
         overlay: LazyOverlayId,
     ) -> Result<Option<LazyOverlay>, Self::Error> {
-        let paths = RecordPaths::new_key(&self.root, "lazy-overlays", &overlay.into_bytes());
-        with_lock(&paths, || {
-            let Some(value) = read_recoverable(&paths)? else {
-                return Ok(None);
-            };
-            let encoded = serde_json::to_vec(&value)?;
-            if blake3::hash(&encoded).as_bytes() != &overlay.into_bytes() {
-                return Err(LocalCoreStateStoreError::Integrity);
-            }
-            Ok(Some(value))
+        let root = self.root.clone();
+        run_local_transaction(move || {
+            let paths = RecordPaths::new_key(&root, "lazy-overlays", &overlay.into_bytes());
+            with_lock(&paths, || {
+                let Some(value) = read_recoverable(&paths)? else {
+                    return Ok(None);
+                };
+                let encoded = serde_json::to_vec(&value)?;
+                if blake3::hash(&encoded).as_bytes() != &overlay.into_bytes() {
+                    return Err(LocalCoreStateStoreError::Integrity);
+                }
+                Ok(Some(value))
+            })
         })
+        .await
     }
 
     async fn put_lazy_overlay(
@@ -1204,38 +1297,46 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         overlay: LazyOverlayId,
         value: LazyOverlay,
     ) -> Result<(), Self::Error> {
-        let encoded = serde_json::to_vec(&value)?;
-        if blake3::hash(&encoded).as_bytes() != &overlay.into_bytes() {
-            return Err(LocalCoreStateStoreError::Integrity);
-        }
-        let paths = RecordPaths::new_key(&self.root, "lazy-overlays", &overlay.into_bytes());
-        with_lock(&paths, || {
-            if let Some(existing) = read_recoverable::<LazyOverlay>(&paths)? {
-                return if existing == value {
-                    Ok(())
-                } else {
-                    Err(LocalCoreStateStoreError::Integrity)
-                };
+        let root = self.root.clone();
+        run_local_transaction(move || {
+            let encoded = serde_json::to_vec(&value)?;
+            if blake3::hash(&encoded).as_bytes() != &overlay.into_bytes() {
+                return Err(LocalCoreStateStoreError::Integrity);
             }
-            write_journaled(&paths, &value)
+            let paths = RecordPaths::new_key(&root, "lazy-overlays", &overlay.into_bytes());
+            with_lock(&paths, || {
+                if let Some(existing) = read_recoverable::<LazyOverlay>(&paths)? {
+                    return if existing == value {
+                        Ok(())
+                    } else {
+                        Err(LocalCoreStateStoreError::Integrity)
+                    };
+                }
+                write_journaled(&paths, &value)
+            })
         })
+        .await
     }
 
     async fn load_lazy_shadow(
         &self,
         shadow: crate::LazyShadowId,
     ) -> Result<Option<crate::LazyShadow>, Self::Error> {
-        let paths = RecordPaths::new_key(&self.root, "lazy-shadows-v1", &shadow.into_bytes());
-        with_lock(&paths, || {
-            let Some(value) = read_recoverable(&paths)? else {
-                return Ok(None);
-            };
-            let encoded = serde_json::to_vec(&value)?;
-            if blake3::hash(&encoded).as_bytes() != &shadow.into_bytes() {
-                return Err(LocalCoreStateStoreError::Integrity);
-            }
-            Ok(Some(value))
+        let root = self.root.clone();
+        run_local_transaction(move || {
+            let paths = RecordPaths::new_key(&root, "lazy-shadows-v1", &shadow.into_bytes());
+            with_lock(&paths, || {
+                let Some(value) = read_recoverable(&paths)? else {
+                    return Ok(None);
+                };
+                let encoded = serde_json::to_vec(&value)?;
+                if blake3::hash(&encoded).as_bytes() != &shadow.into_bytes() {
+                    return Err(LocalCoreStateStoreError::Integrity);
+                }
+                Ok(Some(value))
+            })
         })
+        .await
     }
 
     async fn put_lazy_shadow(
@@ -1243,21 +1344,25 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         shadow: crate::LazyShadowId,
         value: crate::LazyShadow,
     ) -> Result<(), Self::Error> {
-        let encoded = serde_json::to_vec(&value)?;
-        if blake3::hash(&encoded).as_bytes() != &shadow.into_bytes() {
-            return Err(LocalCoreStateStoreError::Integrity);
-        }
-        let paths = RecordPaths::new_key(&self.root, "lazy-shadows-v1", &shadow.into_bytes());
-        with_lock(&paths, || {
-            if let Some(existing) = read_recoverable::<crate::LazyShadow>(&paths)? {
-                return if existing == value {
-                    Ok(())
-                } else {
-                    Err(LocalCoreStateStoreError::Integrity)
-                };
+        let root = self.root.clone();
+        run_local_transaction(move || {
+            let encoded = serde_json::to_vec(&value)?;
+            if blake3::hash(&encoded).as_bytes() != &shadow.into_bytes() {
+                return Err(LocalCoreStateStoreError::Integrity);
             }
-            write_journaled(&paths, &value)
+            let paths = RecordPaths::new_key(&root, "lazy-shadows-v1", &shadow.into_bytes());
+            with_lock(&paths, || {
+                if let Some(existing) = read_recoverable::<crate::LazyShadow>(&paths)? {
+                    return if existing == value {
+                        Ok(())
+                    } else {
+                        Err(LocalCoreStateStoreError::Integrity)
+                    };
+                }
+                write_journaled(&paths, &value)
+            })
         })
+        .await
     }
 }
 
@@ -1268,6 +1373,81 @@ mod tests {
     use crate::{
         Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceName, WorkspaceRootId,
     };
+
+    #[test]
+    fn local_transactions_work_without_a_tokio_runtime() {
+        let directory = tempfile::tempdir().expect("local state directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let result = futures::executor::block_on(WorkspaceLineageStore::load(&store, workspace()));
+        assert!(result.expect("runtime-independent transaction").is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn held_record_lock_is_bounded_without_stalling_unrelated_records() {
+        let directory = tempfile::tempdir().expect("local state directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let held_id = workspace();
+        let other_id = WorkspaceId::from_bytes([0x55; 16]);
+        let paths = RecordPaths::new(directory.path(), "lineage", held_id);
+        std::fs::create_dir_all(&paths.directory).expect("lock directory");
+        let held = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&paths.lock)
+            .expect("held record lock");
+        held.lock_exclusive().expect("hold record lock");
+
+        let contender =
+            tokio::spawn(async move { WorkspaceLineageStore::load(&store, held_id).await });
+        let unrelated = LocalCoreStateStore::new(directory.path());
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            WorkspaceLineageStore::load(&unrelated, other_id),
+        )
+        .await
+        .expect("unrelated record must not stall")
+        .expect("unrelated record load");
+        assert!(matches!(
+            contender.await.expect("contender task"),
+            Err(LocalCoreStateStoreError::LockTimeout(path)) if path == paths.lock
+        ));
+        FileExt::unlock(&held).expect("release held lock");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn admitted_local_transaction_does_not_block_executor_or_stop_on_observer_drop() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let observer = tokio::spawn(async move {
+            run_local_transaction(move || {
+                entered_tx.send(()).expect("test observer is alive");
+                release_rx.recv().expect("test permits completion");
+                finished_tx
+                    .send(())
+                    .expect("test completion observer is alive");
+                Ok(())
+            })
+            .await
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while entered_rx.try_recv().is_err() {
+            assert!(Instant::now() < deadline, "transaction did not enter");
+            tokio::task::yield_now().await;
+        }
+        tokio::task::yield_now().await;
+        observer.abort();
+        release_tx.send(()).expect("transaction remains admitted");
+        while finished_rx.try_recv().is_err() {
+            assert!(Instant::now() < deadline, "admitted transaction was lost");
+            tokio::task::yield_now().await;
+        }
+    }
 
     fn workspace() -> WorkspaceId {
         WorkspaceId::derive(
@@ -1724,6 +1904,16 @@ mod tests {
     async fn git_compatibility_delete_is_revision_fenced_and_durable() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let store = LocalCoreStateStore::new(directory.path());
+        let old_paths = RecordPaths::new(directory.path(), "git-compat", workspace());
+        std::fs::create_dir_all(&old_paths.directory).expect("legacy state directory");
+        write_journaled(&old_paths, &GitCompatState::new("main", workspace()))
+            .expect("legacy state remains isolated");
+        assert!(
+            GitCompatStore::load(&store, workspace())
+                .await
+                .expect("new namespace load")
+                .is_none()
+        );
         let mut state = GitCompatState::new("main", workspace());
         state.revision = 1;
         assert!(
@@ -1748,6 +1938,7 @@ mod tests {
                 .expect("load deleted Git state")
                 .is_none()
         );
+        assert!(old_paths.current.exists(), "legacy state is left untouched");
     }
 
     #[tokio::test]
@@ -1776,12 +1967,13 @@ mod tests {
         );
         assert_eq!(
             store
-                .materialization_operations()
+                .materialization_operations_async()
+                .await
                 .expect("list materializations"),
             [operation_id]
         );
         assert!(matches!(
-            store.remove_materialization(operation_id),
+            store.remove_materialization_async(operation_id).await,
             Err(LocalCoreStateStoreError::MaterializationInProgress)
         ));
         let mut terminal = journal;
@@ -1793,11 +1985,13 @@ mod tests {
                 .expect("finish journal")
         );
         store
-            .remove_materialization(operation_id)
+            .remove_materialization_async(operation_id)
+            .await
             .expect("remove terminal journal");
         assert!(
             store
-                .materialization_operations()
+                .materialization_operations_async()
+                .await
                 .expect("list cleaned materializations")
                 .is_empty()
         );

@@ -524,6 +524,12 @@ struct Journal {
     _root: PathBuf,
 }
 
+impl Drop for Journal {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
 struct PreparedFrame {
     encoded: Vec<u8>,
     bytes: u64,
@@ -574,8 +580,13 @@ impl Journal {
             .read(true)
             .write(true)
             .open(path)?;
-        file.try_lock_exclusive()
-            .map_err(|_| LocalStreamError::AlreadyOpen)?;
+        file.try_lock_exclusive().map_err(|error| {
+            if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
+                LocalStreamError::AlreadyOpen
+            } else {
+                LocalStreamError::Io(error)
+            }
+        })?;
         let length = file.metadata()?.len();
         if length == 0 {
             let header = encode_header(limits)?;

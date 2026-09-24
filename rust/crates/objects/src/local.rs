@@ -29,7 +29,7 @@ const MAXIMUM_RECORD_BYTES: usize = 2 * 1_024 * 1_024;
 const SEGMENT_MAGIC: &[u8; 24] = b"ACYCLIC-OBJECT-SEGMENT\0\x02";
 const SEGMENT_HEADER_BYTES: usize = SEGMENT_MAGIC.len() + 4;
 const SEGMENT_RECORD_BYTES: usize = 32 + 8;
-const MAXIMUM_SEGMENT_BODIES: usize = 4;
+const MAXIMUM_SEGMENT_BODIES: usize = 1_024;
 const MAXIMUM_SEGMENT_BYTES: usize = 4 * 1024 * 1024;
 const REPLAY_PIPELINE_RECORDS: usize = 32;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -112,8 +112,14 @@ struct Persistence {
     #[cfg(test)]
     blocking_work: StdMutex<Option<BlockingWorkHook>>,
     limits: LocalObjectsLimits,
-    _ownership: File,
+    ownership: File,
     _ownership_anchor: Option<OwnershipAnchor>,
+}
+
+impl Drop for Persistence {
+    fn drop(&mut self) {
+        let _ = self.ownership.unlock();
+    }
 }
 
 #[cfg(test)]
@@ -392,22 +398,30 @@ impl LocalObjects {
         let semantic =
             MemoryObjects::new_with_limits(limits.maximum_object_bytes, limits.maximum_bytes)
                 .map_err(|_| LocalObjectsError::Invalid("capacity limits are not representable"))?;
-        fs::create_dir_all(root.join("segments"))?;
-        sync_parent(&root, limits.durability)?;
-        // A failed earlier write may leave a visible but unsynced prefix.
-        // Settle its family name before a reopened writer can reuse it and
-        // publish a new journal reference beneath it.
-        sync_parent(&root.join("segments"), limits.durability)?;
-
-        let ownership = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(root.join("owner.lock"))?;
-        ownership
-            .try_lock_exclusive()
-            .map_err(|_| LocalObjectsError::AlreadyOwned)?;
+        let setup_root = root.clone();
+        let ownership = acyclic_native_runtime::run_blocking_io(move || {
+            fs::create_dir_all(setup_root.join("segments"))?;
+            sync_parent(&setup_root, limits.durability)?;
+            // Settle a possibly unsynced earlier segment family before a
+            // reopened writer can publish a new journal reference beneath it.
+            sync_parent(&setup_root.join("segments"), limits.durability)?;
+            let ownership = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(setup_root.join("owner.lock"))?;
+            ownership.try_lock_exclusive().map_err(|error| {
+                if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
+                    LocalObjectsError::AlreadyOwned
+                } else {
+                    LocalObjectsError::Io(error)
+                }
+            })?;
+            Ok::<_, LocalObjectsError>(ownership)
+        })
+        .await
+        .map_err(|_| LocalObjectsError::Unavailable)??;
 
         let journal_path = root.join("mutations.log");
         let (records, mut receiver) = mpsc::channel(REPLAY_PIPELINE_RECORDS);
@@ -457,7 +471,7 @@ impl LocalObjects {
                 #[cfg(test)]
                 blocking_work: StdMutex::new(None),
                 limits,
-                _ownership: ownership,
+                ownership,
                 _ownership_anchor: ownership_anchor,
             }),
             mutation: Arc::new(Mutex::new(())),
@@ -1986,11 +2000,15 @@ pub(crate) async fn read_body_at_async(
     if start > end || end > expected_length {
         return Err(ObjectsError::Invalid("invalid range"));
     }
-    let file = File::open(segment_path(root, id)).map_err(|_| ObjectsError::Unavailable)?;
-    let file_length = file
-        .metadata()
-        .map_err(|_| ObjectsError::Unavailable)?
-        .len();
+    let segment = segment_path(root, id);
+    let (file, file_length) = acyclic_native_runtime::run_blocking_io(move || {
+        let file = File::open(segment)?;
+        let length = file.metadata()?.len();
+        Ok::<_, std::io::Error>((file, length))
+    })
+    .await
+    .map_err(|_| ObjectsError::Unavailable)?
+    .map_err(|_| ObjectsError::Unavailable)?;
     let selected_length = end.saturating_sub(start);
     let selected_offset = offset
         .checked_add(u64::try_from(start).map_err(|_| ObjectsError::Unavailable)?)

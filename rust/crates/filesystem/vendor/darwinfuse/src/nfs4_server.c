@@ -40,7 +40,7 @@ typedef enum {
 } client_read_state_t;
 
 typedef struct {
-    int                 fd;
+    _Atomic int         fd;
     client_read_state_t read_state;
     uint8_t             mark_buf[4];
     size_t              mark_read;      /* bytes of record mark read so far */
@@ -51,7 +51,7 @@ typedef struct {
     nfs4_conn_state_t   nfs_state;
     pthread_mutex_t     write_lock;     /* serialize reply writes */
     _Atomic int         inflight;       /* in-flight work items (MT mode) */
-    int                 closing;        /* disconnect pending (MT mode) */
+    _Atomic int         closing;        /* disconnect pending (MT mode) */
 } client_conn_t;
 
 /* ---- Work queue for thread pool ---- */
@@ -110,7 +110,7 @@ static void set_tcp_nodelay(int fd)
 static void client_init(client_conn_t *c, int fd)
 {
     memset(c, 0, sizeof(*c));
-    c->fd = fd;
+    atomic_store(&c->fd, fd);
     c->read_state = CLIENT_STATE_READ_MARK;
 
     /* Allocate initial open file tracking array */
@@ -125,14 +125,15 @@ static void client_init(client_conn_t *c, int fd)
 
     /* MT state */
     atomic_store(&c->inflight, 0);
-    c->closing = 0;
+    atomic_store(&c->closing, 0);
 }
 
 static void client_close(client_conn_t *c)
 {
-    if (c->fd >= 0) {
-        close(c->fd);
-        c->fd = -1;
+    int fd = atomic_load(&c->fd);
+    if (fd >= 0) {
+        close(fd);
+        atomic_store(&c->fd, -1);
     }
     free(c->payload_buf);
     c->payload_buf = NULL;
@@ -168,9 +169,16 @@ static void work_queue_destroy(work_queue_t *wq)
     pthread_cond_destroy(&wq->not_empty);
 }
 
-static void work_queue_push(work_queue_t *wq, nfs4_work_item_t *item)
+/* Admit without blocking the poll thread.  Closing the overloaded connection
+ * makes the kernel retry instead of allowing request memory to grow without
+ * bound while every worker is busy. */
+static int work_queue_try_push(work_queue_t *wq, nfs4_work_item_t *item)
 {
     pthread_mutex_lock(&wq->lock);
+    if (wq->shutdown || wq->count >= DFUSE_WORK_QUEUE_MAX) {
+        pthread_mutex_unlock(&wq->lock);
+        return 0;
+    }
     item->next = NULL;
     if (wq->tail)
         wq->tail->next = item;
@@ -180,6 +188,7 @@ static void work_queue_push(work_queue_t *wq, nfs4_work_item_t *item)
     wq->count++;
     pthread_cond_signal(&wq->not_empty);
     pthread_mutex_unlock(&wq->lock);
+    return 1;
 }
 
 /* Returns NULL on shutdown (after draining remaining items). */
@@ -270,13 +279,22 @@ static int process_rpc_message(darwinfuse_server_t *srv, client_conn_t *c,
 static int write_reply(int fd, const uint8_t *buf, size_t len)
 {
     size_t written = 0;
+    int stalled_polls = 0;
     while (written < len) {
         ssize_t n = write(fd, buf + written, len - written);
         if (n < 0) {
             if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                usleep(100);
-                continue;
+                struct pollfd writable = { .fd = fd, .events = POLLOUT };
+                int ready = poll(&writable, 1, 100);
+                if (ready < 0 && errno == EINTR)
+                    continue;
+                if (ready <= 0 && ++stalled_polls < 50)
+                    continue;
+                if (ready > 0 && (writable.revents & POLLOUT))
+                    continue;
+                DFUSE_ERR("reply write stalled or disconnected");
+                return -1;
             }
             DFUSE_ERR("write failed: %s", strerror(errno));
             return -1;
@@ -296,7 +314,7 @@ static int handle_rpc_message(darwinfuse_server_t *srv, client_conn_t *c)
                              &reply_buf, &reply_len) < 0)
         return -1;
 
-    int rc = write_reply(c->fd, reply_buf, reply_len);
+    int rc = write_reply(atomic_load(&c->fd), reply_buf, reply_len);
     free(reply_buf);
     return rc;
 }
@@ -315,7 +333,7 @@ static void *worker_thread_func(void *arg)
 
         client_conn_t *c = item->client;
 
-        if (!c->closing) {
+        if (!atomic_load(&c->closing)) {
             /* Set thread-local FUSE context for this worker */
             darwinfuse_set_private_data(srv->private_data);
 
@@ -325,8 +343,9 @@ static void *worker_thread_func(void *arg)
             if (process_rpc_message(srv, c, item->payload, item->payload_len,
                                      &reply_buf, &reply_len) == 0) {
                 pthread_mutex_lock(&c->write_lock);
-                if (c->fd >= 0)
-                    write_reply(c->fd, reply_buf, reply_len);
+                int fd = atomic_load(&c->fd);
+                if (fd >= 0)
+                    write_reply(fd, reply_buf, reply_len);
                 pthread_mutex_unlock(&c->write_lock);
                 free(reply_buf);
             }
@@ -348,7 +367,7 @@ static int client_read(darwinfuse_server_t *srv, client_conn_t *c)
         if (c->read_state == CLIENT_STATE_READ_MARK) {
             /* Read the 4-byte TCP record mark */
             size_t need = 4 - c->mark_read;
-            ssize_t n = read(c->fd, c->mark_buf + c->mark_read, need);
+            ssize_t n = read(atomic_load(&c->fd), c->mark_buf + c->mark_read, need);
             if (n == 0) return -1;  /* client disconnected */
             if (n < 0) {
                 if (errno == EINTR) continue;
@@ -374,7 +393,7 @@ static int client_read(darwinfuse_server_t *srv, client_conn_t *c)
 
         if (c->read_state == CLIENT_STATE_READ_PAYLOAD) {
             size_t need = c->payload_len - c->payload_read;
-            ssize_t n = read(c->fd, c->payload_buf + c->payload_read, need);
+            ssize_t n = read(atomic_load(&c->fd), c->payload_buf + c->payload_read, need);
             if (n == 0) return -1;
             if (n < 0) {
                 if (errno == EINTR) continue;
@@ -395,9 +414,14 @@ static int client_read(darwinfuse_server_t *srv, client_conn_t *c)
                     item->payload = c->payload_buf;
                     item->payload_len = c->payload_len;
                     item->next = NULL;
-                    c->payload_buf = NULL;  /* ownership transferred */
                     atomic_fetch_add(&c->inflight, 1);
-                    work_queue_push(&srv->work_queue, item);
+                    if (work_queue_try_push(&srv->work_queue, item)) {
+                        c->payload_buf = NULL;  /* ownership transferred */
+                    } else {
+                        atomic_fetch_sub(&c->inflight, 1);
+                        free(item);
+                        rc = -1;
+                    }
                 } else {
                     rc = -1;
                 }
@@ -429,6 +453,8 @@ darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config,
     if (!srv) return NULL;
 
     srv->config = *config;
+    atomic_init(&srv->config.namespace_change, 1);
+    arc4random_buf(srv->config.write_verifier, sizeof(srv->config.write_verifier));
     srv->listen_fd = -1;
     srv->wakeup_pipe[0] = -1;
     srv->wakeup_pipe[1] = -1;
@@ -554,7 +580,7 @@ int nfs4_server_run(darwinfuse_server_t *srv)
 
         /* Client connections (fd=-1 for closing clients — poll ignores them) */
         for (int i = 0; i < srv->num_clients; i++) {
-            pfds[nfds].fd = srv->clients[i].fd;
+            pfds[nfds].fd = atomic_load(&srv->clients[i].fd);
             pfds[nfds].events = POLLIN;
             pfds[nfds].revents = 0;
             nfds++;
@@ -584,39 +610,49 @@ int nfs4_server_run(darwinfuse_server_t *srv)
             int cfd = accept(srv->listen_fd, (struct sockaddr *)&client_addr,
                              &client_len);
             if (cfd >= 0) {
-                if (srv->num_clients >= DFUSE_MAX_CLIENTS) {
+                int slot = -1;
+                for (int i = 0; i < srv->num_clients; i++) {
+                    if (atomic_load(&srv->clients[i].fd) < 0 &&
+                        !atomic_load(&srv->clients[i].closing)) {
+                        slot = i;
+                        break;
+                    }
+                }
+                if (slot < 0 && srv->num_clients < DFUSE_MAX_CLIENTS)
+                    slot = srv->num_clients++;
+
+                if (slot < 0) {
                     close(cfd);
                 } else {
                     set_nonblocking(cfd);
                     set_tcp_nodelay(cfd);
-                    client_init(&srv->clients[srv->num_clients], cfd);
-                    srv->num_clients++;
+                    client_init(&srv->clients[slot], cfd);
                     srv->had_client = 1;
-                    DFUSE_LOG("Client connected (fd=%d, total=%d)", cfd, srv->num_clients);
+                    DFUSE_LOG("Client connected (fd=%d, slot=%d, high_water=%d)",
+                              cfd, slot, srv->num_clients);
                 }
             }
         }
 
         /* Process client data */
         for (int i = 0; i < srv->num_clients; i++) {
-            if (srv->clients[i].closing || srv->clients[i].fd < 0)
+            if (atomic_load(&srv->clients[i].closing) ||
+                atomic_load(&srv->clients[i].fd) < 0)
                 continue;
             int pfd_idx = 2 + i;
             if (pfds[pfd_idx].revents & (POLLIN | POLLERR | POLLHUP)) {
                 if (client_read(srv, &srv->clients[i]) < 0) {
-                    DFUSE_LOG("Client disconnected (fd=%d)", srv->clients[i].fd);
+                    int fd = atomic_load(&srv->clients[i].fd);
+                    DFUSE_LOG("Client disconnected (fd=%d)", fd);
                     if (srv->multithreaded) {
                         /* Close fd but defer full cleanup until workers drain */
-                        srv->clients[i].closing = 1;
-                        close(srv->clients[i].fd);
-                        srv->clients[i].fd = -1;
+                        atomic_store(&srv->clients[i].closing, 1);
+                        pthread_mutex_lock(&srv->clients[i].write_lock);
+                        close(fd);
+                        atomic_store(&srv->clients[i].fd, -1);
+                        pthread_mutex_unlock(&srv->clients[i].write_lock);
                     } else {
                         client_close(&srv->clients[i]);
-                        /* Compact: move last client to this slot */
-                        srv->num_clients--;
-                        if (i < srv->num_clients)
-                            srv->clients[i] = srv->clients[srv->num_clients];
-                        i--;  /* re-check this slot */
                     }
                 }
             }
@@ -625,25 +661,28 @@ int nfs4_server_run(darwinfuse_server_t *srv)
         /* Reap fully-drained closing clients (MT mode) */
         if (srv->multithreaded) {
             for (int i = srv->num_clients - 1; i >= 0; i--) {
-                if (srv->clients[i].closing &&
+                if (atomic_load(&srv->clients[i].closing) &&
                     atomic_load(&srv->clients[i].inflight) == 0) {
                     client_close(&srv->clients[i]);
-                    srv->clients[i].closing = 0;
+                    atomic_store(&srv->clients[i].closing, 0);
                 }
             }
-            /* Shrink num_clients if trailing slots are dead */
-            while (srv->num_clients > 0 &&
-                   srv->clients[srv->num_clients - 1].fd < 0 &&
-                   !srv->clients[srv->num_clients - 1].closing)
-                srv->num_clients--;
         }
+
+        /* Keep a high-water mark while requests reference client slots, but
+         * release dead trailing slots once no worker can still hold them. */
+        while (srv->num_clients > 0 &&
+               atomic_load(&srv->clients[srv->num_clients - 1].fd) < 0 &&
+               !atomic_load(&srv->clients[srv->num_clients - 1].closing))
+            srv->num_clients--;
 
         /* Check if all clients disconnected (mount was unmounted) */
         if (srv->had_client) {
             if (srv->multithreaded) {
                 int alive = 0;
                 for (int i = 0; i < srv->num_clients; i++) {
-                    if (srv->clients[i].fd >= 0 || srv->clients[i].closing)
+                    if (atomic_load(&srv->clients[i].fd) >= 0 ||
+                        atomic_load(&srv->clients[i].closing))
                         alive++;
                 }
                 if (alive == 0) {
@@ -724,8 +763,10 @@ void nfs4_server_close_inherited_fds(darwinfuse_server_t *srv)
     if (srv->listen_fd >= 0) keep[nkeep++] = srv->listen_fd;
     if (srv->wakeup_pipe[0] >= 0) keep[nkeep++] = srv->wakeup_pipe[0];
     if (srv->wakeup_pipe[1] >= 0) keep[nkeep++] = srv->wakeup_pipe[1];
-    for (int i = 0; i < srv->num_clients; i++)
-        if (srv->clients[i].fd >= 0) keep[nkeep++] = srv->clients[i].fd;
+    for (int i = 0; i < srv->num_clients; i++) {
+        int fd = atomic_load(&srv->clients[i].fd);
+        if (fd >= 0) keep[nkeep++] = fd;
+    }
 
     /* Close everything from fd 3 up to a reasonable limit */
     int maxfd = (int)sysconf(_SC_OPEN_MAX);
@@ -804,4 +845,11 @@ void nfs4_server_set_private_data(darwinfuse_server_t *srv, void *private_data)
 {
     if (!srv) return;
     srv->private_data = private_data;
+}
+
+void nfs4_server_mark_namespace_changed(darwinfuse_server_t *srv)
+{
+    if (!srv) return;
+    atomic_fetch_add_explicit(&srv->config.namespace_change, 1,
+                              memory_order_acq_rel);
 }

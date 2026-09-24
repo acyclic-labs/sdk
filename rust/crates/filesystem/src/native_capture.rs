@@ -28,6 +28,104 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+#[cfg(feature = "native-mount")]
+pub(crate) const MAX_NATIVE_EXACT_CAPTURE_PATHS: usize = 65_536;
+
+/// A native view may have host-generated timestamps that are not SDK metadata.
+/// The held root identity binds this policy to the prepared view without a
+/// second full-tree scan after materialization.
+#[cfg(unix)]
+pub(crate) struct NativeViewBaseline {
+    root_identity: NativeRootIdentity,
+}
+
+#[cfg(windows)]
+pub(crate) struct NativeViewBaseline;
+
+#[cfg(unix)]
+impl NativeViewBaseline {
+    pub(crate) fn new(root_identity: NativeRootIdentity) -> Self {
+        Self { root_identity }
+    }
+
+    fn restore_canonical_stamps(
+        &self,
+        root_identity: NativeRootIdentity,
+        _path: &Path,
+        _snapshot: &HostSnapshot,
+        prior: FileMetadata,
+        observed: &mut FileMetadata,
+    ) {
+        if self.root_identity != root_identity {
+            return;
+        }
+        observed.changed_ns = prior.changed_ns;
+        #[cfg(target_os = "linux")]
+        {
+            observed.created_ns = prior.created_ns;
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod native_view_baseline_tests {
+    use super::*;
+
+    #[test]
+    fn native_view_keeps_canonical_stamps_for_the_same_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        std::fs::write(directory.path().join("file"), b"body")?;
+        let root = HostRoot::open(directory.path())?;
+        let identity = root.identity();
+        let baseline = NativeViewBaseline::new(identity);
+        let snapshot = HostSnapshot::from_metadata(&root.symlink_metadata(Path::new("file"))?)?;
+        let prior = FileMetadata {
+            changed_ns: MetadataField::Value(-123),
+            created_ns: MetadataField::Value(-456),
+            ..FileMetadata::default()
+        };
+        let mut observed = snapshot.metadata;
+        baseline.restore_canonical_stamps(
+            identity,
+            Path::new("file"),
+            &snapshot,
+            prior,
+            &mut observed,
+        );
+        assert_eq!(observed.changed_ns, prior.changed_ns);
+        #[cfg(target_os = "linux")]
+        assert_eq!(observed.created_ns, prior.created_ns);
+
+        let mut changed = snapshot;
+        changed.metadata.changed_ns = MetadataField::Value(-789);
+        let mut observed = changed.metadata;
+        baseline.restore_canonical_stamps(
+            identity,
+            Path::new("file"),
+            &changed,
+            prior,
+            &mut observed,
+        );
+        assert_eq!(observed.changed_ns, prior.changed_ns);
+
+        let wrong_identity = NativeRootIdentity {
+            device: identity.device,
+            object: identity.object.wrapping_add(1),
+        };
+        let mut observed = snapshot.metadata;
+        baseline.restore_canonical_stamps(
+            wrong_identity,
+            Path::new("file"),
+            &snapshot,
+            prior,
+            &mut observed,
+        );
+        assert_eq!(observed.changed_ns, snapshot.metadata.changed_ns);
+        Ok(())
+    }
+}
+
 /// Exact native capture options.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CaptureOptions {
@@ -228,6 +326,338 @@ mod capture_policy_tests {
         assert_eq!(paths.len(), 1);
         Ok(())
     }
+
+    #[tokio::test]
+    async fn watch_hint_observes_only_missing_ancestors_of_a_nested_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::create_dir(temporary.path().join("sub"))?;
+        std::fs::write(temporary.path().join("sub/changed.txt"), b"changed")?;
+        std::fs::write(temporary.path().join("sub/unrelated.txt"), b"unrelated")?;
+        let workspace = crate::Fs::memory()
+            .create_workspace("watch-ancestor")
+            .await?;
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        let changed = path("/sub/changed.txt")?;
+        capture_watch_batch(
+            &mut checkout,
+            WatchBatch::Changes {
+                epoch: WatchEpoch::from_u64(1),
+                first_sequence: WatchSequence::from_u64(1),
+                next_sequence: WatchSequence::from_u64(2),
+                changes: vec![WatchChange::Modified(changed.clone())],
+            },
+            &CaptureOptions {
+                source_root: temporary.path().to_path_buf(),
+                expected_root_identity: capture_root_identity(temporary.path())?,
+                maximum_paths: 2,
+                maximum_extent_spans: 8,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let token = CancellationToken::new();
+        let parent = checkout
+            .lookup_no_follow(&path("/sub")?, WorkBudget::UNBOUNDED, &token)
+            .await?;
+        assert_eq!(
+            parent.value.record.map(|record| record.kind),
+            Some(FileKind::Directory)
+        );
+        let file = checkout
+            .lookup_no_follow(&changed, WorkBudget::UNBOUNDED, &token)
+            .await?;
+        assert_eq!(
+            file.value.record.map(|record| record.kind),
+            Some(FileKind::Regular)
+        );
+        let unrelated = checkout
+            .lookup_no_follow(&path("/sub/unrelated.txt")?, WorkBudget::UNBOUNDED, &token)
+            .await?;
+        assert!(unrelated.value.record.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn watch_rename_creates_an_unobserved_destination_parent_first()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::create_dir(temporary.path().join("sub"))?;
+        std::fs::write(temporary.path().join("old.txt"), b"old")?;
+        let workspace = crate::Fs::memory()
+            .create_workspace("watch-rename-parent")
+            .await?;
+        workspace.write_text("/old.txt", "old").await?;
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        std::fs::rename(
+            temporary.path().join("old.txt"),
+            temporary.path().join("sub/new.txt"),
+        )?;
+        let old = path("/old.txt")?;
+        let new = path("/sub/new.txt")?;
+        capture_watch_batch(
+            &mut checkout,
+            WatchBatch::Changes {
+                epoch: WatchEpoch::from_u64(1),
+                first_sequence: WatchSequence::from_u64(1),
+                next_sequence: WatchSequence::from_u64(2),
+                changes: vec![WatchChange::Renamed {
+                    from: old.clone(),
+                    to: new.clone(),
+                }],
+            },
+            &CaptureOptions {
+                source_root: temporary.path().to_path_buf(),
+                expected_root_identity: capture_root_identity(temporary.path())?,
+                maximum_paths: 2,
+                maximum_extent_spans: 8,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let token = CancellationToken::new();
+        assert!(
+            checkout
+                .lookup_no_follow(&old, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .is_none()
+        );
+        assert!(
+            checkout
+                .lookup_no_follow(&new, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .is_some()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn watch_directory_rename_then_child_change_keeps_the_renamed_directory()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::create_dir(temporary.path().join("old"))?;
+        std::fs::write(temporary.path().join("old/file.txt"), b"old")?;
+        let workspace = crate::Fs::memory()
+            .create_workspace("watch-renamed-directory")
+            .await?;
+        let mut transaction = workspace
+            .begin_transaction(crate::IdempotencyKey::new())
+            .await?;
+        transaction.create_dir_all("/old").await?;
+        transaction.write_text("/old/file.txt", "old").await?;
+        transaction.commit().await?;
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        assert!(
+            checkout
+                .lookup_no_follow(
+                    &path("/old")?,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new()
+                )
+                .await?
+                .value
+                .record
+                .is_some()
+        );
+        std::fs::rename(temporary.path().join("old"), temporary.path().join("new"))?;
+        std::fs::write(temporary.path().join("new/file.txt"), b"new")?;
+        let old = path("/old")?;
+        let new = path("/new")?;
+        let child = path("/new/file.txt")?;
+        capture_watch_batch(
+            &mut checkout,
+            WatchBatch::Changes {
+                epoch: WatchEpoch::from_u64(1),
+                first_sequence: WatchSequence::from_u64(1),
+                next_sequence: WatchSequence::from_u64(3),
+                changes: vec![
+                    WatchChange::Renamed {
+                        from: old.clone(),
+                        to: new.clone(),
+                    },
+                    WatchChange::Modified(child.clone()),
+                ],
+            },
+            &CaptureOptions {
+                source_root: temporary.path().to_path_buf(),
+                expected_root_identity: capture_root_identity(temporary.path())?,
+                maximum_paths: 3,
+                maximum_extent_spans: 8,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let token = CancellationToken::new();
+        assert!(
+            checkout
+                .lookup_no_follow(&old, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .is_none()
+        );
+        assert_eq!(
+            checkout
+                .lookup_no_follow(&new, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .map(|record| record.kind),
+            Some(FileKind::Directory)
+        );
+        assert_eq!(
+            checkout
+                .lookup_no_follow(&child, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .map(|record| record.kind),
+            Some(FileKind::Regular)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn watch_nested_file_replaces_a_stale_non_directory_ancestor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::create_dir(temporary.path().join("sub"))?;
+        std::fs::write(temporary.path().join("sub/new.txt"), b"new")?;
+        let workspace = crate::Fs::memory()
+            .create_workspace("watch-stale-ancestor")
+            .await?;
+        workspace.write_text("/sub", "old").await?;
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        let child = path("/sub/new.txt")?;
+        capture_watch_batch_with_policy(
+            &mut checkout,
+            WatchBatch::Changes {
+                epoch: WatchEpoch::from_u64(1),
+                first_sequence: WatchSequence::from_u64(1),
+                next_sequence: WatchSequence::from_u64(2),
+                changes: vec![WatchChange::Created(child.clone())],
+            },
+            &CaptureOptions {
+                source_root: temporary.path().to_path_buf(),
+                expected_root_identity: capture_root_identity(temporary.path())?,
+                maximum_paths: 2,
+                maximum_extent_spans: 8,
+            },
+            &CapturePolicy::allow_all(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let token = CancellationToken::new();
+        assert_eq!(
+            checkout
+                .lookup_no_follow(&path("/sub")?, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .map(|record| record.kind),
+            Some(FileKind::Directory)
+        );
+        assert!(
+            checkout
+                .lookup_no_follow(&child, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .is_some()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn watch_rename_chain_observes_intermediate_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::create_dir(temporary.path().join("sub"))?;
+        std::fs::write(temporary.path().join("final.txt"), b"old")?;
+        let workspace = crate::Fs::memory()
+            .create_workspace("watch-rename-chain")
+            .await?;
+        workspace.write_text("/old.txt", "old").await?;
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        capture_watch_batch(
+            &mut checkout,
+            WatchBatch::Changes {
+                epoch: WatchEpoch::from_u64(1),
+                first_sequence: WatchSequence::from_u64(1),
+                next_sequence: WatchSequence::from_u64(3),
+                changes: vec![
+                    WatchChange::Renamed {
+                        from: path("/old.txt")?,
+                        to: path("/sub/intermediate.txt")?,
+                    },
+                    WatchChange::Renamed {
+                        from: path("/sub/intermediate.txt")?,
+                        to: path("/final.txt")?,
+                    },
+                ],
+            },
+            &CaptureOptions {
+                source_root: temporary.path().to_path_buf(),
+                expected_root_identity: capture_root_identity(temporary.path())?,
+                maximum_paths: 3,
+                maximum_extent_spans: 8,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let token = CancellationToken::new();
+        assert!(
+            checkout
+                .lookup_no_follow(&path("/old.txt")?, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .is_none()
+        );
+        assert!(
+            checkout
+                .lookup_no_follow(&path("/final.txt")?, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .is_some()
+        );
+        Ok(())
+    }
 }
 
 /// Successful authored host-state capture.
@@ -355,6 +785,122 @@ pub async fn capture_paths_with_policy<A: AsyncAuthorityStore, O: AsyncObjectSto
     .await
 }
 
+/// Captures a large explicit path set as bounded transactions on one private
+/// checkout candidate. The caller sees either every path or none of them;
+/// hard-link identities are shared across batches. `budget` applies to the
+/// complete path set, not independently to each batch.
+#[cfg(feature = "native-mount")]
+pub(crate) async fn capture_paths_batched_with_baseline<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+>(
+    checkout: &mut Checkout<A, O>,
+    paths: &[NamespacePath],
+    options: &CaptureOptions,
+    batch_size: usize,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    baseline: Option<&NativeViewBaseline>,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    validate_path_count(paths, options).map_err(OperationFailure::before_work)?;
+    if batch_size == 0 || paths.len() > MAX_NATIVE_EXACT_CAPTURE_PATHS {
+        return Err(OperationFailure::before_work(CaptureError::InvalidOptions));
+    }
+    let source_root = open_source_root(options).map_err(OperationFailure::before_work)?;
+    let mut unique = paths.to_vec();
+    unique.sort();
+    if unique
+        .windows(2)
+        .any(|pair| matches!(pair, [left, right] if left == right))
+    {
+        return Err(OperationFailure::before_work(CaptureError::InvalidOptions));
+    }
+    let mut candidate = checkout.private_candidate();
+    let mut receipt = CaptureReceipt::default();
+    let mut states = Vec::with_capacity(unique.len());
+    let observed = observe_unique_paths(unique, &source_root, budget, cancellation)?;
+    receipt.work = observed.work;
+    let mut observations = observed.value.into_iter();
+    loop {
+        let page = observations.by_ref().take(batch_size).collect::<Vec<_>>();
+        if page.is_empty() {
+            break;
+        }
+        let paths = page
+            .iter()
+            .map(|(_, path)| path.clone())
+            .collect::<Vec<_>>();
+        let remaining = receipt
+            .work
+            .remaining(budget)
+            .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
+        let lookup = candidate
+            .lookup_batch_no_follow(&paths, remaining, cancellation)
+            .await
+            .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+        receipt.work = add_work(receipt.work, lookup.work)?;
+        states.extend(
+            page.into_iter()
+                .zip(lookup.value.entries)
+                .map(|((observation, path), entry)| (observation, path, entry.record)),
+        );
+    }
+    sort_capture_states(&mut states);
+    let mut host_links = BTreeMap::new();
+    let mut states = states.into_iter();
+    loop {
+        let batch = states.by_ref().take(batch_size).collect::<Vec<_>>();
+        if batch.is_empty() {
+            break;
+        }
+        let remaining = receipt
+            .work
+            .remaining(budget)
+            .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
+        let captured = capture_ranked_paths_from_root(
+            &mut candidate,
+            batch,
+            &mut host_links,
+            options.maximum_extent_spans,
+            &source_root,
+            remaining,
+            cancellation,
+            baseline,
+        )
+        .await
+        .map_err(|failure| map_capture_failure(failure, receipt.work))?;
+        for source in host_links.values_mut() {
+            if let HostLinkSource::Pending(path) = source {
+                *source = HostLinkSource::Ready(path.clone());
+            }
+        }
+        receipt.examined_paths = receipt
+            .examined_paths
+            .checked_add(captured.value.examined_paths)
+            .ok_or_else(|| {
+                OperationFailure::new(CaptureError::Work(WorkError::Overflow), receipt.work)
+            })?;
+        receipt.changed_paths = receipt
+            .changed_paths
+            .checked_add(captured.value.changed_paths)
+            .ok_or_else(|| {
+                OperationFailure::new(CaptureError::Work(WorkError::Overflow), receipt.work)
+            })?;
+        receipt.staged_file_bytes = receipt
+            .staged_file_bytes
+            .checked_add(captured.value.staged_file_bytes)
+            .ok_or_else(|| {
+                OperationFailure::new(CaptureError::Work(WorkError::Overflow), receipt.work)
+            })?;
+        receipt.work = add_work(receipt.work, captured.work)?;
+    }
+    *checkout = candidate;
+    Ok(OperationReceipt {
+        value: receipt,
+        work: receipt.work,
+    })
+}
+
 /// Reconciles one host directory and every descendant as one authored
 /// transaction. Both host and checkout descendants are included so removals
 /// inside a replaced imported tree are exact.
@@ -400,6 +946,30 @@ pub async fn capture_subtrees_with_policy<A: AsyncAuthorityStore, O: AsyncObject
     policy: &CapturePolicy,
     budget: WorkBudget,
     cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    capture_subtrees_with_policy_and_baseline(
+        checkout,
+        roots,
+        options,
+        policy,
+        budget,
+        cancellation,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn capture_subtrees_with_policy_and_baseline<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+>(
+    checkout: &mut Checkout<A, O>,
+    roots: &[NamespacePath],
+    options: &CaptureOptions,
+    policy: &CapturePolicy,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    baseline: Option<&NativeViewBaseline>,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
         return Err(OperationFailure::before_work(CaptureError::InvalidOptions));
@@ -473,6 +1043,7 @@ pub async fn capture_subtrees_with_policy<A: AsyncAuthorityStore, O: AsyncObject
         &source_root,
         remaining,
         cancellation,
+        baseline,
     )
     .await
     .map_err(|failure| map_capture_failure(failure, work))?;
@@ -547,16 +1118,64 @@ async fn capture_unique_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectSt
     // A comparator must not inspect a changing host tree: one path could
     // otherwise alternate between present and absent during the sort. This
     // also reduces host metadata probes from O(paths * log paths) to O(paths).
-    let mut ordered = unique
-        .into_iter()
-        .map(|path| {
-            let observation = namespace_to_host_path(&path)
-                .ok()
-                .and_then(|host_path| source_root.symlink_metadata(&host_path).ok())
-                .map(HostObservation::from_metadata);
-            (observation, path)
-        })
-        .collect::<Vec<_>>();
+    let observed = observe_unique_paths(unique, source_root, budget, cancellation)?;
+    let remaining = observed
+        .work
+        .remaining(budget)
+        .map_err(|error| OperationFailure::new(CaptureError::Work(error), observed.work))?;
+    let mut captured = capture_observed_paths_from_root(
+        checkout,
+        observed.value,
+        maximum_extent_spans,
+        source_root,
+        remaining,
+        cancellation,
+        None,
+    )
+    .await
+    .map_err(|failure| map_capture_failure(failure, observed.work))?;
+    captured.work = add_work(observed.work, captured.work)?;
+    captured.value.work = captured.work;
+    Ok(captured)
+}
+
+type ObservedPath = (Option<HostObservation>, NamespacePath);
+
+fn observe_unique_paths(
+    unique: Vec<NamespacePath>,
+    source_root: &HostRoot,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<Vec<ObservedPath>>, OperationFailure<CaptureError>> {
+    let mut ordered = Vec::new();
+    let mut work = WorkCounters::default();
+    for path in unique {
+        cancellation.check().map_err(|error| {
+            OperationFailure::new(CaptureError::Engine(error.to_string()), work)
+        })?;
+        let probe = WorkCounters {
+            source_entries_visited: 1,
+            source_path_components: u64::try_from(path.depth()).map_err(|_| {
+                OperationFailure::new(CaptureError::Work(WorkError::Overflow), work)
+            })?,
+            ..WorkCounters::default()
+        };
+        let next = add_work(work, probe)?;
+        next.verify(budget)
+            .map_err(|error| OperationFailure::new(CaptureError::Work(error), work))?;
+        ordered
+            .try_reserve(1)
+            .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, work))?;
+        let host_path =
+            namespace_to_host_path(&path).map_err(|error| OperationFailure::new(error, work))?;
+        let observation = observe_host_path(source_root, &host_path)
+            .map_err(|error| OperationFailure::new(error, work))?;
+        ordered.push((observation, path));
+        work = next;
+    }
+    cancellation
+        .check()
+        .map_err(|error| OperationFailure::new(CaptureError::Engine(error.to_string()), work))?;
     ordered.sort_by(|(left_observation, left), (right_observation, right)| {
         match (left_observation.is_some(), right_observation.is_some()) {
             (true, true) => left
@@ -571,15 +1190,78 @@ async fn capture_unique_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectSt
             (false, true) => std::cmp::Ordering::Greater,
         }
     });
-    capture_observed_paths_from_root(
-        checkout,
-        ordered,
-        maximum_extent_spans,
-        source_root,
-        budget,
-        cancellation,
-    )
-    .await
+    cancellation
+        .check()
+        .map_err(|error| OperationFailure::new(CaptureError::Engine(error.to_string()), work))?;
+    Ok(OperationReceipt {
+        value: ordered,
+        work,
+    })
+}
+
+fn observe_host_path(
+    source_root: &HostRoot,
+    host_path: &Path,
+) -> Result<Option<HostObservation>, CaptureError> {
+    classify_host_observation(source_root.symlink_metadata_held(host_path))
+}
+
+fn classify_host_observation(
+    metadata: std::io::Result<cap_std::fs::Metadata>,
+) -> Result<Option<HostObservation>, CaptureError> {
+    match metadata {
+        Ok(metadata) => Ok(Some(HostObservation::from_metadata(metadata))),
+        Err(error) if host_path_is_absent(&error) => Ok(None),
+        Err(error) => Err(CaptureError::Io(error)),
+    }
+}
+
+#[cfg(test)]
+mod host_observation_tests {
+    use super::*;
+
+    #[test]
+    fn only_absent_paths_may_become_deletions() -> Result<(), Box<dyn std::error::Error>> {
+        for kind in [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::NotADirectory,
+        ] {
+            assert!(classify_host_observation(Err(kind.into()))?.is_none());
+        }
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::InvalidInput,
+        ] {
+            assert!(matches!(
+                classify_host_observation(Err(kind.into())),
+                Err(CaptureError::Io(_))
+            ));
+        }
+        let directory = tempfile::tempdir()?;
+        std::fs::write(directory.path().join("file"), b"body")?;
+        let source_root = HostRoot::open(directory.path())?;
+        assert!(observe_host_path(&source_root, Path::new("file/child"))?.is_none());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn subtree_walk_rejects_intermediate_symlinks() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        std::fs::write(outside.path().join("private"), b"outside")?;
+        symlink(outside.path(), directory.path().join("alias"))?;
+        let source_root = HostRoot::open(directory.path())?;
+        assert!(source_root.read_dir_held(Path::new("alias")).is_err());
+        assert!(
+            source_root
+                .symlink_metadata_held(Path::new("alias/private"))
+                .is_err()
+        );
+        Ok(())
+    }
 }
 
 async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -589,13 +1271,9 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
     source_root: &HostRoot,
     budget: WorkBudget,
     cancellation: &CancellationToken,
+    baseline: Option<&NativeViewBaseline>,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let mut receipt = CaptureReceipt::default();
-    let mut mutations = Vec::new();
-    let mut host_links = BTreeMap::new();
-    mutations
-        .try_reserve(ordered.len().saturating_mul(3))
-        .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
 
     let mut observations = Vec::new();
     let mut paths = Vec::new();
@@ -629,11 +1307,55 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
             .collect()
     };
 
+    let states = order_capture_states(observations, paths, current);
+    let mut host_links = BTreeMap::new();
+    let remaining = receipt
+        .work
+        .remaining(budget)
+        .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
+    let captured = capture_ranked_paths_from_root(
+        checkout,
+        states,
+        &mut host_links,
+        maximum_extent_spans,
+        source_root,
+        remaining,
+        cancellation,
+        baseline,
+    )
+    .await
+    .map_err(|failure| map_capture_failure(failure, receipt.work))?;
+    receipt.examined_paths = captured.value.examined_paths;
+    receipt.changed_paths = captured.value.changed_paths;
+    receipt.staged_file_bytes = captured.value.staged_file_bytes;
+    receipt.work = add_work(receipt.work, captured.work)?;
+    Ok(OperationReceipt {
+        value: receipt,
+        work: receipt.work,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    states: Vec<CapturePathState>,
+    host_links: &mut BTreeMap<[u8; 16], HostLinkSource>,
+    maximum_extent_spans: u32,
+    source_root: &HostRoot,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    baseline: Option<&NativeViewBaseline>,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    let mut receipt = CaptureReceipt::default();
+    let mut mutations = Vec::new();
+    mutations
+        .try_reserve(states.len().saturating_mul(3))
+        .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
     let mut prepared = Vec::new();
     prepared
-        .try_reserve(paths.len())
+        .try_reserve(states.len())
         .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, receipt.work))?;
-    for ((observation, path), current) in observations.into_iter().zip(paths).zip(current) {
+    for (observation, path, current) in states {
         let plan = prepare_final_path(
             checkout,
             path,
@@ -641,8 +1363,9 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
             CaptureIntent::Complete,
             source_root,
             observation,
-            &mut host_links,
+            host_links,
             None,
+            baseline,
             &mut mutations,
             &mut receipt,
             budget,
@@ -674,6 +1397,56 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
         value: receipt,
         work: receipt.work,
     })
+}
+
+type CapturePathState = (Option<HostObservation>, NamespacePath, Option<FileRecord>);
+
+fn order_capture_states(
+    observations: Vec<Option<HostObservation>>,
+    paths: Vec<NamespacePath>,
+    current: Vec<Option<FileRecord>>,
+) -> Vec<CapturePathState> {
+    let mut states = observations
+        .into_iter()
+        .zip(paths)
+        .zip(current)
+        .map(|((observation, path), current)| (observation, path, current))
+        .collect::<Vec<_>>();
+    // Remove checkout-only descendants first, before an observed ancestor
+    // changes kind. Existing bindings then lead newly observed hard-link
+    // aliases so an earlier-sorting alias cannot replace a stable SDK FileId.
+    sort_capture_states(&mut states);
+    states
+}
+
+fn sort_capture_states(states: &mut [CapturePathState]) {
+    states.sort_by(
+        |(left, left_path, left_current), (right, right_path, right_current)| {
+            let rank = |observation: &Option<HostObservation>, current: &Option<FileRecord>| {
+                match observation {
+                    None => 0,
+                    Some(observation) if observation.metadata.is_dir() => 1,
+                    Some(_) if current.is_some() => 2,
+                    Some(_) => 3,
+                }
+            };
+            let left_rank = rank(left, left_current);
+            let right_rank = rank(right, right_current);
+            left_rank.cmp(&right_rank).then_with(|| {
+                if left_rank == 0 {
+                    right_path
+                        .depth()
+                        .cmp(&left_path.depth())
+                        .then_with(|| left_path.cmp(right_path))
+                } else {
+                    left_path
+                        .depth()
+                        .cmp(&right_path.depth())
+                        .then_with(|| left_path.cmp(right_path))
+                }
+            })
+        },
+    );
 }
 
 /// Authenticates one complete bounded host baseline into a checkout candidate.
@@ -761,6 +1534,7 @@ pub async fn capture_baseline_with_policy<A: AsyncAuthorityStore, O: AsyncObject
         &source_root,
         remaining,
         cancellation,
+        None,
     ))
     .await
     .map_err(|failure| map_capture_failure(failure, work))?;
@@ -792,7 +1566,7 @@ fn collect_host_observations(
             OperationFailure::new(CaptureError::Engine(error.to_string()), *work)
         })?;
         for entry in root
-            .read_dir(&host_parent)
+            .read_dir_held(&host_parent)
             .map_err(|error| OperationFailure::new(error.into(), *work))?
         {
             let entry = entry.map_err(|error| OperationFailure::new(error.into(), *work))?;
@@ -808,7 +1582,7 @@ fn collect_host_observations(
             }
             let host_child = host_parent.join(entry.file_name());
             let metadata = root
-                .symlink_metadata(&host_child)
+                .symlink_metadata_held(&host_child)
                 .map_err(|error| OperationFailure::new(error.into(), *work))?;
             let file_type = metadata.file_type();
             insert_host_observation(
@@ -906,7 +1680,7 @@ fn collect_host_subtree_roots(
 ) -> Result<(), OperationFailure<CaptureError>> {
     for root in roots {
         let host_root = namespace_to_host_path(root).map_err(OperationFailure::before_work)?;
-        match source_root.symlink_metadata(&host_root) {
+        match source_root.symlink_metadata_held(&host_root) {
             Ok(metadata) => {
                 let file_type = metadata.file_type();
                 insert_host_observation(observed, root.clone(), metadata, maximum, work, budget)?;
@@ -926,7 +1700,7 @@ fn collect_host_subtree_roots(
                     )?;
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if host_path_is_absent(&error) => {}
             Err(error) => return Err(OperationFailure::new(error.into(), *work)),
         }
     }
@@ -953,7 +1727,7 @@ fn collect_host_subtree_observations(
             OperationFailure::new(CaptureError::Engine(error.to_string()), *work)
         })?;
         for entry in root
-            .read_dir(&host_parent)
+            .read_dir_held(&host_parent)
             .map_err(|error| OperationFailure::new(error.into(), *work))?
         {
             let entry = entry.map_err(|error| OperationFailure::new(error.into(), *work))?;
@@ -969,7 +1743,7 @@ fn collect_host_subtree_observations(
             }
             let host_child = host_parent.join(entry.file_name());
             let metadata = root
-                .symlink_metadata(&host_child)
+                .symlink_metadata_held(&host_child)
                 .map_err(|error| OperationFailure::new(error.into(), *work))?;
             let file_type = metadata.file_type();
             insert_host_observation(observed, child.clone(), metadata, maximum, work, budget)?;
@@ -1001,7 +1775,7 @@ fn collect_host_subtree_paths<P: ScannedPaths>(
             OperationFailure::new(CaptureError::Engine(error.to_string()), *work)
         })?;
         let entries = root
-            .read_dir(&host_parent)
+            .read_dir_held(&host_parent)
             .map_err(|error| OperationFailure::new(error.into(), *work))?;
         for entry in entries {
             let entry = entry.map_err(|error| OperationFailure::new(error.into(), *work))?;
@@ -1250,7 +2024,6 @@ pub fn host_path_to_namespace(
 /// batch. Other failures are the union of exact rename,
 /// host-state capture, cancellation, engine, allocation, and bounded-work
 /// failures from [`capture_paths`].
-#[allow(clippy::too_many_lines)]
 pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     batch: WatchBatch,
@@ -1270,8 +2043,27 @@ pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 /// Captures one watcher batch while omitting excluded paths symmetrically.
-#[allow(clippy::too_many_lines)]
 pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    batch: WatchBatch,
+    options: &CaptureOptions,
+    policy: &CapturePolicy,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<WatchCaptureReceipt>, OperationFailure<CaptureError>> {
+    Box::pin(capture_watch_batch_with_policy_inner(
+        checkout,
+        batch,
+        options,
+        policy,
+        budget,
+        cancellation,
+    ))
+    .await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn capture_watch_batch_with_policy_inner<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     batch: WatchBatch,
     options: &CaptureOptions,
@@ -1311,6 +2103,8 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
         .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
     let mut ordinary = BTreeMap::new();
     let mut rename_records = BTreeMap::<NamespacePath, FileRecord>::new();
+    let mut renamed_directories = Vec::new();
+    let mut rename_destinations = Vec::new();
     let mut moved_away = BTreeSet::new();
 
     for change in changes.into_iter().filter_map(|change| match &change {
@@ -1397,6 +2191,10 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
                     }
                 };
                 if let Some(record) = record {
+                    if record.kind == FileKind::Directory {
+                        renamed_directories.push((from.clone(), to.clone()));
+                    }
+                    rename_destinations.push(to.clone());
                     mutations.push(AuthoredMutation::Rename {
                         source: from.clone(),
                         destination: to.clone(),
@@ -1424,6 +2222,37 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
     ))
     .await?;
 
+    // A watcher may report a nested file before any ancestor has been
+    // observed in this lazy checkout. Capture only the missing ancestors,
+    // rather than expanding their entire host subtrees as event roots.
+    let maximum_paths = usize::try_from(options.maximum_paths).unwrap_or(usize::MAX);
+    let ancestors = watch_ancestor_candidates(
+        ordinary
+            .keys()
+            .chain(rename_records.keys())
+            .chain(rename_destinations.iter()),
+        &ordinary,
+        &rename_records,
+        policy,
+        maximum_paths,
+        receipt.work,
+        cancellation,
+    )?;
+    let mut missing_ancestors = hydrate_watch_ancestors(
+        checkout,
+        &mut ordinary,
+        ancestors,
+        WatchAncestorScope {
+            source_root: &source_root,
+            epoch,
+            maximum_paths: maximum_paths.saturating_sub(rename_records.len()),
+            budget,
+            cancellation,
+        },
+        &mut receipt,
+    )
+    .await?;
+
     let lookup_paths = ordinary
         .iter()
         .filter(|(_, (current, _))| matches!(current, CurrentRecord::Lookup))
@@ -1440,13 +2269,32 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
             .map_err(|failure| map_engine_failure(failure, receipt.work))?;
         receipt.work = add_work(receipt.work, lookup.work)?;
         for (path, entry) in lookup_paths.into_iter().zip(lookup.value.entries) {
+            let mut record = entry.record;
+            if record.is_none()
+                && let Some(prior_path) = remap_renamed_directory_path(
+                    &path,
+                    &renamed_directories,
+                    checkout.volume_config().limits,
+                )
+                .map_err(|error| OperationFailure::new(error, receipt.work))?
+            {
+                let remaining = receipt.work.remaining(budget).map_err(|error| {
+                    OperationFailure::new(CaptureError::Work(error), receipt.work)
+                })?;
+                let prior = checkout
+                    .lookup_no_follow(&prior_path, remaining, cancellation)
+                    .await
+                    .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+                receipt.work = add_work(receipt.work, prior.work)?;
+                record = prior.value.record;
+            }
             let Some((current, _)) = ordinary.get_mut(&path) else {
                 return Err(OperationFailure::new(
                     CaptureError::Engine("capture lookup path disappeared".into()),
                     receipt.work,
                 ));
             };
-            *current = CurrentRecord::Known(entry.record);
+            *current = CurrentRecord::Known(record);
         }
     }
 
@@ -1455,6 +2303,44 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
     prepared
         .try_reserve(rename_records.len().saturating_add(ordinary.len()))
         .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, receipt.work))?;
+    // A rename can target a directory that has never been observed in this
+    // lazy checkout. Materialize only those host ancestors before the rename,
+    // preserving the event order for all remaining mutations.
+    missing_ancestors.sort_by(|left, right| {
+        left.depth()
+            .cmp(&right.depth())
+            .then_with(|| left.cmp(right))
+    });
+    let rename_mutations = std::mem::take(&mut mutations);
+    for path in missing_ancestors {
+        let Some((current, intent)) = ordinary.remove(&path) else {
+            return Err(OperationFailure::new(
+                CaptureError::Engine("capture ancestor path disappeared".into()),
+                receipt.work,
+            ));
+        };
+        let plan = prepare_final_path(
+            checkout,
+            path,
+            current,
+            intent,
+            &source_root,
+            None,
+            &mut host_links,
+            Some(epoch.get()),
+            None,
+            &mut mutations,
+            &mut receipt,
+            budget,
+            cancellation,
+        )
+        .await?;
+        if let Some(plan) = plan {
+            prepared.push(plan);
+        }
+    }
+    mutations.extend(rename_mutations);
+    let namespace_boundary = mutations.len();
     for (path, record) in rename_records {
         if ordinary.contains_key(&path) {
             continue;
@@ -1468,6 +2354,7 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
             None,
             &mut host_links,
             Some(epoch.get()),
+            None,
             &mut mutations,
             &mut receipt,
             budget,
@@ -1482,11 +2369,7 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
         .into_iter()
         .map(|(path, (current, intent))| {
             let host_path = namespace_to_host_path(&path)?;
-            let observation = match source_root.symlink_metadata(&host_path) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(_) => None,
-                Ok(metadata) => Some(HostObservation::from_metadata(metadata)),
-            };
+            let observation = observe_host_path(&source_root, &host_path)?;
             Ok((path, current, intent, observation))
         })
         .collect::<Result<Vec<_>, CaptureError>>()
@@ -1515,6 +2398,7 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
             observation,
             &mut host_links,
             Some(epoch.get()),
+            None,
             &mut mutations,
             &mut receipt,
             budget,
@@ -1536,7 +2420,33 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
         cancellation,
     )
     .await?;
-    apply_capture_transaction(checkout, mutations, &mut receipt, budget, cancellation).await?;
+    if namespace_boundary == 0 || namespace_boundary == mutations.len() {
+        apply_capture_transaction(checkout, mutations, &mut receipt, budget, cancellation).await?;
+    } else {
+        // Keep the watch batch atomic to callers, but compile the path-shape
+        // changes before mutations that address their resulting bindings.
+        // The authored compiler resolves those bindings against its input
+        // checkout, even though the kernel executes each batch in order.
+        let mut candidate = checkout.private_candidate();
+        let final_state = mutations.split_off(namespace_boundary);
+        apply_capture_transaction(
+            &mut candidate,
+            mutations,
+            &mut receipt,
+            budget,
+            cancellation,
+        )
+        .await?;
+        apply_capture_transaction(
+            &mut candidate,
+            final_state,
+            &mut receipt,
+            budget,
+            cancellation,
+        )
+        .await?;
+        *checkout = candidate;
+    }
     Ok(OperationReceipt {
         value: WatchCaptureReceipt {
             epoch,
@@ -1552,6 +2462,150 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
 enum CurrentRecord {
     Lookup,
     Known(Option<FileRecord>),
+}
+
+fn watch_ancestor_candidates<'a>(
+    paths: impl Iterator<Item = &'a NamespacePath>,
+    ordinary: &BTreeMap<NamespacePath, (CurrentRecord, CaptureIntent)>,
+    rename_records: &BTreeMap<NamespacePath, FileRecord>,
+    policy: &CapturePolicy,
+    maximum_paths: usize,
+    work: WorkCounters,
+    cancellation: &CancellationToken,
+) -> Result<Vec<NamespacePath>, OperationFailure<CaptureError>> {
+    let mut ancestors = BTreeSet::new();
+    for path in paths {
+        let mut parent = path.parent();
+        while let Some(path) = parent {
+            cancellation.check().map_err(|error| {
+                OperationFailure::new(CaptureError::Engine(error.to_string()), work)
+            })?;
+            if path.is_root() {
+                break;
+            }
+            if !ordinary.contains_key(&path)
+                && !rename_records.contains_key(&path)
+                && !policy.excludes(&path)
+            {
+                ancestors.insert(path.clone());
+                if ancestors
+                    .len()
+                    .saturating_add(ordinary.len())
+                    .saturating_add(rename_records.len())
+                    > maximum_paths
+                {
+                    return Err(OperationFailure::new(CaptureError::InvalidOptions, work));
+                }
+            }
+            parent = path.parent();
+        }
+    }
+    let mut ancestors = ancestors.into_iter().collect::<Vec<_>>();
+    ancestors.sort_by(|left, right| {
+        left.depth()
+            .cmp(&right.depth())
+            .then_with(|| left.cmp(right))
+    });
+    Ok(ancestors)
+}
+
+struct WatchAncestorScope<'a> {
+    source_root: &'a HostRoot,
+    epoch: WatchEpoch,
+    maximum_paths: usize,
+    budget: WorkBudget,
+    cancellation: &'a CancellationToken,
+}
+
+async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    ordinary: &mut BTreeMap<NamespacePath, (CurrentRecord, CaptureIntent)>,
+    ancestors: Vec<NamespacePath>,
+    scope: WatchAncestorScope<'_>,
+    receipt: &mut CaptureReceipt,
+) -> Result<Vec<NamespacePath>, OperationFailure<CaptureError>> {
+    let mut missing = Vec::new();
+    let mut replaced = Vec::new();
+    for path in ancestors {
+        let current = if replaced.iter().any(|ancestor| path.is_within(ancestor)) {
+            None
+        } else {
+            let remaining = receipt
+                .work
+                .remaining(scope.budget)
+                .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
+            let lookup = checkout
+                .lookup_no_follow(&path, remaining, scope.cancellation)
+                .await
+                .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+            receipt.work = add_work(receipt.work, lookup.work)?;
+            lookup.value.record
+        };
+        let host_path = namespace_to_host_path(&path)
+            .map_err(|error| OperationFailure::new(error, receipt.work))?;
+        match scope.source_root.symlink_metadata_held(&host_path) {
+            Ok(metadata) if metadata.is_dir() => {
+                if current.is_none_or(|record| record.kind != FileKind::Directory) {
+                    if current.is_some() {
+                        replaced.push(path.clone());
+                    }
+                    missing.push(path.clone());
+                    ordinary.insert(
+                        path,
+                        (CurrentRecord::Known(current), CaptureIntent::Replace),
+                    );
+                }
+            }
+            Ok(_) | Err(_) => {
+                return Err(OperationFailure::new(
+                    CaptureError::RescanRequired {
+                        epoch: scope.epoch.get(),
+                        reason: WatchInvalidationReason::NativeRescanRequired,
+                    },
+                    receipt.work,
+                ));
+            }
+        }
+    }
+    if ordinary.len() > scope.maximum_paths {
+        return Err(OperationFailure::new(
+            CaptureError::InvalidOptions,
+            receipt.work,
+        ));
+    }
+
+    // Descendants of a replaced file or symlink were absent in the old view.
+    for (path, (current, _)) in ordinary {
+        if matches!(current, CurrentRecord::Lookup)
+            && replaced
+                .iter()
+                .any(|ancestor| path != ancestor && path.is_within(ancestor))
+        {
+            *current = CurrentRecord::Known(None);
+        }
+    }
+    Ok(missing)
+}
+
+fn remap_renamed_directory_path(
+    path: &NamespacePath,
+    renames: &[(NamespacePath, NamespacePath)],
+    limits: crate::model::VolumeLimits,
+) -> Result<Option<NamespacePath>, CaptureError> {
+    let mut prior = path.clone();
+    for (from, to) in renames.iter().rev() {
+        if prior == *to || !prior.is_within(to) {
+            continue;
+        }
+        let mut components = from.components().to_vec();
+        let suffix = prior
+            .components()
+            .get(to.depth()..)
+            .ok_or(CaptureError::InvalidOptions)?;
+        components.extend_from_slice(suffix);
+        prior = NamespacePath::new(components, limits).map_err(|_| CaptureError::InvalidOptions)?;
+    }
+    Ok((prior != *path).then_some(prior))
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -1605,17 +2659,16 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     let limits = checkout.volume_config().limits;
     let profile = checkout.volume_config().profile;
-    let roots = ordinary
-        .keys()
-        .filter_map(|path| {
-            let host_path = namespace_to_host_path(path).ok()?;
-            source_root
-                .symlink_metadata(&host_path)
-                .ok()
-                .filter(cap_std::fs::Metadata::is_dir)
-                .map(|_| (host_path, path.clone()))
-        })
-        .collect::<Vec<_>>();
+    let mut roots = Vec::new();
+    for path in ordinary.keys() {
+        let host_path = namespace_to_host_path(path)
+            .map_err(|error| OperationFailure::new(error, receipt.work))?;
+        let observation = observe_host_path(source_root, &host_path)
+            .map_err(|error| OperationFailure::new(error, receipt.work))?;
+        if observation.is_some_and(|observation| observation.metadata.is_dir()) {
+            roots.push((host_path, path.clone()));
+        }
+    }
     let mut paths = ordinary.keys().cloned().collect::<BTreeSet<_>>();
     for (host_path, volume_path) in roots {
         collect_host_subtree_paths(
@@ -1678,11 +2731,14 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     observation: Option<HostObservation>,
     host_links: &mut BTreeMap<[u8; 16], HostLinkSource>,
     watch_epoch: Option<u64>,
+    baseline: Option<&NativeViewBaseline>,
     mutations: &mut Vec<AuthoredMutation>,
     receipt: &mut CaptureReceipt,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<Option<PreparedPath>, OperationFailure<CaptureError>> {
+    #[cfg(windows)]
+    let _ = baseline;
     cancellation.check().map_err(|error| {
         OperationFailure::new(CaptureError::Engine(error.to_string()), receipt.work)
     })?;
@@ -1706,7 +2762,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let metadata = observation.map_or_else(
         || {
             source_root
-                .symlink_metadata(&host_path)
+                .symlink_metadata_held(&host_path)
                 .map(HostObservation::from_metadata)
         },
         Ok,
@@ -1769,6 +2825,17 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             if let Some(record) = current
                 && (record.kind != host_kind || replace)
             {
+                if record.kind == FileKind::Directory {
+                    push_subtree_removals(
+                        checkout,
+                        &path,
+                        mutations,
+                        receipt,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 mutations.push(AuthoredMutation::Remove {
                     path: path.clone(),
                     expected_file_id: Some(record.file_id),
@@ -1776,13 +2843,15 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             }
             let exists_with_kind =
                 !replace && current.is_some_and(|record| record.kind == host_kind);
-            let mut canonical_metadata = if host_kind == FileKind::SymbolicLink {
+            let mut canonical_metadata = if host_kind == FileKind::SymbolicLink && cfg!(unix) {
                 unrestorable_metadata()
             } else {
                 snapshot.metadata
             };
             if let Some(record) = current.filter(|record| {
-                exists_with_kind && record.kind == host_kind && host_kind != FileKind::SymbolicLink
+                exists_with_kind
+                    && record.kind == host_kind
+                    && (host_kind != FileKind::SymbolicLink || cfg!(windows))
             }) {
                 let remaining = receipt.work.remaining(budget).map_err(|error| {
                     OperationFailure::new(CaptureError::Work(error), receipt.work)
@@ -1793,6 +2862,16 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     .map_err(|failure| map_engine_failure(failure, receipt.work))?;
                 receipt.work = add_work(receipt.work, prior.work)?;
                 canonical_metadata = preserve_unobserved_metadata(canonical_metadata, prior.value);
+                #[cfg(unix)]
+                if let Some(baseline) = baseline {
+                    baseline.restore_canonical_stamps(
+                        source_root.identity(),
+                        &host_path,
+                        &snapshot,
+                        prior.value,
+                        &mut canonical_metadata,
+                    );
+                }
             }
             let linked_path = path.clone();
             let prepared = if intent == CaptureIntent::MetadataOnly && exists_with_kind {
@@ -1853,7 +2932,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             receipt.examined_paths = checked_increment(receipt.examined_paths, receipt.work)?;
             return Ok(prepared);
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error) if host_path_is_absent(&error) => {
             if let Some(record) = current {
                 // A directory that vanished takes its descendants with it.
                 // A watcher may say so with one hint on the directory alone
@@ -1883,6 +2962,13 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     receipt.examined_paths = checked_increment(receipt.examined_paths, receipt.work)?;
     Ok(None)
+}
+
+fn host_path_is_absent(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    ) || cfg!(windows) && error.raw_os_error() == Some(267)
 }
 
 /// Queues a remove for every descendant of `root` that the checkout holds,
@@ -1969,7 +3055,7 @@ async fn apply_capture_transaction<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .remaining(budget)
         .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
     let applied = checkout
-        .apply_authored_transaction(mutations, remaining, cancellation)
+        .apply_authored_bulk_transaction(mutations, remaining, cancellation)
         .await
         .map_err(|failure| map_engine_failure(failure, receipt.work))?;
     receipt.work = add_work(receipt.work, applied.work)?;
@@ -2486,7 +3572,7 @@ fn ensure_current_host_node(
     host_path: &Path,
     expected: &HostSnapshot,
 ) -> Result<(), CaptureError> {
-    let observed = source_root.symlink_metadata(host_path)?;
+    let observed = source_root.symlink_metadata_held(host_path)?;
     ensure_same_host_node(expected, &observed)
 }
 
@@ -2599,11 +3685,10 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             .try_clone()
             .map(cap_std::fs::File::into_std)
             .map_err(|error| OperationFailure::new(error.into(), accumulated))?;
-        let mut bounded = NativeRangeSource(acyclic_native_runtime::AsyncRangeReader::new(
-            native,
-            range.offset,
-            range.length,
-        ));
+        let mut bounded = NativeRangeSource(
+            acyclic_native_runtime::AsyncRangeReader::new(native, range.offset, range.length)
+                .map_err(|error| OperationFailure::new(error.into(), accumulated))?,
+        );
         let remaining = accumulated
             .remaining(budget)
             .map_err(|error| OperationFailure::new(CaptureError::Work(error), accumulated))?;
@@ -2947,9 +4032,9 @@ fn read_link_bytes(root: &HostRoot, path: &Path) -> Result<Vec<u8>, CaptureError
         .collect())
 }
 
-/// Symbolic links own no restorable host metadata: mode, ownership, and
-/// timestamps cannot be applied to a link during materialization, and
-/// recording them makes every captured link fail restore fail-closed.
+/// Unix symbolic-link metadata is not restored by the current native view.
+/// Windows link-leaf attributes and timestamps are applied by `HostRoot` and
+/// must remain in the canonical capture.
 fn unrestorable_metadata() -> FileMetadata {
     FileMetadata {
         posix_mode: MetadataField::Unavailable,
@@ -3021,11 +4106,15 @@ fn system_time(value: std::io::Result<cap_std::time::SystemTime>) -> MetadataFie
     let Ok(value) = value else {
         return MetadataField::Unavailable;
     };
-    let Ok(duration) = value.into_std().duration_since(std::time::UNIX_EPOCH) else {
-        return MetadataField::Unavailable;
+    let nanos = match value.into_std().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => {
+            i128::from(duration.as_secs()) * 1_000_000_000 + i128::from(duration.subsec_nanos())
+        }
+        Err(error) => {
+            let duration = error.duration();
+            -(i128::from(duration.as_secs()) * 1_000_000_000 + i128::from(duration.subsec_nanos()))
+        }
     };
-    let nanos =
-        i128::from(duration.as_secs()) * 1_000_000_000 + i128::from(duration.subsec_nanos());
     i64::try_from(nanos).map_or(MetadataField::Unavailable, MetadataField::Value)
 }
 

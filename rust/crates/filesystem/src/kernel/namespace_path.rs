@@ -1,7 +1,7 @@
 //! Bounded profile-independent namespace paths.
 
 use super::{LogicalName, NameEncoding, TreePageError};
-use crate::model::VolumeLimits;
+use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::path::PortablePath;
 use thiserror::Error;
 
@@ -65,15 +65,43 @@ impl NamespacePath {
         path: &PortablePath,
         limits: VolumeLimits,
     ) -> Result<Self, NamespacePathError> {
+        Self::from_portable_in_profile(path, FilesystemProfile::Portable, limits)
+    }
+
+    /// Converts a portable path to the canonical names of one volume profile.
+    ///
+    /// The string API can address names representable as Unicode; native
+    /// capture APIs retain raw POSIX bytes or UTF-16 units outside that subset.
+    ///
+    /// # Errors
+    ///
+    /// Returns bounded-name or path errors when the encoded host names exceed
+    /// the volume limits.
+    pub fn from_portable_in_profile(
+        path: &PortablePath,
+        profile: FilesystemProfile,
+        limits: VolumeLimits,
+    ) -> Result<Self, NamespacePathError> {
         let components = path
             .components()
             .map(|component| {
-                LogicalName::new(
-                    NameEncoding::Utf8,
-                    component.as_bytes().to_vec(),
-                    limits.maximum_component_bytes,
-                )
-                .map_err(NamespacePathError::Name)
+                let (encoding, bytes) = match profile {
+                    FilesystemProfile::Portable | FilesystemProfile::Browser => {
+                        (NameEncoding::Utf8, component.as_bytes().to_vec())
+                    }
+                    FilesystemProfile::Posix => {
+                        (NameEncoding::PosixBytes, component.as_bytes().to_vec())
+                    }
+                    FilesystemProfile::Windows => (
+                        NameEncoding::WindowsUtf16Le,
+                        component
+                            .encode_utf16()
+                            .flat_map(u16::to_le_bytes)
+                            .collect(),
+                    ),
+                };
+                LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
+                    .map_err(NamespacePathError::Name)
             })
             .collect::<Result<Vec<_>, _>>()?;
         Self::new(components, limits)

@@ -903,7 +903,9 @@ pub mod native {
                 file_identity: file_identity(metadata),
                 link_count: link_count(metadata),
                 device: device_identity(metadata, kind),
-                logical_bytes: (kind == SourceNodeKind::RegularFile).then_some(metadata.len()),
+                logical_bytes: (kind == SourceNodeKind::RegularFile
+                    || cfg!(unix) && kind == SourceNodeKind::SymbolicLink)
+                    .then_some(metadata.len()),
                 version: version(metadata),
                 metadata: source_metadata(metadata),
             }
@@ -1389,7 +1391,11 @@ pub mod native {
         {
             Some(metadata.nlink())
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            cap_primitives::fs::_WindowsByHandle::number_of_links(metadata).map(u64::from)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = metadata;
             None
@@ -1488,6 +1494,38 @@ mod tests {
             &portable,
             VolumeLimits::default(),
         )?)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_source_reports_symbolic_link_target_bytes() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        std::os::unix::fs::symlink("target", root.path().join("link"))?;
+        let source = NativeDemandSource::open(
+            root.path(),
+            FilesystemProfile::Posix,
+            VolumeLimits::default(),
+        )
+        .await?;
+        let reference = source.reference();
+        let cancellation = CancellationToken::new();
+        let node = source
+            .lookup(reference, &path("/link")?, &cancellation)
+            .await?
+            .value
+            .ok_or("symbolic link was absent")?;
+
+        assert_eq!(node.kind, SourceNodeKind::SymbolicLink);
+        assert_eq!(node.logical_bytes, Some(6));
+        assert_eq!(
+            source
+                .read_link(reference, &path("/link")?, node.version, &cancellation)
+                .await?
+                .value
+                .as_ref(),
+            b"target"
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -1850,6 +1888,38 @@ mod tests {
             name,
         )
         .await
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn native_lookup_accepts_windows_names_longer_than_127_code_units()
+    -> Result<(), Box<dyn Error>> {
+        use crate::kernel::{LogicalName, NameEncoding};
+
+        let host_name = "x".repeat(200);
+        let limits = crate::model::VolumeConfig::native(crate::model::Lifecycle::Durable).limits;
+        let raw = host_name
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let name = LogicalName::new(
+            NameEncoding::WindowsUtf16Le,
+            raw,
+            limits.maximum_component_bytes,
+        )?;
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join(&host_name), b"data")?;
+        let source =
+            NativeDemandSource::open(root.path(), FilesystemProfile::Windows, limits).await?;
+        let exact = NamespacePath::new(vec![name], limits)?;
+        assert!(
+            source
+                .lookup(source.reference(), &exact, &CancellationToken::new())
+                .await?
+                .value
+                .is_some()
+        );
+        Ok(())
     }
 
     #[cfg(any(target_os = "linux", windows))]

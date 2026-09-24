@@ -10,7 +10,7 @@
 use super::{
     MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry, MountDirectoryPage,
     MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountPath,
-    MountRangeAllocation, MountSeekTarget, MountSourceError,
+    MountRangeAllocation, MountSeekTarget, MountSourceError, MountViewLease,
 };
 use crate::FileId;
 use crate::kernel::FileMetadata;
@@ -21,7 +21,7 @@ use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 
 static ROUTE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -97,6 +97,8 @@ struct Route {
     tag: [u8; 16],
 }
 
+type CaptureRouteBatch = BTreeMap<Vec<u8>, (Arc<dyn MountFilesystem>, Vec<MountPath>)>;
+
 /// One route resolved from an incoming [`MountPath`]: the child source, its
 /// remap tag, its route name, and the remainder of the path within it.
 struct Routed {
@@ -104,6 +106,91 @@ struct Routed {
     tag: [u8; 16],
     name: Vec<u8>,
     sub_path: MountPath,
+}
+
+#[derive(Default)]
+struct RouteViewState {
+    readers: usize,
+    writer: bool,
+    waiting_writers: usize,
+}
+
+#[derive(Default)]
+struct RouteViewGate {
+    state: Mutex<RouteViewState>,
+    changed: Condvar,
+}
+
+struct RouteViewReadLease {
+    gate: Arc<RouteViewGate>,
+    _children: Vec<Box<dyn MountViewLease>>,
+}
+
+impl MountViewLease for RouteViewReadLease {}
+
+impl Drop for RouteViewReadLease {
+    fn drop(&mut self) {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.readers = state.readers.saturating_sub(1);
+        if state.readers == 0 {
+            self.gate.changed.notify_all();
+        }
+    }
+}
+
+struct RouteViewWriteLease {
+    gate: Arc<RouteViewGate>,
+}
+
+impl Drop for RouteViewWriteLease {
+    fn drop(&mut self) {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.writer = false;
+        self.gate.changed.notify_all();
+    }
+}
+
+impl RouteViewGate {
+    fn read(self: &Arc<Self>) -> RouteViewReadLease {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        while state.writer || state.waiting_writers != 0 {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        state.readers = state.readers.saturating_add(1);
+        drop(state);
+        RouteViewReadLease {
+            gate: Arc::clone(self),
+            _children: Vec::new(),
+        }
+    }
+
+    fn write(self: &Arc<Self>) -> RouteViewWriteLease {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.waiting_writers = state.waiting_writers.saturating_add(1);
+        while state.writer || state.readers != 0 {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        state.waiting_writers = state.waiting_writers.saturating_sub(1);
+        state.writer = true;
+        drop(state);
+        RouteViewWriteLease {
+            gate: Arc::clone(self),
+        }
+    }
 }
 
 /// A [`MountFilesystem`] that routes by first path component to a
@@ -117,6 +204,7 @@ struct Routed {
 /// precondition resolve a remapped id back to its owning route through an
 /// index recorded every time an id is emitted, then undo the same XOR.
 pub struct RoutedMountSource {
+    view_gate: Arc<RouteViewGate>,
     routes: RwLock<BTreeMap<Vec<u8>, Route>>,
     file_id_index: RwLock<HashMap<FileId, Vec<u8>>>,
     root_id: FileId,
@@ -131,7 +219,8 @@ impl RoutedMountSource {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            revision: AtomicI64::new(unix_nanos()),
+            view_gate: Arc::new(RouteViewGate::default()),
+            revision: AtomicI64::new(1),
             routes: RwLock::new(BTreeMap::new()),
             file_id_index: RwLock::new(HashMap::new()),
             root_id: FileId::new(),
@@ -155,11 +244,13 @@ impl RoutedMountSource {
             ));
         }
         let tag = next_route_tag(&name);
+        let _view = self.view_gate.write();
         let mut routes = self.routes.write().unwrap_or_else(PoisonError::into_inner);
         if routes.contains_key(&name) {
             return Err(MountSourceError::AlreadyExists);
         }
         routes.insert(name, Route { source, tag });
+        self.bump_revision();
         Ok(())
     }
 
@@ -168,12 +259,13 @@ impl RoutedMountSource {
     ///
     /// Returns whether a route was actually removed.
     pub fn remove_route(&self, name: &[u8]) -> bool {
-        self.bump_revision();
+        let _view = self.view_gate.write();
         let removed = {
             let mut routes = self.routes.write().unwrap_or_else(PoisonError::into_inner);
             routes.remove(name)
         };
         if removed.is_some() {
+            self.bump_revision();
             let mut index = self
                 .file_id_index
                 .write()
@@ -269,7 +361,62 @@ impl RoutedMountSource {
     }
 
     fn bump_revision(&self) {
-        self.revision.store(unix_nanos(), Ordering::Release);
+        self.revision.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn coherent_epoch_by(
+        &self,
+        mut select: impl FnMut(&dyn MountFilesystem) -> Option<u64>,
+    ) -> u64 {
+        let routes = self.routes.read().unwrap_or_else(PoisonError::into_inner);
+        let mut hasher = DefaultHasher::new();
+        self.revision.load(Ordering::Acquire).hash(&mut hasher);
+        for (name, route) in routes.iter() {
+            name.hash(&mut hasher);
+            select(route.source.as_ref()).hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    fn acquire_epoch_lease(
+        &self,
+        expected_epoch: Option<u64>,
+        binding: bool,
+    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+        let mut lease = self.view_gate.read();
+        let epoch = if binding {
+            self.binding_epoch()
+        } else {
+            self.view_epoch()
+        };
+        if expected_epoch.is_some_and(|expected| Some(expected) != epoch) {
+            return Err(MountSourceError::Stale);
+        }
+        let sources = self
+            .routes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .map(|route| Arc::clone(&route.source))
+            .collect::<Vec<_>>();
+        let mut children = Vec::with_capacity(sources.len());
+        for source in sources {
+            children.push(if binding {
+                source.acquire_binding_lease(source.binding_epoch())?
+            } else {
+                source.acquire_view_lease(source.view_epoch())?
+            });
+        }
+        let current = if binding {
+            self.binding_epoch()
+        } else {
+            self.view_epoch()
+        };
+        if !self.view_is_stable() || current != epoch {
+            return Err(MountSourceError::Stale);
+        }
+        lease._children = children;
+        Ok(Box::new(lease))
     }
 
     #[allow(clippy::type_complexity)]
@@ -333,6 +480,10 @@ impl MountOpenFile for RemappedOpenFile {
         self.inner.read_range(offset, length)
     }
 
+    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
+        self.inner.read_up_to(offset, maximum_bytes)
+    }
+
     fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
         self.inner.seek(offset, target)
     }
@@ -389,6 +540,44 @@ impl MountOpenFile for RemappedOpenFile {
 }
 
 impl MountFilesystem for RoutedMountSource {
+    fn supports_posix_named_attributes(&self) -> bool {
+        let routes = self.routes.read().unwrap_or_else(PoisonError::into_inner);
+        !routes.is_empty()
+            && routes
+                .values()
+                .all(|route| route.source.supports_posix_named_attributes())
+    }
+
+    fn view_is_stable(&self) -> bool {
+        self.routes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .all(|route| route.source.view_is_stable())
+    }
+
+    fn view_epoch(&self) -> Option<u64> {
+        Some(self.coherent_epoch_by(MountFilesystem::view_epoch))
+    }
+
+    fn binding_epoch(&self) -> Option<u64> {
+        Some(self.coherent_epoch_by(MountFilesystem::binding_epoch))
+    }
+
+    fn acquire_view_lease(
+        &self,
+        expected_epoch: Option<u64>,
+    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+        self.acquire_epoch_lease(expected_epoch, false)
+    }
+
+    fn acquire_binding_lease(
+        &self,
+        expected_epoch: Option<u64>,
+    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+        self.acquire_epoch_lease(expected_epoch, true)
+    }
+
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
         let Some(routed) = self.route(path)? else {
             return Ok(Some(self.synthetic_root_lookup()));
@@ -781,18 +970,32 @@ impl MountFilesystem for RoutedMountSource {
         source_root: &Path,
         path: &MountPath,
     ) -> Result<(), MountSourceError> {
-        let Some(routed) = self.route(path)? else {
-            return Err(MountSourceError::Unsupported(
-                "the synthetic mount root cannot capture host state".to_owned(),
-            ));
-        };
-        // The child source's path is route-relative; its host root must be
-        // route-relative too, or close-boundary captures read a sibling of
-        // the route and silently miss authored writes.
-        let route_root = source_root.join(host_route_name(&routed.name)?);
-        routed
-            .source
-            .capture_host_path(&route_root, &routed.sub_path)
+        self.capture_host_paths(source_root, std::slice::from_ref(path))
+    }
+
+    fn capture_host_paths(
+        &self,
+        source_root: &Path,
+        paths: &[MountPath],
+    ) -> Result<(), MountSourceError> {
+        let mut routes = CaptureRouteBatch::new();
+        for path in paths {
+            let routed = self.route(path)?.ok_or_else(|| {
+                MountSourceError::Unsupported(
+                    "the synthetic mount root cannot capture host state".to_owned(),
+                )
+            })?;
+            routes
+                .entry(routed.name)
+                .or_insert_with(|| (Arc::clone(&routed.source), Vec::new()))
+                .1
+                .push(routed.sub_path);
+        }
+        for (name, (source, paths)) in routes {
+            // The child source's path and host root are both route-relative.
+            source.capture_host_paths(&source_root.join(host_route_name(&name)?), &paths)?;
+        }
+        Ok(())
     }
 
     fn capture_host_subtree(
@@ -810,13 +1013,6 @@ impl MountFilesystem for RoutedMountSource {
             .source
             .capture_host_subtree(&route_root, &routed.sub_path)
     }
-}
-
-fn unix_nanos() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| i64::try_from(duration.as_nanos()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -1012,6 +1208,55 @@ mod tests {
                 .iter()
                 .all(|entry| entry.node.kind == MountNodeKind::Directory)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn view_lease_pins_routes_until_callback_completion() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let router = Arc::new(RoutedMountSource::new());
+        let route = component("a");
+        router.add_route(route.clone(), memory_source()?)?;
+        let epoch = router.view_epoch();
+        let lease = router.acquire_view_lease(epoch)?;
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let writer = Arc::clone(&router);
+        let writer_route = route.clone();
+        let thread = std::thread::spawn(move || {
+            assert!(started_tx.send(()).is_ok(), "signal writer");
+            let removed = writer.remove_route(&writer_route);
+            assert!(finished_tx.send(removed).is_ok(), "signal completion");
+        });
+        started_rx.recv()?;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert!(
+            finished_rx.try_recv().is_err(),
+            "route mutation escaped an active callback lease"
+        );
+        drop(lease);
+        assert!(finished_rx.recv_timeout(std::time::Duration::from_secs(1))?);
+        thread
+            .join()
+            .map_err(|_| std::io::Error::other("writer thread panicked"))?;
+        assert_ne!(router.view_epoch(), epoch);
+        Ok(())
+    }
+
+    #[test]
+    fn routed_native_writes_invalidate_cache_without_rebinding_other_routes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let router = RoutedMountSource::new();
+        let first = component("first");
+        let second = component("second");
+        router.add_route(first.clone(), memory_source()?)?;
+        router.add_route(second.clone(), memory_source()?)?;
+        let binding = router.binding_epoch();
+        let cache = router.view_epoch();
+        router.create_file(&test_path("first").child(component("file")), metadata())?;
+        assert_eq!(router.binding_epoch(), binding);
+        assert_ne!(router.view_epoch(), cache);
+        let _lease = router.acquire_binding_lease(binding)?;
         Ok(())
     }
 

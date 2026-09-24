@@ -8,25 +8,26 @@
 #![allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 
 use super::{
-    MountDirectoryEntry, MountFilesystem, MountNode, MountNodeKind, MountPath, NativeMountError,
+    DriverStartFailure, MountFilesystem, MountNode, MountNodeKind, MountPath, NativeMountError,
     NativeMountRequest,
 };
 use crate::kernel::{FileMetadata, MetadataField};
-use std::collections::{HashMap, VecDeque};
+use crate::native_host::HostRoot;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, mpsc};
+use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
     FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,
 };
 use windows::Win32::Storage::ProjectedFileSystem::{
-    PRJ_CALLBACK_DATA, PRJ_CALLBACKS, PRJ_DIR_ENTRY_BUFFER_HANDLE, PRJ_EXT_INFO_TYPE_SYMLINK,
-    PRJ_EXTENDED_INFO, PRJ_EXTENDED_INFO_0, PRJ_EXTENDED_INFO_0_0, PRJ_FILE_BASIC_INFO,
-    PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, PRJ_NOTIFICATION,
-    PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED,
+    PRJ_CALLBACK_DATA, PRJ_CALLBACKS, PRJ_CB_DATA_FLAG_ENUM_RESTART_SCAN,
+    PRJ_DIR_ENTRY_BUFFER_HANDLE, PRJ_EXT_INFO_TYPE_SYMLINK, PRJ_EXTENDED_INFO, PRJ_EXTENDED_INFO_0,
+    PRJ_EXTENDED_INFO_0_0, PRJ_FILE_BASIC_INFO, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+    PRJ_NOTIFICATION, PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED,
     PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
     PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION, PRJ_NOTIFICATION_FILE_OPENED,
     PRJ_NOTIFICATION_FILE_OVERWRITTEN, PRJ_NOTIFICATION_FILE_RENAMED,
@@ -37,15 +38,18 @@ use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NOTIFY_FILE_OPENED, PRJ_NOTIFY_FILE_OVERWRITTEN, PRJ_NOTIFY_FILE_RENAMED,
     PRJ_NOTIFY_HARDLINK_CREATED, PRJ_NOTIFY_NEW_FILE_CREATED, PRJ_NOTIFY_PRE_DELETE,
     PRJ_NOTIFY_PRE_RENAME, PRJ_NOTIFY_PRE_SET_HARDLINK, PRJ_PLACEHOLDER_INFO,
-    PRJ_STARTVIRTUALIZING_OPTIONS, PrjAllocateAlignedBuffer, PrjFillDirEntryBuffer,
+    PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_ALLOW_DIRTY_DATA, PRJ_UPDATE_ALLOW_DIRTY_METADATA,
+    PRJ_UPDATE_ALLOW_READ_ONLY, PRJ_UPDATE_ALLOW_TOMBSTONE, PrjAllocateAlignedBuffer,
+    PrjDeleteFile, PrjFileNameCompare, PrjFileNameMatch, PrjFillDirEntryBuffer,
     PrjFillDirEntryBuffer2, PrjFreeAlignedBuffer, PrjMarkDirectoryAsPlaceholder,
-    PrjStartVirtualizing, PrjStopVirtualizing, PrjWriteFileData, PrjWritePlaceholderInfo,
-    PrjWritePlaceholderInfo2,
+    PrjStartVirtualizing, PrjStopVirtualizing, PrjUpdateFileIfNeeded, PrjWriteFileData,
+    PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
 };
 use windows::core::{GUID, HRESULT, HSTRING, PCWSTR};
 
 const HR_OK: HRESULT = HRESULT(0);
 const HR_FILE_NOT_FOUND: HRESULT = HRESULT(0x8007_0002_u32.cast_signed());
+const HR_PATH_NOT_FOUND: HRESULT = HRESULT(0x8007_0003_u32.cast_signed());
 const HR_ALREADY_EXISTS: HRESULT = HRESULT(0x8007_00b7_u32.cast_signed());
 const HR_NOT_SAME_DEVICE: HRESULT = HRESULT(0x8007_0011_u32.cast_signed());
 const HR_INVALID_DATA: HRESULT = HRESULT(0x8007_000d_u32.cast_signed());
@@ -53,56 +57,287 @@ const HR_NOT_SUPPORTED: HRESULT = HRESULT(0x8007_0032_u32.cast_signed());
 const HR_OUT_OF_MEMORY: HRESULT = HRESULT(0x8007_000e_u32.cast_signed());
 const HR_UNEXPECTED: HRESULT = HRESULT(0x8000_ffff_u32.cast_signed());
 const HR_INSUFFICIENT_BUFFER: HRESULT = HRESULT(0x8007_007a_u32.cast_signed());
+
 const DIRECTORY_PAGE_SIZE: u32 = 256;
 const NOTIFICATION_ROOT: [u16; 1] = [0];
 
 struct EnumState {
     path: MountPath,
-    cursor: Option<Vec<u8>>,
-    entries: VecDeque<MountDirectoryEntry>,
-    exhausted: bool,
+    ended: bool,
+    entries: VecDeque<ProjectedEntry>,
+    snapshot_ready: bool,
+    search_expression: Option<HSTRING>,
+    search_expression_captured: bool,
+}
+
+struct ProjectedEntry {
+    // ProjFS compares NUL-terminated UTF-16 names, not SDK byte cursors.
+    name: Vec<u16>,
+    info: PRJ_FILE_BASIC_INFO,
+    symlink_target: Option<bytes::Bytes>,
+}
+
+#[derive(Clone)]
+struct RenamedHydrationFile {
+    file: Arc<dyn super::MountOpenFile>,
+    destination: MountPath,
 }
 
 struct Runtime {
     source: Arc<dyn MountFilesystem>,
     root: PathBuf,
+    metadata_root: Arc<HostRoot>,
     writable: bool,
     enumerations: Mutex<HashMap<u128, Arc<Mutex<EnumState>>>>,
-    metadata_baselines: Arc<Mutex<HashMap<u128, HostWindowsMetadata>>>,
+    renamed_hydration_files: Arc<Mutex<HashMap<u128, RenamedHydrationFile>>>,
+    renamed_paths: Arc<Mutex<HashMap<u128, Option<MountPath>>>>,
+    metadata_baselines: Arc<Mutex<HashMap<u128, OpenMetadataState>>>,
     metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
-    executor: CallbackExecutor,
+    post_operation_failure: Arc<Mutex<PostOperationFailures>>,
+    callbacks: CallbackGate,
 }
 
-struct CallbackExecutor {
-    sender: mpsc::SyncSender<Job>,
+struct CallbackGate {
+    shards: Box<[Mutex<()>]>,
+    active: Mutex<usize>,
+    idle: Condvar,
 }
 
-type Job = Box<dyn FnOnce() + Send>;
+struct ActiveCallback<'a>(&'a CallbackGate);
 
-impl CallbackExecutor {
-    fn start() -> Result<Self, NativeMountError> {
-        let (sender, receiver) = mpsc::sync_channel::<Job>(256);
-        std::thread::Builder::new()
-            .name("acyclic-projfs".into())
-            .stack_size(32 * 1024 * 1024)
-            .spawn(move || {
-                while let Ok(job) = receiver.recv() {
-                    job();
-                }
+impl Drop for ActiveCallback<'_> {
+    fn drop(&mut self) {
+        let mut active = lock_recover(&self.0.active);
+        *active = active.saturating_sub(1);
+        if *active == 0 {
+            self.0.idle.notify_all();
+        }
+    }
+}
+
+#[derive(Default)]
+struct PostOperationFailures {
+    pending_captures: HashMap<MountPath, PendingCapture>,
+    next_capture_serial: u64,
+    unreplayable: Option<String>,
+}
+
+#[derive(Clone)]
+struct PendingCapture {
+    serial: u64,
+    error: String,
+    subtree: bool,
+}
+
+impl PostOperationFailures {
+    fn queue_capture(&mut self, path: MountPath, error: String) {
+        self.next_capture_serial = self.next_capture_serial.wrapping_add(1);
+        let subtree = self
+            .pending_captures
+            .get(&path)
+            .is_some_and(|capture| capture.subtree);
+        self.pending_captures.insert(
+            path,
+            PendingCapture {
+                serial: self.next_capture_serial,
+                error,
+                subtree,
+            },
+        );
+    }
+
+    fn queue_subtree(&mut self, path: &MountPath, error: String) {
+        self.queue_capture(path.clone(), error);
+        if let Some(capture) = self.pending_captures.get_mut(path) {
+            capture.subtree = true;
+        }
+    }
+
+    fn rename_pending_captures(&mut self, source: &MountPath, destination: &MountPath) {
+        let moved = self
+            .pending_captures
+            .iter()
+            .filter_map(|(path, capture)| {
+                projfs_path_suffix(path, source).map(|suffix| {
+                    let destination = suffix.iter().fold(destination.clone(), |path, component| {
+                        path.child(component.clone())
+                    });
+                    (path.clone(), destination, capture.clone())
+                })
             })
+            .collect::<Vec<_>>();
+        for (source, destination, capture) in moved {
+            self.pending_captures.remove(&source);
+            if let Some(existing) = self.pending_captures.get_mut(&destination) {
+                existing.subtree |= capture.subtree;
+                existing.serial = existing.serial.max(capture.serial);
+            } else {
+                self.pending_captures.insert(destination, capture);
+            }
+        }
+    }
+}
+
+fn projfs_path_suffix<'a>(path: &'a MountPath, prefix: &MountPath) -> Option<&'a [Vec<u8>]> {
+    let suffix = path.components().get(prefix.components().len()..)?;
+    path.components()
+        .iter()
+        .zip(prefix.components())
+        .all(|(left, right)| same_projfs_name(left, right))
+        .then_some(suffix)
+}
+
+fn same_projfs_name(left: &[u8], right: &[u8]) -> bool {
+    if left == right {
+        return true;
+    }
+    matches!(compare_projfs_name(left, right), Some(0))
+}
+
+fn compare_projfs_name(left: &[u8], right: &[u8]) -> Option<i32> {
+    let (Some(mut left), Some(mut right)) = (decode_utf16_name(left), decode_utf16_name(right))
+    else {
+        return None;
+    };
+    left.push(0);
+    right.push(0);
+    // SAFETY: both owned buffers are live, NUL-terminated UTF-16 names.
+    Some(unsafe {
+        PrjFileNameCompare(
+            PCWSTR::from_raw(left.as_ptr()),
+            PCWSTR::from_raw(right.as_ptr()),
+        )
+    })
+}
+
+impl CallbackGate {
+    fn start() -> Result<Self, NativeMountError> {
+        const SHARDS: usize = 64;
+        let mut shards = Vec::new();
+        shards
+            .try_reserve_exact(SHARDS)
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-        Ok(Self { sender })
+        for _ in 0..SHARDS {
+            shards.push(Mutex::new(()));
+        }
+        Ok(Self {
+            shards: shards.into_boxed_slice(),
+            active: Mutex::new(0),
+            idle: Condvar::new(),
+        })
     }
 
-    fn call<T: Send + 'static>(&self, operation: impl FnOnce() -> T + Send + 'static) -> Option<T> {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(Box::new(move || {
-                let _ = sender.send(operation());
-            }))
-            .ok()?;
-        receiver.recv().ok()
+    fn call<T>(&self, operation: impl FnOnce() -> T) -> Option<T> {
+        self.drain()?;
+        Some(operation())
     }
+
+    fn drain(&self) -> Option<()> {
+        let mut active = lock_recover(&self.active);
+        while *active != 0 {
+            active = self
+                .idle
+                .wait(active)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        Some(())
+    }
+
+    fn call_observed<T>(
+        &self,
+        key: u128,
+        operation: impl FnOnce() -> T,
+        observe: impl FnOnce(&T),
+    ) -> Option<T> {
+        let count = u128::try_from(self.shards.len()).ok()?;
+        let shard = usize::try_from(key % count).ok()?;
+        {
+            let mut active = lock_recover(&self.active);
+            *active = active.checked_add(1)?;
+        }
+        let _active = ActiveCallback(self);
+        let _serial = lock_recover(self.shards.get(shard)?);
+        let result = operation();
+        observe(&result);
+        Some(result)
+    }
+}
+
+fn flush_callback_gate(
+    callbacks: &CallbackGate,
+    failure: Arc<Mutex<PostOperationFailures>>,
+    capture: impl Fn(&[(MountPath, bool)]) -> Result<(), super::MountSourceError>,
+) -> Result<(), NativeMountError> {
+    let pending_failure = Arc::clone(&failure);
+    let pending = callbacks
+        .call(move || {
+            lock_recover(pending_failure.as_ref())
+                .pending_captures
+                .iter()
+                .map(|(path, capture)| (path.clone(), capture.serial, capture.subtree))
+                .collect::<Vec<_>>()
+        })
+        .ok_or_else(|| NativeMountError::Driver("ProjFS callback worker stopped".to_owned()))?;
+    let mut pending = pending;
+    pending.sort_by(|(left, ..), (right, ..)| {
+        left.components()
+            .len()
+            .cmp(&right.components().len())
+            .then_with(|| left.components().cmp(right.components()))
+    });
+    // Host capture opens paths inside the virtualization root. Run one batch
+    // outside the callback gate so nested notifications can run.
+    let paths = pending
+        .iter()
+        .map(|(path, _, subtree)| (path.clone(), *subtree))
+        .collect::<Vec<_>>();
+    let result = capture(&paths);
+    {
+        let mut failure = lock_recover(failure.as_ref());
+        for (path, serial, _) in pending {
+            if failure
+                .pending_captures
+                .get(&path)
+                .map(|capture| capture.serial)
+                != Some(serial)
+            {
+                continue;
+            }
+            match &result {
+                Ok(()) => {
+                    failure.pending_captures.remove(&path);
+                }
+                Err(error) => {
+                    if let Some(capture) = failure.pending_captures.get_mut(&path) {
+                        capture.error = error.to_string();
+                    }
+                }
+            }
+        }
+    }
+    let failure = callbacks
+        .call(move || {
+            let failure = lock_recover(failure.as_ref());
+            failure.unreplayable.clone().or_else(|| {
+                failure
+                    .pending_captures
+                    .iter()
+                    .next()
+                    .map(|(path, capture)| format!("{path:?}: {}", capture.error))
+            })
+        })
+        .ok_or_else(|| NativeMountError::Driver("ProjFS callback worker stopped".to_owned()))?;
+    if let Some(failure) = failure {
+        Err(NativeMountError::Driver(format!(
+            "ProjFS post-operation capture failed; mount cannot publish: {failure}"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn defer_host_capture(failure: &Mutex<PostOperationFailures>, path: MountPath) {
+    lock_recover(failure).queue_capture(path, "host capture pending".to_owned());
 }
 
 /// One process-owned `ProjFS` virtualization context.
@@ -119,7 +354,13 @@ impl ProjFsSession {
     pub(super) fn start(
         request: &NativeMountRequest,
         source: Arc<dyn MountFilesystem>,
-    ) -> Result<Self, NativeMountError> {
+    ) -> Result<Self, DriverStartFailure> {
+        reject_stale_projection(&request.destination)?;
+        let callback_gate = CallbackGate::start()?;
+        let metadata_root = Arc::new(
+            HostRoot::open(&request.destination)
+                .map_err(|error| NativeMountError::Driver(error.to_string()))?,
+        );
         let root = HSTRING::from(request.destination.as_os_str());
         let root_ptr = PCWSTR::from_raw(root.as_ptr());
         let bytes = request.mount_id.into_bytes();
@@ -135,29 +376,35 @@ impl ProjFsSession {
         // SAFETY: the destination was admitted as an existing empty directory;
         // all pointers remain valid for this synchronous call.
         unsafe { PrjMarkDirectoryAsPlaceholder(root_ptr, PCWSTR::null(), None, &raw const guid) }
-            .or_else(|error| match error.code().0.cast_unsigned() {
-                0x8007_1129 | 0x8007_112b => Ok(()),
-                _ => Err(error),
-            })
-            .map_err(|error| driver_error(&error))?;
+            .map_err(|error| {
+            let error = driver_error(&error);
+            NativeMountError::Driver(format!(
+                "PrjMarkDirectoryAsPlaceholder failed for {}: {error}",
+                request.destination.display()
+            ))
+        })?;
 
         let mut runtime = Box::new(Runtime {
             source,
             root: request.destination.clone(),
+            metadata_root,
             writable: request.writable,
             enumerations: Mutex::new(HashMap::new()),
+            renamed_hydration_files: Arc::new(Mutex::new(HashMap::new())),
+            renamed_paths: Arc::new(Mutex::new(HashMap::new())),
             metadata_baselines: Arc::new(Mutex::new(HashMap::new())),
             metadata_probes: Arc::new(Mutex::new(HashMap::new())),
-            executor: CallbackExecutor::start()?,
+            post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
+            callbacks: callback_gate,
         });
         let context_ptr = (&raw mut *runtime).cast::<c_void>();
         let callbacks = callbacks();
         let mut notification_mapping = PRJ_NOTIFICATION_MAPPING {
             NotificationBitMask: PRJ_NOTIFY_NEW_FILE_CREATED
                 | PRJ_NOTIFY_FILE_OVERWRITTEN
-                | PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION
                 | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED
                 | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED
+                | PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION
                 | PRJ_NOTIFY_FILE_OPENED
                 | PRJ_NOTIFY_PRE_DELETE
                 | PRJ_NOTIFY_PRE_RENAME
@@ -183,8 +430,32 @@ impl ProjFsSession {
                 Some(context_ptr.cast_const()),
                 Some(&raw const options),
             )
-        }
-        .map_err(|error| driver_error(&error))?;
+        };
+        let context = match context {
+            Ok(context) => context,
+            Err(error) => {
+                let start_error = NativeMountError::Driver(format!(
+                    "PrjStartVirtualizing failed for {}: {}",
+                    request.destination.display(),
+                    driver_error(&error)
+                ));
+                let root_identity = runtime.metadata_root.identity();
+                drop(runtime);
+                let cleanup = remove_authenticated_destination(&request.destination, root_identity)
+                    .and_then(|()| {
+                        std::fs::create_dir(&request.destination)
+                            .map_err(|error| NativeMountError::Driver(error.to_string()))
+                    });
+                if let Err(cleanup) = cleanup {
+                    return Err(DriverStartFailure::preserving_destination_fence(
+                        NativeMountError::Driver(format!(
+                            "{start_error}; ProjFS startup rollback failed: {cleanup}"
+                        )),
+                    ));
+                }
+                return Err(start_error.into());
+            }
+        };
         Ok(Self {
             context: Some(context),
             runtime: Some(runtime),
@@ -192,15 +463,192 @@ impl ProjFsSession {
     }
 
     pub(super) fn stop(&mut self) -> Result<(), NativeMountError> {
+        // A post-operation notification cannot veto an already completed host
+        // write. Preserve the live mount and its authored files if capturing
+        // one of those writes failed; removing the projection here would lose
+        // the only remaining copy.
+        if self.runtime.is_some() {
+            self.flush_callbacks()?;
+        }
         if let Some(context) = self.context.take() {
             // SAFETY: this is the sole owner and sole stop call for the context.
             unsafe { PrjStopVirtualizing(context) };
         }
+        // Stop may synchronously drain callbacks admitted after the first
+        // barrier. They must be captured (or reported) before the physical
+        // projection can be removed.
+        if self.runtime.is_some() {
+            self.flush_callbacks()?;
+        }
         finish_cleanup(&mut self.runtime, |runtime| {
             let root = runtime.root.clone();
-            recover_cache_only_destination(&root)?;
+            remove_authenticated_destination(&root, runtime.metadata_root.identity())?;
             std::fs::create_dir(&root).map_err(|error| NativeMountError::Driver(error.to_string()))
         })
+    }
+
+    pub(super) fn flush_callbacks(&self) -> Result<(), NativeMountError> {
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            NativeMountError::Driver("ProjFS callback runtime is stopped".to_owned())
+        })?;
+        let source = Arc::clone(&runtime.source);
+        let root = runtime.root.clone();
+        let host_root = Arc::clone(&runtime.metadata_root);
+        let probes = Arc::clone(&runtime.metadata_probes);
+        let context = self.context;
+        runtime
+            .callbacks
+            .drain()
+            .ok_or_else(|| NativeMountError::Driver("ProjFS callback worker stopped".to_owned()))?;
+        flush_callback_gate(
+            &runtime.callbacks,
+            Arc::clone(&runtime.post_operation_failure),
+            move |paths| {
+                // Host capture reads through this projection. Suppress only
+                // those provider-owned metadata probes; external opens retain
+                // their per-handle baselines.
+                let _guards = paths
+                    .iter()
+                    .map(|(path, _)| MetadataProbeGuard::enter(probes.as_ref(), path))
+                    .collect::<Vec<_>>();
+                // Authenticate exact paths together so hard links share one
+                // identity and one checkout transaction.
+                let mut exact = Vec::new();
+                let mut subtrees = Vec::new();
+                for (path, subtree) in paths {
+                    let host_path = host_relative_path(path)?;
+                    match host_root.symlink_metadata_held(&host_path) {
+                        Ok(_) => {
+                            capture_missing_host_ancestors(source.as_ref(), &root, path)?;
+                            if *subtree {
+                                subtrees.push(path.clone());
+                            } else {
+                                exact.push(path.clone());
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            match source.lookup(path) {
+                                Err(super::MountSourceError::NotFound) | Ok(None) => {
+                                    // A host-created temporary that vanished
+                                    // before the boundary has no state to join.
+                                }
+                                Ok(Some(lookup))
+                                    if lookup.node.kind == MountNodeKind::Directory =>
+                                {
+                                    subtrees.push(path.clone());
+                                }
+                                Ok(Some(_)) => exact.push(path.clone()),
+                                Err(error) => return Err(error),
+                            }
+                        }
+                        Err(error) => {
+                            return Err(super::MountSourceError::Engine(error.to_string()));
+                        }
+                    }
+                }
+                for subtree in subtrees {
+                    source.capture_host_subtree(&root, &subtree)?;
+                }
+                source.capture_host_paths(&root, &exact)?;
+                if let Some(context) = context {
+                    for (path, _) in paths {
+                        normalize_cache_path(context, source.as_ref(), path)?;
+                    }
+                }
+                Ok(())
+            },
+        )
+    }
+}
+
+fn normalize_cache_path(
+    context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+    source: &dyn MountFilesystem,
+    path: &MountPath,
+) -> Result<(), super::MountSourceError> {
+    let relative = host_relative_path(path)?;
+    let relative = HSTRING::from(relative.as_os_str());
+    let update_flags = PRJ_UPDATE_ALLOW_DIRTY_METADATA
+        | PRJ_UPDATE_ALLOW_DIRTY_DATA
+        | PRJ_UPDATE_ALLOW_TOMBSTONE
+        | PRJ_UPDATE_ALLOW_READ_ONLY;
+    let Some(node) = source.lookup(path)? else {
+        // SAFETY: the relative UTF-16 name remains live for this synchronous
+        // call and the context belongs to this mounted runtime.
+        let result = unsafe {
+            PrjDeleteFile(
+                context,
+                PCWSTR::from_raw(relative.as_ptr()),
+                Some(update_flags),
+                None,
+            )
+        };
+        return match result {
+            Ok(()) => Ok(()),
+            Err(error)
+                if error.code() == HR_FILE_NOT_FOUND || error.code() == HR_PATH_NOT_FOUND =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(super::MountSourceError::Engine(
+                driver_error(&error).to_string(),
+            )),
+        };
+    };
+    if matches!(
+        node.node.kind,
+        MountNodeKind::Directory | MountNodeKind::SymbolicLink
+    ) {
+        // ProjFS cannot normalize a non-empty directory, and its update API
+        // cannot carry extended symlink information. Their exact state is
+        // already captured; retaining the cache entry is harmless.
+        return Ok(());
+    }
+    let info = basic(node.node, Some(node.metadata)).ok_or_else(|| {
+        super::MountSourceError::Unsupported("node cannot be represented by ProjFS".to_owned())
+    })?;
+    let placeholder = PRJ_PLACEHOLDER_INFO {
+        FileBasicInfo: info,
+        ..PRJ_PLACEHOLDER_INFO::default()
+    };
+    // SAFETY: every pointer refers to stack/owned data that remains live for
+    // this synchronous call and the context belongs to this mounted runtime.
+    let result = unsafe {
+        PrjUpdateFileIfNeeded(
+            context,
+            PCWSTR::from_raw(relative.as_ptr()),
+            &raw const placeholder,
+            u32::try_from(size_of::<PRJ_PLACEHOLDER_INFO>()).unwrap_or(u32::MAX),
+            Some(update_flags),
+            None,
+        )
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == HR_FILE_NOT_FOUND || error.code() == HR_PATH_NOT_FOUND => {
+            Ok(())
+        }
+        Err(error) => Err(super::MountSourceError::Engine(
+            driver_error(&error).to_string(),
+        )),
+    }
+}
+
+fn reject_stale_projection(destination: &std::path::Path) -> Result<(), NativeMountError> {
+    // An empty directory can still be a crash-left ProjFS root containing
+    // hidden tombstones or metadata. Never mark it again: startup rollback
+    // could otherwise delete the only remaining authored state.
+    match reparse_tag(destination)?.0 {
+        Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS) => {
+            Err(NativeMountError::Driver(format!(
+                "stale ProjFS root at {} may contain unpublished authored state; preserved for recovery",
+                destination.display()
+            )))
+        }
+        Some(tag) => Err(NativeMountError::Driver(format!(
+            "destination has non-ProjFS reparse tag 0x{tag:08x}"
+        ))),
+        None => Ok(()),
     }
 }
 
@@ -216,17 +664,98 @@ fn finish_cleanup<T, E>(
     Ok(())
 }
 
-/// Deletes only authenticated, cache-only residue from a stopped `ProjFS` root.
+/// Preserves a stale `ProjFS` root unless recovery can prove it is disposable.
 ///
-/// A `ProjFS` virtualization root is a reparse point whose descendants can
-/// contain hydrated placeholders after the provider process dies. Ordinary
-/// `remove_dir` therefore cannot reclaim it. This recovery path first proves
-/// the root's exact `ProjFS` reparse tag, delegates the no-follow tree removal
-/// to the Windows standard-library implementation, and bounds transient
-/// virtualization-filter convergence to 64 attempts. A root with any other
-/// reparse tag is rejected.
+/// A reparse tag or directory enumeration cannot prove that all authored files,
+/// metadata, and tombstones reached the SDK before a provider crash. Only a
+/// live session can flush its callbacks before removing the projection. A
+/// stale root is retained for explicit recovery rather than silently deleting
+/// changes that may exist only in the mount cache.
 pub(super) fn recover_cache_only_destination(
     destination: &std::path::Path,
+) -> Result<(), NativeMountError> {
+    match std::fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Err(NativeMountError::InvalidDestination),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(NativeMountError::Driver(error.to_string())),
+    }
+    match reparse_tag(destination)?.0 {
+        Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS) => {
+            Err(NativeMountError::Driver(format!(
+                "stale ProjFS root at {} may contain unpublished authored state; preserved for recovery",
+                destination.display()
+            )))
+        }
+        Some(tag) => Err(NativeMountError::Driver(format!(
+            "destination has non-ProjFS reparse tag 0x{tag:08x}"
+        ))),
+        None => Ok(()),
+    }
+}
+
+pub(super) fn quarantine_crashed_destination(
+    destination: &std::path::Path,
+) -> Result<Option<std::path::PathBuf>, NativeMountError> {
+    let metadata = match std::fs::symlink_metadata(destination) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(NativeMountError::Driver(error.to_string())),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(NativeMountError::InvalidDestination);
+    }
+    let (tag, expected_identity) = reparse_tag(destination)?;
+    match tag {
+        Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS) => {}
+        Some(tag) => {
+            return Err(NativeMountError::Driver(format!(
+                "destination has non-ProjFS reparse tag 0x{tag:08x}"
+            )));
+        }
+        None => {
+            let mut entries = std::fs::read_dir(destination)
+                .map_err(|error| NativeMountError::Driver(error.to_string()))?;
+            if entries.next().is_none() {
+                return Ok(None);
+            }
+        }
+    }
+
+    let parent = destination
+        .parent()
+        .ok_or(NativeMountError::InvalidDestination)?;
+    let preserved = parent.join(format!(
+        ".acyclic-residue-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    if preserved
+        .try_exists()
+        .map_err(|error| NativeMountError::Driver(error.to_string()))?
+    {
+        return Err(NativeMountError::Driver(
+            "native recovery residue name collided; retry recovery".to_owned(),
+        ));
+    }
+    std::fs::rename(destination, &preserved).map_err(|error| {
+        NativeMountError::Driver(format!(
+            "cannot preserve crashed ProjFS destination {}: {error}",
+            destination.display()
+        ))
+    })?;
+    let (_, moved_identity) = reparse_tag(&preserved)?;
+    if moved_identity != expected_identity {
+        return Err(NativeMountError::Driver(format!(
+            "recovered ProjFS root identity changed; residue retained at {}",
+            preserved.display()
+        )));
+    }
+    Ok(Some(preserved))
+}
+
+fn remove_authenticated_destination(
+    destination: &std::path::Path,
+    expected_identity: crate::NativeRootIdentity,
 ) -> Result<(), NativeMountError> {
     let metadata = match std::fs::symlink_metadata(destination) {
         Ok(metadata) => metadata,
@@ -236,12 +765,19 @@ pub(super) fn recover_cache_only_destination(
     if !metadata.is_dir() {
         return Err(NativeMountError::InvalidDestination);
     }
-    match reparse_tag(destination).map_err(|error| {
+    let (tag, identity) = reparse_tag(destination).map_err(|error| {
         NativeMountError::Driver(format!(
             "ProjFS root authentication failed for {}: {error}",
             destination.display()
         ))
-    })? {
+    })?;
+    if identity != expected_identity {
+        return Err(NativeMountError::Driver(format!(
+            "ProjFS root identity changed at {}; refusing to remove a different directory",
+            destination.display()
+        )));
+    }
+    match tag {
         Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS) => {}
         Some(tag) => {
             return Err(NativeMountError::Driver(format!(
@@ -250,13 +786,27 @@ pub(super) fn recover_cache_only_destination(
         }
         None => return Ok(()),
     }
-    let mut last_transient = None;
-    for _ in 0..64 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+    loop {
+        // ProjFS may briefly reject removal after PrjStopVirtualizing. Every
+        // attempt must reauthenticate the directory, because the path can be
+        // replaced while the filter is draining.
+        let (current_tag, current_identity) = reparse_tag(destination)?;
+        if current_tag != Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS)
+            || current_identity != expected_identity
+        {
+            return Err(NativeMountError::Driver(format!(
+                "ProjFS root changed while stopping at {}; preserving it",
+                destination.display()
+            )));
+        }
         match std::fs::remove_dir_all(destination) {
             Ok(()) => return Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) if matches!(error.raw_os_error(), Some(145 | 369)) => {
-                last_transient = Some(error);
+            Err(error)
+                if matches!(error.raw_os_error(), Some(145 | 369))
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(2));
             }
             Err(error) => {
                 return Err(NativeMountError::Driver(format!(
@@ -266,18 +816,12 @@ pub(super) fn recover_cache_only_destination(
             }
         }
     }
-    Err(NativeMountError::Driver(format!(
-        "authenticated ProjFS root removal did not converge for {} after 64 bounded attempts: {}",
-        destination.display(),
-        last_transient.map_or_else(
-            || "unknown transient failure".to_owned(),
-            |error| error.to_string()
-        )
-    )))
 }
 
 #[allow(unsafe_code)]
-fn reparse_tag(path: &std::path::Path) -> Result<Option<u32>, NativeMountError> {
+fn reparse_tag(
+    path: &std::path::Path,
+) -> Result<(Option<u32>, crate::NativeRootIdentity), NativeMountError> {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::{
@@ -295,6 +839,8 @@ fn reparse_tag(path: &std::path::Path) -> Result<Option<u32>, NativeMountError> 
         .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
         .open(path)
+        .map_err(|error| NativeMountError::Driver(error.to_string()))?;
+    let identity = crate::NativeRootIdentity::from_file(&file)
         .map_err(|error| NativeMountError::Driver(error.to_string()))?;
     let output_len = usize::try_from(MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
         .map_err(|_| NativeMountError::Driver("reparse buffer size overflow".to_owned()))?;
@@ -317,11 +863,14 @@ fn reparse_tag(path: &std::path::Path) -> Result<Option<u32>, NativeMountError> 
     if let Err(error) = result {
         let code = error.code().0.cast_unsigned();
         if code == 0x8007_0000_u32 | ERROR_NOT_A_REPARSE_POINT.0 {
-            return Ok(None);
+            return Ok((None, identity));
         }
+        // A stopped ProjFS provider can leave an authenticated placeholder
+        // root even when the filter declines to return its reparse payload.
         if code == 0x8007_0000_u32 | ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE.0 {
-            return Ok(Some(
-                windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS,
+            return Ok((
+                Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS),
+                identity,
             ));
         }
         return Err(NativeMountError::Driver(error.to_string()));
@@ -335,7 +884,7 @@ fn reparse_tag(path: &std::path::Path) -> Result<Option<u32>, NativeMountError> 
         .get(..4)
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or_else(|| NativeMountError::Driver("reparse response omitted its tag".to_owned()))?;
-    Ok(Some(u32::from_le_bytes(tag)))
+    Ok((Some(u32::from_le_bytes(tag)), identity))
 }
 
 fn driver_error(error: &windows::core::Error) -> NativeMountError {
@@ -404,20 +953,26 @@ struct HostWindowsMetadata {
     modified: i64,
 }
 
+#[derive(Clone, Copy)]
+struct OpenMetadataState {
+    baseline: HostWindowsMetadata,
+    open_handles: usize,
+}
+
+enum MetadataClose {
+    Pending,
+    Final(Option<HostWindowsMetadata>),
+}
+
 fn host_windows_metadata(
-    root: &Path,
+    root: &HostRoot,
     path: &MountPath,
 ) -> Result<HostWindowsMetadata, super::MountSourceError> {
-    use std::os::windows::fs::MetadataExt as _;
+    use cap_std::fs::MetadataExt as _;
 
-    let mut host_path = root.to_path_buf();
-    for component in path.components() {
-        let name = decode_utf16_name(component).ok_or_else(|| {
-            super::MountSourceError::Invalid("ProjFS path component is malformed".to_owned())
-        })?;
-        host_path.push(std::ffi::OsString::from_wide(&name));
-    }
-    let metadata = std::fs::symlink_metadata(host_path)
+    let host_path = host_relative_path(path)?;
+    let metadata = root
+        .symlink_metadata_held(&host_path)
         .map_err(|error| super::MountSourceError::Engine(error.to_string()))?;
     Ok(HostWindowsMetadata {
         attributes: metadata.file_attributes(),
@@ -428,6 +983,36 @@ fn host_windows_metadata(
             super::MountSourceError::Invalid("Windows write time exceeds i64".to_owned())
         })?,
     })
+}
+
+fn host_relative_path(path: &MountPath) -> Result<PathBuf, super::MountSourceError> {
+    let mut host_path = PathBuf::new();
+    for component in path.components() {
+        let name = decode_utf16_name(component).ok_or_else(|| {
+            super::MountSourceError::Invalid("ProjFS path component is malformed".to_owned())
+        })?;
+        host_path.push(std::ffi::OsString::from_wide(&name));
+    }
+    Ok(host_path)
+}
+
+fn capture_missing_host_ancestors(
+    source: &dyn MountFilesystem,
+    root: &std::path::Path,
+    path: &MountPath,
+) -> Result<(), super::MountSourceError> {
+    let mut parent = MountPath::root();
+    for component in path
+        .components()
+        .iter()
+        .take(path.components().len().saturating_sub(1))
+    {
+        parent = parent.child(component.clone());
+        if source.lookup(&parent)?.is_none() {
+            source.capture_host_path(root, &parent)?;
+        }
+    }
+    Ok(())
 }
 
 struct MetadataProbeGuard<'a> {
@@ -446,7 +1031,9 @@ impl<'a> MetadataProbeGuard<'a> {
     }
 
     fn is_active(probes: &Mutex<HashMap<MountPath, usize>>, path: &MountPath) -> bool {
-        lock_recover(probes).contains_key(path)
+        lock_recover(probes)
+            .keys()
+            .any(|active| matches!(projfs_path_suffix(active, path), Some([])))
     }
 }
 
@@ -464,7 +1051,7 @@ impl Drop for MetadataProbeGuard<'_> {
 }
 
 fn probe_host_windows_metadata(
-    root: &Path,
+    root: &HostRoot,
     path: &MountPath,
     probes: &Mutex<HashMap<MountPath, usize>>,
 ) -> Result<HostWindowsMetadata, super::MountSourceError> {
@@ -472,45 +1059,103 @@ fn probe_host_windows_metadata(
     host_windows_metadata(root, path)
 }
 
-fn represented_windows_metadata_differs(
-    metadata: FileMetadata,
-    host: &HostWindowsMetadata,
-) -> bool {
-    matches!(metadata.windows_attributes, MetadataField::Value(value) if value != host.attributes)
-        || windows_time(metadata.created_ns).is_some_and(|value| value != host.created)
-        || windows_time(metadata.modified_ns).is_some_and(|value| value != host.modified)
-}
-
-fn take_metadata_baseline(
-    baselines: &Mutex<HashMap<u128, HostWindowsMetadata>>,
+fn close_metadata_handle(
+    baselines: &Mutex<HashMap<u128, OpenMetadataState>>,
     file_id: u128,
-) -> Option<HostWindowsMetadata> {
-    lock_recover(baselines).remove(&file_id)
+) -> MetadataClose {
+    let mut baselines = lock_recover(baselines);
+    let Some(state) = baselines.get_mut(&file_id) else {
+        return MetadataClose::Final(None);
+    };
+    if state.open_handles > 1 {
+        state.open_handles -= 1;
+        MetadataClose::Pending
+    } else {
+        MetadataClose::Final(baselines.remove(&file_id).map(|state| state.baseline))
+    }
 }
 
-fn replace_metadata_baseline(
-    baselines: &Mutex<HashMap<u128, HostWindowsMetadata>>,
+fn record_metadata_open(
+    baselines: &Mutex<HashMap<u128, OpenMetadataState>>,
+    file_id: u128,
+    baseline: HostWindowsMetadata,
+) -> Result<(), super::MountSourceError> {
+    let mut baselines = lock_recover(baselines);
+    if let Some(state) = baselines.get_mut(&file_id) {
+        if state.open_handles == 0 {
+            state.open_handles = 1;
+        } else {
+            state.open_handles = state.open_handles.checked_add(1).ok_or_else(|| {
+                super::MountSourceError::Invalid("ProjFS open-handle count overflow".to_owned())
+            })?;
+        }
+    } else {
+        baselines.insert(
+            file_id,
+            OpenMetadataState {
+                baseline,
+                open_handles: 1,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn refresh_metadata_baseline(
+    baselines: &Mutex<HashMap<u128, OpenMetadataState>>,
     file_id: u128,
     baseline: HostWindowsMetadata,
 ) {
-    lock_recover(baselines).insert(file_id, baseline);
+    let mut baselines = lock_recover(baselines);
+    baselines
+        .entry(file_id)
+        .and_modify(|state| state.baseline = baseline)
+        .or_insert(OpenMetadataState {
+            baseline,
+            open_handles: 0,
+        });
 }
 
 fn metadata_changed_since_open(
     baseline: HostWindowsMetadata,
     current: HostWindowsMetadata,
 ) -> bool {
-    // Hydration replaces RECALL_ON_DATA_ACCESS with ARCHIVE, while a read may
-    // also advance last-access time. Neither transition is an authored edit.
     let hydration_mask = FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 | FILE_ATTRIBUTE_ARCHIVE.0;
     let attributes_changed = if baseline.attributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 != 0 {
-        baseline.attributes & !hydration_mask != current.attributes & !FILE_ATTRIBUTE_ARCHIVE.0
+        baseline.attributes & !hydration_mask != current.attributes & !hydration_mask
     } else {
         baseline.attributes != current.attributes
     };
     attributes_changed
         || baseline.created != current.created
         || baseline.modified != current.modified
+}
+
+fn capture_changed_windows_metadata(
+    source: &dyn MountFilesystem,
+    path: &MountPath,
+    mut metadata: FileMetadata,
+    baseline: HostWindowsMetadata,
+    current: HostWindowsMetadata,
+) -> Result<(), super::MountSourceError> {
+    let hydration_mask = FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 | FILE_ATTRIBUTE_ARCHIVE.0;
+    let attributes_changed = if baseline.attributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 != 0 {
+        baseline.attributes & !hydration_mask != current.attributes & !hydration_mask
+    } else {
+        baseline.attributes != current.attributes
+    };
+    if attributes_changed {
+        metadata.windows_attributes = MetadataField::Value(current.attributes);
+    }
+    if baseline.created != current.created {
+        metadata.created_ns = MetadataField::Value(unix_nanoseconds(current.created)?);
+    }
+    if baseline.modified != current.modified {
+        metadata.modified_ns = MetadataField::Value(unix_nanoseconds(current.modified)?);
+    }
+    source
+        .set_attributes(path, metadata, None)
+        .and_then(|()| source.flush())
 }
 
 fn enum_id(pointer: *const GUID) -> Option<u128> {
@@ -577,6 +1222,24 @@ fn basic(node: MountNode, metadata: Option<FileMetadata>) -> Option<PRJ_FILE_BAS
     })
 }
 
+fn unix_nanoseconds(windows_ticks: i64) -> Result<i64, super::MountSourceError> {
+    const WINDOWS_EPOCH_OFFSET_SECONDS: i128 = 11_644_473_600;
+    const HUNDRED_NANOSECONDS_PER_SECOND: i128 = 10_000_000;
+    i128::from(windows_ticks)
+        .checked_sub(
+            WINDOWS_EPOCH_OFFSET_SECONDS
+                .checked_mul(HUNDRED_NANOSECONDS_PER_SECOND)
+                .ok_or_else(|| {
+                    super::MountSourceError::Invalid("Windows epoch conversion overflow".to_owned())
+                })?,
+        )
+        .and_then(|ticks| ticks.checked_mul(100))
+        .and_then(|nanoseconds| i64::try_from(nanoseconds).ok())
+        .ok_or_else(|| {
+            super::MountSourceError::Invalid("Windows timestamp exceeds i64 nanoseconds".to_owned())
+        })
+}
+
 fn symlink_extended(target: &[u8]) -> Option<(HSTRING, PRJ_EXTENDED_INFO)> {
     let target = HSTRING::from_wide(&decode_utf16_name(target)?);
     let extended = PRJ_EXTENDED_INFO {
@@ -620,12 +1283,91 @@ unsafe extern "system" fn start_directory(
         id,
         Arc::new(Mutex::new(EnumState {
             path,
-            cursor: None,
+            ended: false,
             entries: VecDeque::new(),
-            exhausted: false,
+            snapshot_ready: false,
+            search_expression: None,
+            search_expression_captured: false,
         })),
     );
     HR_OK
+}
+
+fn directory_snapshot(
+    source: &dyn MountFilesystem,
+    path: &MountPath,
+) -> Result<VecDeque<ProjectedEntry>, HRESULT> {
+    // Pin only while building the snapshot. Holding this lease for the native
+    // directory handle's lifetime would block unrelated authored writes.
+    let epoch = source.view_epoch();
+    let lease = source
+        .acquire_view_lease(epoch)
+        .map_err(|_| HR_UNEXPECTED)?;
+    let mut cursor = None;
+    let mut seen_cursors = HashSet::new();
+    let mut entries = Vec::new();
+    loop {
+        let page = source
+            .read_directory(path, cursor.as_deref(), DIRECTORY_PAGE_SIZE)
+            .map_err(|_| HR_UNEXPECTED)?;
+        entries
+            .try_reserve(page.entries.len())
+            .map_err(|_| HR_OUT_OF_MEMORY)?;
+        for entry in page.entries {
+            let info = basic(entry.node, Some(entry.metadata)).ok_or(HR_NOT_SUPPORTED)?;
+            let mut name = decode_utf16_name(&entry.name).ok_or(HR_INVALID_DATA)?;
+            if name.contains(&0) {
+                return Err(HR_INVALID_DATA);
+            }
+            name.push(0);
+            let symlink_target = if entry.node.kind == MountNodeKind::SymbolicLink {
+                let target = source
+                    .read_link(&path.child(entry.name.clone()))
+                    .map_err(|_| HR_UNEXPECTED)?;
+                symlink_extended(&target).ok_or(HR_INVALID_DATA)?;
+                Some(target)
+            } else {
+                None
+            };
+            entries.push(ProjectedEntry {
+                name,
+                info,
+                symlink_target,
+            });
+        }
+        match page.next_cursor {
+            Some(next) if !seen_cursors.insert(next.clone()) => return Err(HR_INVALID_DATA),
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    drop(lease);
+    entries.sort_unstable_by(|left, right| {
+        // SAFETY: both NUL-terminated name buffers remain live for this call.
+        unsafe {
+            PrjFileNameCompare(
+                PCWSTR::from_raw(left.name.as_ptr()),
+                PCWSTR::from_raw(right.name.as_ptr()),
+            )
+        }
+        .cmp(&0)
+    });
+    if entries.windows(2).any(|pair| {
+        let [first, second] = pair else {
+            return false;
+        };
+        // SAFETY: both NUL-terminated name buffers remain live for this call.
+        unsafe {
+            PrjFileNameCompare(
+                PCWSTR::from_raw(first.name.as_ptr()),
+                PCWSTR::from_raw(second.name.as_ptr()),
+            ) == 0
+        }
+    }) {
+        // A case-fold collision cannot be projected as two distinct names.
+        return Err(HR_INVALID_DATA);
+    }
+    Ok(entries.into())
 }
 
 unsafe extern "system" fn end_directory(
@@ -638,17 +1380,26 @@ unsafe extern "system" fn end_directory(
     let Some(id) = enum_id(enumeration_id) else {
         return HR_INVALID_DATA;
     };
-    lock_recover(&runtime.enumerations).remove(&id);
+    let state = lock_recover(&runtime.enumerations).get(&id).cloned();
+    if let Some(state) = state {
+        // Wait for any in-flight page fill before ending this enumeration.
+        lock_recover(&state).ended = true;
+        lock_recover(&runtime.enumerations).remove(&id);
+    }
     HR_OK
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "paged ProjFS enumeration and buffer filling share one callback boundary"
+)]
 unsafe extern "system" fn get_directory(
     callback_data: *const PRJ_CALLBACK_DATA,
     enumeration_id: *const GUID,
-    _search_expression: PCWSTR,
+    search_expression: PCWSTR,
     buffer: PRJ_DIR_ENTRY_BUFFER_HANDLE,
 ) -> HRESULT {
-    let Some((_data, runtime)) = runtime(callback_data) else {
+    let Some((data, runtime)) = runtime(callback_data) else {
         return HR_UNEXPECTED;
     };
     let Some(id) = enum_id(enumeration_id) else {
@@ -657,73 +1408,73 @@ unsafe extern "system" fn get_directory(
     let Some(state) = lock_recover(&runtime.enumerations).get(&id).cloned() else {
         return HR_INVALID_DATA;
     };
-    loop {
-        let need_page = {
-            let state = lock_recover(&state);
-            state.entries.is_empty() && !state.exhausted
-        };
-        if need_page {
-            let (path, cursor) = {
-                let state = lock_recover(&state);
-                (state.path.clone(), state.cursor.clone())
-            };
-            let Ok(page) =
-                runtime
-                    .source
-                    .read_directory(&path, cursor.as_deref(), DIRECTORY_PAGE_SIZE)
-            else {
-                return HR_UNEXPECTED;
-            };
-            let mut state = lock_recover(&state);
-            state.cursor = page.next_cursor;
-            state.exhausted = state.cursor.is_none();
-            state.entries.extend(page.entries);
-            if state.entries.is_empty() && !state.exhausted {
-                continue;
-            }
-        }
-        let entry = lock_recover(&state).entries.front().cloned();
-        let Some(entry) = entry else {
-            return HR_OK;
-        };
-        let Some(info) = basic(entry.node, Some(entry.metadata)) else {
-            return HR_NOT_SUPPORTED;
-        };
-        let Some(wide) = decode_utf16_name(&entry.name) else {
+    // Serialize the complete cursor/read/fill transition for this enumeration.
+    // The map lock is not held while waiting for this state lock.
+    let mut state = lock_recover(&state);
+    if state.ended {
+        return HR_INVALID_DATA;
+    }
+    let restart = data.Flags.0 & PRJ_CB_DATA_FLAG_ENUM_RESTART_SCAN.0 != 0;
+    if !state.search_expression_captured || restart {
+        let Some(expression) = copy_optional_wide(search_expression) else {
             return HR_INVALID_DATA;
         };
-        let wide = HSTRING::from_wide(&wide);
-        let symlink = if entry.node.kind == MountNodeKind::SymbolicLink {
-            let child = lock_recover(&state).path.child(entry.name.clone());
-            let Ok(target) = runtime.source.read_link(&child) else {
-                return HR_UNEXPECTED;
-            };
-            let Some(target) = symlink_extended(&target) else {
-                return HR_INVALID_DATA;
-            };
-            Some(target)
-        } else {
-            None
+        state.search_expression = expression;
+        state.search_expression_captured = true;
+    }
+    if !state.snapshot_ready || restart {
+        state.snapshot_ready = false;
+        state.entries.clear();
+        state.entries = match directory_snapshot(runtime.source.as_ref(), &state.path) {
+            Ok(entries) => entries,
+            Err(error) => return error,
         };
+        state.snapshot_ready = true;
+    }
+    let mut emitted = false;
+    loop {
+        let Some(entry) = state.entries.front() else {
+            return HR_OK;
+        };
+        let Some((&0, name)) = entry.name.split_last() else {
+            return HR_INVALID_DATA;
+        };
+        let entry_name = HSTRING::from_wide(name);
+        let matches = state.search_expression.as_ref().is_none_or(|expression| {
+            // SAFETY: both owned UTF-16 strings remain live for this synchronous comparison.
+            unsafe { PrjFileNameMatch(&entry_name, expression) }
+        });
+        if !matches {
+            state.entries.pop_front();
+            continue;
+        }
+        let symlink = entry.symlink_target.as_deref().and_then(symlink_extended);
         let result = if let Some((_target, extended)) = symlink.as_ref() {
             PrjFillDirEntryBuffer2(
                 buffer,
-                PCWSTR::from_raw(wide.as_ptr()),
-                Some(&raw const info),
+                PCWSTR::from_raw(entry_name.as_ptr()),
+                Some(&raw const entry.info),
                 Some(extended),
             )
         } else {
             PrjFillDirEntryBuffer(
-                PCWSTR::from_raw(wide.as_ptr()),
-                Some(&raw const info),
+                PCWSTR::from_raw(entry_name.as_ptr()),
+                Some(&raw const entry.info),
                 buffer,
             )
         };
         match result {
             Ok(()) => {
-                lock_recover(&state).entries.pop_front();
+                state.entries.pop_front();
+                emitted = true;
             }
-            Err(error) if error.code() == HR_INSUFFICIENT_BUFFER => return HR_OK,
+            Err(error) if error.code() == HR_INSUFFICIENT_BUFFER => {
+                return if emitted {
+                    HR_OK
+                } else {
+                    HR_INSUFFICIENT_BUFFER
+                };
+            }
             Err(error) => return error.code(),
         }
     }
@@ -794,16 +1545,20 @@ unsafe extern "system" fn file_data(
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
-    let source_path = path.clone();
-    let source = Arc::clone(&runtime.source);
-    let bytes = match runtime
-        .executor
-        .call(move || source.read_range(&source_path, byte_offset, length))
-    {
-        Some(Ok(bytes)) if bytes.len() == length as usize => bytes,
-        Some(Ok(_)) => return HR_INVALID_DATA,
-        Some(Err(super::MountSourceError::NotFound)) => return HR_FILE_NOT_FOUND,
-        Some(Err(_)) | None => return HR_UNEXPECTED,
+    let source_path = path;
+    let renamed_file = lock_recover(&runtime.renamed_hydration_files)
+        .get(&file_id(data))
+        .cloned();
+    // Immutable hydration reads take the source's own read gate. Keeping them
+    // off the mutation callback queue lets concurrent compiler reads proceed.
+    let bytes = match renamed_file.map_or_else(
+        || runtime.source.read_range(&source_path, byte_offset, length),
+        |renamed| renamed.file.read_range(byte_offset, length),
+    ) {
+        Ok(bytes) if bytes.len() == length as usize => bytes,
+        Ok(_) => return HR_INVALID_DATA,
+        Err(super::MountSourceError::NotFound) => return HR_FILE_NOT_FOUND,
+        Err(_) => return HR_UNEXPECTED,
     };
     let buffer = PrjAllocateAlignedBuffer(data.NamespaceVirtualizationContext, bytes.len());
     if buffer.is_null() {
@@ -820,24 +1575,7 @@ unsafe extern "system" fn file_data(
         length,
     );
     PrjFreeAlignedBuffer(buffer);
-    match result {
-        Ok(()) => match probe_host_windows_metadata(
-            &runtime.root,
-            &path,
-            runtime.metadata_probes.as_ref(),
-        ) {
-            Ok(metadata) => {
-                replace_metadata_baseline(
-                    runtime.metadata_baselines.as_ref(),
-                    file_id(data),
-                    metadata,
-                );
-                HR_OK
-            }
-            Err(_) => HR_UNEXPECTED,
-        },
-        Err(error) => error.code(),
-    }
+    result.map_or_else(|error| error.code(), |()| HR_OK)
 }
 
 unsafe extern "system" fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
@@ -847,11 +1585,45 @@ unsafe extern "system" fn query_name(callback_data: *const PRJ_CALLBACK_DATA) ->
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
-    let source = Arc::clone(&runtime.source);
-    match runtime.executor.call(move || source.lookup(&path)) {
-        Some(Ok(Some(_))) => HR_OK,
-        Some(Ok(None) | Err(super::MountSourceError::NotFound)) => HR_FILE_NOT_FOUND,
-        Some(Err(_)) | None => HR_UNEXPECTED,
+    match runtime.source.lookup(&path) {
+        Ok(Some(_)) => HR_OK,
+        Ok(None) | Err(super::MountSourceError::NotFound) => HR_FILE_NOT_FOUND,
+        Err(_) => HR_UNEXPECTED,
+    }
+}
+
+fn record_post_operation_failure(
+    failure: &Mutex<PostOperationFailures>,
+    notification: PRJ_NOTIFICATION,
+    path: &MountPath,
+    retry_path: Option<&MountPath>,
+    result: &Result<(), super::MountSourceError>,
+) {
+    if !matches!(
+        notification,
+        PRJ_NOTIFICATION_NEW_FILE_CREATED
+            | PRJ_NOTIFICATION_FILE_OVERWRITTEN
+            | PRJ_NOTIFICATION_FILE_RENAMED
+            | PRJ_NOTIFICATION_HARDLINK_CREATED
+            | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
+            | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
+    ) {
+        return;
+    }
+    let mut failure = lock_recover(failure);
+    match (retry_path, result) {
+        // A successful callback does not prove that an earlier deferred host
+        // capture for this path has happened. In particular, a close after a
+        // rename may be a no-op while the renamed new file is still pending.
+        (_, Ok(())) => {}
+        (Some(retry_path), Err(error)) => {
+            failure.queue_capture(retry_path.clone(), error.to_string());
+        }
+        (None, Err(error)) => {
+            if failure.unreplayable.is_none() {
+                failure.unreplayable = Some(format!("{notification:?} at {path:?}: {error}"));
+            }
+        }
     }
 }
 
@@ -875,10 +1647,12 @@ unsafe extern "system" fn notification(
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
-    if matches!(
-        notification,
-        PRJ_NOTIFICATION_FILE_OPENED | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
-    ) && MetadataProbeGuard::is_active(runtime.metadata_probes.as_ref(), &path)
+    if unsafe { (*callback_data).TriggeringProcessId } == std::process::id()
+        && matches!(
+            notification,
+            PRJ_NOTIFICATION_FILE_OPENED | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
+        )
+        && MetadataProbeGuard::is_active(runtime.metadata_probes.as_ref(), &path)
     {
         return HR_OK;
     }
@@ -903,70 +1677,204 @@ unsafe extern "system" fn notification(
         // provider can prove that boundary instead of admitting a partial tree.
         return HR_NOT_SAME_DEVICE;
     }
+    if notification == PRJ_NOTIFICATION_PRE_DELETE
+        || notification == PRJ_NOTIFICATION_PRE_RENAME
+        || notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
+    {
+        return HR_OK;
+    }
+    if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED {
+        // The physical file is already present. One final-state capture at
+        // the operation boundary covers every later write and metadata edit;
+        // only topology changes need further per-file notifications.
+        if is_directory {
+            lock_recover(runtime.post_operation_failure.as_ref())
+                .queue_subtree(&path, "new directory awaiting capture".to_owned());
+        } else {
+            defer_host_capture(runtime.post_operation_failure.as_ref(), path);
+        }
+        set_post_create_notification_mask(operation_parameters, true);
+        return HR_OK;
+    }
+    if !is_directory && notification == PRJ_NOTIFICATION_FILE_OVERWRITTEN {
+        set_post_create_notification_mask(operation_parameters, false);
+        return HR_OK;
+    }
     let destination = (!destination_is_external)
         .then(|| path_from(destination_filename))
         .flatten();
+    if path.components().is_empty() && notification == PRJ_NOTIFICATION_FILE_OPENED {
+        return HR_OK;
+    }
+    if notification == PRJ_NOTIFICATION_HARDLINK_CREATED {
+        let Some(destination) = destination else {
+            lock_recover(runtime.post_operation_failure.as_ref()).unreplayable = Some(format!(
+                "{path:?}: hard-link destination is invalid after host completion"
+            ));
+            return HR_INVALID_DATA;
+        };
+        // The link already exists physically. Both names must be captured in
+        // one later batch to recover their shared identity, but enqueueing the
+        // two paths cannot fail and does not touch checkout state.
+        defer_host_capture(runtime.post_operation_failure.as_ref(), path);
+        defer_host_capture(runtime.post_operation_failure.as_ref(), destination);
+        return HR_OK;
+    }
     let source = Arc::clone(&runtime.source);
-    let root = runtime.root.clone();
     let metadata_baselines = Arc::clone(&runtime.metadata_baselines);
     let metadata_probes = Arc::clone(&runtime.metadata_probes);
-    let result = runtime.executor.call(move || {
+    let renamed_hydration_files = Arc::clone(&runtime.renamed_hydration_files);
+    let renamed_paths = Arc::clone(&runtime.renamed_paths);
+    let metadata_root = Arc::clone(&runtime.metadata_root);
+    let post_operation_failure = Arc::clone(&runtime.post_operation_failure);
+    let operation_failures = Arc::clone(&post_operation_failure);
+    let failure_path = path.clone();
+    let retry_path = Arc::new(Mutex::new(None));
+    let operation_retry_path = Arc::clone(&retry_path);
+    let operation = move || {
+        let path = lock_recover(renamed_hydration_files.as_ref())
+            .get(&file_id)
+            .map_or_else(|| path.clone(), |renamed| renamed.destination.clone());
+        if path.components().is_empty()
+            && (notification == PRJ_NOTIFICATION_FILE_OPENED
+                || notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION)
+        {
+            return Ok(());
+        }
         if notification == PRJ_NOTIFICATION_FILE_OPENED {
-            let baseline = probe_host_windows_metadata(&root, &path, metadata_probes.as_ref())?;
-            replace_metadata_baseline(metadata_baselines.as_ref(), file_id, baseline);
-            Ok(())
+            {
+                let mut files = lock_recover(renamed_hydration_files.as_ref());
+                if !files.contains_key(&file_id) {
+                    let pending = files
+                        .iter()
+                        .find_map(|(pending_id, renamed)| {
+                            (renamed.destination == path).then_some(*pending_id)
+                        })
+                        .and_then(|pending_id| files.remove(&pending_id));
+                    if let Some(renamed) = pending {
+                        files.insert(file_id, renamed);
+                    }
+                }
+            }
+            let baseline = probe_host_windows_metadata(
+                metadata_root.as_ref(),
+                &path,
+                metadata_probes.as_ref(),
+            )?;
+            record_metadata_open(metadata_baselines.as_ref(), file_id, baseline)
         } else if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED
             || notification == PRJ_NOTIFICATION_FILE_OVERWRITTEN
         {
             if is_directory {
-                source.capture_host_path(&root, &path)
+                defer_host_capture(operation_failures.as_ref(), path);
+                Ok(())
             } else {
                 Ok(())
             }
         } else if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
             || notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
         {
-            let _ = take_metadata_baseline(metadata_baselines.as_ref(), file_id);
-            source.capture_host_path(&root, &path)
-        } else if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION {
-            let host = probe_host_windows_metadata(&root, &path, metadata_probes.as_ref())?;
-            let baseline = take_metadata_baseline(metadata_baselines.as_ref(), file_id);
-            let changed_since_open =
-                baseline.is_some_and(|baseline| metadata_changed_since_open(baseline, host));
-            match source.lookup(&path) {
-                Ok(Some(lookup)) => {
-                    if changed_since_open
-                        || represented_windows_metadata_differs(lookup.metadata, &host)
-                    {
-                        // ProjFS classifies FileBasicInfo-only changes as a
-                        // close without data modification. Capture only when
-                        // represented basic metadata differs, avoiding
-                        // publication on ordinary reads.
-                        source.capture_host_path(&root, &path)
-                    } else {
-                        Ok(())
+            let close = close_metadata_handle(metadata_baselines.as_ref(), file_id);
+            let final_close = matches!(close, MetadataClose::Final(_));
+            let renamed_path = lock_recover(renamed_paths.as_ref()).get(&file_id).cloned();
+            let capture_path = renamed_path.clone().unwrap_or_else(|| Some(path.clone()));
+            if final_close {
+                lock_recover(renamed_hydration_files.as_ref()).remove(&file_id);
+                lock_recover(renamed_paths.as_ref()).remove(&file_id);
+            }
+            let result = if let Some(path) = capture_path.as_ref() {
+                if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
+                    && renamed_path.is_none()
+                {
+                    lock_recover(operation_failures.as_ref())
+                        .pending_captures
+                        .remove(path);
+                    *lock_recover(operation_retry_path.as_ref()) = Some(path.clone());
+                    match source.lookup(path)? {
+                        Some(_) => source.remove(path, None),
+                        None => Ok(()),
                     }
+                } else {
+                    defer_host_capture(operation_failures.as_ref(), path.clone());
+                    Ok(())
                 }
-                Ok(None) => source.capture_host_path(&root, &path),
+            } else {
+                Ok(())
+            };
+            if result.is_ok()
+                && !final_close
+                && notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
+                && let Some(path) = capture_path.as_ref()
+            {
+                let baseline = probe_host_windows_metadata(
+                    metadata_root.as_ref(),
+                    path,
+                    metadata_probes.as_ref(),
+                )?;
+                refresh_metadata_baseline(metadata_baselines.as_ref(), file_id, baseline);
+            }
+            result
+        } else if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION {
+            let baseline = match close_metadata_handle(metadata_baselines.as_ref(), file_id) {
+                MetadataClose::Pending => return Ok(()),
+                MetadataClose::Final(baseline) => baseline,
+            };
+            let capture_path = lock_recover(renamed_paths.as_ref())
+                .remove(&file_id)
+                .unwrap_or_else(|| Some(path.clone()));
+            let Some(capture_path) = capture_path else {
+                return Ok(());
+            };
+            *lock_recover(operation_retry_path.as_ref()) = Some(capture_path.clone());
+            let host = probe_host_windows_metadata(
+                metadata_root.as_ref(),
+                &capture_path,
+                metadata_probes.as_ref(),
+            )?;
+            match source.lookup(&capture_path) {
+                Ok(Some(lookup)) => match baseline {
+                    Some(baseline) if metadata_changed_since_open(baseline, host) => {
+                        capture_changed_windows_metadata(
+                            source.as_ref(),
+                            &capture_path,
+                            lookup.metadata,
+                            baseline,
+                            host,
+                        )
+                    }
+                    _ => Ok(()),
+                },
+                Ok(None) => {
+                    defer_host_capture(operation_failures.as_ref(), capture_path);
+                    Ok(())
+                }
                 Err(error) => Err(error),
             }
         } else if notification == PRJ_NOTIFICATION_FILE_RENAMED {
-            handle_rename_source(
+            let renamed_path = if destination_is_external {
+                None
+            } else {
+                destination.clone()
+            };
+            let result = handle_rename_source(
                 source.as_ref(),
-                &root,
                 &path,
                 source_is_external,
                 destination_is_external,
                 is_directory,
                 destination,
-            )
-        } else if notification == PRJ_NOTIFICATION_HARDLINK_CREATED {
-            destination
-                .ok_or_else(|| {
-                    super::MountSourceError::Invalid("hard-link destination is invalid".to_owned())
-                })
-                .and_then(|destination| source.hard_link(&path, &destination))
-                .and_then(|()| source.flush())
+                file_id,
+                renamed_hydration_files.as_ref(),
+                operation_failures.as_ref(),
+            );
+            if result.is_ok() {
+                if !source_is_external && let Some(destination) = renamed_path.as_ref() {
+                    lock_recover(operation_failures.as_ref())
+                        .rename_pending_captures(&path, destination);
+                }
+                lock_recover(renamed_paths.as_ref()).insert(file_id, renamed_path);
+            }
+            result
         } else if notification == PRJ_NOTIFICATION_PRE_DELETE
             || notification == PRJ_NOTIFICATION_PRE_RENAME
             || notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
@@ -977,25 +1885,28 @@ unsafe extern "system" fn notification(
                 "ProjFS emitted an unadmitted write notification".to_owned(),
             ))
         }
-    });
-    if (notification == PRJ_NOTIFICATION_NEW_FILE_CREATED
-        || notification == PRJ_NOTIFICATION_FILE_OVERWRITTEN)
-        && !operation_parameters.is_null()
+    };
+    let result = runtime
+        .callbacks
+        .call_observed(file_id, operation, move |result| {
+            let retry_path = lock_recover(retry_path.as_ref());
+            record_post_operation_failure(
+                post_operation_failure.as_ref(),
+                notification,
+                &failure_path,
+                retry_path.as_ref(),
+                result,
+            );
+        });
+    if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED
+        || notification == PRJ_NOTIFICATION_FILE_OVERWRITTEN
     {
-        // SAFETY: ProjFS supplies a writable notification-parameter union for
-        // this callback duration.
-        unsafe {
-            (*operation_parameters).PostCreate.NotificationMask =
-                PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION
-                    | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED
-                    | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED
-                    | PRJ_NOTIFY_FILE_OPENED
-                    | PRJ_NOTIFY_PRE_DELETE
-                    | PRJ_NOTIFY_PRE_RENAME
-                    | PRJ_NOTIFY_FILE_RENAMED
-                    | PRJ_NOTIFY_PRE_SET_HARDLINK
-                    | PRJ_NOTIFY_HARDLINK_CREATED;
-        }
+        set_post_create_notification_mask(
+            operation_parameters,
+            notification == PRJ_NOTIFICATION_NEW_FILE_CREATED,
+        );
+    } else if notification == PRJ_NOTIFICATION_FILE_RENAMED && matches!(&result, Some(Ok(()))) {
+        set_post_rename_notification_mask(operation_parameters);
     }
     match result {
         Some(Ok(())) => HR_OK,
@@ -1009,40 +1920,136 @@ unsafe extern "system" fn notification(
     }
 }
 
+fn set_post_create_notification_mask(
+    operation_parameters: *mut PRJ_NOTIFICATION_PARAMETERS,
+    new_regular_file: bool,
+) {
+    if operation_parameters.is_null() {
+        return;
+    }
+    // SAFETY: ProjFS supplies a writable notification-parameter union for
+    // NEW_FILE_CREATED and FILE_OVERWRITTEN callbacks.
+    unsafe {
+        let topology_mask = PRJ_NOTIFY_PRE_RENAME
+            | PRJ_NOTIFY_FILE_RENAMED
+            | PRJ_NOTIFY_PRE_SET_HARDLINK
+            | PRJ_NOTIFY_HARDLINK_CREATED;
+        (*operation_parameters).PostCreate.NotificationMask = if new_regular_file {
+            topology_mask
+        } else {
+            PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION
+                | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_MODIFIED
+                | PRJ_NOTIFY_FILE_HANDLE_CLOSED_FILE_DELETED
+                | PRJ_NOTIFY_FILE_OPENED
+                | PRJ_NOTIFY_PRE_DELETE
+                | topology_mask
+        };
+    }
+}
+
+fn set_post_rename_notification_mask(operation_parameters: *mut PRJ_NOTIFICATION_PARAMETERS) {
+    if operation_parameters.is_null() {
+        return;
+    }
+    // SAFETY: ProjFS supplies the writable renamed-file union member for the
+    // FILE_RENAMED callback. Only renamed placeholders need open callbacks to
+    // bridge a possible FileId change during deferred hydration.
+    unsafe {
+        (*operation_parameters).FileRenamed.NotificationMask = PRJ_NOTIFY_FILE_OPENED
+            | PRJ_NOTIFY_PRE_RENAME
+            | PRJ_NOTIFY_FILE_RENAMED
+            | PRJ_NOTIFY_PRE_SET_HARDLINK
+            | PRJ_NOTIFY_HARDLINK_CREATED;
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "rename admission facts are supplied independently by the ProjFS callback"
+)]
 fn handle_rename_source(
     source_fs: &dyn MountFilesystem,
-    root: &std::path::Path,
     source: &MountPath,
     source_is_external: bool,
     destination_is_external: bool,
     is_directory: bool,
     destination: Option<MountPath>,
+    file_id: u128,
+    renamed_hydration_files: &Mutex<HashMap<u128, RenamedHydrationFile>>,
+    post_operation_failures: &Mutex<PostOperationFailures>,
 ) -> Result<(), super::MountSourceError> {
     if source_is_external {
-        return destination
-            .ok_or_else(|| {
-                super::MountSourceError::Invalid("rename destination is invalid".to_owned())
-            })
-            .and_then(|destination| {
-                if is_directory {
-                    source_fs.capture_host_subtree(root, &destination)
-                } else {
-                    source_fs.capture_host_path(root, &destination)
-                }
-            })
-            .and_then(|()| source_fs.flush());
+        let destination = destination.ok_or_else(|| {
+            super::MountSourceError::Invalid("rename destination is invalid".to_owned())
+        })?;
+        lock_recover(renamed_hydration_files)
+            .retain(|_, renamed| renamed.destination != destination);
+        if is_directory {
+            lock_recover(post_operation_failures).queue_subtree(
+                &destination,
+                "imported directory awaiting capture".to_owned(),
+            );
+        } else {
+            defer_host_capture(post_operation_failures, destination);
+        }
+        return Ok(());
     }
     if destination_is_external {
         // The source vanished from the projection. Capturing that exact
         // now-missing path records its deletion without reading outside.
-        return source_fs
-            .capture_host_path(root, source)
-            .and_then(|()| source_fs.flush());
+        defer_host_capture(post_operation_failures, source.clone());
+        return Ok(());
     }
-    destination
-        .ok_or_else(|| super::MountSourceError::Invalid("rename destination is invalid".to_owned()))
-        .and_then(|destination| source_fs.rename(source, &destination, true))
-        .and_then(|()| source_fs.flush())
+    let destination = destination.ok_or_else(|| {
+        super::MountSourceError::Invalid("rename destination is invalid".to_owned())
+    })?;
+    if source_fs.lookup(source)?.is_none() {
+        // A full file created inside ProjFS can be renamed before its final
+        // close notification has captured it into the SDK. The host rename
+        // already happened, so import the destination instead of attempting
+        // to rename a binding that does not yet exist in the source view.
+        if is_directory {
+            lock_recover(post_operation_failures).queue_subtree(
+                &destination,
+                "renamed directory awaiting capture".to_owned(),
+            );
+        } else {
+            defer_host_capture(post_operation_failures, destination);
+        }
+        return Ok(());
+    }
+    let open_file = (!is_directory)
+        .then(|| source_fs.open_file(source))
+        .transpose()?;
+    // ProjFS rejects renaming projected placeholder directories before the
+    // provider callback. Only files require an identity bridge here.
+    source_fs.rename(source, &destination, true)?;
+    source_fs.flush()?;
+    if let Some(open_file) = open_file {
+        let mut files = lock_recover(renamed_hydration_files);
+        files.retain(|_, renamed| renamed.destination != destination);
+        files.insert(
+            file_id,
+            RenamedHydrationFile {
+                file: open_file,
+                destination,
+            },
+        );
+    }
+    Ok(())
+}
+
+unsafe fn copy_optional_wide(pointer: PCWSTR) -> Option<Option<HSTRING>> {
+    if pointer.is_null() {
+        return Some(None);
+    }
+    let mut length = 0_usize;
+    while *pointer.0.add(length) != 0 {
+        length = length.checked_add(1)?;
+    }
+    Some(Some(HSTRING::from_wide(std::slice::from_raw_parts(
+        pointer.0, length,
+    ))))
 }
 
 unsafe extern "system" fn cancel(_callback_data: *const PRJ_CALLBACK_DATA) {}
@@ -1063,10 +2070,698 @@ fn callbacks() -> PRJ_CALLBACKS {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::{MetadataProbeGuard, finish_cleanup};
-    use crate::native_mount::MountPath;
-    use std::collections::HashMap;
-    use std::sync::Mutex;
+    use super::{
+        CallbackGate, PostOperationFailures, finish_cleanup, flush_callback_gate,
+        record_post_operation_failure, recover_cache_only_destination,
+        remove_authenticated_destination,
+    };
+    use crate::model::{
+        AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
+        VolumeConfig,
+    };
+    use crate::native_mount::adapter::{CheckoutMountSource, SharedCheckout};
+    use crate::native_mount::{MountFilesystem, MountPath, MountSourceError};
+    use crate::{
+        CancellationToken, Fs, IdempotencyKey, LocalOptions, MountOptions, MountPublication,
+        WorkBudget,
+    };
+    use bytes::Bytes;
+    use std::collections::HashSet;
+    use std::sync::{Arc, Barrier, Mutex};
+    use windows::Win32::Storage::ProjectedFileSystem::{
+        PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED, PRJ_NOTIFICATION_PRE_DELETE,
+        PRJ_VIRTUALIZATION_INSTANCE_INFO, PrjGetVirtualizationInstanceInfo,
+        PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
+    };
+    use windows::core::{GUID, HSTRING, PCWSTR};
+
+    #[test]
+    fn projfs_name_order_differs_from_sdk_cursor_order() {
+        let name = |value: &str| {
+            value
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            super::compare_projfs_name(&name("Alpha"), &name("alpha")),
+            Some(0)
+        );
+        assert!(name("Alpha") < name("alpha"));
+        assert!(super::compare_projfs_name(&name("before"), &name("later")) < Some(0));
+        assert!(super::compare_projfs_name(&name("later"), &name("before")) > Some(0));
+        let mut projected = ["éclair", "Zebra", "entry000", "Alpha"];
+        projected.sort_unstable_by(|left, right| {
+            super::compare_projfs_name(&name(left), &name(right))
+                .expect("valid Windows name")
+                .cmp(&0)
+        });
+        assert_eq!(projected, ["Alpha", "entry000", "Zebra", "éclair"]);
+        assert_ne!(
+            ["Alpha", "Zebra", "entry000", "éclair"],
+            projected,
+            "SDK cursor order differs from the ProjFS merge order"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn stopped_projection_cannot_publish_a_late_open_writer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::{Seek as _, Write as _};
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
+        config.profile = crate::model::FilesystemProfile::Windows;
+        let fs = Fs::memory();
+        let cancellation = CancellationToken::new();
+        let volume = fs
+            .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value;
+        let checkout = volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode {
+                    access: AccessMode::ReadWrite,
+                    consistency: ConsistencyMode::Pinned,
+                    mutations: MutationMode::PrivateOverlay,
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        let source = Arc::new(CheckoutMountSource::new(
+            Arc::new(SharedCheckout::new(checkout)),
+            config,
+        )?);
+        let seed = MountPath::root().child(
+            "seed.txt"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect(),
+        );
+        source.create_file(&seed, crate::kernel::FileMetadata::default())?;
+        source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
+
+        let root = tempfile::tempdir()?;
+        let destination = root.path().join("projection");
+        std::fs::create_dir(&destination)?;
+        let mut session = crate::mount_native(
+            crate::NativeMountRequest {
+                mount_id: crate::MountId::new(),
+                volume_id: source.volume_id()?,
+                destination: destination.clone(),
+                writable: true,
+            },
+            Arc::clone(&source) as Arc<dyn MountFilesystem>,
+        )?;
+        let projected = destination.join("seed.txt");
+        assert_eq!(std::fs::read(&projected)?, b"seed");
+
+        // Excluding FILE_SHARE_DELETE models a background compiler or language
+        // server that outlives the host tool boundary. ProjFS can stop, but the
+        // authenticated projection cannot be reclaimed while this handle is
+        // alive, so an in-place native-view transition must not be published.
+        let mut late = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0)
+            .open(&projected)?;
+        let stop = session
+            .stop()
+            .expect_err("an open non-delete-sharing handle must fence cleanup");
+        assert!(
+            stop.to_string().contains("removal failed"),
+            "unexpected cleanup fence: {stop}"
+        );
+
+        late.rewind()?;
+        late.write_all(b"late")?;
+        late.flush()?;
+        drop(late);
+
+        // The provider is already stopped, so no callback can authenticate or
+        // publish this write. A later physical view must quarantine the old
+        // epoch rather than pretending that the late write joined the SDK.
+        assert_eq!(source.read_range(&seed, 0, 4)?, b"seed"[..]);
+        session.stop()?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a host that permits starting a ProjFS provider"]
+    fn minimal_virtualization_starts() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let root_identity = crate::capture_root_identity(root.path())?;
+        let wide = HSTRING::from(root.path().as_os_str());
+        let guid = GUID::from_values(0, 0, 0, [0; 8]);
+        // SAFETY: all referenced values remain live for these synchronous calls.
+        unsafe {
+            PrjMarkDirectoryAsPlaceholder(
+                PCWSTR::from_raw(wide.as_ptr()),
+                PCWSTR::null(),
+                None,
+                &raw const guid,
+            )
+        }?;
+        // No Acyclic source, notification mappings, or mount setup participates.
+        let callbacks = super::callbacks();
+        let context = unsafe {
+            PrjStartVirtualizing(
+                PCWSTR::from_raw(wide.as_ptr()),
+                &raw const callbacks,
+                None,
+                None,
+            )
+        };
+        match context {
+            Ok(context) => {
+                // SAFETY: the successful call returned the sole live context.
+                unsafe { PrjStopVirtualizing(context) };
+                // A crash leaves the designation in place. The provider must
+                // be able to restart without marking or clearing that root.
+                let restarted = unsafe {
+                    PrjStartVirtualizing(
+                        PCWSTR::from_raw(wide.as_ptr()),
+                        &raw const callbacks,
+                        None,
+                        None,
+                    )
+                }?;
+                let mut instance = PRJ_VIRTUALIZATION_INSTANCE_INFO::default();
+                unsafe { PrjGetVirtualizationInstanceInfo(restarted, &raw mut instance) }?;
+                assert_eq!(instance.InstanceID, guid);
+                unsafe { PrjStopVirtualizing(restarted) };
+            }
+            Err(error) => {
+                remove_authenticated_destination(root.path(), root_identity)?;
+                return Err(error.into());
+            }
+        }
+        remove_authenticated_destination(root.path(), root_identity)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn rustc_links_object_files_created_inside_projection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
+        let workspace = engine.create_workspace("rustc-projfs").await?;
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        transaction
+            .create_file(
+                "/acyclic-workflow.rs",
+                Bytes::from_static(b"fn main() { println!(\"ok\"); }\n"),
+                crate::kernel::FileMetadata::default(),
+            )
+            .await?;
+        transaction.commit().await?;
+        let path = root.path().join("mount");
+        std::fs::create_dir(&path)?;
+        let mount = workspace
+            .mount(
+                &path,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        let compiler_path = path.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("rustc")
+                .current_dir(compiler_path)
+                .args([
+                    "--edition",
+                    "2021",
+                    "acyclic-workflow.rs",
+                    "-o",
+                    "acyclic-workflow-bin.exe",
+                ])
+                .output()
+        })
+        .await??;
+        assert!(
+            output.status.success(),
+            "rustc failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        mount.sync().await?;
+        let executable = path.join("acyclic-workflow-bin.exe");
+        let execution =
+            tokio::task::spawn_blocking(move || std::process::Command::new(executable).output())
+                .await??;
+        assert!(execution.status.success());
+        assert_eq!(execution.stdout, b"ok\n");
+        mount.unmount().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn external_metadata_only_change_survives_remount()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
+        let workspace = engine.create_workspace("metadata-projfs").await?;
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        transaction
+            .create_file(
+                "/metadata.txt",
+                Bytes::from_static(b"unchanged contents"),
+                crate::kernel::FileMetadata::default(),
+            )
+            .await?;
+        transaction.commit().await?;
+
+        let first = root.path().join("first-mount");
+        std::fs::create_dir(&first)?;
+        let mount = workspace
+            .mount(
+                &first,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        let projected = first.join("metadata.txt");
+        assert_eq!(std::fs::read(&projected)?, b"unchanged contents");
+        let status = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("attrib")
+                .arg("+R")
+                .arg(projected)
+                .status()
+        })
+        .await??;
+        assert!(status.success(), "attrib failed with {status}");
+        mount.sync().await?;
+        mount.unmount().await?;
+
+        let second = root.path().join("second-mount");
+        std::fs::create_dir(&second)?;
+        let remount = workspace
+            .mount(
+                &second,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        assert!(
+            std::fs::metadata(second.join("metadata.txt"))?
+                .permissions()
+                .readonly(),
+            "metadata-only edits must survive synchronization and remount"
+        );
+        remount.unmount().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn nested_new_directory_hardlink_and_rename_publish()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
+        let workspace = engine.create_workspace("nested-projfs").await?;
+        let path = root.path().join("mount");
+        std::fs::create_dir(&path)?;
+        let mount = workspace
+            .mount(
+                &path,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        let nested = path.join("target").join("debug").join("deps");
+        std::fs::create_dir_all(&nested)?;
+        let source = nested.join("unit.o");
+        std::fs::write(&source, b"object")?;
+        std::fs::hard_link(&source, nested.join("linked.o"))?;
+        let still_open = nested.join("open.o");
+        let mut handle = std::fs::File::create(&still_open)?;
+        std::io::Write::write_all(&mut handle, b"open object")?;
+        std::fs::hard_link(&still_open, nested.join("linked-open.o"))?;
+        drop(handle);
+        std::fs::rename(&nested, path.join("renamed-deps"))?;
+        mount.sync().await?;
+        std::fs::remove_dir_all(path.join("renamed-deps"))?;
+        mount.sync().await?;
+        mount.unmount().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn enumeration_survives_concurrent_projected_writes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
+        let workspace = engine.create_workspace("enumeration-rebase").await?;
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        for index in 0..300 {
+            transaction
+                .create_file(
+                    &format!("/entry{index:03}"),
+                    Bytes::from_static(b"initial"),
+                    crate::kernel::FileMetadata::default(),
+                )
+                .await?;
+        }
+        for name in ["Alpha", "Zebra", "éclair"] {
+            transaction
+                .create_file(
+                    &format!("/{name}"),
+                    Bytes::from_static(b"initial"),
+                    crate::kernel::FileMetadata::default(),
+                )
+                .await?;
+        }
+        transaction.commit().await?;
+        let path = root.path().join("mount");
+        std::fs::create_dir(&path)?;
+        let mount = workspace
+            .mount(
+                &path,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        let initial = std::fs::read_dir(&path)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        let initial_count = initial.len();
+        let barrier = Arc::new(Barrier::new(2));
+        let writer_barrier = Arc::clone(&barrier);
+        let writer_path = path.join("entry000");
+        let writer = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            writer_barrier.wait();
+            for index in 0..32 {
+                std::fs::write(&writer_path, format!("update-{index}"))?;
+            }
+            Ok(())
+        });
+        let enumeration = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            barrier.wait();
+            for _ in 0..64 {
+                let names = std::fs::read_dir(&path)?
+                    .map(|entry| entry.map(|entry| entry.file_name()))
+                    .collect::<std::io::Result<Vec<_>>>()?;
+                let entries = names.iter().cloned().collect::<HashSet<_>>();
+                assert_eq!(
+                    names.len(),
+                    303,
+                    "projected entries changed or duplicated: {:?}",
+                    names
+                        .iter()
+                        .filter(|name| names.iter().filter(|other| other == name).count() > 1)
+                        .collect::<HashSet<_>>()
+                );
+                assert_eq!(entries.len(), 303, "projected entries were duplicated");
+                for index in 0..300 {
+                    assert!(entries.contains(std::ffi::OsStr::new(&format!("entry{index:03}"))));
+                }
+                for name in ["Alpha", "Zebra", "éclair"] {
+                    assert!(entries.contains(std::ffi::OsStr::new(name)));
+                }
+            }
+            Ok(())
+        });
+        let (written, enumerated) = tokio::join!(writer, enumeration);
+        let synchronized = mount.sync().await;
+        let unmounted = mount.unmount().await;
+        assert_eq!(
+            initial_count, 303,
+            "static projected enumeration is incomplete"
+        );
+        written??;
+        enumerated??;
+        synchronized?;
+        unmounted?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires an enabled ProjFS filter"]
+    fn stale_projection_is_preserved_for_recovery() {
+        let root = tempfile::tempdir().expect("root");
+        let root_identity = crate::capture_root_identity(root.path()).expect("root identity");
+        let wide = HSTRING::from(root.path().as_os_str());
+        let guid = GUID::from_values(0, 0, 0, [0; 8]);
+        // SAFETY: pointers remain live for this synchronous call.
+        unsafe {
+            PrjMarkDirectoryAsPlaceholder(
+                PCWSTR::from_raw(wide.as_ptr()),
+                PCWSTR::null(),
+                None,
+                &raw const guid,
+            )
+        }
+        .expect("mark projection root");
+        let error = recover_cache_only_destination(root.path()).expect_err("preserve stale root");
+        assert!(error.to_string().contains("preserved for recovery"));
+        assert!(root.path().exists());
+        remove_authenticated_destination(root.path(), root_identity).expect("test cleanup");
+    }
+
+    #[test]
+    #[ignore = "requires an enabled ProjFS filter"]
+    fn projection_cleanup_rejects_a_replaced_root_identity() {
+        let original = tempfile::tempdir().expect("original root");
+        let replacement = tempfile::tempdir().expect("replacement root");
+        let original_identity =
+            crate::capture_root_identity(original.path()).expect("original identity");
+        let replacement_identity =
+            crate::capture_root_identity(replacement.path()).expect("replacement identity");
+        let wide = HSTRING::from(replacement.path().as_os_str());
+        let guid = GUID::from_values(0, 0, 0, [0; 8]);
+        // SAFETY: pointers remain live for this synchronous call.
+        unsafe {
+            PrjMarkDirectoryAsPlaceholder(
+                PCWSTR::from_raw(wide.as_ptr()),
+                PCWSTR::null(),
+                None,
+                &raw const guid,
+            )
+        }
+        .expect("mark replacement projection root");
+        let rejected = remove_authenticated_destination(replacement.path(), original_identity)
+            .expect_err("different root must not be removed");
+        assert!(rejected.to_string().contains("identity changed"));
+        assert!(replacement.path().exists());
+        remove_authenticated_destination(replacement.path(), replacement_identity)
+            .expect("remove test-owned projection");
+    }
+
+    #[test]
+    fn failed_post_operation_capture_retries_at_sync() {
+        let executor = CallbackGate::start().expect("callback gate");
+        let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
+        let path = MountPath::root().child(b"changed".to_vec());
+        let capture_error = Err(MountSourceError::Invalid("capture failed".to_owned()));
+        record_post_operation_failure(
+            failure.as_ref(),
+            PRJ_NOTIFICATION_PRE_DELETE,
+            &path,
+            None,
+            &capture_error,
+        );
+        assert!(
+            failure
+                .lock()
+                .expect("failure state")
+                .pending_captures
+                .is_empty()
+        );
+        record_post_operation_failure(
+            failure.as_ref(),
+            PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
+            &path,
+            Some(&path),
+            &capture_error,
+        );
+        let error = flush_callback_gate(&executor, Arc::clone(&failure), |_| {
+            Err(MountSourceError::Invalid("transient failure".to_owned()))
+        })
+        .expect_err("failed retry must fence publication");
+        assert!(error.to_string().contains("transient failure"));
+        flush_callback_gate(&executor, Arc::clone(&failure), |_| Ok(()))
+            .expect("successful retry clears failure");
+        assert!(
+            failure
+                .lock()
+                .expect("failure state")
+                .pending_captures
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn newer_capture_is_not_cleared_by_an_older_flush() {
+        let executor = CallbackGate::start().expect("callback gate");
+        let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
+        let path = MountPath::root().child(b"changed".to_vec());
+        failure
+            .lock()
+            .expect("failure state")
+            .queue_capture(path.clone(), "first write".to_owned());
+        let during_capture = Arc::clone(&failure);
+        let error = flush_callback_gate(&executor, Arc::clone(&failure), move |paths| {
+            during_capture
+                .lock()
+                .expect("failure state")
+                .queue_capture(paths[0].0.clone(), "second write".to_owned());
+            Ok(())
+        })
+        .expect_err("the newer write remains pending");
+        assert!(error.to_string().contains("second write"));
+        flush_callback_gate(&executor, Arc::clone(&failure), |_| Ok(()))
+            .expect("a later flush captures the newer write");
+    }
+
+    #[test]
+    fn successful_close_does_not_erase_renamed_pending_capture() {
+        let failure = Mutex::new(PostOperationFailures::default());
+        let source = MountPath::root().child(b"save".to_vec());
+        let destination = MountPath::root().child(b"final".to_vec());
+        {
+            let mut pending = failure.lock().expect("pending capture");
+            pending.queue_capture(source.clone(), "new file".to_owned());
+            pending.rename_pending_captures(&source, &destination);
+        }
+        record_post_operation_failure(
+            &failure,
+            PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
+            &source,
+            Some(&destination),
+            &Ok(()),
+        );
+        assert!(
+            failure
+                .lock()
+                .expect("pending capture")
+                .pending_captures
+                .contains_key(&destination)
+        );
+    }
+
+    #[test]
+    fn rename_retries_failed_capture_at_destination() {
+        let executor = CallbackGate::start().expect("callback gate");
+        let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
+        let source = MountPath::root().child(b"old".to_vec());
+        let destination = MountPath::root().child(b"new".to_vec());
+        let nested = source.child(b"nested".to_vec());
+        let nested_destination = destination.child(b"nested".to_vec());
+        let unrelated = MountPath::root().child(b"other".to_vec());
+        {
+            let mut failures = failure.lock().expect("failure state");
+            failures.queue_capture(source.clone(), "old capture failed".to_owned());
+            failures.queue_capture(nested, "nested capture failed".to_owned());
+            failures.queue_capture(unrelated.clone(), "other capture failed".to_owned());
+            failures.queue_subtree(&destination, "renamed directory".to_owned());
+            failures.rename_pending_captures(&source, &destination);
+            assert!(!failures.pending_captures.contains_key(&source));
+            assert!(failures.pending_captures[&destination].subtree);
+        }
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&captured);
+        flush_callback_gate(&executor, Arc::clone(&failure), move |paths| {
+            observed
+                .lock()
+                .expect("captured paths")
+                .extend(paths.iter().map(|(path, _)| path.clone()));
+            Ok(())
+        })
+        .expect("renamed captures recover");
+        let captured = captured.lock().expect("captured paths");
+        assert!(captured.contains(&destination));
+        assert!(captured.contains(&nested_destination));
+        assert!(captured.contains(&unrelated));
+        assert!(!captured.contains(&source));
+    }
+
+    #[test]
+    fn later_path_capture_keeps_pending_subtree_scope() {
+        let path = MountPath::root().child(b"imported-directory".to_vec());
+        let mut failures = PostOperationFailures::default();
+        failures.queue_subtree(&path, "rename pending".to_owned());
+        failures.queue_capture(path.clone(), "close pending".to_owned());
+        assert!(failures.pending_captures[&path].subtree);
+    }
+
+    #[test]
+    fn renamed_directory_capture_precedes_its_children() {
+        let executor = CallbackGate::start().expect("callback gate");
+        let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
+        let parent = MountPath::root().child(b"renamed".to_vec());
+        let child = parent.child(b"child".to_vec());
+        {
+            let mut failures = failure.lock().expect("failure state");
+            failures.queue_capture(child.clone(), "child write".to_owned());
+            failures.queue_subtree(&parent, "directory rename".to_owned());
+        }
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captures = Arc::clone(&observed);
+        flush_callback_gate(&executor, Arc::clone(&failure), move |paths| {
+            captures
+                .lock()
+                .expect("capture order")
+                .extend(paths.iter().cloned());
+            Ok(())
+        })
+        .expect("parent and child capture");
+        assert_eq!(
+            *observed.lock().expect("capture order"),
+            vec![(parent, true), (child, false)]
+        );
+    }
+
+    #[test]
+    fn rename_matches_windows_case_spelling() {
+        let component = |name: &str| {
+            name.encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>()
+        };
+        let source = MountPath::root().child(component("Old"));
+        let callback_source = MountPath::root().child(component("old"));
+        let destination = MountPath::root().child(component("New"));
+        let mut failures = PostOperationFailures::default();
+        failures.queue_capture(source.clone(), "capture failed".to_owned());
+        failures.rename_pending_captures(&callback_source, &destination);
+        assert!(!failures.pending_captures.contains_key(&source));
+        assert!(failures.pending_captures.contains_key(&destination));
+    }
+
+    #[test]
+    fn callback_admitted_after_first_stop_barrier_prevents_cleanup() {
+        let executor = CallbackGate::start().expect("callback gate");
+        let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
+        flush_callback_gate(&executor, Arc::clone(&failure), |_| Ok(())).expect("first barrier");
+        let observed = Arc::clone(&failure);
+        let path = MountPath::root().child(b"late-object".to_vec());
+        let result = executor
+            .call_observed(
+                0,
+                || Err::<(), _>(MountSourceError::Invalid("late capture failed".to_owned())),
+                move |result| {
+                    record_post_operation_failure(
+                        observed.as_ref(),
+                        PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
+                        &path,
+                        Some(&path),
+                        result,
+                    );
+                },
+            )
+            .expect("callback worker");
+        assert!(result.is_err());
+        assert!(
+            flush_callback_gate(&executor, Arc::clone(&failure), |_| {
+                Err(MountSourceError::Invalid("late capture failed".to_owned()))
+            })
+            .expect_err("second barrier must prevent cleanup")
+            .to_string()
+            .contains("late capture failed")
+        );
+    }
 
     #[test]
     fn stopped_runtime_is_retained_until_cleanup_succeeds() {
@@ -1077,23 +2772,5 @@ mod tests {
 
         finish_cleanup(&mut state, |_| Ok::<(), &str>(())).expect("retry cleanup succeeds");
         assert_eq!(state, None);
-    }
-
-    #[test]
-    fn metadata_probe_guard_is_path_scoped_counted_and_raii() {
-        let probes = Mutex::new(HashMap::new());
-        let first = MountPath::root().child(vec![b'a', 0]);
-        let second = MountPath::root().child(vec![b'b', 0]);
-
-        let outer = MetadataProbeGuard::enter(&probes, &first);
-        assert!(MetadataProbeGuard::is_active(&probes, &first));
-        assert!(!MetadataProbeGuard::is_active(&probes, &second));
-        {
-            let _overlap = MetadataProbeGuard::enter(&probes, &first);
-            assert!(MetadataProbeGuard::is_active(&probes, &first));
-        }
-        assert!(MetadataProbeGuard::is_active(&probes, &first));
-        drop(outer);
-        assert!(!MetadataProbeGuard::is_active(&probes, &first));
     }
 }

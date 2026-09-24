@@ -6,9 +6,9 @@
 #![allow(unsafe_code)]
 
 use super::{
-    MountAttributeWriteMode, MountDirectoryEntry, MountFilesystem, MountLookup, MountNodeKind,
-    MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError,
-    NativeMountError, NativeMountRequest, metadata_or, system_time_ns,
+    DriverStartFailure, MountAttributeWriteMode, MountDirectoryEntry, MountFilesystem, MountLookup,
+    MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget,
+    MountSourceError, NativeMountError, NativeMountRequest, metadata_or, system_time_ns,
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
@@ -29,15 +29,17 @@ use std::time::{Duration, Instant, SystemTime};
 const ROOT_INODE: u64 = 1;
 const DIRECTORY_PAGE_SIZE: u32 = 256;
 const ATTRIBUTE_PAGE_SIZE: u32 = 256;
+const MAXIMUM_LOOKUP_CACHE_ENTRIES: usize = 65_536;
 const MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES: usize = 1024 * 1024;
 const MAXIMUM_CALLBACK_BYTES: usize = i32::MAX as usize;
 const RENAME_NOREPLACE: u32 = 1;
 const FALLOC_FL_KEEP_SIZE: c_int = 0x01;
 const FALLOC_FL_PUNCH_HOLE: c_int = 0x02;
 const FALLOC_FL_ZERO_RANGE: c_int = 0x10;
-const DISKUTIL_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(30);
-const DISKUTIL_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(30);
-const DIRECT_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(5);
+const DISKUTIL_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(4);
+const MOUNT_LOOP_EXIT_TIMEOUT: Duration = Duration::from_secs(4);
+const DISKUTIL_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2);
+const DIRECT_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(3);
 mod mode {
     pub(super) const IFMT: u32 = libc::S_IFMT as u32;
     pub(super) const IFIFO: u32 = libc::S_IFIFO as u32;
@@ -49,6 +51,7 @@ mod mode {
     pub(super) const IFREG: u32 = libc::S_IFREG as u32;
 }
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct NativeStat {
     inode: u64,
@@ -111,24 +114,48 @@ unsafe extern "C" {
 struct FileHandle {
     file_id: FileId,
     file: Arc<dyn MountOpenFile>,
+    observation: Arc<Mutex<FileObservation>>,
 }
 
+struct FileObservation {
+    epochs: Option<CacheEpochs>,
+    lookup: MountLookup,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct CacheEpochs {
+    view: u64,
+    binding: u64,
+}
+
+#[derive(Clone)]
 struct DirectoryHandle {
     path: MountPath,
+    binding_epoch: Option<u64>,
+    epochs: Option<CacheEpochs>,
     cursor: Option<Vec<u8>>,
     entries: VecDeque<MountDirectoryEntry>,
     exhausted: bool,
     emitted: i64,
+    revision: Option<u64>,
+}
+
+struct DirectoryCheckpoint {
+    revision: u64,
+    handle: DirectoryHandle,
 }
 
 impl DirectoryHandle {
-    fn new(path: MountPath) -> Self {
+    fn new(path: MountPath, binding_epoch: Option<u64>, epochs: Option<CacheEpochs>) -> Self {
         Self {
             path,
+            binding_epoch,
+            epochs,
             cursor: None,
             entries: VecDeque::new(),
             exhausted: false,
             emitted: 0,
+            revision: None,
         }
     }
 
@@ -137,6 +164,19 @@ impl DirectoryHandle {
         self.entries.clear();
         self.exhausted = false;
         self.emitted = 0;
+        self.revision = None;
+    }
+
+    fn is_current(&self, source: &dyn MountFilesystem) -> bool {
+        self.matches_epochs(cache_epochs(source))
+    }
+
+    fn matches_epochs(&self, epochs: Option<CacheEpochs>) -> bool {
+        self.epochs == epochs
+    }
+
+    const fn can_reuse_pages(&self) -> bool {
+        self.epochs.is_some()
     }
 }
 
@@ -148,8 +188,26 @@ struct DarwinMountContext {
     next_handle: AtomicU64,
     next_inode: AtomicU64,
     inodes: Mutex<HashMap<FileId, u64>>,
+    lookups: Mutex<LookupCache>,
     files: RwLock<HashMap<u64, FileHandle>>,
     directories: Mutex<HashMap<u64, Arc<Mutex<DirectoryHandle>>>>,
+    directory_checkpoints: Mutex<HashMap<MountPath, DirectoryCheckpoint>>,
+    namespace_revision: AtomicU64,
+}
+
+struct LookupCache {
+    epochs: Option<CacheEpochs>,
+    entries: HashMap<MountPath, Option<MountLookup>>,
+}
+
+fn cache_epochs(source: &dyn MountFilesystem) -> Option<CacheEpochs> {
+    if !source.view_is_stable() {
+        return None;
+    }
+    Some(CacheEpochs {
+        view: source.view_epoch()?,
+        binding: source.binding_epoch()?,
+    })
 }
 
 impl DarwinMountContext {
@@ -159,6 +217,7 @@ impl DarwinMountContext {
         metadata: &Metadata,
         root_file_id: FileId,
     ) -> Self {
+        let epochs = cache_epochs(source.as_ref());
         Self {
             source,
             writable,
@@ -167,8 +226,14 @@ impl DarwinMountContext {
             next_handle: AtomicU64::new(1),
             next_inode: AtomicU64::new(ROOT_INODE + 1),
             inodes: Mutex::new(HashMap::from([(root_file_id, ROOT_INODE)])),
+            lookups: Mutex::new(LookupCache {
+                epochs,
+                entries: HashMap::new(),
+            }),
             files: RwLock::new(HashMap::new()),
             directories: Mutex::new(HashMap::new()),
+            directory_checkpoints: Mutex::new(HashMap::new()),
+            namespace_revision: AtomicU64::new(0),
         }
     }
 
@@ -178,6 +243,10 @@ impl DarwinMountContext {
             return Err(libc::EMFILE);
         }
         Ok(handle)
+    }
+
+    fn namespace_changed(&self) {
+        self.namespace_revision.fetch_add(1, Ordering::Release);
     }
 
     fn inode(&self, file_id: FileId) -> Result<u64, i32> {
@@ -195,19 +264,81 @@ impl DarwinMountContext {
     }
 
     fn lookup(&self, path: &MountPath) -> Result<MountLookup, i32> {
-        self.source
-            .lookup(path)
-            .map_err(|error| errno(&error))?
-            .ok_or(libc::ENOENT)
+        let epochs = cache_epochs(self.source.as_ref());
+        if let Some(epochs) = epochs {
+            let mut cache = self.lookups.lock().map_err(|_| libc::EIO)?;
+            if cache.epochs != Some(epochs) {
+                cache.entries.clear();
+                cache.epochs = Some(epochs);
+            }
+            if let Some(cached) = cache.entries.get(path).copied()
+                && cache_epochs(self.source.as_ref()) == Some(epochs)
+            {
+                return cached.ok_or(libc::ENOENT);
+            }
+        }
+        let lookup = self.source.lookup(path).map_err(|error| errno(&error))?;
+        if let Some(epochs) = epochs
+            && cache_epochs(self.source.as_ref()) == Some(epochs)
+        {
+            self.remember_lookup(path, lookup, epochs)?;
+        }
+        lookup.ok_or(libc::ENOENT)
+    }
+
+    fn remember_current_lookup(
+        &self,
+        path: &MountPath,
+        lookup: Option<MountLookup>,
+    ) -> Result<(), i32> {
+        let Some(epochs) = cache_epochs(self.source.as_ref()) else {
+            return Ok(());
+        };
+        self.remember_lookup(path, lookup, epochs)?;
+        Ok(())
+    }
+
+    fn remember_lookup(
+        &self,
+        path: &MountPath,
+        lookup: Option<MountLookup>,
+        epochs: CacheEpochs,
+    ) -> Result<(), i32> {
+        let mut lookups = self.lookups.lock().map_err(|_| libc::EIO)?;
+        if lookups.epochs != Some(epochs) {
+            lookups.entries.clear();
+            lookups.epochs = Some(epochs);
+        }
+        if lookups.entries.len() >= MAXIMUM_LOOKUP_CACHE_ENTRIES {
+            lookups.entries.clear();
+        }
+        lookups.entries.try_reserve(1).map_err(|_| libc::ENOMEM)?;
+        lookups.entries.insert(path.clone(), lookup);
+        Ok(())
     }
 
     fn open(&self, path: &MountPath) -> Result<u64, i32> {
         let file = self.source.open_file(path).map_err(|error| errno(&error))?;
-        let file_id = file.lookup().map_err(|error| errno(&error))?.node.file_id;
+        let before = cache_epochs(self.source.as_ref());
+        let lookup = file.lookup().map_err(|error| errno(&error))?;
+        let after = cache_epochs(self.source.as_ref());
+        let observed_epochs = (before.is_some() && before == after)
+            .then_some(after)
+            .flatten();
         let handle = self.allocate_handle()?;
         let mut files = self.files.write().map_err(|_| libc::EIO)?;
         files.try_reserve(1).map_err(|_| libc::ENOMEM)?;
-        files.insert(handle, FileHandle { file_id, file });
+        files.insert(
+            handle,
+            FileHandle {
+                file_id: lookup.node.file_id,
+                file,
+                observation: Arc::new(Mutex::new(FileObservation {
+                    epochs: observed_epochs,
+                    lookup,
+                })),
+            },
+        );
         Ok(handle)
     }
 
@@ -228,15 +359,53 @@ impl DarwinMountContext {
         }
     }
 
+    fn file_with_lookup(
+        &self,
+        path: &MountPath,
+        handle: u64,
+    ) -> Result<(Arc<dyn MountOpenFile>, MountLookup), i32> {
+        if handle == 0 {
+            let file = self.source.open_file(path).map_err(|error| errno(&error))?;
+            let lookup = file.lookup().map_err(|error| errno(&error))?;
+            return Ok((file, lookup));
+        }
+        let (file, observation) = {
+            let files = self.files.read().map_err(|_| libc::EIO)?;
+            let entry = files.get(&handle).ok_or(libc::ESTALE)?;
+            (Arc::clone(&entry.file), Arc::clone(&entry.observation))
+        };
+        let epochs = cache_epochs(self.source.as_ref());
+        if let Some(epochs) = epochs {
+            let observation = observation.lock().map_err(|_| libc::EIO)?;
+            if observation.epochs == Some(epochs) {
+                return Ok((file, observation.lookup));
+            }
+        }
+        let lookup = file.lookup().map_err(|error| errno(&error))?;
+        if let Some(epochs) = epochs
+            && cache_epochs(self.source.as_ref()) == Some(epochs)
+        {
+            let mut observation = observation.lock().map_err(|_| libc::EIO)?;
+            observation.epochs = Some(epochs);
+            observation.lookup = lookup;
+        }
+        Ok((file, lookup))
+    }
+
     fn lookup_handle(&self, path: &MountPath, handle: u64) -> Result<MountLookup, i32> {
         if handle == 0 {
             return self.lookup(path);
         }
-        self.file(handle)?.lookup().map_err(|error| errno(&error))
+        self.file_with_lookup(path, handle)
+            .map(|(_, lookup)| lookup)
     }
 
     fn attributes(&self, path: &MountPath, handle: u64) -> Result<NativeStat, i32> {
         let lookup = self.lookup_handle(path, handle)?;
+        self.attributes_from_lookup(lookup)
+    }
+
+    fn attributes_from_lookup(&self, lookup: MountLookup) -> Result<NativeStat, i32> {
         let node = lookup.node;
         let file_kind = match node.kind {
             MountNodeKind::Regular => mode::IFREG,
@@ -311,13 +480,39 @@ impl DarwinMountContext {
 
 /// One process-owned high-level Darwin mount session.
 pub(super) struct DarwinMountSession {
-    source_context: usize,
-    driver_session: usize,
+    resources: Option<Arc<DriverSessionResources>>,
     destination: PathBuf,
     thread: Option<JoinHandle<c_int>>,
     loop_finished_before_teardown: Option<bool>,
-    loop_result: Option<Result<c_int, String>>,
+    loop_result: Option<MountLoopResult>,
     teardown_complete: bool,
+}
+
+#[derive(Debug)]
+enum MountLoopResult {
+    Exited(c_int),
+    Panicked,
+    TimedOut,
+}
+
+/// Both the session and mount loop own these pointers. A timed-out loop may
+/// outlive the session, but neither pointer is freed until that loop exits.
+struct DriverSessionResources {
+    source_context: usize,
+    driver_session: usize,
+}
+
+impl Drop for DriverSessionResources {
+    fn drop(&mut self) {
+        // SAFETY: the last owner has released these exact allocations, and
+        // the mount loop retains an owner through every native callback.
+        unsafe {
+            acyclic_fs_darwin_mount_session_free(self.driver_session as *mut c_void);
+            drop(Arc::from_raw(
+                self.source_context as *const DarwinMountContext,
+            ));
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -330,7 +525,7 @@ impl DarwinMountSession {
     pub(super) fn start(
         request: &NativeMountRequest,
         source: Arc<dyn MountFilesystem>,
-    ) -> Result<Self, NativeMountError> {
+    ) -> Result<Self, DriverStartFailure> {
         static STARTUP: OnceLock<Mutex<()>> = OnceLock::new();
         let _startup = STARTUP.get_or_init(|| Mutex::new(())).lock().map_err(|_| {
             NativeMountError::Driver("Darwin mount startup lock is poisoned".to_owned())
@@ -340,9 +535,9 @@ impl DarwinMountSession {
             .map_err(|error| source_error(&error))?
             .ok_or_else(|| NativeMountError::Driver("volume root is absent".to_owned()))?;
         if root.node.kind != MountNodeKind::Directory {
-            return Err(NativeMountError::Driver(
-                "volume root is not a directory".to_owned(),
-            ));
+            return Err(
+                NativeMountError::Driver("volume root is not a directory".to_owned()).into(),
+            );
         }
         let destination_metadata = request
             .destination
@@ -353,6 +548,7 @@ impl DarwinMountSession {
             .parent()
             .and_then(|parent| parent.metadata().ok())
             .ok_or_else(|| NativeMountError::Driver("mount parent is unavailable".to_owned()))?;
+        let supports_named_attributes = source.supports_posix_named_attributes();
         let context = Arc::new(DarwinMountContext::new(
             source,
             request.writable,
@@ -366,8 +562,10 @@ impl DarwinMountSession {
             std::process::id(),
             hex::encode(request.mount_id.into_bytes())
         );
-        let options = mount_options(request.writable, &volume_name);
+        let options = mount_options(request.writable, &volume_name, supports_named_attributes);
         let arguments = fuse_arguments(&options).map_err(driver_errno)?;
+        let argument_count = c_int::try_from(arguments.len())
+            .map_err(|_| NativeMountError::Driver("too many Darwin mount arguments".to_owned()))?;
         // Transfer the Rust callback context only after every fallible argument
         // conversion has completed, then bind one C interrupt handle to this
         // exact loop. The bridge registry keeps native control state scoped to
@@ -378,8 +576,14 @@ impl DarwinMountSession {
             unsafe { drop(Arc::from_raw(source_context as *const DarwinMountContext)) };
             return Err(NativeMountError::Driver(
                 "Darwin mount session allocation failed".to_owned(),
-            ));
+            )
+            .into());
         }
+        let resources = Arc::new(DriverSessionResources {
+            source_context,
+            driver_session,
+        });
+        let loop_resources = Arc::clone(&resources);
         let thread = std::thread::Builder::new()
             .name("acyclic-fs-darwin-nfs".to_owned())
             .spawn(move || {
@@ -389,52 +593,82 @@ impl DarwinMountSession {
                     .collect::<Vec<_>>();
                 unsafe {
                     acyclic_fs_darwin_mount_run(
-                        driver_session as *mut c_void,
-                        c_int::try_from(pointers.len()).unwrap_or(c_int::MAX),
+                        loop_resources.driver_session as *mut c_void,
+                        argument_count,
                         pointers.as_ptr(),
                         destination_c.as_ptr(),
-                        source_context,
+                        loop_resources.source_context,
                     )
                 }
             })
-            .map_err(|error| {
-                unsafe {
-                    acyclic_fs_darwin_mount_session_free(driver_session as *mut c_void);
-                    drop(Arc::from_raw(source_context as *const DarwinMountContext));
-                }
-                NativeMountError::Driver(error.to_string())
-            })?;
-        let mut session = Self {
-            source_context,
-            driver_session,
+            .map_err(|error| NativeMountError::Driver(error.to_string()))?;
+        Self {
+            resources: Some(resources),
             destination,
             thread: Some(thread),
             loop_finished_before_teardown: None,
             loop_result: None,
             teardown_complete: false,
-        };
+        }
+        .await_mount(&parent_metadata)
+    }
+
+    fn await_mount(mut self, parent_metadata: &Metadata) -> Result<Self, DriverStartFailure> {
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !is_mounted(&session.destination, &parent_metadata)
-            .map_err(NativeMountError::Driver)?
-        {
-            if session.thread.as_ref().is_some_and(JoinHandle::is_finished) {
-                let status = session.finish_thread();
-                session.loop_finished_before_teardown = Some(true);
+        loop {
+            match is_mounted(&self.destination, parent_metadata) {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(error) => {
+                    return Err(self.failed_start(NativeMountError::Driver(error)));
+                }
+            }
+            if self.thread.as_ref().is_some_and(JoinHandle::is_finished) {
+                let status = self.finish_thread();
+                self.loop_finished_before_teardown = Some(true);
                 let description = format!("{status:?}");
-                session.loop_result = Some(status);
-                return Err(NativeMountError::Driver(format!(
+                self.loop_result = Some(status);
+                return Err(self.failed_start(NativeMountError::Driver(format!(
                     "Darwin mount exited before the mount became visible: {description}"
-                )));
+                ))));
             }
             if Instant::now() >= deadline {
-                let _ = session.stop();
-                return Err(NativeMountError::Driver(
+                return Err(self.failed_start(NativeMountError::Driver(
                     "Darwin mount did not become visible within 10 seconds".to_owned(),
-                ));
+                )));
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        Ok(session)
+        // A successful NFS mount does not prove the caller can use it: macOS
+        // privacy policy can allow metadata lookups while denying every open
+        // on the mounted network volume. Opening the root reads no entries or
+        // content, and fails before exposing an unusable child workspace.
+        if let Err(error) = std::fs::File::open(&self.destination) {
+            let message = if error.raw_os_error() == Some(libc::EPERM) {
+                format!(
+                    "macOS denied opening the mounted network volume: {error}; for SSH sessions, enable Remote Login → Allow full disk access for remote users"
+                )
+            } else {
+                format!("Darwin mount root could not be opened: {error}")
+            };
+            return Err(self.failed_start(NativeMountError::Driver(message)));
+        }
+        Ok(self)
+    }
+
+    fn failed_start(mut self, error: NativeMountError) -> DriverStartFailure {
+        match self.stop() {
+            Ok(()) => error.into(),
+            Err(cleanup) => {
+                // The caller will preserve the destination fence. Do not let
+                // Drop retry teardown without owning that fence: its result
+                // could otherwise contradict the caller's ownership decision.
+                std::mem::forget(self);
+                DriverStartFailure::preserving_destination_fence(NativeMountError::Driver(format!(
+                    "{error}; teardown failed: {cleanup}"
+                )))
+            }
+        }
     }
 
     /// Drops the kernel's cached entry/attributes for one mount-relative
@@ -442,6 +676,9 @@ impl DarwinMountSession {
     /// removed route — becomes visible before any cache timeout. Best
     /// effort: transports that cannot invalidate report a driver error.
     pub(super) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
+        let resources = self.resources.as_ref().ok_or_else(|| {
+            NativeMountError::Driver("Darwin mount session has stopped".to_owned())
+        })?;
         let mut bytes = Vec::with_capacity(path.len() + 1);
         if path.first() != Some(&b'/') {
             bytes.push(b'/');
@@ -451,8 +688,16 @@ impl DarwinMountSession {
             .map_err(|_| NativeMountError::Driver("path contains NUL".to_owned()))?;
         // SAFETY: `driver_session` is the live bridge session this struct
         // owns until teardown, and `path` is a NUL-terminated string.
+        // Reject continuation snapshots before the external invalidation can
+        // overlap a directory read.
+        unsafe {
+            (&*(resources.source_context as *const DarwinMountContext)).namespace_changed();
+        }
         let status = unsafe {
-            acyclic_fs_darwin_mount_invalidate(self.driver_session as *mut c_void, path.as_ptr())
+            acyclic_fs_darwin_mount_invalidate(
+                resources.driver_session as *mut c_void,
+                path.as_ptr(),
+            )
         };
         if status == 0 {
             Ok(())
@@ -477,8 +722,16 @@ impl DarwinMountSession {
                 Some(self.thread.as_ref().is_none_or(JoinHandle::is_finished));
         }
         let unmount = bounded_diskutil_unmount(&self.destination);
-        if self.loop_result.is_none() {
-            unsafe { acyclic_fs_darwin_mount_interrupt(self.driver_session as *mut c_void) };
+        if self
+            .loop_result
+            .as_ref()
+            .is_none_or(|result| matches!(result, MountLoopResult::TimedOut))
+        {
+            if let Some(resources) = &self.resources {
+                unsafe {
+                    acyclic_fs_darwin_mount_interrupt(resources.driver_session as *mut c_void);
+                }
+            }
             let join = self.finish_thread();
             self.loop_result = Some(join);
         }
@@ -490,38 +743,67 @@ impl DarwinMountSession {
         let join = self.loop_result.as_ref().ok_or_else(|| {
             NativeMountError::Driver("Darwin mount loop result is absent".to_owned())
         })?;
-        let result = match (join, unmount, loop_finished_before_teardown) {
-            (Ok(0), _, false) => Ok(()),
-            (Ok(0), _, true) => Err(NativeMountError::Driver(
-                "Darwin mount loop exited before teardown began".to_owned(),
-            )),
-            (Ok(status), _, _) => Err(NativeMountError::Driver(format!(
-                "Darwin mount loop exited with status {status}"
-            ))),
-            (Err(error), _, _) => Err(NativeMountError::Driver(error.clone())),
-        };
+        let result = classify_detached_loop(join, unmount, loop_finished_before_teardown);
         if result.is_ok() {
             self.teardown_complete = true;
         }
         result
     }
 
-    fn finish_thread(&mut self) -> Result<c_int, String> {
-        let Some(thread) = self.thread.take() else {
-            return Ok(0);
+    fn finish_thread(&mut self) -> MountLoopResult {
+        self.finish_thread_within(MOUNT_LOOP_EXIT_TIMEOUT)
+    }
+
+    fn finish_thread_within(&mut self, timeout: Duration) -> MountLoopResult {
+        let Some(thread) = self.thread.as_ref() else {
+            return MountLoopResult::Exited(0);
         };
-        let status = thread
-            .join()
-            .map_err(|_| "Darwin mount loop thread panicked".to_owned());
-        unsafe {
-            acyclic_fs_darwin_mount_session_free(self.driver_session as *mut c_void);
-            drop(Arc::from_raw(
-                self.source_context as *const DarwinMountContext,
-            ));
+        let deadline = Instant::now() + timeout;
+        while !thread.is_finished() {
+            if Instant::now() >= deadline {
+                // Keep the join handle, callback resources, and destination
+                // fence so a later stop can retry once callbacks have exited.
+                return MountLoopResult::TimedOut;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
-        self.driver_session = 0;
-        self.source_context = 0;
+        let Some(thread) = self.thread.take() else {
+            return MountLoopResult::Panicked;
+        };
+        let status = match thread.join() {
+            Ok(status) => MountLoopResult::Exited(status),
+            Err(_) => MountLoopResult::Panicked,
+        };
+        self.resources.take();
         status
+    }
+}
+
+fn classify_detached_loop(
+    join: &MountLoopResult,
+    unmount: UnmountEvidence,
+    loop_finished_before_teardown: bool,
+) -> Result<(), NativeMountError> {
+    match (join, unmount, loop_finished_before_teardown) {
+        (MountLoopResult::Exited(0), _, false)
+        | (MountLoopResult::Exited(0), UnmountEvidence::AlreadyUnmounted, true) => Ok(()),
+        // An external forced detach is a mount-loss event, not a provider
+        // failure.  The destination evidence distinguishes it from a
+        // provider loop that died while its stale mount was still present.
+        (MountLoopResult::Exited(0), _, true) => Err(NativeMountError::Driver(
+            "Darwin mount loop exited before teardown began".to_owned(),
+        )),
+        // A detached namespace does not prove that in-flight callbacks have
+        // finished. Publishing this destination now could race a late write.
+        (MountLoopResult::TimedOut, _, _) => Err(NativeMountError::Driver(
+            "Darwin mount callbacks have not finished; destination remains fenced".to_owned(),
+        )),
+        (MountLoopResult::Exited(status), _, _) => Err(NativeMountError::Driver(format!(
+            "Darwin mount loop exited with status {status}"
+        ))),
+        (MountLoopResult::Panicked, _, _) => Err(NativeMountError::Driver(
+            "Darwin mount loop thread panicked".to_owned(),
+        )),
     }
 }
 
@@ -531,16 +813,23 @@ impl Drop for DarwinMountSession {
     }
 }
 
-fn mount_options(writable: bool, volume_name: &str) -> [String; 7] {
-    [
+fn mount_options(
+    writable: bool,
+    volume_name: &str,
+    supports_named_attributes: bool,
+) -> Vec<String> {
+    let mut options = vec![
         if writable { "rw" } else { "ro" }.to_owned(),
         "default_permissions".to_owned(),
         "noatime".to_owned(),
         "noforget".to_owned(),
         "nobrowse".to_owned(),
-        "namedattr".to_owned(),
         format!("volname={volume_name}"),
-    ]
+    ];
+    if supports_named_attributes {
+        options.push("namedattr".to_owned());
+    }
+    options
 }
 
 fn fuse_arguments(options: &[String]) -> Result<Vec<CString>, i32> {
@@ -617,7 +906,10 @@ fn bounded_diskutil_unmount(destination: &Path) -> Result<UnmountEvidence, Strin
             if !is_mounted(destination, &parent)? {
                 return Ok(UnmountEvidence::DiskutilUnmounted);
             }
-            return Err("diskutil unmount exceeded its 30-second bound".to_owned());
+            return Err(format!(
+                "diskutil unmount exceeded its {}-second bound",
+                DISKUTIL_UNMOUNT_TIMEOUT.as_secs()
+            ));
         }
         std::thread::sleep(Duration::from_millis(10));
     };
@@ -750,10 +1042,12 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_create(
         let context = context(address)?;
         context.admit_write()?;
         let path = mount_path(path)?;
-        context
+        let lookup = context
             .source
             .create_file(&path, create_metadata(mode, mode::IFREG, uid, gid))
             .map_err(|error| errno(&error))?;
+        context.remember_current_lookup(&path, Some(lookup))?;
+        context.namespace_changed();
         unsafe { handle.write(context.open(&path)?) };
         Ok(0)
     })
@@ -792,23 +1086,11 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_read(
         let requested_length = bounded_length(length)?;
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         let context = context(address)?;
-        let file = context.file_or_open(&mount_path(path)?, handle)?;
-        let logical_bytes = file
-            .lookup()
-            .map_err(|error| errno(&error))?
-            .node
-            .logical_bytes;
-        let length = logical_bytes
-            .saturating_sub(offset)
-            .min(u64::from(requested_length));
-        if length == 0 {
-            return Ok(0);
-        }
-        let length = u32::try_from(length).map_err(|_| libc::EOVERFLOW)?;
-        let bytes = file
-            .read_range(offset, length)
+        let bytes = context
+            .file_or_open(&mount_path(path)?, handle)?
+            .read_up_to(offset, requested_length)
             .map_err(|error| errno(&error))?;
-        if bytes.len() > usize::try_from(length).unwrap_or(usize::MAX) {
+        if bytes.len() > usize::try_from(requested_length).unwrap_or(usize::MAX) {
             return Err(libc::EIO);
         }
         unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast(), bytes.len()) };
@@ -885,13 +1167,29 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
     ffi_status(|| {
         let context = context(address)?;
         let path = mount_path(path)?;
+        let binding_epoch = context.source.binding_epoch();
+        let epochs = cache_epochs(context.source.as_ref());
+        let _binding_lease = context
+            .source
+            .acquire_binding_lease(binding_epoch)
+            .map_err(|error| errno(&error))?;
         if context.lookup(&path)?.node.kind != MountNodeKind::Directory {
             return Err(libc::ENOTDIR);
+        }
+        if epochs.is_some() && cache_epochs(context.source.as_ref()) != epochs {
+            return Err(libc::ESTALE);
         }
         let allocated = context.allocate_handle()?;
         let mut directories = context.directories.lock().map_err(|_| libc::EIO)?;
         directories.try_reserve(1).map_err(|_| libc::ENOMEM)?;
-        directories.insert(allocated, Arc::new(Mutex::new(DirectoryHandle::new(path))));
+        directories.insert(
+            allocated,
+            Arc::new(Mutex::new(DirectoryHandle::new(
+                path,
+                binding_epoch,
+                epochs,
+            ))),
+        );
         unsafe { handle.write(allocated) };
         Ok(0)
     })
@@ -916,11 +1214,40 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
             .cloned()
             .ok_or(libc::ESTALE)?;
         let mut directory = directory.lock().map_err(|_| libc::EIO)?;
-        if offset == 0 && directory.emitted != 0 {
-            directory.rewind();
-        } else if offset != directory.emitted {
+        let _binding_lease = context
+            .source
+            .acquire_binding_lease(directory.binding_epoch)
+            .map_err(|error| errno(&error))?;
+        if !directory.is_current(context.source.as_ref()) {
+            return Err(libc::ESTALE);
+        }
+        if offset < 0 {
             return Err(libc::EINVAL);
         }
+        if !directory.can_reuse_pages() {
+            directory.rewind();
+            context
+                .directory_checkpoints
+                .lock()
+                .map_err(|_| libc::EIO)?
+                .remove(&directory.path);
+        } else if offset > 0 && directory.emitted == 0 {
+            let checkpoints = context
+                .directory_checkpoints
+                .lock()
+                .map_err(|_| libc::EIO)?;
+            if let Some(checkpoint) = checkpoints.get(&directory.path)
+                && checkpoint.revision == context.namespace_revision.load(Ordering::Acquire)
+                && checkpoint.handle.emitted == offset
+                && checkpoint.handle.epochs == directory.epochs
+            {
+                *directory = checkpoint.handle.clone();
+            }
+        }
+        if offset < directory.emitted {
+            directory.rewind();
+        }
+        advance_directory_to_offset(context, &mut directory, offset)?;
         while directory.emitted < 2 {
             let name = if directory.emitted == 0 { c"." } else { c".." };
             let next = directory.emitted + 1;
@@ -934,33 +1261,27 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
                 )
             };
             if buffer_full != 0 {
+                finish_directory_page(context, &directory, true)?;
                 return Ok(0);
             }
             directory.emitted = next;
         }
         loop {
-            if directory.entries.is_empty() && !directory.exhausted {
-                let page = context
-                    .source
-                    .read_directory(
-                        &directory.path,
-                        directory.cursor.as_deref(),
-                        DIRECTORY_PAGE_SIZE,
-                    )
-                    .map_err(|error| errno(&error))?;
-                if page.entries.is_empty() && page.next_cursor.is_some() {
-                    return Err(libc::EIO);
-                }
-                directory.cursor = page.next_cursor;
-                directory.exhausted = directory.cursor.is_none();
-                directory.entries = page.entries.into();
-            }
+            ensure_directory_page(context, &mut directory)?;
             let Some(entry) = directory.entries.front() else {
+                finish_directory_page(context, &directory, false)?;
+                context
+                    .directory_checkpoints
+                    .lock()
+                    .map_err(|_| libc::EIO)?
+                    .remove(&directory.path);
                 return Ok(0);
             };
             let name = CString::new(entry.name.as_slice()).map_err(|_| libc::EIO)?;
-            let child = directory.path.child(entry.name.clone());
-            let attributes = context.attributes(&child, 0)?;
+            let attributes = context.attributes_from_lookup(MountLookup {
+                node: entry.node,
+                metadata: entry.metadata,
+            })?;
             let next = directory.emitted.checked_add(1).ok_or(libc::EOVERFLOW)?;
             let buffer_full = unsafe {
                 acyclic_fs_darwin_mount_fill_directory(
@@ -972,12 +1293,114 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
                 )
             };
             if buffer_full != 0 {
+                finish_directory_page(context, &directory, true)?;
                 return Ok(0);
             }
             directory.entries.pop_front();
             directory.emitted = next;
         }
     })
+}
+
+fn finish_directory_page(
+    context: &DarwinMountContext,
+    directory: &DirectoryHandle,
+    checkpoint: bool,
+) -> Result<(), i32> {
+    // A mutation can happen after the last page read, while the native filler
+    // copies entries into its buffer. Returning ESTALE discards that buffer
+    // rather than exposing a listing assembled from different view epochs.
+    if directory.can_reuse_pages() && !directory.is_current(context.source.as_ref()) {
+        return Err(libc::ESTALE);
+    }
+    if checkpoint {
+        checkpoint_directory(context, directory)?;
+    }
+    Ok(())
+}
+
+fn advance_directory_to_offset(
+    context: &DarwinMountContext,
+    directory: &mut DirectoryHandle,
+    offset: i64,
+) -> Result<(), i32> {
+    while directory.emitted < offset {
+        if directory.emitted < 2 {
+            directory.emitted += 1;
+            continue;
+        }
+        ensure_directory_page(context, directory)?;
+        if directory.entries.pop_front().is_none() {
+            return Err(libc::EINVAL);
+        }
+        directory.emitted += 1;
+    }
+    Ok(())
+}
+
+fn ensure_directory_page(
+    context: &DarwinMountContext,
+    directory: &mut DirectoryHandle,
+) -> Result<(), i32> {
+    if directory.can_reuse_pages() && !directory.is_current(context.source.as_ref()) {
+        return Err(libc::ESTALE);
+    }
+    if directory.entries.is_empty() && !directory.exhausted {
+        directory
+            .revision
+            .get_or_insert_with(|| context.namespace_revision.load(Ordering::Acquire));
+        let page = context
+            .source
+            .read_directory(
+                &directory.path,
+                directory.cursor.as_deref(),
+                DIRECTORY_PAGE_SIZE,
+            )
+            .map_err(|error| errno(&error))?;
+        if directory.can_reuse_pages() && !directory.is_current(context.source.as_ref()) {
+            return Err(libc::ESTALE);
+        }
+        if page.entries.is_empty() && page.next_cursor.is_some() {
+            return Err(libc::EIO);
+        }
+        directory.cursor = page.next_cursor;
+        directory.exhausted = directory.cursor.is_none();
+        directory.entries = page.entries.into();
+    }
+    Ok(())
+}
+
+fn checkpoint_directory(
+    context: &DarwinMountContext,
+    directory: &DirectoryHandle,
+) -> Result<(), i32> {
+    const MAXIMUM_DIRECTORY_CHECKPOINTS: usize = 64;
+    if !directory.can_reuse_pages() {
+        return Ok(());
+    }
+    let mut checkpoints = context
+        .directory_checkpoints
+        .lock()
+        .map_err(|_| libc::EIO)?;
+    let current_revision = context.namespace_revision.load(Ordering::Acquire);
+    let revision = directory.revision.unwrap_or(current_revision);
+    if revision != current_revision {
+        checkpoints.remove(&directory.path);
+        return Ok(());
+    }
+    if checkpoints.len() >= MAXIMUM_DIRECTORY_CHECKPOINTS
+        && !checkpoints.contains_key(&directory.path)
+    {
+        checkpoints.clear();
+    }
+    checkpoints.insert(
+        directory.path.clone(),
+        DirectoryCheckpoint {
+            revision,
+            handle: directory.clone(),
+        },
+    );
+    Ok(())
 }
 
 #[unsafe(no_mangle)]
@@ -1011,6 +1434,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
                 create_metadata(mode, mode::IFDIR, uid, gid),
             )
             .map_err(|error| errno(&error))?;
+        context.namespace_changed();
         Ok(0)
     })
 }
@@ -1056,6 +1480,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
             .source
             .remove(&path, Some(lookup.node.file_id))
             .map_err(|error| errno(&error))?;
+        context.namespace_changed();
         if let Some(detached) = detached {
             for entry in context
                 .files
@@ -1092,6 +1517,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
                 flags & RENAME_NOREPLACE == 0,
             )
             .map_err(|error| errno(&error))?;
+        context.namespace_changed();
         Ok(0)
     })
 }
@@ -1109,6 +1535,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_link(
             .source
             .hard_link(&mount_path(source)?, &mount_path(destination)?)
             .map_err(|error| errno(&error))?;
+        context.namespace_changed();
         Ok(0)
     })
 }
@@ -1133,6 +1560,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
                 create_metadata(0o777, mode::IFLNK, uid, gid),
             )
             .map_err(|error| errno(&error))?;
+        context.namespace_changed();
         Ok(0)
     })
 }
@@ -1196,6 +1624,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
                 create_metadata(mode, mode & mode::IFMT, uid, gid),
             )
             .map_err(|error| errno(&error))?;
+        context.namespace_changed();
         Ok(0)
     })
 }
@@ -1607,4 +2036,133 @@ fn source_error(error: &MountSourceError) -> NativeMountError {
 
 fn driver_errno(error: i32) -> NativeMountError {
     NativeMountError::Driver(std::io::Error::from_raw_os_error(error).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directory_page_rejects_a_native_mutation_between_reads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::Fs;
+        use crate::model::{CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle};
+        use crate::native_mount::{CheckoutMountSource, MountPublication, SharedCheckout};
+
+        let mut config = crate::model::VolumeConfig::portable(Lifecycle::Ephemeral);
+        config.profile = FilesystemProfile::Posix;
+        let fs = Fs::memory();
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let checkout = runtime.block_on(async {
+            let cancellation = crate::CancellationToken::new();
+            let volume = fs
+                .create_volume(config, crate::WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value;
+            volume
+                .checkout(
+                    GenerationSelector::Head,
+                    CheckoutMode::tracking_transaction(),
+                    crate::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map(|receipt| receipt.value)
+        })?;
+        let shared = Arc::new(SharedCheckout::with_publication(
+            checkout,
+            MountPublication::Manual,
+        ));
+        let source = Arc::new(CheckoutMountSource::new(shared, config)?);
+        let root = MountPath::root();
+        let root_id = source.lookup(&root)?.ok_or("root absent")?.node.file_id;
+        let context = DarwinMountContext::new(
+            Arc::clone(&source) as Arc<dyn MountFilesystem>,
+            true,
+            &std::fs::metadata(".")?,
+            root_id,
+        );
+        let mut directory =
+            DirectoryHandle::new(root, source.binding_epoch(), cache_epochs(source.as_ref()));
+        ensure_directory_page(&context, &mut directory)
+            .map_err(std::io::Error::from_raw_os_error)?;
+        source.create_file(
+            &MountPath::root().child(b"after-page".to_vec()),
+            FileMetadata::default(),
+        )?;
+        assert_eq!(
+            finish_directory_page(&context, &directory, false),
+            Err(libc::ESTALE)
+        );
+        assert_eq!(
+            ensure_directory_page(&context, &mut directory),
+            Err(libc::ESTALE)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn directory_continuation_requires_the_same_view_and_binding_epochs() {
+        let directory = DirectoryHandle::new(
+            MountPath::root(),
+            Some(11),
+            Some(CacheEpochs {
+                view: 7,
+                binding: 11,
+            }),
+        );
+        assert!(directory.matches_epochs(Some(CacheEpochs {
+            view: 7,
+            binding: 11,
+        })));
+        assert!(!directory.matches_epochs(Some(CacheEpochs {
+            view: 8,
+            binding: 11,
+        })));
+        assert!(!directory.matches_epochs(Some(CacheEpochs {
+            view: 7,
+            binding: 12,
+        })));
+        assert!(!directory.matches_epochs(None));
+        assert!(directory.can_reuse_pages());
+
+        let epochless = DirectoryHandle::new(MountPath::root(), None, None);
+        assert!(epochless.matches_epochs(None));
+        assert!(!epochless.can_reuse_pages());
+    }
+
+    #[test]
+    fn stalled_mount_loop_keeps_destination_fenced_until_callbacks_finish() {
+        let (release, waiting) = std::sync::mpsc::channel::<()>();
+        let (exited, complete) = std::sync::mpsc::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            let _ = waiting.recv();
+            let _ = exited.send(());
+            0
+        });
+        let mut session = DarwinMountSession {
+            resources: None,
+            destination: PathBuf::new(),
+            thread: Some(thread),
+            loop_finished_before_teardown: None,
+            loop_result: None,
+            teardown_complete: false,
+        };
+        let start = Instant::now();
+        let result = session.finish_thread_within(Duration::from_millis(20));
+        assert!(matches!(result, MountLoopResult::TimedOut));
+        assert!(
+            classify_detached_loop(&result, UnmountEvidence::DiskutilUnmounted, false).is_err()
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(session.thread.is_some());
+        let _ = release.send(());
+        assert!(complete.recv_timeout(Duration::from_secs(1)).is_ok());
+        let result = session.finish_thread_within(Duration::from_secs(1));
+        assert!(matches!(result, MountLoopResult::Exited(0)));
+        assert!(classify_detached_loop(&result, UnmountEvidence::DiskutilUnmounted, false).is_ok());
+        assert!(session.thread.is_none());
+        // This synthetic session has no destination or native driver to stop.
+        session.teardown_complete = true;
+    }
 }

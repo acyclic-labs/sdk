@@ -99,7 +99,7 @@ pub struct WorkCounters {
     pub source_bytes_read: u64,
     /// Components in requested source paths.
     pub source_path_components: u64,
-    /// Exact directory entries visited by demand requests.
+    /// Source entries observed by demand or native capture requests.
     pub source_entries_visited: u64,
     /// Bytes returned to an application or export sink.
     pub output_bytes: u64,

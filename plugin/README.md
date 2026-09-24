@@ -1,7 +1,9 @@
 # Acyclic
 
-Acyclic gives native coding-agent subagents isolated, recursively forked
-distributed-filesystem workspaces. It adds a familiar local-history interface
+Acyclic gives supported native coding-agent subagents independent, recursively
+forked distributed-filesystem workspaces. Recognized filesystem tools are
+routed into the child mount; process-level confinement is a separate,
+host-and-platform-qualified capability. It adds a familiar local-history interface
 through `acyclic git`; it never intercepts bare `git` and never changes the
 filesystem SDK's fork, lease, conflict, merge, or recovery semantics.
 
@@ -28,11 +30,11 @@ Codex plugin, marketplace assets, and native qualification receipts for tagged
 release binaries. A source-built Cargo binary remains uncertified until that
 exact executable completes the native-mount qualification.
 
-The Codex-managed plugin bundles the same dispatcher as an MCP tool named
-`acyclic`, so agents can inspect and operate managed workspaces without a
-separate global PATH entry. Codex plugins do not inject arbitrary shell
-executables into PATH; install the npm package globally only when humans or
-shell commands need the `acyclic` executable.
+Native hooks invoke the installed Acyclic binary directly; the npm launcher is
+only for shell CLI entry. Acyclic does not add an MCP server or a second command
+implementation to shell-capable hosts. Codex plugins do not inject
+arbitrary executables into `PATH`, so install the npm package globally when
+humans or agent shell commands need the `acyclic` executable.
 
 `acyclic install <host>` changes only per-user host
 configuration. Pass `--project` explicitly before Acyclic may create project
@@ -40,14 +42,15 @@ configuration. No `init` command or repository marker exists.
 
 Supported target names are `codex`, `claude-code`, `cursor`, `copilot`,
 `opencode`, `vscode`, `claude-desktop`, `copilot-cloud`, and `pydantic-ai`.
-`acyclic install --detected` installs detected local targets. Full isolation is
-certified only after that host/platform's escape suite passes; MCP-only and
+`acyclic install --detected` installs detected local targets. Process
+confinement is certified only after that host/platform's escape suite passes;
+native-mount qualification alone does not make that claim. MCP-only and
 provisional targets say so at session start.
 
 ## Use
 
 Normal commands and filesystem tools are transparently redirected to a child
-mount. Acyclic itself has six public command shapes:
+mount. Acyclic itself has this public command surface:
 
 ```text
 acyclic git <git-style argv...>
@@ -80,6 +83,7 @@ resolved path with `acyclic git add <path>`, and run
 exact pre-merge workspace. Non-text conflicts are reported with typed paths and
 kinds rather than being flattened into text and must likewise be declared.
 
-The first v2 release uses a fresh per-user state namespace. It neither migrates
-nor deletes prior plugin state. Remove old state manually only after confirming
-that no older Acyclic installation still needs it.
+The current release uses the fresh `state-v5` per-user namespace. It neither
+migrates nor deletes prior plugin state. Remove an older `state-v*` directory
+manually only after confirming that no older Acyclic installation still needs
+it.

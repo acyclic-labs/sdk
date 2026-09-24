@@ -1,13 +1,13 @@
 //! Small composition root for one distributed-filesystem deployment.
 
 use crate::demand::DemandSource;
+use crate::model::VolumeConfig;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, Fs, GitCompatRepository, LazyWorkspace,
     LazyWorkspaceError, LazyWorkspaceStore, MultiRootPublicationAuthorizer,
     MultiRootPublicationCoordinator, MultiRootPublicationStore, MultiRootPublisher,
-    OperationWindowCoordinator, OperationWindowStore, Workspace, WorkspaceContextRegistry,
-    WorkspaceContextStore, WorkspaceGraph, WorkspaceId, WorkspaceLineageError,
-    WorkspaceLineageStore, WorkspaceResolver,
+    OperationWindowCoordinator, Workspace, WorkspaceContextRegistry, WorkspaceContextStore,
+    WorkspaceGraph, WorkspaceId, WorkspaceLineageError, WorkspaceLineageStore, WorkspaceResolver,
 };
 use std::sync::Arc;
 
@@ -64,14 +64,6 @@ impl<A, O, S> DistributedFs<A, O, S> {
         WorkspaceGraph::new(self.store.clone())
     }
 
-    /// Constructs the durable overlapping-operation coordinator.
-    pub fn operations(&self) -> OperationWindowCoordinator<S>
-    where
-        S: OperationWindowStore + Clone,
-    {
-        OperationWindowCoordinator::new(self.store.clone())
-    }
-
     /// Constructs one root's Git-shaped compatibility view.
     pub fn git(&self, workspace_id: WorkspaceId) -> GitCompatRepository<S>
     where
@@ -92,6 +84,21 @@ impl<A, O, S> DistributedFs<A, O, S> {
         S: LazyWorkspaceStore + Clone,
     {
         LazyWorkspace::attach(&self.fs, name, source, self.store.clone()).await
+    }
+
+    /// Attaches an unresolved source to a workspace with exact filesystem semantics.
+    pub async fn attach_lazy_with_config<D: DemandSource + 'static>(
+        &self,
+        name: impl AsRef<str>,
+        source: Arc<D>,
+        config: VolumeConfig,
+    ) -> Result<LazyWorkspace<A, O, D, S>, LazyWorkspaceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+        S: LazyWorkspaceStore + Clone,
+    {
+        LazyWorkspace::attach_with_config(&self.fs, name, source, self.store.clone(), config).await
     }
 
     /// Reopens an existing workspace against its unresolved source.
@@ -118,6 +125,18 @@ impl<A, O, S> DistributedFs<A, O, S> {
         S: MultiRootPublicationStore + Clone,
     {
         MultiRootPublicationCoordinator::new(self.store.clone(), publisher, authorizer)
+    }
+}
+
+impl<P, O, S> DistributedFs<crate::StreamAuthorityStore<P>, O, S> {
+    /// Constructs operation windows on the same authority stream that fences
+    /// generation publication.
+    ///
+    /// Keeping the lease gate and workspace authority on one provider makes it
+    /// impossible to construct a coordinator whose leases cannot authorize the
+    /// publications they protect.
+    pub fn operations(&self) -> OperationWindowCoordinator<crate::StreamOperationWindowStore<P>> {
+        OperationWindowCoordinator::new(self.fs.operation_window_store())
     }
 }
 

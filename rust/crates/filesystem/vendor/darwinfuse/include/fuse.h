@@ -321,6 +321,9 @@ void fuse_remove_signal_handlers(struct fuse_session *se);
  */
 void fuse_exit(struct fuse *f);
 
+/* Reject stale NFS READDIR continuations after provider-side changes. */
+void fuse_mark_namespace_changed(struct fuse *f);
+
 /* ---- Utility functions ---- */
 
 /*

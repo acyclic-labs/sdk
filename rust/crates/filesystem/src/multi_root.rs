@@ -41,6 +41,10 @@ pub struct MultiRootMergeRoot {
     pub target_generation: GenerationId,
     /// Three-way common ancestor authenticated by the per-root join plan.
     pub base_generation: GenerationId,
+    /// Caller-selected child-wins binding paths pinned with the publication
+    /// journal. This does not alter ordinary filesystem merge semantics.
+    #[serde(default)]
+    pub child_wins_bindings: BTreeSet<String>,
 }
 
 /// Immutable pinned plan for one logical multi-root publication.
@@ -556,6 +560,7 @@ where
     async fn apply_plan(
         &self,
         root_id: WorkspaceRootId,
+        root: &MultiRootMergeRoot,
         plan: &crate::JoinPlan<A, O>,
         operation: IdempotencyKey,
         resolutions: &BTreeMap<ConflictKey, MergeResolution>,
@@ -574,41 +579,62 @@ where
             return Ok(initial);
         };
         let typed = plan.describe_conflicts(&conflicts, truncated).await?;
+        let automatic = child_wins_resolutions(&typed, &root.child_wins_bindings);
         let candidate = if resolutions.is_empty() && !typed.conflicts.is_empty() {
-            let Some(registry) = self
-                .root_merge_drivers
-                .get(&root_id)
-                .or(self.merge_drivers.as_ref())
-            else {
-                return Err(WorkspaceMultiRootPublisherError::Conflicted {
-                    plan: Box::new(typed),
-                });
+            let remaining = crate::MergePlan {
+                conflicts: typed
+                    .conflicts
+                    .iter()
+                    .filter(|conflict| !automatic.contains_key(&conflict.key))
+                    .cloned()
+                    .collect(),
+                ..typed.clone()
             };
-            let mut cache = self.resolution_cache.lock().map_err(|_| {
-                WorkspaceMultiRootPublisherError::Candidate(
-                    "merge resolution cache is unavailable".to_owned(),
-                )
-            })?;
-            match crate::resolve_merge_plan(typed.clone(), registry, &mut *cache, false) {
-                Ok(candidate) => candidate,
-                Err(
-                    MergePlanResolutionError::MissingDriver(_)
-                    | MergePlanResolutionError::Driver(DriverError::Unsupported),
-                ) => {
+            if remaining.conflicts.is_empty() {
+                UnpublishedMergeCandidate {
+                    plan: typed.clone(),
+                    resolutions: automatic,
+                }
+            } else {
+                let Some(registry) = self
+                    .root_merge_drivers
+                    .get(&root_id)
+                    .or(self.merge_drivers.as_ref())
+                else {
                     return Err(WorkspaceMultiRootPublisherError::Conflicted {
                         plan: Box::new(typed),
                     });
-                }
-                Err(error) => {
-                    return Err(WorkspaceMultiRootPublisherError::Candidate(
-                        error.to_string(),
-                    ));
+                };
+                let mut cache = self.resolution_cache.lock().map_err(|_| {
+                    WorkspaceMultiRootPublisherError::Candidate(
+                        "merge resolution cache is unavailable".to_owned(),
+                    )
+                })?;
+                match crate::resolve_merge_plan(remaining, registry, &mut *cache, false) {
+                    Ok(mut candidate) => {
+                        candidate.plan = typed.clone();
+                        candidate.resolutions.extend(automatic);
+                        candidate
+                    }
+                    Err(
+                        MergePlanResolutionError::MissingDriver(_)
+                        | MergePlanResolutionError::Driver(DriverError::Unsupported),
+                    ) => {
+                        return Err(WorkspaceMultiRootPublisherError::Conflicted {
+                            plan: Box::new(typed),
+                        });
+                    }
+                    Err(error) => {
+                        return Err(WorkspaceMultiRootPublisherError::Candidate(
+                            error.to_string(),
+                        ));
+                    }
                 }
             }
         } else {
             UnpublishedMergeCandidate {
                 plan: typed,
-                resolutions: resolutions.clone(),
+                resolutions: resolutions.clone().into_iter().chain(automatic).collect(),
             }
         };
         if resolutions.is_empty()
@@ -641,15 +667,15 @@ where
         if target.head().await?.id() != root.target_generation {
             return Ok(false);
         }
-        let preview_name = preview_workspace_name(operation_id, root_id)?;
+        // A prior preview may have been deleted after reporting conflicts.
+        // Reusing its fork identity would reopen that tombstone on continuation.
+        let preview_key = IdempotencyKey::new();
+        let preview_name = preview_workspace_name(operation_id, root_id, preview_key)?;
         let target_generation = target.generation(root.target_generation).await?;
         let preview = target
             .fork(
                 preview_name.as_str(),
-                ForkOptions::from_generation(
-                    target_generation,
-                    publisher_key(operation_id, root_id, b"preview-fork"),
-                ),
+                ForkOptions::from_generation(target_generation, preview_key),
             )
             .await?;
         let result = async {
@@ -665,6 +691,7 @@ where
             Ok(matches!(
                 self.apply_plan(
                     root_id,
+                    root,
                     &plan,
                     publisher_key(operation_id, root_id, b"preview-apply"),
                     resolutions,
@@ -831,6 +858,7 @@ where
         let outcome = self
             .apply_plan(
                 root_id,
+                root,
                 &plan,
                 projection_key,
                 &resolutions,
@@ -1094,6 +1122,7 @@ where
         let outcome = match self
             .apply_plan(
                 root_id,
+                root,
                 &plan,
                 publisher_key(operation_id, root_id, b"publish"),
                 resolutions,
@@ -1336,6 +1365,28 @@ where
     }
 }
 
+fn child_wins_resolutions(
+    plan: &crate::MergePlan,
+    paths: &BTreeSet<String>,
+) -> BTreeMap<ConflictKey, MergeResolution> {
+    plan.conflicts
+        .iter()
+        .filter(|conflict| {
+            conflict.kind == crate::ConflictKind::Binding
+                && conflict
+                    .path
+                    .as_ref()
+                    .is_some_and(|path| paths.contains(path))
+        })
+        .map(|conflict| {
+            (
+                conflict.key.clone(),
+                MergeResolution::Select(ConflictSide::Theirs),
+            )
+        })
+        .collect()
+}
+
 fn publisher_key(
     operation_id: OperationId,
     root_id: WorkspaceRootId,
@@ -1457,11 +1508,13 @@ fn decode_reservation<E: std::error::Error + 'static>(
 fn preview_workspace_name(
     operation_id: OperationId,
     root_id: WorkspaceRootId,
+    preview_key: IdempotencyKey,
 ) -> Result<WorkspaceName, WorkspaceError> {
     WorkspaceName::new(format!(
-        "multi-root-preview-{}-{}",
+        "multi-root-preview-{}-{}-{}",
         hex::encode(&operation_id.into_bytes()[..6]),
-        hex::encode(&root_id.into_bytes()[..6])
+        hex::encode(&root_id.into_bytes()[..6]),
+        hex::encode(preview_key.operation_id().into_bytes())
     ))
     .map_err(Into::into)
 }
@@ -2799,6 +2852,7 @@ mod tests {
                         target_workspace_id: WorkspaceId::from_bytes([byte + 10; 16]),
                         target_generation: generation(byte + 10),
                         base_generation: generation(0),
+                        child_wins_bindings: BTreeSet::new(),
                     },
                 )
             })
@@ -2892,6 +2946,7 @@ mod tests {
             target_workspace_id: target.id(),
             target_generation: head.id(),
             base_generation: head.id(),
+            child_wins_bindings: BTreeSet::new(),
         };
 
         assert!(
@@ -3187,6 +3242,7 @@ mod tests {
             target_workspace_id: parent.id(),
             target_generation: parent_head.id(),
             base_generation: base.id(),
+            child_wins_bindings: BTreeSet::new(),
         };
         let resolutions = BTreeMap::new();
         let fence = match publisher
@@ -3263,6 +3319,7 @@ mod tests {
             target_workspace_id: parent.id(),
             target_generation: parent_head.id(),
             base_generation: base.id(),
+            child_wins_bindings: BTreeSet::new(),
         };
         assert!(matches!(
             publisher
@@ -3280,6 +3337,179 @@ mod tests {
             parent.read("/conflicted.txt", 32).await?.as_ref(),
             b"parent\n"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn child_wins_binding_policy_overrides_explicit_parent_resolution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fs = Fs::memory();
+        let parent = fs.create_workspace("child-wins-parent").await?;
+        parent.write_text("/base.txt", "base").await?;
+        let base = parent.head().await?;
+        let child = parent
+            .fork(
+                "child-wins-child",
+                ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+            )
+            .await?;
+        child.write_text("/cache.tmp", "child").await?;
+        parent.write_text("/cache.tmp", "parent").await?;
+        let child_head = child.head().await?;
+        let parent_head = parent.head().await?;
+        let resolver = Resolver {
+            workspaces: Mutex::new(BTreeMap::from([
+                (parent.id(), parent.clone()),
+                (child.id(), child.clone()),
+            ])),
+        };
+        let publisher = WorkspaceMultiRootPublisher::new(resolver);
+        let operation = OperationId::from_bytes([81; 16]);
+        let root_id = WorkspaceRootId::from_bytes([82; 16]);
+        let mut root = MultiRootMergeRoot {
+            source_workspace_id: child.id(),
+            merge_workspace_id: None,
+            source_generation: child_head.id(),
+            target_workspace_id: parent.id(),
+            target_generation: parent_head.id(),
+            base_generation: base.id(),
+            child_wins_bindings: BTreeSet::new(),
+        };
+        let MultiRootPrepare::Conflicted(plan) = publisher
+            .prepare(operation, root_id, &root, &BTreeMap::new())
+            .await
+            .map_err(|error| format!("initial preview: {error}"))?
+        else {
+            return Err("same-name creations did not conflict".into());
+        };
+        let binding = plan
+            .conflicts
+            .iter()
+            .find(|conflict| {
+                conflict.kind == crate::ConflictKind::Binding
+                    && conflict.path.as_deref() == Some("/cache.tmp")
+            })
+            .ok_or("binding conflict missing")?;
+        let resolutions = BTreeMap::from([(
+            binding.key.clone(),
+            MergeResolution::Select(ConflictSide::Ours),
+        )]);
+        root.child_wins_bindings.insert("/cache.tmp".to_owned());
+        let MultiRootPrepare::Ready(fence) = publisher
+            .prepare(operation, root_id, &root, &resolutions)
+            .await
+            .map_err(|error| format!("resolved preview: {error}"))?
+        else {
+            return Err("child-wins binding was not ready".into());
+        };
+        assert!(matches!(
+            publisher
+                .publish(operation, root_id, &root, &resolutions, &fence)
+                .await
+                .map_err(|error| format!("resolved publication: {error}"))?,
+            MultiRootPublishRoot::Published(_)
+        ));
+        assert_eq!(parent.read("/cache.tmp", 16).await?.as_ref(), b"child");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn independent_same_name_directory_creations_return_a_binding_conflict()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fs = Fs::memory();
+        let parent = fs.create_workspace("directory-race-parent").await?;
+        let base = parent.head().await?;
+        let child = parent
+            .fork(
+                "directory-race-child",
+                ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+            )
+            .await?;
+        let mut child_tx = child.begin_transaction(IdempotencyKey::new()).await?;
+        child_tx.create_dir_all("/sub").await?;
+        child_tx.write_text("/.gitignore", "*.tmp\n").await?;
+        child_tx.write_text("/scratch.tmp", "child").await?;
+        child_tx.write_text("/sub/.gitignore", "*.tmp\n").await?;
+        child_tx.write_text("/sub/cache.tmp", "child").await?;
+        child_tx.create_dir_all("/sub/nested").await?;
+        child_tx
+            .write_text("/sub/nested/deep.tmp", "nested child")
+            .await?;
+        child_tx.commit().await?;
+        let mut parent_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
+        parent_tx.create_dir_all("/sub").await?;
+        parent_tx.write_text("/scratch.tmp", "parent").await?;
+        parent_tx.write_text("/sub/cache.tmp", "parent").await?;
+        parent_tx.commit().await?;
+        let resolver = Resolver {
+            workspaces: Mutex::new(BTreeMap::from([
+                (parent.id(), parent.clone()),
+                (child.id(), child.clone()),
+            ])),
+        };
+        let publisher = WorkspaceMultiRootPublisher::new(resolver);
+        let root = MultiRootMergeRoot {
+            source_workspace_id: child.id(),
+            merge_workspace_id: None,
+            source_generation: child.head().await?.id(),
+            target_workspace_id: parent.id(),
+            target_generation: parent.head().await?.id(),
+            base_generation: base.id(),
+            child_wins_bindings: BTreeSet::from([
+                "/scratch.tmp".to_owned(),
+                "/sub/cache.tmp".to_owned(),
+            ]),
+        };
+        let MultiRootPrepare::Conflicted(plan) = publisher
+            .prepare(
+                OperationId::from_bytes([83; 16]),
+                WorkspaceRootId::from_bytes([84; 16]),
+                &root,
+                &BTreeMap::new(),
+            )
+            .await?
+        else {
+            return Err("independently created directories did not conflict".into());
+        };
+        let directory_conflict = plan
+            .conflicts
+            .iter()
+            .find(|conflict| {
+                conflict.kind == crate::ConflictKind::Binding
+                    && conflict.path.as_deref() == Some("/sub")
+            })
+            .ok_or("directory binding conflict missing")?;
+        let MultiRootPrepare::Ready(fence) = publisher
+            .prepare(
+                OperationId::from_bytes([83; 16]),
+                WorkspaceRootId::from_bytes([84; 16]),
+                &root,
+                &BTreeMap::from([(
+                    directory_conflict.key.clone(),
+                    MergeResolution::Select(ConflictSide::Theirs),
+                )]),
+            )
+            .await?
+        else {
+            return Err("resolved directory binding was not ready".into());
+        };
+        publisher
+            .release(
+                OperationId::from_bytes([83; 16]),
+                WorkspaceRootId::from_bytes([84; 16]),
+                &fence,
+            )
+            .await?;
+        publisher
+            .project_conflict(
+                OperationId::from_bytes([85; 16]),
+                WorkspaceRootId::from_bytes([84; 16]),
+                &root,
+                Some(&plan),
+            )
+            .await?;
+        assert_eq!(parent.read("/sub/cache.tmp", 16).await?.as_ref(), b"parent");
+        assert_eq!(child.read("/sub/cache.tmp", 16).await?.as_ref(), b"child");
         Ok(())
     }
 
@@ -3339,6 +3569,7 @@ mod tests {
                         target_workspace_id: parent.id(),
                         target_generation: parent_head.id(),
                         base_generation: base.id(),
+                        child_wins_bindings: BTreeSet::new(),
                     },
                 )]),
             },
@@ -3466,6 +3697,7 @@ mod tests {
                         target_workspace_id: parent.id(),
                         target_generation: parent_head.id(),
                         base_generation: base.id(),
+                        child_wins_bindings: BTreeSet::new(),
                     },
                 )]),
             },

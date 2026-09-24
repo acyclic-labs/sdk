@@ -20,10 +20,12 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
 #include <arpa/inet.h>
+#include <sys/xattr.h>
 
 /* xattr calling conventions — macOS adds a position parameter */
 #ifdef __APPLE__
@@ -36,6 +38,13 @@
 
 /* ---- errno to NFS4 status mapping ---- */
 
+static void encode_write_verifier(const darwinfuse_config_t *config,
+                                  xdr_buf_t *rep)
+{
+    xdr_encode_opaque_fixed(rep, config->write_verifier,
+                            sizeof(config->write_verifier));
+}
+
 static uint32_t errno_to_nfs4(int fuse_rc)
 {
     if (fuse_rc == 0) return NFS4_OK;
@@ -43,6 +52,12 @@ static uint32_t errno_to_nfs4(int fuse_rc)
     switch (e) {
     case EPERM:        return NFS4ERR_PERM;
     case ENOENT:       return NFS4ERR_NOENT;
+#ifdef ENOATTR
+    case ENOATTR:      return NFS4ERR_NOENT;
+#endif
+#if defined(ENODATA) && (!defined(ENOATTR) || ENODATA != ENOATTR)
+    case ENODATA:      return NFS4ERR_NOENT;
+#endif
     case EIO:          return NFS4ERR_IO;
     case ENXIO:        return NFS4ERR_NXIO;
     case EACCES:       return NFS4ERR_ACCESS;
@@ -239,6 +254,46 @@ static inline int bitmap_isset(const uint32_t *bitmap, int nwords, int bit)
     return (bitmap[word] >> (bit % 32)) & 1;
 }
 
+static uint64_t namespace_change(const darwinfuse_config_t *config)
+{
+    return atomic_load_explicit(&config->namespace_change, memory_order_acquire);
+}
+
+static uint64_t namespace_changed(const darwinfuse_config_t *config)
+{
+    return atomic_fetch_add_explicit(
+               (atomic_uint_fast64_t *)&config->namespace_change,
+               1,
+               memory_order_acq_rel) + 1;
+}
+
+static void encode_cookie_verifier(uint64_t revision, uint8_t verifier[8])
+{
+    for (unsigned index = 0; index < 8; index++)
+        verifier[7U - index] = (uint8_t)(revision >> (index * 8U));
+}
+
+static int readdir_cookie_is_current(uint64_t cookie,
+                                     const uint8_t verifier[8],
+                                     uint64_t revision)
+{
+    uint8_t expected[8];
+    if (cookie == 0) return 1;
+    encode_cookie_verifier(revision, expected);
+    return memcmp(verifier, expected, sizeof(expected)) == 0;
+}
+
+static void encode_change_info(xdr_buf_t *reply,
+                               uint64_t before,
+                               uint64_t after)
+{
+    /* Multiple NFS workers may mutate separate directories concurrently, so
+     * the global conservative change sequence is intentionally non-atomic. */
+    xdr_encode_bool(reply, 0);
+    xdr_encode_uint64(reply, before);
+    xdr_encode_uint64(reply, after);
+}
+
 /*
  * Encode fattr4 for a given stat result.
  * Only encodes attributes that are both requested AND supported.
@@ -321,11 +376,19 @@ static void encode_fattr4(xdr_buf_t *xdr,
     }
 
     if (ATTR_SET(FATTR4_CHANGE)) {
-        /* Use mtime as change attribute */
-        uint64_t change = (uint64_t)st->st_mtime * 1000000000ULL;
+        uint64_t change;
+        if (type_override == NF4DIR || type_override == NF4ATTRDIR ||
+            (!type_override && S_ISDIR(st->st_mode))) {
+            /* Namespace mutations do not necessarily rewrite authored
+             * directory metadata. A server sequence prevents stale negative
+             * name-cache entries after CREATE/REMOVE/RENAME/LINK. */
+            change = namespace_change(config);
+        } else {
+            change = (uint64_t)st->st_mtime * 1000000000ULL;
 #ifdef __APPLE__
-        change += (uint64_t)st->st_mtimespec.tv_nsec;
+            change += (uint64_t)st->st_mtimespec.tv_nsec;
 #endif
+        }
         xdr_encode_uint64(&attr, change);
     }
 
@@ -398,11 +461,11 @@ static void encode_fattr4(xdr_buf_t *xdr,
     }
 
     if (ATTR_SET(FATTR4_MAXREAD)) {
-        xdr_encode_uint64(&attr, 65536);
+        xdr_encode_uint64(&attr, DFUSE_IO_SIZE);
     }
 
     if (ATTR_SET(FATTR4_MAXWRITE)) {
-        xdr_encode_uint64(&attr, 65536);
+        xdr_encode_uint64(&attr, DFUSE_IO_SIZE);
     }
 
     /* Word 1 attributes (bits 32+), in order */
@@ -1054,16 +1117,31 @@ static uint32_t handle_access(const darwinfuse_config_t *config,
     uint32_t requested = xdr_decode_uint32(req);
     if (req->error) return NFS4ERR_INVAL;
 
-    char *path = fh_to_path(config, ctx->current_fh, ctx->current_fh_len);
+    dfuse_ino_t ino = fh_get_ino(ctx->current_fh, ctx->current_fh_len);
+    if (ino == 0) return NFS4ERR_BADHANDLE;
+    dfuse_ino_type_t type = dfuse_itable_type(config->inode_table, ino);
+    int is_named_attribute = type == DFUSE_INO_NAMEDATTR;
+    int is_attribute_inode = type == DFUSE_INO_ATTRDIR || is_named_attribute;
+    char *path = is_attribute_inode
+        ? xattr_file_path(config, ino)
+        : fh_to_path(config, ctx->current_fh, ctx->current_fh_len);
     if (!path) return NFS4ERR_STALE;
 
-    uint32_t granted = requested;  /* default: grant everything */
+    /* Named attributes are synthetic inodes. Authorize them against their
+     * owning file rather than passing the inode table's synthetic path to the
+     * source callback. Attribute streams are data, not executables. */
+    uint32_t granted = is_named_attribute
+        ? requested & ~ACCESS4_EXECUTE
+        : requested;
 
     if (config->ops->access) {
         int mask = 0;
-        if (requested & ACCESS4_READ)    mask |= R_OK;
-        if (requested & ACCESS4_MODIFY)  mask |= W_OK;
-        if (requested & ACCESS4_EXECUTE) mask |= X_OK;
+        if (requested & (ACCESS4_READ | ACCESS4_LOOKUP))
+            mask |= R_OK;
+        if (requested & (ACCESS4_MODIFY | ACCESS4_EXTEND | ACCESS4_DELETE))
+            mask |= W_OK;
+        if (!is_attribute_inode && requested & ACCESS4_EXECUTE)
+            mask |= X_OK;
 
         int rc = config->ops->access(path, mask);
         if (rc != 0)
@@ -1083,26 +1161,46 @@ static uint32_t handle_access(const darwinfuse_config_t *config,
 typedef struct {
     char     name[256];
     uint64_t cookie;
+    struct stat attributes;
 } readdir_entry_t;
 
 typedef struct {
     readdir_entry_t *entries;
     int count;
     int cap;
+    int limit;
+    uint32_t directory_bytes;
+    uint32_t directory_limit;
+    int full;
 } readdir_collector_t;
 
 static int readdir_filler(void *buf, const char *name,
                            const struct stat *stbuf, off_t off)
 {
-    (void)stbuf; (void)off;
     readdir_collector_t *col = (readdir_collector_t *)buf;
+
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+        return 0;
+
+    size_t name_len = strlen(name);
+    uint32_t directory_bytes = 16U + (uint32_t)((name_len + 3U) & ~3U);
+    if (col->count >= col->limit ||
+        (col->directory_limit > 0 &&
+         col->directory_bytes + directory_bytes > col->directory_limit)) {
+        col->full = 1;
+        return 1;
+    }
 
     /* Grow if needed */
     if (col->count >= col->cap) {
         int new_cap = col->cap ? col->cap * 2 : 128;
+        if (new_cap > col->limit) new_cap = col->limit;
         readdir_entry_t *new_arr = realloc(col->entries,
                                             (size_t)new_cap * sizeof(*new_arr));
-        if (!new_arr) return 1;  /* stop filling on OOM */
+        if (!new_arr) {
+            col->full = 1;
+            return 1;  /* stop filling on OOM */
+        }
         col->entries = new_arr;
         col->cap = new_cap;
     }
@@ -1110,8 +1208,13 @@ static int readdir_filler(void *buf, const char *name,
     readdir_entry_t *e = &col->entries[col->count];
     strncpy(e->name, name, sizeof(e->name) - 1);
     e->name[sizeof(e->name) - 1] = '\0';
-    e->cookie = (uint64_t)(col->count + 1);
+    e->cookie = (uint64_t)off;
+    if (stbuf)
+        e->attributes = *stbuf;
+    else
+        memset(&e->attributes, 0, sizeof(e->attributes));
     col->count++;
+    col->directory_bytes += directory_bytes;
     return 0;
 }
 
@@ -1135,12 +1238,16 @@ static uint32_t handle_readdir(const darwinfuse_config_t *config,
     int attr_nwords = 0;
     decode_bitmap(req, attr_bitmap, &attr_nwords);
     if (req->error) return NFS4ERR_INVAL;
-
-    (void)dircount;
-    (void)maxcount;
+    if (maxcount < 16U) return NFS4ERR_TOOSMALL;
+    if (cookie > (uint64_t)INT64_MAX) return NFS4ERR_BAD_COOKIE;
+    uint64_t directory_revision = namespace_change(config);
+    if (!readdir_cookie_is_current(cookie, cookieverf, directory_revision))
+        return NFS4ERR_BAD_COOKIE;
 
     /* Encode cookieverf */
-    uint8_t reply_verf[8] = {0};
+    size_t reply_start = xdr_getpos(rep);
+    uint8_t reply_verf[8];
+    encode_cookie_verifier(directory_revision, reply_verf);
     xdr_encode_opaque_fixed(rep, reply_verf, 8);
 
     if (dir_type == DFUSE_INO_ATTRDIR) {
@@ -1155,32 +1262,61 @@ static uint32_t handle_readdir(const darwinfuse_config_t *config,
             return NFS4_OK;
         }
 
-        char list_buf[8192];
-        int list_size = config->ops->listxattr(file_path, list_buf,
-                                                sizeof(list_buf));
-        if (list_size <= 0) {
+        int list_size = config->ops->listxattr(file_path, NULL, 0);
+        if (list_size < 0) {
+            free(file_path);
+            return errno_to_nfs4(list_size);
+        }
+        if (list_size == 0) {
             free(file_path);
             xdr_encode_bool(rep, 0);
             xdr_encode_bool(rep, 1);
             return NFS4_OK;
         }
+        if ((size_t)list_size > DFUSE_XDR_MAXBUF) {
+            free(file_path);
+            return NFS4ERR_RESOURCE;
+        }
+        char *list_buf = malloc((size_t)list_size);
+        if (!list_buf) {
+            free(file_path);
+            return NFS4ERR_RESOURCE;
+        }
+        int listed = config->ops->listxattr(file_path, list_buf,
+                                             (size_t)list_size);
+        if (listed < 0) {
+            free(list_buf);
+            free(file_path);
+            return errno_to_nfs4(listed);
+        }
+        list_size = listed;
 
-        /* Parse null-terminated list and emit entries */
+        /* Parse the bounded null-terminated list and emit one maxcount-safe page. */
         const char *p = list_buf;
         uint64_t entry_cookie = 0;
+        uint32_t directory_bytes = 0;
+        int full = 0;
         while (p < list_buf + list_size && *p != '\0') {
             entry_cookie++;
             size_t name_len = strlen(p);
 
             if (entry_cookie > cookie) {
+                uint32_t next_directory_bytes =
+                    16U + (uint32_t)((name_len + 3U) & ~3U);
+                if (dircount > 0 &&
+                    directory_bytes + next_directory_bytes > dircount) {
+                    if (directory_bytes == 0) {
+                        free(list_buf);
+                        free(file_path);
+                        xdr_setpos(rep, reply_start);
+                        return NFS4ERR_TOOSMALL;
+                    }
+                    full = 1;
+                    break;
+                }
                 /* Get or create namedattr inode */
                 dfuse_ino_t na_ino = dfuse_itable_get_namedattr(
                     config->inode_table, dir_ino, p);
-
-                /* value_follows = TRUE */
-                xdr_encode_bool(rep, 1);
-                xdr_encode_uint64(rep, entry_cookie);
-                xdr_encode_string(rep, p);
 
                 /* Synthetic stat for named attribute */
                 struct stat na_st;
@@ -1200,16 +1336,40 @@ static uint32_t handle_readdir(const darwinfuse_config_t *config,
                 if (na_ino)
                     fh_set_ino(efh, &efh_len, na_ino);
 
-                encode_fattr4(rep, &na_st, attr_bitmap, attr_nwords,
+                uint8_t entry_buf[8192];
+                xdr_buf_t entry;
+                xdr_init(&entry, entry_buf, sizeof(entry_buf));
+                xdr_encode_bool(&entry, 1);
+                xdr_encode_uint64(&entry, entry_cookie);
+                xdr_encode_string(&entry, p);
+                encode_fattr4(&entry, &na_st, attr_bitmap, attr_nwords,
                               efh, efh_len, config, NF4NAMEDATTR);
+                size_t entry_len = xdr_getpos(&entry);
+                size_t response_len = xdr_getpos(rep) - reply_start;
+                if (entry.error || entry_len + 8U > xdr_remaining(rep) ||
+                    entry_len + 8U > (size_t)maxcount ||
+                    response_len > (size_t)maxcount - entry_len - 8U) {
+                    if (directory_bytes == 0) {
+                        free(list_buf);
+                        free(file_path);
+                        xdr_setpos(rep, reply_start);
+                        return NFS4ERR_TOOSMALL;
+                    }
+                    full = 1;
+                    break;
+                }
+                memcpy(rep->data + rep->pos, entry.data, entry_len);
+                rep->pos += entry_len;
+                directory_bytes += next_directory_bytes;
             }
 
             p += name_len + 1;
         }
 
+        free(list_buf);
         free(file_path);
         xdr_encode_bool(rep, 0);  /* no more entries */
-        xdr_encode_bool(rep, 1);  /* eof */
+        xdr_encode_bool(rep, !full);
         return NFS4_OK;
     }
 
@@ -1230,37 +1390,50 @@ static uint32_t handle_readdir(const darwinfuse_config_t *config,
 
     readdir_collector_t collector;
     memset(&collector, 0, sizeof(collector));
+    uint32_t collection_budget = maxcount;
+    if (dircount > 0 && dircount < collection_budget)
+        collection_budget = dircount;
+    collector.limit = (int)(collection_budget / 32U);
+    if (collector.limit < 1) collector.limit = 1;
+    if (collector.limit > 1024) collector.limit = 1024;
+    collector.directory_limit = dircount;
 
     struct fuse_file_info dir_fi;
     memset(&dir_fi, 0, sizeof(dir_fi));
 
-    if (config->ops->opendir)
-        config->ops->opendir(dir_path, &dir_fi);
+    if (config->ops->opendir) {
+        int rc = config->ops->opendir(dir_path, &dir_fi);
+        if (rc != 0) {
+            free(dir_path);
+            return errno_to_nfs4(rc);
+        }
+    }
 
+    int readdir_rc = 0;
     if (config->ops->readdir)
-        config->ops->readdir(dir_path, &collector, readdir_filler, 0, &dir_fi);
+        readdir_rc = config->ops->readdir(dir_path, &collector, readdir_filler,
+                                          (off_t)cookie, &dir_fi);
 
+    int releasedir_rc = 0;
     if (config->ops->releasedir)
-        config->ops->releasedir(dir_path, &dir_fi);
+        releasedir_rc = config->ops->releasedir(dir_path, &dir_fi);
+    if (readdir_rc != 0 || releasedir_rc != 0) {
+        free(collector.entries);
+        free(dir_path);
+        return errno_to_nfs4(readdir_rc != 0 ? readdir_rc : releasedir_rc);
+    }
+    if (collector.full && collector.count == 0) {
+        free(collector.entries);
+        free(dir_path);
+        xdr_setpos(rep, reply_start);
+        return NFS4ERR_TOOSMALL;
+    }
 
+    int encoded_entries = 0;
     for (int i = 0; i < collector.count; i++) {
         readdir_entry_t *e = &collector.entries[i];
-        if (e->cookie <= cookie) continue;
-
-        if (strcmp(e->name, ".") == 0 || strcmp(e->name, "..") == 0)
-            continue;
-
-        xdr_encode_bool(rep, 1);
-        xdr_encode_uint64(rep, e->cookie);
-        xdr_encode_string(rep, e->name);
-
         char child_path[1024];
         build_child_path(child_path, sizeof(child_path), dir_path, e->name);
-
-        struct stat st;
-        memset(&st, 0, sizeof(st));
-        if (config->ops->getattr)
-            config->ops->getattr(child_path, &st);
 
         dfuse_ino_t entry_ino = dfuse_itable_get_or_create(config->inode_table,
                                                             child_path);
@@ -1269,15 +1442,38 @@ static uint32_t handle_readdir(const darwinfuse_config_t *config,
         if (entry_ino)
             fh_set_ino(efh, &efh_len, entry_ino);
 
-        encode_fattr4(rep, &st, attr_bitmap, attr_nwords, efh, efh_len,
-                      config, 0);
+        uint8_t entry_buf[8192];
+        xdr_buf_t entry;
+        xdr_init(&entry, entry_buf, sizeof(entry_buf));
+        xdr_encode_bool(&entry, 1);
+        xdr_encode_uint64(&entry, e->cookie);
+        xdr_encode_string(&entry, e->name);
+        encode_fattr4(&entry, &e->attributes, attr_bitmap, attr_nwords,
+                      efh, efh_len, config, 0);
+        size_t entry_len = xdr_getpos(&entry);
+        size_t response_len = xdr_getpos(rep) - reply_start;
+        if (entry.error || entry_len + 8U > xdr_remaining(rep) ||
+            entry_len + 8U > (size_t)maxcount ||
+            response_len > (size_t)maxcount - entry_len - 8U) {
+            if (encoded_entries == 0) {
+                free(collector.entries);
+                free(dir_path);
+                xdr_setpos(rep, reply_start);
+                return NFS4ERR_TOOSMALL;
+            }
+            collector.full = 1;
+            break;
+        }
+        memcpy(rep->data + rep->pos, entry.data, entry_len);
+        rep->pos += entry_len;
+        encoded_entries++;
     }
 
     free(collector.entries);
     free(dir_path);
 
     xdr_encode_bool(rep, 0);
-    xdr_encode_bool(rep, 1);
+    xdr_encode_bool(rep, !collector.full);
 
     return NFS4_OK;
 }
@@ -1369,6 +1565,248 @@ static int exclusive_validate_replay(const darwinfuse_config_t *config,
     return 0;
 }
 
+/* Named attributes have no FUSE file handle whose identity can be checked.
+ * Bind EXCLUSIVE4 replay to the owning file identity plus the attribute name,
+ * and use XATTR_CREATE for the actual absent-to-present transition. */
+typedef struct {
+    const darwinfuse_config_t *config;
+    uint64_t verifier;
+    dev_t device;
+    ino_t inode;
+    char path[1024];
+    char name[256];
+} namedattr_exclusive_verifier_t;
+static namedattr_exclusive_verifier_t
+    namedattr_exclusive_verifiers[EXCLUSIVE_VERIFIERS];
+static unsigned namedattr_exclusive_verifier_next;
+static pthread_mutex_t namedattr_exclusive_verifier_lock =
+    PTHREAD_MUTEX_INITIALIZER;
+
+#define NAMEDATTR_OPERATION_LOCKS 64
+static pthread_mutex_t namedattr_operation_locks[NAMEDATTR_OPERATION_LOCKS];
+static pthread_once_t namedattr_operation_locks_once = PTHREAD_ONCE_INIT;
+
+static void namedattr_operation_locks_init(void) {
+    for (unsigned i = 0; i < NAMEDATTR_OPERATION_LOCKS; i++)
+        pthread_mutex_init(&namedattr_operation_locks[i], NULL);
+}
+
+static pthread_mutex_t *namedattr_operation_lock(
+    const darwinfuse_config_t *config, const char *path, const char *name,
+    int have_identity, dev_t device, ino_t inode) {
+    pthread_once(&namedattr_operation_locks_once,
+                 namedattr_operation_locks_init);
+    uintptr_t hash = (uintptr_t)config ^ (uintptr_t)device ^
+                     ((uintptr_t)inode * UINT64_C(11400714819323198485));
+    const unsigned char *cursor = (const unsigned char *)name;
+    while (*cursor)
+        hash = (hash ^ *cursor++) * UINT64_C(1099511628211);
+    if (!have_identity) {
+        cursor = (const unsigned char *)path;
+        while (*cursor)
+            hash = (hash ^ *cursor++) * UINT64_C(1099511628211);
+    }
+    return &namedattr_operation_locks[hash % NAMEDATTR_OPERATION_LOCKS];
+}
+
+static int namedattr_owner_identity(const darwinfuse_config_t *config,
+                                    const char *path,
+                                    dev_t *device, ino_t *inode) {
+    struct stat st;
+    memset(&st, 0, sizeof(st));
+    if (!config->ops->getattr || config->ops->getattr(path, &st) != 0)
+        return 0;
+    *device = st.st_dev;
+    *inode = st.st_ino;
+    return 1;
+}
+
+static void namedattr_exclusive_forget_locked(
+    const darwinfuse_config_t *config, const char *path, const char *name,
+    int have_identity, dev_t device, ino_t inode) {
+    for (unsigned i = 0; i < EXCLUSIVE_VERIFIERS; i++) {
+        namedattr_exclusive_verifier_t *slot =
+            &namedattr_exclusive_verifiers[i];
+        int same_owner = have_identity && slot->device == device &&
+                         slot->inode == inode;
+        int same_path = strcmp(slot->path, path) == 0;
+        if (slot->config == config && strcmp(slot->name, name) == 0 &&
+            (same_owner || same_path))
+            memset(slot, 0, sizeof(*slot));
+    }
+}
+
+static int namedattr_exclusive_recall_locked(
+    const darwinfuse_config_t *config, const char *path, const char *name,
+    uint64_t verf, dev_t device, ino_t inode) {
+    for (unsigned i = 0; i < EXCLUSIVE_VERIFIERS; i++) {
+        const namedattr_exclusive_verifier_t *slot =
+            &namedattr_exclusive_verifiers[i];
+        if (slot->config == config && slot->verifier == verf &&
+            slot->device == device && slot->inode == inode &&
+            strcmp(slot->path, path) == 0 && strcmp(slot->name, name) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static void namedattr_exclusive_remember_locked(
+    const darwinfuse_config_t *config, const char *path, const char *name,
+    uint64_t verf, dev_t device, ino_t inode) {
+    namedattr_exclusive_verifier_t *slot = &namedattr_exclusive_verifiers[
+        namedattr_exclusive_verifier_next++ % EXCLUSIVE_VERIFIERS];
+    slot->config = config;
+    slot->verifier = verf;
+    slot->device = device;
+    slot->inode = inode;
+    strlcpy(slot->path, path, sizeof(slot->path));
+    strlcpy(slot->name, name, sizeof(slot->name));
+}
+
+static int namedattr_exclusive_recall_identity(
+    const darwinfuse_config_t *config, const char *path, const char *name,
+    uint64_t verf, dev_t device, ino_t inode) {
+    pthread_mutex_lock(&namedattr_exclusive_verifier_lock);
+    int found = namedattr_exclusive_recall_locked(
+        config, path, name, verf, device, inode);
+    pthread_mutex_unlock(&namedattr_exclusive_verifier_lock);
+    return found;
+}
+
+static void namedattr_exclusive_forget_identity(
+    const darwinfuse_config_t *config, const char *path, const char *name,
+    int have_identity, dev_t device, ino_t inode) {
+    pthread_mutex_lock(&namedattr_exclusive_verifier_lock);
+    namedattr_exclusive_forget_locked(config, path, name, have_identity,
+                                      device, inode);
+    pthread_mutex_unlock(&namedattr_exclusive_verifier_lock);
+}
+
+static void namedattr_exclusive_remember_identity(
+    const darwinfuse_config_t *config, const char *path, const char *name,
+    uint64_t verf, dev_t device, ino_t inode) {
+    pthread_mutex_lock(&namedattr_exclusive_verifier_lock);
+    namedattr_exclusive_remember_locked(config, path, name, verf, device,
+                                        inode);
+    pthread_mutex_unlock(&namedattr_exclusive_verifier_lock);
+}
+
+static int namedattr_exclusive_remember(const darwinfuse_config_t *config,
+                                        const char *path, const char *name,
+                                        uint64_t verf) {
+    dev_t device;
+    ino_t inode;
+    if (!namedattr_owner_identity(config, path, &device, &inode))
+        return 0;
+    namedattr_exclusive_forget_identity(config, path, name, 1, device, inode);
+    namedattr_exclusive_remember_identity(config, path, name, verf, device,
+                                          inode);
+    return 1;
+}
+
+static int namedattr_exclusive_recall(const darwinfuse_config_t *config,
+                                      const char *path, const char *name,
+                                      uint64_t verf) {
+    dev_t device;
+    ino_t inode;
+    if (!namedattr_owner_identity(config, path, &device, &inode))
+        return 0;
+    return namedattr_exclusive_recall_identity(config, path, name, verf,
+                                               device, inode);
+}
+
+static void namedattr_exclusive_forget(const darwinfuse_config_t *config,
+                                       const char *path, const char *name) {
+    dev_t device = 0;
+    ino_t inode = 0;
+    int have_identity = namedattr_owner_identity(config, path, &device, &inode);
+    namedattr_exclusive_forget_identity(config, path, name, have_identity,
+                                        device, inode);
+}
+
+static int namedattr_remove(const darwinfuse_config_t *config,
+                            const char *path, const char *name) {
+    dev_t device = 0;
+    ino_t inode = 0;
+    int have_identity = namedattr_owner_identity(config, path, &device, &inode);
+    pthread_mutex_t *operation_lock = namedattr_operation_lock(
+        config, path, name, have_identity, device, inode);
+    pthread_mutex_lock(operation_lock);
+    int rc = config->ops->removexattr(path, name);
+    if (rc == 0)
+        namedattr_exclusive_forget_identity(config, path, name, have_identity,
+                                            device, inode);
+    pthread_mutex_unlock(operation_lock);
+    return rc;
+}
+
+/* Serialize existence testing, create-only transition, and verifier
+ * publication.  REMOVE takes the same lock, so no replay can observe an
+ * unrecorded creation or retain a verifier across remove/recreate. */
+static uint32_t namedattr_open_create(const darwinfuse_config_t *config,
+                                      const char *path, const char *name,
+                                      uint32_t createmode, uint64_t verf,
+                                      int *created) {
+    *created = 0;
+    dev_t device = 0;
+    ino_t inode = 0;
+    int have_identity = namedattr_owner_identity(config, path, &device, &inode);
+    pthread_mutex_t *operation_lock = namedattr_operation_lock(
+        config, path, name, have_identity, device, inode);
+    pthread_mutex_lock(operation_lock);
+    int size = config->ops->getxattr
+        ? FUSE_GETXATTR(config->ops, path, name, NULL, 0)
+        : -ENOTSUP;
+    uint32_t status = NFS4_OK;
+
+    if (size >= 0) {
+        if (createmode == EXCLUSIVE4 && have_identity &&
+            namedattr_exclusive_recall_identity(config, path, name, verf,
+                                                 device, inode)) {
+            /* Lost-reply replay of this exact creation. */
+        } else if (createmode == GUARDED4 || createmode == EXCLUSIVE4) {
+            status = NFS4ERR_EXIST;
+        }
+        goto done;
+    }
+
+    status = errno_to_nfs4(size);
+    if (status != NFS4ERR_NOENT)
+        goto done;
+    if (!config->ops->setxattr) {
+        status = NFS4ERR_ROFS;
+        goto done;
+    }
+    if (createmode == EXCLUSIVE4 && !have_identity) {
+        status = NFS4ERR_IO;
+        goto done;
+    }
+
+    int rc = FUSE_SETXATTR(config->ops, path, name, "", 0, XATTR_CREATE);
+    if (rc == 0) {
+        *created = 1;
+        namedattr_exclusive_forget_identity(config, path, name, have_identity,
+                                            device, inode);
+        if (createmode == EXCLUSIVE4) {
+            namedattr_exclusive_remember_identity(config, path, name, verf,
+                                                  device, inode);
+        }
+        status = NFS4_OK;
+    } else if (rc == -EEXIST && createmode == UNCHECKED4) {
+        status = NFS4_OK;
+    } else if (rc == -EEXIST && createmode == EXCLUSIVE4 && have_identity &&
+               namedattr_exclusive_recall_identity(config, path, name, verf,
+                                                    device, inode)) {
+        status = NFS4_OK;
+    } else {
+        status = errno_to_nfs4(rc);
+    }
+
+done:
+    pthread_mutex_unlock(operation_lock);
+    return status;
+}
+
 /* Deterministic callback-level regression for the exact-handle replay rule.
  * This is called by the macOS Rust test suite. */
 static uint64_t exclusive_test_released_fh;
@@ -1422,11 +1860,174 @@ int nfs4_test_exclusive_replay_identity(void) {
     return 0;
 }
 
+int nfs4_test_readdir_cookie_verifier(void) {
+    uint8_t verifier[8];
+    uint8_t stale[8];
+    const uint64_t revision = UINT64_C(0x0102030405060708);
+    encode_cookie_verifier(revision, verifier);
+    encode_cookie_verifier(revision - 1, stale);
+    if (!readdir_cookie_is_current(0, stale, revision))
+        return 1;
+    if (!readdir_cookie_is_current(1, verifier, revision))
+        return 2;
+    if (readdir_cookie_is_current(1, stale, revision))
+        return 3;
+    if (memcmp(verifier, "\x01\x02\x03\x04\x05\x06\x07\x08", 8) != 0)
+        return 4;
+    return 0;
+}
+
+static ino_t namedattr_test_inode;
+static int namedattr_test_present;
+static unsigned namedattr_test_create_count;
+
+static int namedattr_test_getattr(const char *path, struct stat *st) {
+    (void)path;
+    memset(st, 0, sizeof(*st));
+    st->st_dev = 11;
+    st->st_ino = namedattr_test_inode;
+    return 0;
+}
+
+static int namedattr_test_getxattr(const char *path, const char *name,
+                                   char *value, size_t size,
+                                   uint32_t position) {
+    (void)path;
+    (void)name;
+    (void)value;
+    (void)size;
+    (void)position;
+    return namedattr_test_present ? 0 : -ENOATTR;
+}
+
+static int namedattr_test_setxattr(const char *path, const char *name,
+                                   const char *value, size_t size, int flags,
+                                   uint32_t position) {
+    (void)path;
+    (void)name;
+    (void)value;
+    (void)size;
+    (void)position;
+    if ((flags & XATTR_CREATE) && namedattr_test_present)
+        return -EEXIST;
+    namedattr_test_present = 1;
+    namedattr_test_create_count++;
+    return 0;
+}
+
+static int namedattr_test_removexattr(const char *path, const char *name) {
+    (void)path;
+    (void)name;
+    if (!namedattr_test_present)
+        return -ENOATTR;
+    namedattr_test_present = 0;
+    return 0;
+}
+
+typedef struct {
+    const darwinfuse_config_t *config;
+    const char *path;
+    const char *name;
+    uint64_t verifier;
+    uint32_t status;
+    int created;
+} namedattr_test_open_t;
+
+static void *namedattr_test_open(void *opaque) {
+    namedattr_test_open_t *open = opaque;
+    open->status = namedattr_open_create(
+        open->config, open->path, open->name, EXCLUSIVE4, open->verifier,
+        &open->created);
+    return NULL;
+}
+
+int nfs4_test_namedattr_exclusive_replay_identity(void) {
+    static struct fuse_operations ops;
+    static darwinfuse_config_t config;
+    const char *path = "/namedattr-exclusive-replay-self-test";
+    const char *name = "com.acyclic.test";
+    const uint64_t verifier = UINT64_C(0x19a27c4d58e630bf);
+    memset(&ops, 0, sizeof(ops));
+    memset(&config, 0, sizeof(config));
+    ops.getattr = namedattr_test_getattr;
+    ops.getxattr = namedattr_test_getxattr;
+    ops.setxattr = namedattr_test_setxattr;
+    ops.removexattr = namedattr_test_removexattr;
+    config.ops = &ops;
+    namedattr_test_inode = 301;
+    if (!namedattr_exclusive_remember(&config, path, name, verifier))
+        return 1;
+    if (!namedattr_exclusive_recall(&config, path, name, verifier))
+        return 2;
+    if (namedattr_exclusive_recall(&config, path, "com.acyclic.other", verifier))
+        return 3;
+    namedattr_test_inode = 302;
+    if (namedattr_exclusive_recall(&config, path, name, verifier))
+        return 4;
+    namedattr_test_inode = 301;
+    namedattr_exclusive_forget(&config, path, name);
+    if (!namedattr_exclusive_remember(&config, path, name, verifier + 1))
+        return 5;
+    if (namedattr_exclusive_recall(&config, path, name, verifier))
+        return 6;
+    if (!namedattr_exclusive_recall(&config, path, name, verifier + 1))
+        return 7;
+
+    const char *atomic_name = "com.acyclic.atomic";
+    namedattr_test_present = 0;
+    namedattr_test_create_count = 0;
+    namedattr_test_open_t first = {&config, path, atomic_name, verifier + 2,
+                                   NFS4ERR_SERVERFAULT, 0};
+    namedattr_test_open_t second = first;
+    pthread_t first_thread;
+    pthread_t second_thread;
+    if (pthread_create(&first_thread, NULL, namedattr_test_open, &first) != 0)
+        return 8;
+    if (pthread_create(&second_thread, NULL, namedattr_test_open, &second) != 0) {
+        pthread_join(first_thread, NULL);
+        return 9;
+    }
+    pthread_join(first_thread, NULL);
+    pthread_join(second_thread, NULL);
+    if (first.status != NFS4_OK || second.status != NFS4_OK)
+        return 10;
+    if (namedattr_test_create_count != 1 || first.created + second.created != 1)
+        return 11;
+
+    if (namedattr_remove(&config, path, atomic_name) != 0)
+        return 12;
+    int recreated = 0;
+    if (namedattr_open_create(&config, path, atomic_name, EXCLUSIVE4,
+                              verifier + 3, &recreated) != NFS4_OK ||
+        !recreated)
+        return 13;
+    int replay_created = 0;
+    if (namedattr_open_create(&config, path, atomic_name, EXCLUSIVE4,
+                              verifier + 2, &replay_created) != NFS4ERR_EXIST)
+        return 14;
+    if (namedattr_open_create(&config, path, atomic_name, EXCLUSIVE4,
+                              verifier + 3, &replay_created) != NFS4_OK)
+        return 15;
+
+    const char *renamed_name = "com.acyclic.renamed-owner";
+    if (!namedattr_exclusive_remember(&config, "/owner-before-rename",
+                                      renamed_name, verifier + 4))
+        return 16;
+    namedattr_exclusive_forget(&config, "/owner-after-rename", renamed_name);
+    if (namedattr_exclusive_recall(&config, "/owner-before-rename",
+                                   renamed_name, verifier + 4))
+        return 17;
+    return 0;
+}
+
 static uint32_t handle_open(const darwinfuse_config_t *config,
                              nfs4_conn_state_t *conn,
                              nfs4_request_ctx_t *ctx,
                              xdr_buf_t *req, xdr_buf_t *rep)
 {
+    uint64_t change_before = namespace_change(config);
+    uint64_t change_after = change_before;
+
     /* Decode OPEN4args */
     xdr_decode_uint32(req);    /* seqid — unused */
     uint32_t share_access  = xdr_decode_uint32(req);
@@ -1495,18 +2096,27 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
             char *file_path = xattr_file_path(config, cur_ino);
             if (!file_path) return NFS4ERR_STALE;
 
-            /* Create the xattr if OPEN4_CREATE */
-            if (opentype == OPEN4_CREATE && config->ops->setxattr) {
-                FUSE_SETXATTR(config->ops, file_path, filename, "", 0, 0);
-            }
-
-            /* Verify xattr exists */
-            if (config->ops->getxattr) {
-                int sz = FUSE_GETXATTR(config->ops, file_path, filename,
-                                       NULL, 0);
-                if (sz < 0 && opentype != OPEN4_CREATE) {
+            int created_namedattr = 0;
+            if (opentype == OPEN4_CREATE) {
+                uint32_t status = namedattr_open_create(
+                    config, file_path, filename, createmode, createverf,
+                    &created_namedattr);
+                if (status != NFS4_OK) {
                     free(file_path);
-                    return errno_to_nfs4(sz);
+                    return status;
+                }
+            } else {
+                int namedattr_size = config->ops->getxattr
+                    ? FUSE_GETXATTR(config->ops, file_path, filename, NULL, 0)
+                    : -ENOTSUP;
+                if (namedattr_size >= 0) {
+                    /* Existing attribute opened without modification. */
+                } else if (config->ops->getxattr) {
+                    free(file_path);
+                    return errno_to_nfs4(namedattr_size);
+                } else {
+                    free(file_path);
+                    return NFS4ERR_NOTSUPP;
                 }
             }
 
@@ -1539,9 +2149,9 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
             /* Encode OPEN4resok */
             xdr_encode_uint32(rep, sid.seqid);
             xdr_encode_opaque_fixed(rep, sid.other, 12);
-            xdr_encode_bool(rep, 1);
-            xdr_encode_uint64(rep, 0);
-            xdr_encode_uint64(rep, 1);
+            if (created_namedattr)
+                change_after = namespace_changed(config);
+            encode_change_info(rep, change_before, change_after);
             xdr_encode_uint32(rep, 0x00000004);
             xdr_encode_uint32(rep, 0);
             xdr_encode_uint32(rep, OPEN_DELEGATE_NONE);
@@ -1585,6 +2195,7 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
                     }
                 }
                 if (rc == 0) {
+                    change_after = namespace_changed(config);
                     /* Store the fuse_fh */
                     target_ino = dfuse_itable_get_or_create(config->inode_table, path_buf);
                     if (target_ino == 0) return NFS4ERR_SERVERFAULT;
@@ -1614,9 +2225,7 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
                     /* Encode OPEN4resok */
                     xdr_encode_uint32(rep, sid.seqid);
                     xdr_encode_opaque_fixed(rep, sid.other, 12);
-                    xdr_encode_bool(rep, 1);      /* atomic */
-                    xdr_encode_uint64(rep, 0);    /* before */
-                    xdr_encode_uint64(rep, 1);    /* after */
+                    encode_change_info(rep, change_before, change_after);
                     xdr_encode_uint32(rep, 0x00000004);  /* OPEN4_RESULT_CONFIRM */
                     xdr_encode_uint32(rep, 0);    /* attrset bitmap (empty) */
                     xdr_encode_uint32(rep, OPEN_DELEGATE_NONE);
@@ -1725,10 +2334,7 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
     xdr_encode_uint32(rep, sid.seqid);
     xdr_encode_opaque_fixed(rep, sid.other, 12);
 
-    /* cinfo: change_info4 { atomic=true, before=0, after=1 } */
-    xdr_encode_bool(rep, 1);      /* atomic */
-    xdr_encode_uint64(rep, 0);    /* before */
-    xdr_encode_uint64(rep, 1);    /* after */
+    encode_change_info(rep, change_before, change_after);
 
     /* rflags: OPEN4_RESULT_CONFIRM (need open_confirm for v4.0) */
     xdr_encode_uint32(rep, 0x00000004);
@@ -1919,7 +2525,7 @@ static uint32_t handle_read(const darwinfuse_config_t *config,
         return NFS4ERR_NOTSUPP;
     }
 
-    if (count > 65536) count = 65536;
+    if (count > DFUSE_IO_SIZE) count = DFUSE_IO_SIZE;
     uint8_t *buf = malloc(count);
     if (!buf) return NFS4ERR_SERVERFAULT;
 
@@ -1956,6 +2562,38 @@ static uint32_t handle_read(const darwinfuse_config_t *config,
     return NFS4_OK;
 }
 
+static uint32_t sync_file(const darwinfuse_config_t *config,
+                          const char *path, struct fuse_file_info *fi)
+{
+    if (!config->ops->fsync)
+        return NFS4ERR_IO;
+    return errno_to_nfs4(config->ops->fsync(path, 0, fi));
+}
+
+static int sync_test_success(const char *path, int data_only,
+                             struct fuse_file_info *fi)
+{
+    return strcmp(path, "/sync-test") == 0 && data_only == 0 && fi->fh == 0
+        ? 0 : -EIO;
+}
+
+static int sync_test_failure(const char *path, int data_only,
+                             struct fuse_file_info *fi)
+{
+    (void)path;
+    (void)data_only;
+    (void)fi;
+    return -ENOSPC;
+}
+
+static int sync_test_write(const char *path, const char *data, size_t length,
+                           off_t offset, struct fuse_file_info *fi)
+{
+    return strcmp(path, "/sync-test") == 0 && length == 3 &&
+           memcmp(data, "abc", 3) == 0 && offset == 0 && fi->fh == 0
+        ? (int)length : -EIO;
+}
+
 static uint32_t handle_write(const darwinfuse_config_t *config,
                               nfs4_conn_state_t *conn,
                               nfs4_request_ctx_t *ctx,
@@ -1968,11 +2606,12 @@ static uint32_t handle_write(const darwinfuse_config_t *config,
 
     uint64_t offset = xdr_decode_uint64(req);
     uint32_t stable = xdr_decode_uint32(req);
-    (void)stable;
+    if (req->error || stable > FILE_SYNC4)
+        return NFS4ERR_INVAL;
 
     /* data (opaque) */
     uint32_t data_len_raw = xdr_decode_uint32(req);
-    if (req->error || data_len_raw > DFUSE_XDR_MAXBUF)
+    if (req->error || data_len_raw > DFUSE_IO_SIZE)
         return NFS4ERR_INVAL;
 
     size_t padded = (data_len_raw + 3) & ~(size_t)3;
@@ -2044,16 +2683,23 @@ static uint32_t handle_write(const darwinfuse_config_t *config,
         int rc = FUSE_SETXATTR(config->ops, file_path, attr_name,
                                new_val, new_size, 0);
         free(new_val);
+        uint32_t sync_status = NFS4_OK;
+        if (rc == 0 && stable != UNSTABLE4) {
+            struct fuse_file_info fi;
+            memset(&fi, 0, sizeof(fi));
+            sync_status = sync_file(config, file_path, &fi);
+        }
         free(file_path);
         free(attr_name);
 
         if (rc != 0)
             return errno_to_nfs4(rc);
+        if (sync_status != NFS4_OK)
+            return sync_status;
 
         xdr_encode_uint32(rep, data_len_raw);
-        xdr_encode_uint32(rep, FILE_SYNC4);
-        uint8_t writeverf[8] = {'D','F','U','S','E','v','0','2'};
-        xdr_encode_opaque_fixed(rep, writeverf, 8);
+        xdr_encode_uint32(rep, stable == UNSTABLE4 ? UNSTABLE4 : FILE_SYNC4);
+        encode_write_verifier(config, rep);
         return NFS4_OK;
     }
 
@@ -2081,13 +2727,16 @@ static uint32_t handle_write(const darwinfuse_config_t *config,
         return errno_to_nfs4(n);
     }
 
+    uint32_t sync_status = NFS4_OK;
+    if (stable != UNSTABLE4)
+        sync_status = sync_file(config, path, &fi);
     free(path);
+    if (sync_status != NFS4_OK)
+        return sync_status;
 
     xdr_encode_uint32(rep, (uint32_t)n);
-    xdr_encode_uint32(rep, FILE_SYNC4);
-
-    uint8_t writeverf[8] = {'D','F','U','S','E','v','0','2'};
-    xdr_encode_opaque_fixed(rep, writeverf, 8);
+    xdr_encode_uint32(rep, stable == UNSTABLE4 ? UNSTABLE4 : FILE_SYNC4);
+    encode_write_verifier(config, rep);
 
     return NFS4_OK;
 }
@@ -2100,21 +2749,104 @@ static uint32_t handle_commit(const darwinfuse_config_t *config,
     /* Decode: offset (uint64), count (uint32) */
     xdr_decode_uint64(req);
     xdr_decode_uint32(req);
+    if (req->error)
+        return NFS4ERR_INVAL;
 
-    /* Call fsync if available */
     char *path = fh_to_path(config, ctx->current_fh, ctx->current_fh_len);
-    if (path && config->ops->fsync) {
-        struct fuse_file_info fi;
-        memset(&fi, 0, sizeof(fi));
-        config->ops->fsync(path, 0, &fi);
-    }
+    if (!path)
+        return NFS4ERR_STALE;
+    struct fuse_file_info fi;
+    memset(&fi, 0, sizeof(fi));
+    uint32_t status = sync_file(config, path, &fi);
     free(path);
+    if (status != NFS4_OK)
+        return status;
 
-    /* Reply: writeverf */
-    uint8_t writeverf[8] = {'D','F','U','S','E','v','0','2'};
-    xdr_encode_opaque_fixed(rep, writeverf, 8);
+    encode_write_verifier(config, rep);
 
     return NFS4_OK;
+}
+
+/* Exercise the actual COMMIT response, not just its fsync callback helper. */
+int nfs4_test_sync_acknowledgement(void)
+{
+    struct fuse_operations ops;
+    darwinfuse_config_t config;
+    nfs4_request_ctx_t ctx;
+    nfs4_conn_state_t conn;
+    uint8_t request_bytes[12] = {0};
+    uint8_t write_bytes[40];
+    uint8_t reply_bytes[16];
+    uint8_t stateid[12] = {0};
+    xdr_buf_t request, write_request, reply;
+    uint32_t status;
+    memset(&ops, 0, sizeof(ops));
+    memset(&config, 0, sizeof(config));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&conn, 0, sizeof(conn));
+    pthread_mutex_init(&conn.lock, NULL);
+    config.ops = &ops;
+    config.inode_table = dfuse_itable_create();
+    if (!config.inode_table)
+        return 1;
+    dfuse_ino_t ino = dfuse_itable_get_or_create(config.inode_table,
+                                                 "/sync-test");
+    if (!ino) {
+        dfuse_itable_destroy(config.inode_table);
+        return 2;
+    }
+    fh_set_ino(ctx.current_fh, &ctx.current_fh_len, ino);
+
+    xdr_init(&request, request_bytes, sizeof(request_bytes));
+    xdr_init(&reply, reply_bytes, sizeof(reply_bytes));
+    if (handle_commit(&config, NULL, &ctx, &request, &reply) != NFS4ERR_IO)
+        status = 3;
+    else {
+        ops.fsync = sync_test_failure;
+        xdr_reset(&request);
+        xdr_reset(&reply);
+        if (handle_commit(&config, NULL, &ctx, &request, &reply) != NFS4ERR_NOSPC)
+            status = 4;
+        else {
+            ops.fsync = sync_test_success;
+            xdr_reset(&request);
+            xdr_reset(&reply);
+            status = handle_commit(&config, NULL, &ctx, &request, &reply) == NFS4_OK
+                     && reply.pos == 8 && !reply.error ? 0 : 5;
+        }
+    }
+
+    if (status == 0) {
+        ops.write = sync_test_write;
+        xdr_init(&write_request, write_bytes, sizeof(write_bytes));
+        xdr_encode_uint32(&write_request, 0);
+        xdr_encode_opaque_fixed(&write_request, stateid, sizeof(stateid));
+        xdr_encode_uint64(&write_request, 0);
+        xdr_encode_uint32(&write_request, FILE_SYNC4);
+        xdr_encode_opaque(&write_request, "abc", 3);
+        xdr_reset(&write_request);
+        xdr_reset(&reply);
+        ops.fsync = sync_test_failure;
+        if (handle_write(&config, &conn, &ctx, &write_request, &reply)
+            != NFS4ERR_NOSPC || reply.pos != 0)
+            status = 6;
+        else {
+            ops.fsync = sync_test_success;
+            xdr_reset(&write_request);
+            xdr_reset(&reply);
+            if (handle_write(&config, &conn, &ctx, &write_request, &reply)
+                != NFS4_OK || reply.pos != 16 || reply.error)
+                status = 7;
+            else {
+                xdr_reset(&reply);
+                status = xdr_decode_uint32(&reply) == 3 &&
+                         xdr_decode_uint32(&reply) == FILE_SYNC4 ? 0 : 8;
+            }
+        }
+    }
+    pthread_mutex_destroy(&conn.lock);
+    dfuse_itable_destroy(config.inode_table);
+    return (int)status;
 }
 
 /* ---- CREATE (non-regular files: mkdir, symlink, mknod) ---- */
@@ -2124,6 +2856,8 @@ static uint32_t handle_create(const darwinfuse_config_t *config,
                                nfs4_request_ctx_t *ctx,
                                xdr_buf_t *req, xdr_buf_t *rep)
 {
+    uint64_t change_before = namespace_change(config);
+
     /* Current FH must be a directory */
     char *dir_path = fh_to_path(config, ctx->current_fh, ctx->current_fh_len);
     if (!dir_path) return NFS4ERR_STALE;
@@ -2186,6 +2920,7 @@ static uint32_t handle_create(const darwinfuse_config_t *config,
     char child_path[1024];
     build_child_path(child_path, sizeof(child_path), dir_path, name);
     free(dir_path);
+    DFUSE_LOG("  CREATE type=%u path='%s'", objtype, child_path);
 
     int rc;
     switch (objtype) {
@@ -2217,17 +2952,18 @@ static uint32_t handle_create(const darwinfuse_config_t *config,
         return NFS4ERR_BADTYPE;
     }
 
-    if (rc != 0) return errno_to_nfs4(rc);
+    if (rc != 0) {
+        DFUSE_LOG("  CREATE '%s' -> error %d", child_path, rc);
+        return errno_to_nfs4(rc);
+    }
+    uint64_t change_after = namespace_changed(config);
 
     /* Assign inode and set as current FH */
     dfuse_ino_t child_ino = dfuse_itable_get_or_create(config->inode_table, child_path);
     if (child_ino == 0) return NFS4ERR_SERVERFAULT;
     fh_set_ino(ctx->current_fh, &ctx->current_fh_len, child_ino);
 
-    /* Encode: cinfo { atomic=true, before=0, after=1 } */
-    xdr_encode_bool(rep, 1);
-    xdr_encode_uint64(rep, 0);
-    xdr_encode_uint64(rep, 1);
+    encode_change_info(rep, change_before, change_after);
 
     /* attrset bitmap (empty) */
     xdr_encode_uint32(rep, 0);
@@ -2242,6 +2978,8 @@ static uint32_t handle_remove(const darwinfuse_config_t *config,
                                nfs4_request_ctx_t *ctx,
                                xdr_buf_t *req, xdr_buf_t *rep)
 {
+    uint64_t change_before = namespace_change(config);
+
     dfuse_ino_t dir_ino = fh_get_ino(ctx->current_fh, ctx->current_fh_len);
     if (dir_ino == 0) return NFS4ERR_BADHANDLE;
 
@@ -2257,14 +2995,11 @@ static uint32_t handle_remove(const darwinfuse_config_t *config,
         if (!file_path) return NFS4ERR_STALE;
         if (!config->ops->removexattr) { free(file_path); return NFS4ERR_NOTSUPP; }
 
-        int rc = config->ops->removexattr(file_path, name);
+        int rc = namedattr_remove(config, file_path, name);
         free(file_path);
         if (rc != 0) return errno_to_nfs4(rc);
 
-        /* Encode: cinfo */
-        xdr_encode_bool(rep, 1);
-        xdr_encode_uint64(rep, 0);
-        xdr_encode_uint64(rep, 1);
+        encode_change_info(rep, change_before, namespace_changed(config));
         return NFS4_OK;
     }
 
@@ -2296,9 +3031,7 @@ static uint32_t handle_remove(const darwinfuse_config_t *config,
 
     dfuse_itable_remove(config->inode_table, child_path);
 
-    xdr_encode_bool(rep, 1);
-    xdr_encode_uint64(rep, 0);
-    xdr_encode_uint64(rep, 1);
+    encode_change_info(rep, change_before, namespace_changed(config));
 
     return NFS4_OK;
 }
@@ -2310,6 +3043,8 @@ static uint32_t handle_rename(const darwinfuse_config_t *config,
                                nfs4_request_ctx_t *ctx,
                                xdr_buf_t *req, xdr_buf_t *rep)
 {
+    uint64_t change_before = namespace_change(config);
+
     /* Saved FH = source directory, current FH = target directory */
     char *src_dir = dfuse_itable_path_dup(config->inode_table,
                           fh_get_ino(ctx->saved_fh, ctx->saved_fh_len));
@@ -2344,12 +3079,9 @@ static uint32_t handle_rename(const darwinfuse_config_t *config,
     dfuse_itable_rename(config->inode_table, old_path, new_path);
 
     /* Encode: source_cinfo, target_cinfo */
-    xdr_encode_bool(rep, 1);      /* atomic */
-    xdr_encode_uint64(rep, 0);
-    xdr_encode_uint64(rep, 1);
-    xdr_encode_bool(rep, 1);      /* atomic */
-    xdr_encode_uint64(rep, 0);
-    xdr_encode_uint64(rep, 1);
+    uint64_t change_after = namespace_changed(config);
+    encode_change_info(rep, change_before, change_after);
+    encode_change_info(rep, change_before, change_after);
 
     return NFS4_OK;
 }
@@ -2361,6 +3093,8 @@ static uint32_t handle_link(const darwinfuse_config_t *config,
                              nfs4_request_ctx_t *ctx,
                              xdr_buf_t *req, xdr_buf_t *rep)
 {
+    uint64_t change_before = namespace_change(config);
+
     /* Saved FH = existing file, current FH = target directory */
     char *existing = dfuse_itable_path_dup(config->inode_table,
                            fh_get_ino(ctx->saved_fh, ctx->saved_fh_len));
@@ -2389,10 +3123,7 @@ static uint32_t handle_link(const darwinfuse_config_t *config,
     free(existing);
     if (rc != 0) return errno_to_nfs4(rc);
 
-    /* Encode: cinfo { atomic=true, before=0, after=1 } */
-    xdr_encode_bool(rep, 1);
-    xdr_encode_uint64(rep, 0);
-    xdr_encode_uint64(rep, 1);
+    encode_change_info(rep, change_before, namespace_changed(config));
 
     return NFS4_OK;
 }

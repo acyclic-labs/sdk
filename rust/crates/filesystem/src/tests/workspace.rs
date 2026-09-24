@@ -69,6 +69,41 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
 }
 
 #[tokio::test]
+async fn string_workspace_paths_match_native_namespace_names() -> Result<(), Box<dyn Error>> {
+    for profile in [
+        crate::model::FilesystemProfile::Posix,
+        crate::model::FilesystemProfile::Windows,
+    ] {
+        let fs = Fs::memory();
+        let config = VolumeConfig {
+            profile,
+            ..VolumeConfig::portable(Lifecycle::Ephemeral)
+        };
+        let workspace = fs
+            .create_workspace_with_config("native-path", config)
+            .await?;
+        workspace.write_text("/é.txt", "native").await?;
+        let mut checkout = workspace
+            .engine_checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned())
+            .await?;
+        let path = NamespacePath::from_portable_in_profile(
+            &PortablePath::parse("/é.txt", config.limits)?,
+            profile,
+            config.limits,
+        )?;
+        assert!(
+            checkout
+                .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await?
+                .value
+                .record
+                .is_some()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn conditional_remove_preserves_typed_stale_identity() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = fs.create_workspace("conditional-remove").await?;
@@ -1650,9 +1685,9 @@ async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
     let workspace = fs.create_workspace("lookup-paths").await?;
     workspace.write_text("/present", "body").await?;
     let generation = workspace.head().await?;
-    let limits = crate::model::VolumeLimits::default();
-    let present = customer_path("/present", limits)?;
-    let absent = customer_path("/absent", limits)?;
+    let config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
+    let present = customer_path("/present", config)?;
+    let absent = customer_path("/absent", config)?;
     let records = generation
         .lookup_paths(
             &[present.clone(), absent, present.clone()],
@@ -1723,9 +1758,9 @@ async fn generation_reader_resolves_many_paths_from_one_pinned_root() -> Result<
     let workspace = fs.create_workspace("generation-reader").await?;
     workspace.write_text("/present", "body").await?;
     let generation = workspace.head().await?;
-    let limits = crate::model::VolumeLimits::default();
-    let present = customer_path("/present", limits)?;
-    let absent = customer_path("/absent", limits)?;
+    let config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
+    let present = customer_path("/present", config)?;
+    let absent = customer_path("/absent", config)?;
 
     let reader = generation.reader().await?;
     let descriptions = reader

@@ -1285,6 +1285,23 @@ fn borrowed_sync_paths_and_private_accounting_helpers_are_total()
 }
 
 #[test]
+fn batch_lookup_does_not_reserve_worst_case_page_frontiers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let (generation, _) = fixture(&store)?;
+    let missing = LogicalName::new(NameEncoding::Utf8, b"missing".to_vec(), 255)?;
+    let path = NamespacePath::new(vec![missing; 10], config().limits)?;
+    let paths = vec![&path; 1_224];
+    let mut budget = WorkBudget::UNBOUNDED;
+    budget.peak_allocation_bytes = 16 * 1024 * 1024;
+    let result = lookup_path_refs(&store, &generation, &paths, config(), budget)?;
+    assert_eq!(result.entries.len(), paths.len());
+    assert!(result.entries.iter().all(|entry| entry.record.is_none()));
+    assert!(result.work.peak_allocation_bytes <= budget.peak_allocation_bytes);
+    Ok(())
+}
+
+#[test]
 fn operation_cache_capacity_never_evicts_or_misattributes_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();

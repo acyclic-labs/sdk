@@ -13,8 +13,11 @@ import {
 } from "../src/compat.js";
 
 const workspace = Uint8Array.from({ length: 16 }, (_, index) => index);
+const workspaceUuid = "00010203-0405-0607-0809-0a0b0c0d0e0f";
 const generation = Uint8Array.from({ length: 32 }, (_, index) => index);
 const commit = "ab".repeat(32);
+const exactTree = { kind: "exact" as const, workspace_id: workspace, generation };
+const exactTreeJson = { kind: "exact", workspace_id: Array.from(workspace), generation: Array.from(generation) };
 
 describe("Git compatibility command codec", () => {
   test("encodes every advertised typed command", () => {
@@ -62,31 +65,29 @@ describe("Git compatibility command codec", () => {
       Status: {
         branch: "main",
         head: null,
-        workspace: Array.from(generation),
-        dirty: true,
+        workspace: exactTreeJson,
+        dirty: "dirty",
         all_changes_staged: true,
       },
     }));
     expect(parsed).toEqual({ Status: {
       branch: "main",
       head: undefined,
-      workspace: generation,
-      dirty: true,
+      workspace: exactTree,
+      dirty: "dirty",
       allChangesStaged: true,
     } });
   });
 
   test("round-trips prepared actions and executor results as byte arrays", () => {
     const action: GitFilesystemAction = { RestoreGeneration: {
-      workspace_id: workspace,
-      generation,
+      tree: exactTree,
       paths: undefined,
     } };
     const pending = parseGitPendingTransitionJson(JSON.stringify({
-      id: Array.from(workspace),
+      id: workspaceUuid,
       action: { RestoreGeneration: {
-        workspace_id: Array.from(workspace),
-        generation: Array.from(generation),
+        tree: exactTreeJson,
         paths: null,
       } },
       mutation: "NoOp",
@@ -95,14 +96,14 @@ describe("Git compatibility command codec", () => {
     expect(pending.action).toEqual(action);
 
     const result: GitFilesystemResult = { Captured: {
-      generation,
-      workspace_id: workspace,
+      tree: exactTree,
       tracked_paths: ["file"],
+      proof: undefined,
     } };
     expect(JSON.parse(stringifyGitFilesystemResult(result))).toEqual({ Captured: {
-      generation: Array.from(generation),
-      workspace_id: Array.from(workspace),
+      tree: exactTreeJson,
       tracked_paths: ["file"],
+      proof: null,
     } });
     expect(JSON.parse(stringifyGitFilesystemResult({ Data: {
       kind: "nested-bytes",
@@ -111,6 +112,64 @@ describe("Git compatibility command codec", () => {
       kind: "nested-bytes",
       value: { bytes: [1, 2], nested: [[3]] },
     } });
+  });
+
+  test("preserves lazy trees, tracked paths, and issued capture proofs", () => {
+    const lazyTreeJson = {
+      kind: "lazy", id: Array.from(generation), workspace_id: Array.from(workspace),
+      authored_generation: Array.from(generation),
+      source: { identity: Array.from(workspace), epoch: 7 },
+      overlay: Array.from(generation), shadows: Array.from(generation),
+    };
+    const prepared = parseGitCompatOutputJson(JSON.stringify({ Prepared: {
+      transition: workspaceUuid,
+      action: { CaptureCommit: {
+        workspace_tree: lazyTreeJson, head_tree: exactTreeJson,
+        head_workspace_tree: exactTreeJson, tracked_paths: ["kept.txt"],
+        message: "commit", author: "agent", authored_at_seconds: 10, expected_head: commit,
+      } },
+    } }));
+    expect(prepared).toEqual({ Prepared: {
+      transition: workspace,
+      action: { CaptureCommit: {
+        workspace_tree: {
+          kind: "lazy", id: generation, workspace_id: workspace,
+          authored_generation: generation, source: { identity: workspace, epoch: 7n },
+          overlay: generation, shadows: generation,
+        },
+        head_tree: exactTree, head_workspace_tree: exactTree,
+        tracked_paths: ["kept.txt"], message: "commit", author: "agent",
+        authored_at_seconds: 10, expected_head: commit,
+      } },
+    } });
+    const proof = {
+      fork_parent: exactTree, initial_generation: generation, operation_id: workspace,
+    };
+    const captured: GitFilesystemResult = { Captured: {
+      tree: exactTree, tracked_paths: ["kept.txt"], proof,
+    } };
+    const wire = JSON.parse(stringifyGitFilesystemResult(captured));
+    expect(wire).toEqual({ Captured: {
+      tree: exactTreeJson, tracked_paths: ["kept.txt"],
+      proof: {
+        fork_parent: exactTreeJson, initial_generation: Array.from(generation),
+        operation_id: workspaceUuid,
+      },
+    } });
+    expect(parseGitCompatOutputJson(JSON.stringify({ Filesystem: wire }))).toEqual({ Filesystem: captured });
+  });
+
+  test("preserves a full u64 lazy source epoch", () => {
+    const epoch = 18_446_744_073_709_551_615n;
+    const lazy = {
+      kind: "lazy" as const, id: generation, workspace_id: workspace,
+      authored_generation: generation,
+      source: { identity: workspace, epoch }, overlay: generation, shadows: generation,
+    };
+    const result: GitFilesystemResult = { Applied: { tree: lazy, tracked_paths: undefined } };
+    const wire = stringifyGitFilesystemResult(result);
+    expect(wire).toContain('"epoch":18446744073709551615');
+    expect(parseGitCompatOutputJson(`{"Filesystem":${wire}}`)).toEqual({ Filesystem: result });
   });
 
   test("rejects malformed machine-readable output", () => {
@@ -128,7 +187,7 @@ describe("Git compatibility command codec", () => {
 describe("Git compatibility durable execution", () => {
   test("returns the filesystem result when a no-op transition completes", async () => {
     const action: GitFilesystemAction = { ApplyPatch: { patch: [1, 2, 3] } };
-    const result: GitFilesystemResult = { Applied: { generation } };
+    const result: GitFilesystemResult = { Applied: { tree: exactTree, tracked_paths: undefined } };
     let completed: Uint8Array | undefined;
     const output = await finishGitCompatOutput(
       {
@@ -154,7 +213,7 @@ describe("Git compatibility durable execution", () => {
     await expect(finishGitCompatOutput(
       { async completeTransitionResult() { return "NoOp"; } },
       output,
-      { async execute() { return { Applied: { generation: undefined } }; } },
+      { async execute() { return { Applied: { tree: undefined, tracked_paths: undefined } }; } },
     )).rejects.toThrow("without a durable transition");
   });
 });

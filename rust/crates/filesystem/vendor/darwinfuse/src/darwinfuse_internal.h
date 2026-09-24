@@ -54,6 +54,7 @@
 /* ---------- Buffer sizes ---------- */
 
 #define DFUSE_XDR_MAXBUF    (512 * 1024)
+#define DFUSE_IO_SIZE       (256 * 1024)
 #define DFUSE_MAX_CLIENTS   8
 #define DFUSE_READ_BUFSIZE  (256 * 1024)
 /* ---------- Thread pool ---------- */

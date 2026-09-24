@@ -7,7 +7,6 @@ import type {
 import { adaptCompatibilityWire } from "./compat.js";
 import {
   adaptWasmFs,
-  adaptWasmOperationWindowCoordinator,
   adaptWasmWorkspaceContextRegistry,
 } from "./wasm-adapter.js";
 
@@ -49,8 +48,11 @@ export async function openBrowserWorkspaceContextRegistry(): Promise<WorkspaceCo
   return adaptWasmWorkspaceContextRegistry(new binding.BrowserWorkspaceContextRegistry());
 }
 
-/** Creates a process-local overlapping-operation coordinator. */
+/**
+ * Browser persistence cannot yet fence publication with operation leases.
+ * Fail explicitly instead of returning a coordinator whose permits the
+ * IndexedDB/OPFS authority would always reject.
+ */
 export async function openBrowserOperationWindowCoordinator(): Promise<OperationWindowCoordinator> {
-  const binding = await bindings();
-  return adaptWasmOperationWindowCoordinator(new binding.BrowserOperationWindowCoordinator());
+  throw new Error("browser operation windows are unsupported by the persistent authority");
 }

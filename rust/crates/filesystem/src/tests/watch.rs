@@ -597,8 +597,9 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
     let empty = watch.poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
     assert_eq!(empty.work.backend_read_operations, 1);
 
-    std::fs::write(directory.path().join("observed"), b"content")?;
+    std::fs::write(directory.path().join("observed-0"), b"content")?;
     let deadline = Instant::now() + Duration::from_secs(5);
+    let mut retries = 0_u8;
     let observed = loop {
         let receipt = watch.poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
         match receipt.value {
@@ -607,6 +608,21 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
                 std::thread::sleep(Duration::from_millis(10));
             }
             WatchBatch::Changes { .. } => return Err("native watcher timed out".into()),
+            WatchBatch::RescanRequired {
+                reason: WatchInvalidationReason::NativeRescanRequired,
+                ..
+            } if cfg!(target_os = "macos") && retries < 3 => {
+                // FSEvents may deliver the watched root's creation hint after
+                // the first baseline. Rebaseline, then demand a precise event
+                // for a fresh write rather than accepting permanent rescans.
+                retries += 1;
+                let _ = watch.begin_rescan()?;
+                let _ = watch.finish_rescan()?;
+                std::fs::write(
+                    directory.path().join(format!("observed-{retries}")),
+                    b"content",
+                )?;
+            }
             WatchBatch::RescanRequired { reason, .. } => {
                 return Err(format!("native watcher invalidated: {reason}").into());
             }
@@ -663,6 +679,52 @@ fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directorie
                     | WatchChange::MetadataChanged(path)
                     | WatchChange::Removed(path) => path.depth() == 2,
                     WatchChange::Renamed { from, to } => from.depth() == 2 || to.depth() == 2,
+                }) =>
+            {
+                break;
+            }
+            WatchBatch::Changes { .. } if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            WatchBatch::Changes { .. } => return Err("demand watcher timed out".into()),
+            WatchBatch::RescanRequired { reason, .. } => {
+                return Err(format!("demand watcher invalidated: {reason}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_demand_watch_tracks_the_nearest_existing_parent_of_an_absent_directory()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+
+    let root = tempfile::tempdir()?;
+    let mut options = NativeWatchOptions::new(VolumeLimits::default());
+    options.recursive = false;
+    let mut watch = NativeWatch::open(root.path(), options)?;
+    watch.accept_lazy_baseline()?;
+
+    let portable = crate::path::PortablePath::parse("/future/child", VolumeLimits::default())?;
+    let absent = NamespacePath::from_portable(&portable, VolumeLimits::default())?;
+    watch.watch_directory(&absent)?;
+    std::fs::create_dir(root.path().join("future"))?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match watch
+            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value
+        {
+            WatchBatch::Changes { changes, .. }
+                if changes.iter().any(|change| match change {
+                    WatchChange::Created(path)
+                    | WatchChange::Modified(path)
+                    | WatchChange::MetadataChanged(path)
+                    | WatchChange::Removed(path) => path.depth() == 1,
+                    WatchChange::Renamed { from, to } => from.depth() == 1 || to.depth() == 1,
                 }) =>
             {
                 break;
