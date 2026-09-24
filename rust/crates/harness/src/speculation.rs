@@ -745,6 +745,20 @@ impl Scheduler {
             .count()
     }
 
+    /// Whether every structured descendant of `operation_id` is terminal.
+    pub(crate) fn descendants_stopped(&self, operation_id: OperationId) -> bool {
+        let mut pending = vec![operation_id];
+        while let Some(current) = pending.pop() {
+            for (_, child) in self.children(current) {
+                if child.phase != OperationPhase::Terminal {
+                    return false;
+                }
+                pending.push(child.spec.operation_id);
+            }
+        }
+        true
+    }
+
     /// Depth of a new child of `parent`: its ancestors, not counting speculation nodes.
     fn child_depth(&self, parent: OperationId) -> usize {
         let mut depth = 0;
@@ -1114,9 +1128,11 @@ mod host {
         /// attempt workspace. A merge conflict fails the speculation and leaves the
         /// winner's fork intact for inspection.
         ///
-        /// No workspace is discarded while a losing or cancelled attempt is still
-        /// stopping, since its worker may still be using its fork: settlement
-        /// returns [`Error::Conflict`] until every such attempt is terminal.
+        /// No workspace is discarded while any attempt, or any nested operation under
+        /// one, is still stopping, since its worker may still be using the attempt's
+        /// fork: settlement returns [`Error::Conflict`] until the whole subtree is
+        /// terminal. A Race or Quorum attempt can finish before its cancelled
+        /// children stop.
         pub async fn settle_speculation(
             &mut self,
             parent: OperationId,
@@ -1145,9 +1161,7 @@ mod host {
                 None => return Err(Error::Conflict("speculation has no verdict".into())),
             };
             if !state.settled {
-                if self.scheduler().children(parent).any(|(slot, attempt)| {
-                    attempt.phase != OperationPhase::Terminal && winner.as_deref() != Some(slot)
-                }) {
+                if !self.scheduler().descendants_stopped(parent) {
                     return Err(Error::Conflict(
                         "speculation attempts are still stopping".into(),
                     ));
@@ -2101,6 +2115,140 @@ mod tests {
         );
         let reopened = open(&client, SwarmLimits::DOGFOOD).await?;
         assert_eq!(reopened.scheduler(), coordinator.scheduler());
+        Ok(())
+    }
+
+    /// Runs attempt `a` as a race whose direct child wins while its sibling is
+    /// still running, fails attempt `b`, and commits the verdict for `a`.
+    async fn decide_for_a_racing_race(
+        coordinator: &mut DistributedCoordinator<MemoryStream>,
+        fake: &MemoryWorkspaces,
+    ) -> Result<(OperationId, BTreeMap<OperationId, LeaseFence>)> {
+        let mut request = request(&["a", "b"], false, JudgeTiming::AllSettled)?;
+        if let Some(first) = request.attempts.first_mut() {
+            first.orchestration = Orchestration::Race;
+        }
+        coordinator
+            .open_speculation(&request, &key("speculate")?)
+            .await?;
+        let nested = [
+            OperationId::from_bytes([30; 16]),
+            OperationId::from_bytes([31; 16]),
+        ];
+        for (id, slot) in nested.into_iter().zip(["x", "y"]) {
+            let event = coordinator.scheduler().declare(OperationSpec {
+                operation_id: id,
+                parent: Some(ParentLink {
+                    operation_id: attempt_id(0),
+                    slot: slot.into(),
+                }),
+                owner: owner(),
+                entrypoint: entrypoint("example.agent"),
+                dependencies: BTreeSet::new(),
+                resources: ResourceRequest::default(),
+                placement: Value::Null,
+                orchestration: Orchestration::Leaf,
+                state: Value::Null,
+            })?;
+            coordinator
+                .apply(id, key(&format!("declare-{id}"))?, event)
+                .await?;
+        }
+        let fences = start(coordinator, 4).await?;
+        let race = attempt_id(0);
+        let fence = fences
+            .get(&race)
+            .cloned()
+            .ok_or_else(|| Error::NotFound("race lease".into()))?;
+        coordinator
+            .apply(
+                race,
+                key("race-wait")?,
+                SchedulerEvent::WaitingForChildren {
+                    operation_id: race,
+                    fence,
+                },
+            )
+            .await?;
+        let [winner, straggler] = nested;
+        finish(
+            coordinator,
+            &fences,
+            &[
+                (winner, Outcome::Succeeded(json!("x done"))),
+                (attempt_id(1), failed()),
+            ],
+        )
+        .await?;
+        let OrchestrationDecision::Complete { outcome, cancel } =
+            coordinator.scheduler().orchestration(race)
+        else {
+            return Err(Error::Conflict("race should be decided".into()));
+        };
+        assert_eq!(cancel, vec![straggler]);
+        let expected_revision = coordinator
+            .scheduler()
+            .operation(race)
+            .map_or(0, |state| state.revision);
+        coordinator
+            .apply(
+                race,
+                key("race")?,
+                SchedulerEvent::Orchestrated {
+                    operation_id: race,
+                    expected_revision,
+                    outcome,
+                    cancel,
+                    reducer: None,
+                    reduction_digest: None,
+                },
+            )
+            .await?;
+        coordinator
+            .evaluate_attempt(NODE, "a", fake, None, &key("eval-a")?)
+            .await?;
+        let verdict = coordinator
+            .judge_speculation(NODE, &FewestChangesJudge::new(), &key("judge")?)
+            .await?;
+        assert_eq!(verdict.and_then(|value| value.winner), Some("a".into()));
+        Ok((straggler, fences))
+    }
+
+    #[tokio::test]
+    async fn settlement_waits_for_nested_workers_of_a_finished_attempt() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let mut coordinator = open(&client, SwarmLimits::DOGFOOD).await?;
+        let fake = workspaces(&[("a", 1)], &[]);
+        let (straggler, fences) = decide_for_a_racing_race(&mut coordinator, &fake).await?;
+        assert!(
+            coordinator
+                .scheduler()
+                .operation(straggler)
+                .is_some_and(|state| state.cancellation_requested && state.outcome.is_none()),
+            "the race attempt finished while its nested worker is still stopping"
+        );
+        assert!(matches!(
+            coordinator
+                .settle_speculation(NODE, &fake, &key("settle")?)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        {
+            let recorded = fake.state()?;
+            assert!(recorded.discarded.is_empty() && recorded.merges.is_empty());
+        }
+        finish(
+            &mut coordinator,
+            &fences,
+            &[(straggler, Outcome::Cancelled)],
+        )
+        .await?;
+        assert!(
+            coordinator
+                .settle_speculation(NODE, &fake, &key("settle")?)
+                .await?
+                .is_some()
+        );
         Ok(())
     }
 
