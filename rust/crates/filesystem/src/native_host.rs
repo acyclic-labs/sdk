@@ -2697,13 +2697,14 @@ mod windows_clone_tests {
         task.abort();
         let _ = task.await;
         for _ in 0..400 {
-            if !copy_path.exists() {
-                return Ok(());
-            }
             match std::fs::metadata(&copy_path) {
                 Ok(metadata) if metadata.len() == length => return Ok(()),
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                // Windows can briefly deny metadata access while a cancelled
+                // copy releases its handle. Keep polling instead of treating
+                // the transient sharing race as an incomplete copy.
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
                 Err(error) => return Err(error),
             }
             tokio::time::sleep(Duration::from_millis(5)).await;

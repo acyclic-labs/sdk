@@ -108,23 +108,73 @@ case "$lane" in
     cargo test -p acyclic-labs-plugin --locked
     cargo clippy -p acyclic-labs-plugin --all-targets --all-features --locked -- -D warnings
     head="${CI_HEAD_SHA:-$(git rev-parse HEAD)}"
-    if [[ -n "${CI_TARGET_BRANCH:-}" ]]; then
+    allow_webflow=false
+    if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
+      [[ -n "${CI_TARGET_BRANCH:-}" ]] || {
+        echo 'pull request target branch is required for signature verification' >&2
+        exit 1
+      }
       branch="$CI_TARGET_BRANCH"
       git fetch --no-tags origin "$branch"
       base="$(git merge-base "$head" "origin/$branch")"
+      range="$base..$head"
+    elif [[ "${GITHUB_EVENT_NAME:-}" == "push" &&
+            "${GITHUB_REF:-}" == "refs/heads/main" ]]; then
+      before="${CI_BEFORE_SHA:-}"
+      [[ "$before" =~ ^[0-9a-f]{40}$ ]] || {
+        echo 'main push must include its previous commit for signature verification' >&2
+        exit 1
+      }
+      if [[ "$before" == "0000000000000000000000000000000000000000" ]]; then
+        range="$head"
+      else
+        git merge-base --is-ancestor "$before" "$head" || {
+          echo 'main push previous commit is not an ancestor of its head' >&2
+          exit 1
+        }
+        range="$before..$head"
+      fi
+      allow_webflow=true
     else
       base="${head}^"
+      range="$base..$head"
     fi
+    webflow_home=""
     while read -r commit; do
       verification=$(git \
         -c gpg.format=ssh \
         -c "gpg.ssh.allowedSignersFile=$(pwd)/.github/allowed_signers" \
         show --quiet --format='%G?' "$commit")
-      [[ "$verification" == "G" ]] || {
-        echo "Commit $commit lacks an authorized cryptographic signature." >&2
-        exit 1
-      }
-    done < <(git rev-list --reverse "$base..$head")
+      if [[ "$verification" == "G" ]]; then
+        continue
+      fi
+      # GitHub signs squash merges with its web-flow OpenPGP key. Only main
+      # accepts that pinned key; PR commits must still use allowed SSH signers.
+      if [[ "$allow_webflow" == true ]]; then
+        if [[ -z "$webflow_home" ]]; then
+          webflow_home="$(mktemp -d "$SDK_TEMP_DIR/web-flow.XXXXXXXX")"
+          trap 'rm -rf -- "$webflow_home"' EXIT
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --max-time 30 https://github.com/web-flow.gpg \
+            --output "$webflow_home/web-flow.gpg"
+          echo "6e8af687f60cf3f403151c8fb1b26e95e6f9e424ca60cc8f3787bd4466a3ef84  $webflow_home/web-flow.gpg" |
+            sha256sum --check --status
+          GNUPGHOME="$webflow_home" gpg --batch --quiet --import "$webflow_home/web-flow.gpg"
+        fi
+        signature=$(GNUPGHOME="$webflow_home" git -c gpg.format=openpgp \
+          show --quiet --format='%G? %GF' "$commit")
+        if [[ "$signature" == "G 968479A1AFF927E37D1A566BB5690EEEBB952194" ||
+              "$signature" == "U 968479A1AFF927E37D1A566BB5690EEEBB952194" ]]; then
+          continue
+        fi
+      fi
+      echo "Commit $commit lacks an authorized cryptographic signature." >&2
+      exit 1
+    done < <(git rev-list --reverse "$range")
+    if [[ -n "$webflow_home" ]]; then
+      rm -rf -- "$webflow_home"
+      trap - EXIT
+    fi
 
     archive="$TOOLS_DIR/cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz"
     if [[ ! -f "$archive" ]]; then
