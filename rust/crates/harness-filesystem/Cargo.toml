@@ -14,15 +14,19 @@ documentation = "https://docs.rs/acyclic-harness-filesystem"
 default = ["memory"]
 memory = ["acyclic-fs/memory"]
 local = ["acyclic-fs/local"]
+speculation = ["acyclic-harness/host", "dep:futures"]
 
 [dependencies]
 acyclic-fs = { version = "=0.1.1", path = "../filesystem", default-features = false }
 acyclic-harness = { version = "=0.1.1", path = "../harness", default-features = false }
 blake3.workspace = true
 bytes.workspace = true
+futures = { workspace = true, optional = true }
 serde.workspace = true
 
 [dev-dependencies]
+acyclic-stream = { version = "=0.1.0", path = "../stream", default-features = false }
+serde_json.workspace = true
 tokio.workspace = true
 
 [lints]
