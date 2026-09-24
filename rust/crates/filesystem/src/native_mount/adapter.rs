@@ -25,11 +25,14 @@ use bytes::Bytes;
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use std::sync::Weak;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::task::{Context, Poll, Wake, Waker};
+use std::thread::ThreadId;
 use std::time::Duration;
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
@@ -94,12 +97,56 @@ pub struct CheckoutMountSource<A, O> {
     runtime: CallbackRuntime,
 }
 
+/// Blocking bridge from native driver threads into the shared async runtime.
+///
+/// A callback polls its future on the calling thread inside the runtime's
+/// context, so timers, I/O, and blocking pools resolve against the shared
+/// runtime while no helper thread is ever created. The future lives in one
+/// heap allocation, so while a callback waits, a driver thread's stack holds
+/// only poll frames, whatever the future's size.
 #[derive(Clone)]
 pub(super) struct CallbackRuntime {
     handle: tokio::runtime::Handle,
 }
 
 static CALLBACK_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+
+/// Wakes one callback thread parked on its future. The flag keeps a wake
+/// observable even when code polled on that thread consumes its park token.
+struct ParkedCallback {
+    thread: std::thread::Thread,
+    woken: AtomicBool,
+}
+
+impl Wake for ParkedCallback {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.woken.store(true, Ordering::Release);
+        self.thread.unpark();
+    }
+}
+
+impl ParkedCallback {
+    fn poll_to_completion<F: Future>(mut future: Pin<Box<F>>) -> F::Output {
+        let parked = Arc::new(Self {
+            thread: std::thread::current(),
+            woken: AtomicBool::new(false),
+        });
+        let waker = Waker::from(Arc::clone(&parked));
+        let mut context = Context::from_waker(&waker);
+        loop {
+            if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+                return output;
+            }
+            while !parked.woken.swap(false, Ordering::Acquire) {
+                std::thread::park();
+            }
+        }
+    }
+}
 
 impl CallbackRuntime {
     pub(super) fn create() -> Result<Self, NativeMountError> {
@@ -119,61 +166,34 @@ impl CallbackRuntime {
         }
     }
 
-    fn block_on<F>(&self, create: impl FnOnce() -> F + Send) -> Result<F::Output, MountSourceError>
-    where
-        F: Future,
-        F::Output: Send,
-    {
+    fn block_on<F: Future>(&self, create: impl FnOnce() -> F) -> F::Output {
+        let future = Box::pin(async { create().await });
+        let poll = || {
+            let _runtime = self.handle.enter();
+            ParkedCallback::poll_to_completion(future)
+        };
         match tokio::runtime::Handle::try_current() {
+            // A multi-thread worker first hands its scheduler core to another
+            // thread, so tasks queued behind this callback keep running.
             Ok(current)
                 if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
             {
-                Ok(tokio::task::block_in_place(|| {
-                    self.handle.block_on(create())
-                }))
+                tokio::task::block_in_place(poll)
             }
-            Ok(_) => self.block_on_worker(create),
-            // Linux FUSE and macOS NFS callbacks enter from driver-owned
-            // threads; concurrent callbacks can use the shared runtime
-            // directly without allocating a helper thread per request.
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            Err(_) => Ok(self.handle.block_on(create())),
-            // ProjFS can synchronously re-enter while a callback is being
-            // serviced. Preserve the scoped boundary to bound that recursion.
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            Err(_) => self.block_on_worker(create),
+            _ => poll(),
         }
     }
 
-    fn block_on_worker<F>(
+    /// Runs one callback's complete future under the finite callback deadline.
+    pub(super) fn wait<T, F: Future<Output = Result<T, MountSourceError>>>(
         &self,
-        create: impl FnOnce() -> F + Send,
-    ) -> Result<F::Output, MountSourceError>
-    where
-        F: Future,
-        F::Output: Send,
-    {
-        std::thread::scope(|scope| {
-            let worker = std::thread::Builder::new()
-                .name("acyclic-fs-callback".to_owned())
-                .spawn_scoped(scope, || self.handle.block_on(create()))
-                .map_err(|error| MountSourceError::Engine(error.to_string()))?;
-            match worker.join() {
-                Ok(value) => Ok(value),
-                Err(payload) => std::panic::resume_unwind(payload),
-            }
-        })
-    }
-
-    pub(super) fn wait<T: Send, F: Future<Output = Result<T, MountSourceError>>>(
-        &self,
-        create: impl FnOnce() -> F + Send,
+        create: impl FnOnce() -> F,
     ) -> Result<T, MountSourceError> {
         self.block_on(|| async {
             tokio::time::timeout(CALLBACK_TIMEOUT, create())
                 .await
                 .map_err(|_| MountSourceError::Stale)?
-        })?
+        })
     }
 }
 
@@ -202,8 +222,10 @@ struct CheckoutAttachedFile<A, O> {
 
 /// One process-local serialization and publication-fencing boundary for every
 /// adapter, watcher, and transport view of the same checkout.
+///
+/// Mutations are exclusive and ordered; callback reads share the current view.
 pub struct SharedCheckout<A, O> {
-    state: tokio::sync::Mutex<SharedCheckoutState<A, O>>,
+    state: tokio::sync::RwLock<SharedCheckoutState<A, O>>,
     view_epoch: Arc<AtomicU64>,
     view_gate: Arc<ViewGate>,
 }
@@ -212,12 +234,17 @@ pub struct SharedCheckout<A, O> {
 /// native callback from observing a partial external SDK operation.
 pub struct SharedCheckoutGuard<'a, A, O> {
     _view: ViewWriteLease,
-    state: tokio::sync::MutexGuard<'a, SharedCheckoutState<A, O>>,
+    state: tokio::sync::RwLockWriteGuard<'a, SharedCheckoutState<A, O>>,
 }
 
-struct SharedCheckoutReadGuard<'a, A, O> {
+/// One callback's shared admission to the checkout's current view.
+///
+/// Observations overlap freely. Each excludes every mutation until it drops,
+/// because a mutation first needs the view gate's exclusive lease; reads go
+/// through [`Checkout::observer`], which cannot outlive this admission.
+pub(super) struct SharedCheckoutObservation<'a, A, O> {
     _view: ViewReadLease,
-    state: tokio::sync::MutexGuard<'a, SharedCheckoutState<A, O>>,
+    state: tokio::sync::RwLockReadGuard<'a, SharedCheckoutState<A, O>>,
 }
 
 /// Locked checkout state. Dereferencing reaches the canonical checkout while
@@ -241,7 +268,7 @@ impl<A, O> SharedCheckout<A, O> {
     pub fn with_publication(checkout: Checkout<A, O>, publication: MountPublication) -> Self {
         let view_epoch = Arc::new(AtomicU64::new(1));
         Self {
-            state: tokio::sync::Mutex::new(SharedCheckoutState {
+            state: tokio::sync::RwLock::new(SharedCheckoutState {
                 checkout,
                 publication_operation: None,
                 publication,
@@ -255,17 +282,31 @@ impl<A, O> SharedCheckout<A, O> {
     /// Serializes external checkout access and excludes native callbacks.
     pub async fn lock(&self) -> SharedCheckoutGuard<'_, A, O> {
         let view = self.view_gate.write().await;
-        let state = self.state.lock().await;
+        let state = self.state.write().await;
         SharedCheckoutGuard { _view: view, state }
     }
 
-    async fn read_lock(
+    /// Admits one callback to the current view alongside every other reader.
+    pub(super) async fn observe(
         &self,
-        owner: std::thread::ThreadId,
-    ) -> Result<SharedCheckoutReadGuard<'_, A, O>, MountSourceError> {
+        owner: ThreadId,
+    ) -> Result<SharedCheckoutObservation<'_, A, O>, MountSourceError> {
         let view = self.view_gate.read_for_callback(owner, None).await?;
-        let state = self.state.lock().await;
-        Ok(SharedCheckoutReadGuard { _view: view, state })
+        let state = self.state.read().await;
+        Ok(SharedCheckoutObservation { _view: view, state })
+    }
+
+    /// Copies the current candidate and the view epoch it belongs to, for an
+    /// optimistic transaction that installs only if that epoch still holds.
+    /// No reader is excluded: the copy records nothing into this checkout.
+    pub(super) async fn candidate(&self) -> Result<(Checkout<A, O>, u64), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let state = self.state.read().await;
+        state.ensure_publication_resolved()?;
+        Ok((state.private_candidate(), state.view_epoch()))
     }
 
     pub(super) fn view_epoch(&self) -> u64 {
@@ -287,17 +328,11 @@ impl<A, O> DerefMut for SharedCheckoutGuard<'_, A, O> {
     }
 }
 
-impl<A, O> Deref for SharedCheckoutReadGuard<'_, A, O> {
+impl<A, O> Deref for SharedCheckoutObservation<'_, A, O> {
     type Target = SharedCheckoutState<A, O>;
 
     fn deref(&self) -> &Self::Target {
         &self.state
-    }
-}
-
-impl<A, O> DerefMut for SharedCheckoutReadGuard<'_, A, O> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.state
     }
 }
 
@@ -496,6 +531,25 @@ impl<A, O> CheckoutDetachedFile<A, O> {
             Ok((state.file.record(), state.metadata, state.mutation_epoch))
         })
     }
+
+    /// Reports the detached identity's live state within a caller's callback.
+    pub(super) async fn lookup_async(&self) -> Result<MountLookup, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let state = self.state.lock().await;
+        Ok(MountLookup {
+            node: MountNode {
+                file_id: state.file.file_id(),
+                kind: MountNodeKind::Regular,
+                logical_bytes: state.file.logical_bytes(),
+                link_count: 0,
+                device: None,
+            },
+            metadata: state.metadata,
+        })
+    }
 }
 
 impl<A, O> MountOpenFile for CheckoutDetachedFile<A, O>
@@ -504,19 +558,7 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     fn lookup(&self) -> Result<MountLookup, MountSourceError> {
-        self.runtime.wait(|| async {
-            let state = self.state.lock().await;
-            Ok(MountLookup {
-                node: MountNode {
-                    file_id: state.file.file_id(),
-                    kind: MountNodeKind::Regular,
-                    logical_bytes: state.file.logical_bytes(),
-                    link_count: 0,
-                    device: None,
-                },
-                metadata: state.metadata,
-            })
-        })
+        self.runtime.wait(|| self.lookup_async())
     }
 
     fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
@@ -802,7 +844,8 @@ where
     fn lookup(&self) -> Result<MountLookup, MountSourceError> {
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             let record = checkout
                 .read_file_record_by_id(self.file_id, boundary_budget(), &self.cancellation)
                 .await
@@ -823,7 +866,8 @@ where
     fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .read_file_range_by_id(
                     self.file_id,
@@ -843,7 +887,8 @@ where
     fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .read_file_up_to_by_id(
                     self.file_id,
@@ -861,7 +906,8 @@ where
     fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .seek_file_extent_by_id(
                     self.file_id,
@@ -992,7 +1038,8 @@ where
         let name = self.attribute_name(name)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .read_named_attribute_by_id(
                     self.file_id,
@@ -1014,7 +1061,8 @@ where
         let cursor = cursor.map(|name| self.attribute_name(name)).transpose()?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             let receipt = checkout
                 .list_named_attributes_by_id(
                     self.file_id,
@@ -1133,7 +1181,8 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let owner = ViewGate::callback_owner();
         let present = self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             match checkout
                 .read_file_record_by_id(file_id, boundary_budget(), &self.cancellation)
                 .await
@@ -1156,15 +1205,41 @@ impl<A, O> CheckoutMountSource<A, O> {
         }))
     }
 
+    /// Resolves one mounted path within a caller's callback future, so a
+    /// composed source spends one runtime entry on its whole callback.
+    pub(super) async fn lookup_async(
+        &self,
+        path: &MountPath,
+        owner: ThreadId,
+    ) -> Result<Option<MountLookup>, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let path = self.path(path)?;
+        let observation = self.checkout.observe(owner).await?;
+        let mut checkout = observation.observer();
+        let receipt = checkout
+            .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
+            .await
+            .map_err(engine_error)?;
+        Ok(receipt.value.map(|value| MountLookup {
+            node: mount_node(value.record),
+            metadata: value.metadata,
+        }))
+    }
+
     pub(super) fn record_by_id(&self, file_id: FileId) -> Result<FileRecord, MountSourceError>
     where
         A: AsyncAuthorityStore + Send + Sync,
         O: AsyncObjectStore + Send + Sync,
     {
+        let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            checkout
+            let observation = self.checkout.observe(owner).await?;
+            observation.ensure_publication_resolved()?;
+            observation
+                .observer()
                 .read_file_record_by_id(file_id, boundary_budget(), &self.cancellation)
                 .await
                 .map(|receipt| receipt.value)
@@ -1181,9 +1256,13 @@ impl<A, O> CheckoutMountSource<A, O> {
         A: AsyncAuthorityStore + Send + Sync,
         O: AsyncObjectStore + Send + Sync,
     {
+        let owner = ViewGate::callback_owner();
         let file = self.runtime.wait(|| async {
-            let checkout = self.checkout.lock().await;
-            Ok(checkout.detached_from_record(record))
+            Ok(self
+                .checkout
+                .observe(owner)
+                .await?
+                .detached_from_record(record))
         })?;
         Ok(Arc::new(CheckoutDetachedFile {
             state: tokio::sync::Mutex::new(DetachedMountState {
@@ -1252,7 +1331,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let owner = ViewGate::callback_owner();
         self.runtime
-            .wait(|| async { Ok(self.checkout.read_lock(owner).await?.volume_id()) })
+            .wait(|| async { Ok(self.checkout.observe(owner).await?.volume_id()) })
     }
 
     /// Cancels future and in-flight canonical operations owned by this mount.
@@ -1619,14 +1698,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 maximum_extent_spans: 65_536,
             };
             for _ in 0..3 {
-                let (mut candidate, epoch) = {
-                    let checkout = self.checkout.lock().await;
-                    checkout.ensure_publication_resolved()?;
-                    (
-                        checkout.private_candidate(),
-                        checkout.view_epoch.load(Ordering::Acquire),
-                    )
-                };
+                let (mut candidate, epoch) = self.checkout.candidate().await?;
                 // Projected host reads may call back into this checkout. Never
                 // hold its view gate while observing the virtualization root.
                 match scope {
@@ -1796,26 +1868,16 @@ where
     }
 
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
-        let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
-            let receipt = checkout
-                .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
-                .await
-                .map_err(engine_error)?;
-            Ok(receipt.value.map(|value| MountLookup {
-                node: mount_node(value.record),
-                metadata: value.metadata,
-            }))
-        })
+        self.runtime.wait(|| self.lookup_async(path, owner))
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
         let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
         let file_id = self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             let record = checkout
                 .lookup_no_follow(&path, boundary_budget(), &self.cancellation)
                 .await
@@ -1844,8 +1906,9 @@ where
         let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
         let (file, metadata) = self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
-            checkout.ensure_publication_resolved()?;
+            let observation = self.checkout.observe(owner).await?;
+            observation.ensure_publication_resolved()?;
+            let mut checkout = observation.observer();
             let lookup = checkout
                 .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
                 .await
@@ -1881,7 +1944,8 @@ where
         let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .read_symbolic_link(&path, boundary_budget(), &self.cancellation)
                 .await
@@ -1899,7 +1963,8 @@ where
         let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .read_file_range(
                     &path,
@@ -1925,7 +1990,8 @@ where
         let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .seek_file_extent(
                     &path,
@@ -1953,7 +2019,8 @@ where
         let cursor = cursor.map(|bytes| self.logical_name(bytes)).transpose()?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             let receipt = checkout
                 .list_directory_records(
                     &path,
@@ -2240,7 +2307,8 @@ where
         let name = self.posix_attribute_name(name)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .read_named_attribute(&path, &name, boundary_budget(), &self.cancellation)
                 .await
@@ -2261,7 +2329,8 @@ where
             .transpose()?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             let receipt = checkout
                 .list_named_attributes(
                     &path,
@@ -2580,14 +2649,7 @@ where
                 maximum_extent_spans: 65_536,
             };
             for _ in 0..3 {
-                let (mut candidate, epoch) = {
-                    let checkout = self.checkout.lock().await;
-                    checkout.ensure_publication_resolved()?;
-                    (
-                        checkout.private_candidate(),
-                        checkout.view_epoch.load(Ordering::Acquire),
-                    )
-                };
+                let (mut candidate, epoch) = self.checkout.candidate().await?;
                 capture_subtree(
                     &mut candidate,
                     path.clone(),
@@ -2791,7 +2853,7 @@ mod tests {
             .ok_or_else(|| std::io::Error::other("missing checkout view epoch"))?;
         let candidate = source
             .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() })?;
+            .block_on(|| async { source.checkout.lock().await.private_candidate() });
         let request = Arc::new(CaptureCommitGate {
             cancellation: CancellationToken::new(),
             state: AtomicU8::new(CAPTURE_PENDING),
@@ -2799,7 +2861,7 @@ mod tests {
         drop(CancelCaptureOnDrop(Arc::clone(&request)));
         let result = source
             .runtime
-            .block_on(|| source.commit_host_capture(candidate, epoch, Some(&request)))?;
+            .block_on(|| source.commit_host_capture(candidate, epoch, Some(&request)));
         assert!(result.is_err());
         assert_eq!(source.view_epoch(), Some(epoch));
         let request = Arc::new(CaptureCommitGate {
@@ -2816,10 +2878,10 @@ mod tests {
         assert!(request.cancellation.is_cancelled());
         let candidate = source
             .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() })?;
+            .block_on(|| async { source.checkout.lock().await.private_candidate() });
         let result = source
             .runtime
-            .block_on(|| source.commit_host_capture(candidate, epoch, Some(&request)))?;
+            .block_on(|| source.commit_host_capture(candidate, epoch, Some(&request)));
         assert!(result.is_err());
         assert_eq!(source.view_epoch(), Some(epoch));
         Ok(())
@@ -2909,7 +2971,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let mut zero_candidate = source
             .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() })?;
+            .block_on(|| async { source.checkout.lock().await.private_candidate() });
         let zero_result = source.runtime.block_on(|| {
             capture_paths_batched_with_baseline(
                 &mut zero_candidate,
@@ -2920,7 +2982,7 @@ mod tests {
                 &cancellation,
                 None,
             )
-        })?;
+        });
         let Err(zero_failure) = zero_result else {
             return Err(std::io::Error::other("zero budget admitted host observation").into());
         };
@@ -2928,7 +2990,7 @@ mod tests {
         assert!(!zero_candidate.has_pending_mutations());
         let mut candidate = source
             .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() })?;
+            .block_on(|| async { source.checkout.lock().await.private_candidate() });
         let single = source.runtime.block_on(|| {
             capture_paths_batched_with_baseline(
                 &mut candidate,
@@ -2939,13 +3001,13 @@ mod tests {
                 &cancellation,
                 None,
             )
-        })??;
+        })?;
         assert!(single.work.source_bytes_read > 0);
         let mut budget = WorkBudget::UNBOUNDED;
         budget.source_bytes_read = single.work.source_bytes_read;
         let mut candidate = source
             .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() })?;
+            .block_on(|| async { source.checkout.lock().await.private_candidate() });
         let paths = [first, second];
         let result = source.runtime.block_on(|| {
             capture_paths_batched_with_baseline(
@@ -2957,7 +3019,7 @@ mod tests {
                 &cancellation,
                 None,
             )
-        })?;
+        });
         let Err(failure) = result else {
             return Err(std::io::Error::other("aggregate source budget was ignored").into());
         };
@@ -2966,18 +3028,20 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn external_callbacks_enter_the_shared_runtime_without_transient_threads()
+    fn callbacks_run_on_their_driver_threads_without_helper_threads()
     -> Result<(), Box<dyn std::error::Error>> {
         let runtime = CallbackRuntime::create()?;
         let callers = (0..32)
             .map(|index| {
                 let runtime = runtime.clone();
                 std::thread::Builder::new()
-                    .name(format!("callback-probe-{index}"))
+                    .name(format!("native-driver-{index}"))
                     .spawn(move || {
                         runtime.wait(|| async {
+                            // A real reactor wait parks the driver thread
+                            // until a runtime worker wakes it.
+                            tokio::time::sleep(Duration::from_millis(1)).await;
                             Ok::<_, MountSourceError>(
                                 std::thread::current().name().unwrap_or_default().to_owned(),
                             )
@@ -2989,10 +3053,32 @@ mod tests {
             assert_eq!(
                 caller
                     .join()
-                    .map_err(|_| std::io::Error::other("callback probe thread panicked"))??,
-                format!("callback-probe-{index}")
+                    .map_err(|_| std::io::Error::other("native driver thread panicked"))??,
+                format!("native-driver-{index}")
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn nested_callbacks_reenter_on_the_same_driver_thread() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let runtime = CallbackRuntime::create()?;
+        let nested = runtime.clone();
+        let observed = std::thread::Builder::new()
+            .name("native-driver".to_owned())
+            .spawn(move || {
+                runtime.wait(|| async {
+                    tokio::task::yield_now().await;
+                    nested.wait(|| async {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                        Ok(std::thread::current().name().unwrap_or_default().to_owned())
+                    })
+                })
+            })?
+            .join()
+            .map_err(|_| "native driver callback panicked")??;
+        assert_eq!(observed, "native-driver");
         Ok(())
     }
 
@@ -3013,9 +3099,7 @@ mod tests {
         }
     }
 
-    fn checkout_state(
-        source: &MemorySource,
-    ) -> Result<(crate::GenerationId, bool), MountSourceError> {
+    fn checkout_state(source: &MemorySource) -> (crate::GenerationId, bool) {
         source.runtime.block_on(|| async {
             let checkout = source.checkout.lock().await;
             (checkout.generation_id(), checkout.has_pending_mutations())
@@ -3052,6 +3136,153 @@ mod tests {
         receive.recv_timeout(Duration::from_secs(5))??;
         task.join()
             .map_err(|_| std::io::Error::other("mutation thread panicked"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn callback_reads_overlap_a_held_observation() -> Result<(), Box<dyn std::error::Error>> {
+        let (source, _) = tracking_sources(FilesystemProfile::Portable)?;
+        let source = Arc::new(source);
+        let path = native_test_path("shared.bin");
+        source.create_file(&path, metadata())?;
+        source.write_range(&path, 0, Bytes::from_static(b"shared"))?;
+        let owner = ViewGate::callback_owner();
+        let held = source.runtime.block_on(|| source.checkout.observe(owner))?;
+        let reader = Arc::clone(&source);
+        let (completed, receive) = std::sync::mpsc::sync_channel(1);
+        let task = std::thread::spawn(move || {
+            let result = reader.read_range(&path, 0, 6);
+            assert!(completed.send(result).is_ok(), "read result receiver");
+        });
+        let read = receive.recv_timeout(Duration::from_secs(5)).map_err(|_| {
+            std::io::Error::other("a callback read waited for another callback's read")
+        })??;
+        assert_eq!(read.as_ref(), b"shared");
+        drop(held);
+        task.join()
+            .map_err(|_| std::io::Error::other("read thread panicked"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_observations_never_see_a_mutation_half_applied()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const ROUNDS: u8 = 32;
+        let (source, _) = tracking_sources(FilesystemProfile::Portable)?;
+        let source = Arc::new(source);
+        let pair = [
+            native_test_path("first.bin"),
+            native_test_path("second.bin"),
+        ];
+        for path in &pair {
+            source.create_file(path, metadata())?;
+            source.write_range(path, 0, Bytes::from_static(&[0]))?;
+        }
+        let pair = [source.path(&pair[0])?, source.path(&pair[1])?];
+        let done = Arc::new(AtomicBool::new(false));
+        let readers = (0..4)
+            .map(|_| {
+                let source = Arc::clone(&source);
+                let pair = pair.clone();
+                let done = Arc::clone(&done);
+                std::thread::spawn(move || -> Result<u32, MountSourceError> {
+                    let owner = ViewGate::callback_owner();
+                    let mut observed = 0;
+                    loop {
+                        let finished = done.load(Ordering::Acquire);
+                        let [first, second] = source.runtime.wait(|| async {
+                            let observation = source.checkout.observe(owner).await?;
+                            let mut checkout = observation.observer();
+                            let mut values = [0; 2];
+                            for (value, path) in values.iter_mut().zip(&pair) {
+                                let range = ByteRange {
+                                    offset: 0,
+                                    length: 1,
+                                };
+                                *value = checkout
+                                    .read_file_range(
+                                        path,
+                                        range,
+                                        boundary_budget(),
+                                        &source.cancellation,
+                                    )
+                                    .await
+                                    .map_err(engine_error)?
+                                    .value
+                                    .bytes[0];
+                                tokio::task::yield_now().await;
+                            }
+                            Ok(values)
+                        })?;
+                        assert_eq!(first, second, "an observation crossed a mutation");
+                        observed += 1;
+                        if finished {
+                            return Ok(observed);
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for round in 1..=ROUNDS {
+            source.runtime.wait(|| async {
+                let mut checkout = source.checkout.lock().await;
+                for path in &pair {
+                    checkout
+                        .write_file(
+                            path.clone(),
+                            0,
+                            Bytes::from(vec![round]),
+                            boundary_budget(),
+                            &source.cancellation,
+                        )
+                        .await
+                        .map_err(engine_error)?;
+                    tokio::task::yield_now().await;
+                }
+                checkout.publish_after_mutation(&source.cancellation).await
+            })?;
+        }
+        done.store(true, Ordering::Release);
+        for reader in readers {
+            let observed = reader
+                .join()
+                .map_err(|_| std::io::Error::other("observation thread panicked"))??;
+            assert!(observed > 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn observers_cannot_mutate_or_advance_their_checkout() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (source, _) = tracking_sources(FilesystemProfile::Portable)?;
+        let path = native_test_path("observed.bin");
+        source.create_file(&path, metadata())?;
+        let path = source.path(&path)?;
+        let owner = ViewGate::callback_owner();
+        let (write, refresh) = source.runtime.block_on(|| async {
+            let observation = source.checkout.observe(owner).await?;
+            let mut observer = observation.observer();
+            let write = observer
+                .write_file(
+                    path,
+                    0,
+                    Bytes::from_static(b"lost"),
+                    boundary_budget(),
+                    &source.cancellation,
+                )
+                .await;
+            let refresh = observer
+                .refresh_head(boundary_budget(), &source.cancellation)
+                .await;
+            Ok::<_, MountSourceError>((write, refresh))
+        })?;
+        assert!(
+            matches!(write, Err(failure) if matches!(failure.error, FsError::MutationNotAllowed))
+        );
+        assert!(
+            matches!(refresh, Err(failure) if matches!(failure.error, FsError::RefreshNotAllowed))
+        );
         Ok(())
     }
 
@@ -3193,7 +3424,7 @@ mod tests {
                     let local = std::rc::Rc::new(42_u8);
                     tokio::time::sleep(Duration::from_millis(1)).await;
                     *local
-                })?;
+                });
                 assert_eq!(value, 42);
                 let path = native_test_path("runtime.bin");
                 source.volume_id()?;
@@ -3213,48 +3444,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[test]
-    fn callback_runtime_enters_directly_from_native_driver_threads()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let callback = CallbackRuntime::create()?;
-        let observed = std::thread::Builder::new()
-            .name("native-driver".to_owned())
-            .spawn(move || {
-                callback.block_on(|| async {
-                    std::thread::current()
-                        .name()
-                        .unwrap_or("unnamed")
-                        .to_owned()
-                })
-            })?
-            .join()
-            .map_err(|_| "native driver callback panicked")??;
-
-        assert_eq!(observed, "native-driver");
-        Ok(())
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    #[test]
-    fn native_driver_callback_uses_a_fresh_stack() -> Result<(), Box<dyn std::error::Error>> {
-        let callback = CallbackRuntime::create()?;
-        let observed = std::thread::Builder::new()
-            .name("native-driver".to_owned())
-            .spawn(move || {
-                callback.block_on(|| async {
-                    std::thread::current()
-                        .name()
-                        .unwrap_or("unnamed")
-                        .to_owned()
-                })
-            })?
-            .join()
-            .map_err(|_| "native callback panicked")??;
-        assert_eq!(observed, "acyclic-fs-callback");
-        Ok(())
-    }
-
     #[test]
     fn publication_policies_are_exact_and_subtree_roots_do_not_scan_or_escape()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3264,12 +3453,12 @@ mod tests {
             FilesystemProfile::Posix
         };
         let (manual, _) = shared_sources_with_publication(profile, MountPublication::Manual)?;
-        let initial = checkout_state(&manual)?.0;
+        let initial = checkout_state(&manual).0;
         manual.create_directory(&native_test_path("src"), metadata())?;
         manual.flush()?;
-        assert_eq!(checkout_state(&manual)?, (initial, true));
+        assert_eq!(checkout_state(&manual), (initial, true));
         manual.sync()?;
-        let published = checkout_state(&manual)?.0;
+        let published = checkout_state(&manual).0;
         assert_ne!(published, initial);
 
         let config = {
@@ -3294,7 +3483,7 @@ mod tests {
 
         let (per_mutation, _) =
             shared_sources_with_publication(profile, MountPublication::PerMutation)?;
-        let before = checkout_state(&per_mutation)?.0;
+        let before = checkout_state(&per_mutation).0;
         per_mutation.create_file(&native_test_path("published.bin"), metadata())?;
         let published_directory = native_test_path("published-directory");
         let created_directory = per_mutation.create_directory(&published_directory, metadata())?;
@@ -3302,7 +3491,7 @@ mod tests {
             per_mutation.lookup(&published_directory)?,
             Some(created_directory)
         );
-        let (after, pending) = checkout_state(&per_mutation)?;
+        let (after, pending) = checkout_state(&per_mutation);
         assert_ne!(after, before);
         assert!(!pending);
 
@@ -3333,19 +3522,19 @@ mod tests {
         writer.write_range(&path, 0, Bytes::from_static(b"first"))?;
         writer.sync()?;
         let binding_before = reader.binding_epoch();
-        reader.runtime.block_on(|| reader.refresh_async())??;
+        reader.runtime.block_on(|| reader.refresh_async())?;
         let binding_after = reader.binding_epoch();
         assert_ne!(binding_after, binding_before);
         assert_eq!(reader.read_range(&path, 0, 5)?.as_ref(), b"first");
-        let observed_generation = checkout_state(&reader)?.0;
+        let observed_generation = checkout_state(&reader).0;
 
         writer.write_range(&path, 0, Bytes::from_static(b"other"))?;
         writer.sync()?;
         assert!(matches!(
-            reader.runtime.block_on(|| reader.refresh_async())?,
+            reader.runtime.block_on(|| reader.refresh_async()),
             Err(MountSourceError::Stale)
         ));
-        assert_eq!(checkout_state(&reader)?.0, observed_generation);
+        assert_eq!(checkout_state(&reader).0, observed_generation);
         assert_eq!(reader.binding_epoch(), binding_after);
         assert_eq!(reader.read_range(&path, 0, 5)?.as_ref(), b"first");
         Ok(())
@@ -3420,7 +3609,7 @@ mod tests {
                 .lock()
                 .await
                 .retain_operation_id(operation_id)
-        })??;
+        })?;
         let path = native_test_path("fenced.bin");
         assert!(matches!(
             second.create_file(&path, metadata()),
@@ -3432,7 +3621,7 @@ mod tests {
                 .lock()
                 .await
                 .clear_retained_operation(operation_id);
-        })?;
+        });
         second.create_file(&path, metadata())?;
         Ok(())
     }
@@ -3572,7 +3761,7 @@ mod tests {
     fn windows_mount_path_preserves_exact_utf16_components()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Windows)?;
-        let (initial, pending) = checkout_state(&source)?;
+        let (initial, pending) = checkout_state(&source);
         assert!(!pending);
         let name = "exact-α-😀"
             .encode_utf16()
@@ -3591,10 +3780,10 @@ mod tests {
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].name, name);
         assert_eq!(page.entries[0].metadata, exact_metadata);
-        assert!(checkout_state(&source)?.1);
+        assert!(checkout_state(&source).1);
         source.flush()?;
         source.flush()?;
-        let (published, pending) = checkout_state(&source)?;
+        let (published, pending) = checkout_state(&source);
         assert_ne!(published, initial);
         assert!(!pending);
 
@@ -4039,7 +4228,7 @@ mod tests {
         drop(file);
         assert_eq!(std::fs::read(&path)?, b"new");
         assert!(
-            !checkout_state(&source)?.1,
+            !checkout_state(&source).1,
             "fsync published the admitted write"
         );
         assert!(mount.stop()?);
@@ -4069,18 +4258,18 @@ mod tests {
         let syncer = std::fs::OpenOptions::new().read(true).open(&path)?;
         let mut writer = std::fs::OpenOptions::new().write(true).open(&path)?;
         writer.write_all(b"new")?;
-        assert!(checkout_state(&source)?.1, "write remains pending");
+        assert!(checkout_state(&source).1, "write remains pending");
         syncer.sync_all()?;
         assert!(
-            !checkout_state(&source)?.1,
+            !checkout_state(&source).1,
             "explicit fsync published the write"
         );
         assert_eq!(std::fs::read(&path)?, b"new");
         writer.write_all(b"2")?;
-        assert!(checkout_state(&source)?.1, "second write remains pending");
+        assert!(checkout_state(&source).1, "second write remains pending");
         std::fs::File::open(temporary.path())?.sync_all()?;
         assert!(
-            !checkout_state(&source)?.1,
+            !checkout_state(&source).1,
             "directory fsync published the write"
         );
         drop(writer);
@@ -4365,7 +4554,7 @@ mod tests {
     #[test]
     fn posix_mount_path_preserves_non_utf8_components() -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Posix)?;
-        let (initial, pending) = checkout_state(&source)?;
+        let (initial, pending) = checkout_state(&source);
         assert!(!pending);
         let name = vec![b'r', 0xff, b'w'];
         let path = MountPath::root().child(name.clone());
@@ -4389,10 +4578,10 @@ mod tests {
         let page = source.read_directory(&MountPath::root(), None, 8)?;
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].name, name);
-        assert!(checkout_state(&source)?.1);
+        assert!(checkout_state(&source).1);
         source.flush()?;
         source.flush()?;
-        let (published, pending) = checkout_state(&source)?;
+        let (published, pending) = checkout_state(&source);
         assert_ne!(published, initial);
         assert!(!pending);
         Ok(())

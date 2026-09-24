@@ -71,10 +71,11 @@ use acyclic_objects::ObjectsProvider as _;
 use bytes::Bytes;
 use futures::{StreamExt as _, stream};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::marker::PhantomData;
 use std::mem::size_of;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use std::sync::{OnceLock, Weak};
 use thiserror::Error;
@@ -513,8 +514,68 @@ pub struct Checkout<A, O> {
     live_operation_id: Option<OperationId>,
     last_commit: Option<LastCommit>,
     prepared_merge_parent: Option<ObjectId>,
-    dependencies: CheckoutDependencies,
+    dependencies: DependencyLedger,
     mode: CheckoutMode,
+}
+
+/// Tracking proof of one checkout, shared with that checkout's observers.
+///
+/// Observers append observations under a short synchronous lock while their
+/// borrow excludes every mutation of the owning checkout. A private candidate
+/// copies the proof and never shares it.
+struct DependencyLedger {
+    proof: Arc<Mutex<CheckoutDependencies>>,
+    observing: bool,
+}
+
+impl DependencyLedger {
+    fn new(dependencies: CheckoutDependencies) -> Self {
+        Self {
+            proof: Arc::new(Mutex::new(dependencies)),
+            observing: false,
+        }
+    }
+
+    fn proof(&self) -> MutexGuard<'_, CheckoutDependencies> {
+        self.proof.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn observing(&self) -> Self {
+        Self {
+            proof: Arc::clone(&self.proof),
+            observing: true,
+        }
+    }
+
+    fn independent(&self) -> Self {
+        Self::new(self.proof().clone())
+    }
+}
+
+/// Read-only observer of one checkout's current candidate.
+///
+/// Its borrow of the owning checkout excludes every mutation of that checkout
+/// while it lives, so any number of observers may read concurrently. It reads
+/// as a pinned read-only checkout, so every mutation or generation advance
+/// through it is rejected, and it records exactly the observations its owner
+/// would record, into the owner's own proof.
+pub(crate) struct CheckoutObserver<'a, A, O> {
+    checkout: Checkout<A, O>,
+    owner: PhantomData<&'a Checkout<A, O>>,
+}
+
+impl<A, O> std::ops::Deref for CheckoutObserver<'_, A, O> {
+    type Target = Checkout<A, O>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.checkout
+    }
+}
+
+impl<A, O> std::ops::DerefMut for CheckoutObserver<'_, A, O> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.checkout
+    }
 }
 
 /// Cheap immutable reader over one authenticated pinned checkout candidate.
@@ -4301,7 +4362,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 live_operation_id: None,
                 last_commit: None,
                 prepared_merge_parent: None,
-                dependencies,
+                dependencies: DependencyLedger::new(dependencies),
                 mode,
             },
             work,
@@ -4395,6 +4456,12 @@ impl<A, O> Checkout<A, O> {
         self.root.file_table != self.base_file_table || self.prepared_merge_parent.is_some()
     }
 
+    /// Whether reads retain exact observations for safe rebase and commit.
+    /// An observer tracks exactly when its owner does.
+    fn tracks_observations(&self) -> bool {
+        self.mode.consistency != ConsistencyMode::Pinned || self.dependencies.observing
+    }
+
     /// Creates an immutable reader for this checkout's current private candidate.
     ///
     /// The reader snapshots the exact authenticated root already held by the
@@ -4413,9 +4480,10 @@ impl<A, O> Checkout<A, O> {
     ///
     /// # Errors
     ///
-    /// Rejects non-pinned checkouts before any storage work.
+    /// Rejects checkouts that track observations, including observers of a
+    /// tracking checkout, before any storage work.
     pub fn pinned_reader(&self) -> Result<PinnedReader<A, O>, FsError> {
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             return Err(FsError::MutationNotAllowed);
         }
         Ok(self.snapshot_reader())
@@ -5444,7 +5512,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.generation_root = self.base_generation_root;
         self.live_operation_id = None;
         self.prepared_merge_parent = None;
-        self.dependencies.clear();
+        self.dependencies.proof().clear();
         Ok(FsReceipt { value: (), work })
     }
 
@@ -5503,7 +5571,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.base_root = self.root.clone();
         self.base_file_table = self.root.file_table;
         self.authority_head = Some(head);
-        self.dependencies.clear();
+        self.dependencies.proof().clear();
         Ok(FsReceipt {
             value: self.generation_id(),
             work,
@@ -5567,11 +5635,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             },
         )
         .map_err(|error| OperationFailure::new(FsError::Rebase(RebaseError::Probe(error)), work))?;
+        let dependencies = self.dependencies.proof().clone();
         let classification = classify_rebase_async(
             &probe,
             base,
             candidate,
-            &self.dependencies,
+            &dependencies,
             maximum_conflicts,
             remaining(work, budget)?,
             cancellation,
@@ -6159,6 +6228,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         // lands; `&mut self` keeps the proof unchanged in between.
         let extension = self
             .dependencies
+            .proof()
             .prepare_mutations(
                 captured.value,
                 self.volume.config.limits.maximum_checkout_dependencies,
@@ -6178,9 +6248,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let work = add(dependency_work, receipt.work)?;
         if receipt.root.file_table != prior_file_table {
             if receipt.root.file_table == self.base_file_table {
-                self.dependencies.clear_mutations();
+                self.dependencies.proof().clear_mutations();
             } else {
-                self.dependencies.commit(extension);
+                self.dependencies.proof().commit(extension);
             }
             self.root = receipt.root;
         }
@@ -6811,6 +6881,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     pub(crate) fn private_candidate(&self) -> Self {
+        self.replica(self.dependencies.independent(), self.mode)
+    }
+
+    /// Creates a read-only observer of this checkout's current candidate.
+    ///
+    /// A live checkout is observed at its current generation: advancing it is
+    /// a mutation of the owner, never of an observer.
+    pub(crate) fn observer(&self) -> CheckoutObserver<'_, A, O> {
+        let dependencies = if self.tracks_observations() {
+            self.dependencies.observing()
+        } else {
+            self.dependencies.independent()
+        };
+        CheckoutObserver {
+            checkout: self.replica(dependencies, CheckoutMode::read_only_pinned()),
+            owner: PhantomData,
+        }
+    }
+
+    fn replica(&self, dependencies: DependencyLedger, mode: CheckoutMode) -> Self {
         Self {
             volume: self.volume.clone(),
             base_generation_root: self.base_generation_root,
@@ -6823,8 +6913,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             live_operation_id: self.live_operation_id,
             last_commit: self.last_commit,
             prepared_merge_parent: self.prepared_merge_parent,
-            dependencies: self.dependencies.clone(),
-            mode: self.mode,
+            dependencies,
+            mode,
         }
     }
 
@@ -8085,7 +8175,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let record = lookup
             .value
             .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             work = self
                 .observe_identity_region(
                     DependencyRegion::FileRecord(file_id),
@@ -8187,7 +8277,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             };
             range.length = range.length.min(logical_bytes.saturating_sub(range.offset));
             if range.length == 0 {
-                if self.mode.consistency != ConsistencyMode::Pinned && requested_range.length != 0 {
+                if self.tracks_observations() && requested_range.length != 0 {
                     work = self
                         .observe_base_regular_range(
                             file_id,
@@ -8221,7 +8311,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .await
         .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRead))?;
         work = add(work, read.work)?;
-        if self.mode.consistency != ConsistencyMode::Pinned && requested_range.length != 0 {
+        if self.tracks_observations() && requested_range.length != 0 {
             work = self
                 .observe_base_regular_range(file_id, requested_range, work, budget, cancellation)
                 .await?;
@@ -8265,7 +8355,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             FilePayload::InlineRegular(data) => {
                 let logical_bytes = u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX);
                 validate_planned_file_range(logical_bytes, range, work)?;
-                if self.mode.consistency != ConsistencyMode::Pinned && range.length != 0 {
+                if self.tracks_observations() && range.length != 0 {
                     work = self
                         .observe_base_regular_range(file_id, range, work, budget, cancellation)
                         .await?;
@@ -8306,7 +8396,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             })
         })?;
         work = add(work, plan.work)?;
-        if self.mode.consistency != ConsistencyMode::Pinned && range.length != 0 {
+        if self.tracks_observations() && range.length != 0 {
             work = self
                 .observe_base_regular_range(file_id, range, work, budget, cancellation)
                 .await?;
@@ -8391,7 +8481,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 ));
             }
         };
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             work = self
                 .observe_identity_region(
                     DependencyRegion::SparseSeek {
@@ -8443,7 +8533,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         work = add(work, metadata.work)?;
         let value = decode_file_metadata(&metadata.value, decode_limits(self.volume.config))
             .map_err(|error| OperationFailure::new(error.into(), work))?;
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             work = self
                 .observe_base_metadata_ids(
                     std::slice::from_ref(&file_id),
@@ -9527,7 +9617,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.base_file_table = self.root.file_table;
                 self.authority_head = Some(head);
                 self.prepared_merge_parent = None;
-                self.dependencies.clear();
+                self.dependencies.proof().clear();
                 self.last_commit = Some(LastCommit {
                     operation_id,
                     generation_id,
@@ -9547,7 +9637,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.base_file_table = self.root.file_table;
                 self.authority_head = Some(head);
                 self.prepared_merge_parent = None;
-                self.dependencies.clear();
+                self.dependencies.proof().clear();
                 self.last_commit = Some(LastCommit {
                     operation_id,
                     generation_id,
@@ -9745,7 +9835,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         work = add(work, metadata.work)?;
         let metadata = decode_file_metadata(&metadata.value, decode_limits(self.volume.config))
             .map_err(|error| OperationFailure::new(error.into(), work))?;
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             work = self
                 .observe_base_metadata_ids(
                     std::slice::from_ref(&record.file_id),
@@ -9855,18 +9945,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
         capture_terminal: bool,
     ) -> FsResult<PathLookup> {
-        let lookup = if self.mode.consistency == ConsistencyMode::Pinned {
-            crate::kernel::lookup_path_async(
-                &self.volume.fs.inner.objects,
-                &self.root,
-                path,
-                self.volume.config,
-                budget,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?
-        } else {
+        let lookup = if self.tracks_observations() {
             let candidate = if self.has_pending_mutations() {
                 Some(
                     crate::kernel::lookup_path_async(
@@ -9900,6 +9979,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .await?;
             let combined = observed.work;
             self.dependencies
+                .proof()
                 .extend_observations(
                     observed.value.dependencies,
                     self.volume.config.limits.maximum_checkout_dependencies,
@@ -9915,6 +9995,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     ..value
                 },
             )
+        } else {
+            crate::kernel::lookup_path_async(
+                &self.volume.fs.inner.objects,
+                &self.root,
+                path,
+                self.volume.config,
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?
         };
         Ok(FsReceipt {
             work: lookup.work,
@@ -10008,7 +10099,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .await
         .map_err(|failure| failure.map_with_prior_work(prior, FsError::Path))?;
         lookup.work = add(prior, lookup.work)?;
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             let mut work = lookup.work;
             for path in paths {
                 let observed = crate::kernel::observe_path_async(
@@ -10023,6 +10114,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .map_err(|failure| failure.map_with_prior_work(work, FsError::Path))?;
                 work = add(work, observed.lookup.work)?;
                 self.dependencies
+                    .proof()
                     .extend_observations(
                         observed.dependencies,
                         self.volume.config.limits.maximum_checkout_dependencies,
@@ -10106,7 +10198,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         .map_err(|failure| failure.map_with_prior_work(work, FsError::Directory))?;
         work = add(work, page.work)?;
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             let region = DependencyRegion::DirectoryRange {
                 directory_id: record.file_id,
                 after: after.cloned(),
@@ -10128,6 +10220,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .map_err(|failure| failure.map_with_prior_work(work, FsError::Probe))?;
             work = add(work, state.work)?;
             self.dependencies
+                .proof()
                 .extend_observations(
                     vec![Dependency {
                         region,
@@ -10179,7 +10272,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<DirectoryRecordPage> {
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             return Err(OperationFailure::before_work(FsError::UnsupportedCheckout));
         }
         self.list_directory_records_with_bound(
@@ -10308,7 +10401,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 metadata,
             });
         }
-        if self.mode.consistency != ConsistencyMode::Pinned && !entries.is_empty() {
+        if self.tracks_observations() && !entries.is_empty() {
             let mut file_ids = Vec::new();
             file_ids.try_reserve_exact(entries.len()).map_err(|_| {
                 OperationFailure::new(FsError::PendingMutationAllocationFailed, work)
@@ -10641,7 +10734,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             FilePayload::InlineRegular(data) => {
                 let logical_bytes = u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX);
                 validate_planned_file_range(logical_bytes, range, work)?;
-                if self.mode.consistency != ConsistencyMode::Pinned && range.length != 0 {
+                if self.tracks_observations() && range.length != 0 {
                     work = self
                         .observe_base_regular_range(
                             record.file_id,
@@ -10688,7 +10781,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             })
         })?;
         work = add(work, plan.work)?;
-        if self.mode.consistency != ConsistencyMode::Pinned && range.length != 0 {
+        if self.tracks_observations() && range.length != 0 {
             work = self
                 .observe_base_regular_range(record.file_id, range, work, budget, cancellation)
                 .await?;
@@ -10779,7 +10872,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 ));
             }
         };
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             let region = DependencyRegion::SparseSeek {
                 file_id: record.file_id,
                 offset,
@@ -10801,6 +10894,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .map_err(|failure| failure.map_with_prior_work(work, FsError::Probe))?;
             work = add(work, state.work)?;
             self.dependencies
+                .proof()
                 .extend_observations(
                     vec![Dependency {
                         region,
@@ -10854,7 +10948,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .await
         .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRead))?;
         work = add(work, read.work)?;
-        if self.mode.consistency != ConsistencyMode::Pinned && range.length != 0 {
+        if self.tracks_observations() && range.length != 0 {
             work = self
                 .observe_base_regular_range(record.file_id, range, work, budget, cancellation)
                 .await?;
@@ -10916,6 +11010,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
         work = add(work, captured.work)?;
         self.dependencies
+            .proof()
             .extend_observations(
                 captured.value,
                 self.volume.config.limits.maximum_checkout_dependencies,
@@ -10990,6 +11085,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 }),
         );
         self.dependencies
+            .proof()
             .extend_observations(
                 dependencies,
                 self.volume.config.limits.maximum_checkout_dependencies,

@@ -203,7 +203,7 @@ fn checkout_state<A, O>(checkout: &Checkout<A, O>) -> CheckoutState {
         root: checkout.root.clone(),
         authority_head: checkout.authority_head,
         prepared_merge_parent: checkout.prepared_merge_parent,
-        dependencies: checkout.dependencies.clone(),
+        dependencies: checkout.dependencies.proof().clone(),
         mode: checkout.mode,
     }
 }
@@ -3895,7 +3895,7 @@ fn inline_extent_plans_validate_ranges_and_capture_identity_dependencies()
     ))
     .ok_or("inline identity plan blocked")??;
     assert!(plan.value.is_none());
-    assert_eq!(checkout.dependencies.len(), 1);
+    assert_eq!(checkout.dependencies.proof().len(), 1);
 
     let invalid = poll_ready(checkout.plan_file_extents_by_id(
         file_id,
@@ -3914,7 +3914,7 @@ fn inline_extent_plans_validate_ranges_and_capture_identity_dependencies()
         invalid.error,
         FsError::FileRead(FileRangeReadError::InvalidRange)
     ));
-    assert_eq!(checkout.dependencies.len(), 1);
+    assert_eq!(checkout.dependencies.proof().len(), 1);
 
     let path_plan = poll_ready(checkout.plan_file_extents(
         &file,
@@ -7859,7 +7859,7 @@ fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     ))
     .ok_or("inverse removal blocked")??;
     assert!(!inverse.has_pending_mutations());
-    assert!(inverse.dependencies.is_empty());
+    assert!(inverse.dependencies.proof().is_empty());
     let inverse_commit = poll_ready(inverse.commit(
         OperationId::from_bytes([16; 16]),
         WorkBudget::UNBOUNDED,
@@ -8170,10 +8170,10 @@ fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     assert_eq!(equal.work.object_probes, 0);
     assert_eq!(equal.work.backend_read_operations, 3);
 
-    assert!(!dirty.dependencies.is_empty());
+    assert!(!dirty.dependencies.proof().is_empty());
     poll_ready(dirty.discard(WorkBudget::UNBOUNDED, &cancellation)).ok_or("discard blocked")??;
     assert!(!dirty.has_pending_mutations());
-    assert!(dirty.dependencies.is_empty());
+    assert!(dirty.dependencies.proof().is_empty());
     assert!(
         poll_ready(
             dirty.lookup_no_follow(&path("private")?, WorkBudget::UNBOUNDED, &cancellation,)

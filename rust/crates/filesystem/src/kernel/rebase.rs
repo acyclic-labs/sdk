@@ -6,6 +6,7 @@ use crate::foundation::{Digest, FileId, GenerationId};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::sync::Arc;
 use thiserror::Error;
 
 /// One exact semantic region whose state can affect a checkout.
@@ -121,10 +122,12 @@ struct CapturedState {
 /// Validated, sorted, and deduplicated checkout dependency proof.
 ///
 /// Construction pays normalization cost once. Equal-generation refresh can
-/// therefore return in constant work regardless of dependency count.
+/// therefore return in constant work regardless of dependency count. Copies
+/// share one proof until either side changes it, so snapshotting a proof for
+/// classification is constant work too.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CheckoutDependencies {
-    captured: BTreeMap<DependencyRegion, CapturedState>,
+    captured: Arc<BTreeMap<DependencyRegion, CapturedState>>,
 }
 
 impl CheckoutDependencies {
@@ -174,7 +177,9 @@ impl CheckoutDependencies {
                 },
             );
         }
-        Ok(Self { captured })
+        Ok(Self {
+            captured: Arc::new(captured),
+        })
     }
 
     /// Number of distinct exact regions in the proof.
@@ -190,11 +195,11 @@ impl CheckoutDependencies {
     }
 
     pub(crate) fn clear(&mut self) {
-        self.captured.clear();
+        self.captured = Arc::default();
     }
 
     pub(crate) fn clear_mutations(&mut self) {
-        self.captured.retain(|_, state| match state.usage {
+        Arc::make_mut(&mut self.captured).retain(|_, state| match state.usage {
             DependencyUse::Observation => true,
             DependencyUse::Mutation => false,
             DependencyUse::ObservationAndMutation => {
@@ -229,8 +234,9 @@ impl CheckoutDependencies {
     /// Applies an extension prepared against this unchanged proof.
     pub(crate) fn commit(&mut self, extension: DependencyExtension) {
         let DependencyExtension { staged, usage } = extension;
+        let captured = Arc::make_mut(&mut self.captured);
         for (region, expected) in staged {
-            match self.captured.get_mut(&region) {
+            match captured.get_mut(&region) {
                 Some(existing) => {
                     if existing.usage != usage
                         && existing.usage != DependencyUse::ObservationAndMutation
@@ -239,8 +245,7 @@ impl CheckoutDependencies {
                     }
                 }
                 None => {
-                    self.captured
-                        .insert(region, CapturedState { expected, usage });
+                    captured.insert(region, CapturedState { expected, usage });
                 }
             }
         }
@@ -441,7 +446,7 @@ pub fn classify_rebase<P: RebaseProbe>(
     let mut work = WorkCounters::default();
     let mut conflicts = Vec::new();
     let mut truncated = false;
-    for (region, captured) in &dependencies.captured {
+    for (region, captured) in dependencies.captured.iter() {
         let semantic = WorkCounters {
             items_examined: 1,
             ..WorkCounters::default()
@@ -518,7 +523,7 @@ pub async fn classify_rebase_async<P: AsyncRebaseProbe>(
     let mut work = WorkCounters::default();
     let mut conflicts = Vec::new();
     let mut truncated = false;
-    for (region, captured) in &dependencies.captured {
+    for (region, captured) in dependencies.captured.iter() {
         cancellation
             .check()
             .map_err(|_| OperationFailure::new(RebaseError::Cancelled, work))?;

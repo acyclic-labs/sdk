@@ -44,11 +44,7 @@ where
     S: LazyWorkspaceStore,
 {
     for _ in 0..MAXIMUM_PROMOTION_RETRIES {
-        let (mut candidate, epoch) = {
-            let checkout = authored.shared_checkout().lock().await;
-            checkout.ensure_publication_resolved()?;
-            (checkout.private_candidate(), checkout.view_epoch())
-        };
+        let (mut candidate, epoch) = authored.shared_checkout().candidate().await?;
         let changed = lazy
             .stage_exact_into_checkout(
                 &mut candidate,
@@ -239,6 +235,20 @@ where
             .get(&file_id)
             .filter(|entry| entry.ready)
             .map(|entry| Arc::clone(&entry.file)))
+    }
+
+    /// A detached identity's live state under the link count of the name
+    /// that resolved it, when the named node is detached.
+    async fn detached_identity(
+        &self,
+        named: MountLookup,
+    ) -> Result<Option<MountLookup>, MountSourceError> {
+        let Some(file) = self.detached_by_id(named.node.file_id)? else {
+            return Ok(None);
+        };
+        let mut current = file.lookup_async().await?;
+        current.node.link_count = named.node.link_count;
+        Ok(Some(current))
     }
 
     fn has_open_source_handle(&self, file_id: FileId) -> Result<bool, MountSourceError> {
@@ -1305,26 +1315,23 @@ where
         &self,
         path: &MountPath,
     ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError> {
-        let _lease = self.view_lease(None)?;
-        // Newly authored objects are visible before the operation barrier has
-        // published them into the lazy view. This is required for NFS CREATE
-        // compounds, which immediately GETATTR the returned filehandle.
         let path_text = self.path(path)?;
-        if let Some(lookup) = self.authored.lookup(path)? {
-            if self.removed_identity(&path_text, lookup.node.file_id)? {
+        let owner = SourceViewGate::callback_owner();
+        self.wait(|| async move {
+            let _lease = self.source_view.read_for_callback(owner, None).await?;
+            // Newly authored objects are visible before the operation barrier has
+            // published them into the lazy view. This is required for NFS CREATE
+            // compounds, which immediately GETATTR the returned filehandle.
+            if let Some(lookup) = self.authored.lookup_async(path, owner).await? {
+                if self.removed_identity(&path_text, lookup.node.file_id)? {
+                    return Ok(None);
+                }
+                let current = self.detached_identity(lookup).await?;
+                return Ok(Some((current.unwrap_or(lookup), None)));
+            }
+            if self.is_removed(&path_text)? {
                 return Ok(None);
             }
-            if let Some(file) = self.detached_by_id(lookup.node.file_id)? {
-                let mut current = file.lookup()?;
-                current.node.link_count = lookup.node.link_count;
-                return Ok(Some((current, None)));
-            }
-            return Ok(Some((lookup, None)));
-        }
-        if self.is_removed(&path_text)? {
-            return Ok(None);
-        }
-        self.wait(|| async move {
             // Inspection never extends the durable observation index. A
             // caller that must later reproduce this exact content keeps the
             // returned pin instead.
@@ -1347,9 +1354,7 @@ where
                 .await
                 .map_err(lazy_error)?;
             let projected = mount_lookup(lookup, file_id);
-            if let Some(file) = self.detached_by_id(file_id)? {
-                let mut current = file.lookup()?;
-                current.node.link_count = projected.node.link_count;
+            if let Some(current) = self.detached_identity(projected).await? {
                 return Ok(Some((current, None)));
             }
             Ok(Some((projected, pin)))
@@ -1526,44 +1531,44 @@ where
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        let lease = self.view_lease(None)?;
         let text = self.path(path)?;
-        let (removed_children, opaque, removal_epoch) = self.removal_snapshot(&text)?;
-        if opaque && self.authored.lookup(path)?.is_none() {
-            return Err(MountSourceError::NotFound);
-        }
-        let generation = (
-            lease.generation,
-            self.authored.shared_checkout().view_epoch(),
-            removal_epoch,
-        );
-        let cursor = self.take_cursor(generation, cursor)?;
-        let page_path = text.clone();
-        let (page, state) = self.wait(|| async move {
-            let mut checkout = self.authored.shared_checkout().lock().await;
-            checkout.ensure_publication_resolved()?;
-            self.lazy
-                .list_directory_in_checkout(
-                    &mut checkout,
-                    &page_path,
-                    cursor,
-                    maximum_entries,
-                    Some((&removed_children, opaque)),
-                )
-                .await
-                .map_err(lazy_error)
-        })?;
-        let mut entries = Vec::with_capacity(page.entries.len());
-        for entry in page.entries {
-            let child = logical_child_path(&text, &entry.name).ok_or_else(|| {
-                MountSourceError::Unsupported(
-                    "lazy mount cannot address a non-Unicode name".to_owned(),
-                )
-            })?;
-            let name = super::adapter::native_mount_name(&entry.name)?;
-            let mounted_child = path.child(name.clone());
-            let lookup = if let Some(node) = entry.source {
-                self.wait(|| async {
+        let owner = SourceViewGate::callback_owner();
+        self.wait(|| async move {
+            let lease = self.source_view.read_for_callback(owner, None).await?;
+            let (removed_children, opaque, removal_epoch) = self.removal_snapshot(&text)?;
+            if opaque && self.authored.lookup_async(path, owner).await?.is_none() {
+                return Err(MountSourceError::NotFound);
+            }
+            let generation = (
+                lease.generation,
+                self.authored.shared_checkout().view_epoch(),
+                removal_epoch,
+            );
+            let cursor = self.take_cursor(generation, cursor)?;
+            let (page, state) = {
+                let mut checkout = self.authored.shared_checkout().lock().await;
+                checkout.ensure_publication_resolved()?;
+                self.lazy
+                    .list_directory_in_checkout(
+                        &mut checkout,
+                        &text,
+                        cursor,
+                        maximum_entries,
+                        Some((&removed_children, opaque)),
+                    )
+                    .await
+                    .map_err(lazy_error)?
+            };
+            let mut entries = Vec::with_capacity(page.entries.len());
+            for entry in page.entries {
+                let child = logical_child_path(&text, &entry.name).ok_or_else(|| {
+                    MountSourceError::Unsupported(
+                        "lazy mount cannot address a non-Unicode name".to_owned(),
+                    )
+                })?;
+                let name = super::adapter::native_mount_name(&entry.name)?;
+                let mounted_child = path.child(name.clone());
+                let lookup = if let Some(node) = entry.source {
                     let lookup = self
                         .lazy
                         .inspect_listed(&state, &child, node)
@@ -1574,15 +1579,15 @@ where
                         .stable_file_id_for_lookup(&child, &lookup)
                         .await
                         .map_err(lazy_error)?;
-                    Ok(mount_lookup(lookup, file_id))
-                })?
-            } else if let Some(authored) = self.authored.lookup(&mounted_child)? {
-                if self.removed_identity(&child, authored.node.file_id)? {
-                    continue;
-                }
-                authored
-            } else {
-                self.wait(|| async {
+                    mount_lookup(lookup, file_id)
+                } else if let Some(authored) =
+                    self.authored.lookup_async(&mounted_child, owner).await?
+                {
+                    if self.removed_identity(&child, authored.node.file_id)? {
+                        continue;
+                    }
+                    authored
+                } else {
                     let lookup = self
                         .lazy
                         .inspect_unauthored(&child, Some(&state))
@@ -1594,26 +1599,26 @@ where
                         .stable_file_id_for_lookup(&child, &lookup)
                         .await
                         .map_err(lazy_error)?;
-                    Ok(mount_lookup(lookup, file_id))
-                })?
-            };
-            entries.push(MountDirectoryEntry {
-                name,
-                node: lookup.node,
-                metadata: lookup.metadata,
-            });
-        }
-        if self.authored.shared_checkout().view_epoch() != generation.1
-            || self.removal_snapshot(&text)?.2 != generation.2
-        {
-            return Err(MountSourceError::Stale);
-        }
-        Ok(MountDirectoryPage {
-            entries,
-            next_cursor: page
-                .next
-                .map(|cursor| self.remember_cursor(generation, cursor))
-                .transpose()?,
+                    mount_lookup(lookup, file_id)
+                };
+                entries.push(MountDirectoryEntry {
+                    name,
+                    node: lookup.node,
+                    metadata: lookup.metadata,
+                });
+            }
+            if self.authored.shared_checkout().view_epoch() != generation.1
+                || self.removal_snapshot(&text)?.2 != generation.2
+            {
+                return Err(MountSourceError::Stale);
+            }
+            Ok(MountDirectoryPage {
+                entries,
+                next_cursor: page
+                    .next
+                    .map(|cursor| self.remember_cursor(generation, cursor))
+                    .transpose()?,
+            })
         })
     }
 
