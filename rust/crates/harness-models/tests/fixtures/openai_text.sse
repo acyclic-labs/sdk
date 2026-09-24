@@ -1,0 +1,8 @@
+: keepalive
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"thinking"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"content":"Done."},"finish_reason":"stop"}]}
+
+data: [DONE]
+
