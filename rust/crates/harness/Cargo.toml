@@ -26,6 +26,7 @@ filesystem-local = ["filesystem", "acyclic-fs/local"]
 grpc = ["host", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 http = ["host", "dep:axum", "dep:prost-reflect"]
 machines = ["host", "dep:acyclic-machines"]
+models = ["host", "dep:reqwest"]
 
 [dependencies]
 acyclic-stream = { version = "=0.1.2", path = "../stream", default-features = false, optional = true }
@@ -38,6 +39,7 @@ futures = { workspace = true, optional = true }
 jsonschema.workspace = true
 prost-reflect = { workspace = true, optional = true }
 prost.workspace = true
+reqwest = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -54,7 +56,12 @@ protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }
 
 [dev-dependencies]
+axum.workspace = true
 tower.workspace = true
+
+[[test]]
+name = "openai_compat"
+required-features = ["models"]
 
 [lints]
 workspace = true

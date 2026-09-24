@@ -54,6 +54,24 @@
       "license": "MIT",
       "auditResult": "approved",
       "reviewer": "Acyclic Labs self-contained macOS mount transport audit"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/managed-agents",
+      "sourceCommit": "83dddb7ef69102d6359401b57fde17a3f828c08c",
+      "sourcePath": "crates/bundle-graphcoder/src/byok.rs",
+      "destinationPath": "rust/crates/harness/src/models/openai_compat.rs",
+      "license": "Apache-2.0",
+      "auditResult": "pending",
+      "reviewer": "Acyclic Labs model adapter extraction audit"
+    },
+    {
+      "sourceRepository": "https://github.com/acyclic-labs/managed-agents",
+      "sourceCommit": "83dddb7ef69102d6359401b57fde17a3f828c08c",
+      "sourcePath": "crates/bundle-graphcoder/tests/fixtures",
+      "destinationPath": "rust/crates/harness/tests/fixtures",
+      "license": "Apache-2.0",
+      "auditResult": "pending",
+      "reviewer": "Acyclic Labs model adapter extraction audit"
     }
   ],
   "references": [
