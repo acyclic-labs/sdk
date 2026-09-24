@@ -1,5 +1,12 @@
 # @acyclic-labs/machines changelog
 
+## Unreleased
+
+- Add `forkMachine` / `Machine.fork` live fork of a running machine, the
+  `machine-forked` outcome, `ForkFidelity`, and `forkFidelity(capabilities)`.
+  The simulator declares `disk-fork`, accepts a capability set, and refuses to
+  destroy a live-fork source before its children.
+
 ## 0.1.1 - 2026-09-24
 
 - First coordinated SDK release of machine lifecycle and operation contracts.
