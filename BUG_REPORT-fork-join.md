@@ -6,9 +6,9 @@ Test status at time of writing:
 
 | Suite | macOS | Linux |
 |---|---|---|
-| `cargo test -p acyclic-fs --features native-mount --lib` | 899 passed | 903 passed |
+| `cargo test -p acyclic-fs --features native-mount --lib` | 900 passed | 904 passed |
 | `cargo test -p acyclic-labs-plugin` | 61 + 5 passed | 60 + 5 passed |
-| `plugin/packaging/pypi`: protocol, live and black-box conformance tests on real mounts | 21 passed, 1 known failure (open item A) | 21 passed, 1 known failure (open item A) |
+| `plugin/packaging/pypi`: protocol, live and black-box conformance tests on real mounts | 25 passed | 25 passed |
 
 ## Fixed
 
@@ -112,6 +112,17 @@ Test status at time of writing:
 - **macOS: `._*` files were visible inside a running fork** (open item D). Directory listings on the macOS driver now leave out AppleDouble companions, and `rmdir` removes hidden companions first.
 - **macOS: `._*` files could still reach the root.** Stop-time cleanup unlinked through the service's own NFS mount (the service is that mount's server) and silently skipped failures. It now removes companions straight from the fork's workspace after unmount.
 
+### 4i. A fork's deletion or rename of a file it only read from disk was lost
+- **Symptom:** `rm README.md` in a fork left `README.md` in the root after the merge. `mv README.md GUIDE.md` produced a copy, and `README.md` also reappeared inside the fork once its checkout published.
+- **Cause:** a file the fork only read lazily from the physical root was never part of any generation. Deleting it records only a tombstone in the fork's lazy overlay, and a three-way merge can't delete what its base doesn't hold. A rename in the live checkout didn't tombstone the old source path at all.
+- **Fix:**
+  - `LazyWorkspace::source_tombstones` lists a view's source deletions.
+  - The merge applies them to the parent once the child has advanced onto the result: the physical file for the root, a removal in the parent's view otherwise. A path the parent changed since the fork is kept and logged as `deletion_skipped_changed_in_parent`.
+  - Renames publish and tombstone the old source path.
+- **Tests:**
+  - conformance: `test_posix_operations_inside_a_fork`, `test_renaming_a_source_file_moves_it_in_the_parent`, `test_a_deletion_travels_up_one_parent_at_a_time`, `test_a_deletion_does_not_discard_a_siblings_newer_edit`
+  - Rust: `lazy_workspace::tests::source_tombstones_list_only_removed_source_paths`; the live-view rename test now also asserts that publishing doesn't resurrect the old name.
+
 ### 5. `._*` AppleDouble files merged as agent work (macOS)
 - **Symptom:** `._retries.py` lands in the repo. `changedPaths` includes `._*` files, which skews speculation's "fewest changes" choice.
 - **Root cause:** the macOS NFS client stores xattrs it can't send to the server as `._name` files. Adding the `namedattr` mount option (`darwinfuse.c`) didn't change that.
@@ -122,15 +133,6 @@ Test status at time of writing:
 `result.usage` is a property in pydantic-ai 2.48, not a method. A speculation check could merge its own artifacts; checks now run in a throwaway grandchild fork.
 
 ## Open
-
-### A. A fork deleting a file it only read from the physical root is lost at merge (high)
-- **Repro:** fork, `unlink README.md` (a file present on disk but never captured into the root's generation), merge. `README.md` is still in the root; `changes` is empty.
-- **Cause:** a three-way merge can't express deleting something the base doesn't have. The fork's base generation never recorded a file that was only read lazily from the physical root.
-- **Proposed fix:** propagate the fork's source tombstones explicitly after a successful merge. Delete the path in the parent when the parent still has the untouched source version; keep and report a sibling's newer version.
-- **Tracked by:** `test_posix_operations_inside_a_fork` (xfail, strict).
-
-### B. A source file renamed away can reappear once the checkout publishes (medium)
-The published head doesn't record that the source path was moved, so the lazy view shows the source file again. Same root cause as A: source-path deletions need to be tombstones in the lazy overlay.
 
 ### C. Forks see later root changes while running (low, design)
 - A fork reads the live physical root, so files merged into the root after the fork was created are visible inside it.

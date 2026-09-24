@@ -1504,11 +1504,14 @@ async fn git_workspace_tree(
 #[derive(Default)]
 struct InheritedPaths {
     tombstone: Vec<String>,
+    /// Every path the parent (or an ancestor) changed since the fork.
+    changed: BTreeSet<String>,
 }
 
 impl InheritedPaths {
     fn extend(&mut self, other: Self) {
         self.tombstone.extend(other.tombstone);
+        self.changed.extend(other.changed);
     }
 
     fn normalize(&mut self) {
@@ -3718,14 +3721,15 @@ impl ControlPlane {
         let changes = parent.diff(&base, &head, 100_000).await.map_err(display)?;
         let mut inherited = InheritedPaths::default();
         for change in changes.changed_paths(100_000).await.map_err(display)? {
-            let (None, Some(added)) = (change.before, change.after) else {
-                continue;
-            };
             let mut path = String::new();
             for component in change.path.components() {
                 path.push('/');
                 path.push_str(&String::from_utf8_lossy(component.as_bytes()));
             }
+            inherited.changed.insert(path.clone());
+            let (None, Some(added)) = (change.before, change.after) else {
+                continue;
+            };
             // The child only reads this path through the shared physical root
             // and never wrote it, so the parent's copy is authoritative whatever
             // identity each side derived for it.
@@ -3750,6 +3754,70 @@ impl ControlPlane {
             }
         }
         Ok(inherited)
+    }
+
+    /// Deletes in the parent the source paths a merged child deleted. For the
+    /// root that is the physical file itself (the next refresh records it);
+    /// for a child parent, a removal in its own view.
+    async fn apply_source_deletions(
+        &mut self,
+        caller: &str,
+        agent: &str,
+        deletions: BTreeMap<WorkspaceRootId, Vec<String>>,
+    ) -> Result<bool, String> {
+        let mut deleted_any = false;
+        for (root_id, paths) in deletions {
+            let mut deleted = Vec::new();
+            if caller == self.state.root_agent_id {
+                let base = self
+                    .state
+                    .roots
+                    .get(&root_key(root_id))
+                    .map(|binding| binding.path.clone())
+                    .ok_or_else(|| "physical root binding is missing".to_owned())?;
+                // The next refresh of the physical root records these.
+                for path in paths {
+                    let host = base.join(path.trim_start_matches('/'));
+                    let removed = match fs::symlink_metadata(&host) {
+                        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&host),
+                        Ok(_) => fs::remove_file(&host),
+                        // Never in the parent (a client bookkeeping file, say).
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                        Err(error) => Err(error),
+                    };
+                    removed
+                        .map_err(|error| format!("cannot delete {}: {error}", host.display()))?;
+                    deleted.push(path);
+                }
+            } else {
+                let parent_route = self
+                    .state
+                    .routes
+                    .get(caller)
+                    .cloned()
+                    .ok_or_else(|| "parent route is unavailable".to_owned())?;
+                let view = self.lazy_workspace_root(&parent_route, root_id).await?;
+                for path in paths {
+                    match view.remove(&path).await {
+                        Ok(()) => deleted.push(path),
+                        Err(acyclic_fs::LazyWorkspaceError::NotFound) => {}
+                        Err(error) => return Err(format!("cannot delete {path}: {error}")),
+                    }
+                }
+            }
+            if !deleted.is_empty() {
+                deleted_any = true;
+                acyclic_fs::diag!(
+                    Level::Info,
+                    "merge",
+                    "source_deletions_propagated",
+                    agent = agent,
+                    parent = caller,
+                    paths = deleted.join(","),
+                );
+            }
+        }
+        Ok(deleted_any)
     }
 
     async fn agent_merge_as(&mut self, caller: &str, input: Value) -> Result<Value, String> {
@@ -3794,6 +3862,7 @@ impl ControlPlane {
         let mut roots = BTreeMap::new();
         let mut resolutions = BTreeMap::new();
         let mut source_heads = BTreeMap::new();
+        let mut source_deletions = BTreeMap::<WorkspaceRootId, Vec<String>>::new();
         let mut target_heads = BTreeMap::new();
         for (root_id, child_root) in &child_context.roots {
             let parent_root = parent_context
@@ -3814,6 +3883,13 @@ impl ControlPlane {
                 .await
                 .map_err(display)?;
             let lazy_source = self.lazy_workspace_root(&route, *root_id).await?;
+            // Source paths the child itself deleted (or renamed away). No
+            // generation ever held them, so the merge below cannot carry the
+            // deletion; it is applied to the parent once the merge lands.
+            let own_tombstones = lazy_source
+                .source_tombstones(100_000)
+                .await
+                .map_err(display)?;
             // Paths the parent gained since this child forked (a sibling's merge,
             // a refresh from the physical root) are also on the physical root the
             // child's unresolved view reads from. They are not the child's work:
@@ -3850,6 +3926,30 @@ impl ControlPlane {
                 ancestor = grandparent;
             }
             inherited.normalize();
+            let child_head = source.head().await.map_err(display)?;
+            let mut deletions = Vec::new();
+            for path in own_tombstones {
+                if inherited.tombstone.binary_search(&path).is_ok()
+                    || child_head.stat(&path).await.is_ok()
+                {
+                    continue;
+                }
+                if inherited.changed.contains(&path) {
+                    // Deleted here, changed in the parent since the fork: the
+                    // parent's newer version is kept.
+                    acyclic_fs::diag!(
+                        Level::Warn,
+                        "merge",
+                        "deletion_skipped_changed_in_parent",
+                        agent = agent,
+                        parent = caller,
+                        path = path,
+                    );
+                    continue;
+                }
+                deletions.push(path);
+            }
+            source_deletions.insert(*root_id, deletions);
             if !inherited.tombstone.is_empty() {
                 acyclic_fs::diag!(
                     Level::Info,
@@ -4105,8 +4205,12 @@ impl ControlPlane {
             routed.published_generation = *source_head.digest().as_bytes();
         }
         self.persist()?;
+        // Last, once the child has advanced onto the merge result: deletions
+        // the merge itself could not carry.
+        let mut changed = self
+            .apply_source_deletions(caller, &agent, source_deletions)
+            .await?;
         let mut generations = BTreeMap::new();
-        let mut changed = false;
         for (root_id, parent_root) in &parent_context.roots {
             let target = self
                 .distributed
@@ -4466,11 +4570,12 @@ impl ControlPlane {
                 .into_iter()
                 .flatten()
                 .filter_map(Value::as_str)
-                .filter_map(|path| {
-                    let (parent, name) = path.rsplit_once('/')?;
-                    let original = name.strip_prefix("._").filter(|rest| !rest.is_empty())?;
-                    Some((path.to_owned(), format!("{parent}/{original}")))
+                .filter(|path| {
+                    path.rsplit_once('/')
+                        .and_then(|(_, name)| name.strip_prefix("._"))
+                        .is_some_and(|rest| !rest.is_empty())
                 })
+                .map(str::to_owned)
                 .collect::<Vec<_>>();
             if companions.is_empty() {
                 continue;
@@ -4478,10 +4583,9 @@ impl ControlPlane {
             let view = self
                 .lazy_workspace_root(route, WorkspaceRootId::from_bytes(root_id))
                 .await?;
-            for (companion, original) in companions {
-                if view.lookup(&original).await.is_err() {
-                    continue;
-                }
+            for companion in companions {
+                // Orphaned companions too (the client leaves one behind when it
+                // renames or removes the file it described).
                 match view.remove(&companion).await {
                     Ok(()) | Err(acyclic_fs::LazyWorkspaceError::NotFound) => {
                         acyclic_fs::diag!(

@@ -43,12 +43,6 @@ def files(root: Path) -> list[str]:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known engine gap: deleting a file the fork only read lazily from the physical "
-    "root is not propagated by the merge (the fork's base never recorded it); see "
-    "BUG_REPORT-fork-join.md, open item A",
-)
 async def test_posix_operations_inside_a_fork(repo: Path):
     async with Session.open(repo, engine=Engine(BINARY)) as session:
         ws = await session.root.spawn("posix")
@@ -81,6 +75,39 @@ async def test_posix_operations_inside_a_fork_without_source_deletion(repo: Path
         await ws.merge()
     assert files(repo) == ["README.md", "new/b.py", "pkg/shared.py"]
     assert (repo / "pkg" / "shared.py").read_text() == "VALUE = 2\n"
+
+
+async def test_renaming_a_source_file_moves_it_in_the_parent(repo: Path):
+    async with Session.open(repo, engine=Engine(BINARY)) as session:
+        ws = await session.root.spawn("mover")
+        (ws.path / "README.md").rename(ws.path / "GUIDE.md")
+        assert sorted(os.listdir(ws.path)) == ["GUIDE.md", "pkg"]
+        await ws.merge()
+    assert files(repo) == ["GUIDE.md", "pkg/shared.py"]
+    assert (repo / "GUIDE.md").read_text() == "base\n"
+
+
+async def test_a_deletion_travels_up_one_parent_at_a_time(repo: Path):
+    async with Session.open(repo, engine=Engine(BINARY)) as session:
+        child = await session.root.spawn("child")
+        grandchild = await child.spawn("grandchild")
+        (grandchild.path / "pkg" / "shared.py").unlink()
+        await grandchild.merge()
+        assert not (child.path / "pkg" / "shared.py").exists()
+        assert (repo / "pkg" / "shared.py").exists()
+        await child.merge()
+    assert files(repo) == ["README.md"]
+
+
+async def test_a_deletion_does_not_discard_a_siblings_newer_edit(repo: Path):
+    async with Session.open(repo, engine=Engine(BINARY)) as session:
+        editor = await session.root.spawn("editor")
+        deleter = await session.root.spawn("deleter")
+        (editor.path / "README.md").write_text("edited\n")
+        (deleter.path / "README.md").unlink()
+        await editor.merge()
+        await deleter.merge()
+    assert (repo / "README.md").read_text() == "edited\n"
 
 
 async def test_parallel_siblings_adding_to_one_directory_both_land(repo: Path):

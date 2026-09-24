@@ -255,7 +255,7 @@ class Workspace:
             except AcyclicError as error:
                 raise MergeConflict(self.ref, conflicts, aborted=False, detail=str(error)) from None
             raise MergeConflict(self.ref, conflicts, aborted=True)
-        if result.get("status") != "applied":
+        if result.get("status") not in ("applied", "no-changes"):
             raise AcyclicError(f"merging {self.ref} returned {result!r}")
         self.state = "merged"
         return result

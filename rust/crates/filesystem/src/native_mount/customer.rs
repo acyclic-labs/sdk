@@ -665,6 +665,11 @@ mod live_view_tests {
                 assert_eq!(list(fs, "/", page), ["README.old", "saved.txt", "src"]);
                 assert!(list(fs, "/src", page).is_empty());
             }
+
+            // Publishing must not bring a renamed-away source file back.
+            fs.flush().expect("publish");
+            assert!(fs.lookup(&at("/README.md")).expect("lookup").is_none());
+            assert_eq!(list(fs, "/", 512), ["README.old", "saved.txt", "src"]);
         })
         .await
     }

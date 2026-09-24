@@ -1251,6 +1251,52 @@ where
         })
     }
 
+    /// Paths this view removed from its source (and that exist only as
+    /// tombstones, never as authored records), in path order.
+    ///
+    /// A generation diff cannot show these: the source path was never part of
+    /// any generation, so a merge learns of the deletion only from here.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale binding, store failure, or more than `maximum` paths.
+    pub async fn source_tombstones(
+        &self,
+        maximum: usize,
+    ) -> Result<Vec<String>, LazyWorkspaceError> {
+        let state = self.state().await?;
+        let mut pending = vec![state.overlay];
+        let mut tombstones = Vec::new();
+        while let Some(id) = pending.pop() {
+            let Some(LazyOverlay::Node {
+                path,
+                change,
+                left,
+                right,
+                ..
+            }) = self
+                .store
+                .load_lazy_overlay(id)
+                .await
+                .map_err(store_error)?
+            else {
+                continue;
+            };
+            if matches!(change, LazyOverlayChange::Tombstone) {
+                if tombstones.len() == maximum {
+                    return Err(LazyWorkspaceError::Work(format!(
+                        "more than {maximum} source tombstones"
+                    )));
+                }
+                tombstones.push(path);
+            }
+            pending.push(left);
+            pending.push(right);
+        }
+        tombstones.sort();
+        Ok(tombstones)
+    }
+
     /// Advances this binding to the provider's current invalidation epoch
     /// without enumerating the source. Prior overlay roots remain immutable;
     /// observations are refreshed on demand in the new epoch while authored
@@ -4454,6 +4500,36 @@ mod tests {
             Err(LazyWorkspaceError::NotFound)
         ));
         assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn source_tombstones_list_only_removed_source_paths() {
+        let fs = Fs::memory();
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+        let root = LazyWorkspace::attach(
+            &fs,
+            "tombstones",
+            Arc::clone(&source),
+            MemoryLazyWorkspaceStore::default(),
+        )
+        .await
+        .expect("attach");
+        root.stat("/kept.txt").await.expect("observe kept");
+        root.stat("/removed.txt").await.expect("observe removed");
+        root.remove("/removed.txt")
+            .await
+            .expect("remove source path");
+        root.remove("/also-removed.txt")
+            .await
+            .expect("remove unobserved source path");
+        assert_eq!(
+            root.source_tombstones(16).await.expect("tombstones"),
+            ["/also-removed.txt", "/removed.txt"]
+        );
+        assert!(matches!(
+            root.source_tombstones(1).await,
+            Err(LazyWorkspaceError::Work(_))
+        ));
     }
 
     #[tokio::test]

@@ -1029,7 +1029,20 @@ where
         }
         self.promote_blocking(source)?;
         self.wait(|| async move { self.promote_parents(destination).await })?;
-        self.authored.rename(source, destination, replace)
+        self.authored.rename(source, destination, replace)?;
+        // The old name may be backed by the physical source. Publish the rename
+        // and tombstone that source path, or it reappears in this view once the
+        // published head no longer holds it, and a merge could not tell the
+        // parent it moved.
+        let text = self.path(source)?;
+        self.wait(|| async move {
+            self.authored.sync_async().await?;
+            match self.lazy.remove_if(&text, None).await {
+                Ok(()) | Err(LazyWorkspaceError::NotFound) => {}
+                Err(error) => return Err(lazy_error(error)),
+            }
+            self.authored.adopt_materialization_async().await
+        })
     }
 
     fn hard_link(
