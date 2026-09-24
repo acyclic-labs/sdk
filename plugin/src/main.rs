@@ -127,10 +127,12 @@ impl SharedPhysicalRoot {
 
     fn observe(&self) -> Result<SharedRootObservation, String> {
         self.observe_with(|| {
-            Ok(self
+            let mut watcher = self
                 .watcher
                 .lock()
-                .map_err(|_| "physical root watcher state is poisoned".to_owned())?
+                .map_err(|_| "physical root watcher state is poisoned".to_owned())?;
+            watcher.fence(WATCH_FENCE_TIMEOUT).map_err(display)?;
+            Ok(watcher
                 .poll(65_536, WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .map_err(display)?
                 .value)
@@ -1586,7 +1588,8 @@ async fn git_ignore_policy(workspace: &LocalLazyWorkspace) -> Result<GitIgnorePo
         Err(error) => return Err(display(error)),
     };
     Ok(GitIgnorePolicy::parse(&format!(
-        "{ignore_text}\n.git/\n.acyclic-sdk/\n"
+        "{ignore_text}\n{}",
+        reserved_ignore_rules()
     )))
 }
 
@@ -2144,7 +2147,8 @@ impl ControlPlane {
                 Err(WorkspaceError::NotFound) => String::new(),
                 Err(error) => return Err(display(error)),
             };
-            let ignore = GitIgnorePolicy::parse(&format!("{ignore_text}\n.git/\n.acyclic-sdk/\n"));
+            let ignore =
+                GitIgnorePolicy::parse(&format!("{ignore_text}\n{}", reserved_ignore_rules()));
             let repository = self.distributed.git(parent_repository_id);
             let tracked = repository.tracked_paths().await.map_err(display)?;
             let child_binding = child_route
@@ -5255,24 +5259,13 @@ impl ControlPlane {
             .workspace()
             .clone();
         let root_identity = physical.source.inner().root_identity();
-        let limits = VolumeLimits::default();
         let capture = CaptureOptions {
             source_root: binding.path.clone(),
             expected_root_identity: root_identity,
             maximum_paths: 262_144,
             maximum_extent_spans: 65_536,
         };
-        let policy = CapturePolicy::excluding(
-            ["/.git", "/.acyclic-sdk"]
-                .into_iter()
-                .map(|path| {
-                    let path = PortablePath::parse(path, limits).map_err(display)?;
-                    NamespacePath::from_portable_in_profile(&path, workspace.profile(), limits)
-                        .map_err(display)
-                })
-                .collect::<Result<Vec<_>, String>>()?,
-        )
-        .map_err(display)?;
+        let policy = CapturePolicy::excluding(reserved_root_paths()?).map_err(display)?;
         let mut checkout = workspace
             .checkout(
                 GenerationSelector::Head,
@@ -6011,15 +6004,34 @@ async fn open_lazy_source(
         }
     }
     .map_err(display)?;
-    let excluded = ["/.git", "/.acyclic-sdk"]
-        .into_iter()
-        .map(|path| {
-            let path = PortablePath::parse(path, limits).map_err(display)?;
+    Ok(Arc::new(FilteredDemandSource::new(
+        source,
+        reserved_root_paths()?,
+    )))
+}
+
+/// Host subtrees owned by version control or SDK state, never workspace
+/// content. The order is the watcher fence placement preference: an existing
+/// `.git` hosts fence cookies, and only a root without one gains `.acyclic-sdk`.
+const RESERVED_ROOT_NAMES: [&str; 2] = [".acyclic-sdk", ".git"];
+
+fn reserved_root_paths() -> Result<Vec<NamespacePath>, String> {
+    let limits = VolumeLimits::default();
+    RESERVED_ROOT_NAMES
+        .iter()
+        .map(|name| {
+            let path = PortablePath::parse(&format!("/{name}"), limits).map_err(display)?;
             NamespacePath::from_portable_in_profile(&path, native_filesystem_profile(), limits)
                 .map_err(display)
         })
-        .collect::<Result<Vec<_>, String>>()?;
-    Ok(Arc::new(FilteredDemandSource::new(source, excluded)))
+        .collect()
+}
+
+fn reserved_ignore_rules() -> String {
+    RESERVED_ROOT_NAMES
+        .iter()
+        .map(|name| format!("{name}/\n"))
+        .collect()
 }
 
 fn open_native_watcher(root: &Path) -> Result<Arc<Mutex<NativeWatch>>, String> {
@@ -6035,6 +6047,9 @@ fn open_native_watcher(root: &Path) -> Result<Arc<Mutex<NativeWatch>>, String> {
         },
     )
     .map_err(display)?;
+    watcher
+        .exclude_subtrees(&reserved_root_paths()?)
+        .map_err(display)?;
     watcher.accept_lazy_baseline().map_err(display)?;
     Ok(Arc::new(Mutex::new(watcher)))
 }
@@ -6333,6 +6348,8 @@ fn subagent_context(path: &Path) -> Value {
     })
 }
 
+/// Bounds a watcher fence; a late notification forces a sound rescan.
+const WATCH_FENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const MAXIMUM_ADAPTER_STATE_BYTES: u64 = 4 * 1024 * 1024;
 const ADAPTER_STATE_VERSION: u32 = 4;
 const MAXIMUM_ADAPTER_ROOTS: usize = 256;

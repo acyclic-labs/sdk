@@ -209,13 +209,18 @@ impl FuseSession {
             .as_ref()
             .ok_or_else(|| NativeMountError::Driver("session is stopped".to_owned()))?;
         let notifier = session.notifier();
-        if let Some(file_inode) = file_inode {
-            notifier
-                .inval_inode(INodeNo(file_inode), 0, 0)
-                .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-        }
-        notifier
-            .inval_entry(INodeNo(parent_inode), OsStr::from_bytes(name))
+        // The inode and entry caches are independent: always attempt both.
+        // `ENOENT` means the kernel held nothing to invalidate.
+        let inode = file_inode.map_or(Ok(()), |file_inode| {
+            notifier.inval_inode(INodeNo(file_inode), 0, 0)
+        });
+        let entry = notifier.inval_entry(INodeNo(parent_inode), OsStr::from_bytes(name));
+        [inode, entry]
+            .into_iter()
+            .filter(|result| {
+                !matches!(result, Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+            })
+            .collect::<Result<(), _>>()
             .map_err(|error| NativeMountError::Driver(error.to_string()))
     }
 

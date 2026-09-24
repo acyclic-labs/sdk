@@ -2113,44 +2113,17 @@ async fn capture_watch_batch_with_policy_inner<A: AsyncAuthorityStore, O: AsyncO
     }) {
         match change {
             WatchChange::Created(path) => {
-                let current = rename_records.get(&path).copied().map_or_else(
-                    || {
-                        if moved_away.contains(&path) {
-                            CurrentRecord::Known(None)
-                        } else {
-                            CurrentRecord::Lookup
-                        }
-                    },
-                    |record| CurrentRecord::Known(Some(record)),
-                );
+                let current = current_record(&rename_records, &moved_away, &path);
                 ordinary.insert(path, (current, CaptureIntent::Replace));
             }
             WatchChange::Modified(path) | WatchChange::Removed(path) => {
-                let current = rename_records.get(&path).copied().map_or_else(
-                    || {
-                        if moved_away.contains(&path) {
-                            CurrentRecord::Known(None)
-                        } else {
-                            CurrentRecord::Lookup
-                        }
-                    },
-                    |record| CurrentRecord::Known(Some(record)),
-                );
+                let current = current_record(&rename_records, &moved_away, &path);
                 ordinary
                     .entry(path)
                     .or_insert((current, CaptureIntent::Complete));
             }
             WatchChange::MetadataChanged(path) => {
-                let current = rename_records.get(&path).copied().map_or_else(
-                    || {
-                        if moved_away.contains(&path) {
-                            CurrentRecord::Known(None)
-                        } else {
-                            CurrentRecord::Lookup
-                        }
-                    },
-                    |record| CurrentRecord::Known(Some(record)),
-                );
+                let current = current_record(&rename_records, &moved_away, &path);
                 ordinary
                     .entry(path)
                     .or_insert((current, CaptureIntent::MetadataOnly));
@@ -2454,6 +2427,20 @@ async fn capture_watch_batch_with_policy_inner<A: AsyncAuthorityStore, O: AsyncO
 enum CurrentRecord {
     Lookup,
     Known(Option<FileRecord>),
+}
+
+/// What a hinted path held before this batch: a renamed record, nothing if
+/// it was moved away, or the checkout's current binding.
+fn current_record(
+    rename_records: &BTreeMap<NamespacePath, FileRecord>,
+    moved_away: &BTreeSet<NamespacePath>,
+    path: &NamespacePath,
+) -> CurrentRecord {
+    match rename_records.get(path) {
+        Some(record) => CurrentRecord::Known(Some(*record)),
+        None if moved_away.contains(path) => CurrentRecord::Known(None),
+        None => CurrentRecord::Lookup,
+    }
 }
 
 fn watch_ancestor_candidates<'a>(

@@ -20,7 +20,8 @@ use std::mem::size_of;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 /// Native notification mechanism compiled for this target.
@@ -278,6 +279,10 @@ struct SharedState {
     invalidation: Option<WatchInvalidationReason>,
     #[cfg(target_os = "linux")]
     pending_rename: Option<PendingRename>,
+    /// Host path of the outstanding fence cookie, cleared on delivery.
+    fence: Option<PathBuf>,
+    /// Host subtrees whose events are never hints, in fence preference order.
+    excluded: Vec<PathBuf>,
 }
 
 #[cfg(target_os = "linux")]
@@ -289,6 +294,16 @@ struct PendingRename {
 }
 
 impl SharedState {
+    const fn new(invalidation: Option<WatchInvalidationReason>) -> Self {
+        Self {
+            invalidation,
+            #[cfg(target_os = "linux")]
+            pending_rename: None,
+            fence: None,
+            excluded: Vec::new(),
+        }
+    }
+
     fn seal_invalidation(&mut self) -> Option<WatchInvalidationReason> {
         #[cfg(target_os = "linux")]
         if self.invalidation.is_none() && self.pending_rename.is_some() {
@@ -321,6 +336,9 @@ pub struct NativeWatch {
     receiver: Receiver<WatchChange>,
     queued: Arc<AtomicU32>,
     shared: Arc<Mutex<SharedState>>,
+    fenced: Arc<Condvar>,
+    fences: u64,
+    excluded: Vec<(NamespacePath, PathBuf)>,
     epoch: WatchEpoch,
     next_sequence: WatchSequence,
     rescan_in_progress: bool,
@@ -390,12 +408,12 @@ impl NativeWatch {
             .map_err(|_| NativeWatchError::InvalidOptions)?;
         let (sender, receiver) = sync_channel(capacity);
         let queued = Arc::new(AtomicU32::new(0));
-        let shared = Arc::new(Mutex::new(SharedState {
-            invalidation: Some(WatchInvalidationReason::InitialSnapshotRequired),
-            #[cfg(target_os = "linux")]
-            pending_rename: None,
-        }));
+        let shared = Arc::new(Mutex::new(SharedState::new(Some(
+            WatchInvalidationReason::InitialSnapshotRequired,
+        ))));
+        let fenced = Arc::new(Condvar::new());
         let callback_shared = Arc::clone(&shared);
+        let callback_fenced = Arc::clone(&fenced);
         let callback_queued = Arc::clone(&queued);
         let callback_context = NativeEventContext {
             root: root.clone(),
@@ -405,14 +423,25 @@ impl NativeWatch {
             #[cfg(target_os = "linux")]
             maximum_queued_changes: options.maximum_queued_changes,
         };
-        let mut watcher = notify::recommended_watcher(move |event| {
+        let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
             accept_native_event(
-                event,
+                &event,
                 &callback_context,
                 &sender,
                 &callback_shared,
                 &callback_queued,
             );
+            // Signal only after the cookie's own hint is handled: delivery is
+            // ordered, so every earlier host change is already queued.
+            if let (Ok(event), Ok(mut state)) = (&event, callback_shared.lock())
+                && state
+                    .fence
+                    .as_ref()
+                    .is_some_and(|fence| event.paths.contains(fence))
+            {
+                state.fence = None;
+                callback_fenced.notify_all();
+            }
         })
         .map_err(|error| NativeWatchError::Backend(error.to_string()))?;
         watcher
@@ -433,6 +462,9 @@ impl NativeWatch {
             receiver,
             queued,
             shared,
+            fenced,
+            fences: 0,
+            excluded: Vec::new(),
             epoch: WatchEpoch(0),
             next_sequence: WatchSequence(0),
             rescan_in_progress: false,
@@ -748,6 +780,113 @@ impl NativeWatch {
         Ok(())
     }
 
+    /// Stops reporting hints for events wholly inside `subtrees`.
+    ///
+    /// Excluded subtrees are invisible to the consumer (for example a VCS
+    /// directory or reserved SDK state), so their churn never invalidates it.
+    /// Their order is the [`Self::fence`] placement preference.
+    ///
+    /// # Errors
+    ///
+    /// Rejects the root, unrepresentable paths, or poisoned synchronization.
+    pub fn exclude_subtrees(&mut self, subtrees: &[NamespacePath]) -> Result<(), NativeWatchError> {
+        let excluded = subtrees
+            .iter()
+            .map(|subtree| {
+                if subtree.is_root() {
+                    return Err(NativeWatchError::UnrepresentablePath);
+                }
+                crate::native_capture::namespace_to_host_path(subtree)
+                    .map(|relative| self.root.join(relative))
+                    .map_err(|_| NativeWatchError::UnrepresentablePath)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?
+            .excluded
+            .clone_from(&excluded);
+        self.excluded = subtrees.iter().cloned().zip(excluded).collect();
+        Ok(())
+    }
+
+    /// Waits until every host change completed before this call is queued.
+    ///
+    /// Native delivery is asynchronous (`FSEvents` most visibly), so a poll
+    /// alone can miss a write that finished before it. The fence creates and
+    /// removes a uniquely named cookie inside the first excluded subtree that
+    /// is a directory (creating the first one when none is), then waits for
+    /// the cookie's ordered notification. Excluded cookies are never hints.
+    /// If delivery does not arrive within `timeout`, the watcher is
+    /// invalidated so the next poll demands an authenticated rescan.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a watcher without excluded subtrees, cookie I/O failures, or
+    /// poisoned synchronization.
+    pub fn fence(&mut self, timeout: Duration) -> Result<(), NativeWatchError> {
+        let (directory, host_directory) = self.fence_directory()?;
+        self.watch_directory(&directory)?;
+        self.fences = self.fences.wrapping_add(1);
+        let cookie = host_directory.join(format!(
+            ".acyclic-fence-{}-{}",
+            std::process::id(),
+            self.fences
+        ));
+        let mut state = self
+            .shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?;
+        if state.invalidation.is_some() {
+            return Ok(());
+        }
+        state.fence = Some(cookie.clone());
+        drop(state);
+        let written =
+            std::fs::File::create_new(&cookie).and_then(|_| std::fs::remove_file(&cookie));
+        let deadline = Instant::now() + timeout;
+        let mut state = self
+            .shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?;
+        if let Err(error) = written {
+            state.fence = None;
+            return Err(NativeWatchError::Io(error.to_string()));
+        }
+        while state.fence.is_some() && state.invalidation.is_none() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
+                break;
+            }
+            state = self
+                .fenced
+                .wait_timeout(state, remaining)
+                .map_err(|_| NativeWatchError::StatePoisoned)?
+                .0;
+        }
+        state.fence = None;
+        Ok(())
+    }
+
+    fn fence_directory(&self) -> Result<(NamespacePath, PathBuf), NativeWatchError> {
+        for (subtree, host) in &self.excluded {
+            match host.symlink_metadata() {
+                Ok(metadata) if metadata.is_dir() => return Ok((subtree.clone(), host.clone())),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(NativeWatchError::Io(error.to_string())),
+            }
+        }
+        let (subtree, host) = self
+            .excluded
+            .first()
+            .cloned()
+            .ok_or(NativeWatchError::InvalidOptions)?;
+        std::fs::create_dir(&host).map_err(|error| NativeWatchError::Io(error.to_string()))?;
+        Ok((subtree, host))
+    }
+
     /// Moves at most `maximum_changes` contiguous hints from the native queue.
     ///
     /// # Errors
@@ -942,21 +1081,33 @@ impl crate::demand::DemandDirectoryObserver for Mutex<NativeWatch> {
 }
 
 fn accept_native_event(
-    event: notify::Result<Event>,
+    event: &notify::Result<Event>,
     context: &NativeEventContext,
     sender: &SyncSender<WatchChange>,
     shared: &Arc<Mutex<SharedState>>,
     queued: &Arc<AtomicU32>,
 ) {
-    let mapped = event
-        .map_err(|_| WatchInvalidationReason::BackendError)
-        .and_then(|event| map_native_event(&event, context));
     let Ok(mut state) = shared.lock() else {
         return;
     };
     if state.invalidation.is_some() {
         return;
     }
+    if let Ok(event) = event
+        && !event.paths.is_empty()
+        && event.paths.iter().all(|path| {
+            state
+                .excluded
+                .iter()
+                .any(|excluded| path.starts_with(excluded))
+        })
+    {
+        return;
+    }
+    let mapped = event
+        .as_ref()
+        .map_err(|_| WatchInvalidationReason::BackendError)
+        .and_then(|event| map_native_event(event, context));
     let changes = match mapped {
         Ok(MappedNativeEvent::Changes(changes)) => changes,
         #[cfg(target_os = "linux")]
