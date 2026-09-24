@@ -528,7 +528,17 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             }
         }
         for record in records.values() {
-            if links.get(&record.file_id).copied().unwrap_or(0) != record.link_count {
+            let actual = links.get(&record.file_id).copied().unwrap_or(0);
+            if actual != record.link_count {
+                crate::diag!(
+                    crate::diagnostics::Level::Error,
+                    "closure",
+                    "link_count_mismatch",
+                    file_id = format!("{:?}", record.file_id),
+                    kind = format!("{:?}", record.kind),
+                    recorded = record.link_count,
+                    actual = actual,
+                );
                 return Err(ClosureError::LinkCountMismatch(record.file_id));
             }
             if matches!(record.payload, FilePayload::Directory { .. }) && record.link_count != 1 {

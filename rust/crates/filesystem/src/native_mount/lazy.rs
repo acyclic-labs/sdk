@@ -990,10 +990,22 @@ where
             }
         }
         self.wait(|| async move {
-            self.lazy
-                .remove_if(&text, expected)
-                .await
-                .map_err(lazy_error)?;
+            match self.lazy.remove_if(&text, expected).await {
+                Err(LazyWorkspaceError::Workspace(message))
+                    if message.contains("directory is not empty")
+                        && self.authored.has_unpublished_async().await =>
+                {
+                    // The removal is checked against the published head, where a
+                    // child renamed or removed in the live checkout still exists.
+                    // Publish that pending work, then remove.
+                    self.authored.sync_async().await?;
+                    self.lazy
+                        .remove_if(&text, expected)
+                        .await
+                        .map_err(lazy_error)?;
+                }
+                result => result.map_err(lazy_error)?,
+            }
             self.authored.adopt_materialization_async().await
         })
     }

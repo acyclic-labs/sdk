@@ -1499,6 +1499,24 @@ async fn git_workspace_tree(
     ))
 }
 
+/// Paths a child only reads through the shared physical root that its parent
+/// gained after the fork; the child drops them before its capture.
+#[derive(Default)]
+struct InheritedPaths {
+    tombstone: Vec<String>,
+}
+
+impl InheritedPaths {
+    fn extend(&mut self, other: Self) {
+        self.tombstone.extend(other.tombstone);
+    }
+
+    fn normalize(&mut self) {
+        self.tombstone.sort();
+        self.tombstone.dedup();
+    }
+}
+
 async fn git_policy(
     workspace: &LocalLazyWorkspace,
 ) -> Result<(GitIgnorePolicy, Arc<MergeDriverRegistry>), String> {
@@ -3345,9 +3363,9 @@ impl ControlPlane {
         {
             return Err("subagent cannot stop while filesystem tools are still active".to_owned());
         }
+        self.unmount_agent(&agent_id).await?;
         #[cfg(target_os = "macos")]
         self.remove_appledouble_companions(&route).await?;
-        self.unmount_agent(&agent_id).await?;
         self.distributed
             .contexts()
             .set_active(WorkspaceContextId::from_bytes(route.context_id), false)
@@ -3678,15 +3696,14 @@ impl ControlPlane {
     /// physical root as if they were its own.
     /// Paths added to `parent` after `child` forked from it that the child never
     /// authored. The child's unresolved view reads the shared physical root, so
-    /// it would otherwise see a sibling's merged files as its own. A path the
-    /// parent merely promoted from that same root keeps the source identity and
-    /// is not inherited.
+    /// it would otherwise see a sibling's merged files, or files the parent only
+    /// promoted, as its own additions under a different identity.
     async fn paths_inherited_since_fork(
         &self,
         child: &LocalWorkspace,
         parent: &LocalWorkspace,
         child_view: &LocalLazyWorkspace,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<InheritedPaths, String> {
         let fork_point = child
             .join_into(parent)
             .plan()
@@ -3696,10 +3713,10 @@ impl ControlPlane {
         let base = parent.generation(fork_point).await.map_err(display)?;
         let head = parent.head().await.map_err(display)?;
         if base.id() == head.id() {
-            return Ok(Vec::new());
+            return Ok(InheritedPaths::default());
         }
         let changes = parent.diff(&base, &head, 100_000).await.map_err(display)?;
-        let mut inherited = Vec::new();
+        let mut inherited = InheritedPaths::default();
         for change in changes.changed_paths(100_000).await.map_err(display)? {
             let (None, Some(added)) = (change.before, change.after) else {
                 continue;
@@ -3709,10 +3726,27 @@ impl ControlPlane {
                 path.push('/');
                 path.push_str(&String::from_utf8_lossy(component.as_bytes()));
             }
-            if let Ok(acyclic_fs::LazyLookup::Source(node)) = child_view.lookup(&path).await
-                && child_view.source_file_id(&node) != added.file_id
-            {
-                inherited.push(path);
+            // The child only reads this path through the shared physical root
+            // and never wrote it, so the parent's copy is authoritative whatever
+            // identity each side derived for it.
+            let lookup = child_view.lookup(&path).await;
+            acyclic_fs::diag!(
+                Level::Debug,
+                "merge",
+                "inherited_candidate",
+                path = path,
+                parent_file_id = format!("{:?}", added.file_id),
+                child_view = match &lookup {
+                    Ok(acyclic_fs::LazyLookup::Source(node)) =>
+                        format!("source {:?}", child_view.source_file_id(node)),
+                    Ok(other) => format!("{other:?}"),
+                    Err(error) => format!("error {error}"),
+                },
+            );
+            // A directory both sides hold under different identities needs
+            // nothing here: the merge folds same-named directories by path.
+            if let Ok(acyclic_fs::LazyLookup::Source(_)) = lookup {
+                inherited.tombstone.push(path);
             }
         }
         Ok(inherited)
@@ -3815,17 +3849,17 @@ impl ControlPlane {
                 );
                 ancestor = grandparent;
             }
-            inherited.sort();
-            inherited.dedup();
-            if !inherited.is_empty() {
+            inherited.normalize();
+            if !inherited.tombstone.is_empty() {
                 acyclic_fs::diag!(
                     Level::Info,
                     "merge",
                     "inherited_paths_filtered",
                     agent = agent,
                     parent = caller,
-                    count = inherited.len(),
+                    count = inherited.tombstone.len(),
                     paths = inherited
+                        .tombstone
                         .iter()
                         .take(32)
                         .cloned()
@@ -3833,7 +3867,7 @@ impl ControlPlane {
                         .join(","),
                 );
             }
-            for path in inherited {
+            for path in inherited.tombstone {
                 // Source-only: records a tombstone, never an authored removal.
                 match lazy_source.remove_if(&path, None).await {
                     Ok(()) | Err(acyclic_fs::LazyWorkspaceError::NotFound) => {}
@@ -4401,47 +4435,66 @@ impl ControlPlane {
 
     /// The macOS NFS client stores extended attributes it cannot hand to the
     /// server as `._name` `AppleDouble` files beside `name`. They are client
-    /// bookkeeping, not agent work: remove the ones this agent created, through
-    /// its own mount, before the mount's final sync freezes the workspace.
+    /// bookkeeping, not agent work: once the mount is gone, remove the ones this
+    /// agent created straight from its workspace. (Unlinking through the mount
+    /// would send the service back into the NFS server it is itself running.)
     #[cfg(target_os = "macos")]
     async fn remove_appledouble_companions(&mut self, route: &Route) -> Result<(), String> {
-        let Some(mount) = self.mounts.get(&route.agent_id) else {
-            return Ok(());
-        };
-        mount.sync().await.map_err(display)?;
         let changes = self
             .agent_changes_as(
                 &route.parent_agent_id,
                 json!({"agent": route.agent_id, "path": "."}),
             )
             .await?;
-        let paths = changes
+        let roots = changes
             .get("roots")
             .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|root| root.get("paths").and_then(Value::as_array))
-            .flatten()
-            .filter_map(Value::as_str);
-        for relative in paths {
-            let path = Path::new(&route.path).join(relative.trim_start_matches('/'));
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            .cloned()
+            .unwrap_or_default();
+        for root in roots {
+            let Some(root_id) = root
+                .get("root")
+                .and_then(Value::as_str)
+                .and_then(|text| hex::decode(text).ok())
+                .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+            else {
                 continue;
             };
-            let Some(companion_of) = name.strip_prefix("._") else {
+            let companions = root
+                .get("paths")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter_map(|path| {
+                    let (parent, name) = path.rsplit_once('/')?;
+                    let original = name.strip_prefix("._").filter(|rest| !rest.is_empty())?;
+                    Some((path.to_owned(), format!("{parent}/{original}")))
+                })
+                .collect::<Vec<_>>();
+            if companions.is_empty() {
                 continue;
-            };
-            if std::fs::symlink_metadata(path.with_file_name(companion_of)).is_ok() {
-                match std::fs::remove_file(&path) {
-                    Ok(()) => acyclic_fs::diag!(
-                        Level::Debug,
-                        "mount",
-                        "appledouble_removed",
-                        agent = route.agent_id,
-                        path = relative,
-                    ),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(format!("cannot remove {}: {error}", path.display())),
+            }
+            let view = self
+                .lazy_workspace_root(route, WorkspaceRootId::from_bytes(root_id))
+                .await?;
+            for (companion, original) in companions {
+                if view.lookup(&original).await.is_err() {
+                    continue;
+                }
+                match view.remove(&companion).await {
+                    Ok(()) | Err(acyclic_fs::LazyWorkspaceError::NotFound) => {
+                        acyclic_fs::diag!(
+                            Level::Debug,
+                            "mount",
+                            "appledouble_removed",
+                            agent = route.agent_id,
+                            path = companion,
+                        );
+                    }
+                    Err(error) => {
+                        return Err(format!("cannot remove {companion}: {error}"));
+                    }
                 }
             }
         }

@@ -1793,7 +1793,7 @@ fn errno(error: MountSourceError) -> i32 {
         MountSourceError::AlreadyExists => libc::EEXIST,
         MountSourceError::Invalid(_) => libc::EINVAL,
         MountSourceError::Unsupported(_) => libc::EOPNOTSUPP,
-        MountSourceError::Engine(_) => libc::EIO,
+        MountSourceError::Engine(message) => super::engine_errno(message),
         MountSourceError::Stale => libc::ESTALE,
     };
     super::report_callback_error("fuse", &error, code);

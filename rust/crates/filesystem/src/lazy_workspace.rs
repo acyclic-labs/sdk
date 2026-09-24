@@ -1963,7 +1963,10 @@ where
             .await
             .map_err(workspace_error)?;
         work = account_work(work, applied, budget)?;
-        if node.kind != SourceNodeKind::Directory {
+        // Directories keep their source identity too: every fork that promotes
+        // one shared source directory must name it identically, or siblings
+        // adding entries to it conflict as independent additions.
+        {
             let applied = transaction
                 .preserve_file_identity_measured(
                     requested,

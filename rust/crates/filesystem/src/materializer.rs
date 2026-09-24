@@ -773,7 +773,11 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 path.to_owned(),
             ));
         }
-        let before = native_entry_fingerprint(&live)?;
+        let before = if matches!(edit, MaterializationEdit::SetMetadata { .. }) {
+            native_attribute_fingerprint(&live, None)?
+        } else {
+            native_entry_fingerprint(&live)?
+        };
         let after = match edit {
             MaterializationEdit::Install { .. } => native_entry_fingerprint(&target)?
                 .ok_or_else(|| NativeTreeMaterializationError::MissingTarget(path.to_owned()))?
@@ -781,7 +785,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
             MaterializationEdit::Remove { .. } => None,
             MaterializationEdit::SetMetadata { image, .. } => {
                 let desired = decode_native_metadata(image)?;
-                native_entry_fingerprint_with_metadata(&live, &desired)?
+                native_attribute_fingerprint(&live, Some(&desired))?
             }
             MaterializationEdit::Rename { .. } => {
                 return Err(NativeTreeMaterializationError::UnsupportedRename);
@@ -805,7 +809,11 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         let (before, after) = decode_native_witness(&preimage.image)?;
         let path = edit_path(edit);
         let (live, target, backup) = self.paths(path);
-        let current = native_entry_fingerprint(&live)?;
+        let current = if matches!(edit, MaterializationEdit::SetMetadata { .. }) {
+            native_attribute_fingerprint(&live, None)?
+        } else {
+            native_entry_fingerprint(&live)?
+        };
         let target_current = if matches!(edit, MaterializationEdit::Install { .. }) {
             native_entry_fingerprint(&target)?
         } else {
@@ -854,7 +862,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         let (live, target, backup) = self.paths(path);
         let (before, after) = decode_native_witness(&preimage.image)?;
         if let MaterializationEdit::SetMetadata { image, .. } = edit {
-            let current = native_entry_fingerprint(&live)?;
+            let current = native_attribute_fingerprint(&live, None)?;
             if current == after {
                 return Ok(());
             }
@@ -938,7 +946,11 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         let path = edit_path(edit);
         let (live, _, backup) = self.paths(path);
         let (before, after) = decode_native_witness(&preimage.image)?;
-        let current = native_entry_fingerprint(&live)?;
+        let current = if matches!(edit, MaterializationEdit::SetMetadata { .. }) {
+            native_attribute_fingerprint(&live, None)?
+        } else {
+            native_entry_fingerprint(&live)?
+        };
         if matches!(edit, MaterializationEdit::SetMetadata { .. }) {
             if current == before {
                 return Ok(());
@@ -1147,18 +1159,55 @@ fn native_entry_fingerprint(path: &Path) -> Result<Option<[u8; 32]>, std::io::Er
     Ok(Some(*hasher.finalize().as_bytes()))
 }
 
+/// Fingerprint of an entry's own authored attributes, for metadata edits.
+///
+/// Unlike [`native_entry_fingerprint`] it leaves out content, children, size,
+/// link count and times: installing a file into a directory changes all of
+/// those for the directory, and must not read as an external change to the
+/// directory's pending metadata edit.
 #[cfg(not(target_arch = "wasm32"))]
-fn native_entry_fingerprint_with_metadata(
+fn native_attribute_fingerprint(
     path: &Path,
-    desired: &NativeMetadataImage,
-) -> Result<Option<[u8; 32]>, NativeTreeMaterializationError> {
+    desired: Option<&NativeMetadataImage>,
+) -> Result<Option<[u8; 32]>, std::io::Error> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error),
     };
     let mut hasher = blake3::Hasher::new();
-    hash_native_entry(path, &metadata, &mut hasher, Some(desired))?;
+    hasher.update(b"acyclic-native-attributes-v1\0");
+    let file_type = metadata.file_type();
+    hasher.update(if file_type.is_symlink() {
+        b"link"
+    } else if file_type.is_dir() {
+        b"directory"
+    } else if file_type.is_file() {
+        b"file"
+    } else {
+        b"special"
+    });
+    hasher.update(&[u8::from(desired.map_or_else(
+        || metadata.permissions().readonly(),
+        |value| value.readonly,
+    ))]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        for value in [
+            metadata.dev(),
+            metadata.ino(),
+            u64::from(
+                desired
+                    .and_then(|value| value.posix_mode)
+                    .unwrap_or_else(|| metadata.mode()),
+            ),
+            u64::from(metadata.uid()),
+            u64::from(metadata.gid()),
+        ] {
+            hasher.update(&value.to_le_bytes());
+        }
+    }
     Ok(Some(*hasher.finalize().as_bytes()))
 }
 
@@ -1588,6 +1637,18 @@ where
         let after_directory = change
             .after
             .is_some_and(|record| record.kind == crate::kernel::FileKind::Directory);
+        // A directory with no earlier record that already exists on the host
+        // is a lazily promoted source directory. Replacing it wholesale would
+        // give it and every file under it new host identities; keep it and let
+        // each descendant be reconciled on its own.
+        let promoted_directory = change.before.is_none()
+            && after_directory
+            && std::fs::symlink_metadata(root.join(&path))
+                .is_ok_and(|metadata| metadata.file_type().is_dir());
+        if promoted_directory {
+            // The host directory is the source this record was read from.
+            continue;
+        }
         if before_directory && after_directory {
             let stat = to_generation.stat(&format!("/{path}")).await?;
             metadata_edits.push(MaterializationEdit::SetMetadata {

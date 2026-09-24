@@ -240,6 +240,7 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
     let mut resolutions = BTreeMap::new();
     let mut conflicts = Vec::new();
     let mut truncated = false;
+    let mut folds = Vec::new();
     for file_id in identities {
         let base = ours
             .get(&file_id)
@@ -272,6 +273,23 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
                 ..ours_record
             }));
         }
+        // Both sides added the same directory identity (each promoted one
+        // shared source directory, say) with different entries: merge those
+        // entries against an empty directory.
+        let base = if base.is_none()
+            && matches!(resolved, OptionalResolution::Conflict)
+            && is_directory(ours_value)
+            && is_directory(theirs_value)
+        {
+            let ours_record = ours_value.ok_or_else(|| invalid(work))?;
+            let entries = empty_tree_async(store, limits, budget, cancellation, &mut work).await?;
+            Some(FileRecord {
+                payload: FilePayload::Directory { entries },
+                ..ours_record
+            })
+        } else {
+            base
+        };
         if matches!(resolved, OptionalResolution::Conflict)
             && is_directory(base)
             && is_directory(ours_value)
@@ -306,6 +324,7 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
                 .ok_or_else(|| OperationFailure::new(MergeGenerationError::ChangeLimit, work))?;
             conflicts.extend(directory.value.conflicts);
             truncated |= directory.value.truncated;
+            folds.extend(directory.value.folds);
             let Some(record) = directory.value.record else {
                 continue;
             };
@@ -385,6 +404,23 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
         };
         resolutions.insert(file_id, (ours_value, resolved));
     }
+    fold_directories(
+        store,
+        folds,
+        &mut resolutions,
+        &mut FoldState {
+            conflicts: &mut conflicts,
+            truncated: &mut truncated,
+            remaining_changes: &mut remaining_changes,
+        },
+        request.maximum_conflicts,
+        &request.resolutions,
+        limits,
+        budget,
+        cancellation,
+        &mut work,
+    )
+    .await?;
     if !conflicts.is_empty() || truncated {
         return Ok(OperationReceipt {
             value: MergeGenerationOutcome::Conflicted {
@@ -803,6 +839,9 @@ pub(crate) struct DirectoryMergeResult {
     pub(crate) conflicts: Vec<MergeConflict>,
     pub(crate) truncated: bool,
     pub(crate) examined_changes: u32,
+    /// Names both sides added as directories under different identities:
+    /// `(ours, theirs)`. Ours keeps the name; theirs' entries fold into it.
+    pub(crate) folds: Vec<(FileId, FileId)>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -858,6 +897,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
             .collect(),
         truncated: maximum_conflicts == 0,
         examined_changes: 0,
+        folds: Vec::new(),
     };
     // A driver resolving this directory's record supplies its metadata only:
     // the entries below are always merged, never replaced wholesale, so one
@@ -967,6 +1007,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
     let mut conflicts = Vec::new();
     let mut truncated = false;
     let mut mutations = Vec::new();
+    let mut folds = Vec::new();
     for name in names {
         let base_value = ours_changes
             .get(&name)
@@ -997,6 +1038,20 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                     MergeConflictResolution::File(_) => None,
                 })
         });
+        // Both sides added a directory under this name with different
+        // identities. Directories merge by path: ours keeps the name and
+        // theirs' entries are folded into it by the caller.
+        let resolved = resolved.or_else(|| match (&base_value, &ours_value, &theirs_value) {
+            (None, Some(ours_entry), Some(theirs_entry))
+                if ours_entry.kind == super::FileKind::Directory
+                    && theirs_entry.kind == super::FileKind::Directory
+                    && ours_entry.file_id != theirs_entry.file_id =>
+            {
+                folds.push((ours_entry.file_id, theirs_entry.file_id));
+                Some(ours_value.clone())
+            }
+            _ => None,
+        });
         let Some(resolved) = resolved else {
             if conflicts.len() < usize::try_from(maximum_conflicts).unwrap_or(usize::MAX) {
                 conflicts.push(MergeConflict::Binding { directory_id, name });
@@ -1018,6 +1073,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                 conflicts,
                 truncated,
                 examined_changes,
+                folds,
             },
             work,
         });
@@ -1051,6 +1107,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
             conflicts,
             truncated,
             examined_changes,
+            folds,
         },
         work,
     })
@@ -1208,6 +1265,102 @@ async fn merge_metadata_async<S: AsyncObjectStore>(
         *work = add(*work, receipt.work)?;
     }
     Ok(Some(object))
+}
+
+struct FoldState<'a> {
+    conflicts: &'a mut Vec<MergeConflict>,
+    truncated: &'a mut bool,
+    remaining_changes: &'a mut u32,
+}
+
+/// Folds each directory theirs added under a name ours also added as a
+/// directory: ours keeps its identity and gains theirs' entries (merged
+/// against an empty directory, which may fold further), and theirs' record,
+/// left without a name, is dropped.
+#[allow(clippy::too_many_arguments)]
+async fn fold_directories<S: AsyncObjectStore>(
+    store: &S,
+    mut folds: Vec<(FileId, FileId)>,
+    resolutions: &mut BTreeMap<FileId, RecordChange>,
+    state: &mut FoldState<'_>,
+    maximum_conflicts: u32,
+    requested: &BTreeMap<MergeConflict, MergeConflictResolution>,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    work: &mut WorkCounters,
+) -> Result<(), OperationFailure<MergeGenerationError>> {
+    while let Some((ours_id, theirs_id)) = folds.pop() {
+        let (Some((ours_before, Some(ours_record))), Some((theirs_before, Some(theirs_record)))) = (
+            resolutions.get(&ours_id).copied(),
+            resolutions.get(&theirs_id).copied(),
+        ) else {
+            return Err(invalid(*work));
+        };
+        let entries = empty_tree_async(store, limits, budget, cancellation, work).await?;
+        let empty = FileRecord {
+            payload: FilePayload::Directory { entries },
+            ..ours_record
+        };
+        let directory = merge_directory_record_with_resolutions_async(
+            store,
+            ours_id,
+            empty,
+            ours_record,
+            theirs_record,
+            (*state.remaining_changes).max(1),
+            maximum_conflicts
+                .saturating_sub(u32::try_from(state.conflicts.len()).unwrap_or(u32::MAX)),
+            requested,
+            limits,
+            remaining(*work, budget)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(*work, std::convert::identity))?;
+        *work = add(*work, directory.work)?;
+        *state.remaining_changes = state
+            .remaining_changes
+            .saturating_sub(directory.value.examined_changes);
+        state.conflicts.extend(directory.value.conflicts);
+        *state.truncated |= directory.value.truncated;
+        folds.extend(directory.value.folds);
+        if let Some(record) = directory.value.record {
+            resolutions.insert(ours_id, (ours_before, Some(record)));
+        }
+        resolutions.insert(theirs_id, (theirs_before, None));
+    }
+    Ok(())
+}
+
+/// The canonical empty directory tree, stored if absent.
+async fn empty_tree_async<S: AsyncObjectStore>(
+    store: &S,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    work: &mut WorkCounters,
+) -> Result<ObjectId, OperationFailure<MergeGenerationError>> {
+    let bytes = super::encode_tree_page(
+        &super::TreePage::Leaf(Vec::new()),
+        limits.maximum_page_items,
+    )
+    .map_err(|error| OperationFailure::new(error.into(), *work))?;
+    let object = ObjectId {
+        kind: ObjectKind::TreePage,
+        digest: object_digest(ObjectKind::TreePage, &bytes),
+    };
+    let receipt = store
+        .put(
+            object,
+            Bytes::from(bytes),
+            remaining(*work, budget)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(*work, MergeGenerationError::Object))?;
+    *work = add(*work, receipt.work)?;
+    Ok(object)
 }
 
 async fn read_metadata<S: AsyncObjectStore>(

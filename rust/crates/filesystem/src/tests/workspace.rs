@@ -1798,6 +1798,65 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
     Ok(())
 }
 
+/// Two siblings each create the same directory (under different identities)
+/// and add a file to it. Directories merge by path, as in Git: the second join
+/// folds its directory into the first's instead of conflicting on the name,
+/// including a nested directory both created.
+#[allow(clippy::expect_used, clippy::panic)]
+#[tokio::test]
+async fn sibling_directories_created_independently_merge_by_path() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let main = fs.create_workspace("fold-main").await?;
+    main.write_text("/README.md", "base\n").await?;
+    let base = main.head().await?;
+    let mut forks = Vec::new();
+    for (name, file) in [("fold-first", "a.py"), ("fold-second", "b.py")] {
+        let fork = main
+            .fork(
+                name,
+                ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+            )
+            .await?;
+        let mut transaction = fork.begin_transaction(IdempotencyKey::new()).await?;
+        transaction.create_dir_all("/pkg/nested").await?;
+        transaction.commit().await?;
+        fork.write_text(&format!("/pkg/{file}"), file).await?;
+        fork.write_text(&format!("/pkg/nested/{file}"), file)
+            .await?;
+        forks.push(fork);
+    }
+    for fork in &forks {
+        let plan = fork.join_into(&main).plan().await?;
+        match plan
+            .apply(ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: IdempotencyKey::new(),
+            })
+            .await?
+        {
+            JoinOutcome::Applied(_) => {}
+            JoinOutcome::Conflicted { conflicts, .. } => {
+                let described = plan.describe_conflicts(&conflicts, false).await?;
+                panic!("join conflicted: {:?}", described.conflicts);
+            }
+            _ => panic!("join did not apply"),
+        }
+    }
+    for path in [
+        "/pkg/a.py",
+        "/pkg/b.py",
+        "/pkg/nested/a.py",
+        "/pkg/nested/b.py",
+    ] {
+        let name = path.rsplit('/').next().expect("file name");
+        assert_eq!(
+            main.read(path, 16).await?,
+            Bytes::copy_from_slice(name.as_bytes())
+        );
+    }
+    Ok(())
+}
+
 /// The mount bumps a directory's modification time whenever a child is
 /// added, so two siblings adding files to one directory always diverge on its
 /// metadata. That must reconcile; only authored metadata (the mode) conflicts.

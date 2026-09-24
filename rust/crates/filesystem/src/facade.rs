@@ -6775,9 +6775,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 let current = current
                     .record
                     .ok_or_else(|| OperationFailure::new(FsError::NotFound, *work))?;
-                if current.kind == FileKind::Directory {
-                    return Err(OperationFailure::new(FsError::InvalidSpecialKind, *work));
-                }
                 if current.file_id == file_id {
                     return Ok(None);
                 }
@@ -6788,6 +6785,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         failure.map_with_prior_work(*work, std::convert::identity)
                     })?;
                 *work = add(*work, existing.work)?;
+                // A directory cannot be aliased: it may take a stable identity
+                // only while no other record holds it.
+                if current.kind == FileKind::Directory && existing.value.is_some() {
+                    return Err(OperationFailure::new(FsError::FileIdentityCollision, *work));
+                }
                 if existing.value.is_some_and(|existing| {
                     existing.kind != current.kind
                         || existing.metadata != current.metadata

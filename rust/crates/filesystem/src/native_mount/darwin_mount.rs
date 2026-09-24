@@ -953,7 +953,15 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
                 }
                 directory.cursor = page.next_cursor;
                 directory.exhausted = directory.cursor.is_none();
-                directory.entries = page.entries.into();
+                // The macOS NFS client stores extended attributes it cannot
+                // hand to the server as `._name` AppleDouble companions. They
+                // are client bookkeeping (removed when the agent stops), so
+                // listings leave them out; they still resolve by name.
+                directory.entries = page
+                    .entries
+                    .into_iter()
+                    .filter(|entry| !entry.name.as_slice().starts_with(b"._"))
+                    .collect();
             }
             let Some(entry) = directory.entries.front() else {
                 return Ok(0);
@@ -1052,6 +1060,9 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
         } else {
             None
         };
+        if directory != 0 {
+            remove_hidden_appledouble(context, &path)?;
+        }
         context
             .source
             .remove(&path, Some(lookup.node.file_id))
@@ -1069,6 +1080,57 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
         }
         Ok(0)
     })
+}
+
+/// Listings hide `._name` `AppleDouble` companions, so the NFS client cannot
+/// delete them before removing their directory as it otherwise would; remove
+/// them here so a directory holding only companions is empty.
+fn remove_hidden_appledouble(
+    context: &DarwinMountContext,
+    directory: &MountPath,
+) -> Result<(), c_int> {
+    let mut cursor: Option<Vec<u8>> = None;
+    let mut companions = Vec::new();
+    loop {
+        let page = context
+            .source
+            .read_directory(directory, cursor.as_deref(), DIRECTORY_PAGE_SIZE)
+            .map_err(|error| errno(&error))?;
+        crate::diag!(
+            crate::diagnostics::Level::Debug,
+            "mount",
+            "rmdir_entries",
+            directory = directory
+                .components()
+                .iter()
+                .map(|part| String::from_utf8_lossy(part).into_owned())
+                .collect::<Vec<_>>()
+                .join("/"),
+            entries = page
+                .entries
+                .iter()
+                .map(|entry| String::from_utf8_lossy(entry.name.as_slice()).into_owned())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        companions.extend(
+            page.entries
+                .into_iter()
+                .filter(|entry| entry.name.as_slice().starts_with(b"._"))
+                .map(|entry| (directory.child(entry.name), entry.node.file_id)),
+        );
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    for (path, file_id) in companions {
+        match context.source.remove(&path, Some(file_id)) {
+            Ok(()) | Err(MountSourceError::NotFound) => {}
+            Err(error) => return Err(errno(&error)),
+        }
+    }
+    Ok(())
 }
 
 #[unsafe(no_mangle)]
@@ -1596,7 +1658,7 @@ fn errno(error: &MountSourceError) -> i32 {
         MountSourceError::AlreadyExists => libc::EEXIST,
         MountSourceError::Invalid(_) => libc::EINVAL,
         MountSourceError::Unsupported(_) => libc::EOPNOTSUPP,
-        MountSourceError::Engine(_) => libc::EIO,
+        MountSourceError::Engine(message) => super::engine_errno(message),
         MountSourceError::Stale => libc::ESTALE,
     };
     super::report_callback_error("darwin-nfs", error, code);

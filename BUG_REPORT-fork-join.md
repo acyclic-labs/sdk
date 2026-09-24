@@ -6,9 +6,9 @@ Test status at time of writing:
 
 | Suite | macOS | Linux |
 |---|---|---|
-| `cargo test -p acyclic-fs --features native-mount --lib` | 898 passed | 902 passed |
+| `cargo test -p acyclic-fs --features native-mount --lib` | 899 passed | 903 passed |
 | `cargo test -p acyclic-labs-plugin` | 61 + 5 passed | 60 + 5 passed |
-| `plugin/packaging/pypi` (`ACYCLIC_LIVE_BIN=target/debug/acyclic pytest`) | 13 passed, 3 consecutive runs | 13 passed, 2 consecutive runs |
+| `plugin/packaging/pypi`: protocol, live and black-box conformance tests on real mounts | 21 passed, 1 known failure (open item A) | 21 passed, 1 known failure (open item A) |
 
 ## Fixed
 
@@ -96,6 +96,22 @@ Test status at time of writing:
 - **Client errors:** these now name the log file.
 - **Test:** `diagnostics::tests::events_are_json_lines_with_escaped_fields`.
 
+### 4h. Found by the conformance suite
+`plugin/packaging/pypi/tests/test_conformance.py` drives the engine only through its public surface: `__hook sdk`, `acyclic git merge/discard`, `acyclic agents --json`, and POSIX calls on the mounts. On its first run it found:
+
+- **Siblings adding files to an existing subdirectory failed** (`file link count is incorrect`). My earlier sibling tests only added at the repo root.
+  - Cause: the same source directory ended up with different identities across forks and the root. Directory promotion didn't keep the source id, and the materializer replaced a lazily known host directory wholesale (new inodes for it and every file under it).
+  - Fixes:
+    - Kernel merge semantics: directories merge by path. When both sides add a directory under one name with different ids, theirs' entries fold into ours (recursively) and theirs' unbound record is dropped (`fold_directories`, `kernel/merge.rs`).
+    - Promoted directories keep their source id (`Reidentify` allows a directory while no other record holds the id).
+    - The materializer keeps an existing host directory instead of replacing it.
+    - The inherited-path filter tombstones any path the fork only reads from the source.
+  - Test: `workspace::tests::sibling_directories_created_independently_merge_by_path` (fails without the fold).
+- **Linux: a metadata edit on a directory tripped the "external mutation" guard** once a file was installed into it. The fingerprint covered the whole subtree. Metadata edits are now checked with an attribute-only fingerprint (kind, mode, owner, identity).
+- **macOS: `rmdir` after renaming a child out of a directory failed with EIO.** The rename was pending in the live checkout, while the removal was checked against the published head. The mount now publishes and retries in that case. Non-empty directories report `ENOTEMPTY` (both drivers), not `EIO`.
+- **macOS: `._*` files were visible inside a running fork** (open item D). Directory listings on the macOS driver now leave out AppleDouble companions, and `rmdir` removes hidden companions first.
+- **macOS: `._*` files could still reach the root.** Stop-time cleanup unlinked through the service's own NFS mount (the service is that mount's server) and silently skipped failures. It now removes companions straight from the fork's workspace after unmount.
+
 ### 5. `._*` AppleDouble files merged as agent work (macOS)
 - **Symptom:** `._retries.py` lands in the repo. `changedPaths` includes `._*` files, which skews speculation's "fewest changes" choice.
 - **Root cause:** the macOS NFS client stores xattrs it can't send to the server as `._name` files. Adding the `namedattr` mount option (`darwinfuse.c`) didn't change that.
@@ -107,16 +123,19 @@ Test status at time of writing:
 
 ## Open
 
-### C. Forks aren't isolated from later root changes (medium, design)
-- A fork reads the live physical root, so files merged into the root after the fork was created show up in it (repro: sibling `c.py` listed in fork `b`).
-- Merge-time filtering (fixes 2 and 3) keeps *added* files out of a fork's merge. It doesn't cover a sibling *modifying* an existing file that the fork never touched: the fork would see the new content and could re-merge it under a different identity. There's no test for this case yet.
-- Fix 4 (rebinding forks to the new epoch) makes forks follow the live root by design. Proper snapshot isolation would pin unresolved lookups to the fork generation.
+### A. A fork deleting a file it only read from the physical root is lost at merge (high)
+- **Repro:** fork, `unlink README.md` (a file present on disk but never captured into the root's generation), merge. `README.md` is still in the root; `changes` is empty.
+- **Cause:** a three-way merge can't express deleting something the base doesn't have. The fork's base generation never recorded a file that was only read lazily from the physical root.
+- **Proposed fix:** propagate the fork's source tombstones explicitly after a successful merge. Delete the path in the parent when the parent still has the untouched source version; keep and report a sibling's newer version.
+- **Tracked by:** `test_posix_operations_inside_a_fork` (xfail, strict).
 
-### D. AppleDouble files still exist *while* a fork runs (low)
-They're removed at stop, so agents can see `._*` in listings mid-run. The package's `list_files` tool hides them. The real fix is NFSv4 named-attribute (OPENATTR) support in darwinfuse, so the client stops writing them.
+### B. A source file renamed away can reappear once the checkout publishes (medium)
+The published head doesn't record that the source path was moved, so the lazy view shows the source file again. Same root cause as A: source-path deletions need to be tombstones in the lazy overlay.
 
-### E. Missing coverage (medium)
-- A black-box conformance test in `plugin/tests/` that drives only `__hook sdk`, `acyclic git merge/discard` and `agents --json` on a real mount. It should cover create/mkdir/list/rename/remove, sibling merges, grandchild merges, discard of a subtree, conflict + abort, no `._` files, and create-after-root-refresh (bug 4).
+### C. Forks see later root changes while running (low, design)
+- A fork reads the live physical root, so files merged into the root after the fork was created are visible inside it.
+- Merges are unaffected: added paths are filtered, and a sibling's edit to an untouched file is not reverted (`test_a_sibling_edit_is_not_reverted_by_a_fork_that_never_touched_the_file` passes).
+- Proper snapshot isolation would pin unresolved lookups to the fork's generation.
 
 ### F. Housekeeping
 `cargo fmt` and clippy are clean for `acyclic-fs` and `acyclic-labs-plugin`. The pitch artifact still cites Arena for speculation; the source is now `speculate()` in `acyclic-pydantic-ai`.
