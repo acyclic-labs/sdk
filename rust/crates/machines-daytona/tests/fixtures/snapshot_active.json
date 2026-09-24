@@ -1,0 +1,12 @@
+{
+  "id": "9c8b7a6f-5e4d-4c3b-8a29-18f7e6d5c4b3",
+  "organizationId": "0f0e0d0c-0b0a-4908-8706-050403020100",
+  "name": "acyclic-ckpt-00000000-0000-0000-0000-000000000002",
+  "state": "active",
+  "sourceSandboxId": "6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a61",
+  "size": 2147483648,
+  "createdAt": "2026-09-11T10:25:00.000Z",
+  "updatedAt": "2026-09-11T10:25:40Z",
+  "sandboxClass": "linux-vm",
+  "general": false
+}
