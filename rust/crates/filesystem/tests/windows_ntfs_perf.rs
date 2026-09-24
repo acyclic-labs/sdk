@@ -1,5 +1,5 @@
-#![cfg_attr(not(windows), allow(missing_docs))]
-#![cfg(windows)]
+#![cfg_attr(not(all(windows, feature = "native-mount")), allow(missing_docs))]
+#![cfg(all(windows, feature = "native-mount"))]
 
 //! Local NTFS qualification for pinned, no-driver SDK working sets.
 
