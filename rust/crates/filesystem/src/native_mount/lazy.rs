@@ -13,7 +13,7 @@ use super::{
 };
 use crate::LazySeekTarget;
 #[cfg(unix)]
-use crate::demand::SourceReference;
+use crate::demand::DemandFile;
 use crate::demand::{DemandSource, SourceNode, SourceNodeKind};
 use crate::kernel::{
     FileKind, FileMetadata, FileMutation, FilePayload, FileRecord, MetadataField, Mutation,
@@ -892,8 +892,10 @@ struct LazyOpenFile<A, O, D, S> {
     path: String,
     mount_path: MountPath,
     expected_source: FileId,
+    /// The source file, held open and version-proven since the mount opened
+    /// it; unpromoted reads are served only through it.
     #[cfg(unix)]
-    source: SourceReference,
+    source_file: Box<dyn DemandFile>,
     #[cfg(unix)]
     source_node: SourceNode,
     source_generation: u64,
@@ -1100,6 +1102,14 @@ where
         Ok(None)
     }
 
+    #[cfg(unix)]
+    fn read_source(&self, offset: u64, length: u64) -> Result<Bytes, MountSourceError> {
+        self.source_file
+            .read_range(offset, length, &crate::CancellationToken::new())
+            .map(|receipt| receipt.value)
+            .map_err(|failure| lazy_error(failure.error.into()))
+    }
+
     fn source_lease(&self) -> Result<SourceViewLease, MountSourceError> {
         let owner = SourceViewGate::callback_owner();
         self.runtime.wait(|| {
@@ -1172,18 +1182,7 @@ where
         }
         #[cfg(unix)]
         {
-            self.runtime.wait(|| async {
-                self.lazy
-                    .read_source_range(
-                        &self.path,
-                        self.source,
-                        self.source_node,
-                        offset,
-                        u64::from(length),
-                    )
-                    .await
-                    .map_err(lazy_error)
-            })
+            self.read_source(offset, u64::from(length))
         }
         #[cfg(not(unix))]
         self.runtime.wait(|| async {
@@ -1210,12 +1209,7 @@ where
             if length == 0 {
                 return Ok(Bytes::new());
             }
-            self.runtime.wait(|| async {
-                self.lazy
-                    .read_source_range(&self.path, self.source, self.source_node, offset, length)
-                    .await
-                    .map_err(lazy_error)
-            })
+            self.read_source(offset, length)
         }
         #[cfg(not(unix))]
         self.runtime.wait(|| async {
@@ -1491,6 +1485,13 @@ where
             }
             LazyLookup::Source(node) if node.kind == SourceNodeKind::RegularFile => {
                 let _source = source.ok_or(MountSourceError::Stale)?;
+                #[cfg(unix)]
+                let source_file = self.wait(|| async {
+                    self.lazy
+                        .open_source_file(&path_text, _source, node)
+                        .await
+                        .map_err(lazy_error)
+                })?;
                 let expected_source = self.lazy.source_file_id(&node);
                 let file: Arc<dyn MountOpenFile> = Arc::new(LazyOpenFile {
                     lazy: Arc::clone(&self.lazy),
@@ -1500,7 +1501,7 @@ where
                     mount_path: path.clone(),
                     expected_source,
                     #[cfg(unix)]
-                    source: _source,
+                    source_file,
                     #[cfg(unix)]
                     source_node: node,
                     source_generation,
