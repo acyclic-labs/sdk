@@ -196,6 +196,40 @@ impl WorkCounters {
     ///
     /// Returns the first stable counter name that exceeded its bound.
     pub fn verify(self, budget: WorkBudget) -> Result<(), WorkError> {
+        // Charged once per examined item on hot paths: compare every counter
+        // without branching and name the exceeded one only on failure.
+        if (self.authority_records_read <= budget.authority_records_read)
+            & (self.authority_records_appended <= budget.authority_records_appended)
+            & (self.authority_bytes_read <= budget.authority_bytes_read)
+            & (self.authority_bytes_written <= budget.authority_bytes_written)
+            & (self.object_probes <= budget.object_probes)
+            & (self.backend_read_operations <= budget.backend_read_operations)
+            & (self.backend_write_operations <= budget.backend_write_operations)
+            & (self.durability_operations <= budget.durability_operations)
+            & (self.page_reads <= budget.page_reads)
+            & (self.page_writes <= budget.page_writes)
+            & (self.object_bytes_read <= budget.object_bytes_read)
+            & (self.object_bytes_written <= budget.object_bytes_written)
+            & (self.bytes_hashed <= budget.bytes_hashed)
+            & (self.bytes_copied <= budget.bytes_copied)
+            & (self.bytes_encoded <= budget.bytes_encoded)
+            & (self.source_bytes_read <= budget.source_bytes_read)
+            & (self.source_path_components <= budget.source_path_components)
+            & (self.source_entries_visited <= budget.source_entries_visited)
+            & (self.output_bytes <= budget.output_bytes)
+            & (self.items_examined <= budget.items_examined)
+            & (self.items_returned <= budget.items_returned)
+            & (self.allocation_operations <= budget.allocation_operations)
+            & (self.peak_allocation_bytes <= budget.peak_allocation_bytes)
+            & (self.materializations <= budget.materializations)
+        {
+            return Ok(());
+        }
+        self.exceeded(budget)
+    }
+
+    #[cold]
+    fn exceeded(self, budget: WorkBudget) -> Result<(), WorkError> {
         let fields = [
             (
                 "authority_records_read",
