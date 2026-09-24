@@ -71,6 +71,7 @@ use acyclic_objects::ObjectsProvider as _;
 use bytes::Bytes;
 use futures::{StreamExt as _, stream};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[cfg(feature = "native-mount")]
 use std::marker::PhantomData;
 use std::mem::size_of;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -540,6 +541,7 @@ impl DependencyLedger {
         self.proof.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    #[cfg(feature = "native-mount")]
     fn observing(&self) -> Self {
         Self {
             proof: Arc::clone(&self.proof),
@@ -559,11 +561,13 @@ impl DependencyLedger {
 /// as a pinned read-only checkout, so every mutation or generation advance
 /// through it is rejected, and it records exactly the observations its owner
 /// would record, into the owner's own proof.
+#[cfg(feature = "native-mount")]
 pub(crate) struct CheckoutObserver<'a, A, O> {
     checkout: Checkout<A, O>,
     owner: PhantomData<&'a Checkout<A, O>>,
 }
 
+#[cfg(feature = "native-mount")]
 impl<A, O> std::ops::Deref for CheckoutObserver<'_, A, O> {
     type Target = Checkout<A, O>;
 
@@ -572,6 +576,7 @@ impl<A, O> std::ops::Deref for CheckoutObserver<'_, A, O> {
     }
 }
 
+#[cfg(feature = "native-mount")]
 impl<A, O> std::ops::DerefMut for CheckoutObserver<'_, A, O> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.checkout
@@ -6888,6 +6893,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ///
     /// A live checkout is observed at its current generation: advancing it is
     /// a mutation of the owner, never of an observer.
+    #[cfg(feature = "native-mount")]
     pub(crate) fn observer(&self) -> CheckoutObserver<'_, A, O> {
         if !self.tracks_observations() {
             return self.inspector();
@@ -6903,6 +6909,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
     /// Creates a read-only view of this checkout's current candidate that
     /// records no observation, for bookkeeping that is not a semantic read.
+    #[cfg(feature = "native-mount")]
     pub(crate) fn inspector(&self) -> CheckoutObserver<'_, A, O> {
         CheckoutObserver {
             checkout: self.replica(
