@@ -23,6 +23,9 @@ pub use adapter::{CheckoutMountSource, SharedCheckout, SharedCheckoutGuard, Shar
 
 mod view_gate;
 
+mod view_ledger;
+pub use view_ledger::ViewStamp;
+
 mod lazy;
 pub use lazy::LazyMountSource;
 
@@ -561,35 +564,45 @@ pub trait MountFilesystem: Send + Sync + 'static {
         true
     }
 
-    /// Returns the current coherent projection view, when the source can
-    /// precisely invalidate cached lookups.
+    /// Samples this source's position in the order of view changes, before a
+    /// lookup whose result a driver may cache.
     ///
-    /// Sources without an epoch return `None`; drivers must then resolve every
-    /// lookup through the source. An epoch may be reused only until this value
-    /// changes.
-    fn view_epoch(&self) -> Option<u64> {
+    /// Sources that cannot invalidate exactly return `None`; drivers must then
+    /// resolve every lookup through the source.
+    fn view_stamp(&self) -> Option<ViewStamp> {
         None
     }
 
+    /// Whether a lookup of `path`, which resolved to `file_id` (`None`: to
+    /// nothing) after `stamp` was sampled, still describes the view.
+    ///
+    /// It does until a change after `stamp` rebinds any component of `path`,
+    /// changes the listing or attributes of `path` itself, or changes the
+    /// node `file_id` under any of its names. A directory page cached at
+    /// `stamp` is current while its directory and every listed entry are.
+    fn unchanged_since(
+        &self,
+        _path: &MountPath,
+        _file_id: Option<FileId>,
+        _stamp: ViewStamp,
+    ) -> bool {
+        false
+    }
+
     /// Changes only when existing path or handle bindings may be replaced by
-    /// an external source transition. Ordinary mutations may advance
-    /// `view_epoch` to invalidate caches without making a native callback
-    /// stale. Sources without that distinction retain the conservative view
-    /// epoch behavior.
+    /// an external source transition. Ordinary mutations never change it;
+    /// they invalidate exactly what they change through [`Self::view_stamp`].
+    /// Sources without that distinction return `None`.
     fn binding_epoch(&self) -> Option<u64> {
-        self.view_epoch()
+        None
     }
 
     /// Pins the current coherent projection view for one native callback.
     ///
-    /// `expected_epoch` binds a continuation to the view in which it began.
     /// Stable sources need no retained state; rebindable sources override this
     /// method with an owned synchronization permit.
-    fn acquire_view_lease(
-        &self,
-        expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
-        if !self.view_is_stable() || self.view_epoch() != expected_epoch {
+    fn acquire_view_lease(&self) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+        if !self.view_is_stable() {
             return Err(MountSourceError::Stale);
         }
         Ok(Box::new(()))

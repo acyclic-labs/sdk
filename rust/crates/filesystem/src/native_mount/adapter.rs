@@ -1,6 +1,7 @@
 //! One native callback adapter for every embedded checkout consumer.
 
 use super::view_gate::{ViewGate, ViewReadLease, ViewWriteLease};
+use super::view_ledger::{ViewChange, ViewLedger, ViewStamp};
 use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
@@ -18,7 +19,7 @@ use crate::native_capture::{
 };
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
-    Checkout, DetachedFile, FileId, FsError, NamedAttributeWriteMode, NativeRootIdentity,
+    Checkout, DetachedFile, FileId, FsError, NamedAttributeWriteMode, NativeRootIdentity, ObjectId,
     OperationFailure, OperationId, VolumeId, WorkBudget,
 };
 use bytes::Bytes;
@@ -203,8 +204,26 @@ struct DetachedMountState<A, O> {
     mutation_epoch: u64,
 }
 
+impl<A, O> DetachedMountState<A, O> {
+    /// Advances the identity's own publication epoch and invalidates every
+    /// cached lookup of the identity, under the lock its lookups take.
+    fn record_change(&mut self, ledger: &ViewLedger) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.mutation_epoch = self
+            .mutation_epoch
+            .checked_add(1)
+            .ok_or(MountSourceError::Stale)?;
+        ledger.record(&ViewChange::Node(self.file.file_id()));
+        Ok(())
+    }
+}
+
 pub(super) struct CheckoutDetachedFile<A, O> {
     state: tokio::sync::Mutex<DetachedMountState<A, O>>,
+    ledger: Arc<ViewLedger>,
     runtime: CallbackRuntime,
     cancellation: CancellationToken,
     profile: FilesystemProfile,
@@ -226,12 +245,16 @@ struct CheckoutAttachedFile<A, O> {
 /// Mutations are exclusive and ordered; callback reads share the current view.
 pub struct SharedCheckout<A, O> {
     state: tokio::sync::RwLock<SharedCheckoutState<A, O>>,
-    view_epoch: Arc<AtomicU64>,
+    revision: Arc<AtomicU64>,
+    ledger: Arc<ViewLedger>,
     view_gate: Arc<ViewGate>,
 }
 
 /// Exclusive access to a shared checkout. The retained view lease prevents a
 /// native callback from observing a partial external SDK operation.
+///
+/// A change to the checkout's view that no exact [`ViewChange`] accounts for
+/// invalidates every cached lookup before the guard releases the view.
 pub struct SharedCheckoutGuard<'a, A, O> {
     _view: ViewWriteLease,
     state: tokio::sync::RwLockWriteGuard<'a, SharedCheckoutState<A, O>>,
@@ -253,7 +276,10 @@ pub struct SharedCheckoutState<A, O> {
     checkout: Checkout<A, O>,
     publication_operation: Option<OperationId>,
     publication: MountPublication,
-    view_epoch: Arc<AtomicU64>,
+    revision: Arc<AtomicU64>,
+    ledger: Arc<ViewLedger>,
+    /// The file table every change up to now has been recorded against.
+    recorded_view: ObjectId,
 }
 
 impl<A, O> SharedCheckout<A, O> {
@@ -266,15 +292,19 @@ impl<A, O> SharedCheckout<A, O> {
     /// Creates a shared checkout with one explicit native publication policy.
     #[must_use]
     pub fn with_publication(checkout: Checkout<A, O>, publication: MountPublication) -> Self {
-        let view_epoch = Arc::new(AtomicU64::new(1));
+        let revision = Arc::new(AtomicU64::new(1));
+        let ledger = Arc::new(ViewLedger::new());
         Self {
             state: tokio::sync::RwLock::new(SharedCheckoutState {
+                recorded_view: checkout.root().file_table,
                 checkout,
                 publication_operation: None,
                 publication,
-                view_epoch: Arc::clone(&view_epoch),
+                revision: Arc::clone(&revision),
+                ledger: Arc::clone(&ledger),
             }),
-            view_epoch,
+            revision,
+            ledger,
             view_gate: Arc::new(ViewGate::new()),
         }
     }
@@ -296,8 +326,8 @@ impl<A, O> SharedCheckout<A, O> {
         Ok(SharedCheckoutObservation { _view: view, state })
     }
 
-    /// Copies the current candidate and the view epoch it belongs to, for an
-    /// optimistic transaction that installs only if that epoch still holds.
+    /// Copies the current candidate and the revision it belongs to, for an
+    /// optimistic transaction that installs only if that revision still holds.
     /// No reader is excluded: the copy records nothing into this checkout.
     pub(super) async fn candidate(&self) -> Result<(Checkout<A, O>, u64), MountSourceError>
     where
@@ -306,11 +336,22 @@ impl<A, O> SharedCheckout<A, O> {
     {
         let state = self.state.read().await;
         state.ensure_publication_resolved()?;
-        Ok((state.private_candidate(), state.view_epoch()))
+        Ok((state.private_candidate(), state.revision()))
     }
 
-    pub(super) fn view_epoch(&self) -> u64 {
-        self.view_epoch.load(Ordering::Acquire)
+    /// Advances with every change to the checkout; optimistic transactions
+    /// install only over the revision they began from.
+    pub(super) fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+
+    fn unchanged_since(
+        &self,
+        path: &NamespacePath,
+        file_id: Option<FileId>,
+        stamp: ViewStamp,
+    ) -> bool {
+        self.view_gate.is_stable() && self.ledger.unchanged_since(path, file_id, stamp)
     }
 }
 
@@ -325,6 +366,14 @@ impl<A, O> Deref for SharedCheckoutGuard<'_, A, O> {
 impl<A, O> DerefMut for SharedCheckoutGuard<'_, A, O> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.state
+    }
+}
+
+impl<A, O> Drop for SharedCheckoutGuard<'_, A, O> {
+    fn drop(&mut self) {
+        if self.state.checkout.root().file_table != self.state.recorded_view {
+            self.state.record(&ViewChange::Everything);
+        }
     }
 }
 
@@ -355,9 +404,6 @@ impl<A, O> SharedCheckoutState<A, O> {
                 && self.checkout.mode().mutations == crate::model::MutationMode::PrivateOverlay)
         {
             self.clear_retained_operation(operation_id);
-        }
-        if result.is_ok() {
-            self.view_epoch.fetch_add(1, Ordering::AcqRel);
         }
         result
     }
@@ -398,21 +444,21 @@ impl<A, O> SharedCheckoutState<A, O> {
         {
             self.clear_retained_operation(operation_id);
         }
-        if result.is_ok() {
-            self.view_epoch.fetch_add(1, Ordering::AcqRel);
-        }
         result
     }
 
+    /// Records exactly what one mutation changed, then publishes it when the
+    /// policy publishes every mutation.
     pub(super) async fn publish_after_mutation(
         &mut self,
+        change: ViewChange<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        self.view_epoch.fetch_add(1, Ordering::AcqRel);
+        self.record(&change);
         if self.publication == MountPublication::PerMutation {
             self.seal(cancellation).await?;
         }
@@ -483,12 +529,59 @@ impl<A, O> SharedCheckoutState<A, O> {
         }
     }
 
-    pub(super) fn view_epoch(&self) -> u64 {
-        self.view_epoch.load(Ordering::Acquire)
+    pub(super) fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
     }
 
+    /// The node a mutation is about to change through `path`, read without
+    /// recording an observation.
+    async fn node_at(
+        &self,
+        path: &NamespacePath,
+        cancellation: &CancellationToken,
+    ) -> Result<FileId, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.node_if_bound(path, cancellation)
+            .await?
+            .ok_or(MountSourceError::NotFound)
+    }
+
+    async fn node_if_bound(
+        &self,
+        path: &NamespacePath,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<FileId>, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        Ok(self
+            .checkout
+            .inspector()
+            .lookup_no_follow(path, boundary_budget(), cancellation)
+            .await
+            .map_err(engine_error)?
+            .value
+            .record
+            .map(|record| record.file_id))
+    }
+
+    /// Installs a candidate prepared from a copy of this checkout. The caller
+    /// records its change; one it leaves unrecorded invalidates everything
+    /// when the guard drops.
     pub(super) fn install_candidate(&mut self, candidate: Checkout<A, O>) {
         self.checkout = candidate;
+    }
+
+    /// Records one change to the checkout's view. The exclusive guard keeps
+    /// every lookup from overlapping the change it records.
+    pub(super) fn record(&mut self, change: &ViewChange<'_>) {
+        self.ledger.record(change);
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        self.recorded_view = self.checkout.root().file_table;
     }
 }
 
@@ -633,11 +726,7 @@ where
                 .await
                 .map(|_| ())
                 .map_err(engine_error)?;
-            state.mutation_epoch = state
-                .mutation_epoch
-                .checked_add(1)
-                .ok_or(MountSourceError::Stale)?;
-            Ok(())
+            state.record_change(&self.ledger)
         })
     }
 
@@ -650,11 +739,7 @@ where
                 .await
                 .map(|_| ())
                 .map_err(engine_error)?;
-            state.mutation_epoch = state
-                .mutation_epoch
-                .checked_add(1)
-                .ok_or(MountSourceError::Stale)?;
-            Ok(())
+            state.record_change(&self.ledger)
         })
     }
 
@@ -689,11 +774,7 @@ where
             }
             .map(|_| ())
             .map_err(engine_error)?;
-            state.mutation_epoch = state
-                .mutation_epoch
-                .checked_add(1)
-                .ok_or(MountSourceError::Stale)?;
-            Ok(())
+            state.record_change(&self.ledger)
         })
     }
 
@@ -715,11 +796,7 @@ where
                 .await
                 .map_err(engine_error)?;
             state.metadata = metadata;
-            state.mutation_epoch = state
-                .mutation_epoch
-                .checked_add(1)
-                .ok_or(MountSourceError::Stale)?;
-            Ok(())
+            state.record_change(&self.ledger)
         })
     }
 
@@ -793,11 +870,7 @@ where
                 .await
                 .map_err(facade_error)?;
             state.metadata = receipt.value;
-            state.mutation_epoch = state
-                .mutation_epoch
-                .checked_add(1)
-                .ok_or(MountSourceError::Stale)?;
-            Ok(())
+            state.record_change(&self.ledger)
         })
     }
 
@@ -811,11 +884,7 @@ where
                 .await
                 .map_err(facade_error)?;
             state.metadata = receipt.value;
-            state.mutation_epoch = state
-                .mutation_epoch
-                .checked_add(1)
-                .ok_or(MountSourceError::Stale)?;
-            Ok(())
+            state.record_change(&self.ledger)
         })
     }
 }
@@ -939,7 +1008,9 @@ where
                 )
                 .await
                 .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(self.file_id), &self.cancellation)
+                .await
         })
     }
 
@@ -956,7 +1027,9 @@ where
                 )
                 .await
                 .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(self.file_id), &self.cancellation)
+                .await
         })
     }
 
@@ -1008,7 +1081,9 @@ where
                 }
             }
             .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(self.file_id), &self.cancellation)
+                .await
         })
     }
 
@@ -1030,7 +1105,9 @@ where
                 )
                 .await
                 .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(self.file_id), &self.cancellation)
+                .await
         })
     }
 
@@ -1118,7 +1195,9 @@ where
                 )
                 .await
                 .map_err(facade_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(self.file_id), &self.cancellation)
+                .await
         })
     }
 
@@ -1136,7 +1215,9 @@ where
                 )
                 .await
                 .map_err(facade_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(self.file_id), &self.cancellation)
+                .await
         })
     }
 }
@@ -1167,6 +1248,33 @@ impl<A, O> CheckoutMountSource<A, O> {
 
     pub(super) fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
+    }
+
+    /// The checkout's current generation, which publication advances.
+    #[cfg(all(test, target_os = "macos"))]
+    pub(super) fn generation_id(&self) -> Result<crate::GenerationId, MountSourceError>
+    where
+        A: Send + Sync,
+        O: Send + Sync,
+    {
+        let owner = ViewGate::callback_owner();
+        self.runtime
+            .wait(|| async { Ok(self.checkout.observe(owner).await?.generation_id()) })
+    }
+
+    /// The checkout path a mounted path names, as view changes key it.
+    pub(super) fn namespace_path(
+        &self,
+        path: &MountPath,
+    ) -> Result<NamespacePath, MountSourceError> {
+        self.path(path)
+    }
+
+    /// Records a change a composing source makes to its own projection of
+    /// this checkout. The caller holds that source's exclusive view, so no
+    /// lookup through it overlaps the change.
+    pub(super) fn record_projection_change(&self, change: &ViewChange<'_>) {
+        self.checkout.ledger.record(change);
     }
 
     /// Binds an existing source handle to the same stable identity once a
@@ -1270,6 +1378,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 metadata,
                 mutation_epoch: 0,
             }),
+            ledger: Arc::clone(&self.checkout.ledger),
             runtime: self.runtime.clone(),
             cancellation: self.cancellation.clone(),
             profile: self.profile,
@@ -1450,8 +1559,8 @@ impl<A, O> CheckoutMountSource<A, O> {
         match decision.value {
             RebaseDecision::Safe { .. } => {
                 self.checkout.view_gate.begin_transition();
+                checkout.record(&ViewChange::Everything);
                 self.checkout.view_gate.finish_transition();
-                checkout.view_epoch.fetch_add(1, Ordering::AcqRel);
                 Ok(())
             }
             RebaseDecision::Conflicted { .. } => Err(MountSourceError::Stale),
@@ -1472,8 +1581,8 @@ impl<A, O> CheckoutMountSource<A, O> {
             .await
             .map_err(engine_error)?;
         self.checkout.view_gate.begin_transition();
+        checkout.record(&ViewChange::Everything);
         self.checkout.view_gate.finish_transition();
-        checkout.view_epoch.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -1698,7 +1807,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 maximum_extent_spans: 65_536,
             };
             for _ in 0..3 {
-                let (mut candidate, epoch) = self.checkout.candidate().await?;
+                let (mut candidate, revision) = self.checkout.candidate().await?;
                 // Projected host reads may call back into this checkout. Never
                 // hold its view gate while observing the virtualization root.
                 match scope {
@@ -1733,7 +1842,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     }
                 }
                 if self
-                    .commit_host_capture(candidate, epoch, policy.request)
+                    .commit_host_capture(candidate, revision, policy.request)
                     .await?
                 {
                     return Ok(());
@@ -1746,7 +1855,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     async fn commit_host_capture(
         &self,
         candidate: Checkout<A, O>,
-        epoch: u64,
+        revision: u64,
         request: Option<&CaptureCommitGate>,
     ) -> Result<bool, MountSourceError>
     where
@@ -1755,7 +1864,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
-        if checkout.view_epoch.load(Ordering::Acquire) != epoch {
+        if checkout.revision() != revision {
             return Ok(false);
         }
         {
@@ -1788,12 +1897,12 @@ impl<A, O> CheckoutMountSource<A, O> {
                         Ordering::Acquire,
                     )
                     .map_err(|_| MountSourceError::Stale)?;
-                checkout.checkout = candidate;
-                checkout.view_epoch.fetch_add(1, Ordering::AcqRel);
+                checkout.install_candidate(candidate);
+                checkout.record(&ViewChange::Everything);
                 return Ok(true);
             }
-            checkout.checkout = candidate;
-            checkout.view_epoch.fetch_add(1, Ordering::AcqRel);
+            checkout.install_candidate(candidate);
+            checkout.record(&ViewChange::Everything);
         }
         checkout
             .publish_at_native_boundary(&self.cancellation)
@@ -1828,8 +1937,16 @@ where
         self.profile == FilesystemProfile::Posix
     }
 
-    fn view_epoch(&self) -> Option<u64> {
-        Some(self.checkout.view_epoch())
+    fn view_stamp(&self) -> Option<ViewStamp> {
+        self.checkout
+            .view_gate
+            .is_stable()
+            .then(|| self.checkout.ledger.stamp())
+    }
+
+    fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
+        self.path(path)
+            .is_ok_and(|path| self.checkout.unchanged_since(&path, file_id, stamp))
     }
 
     fn binding_epoch(&self) -> Option<u64> {
@@ -1840,18 +1957,12 @@ where
         self.checkout.view_gate.is_stable()
     }
 
-    fn acquire_view_lease(
-        &self,
-        expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+    fn acquire_view_lease(&self) -> Result<Box<dyn MountViewLease>, MountSourceError> {
         let owner = ViewGate::callback_owner();
         let lease = self.runtime.wait(|| {
             let gate = Arc::clone(&self.checkout.view_gate);
             async move { gate.read_for_callback(owner, None).await }
         })?;
-        if self.view_epoch() != expected_epoch {
-            return Err(MountSourceError::Stale);
-        }
         Ok(Box::new(lease))
     }
 
@@ -1933,6 +2044,7 @@ where
                 metadata,
                 mutation_epoch: 0,
             }),
+            ledger: Arc::clone(&self.checkout.ledger),
             runtime: self.runtime.clone(),
             cancellation: self.cancellation.clone(),
             profile: self.profile,
@@ -2066,7 +2178,7 @@ where
             let receipt = checkout
                 .apply_authored_transaction(
                     vec![AuthoredMutation::CreateFile {
-                        path,
+                        path: path.clone(),
                         bytes: Bytes::new(),
                         metadata,
                     }],
@@ -2084,7 +2196,9 @@ where
                 .ok_or_else(|| {
                     MountSourceError::Engine("create omitted file identity".to_owned())
                 })?;
-            checkout.publish_after_mutation(&self.cancellation).await?;
+            checkout
+                .publish_after_mutation(ViewChange::Bound(&path), &self.cancellation)
+                .await?;
             Ok(MountLookup {
                 node: MountNode {
                     file_id,
@@ -2109,7 +2223,10 @@ where
             checkout.ensure_publication_resolved()?;
             let receipt = checkout
                 .apply_authored_transaction(
-                    vec![AuthoredMutation::CreateDirectory { path, metadata }],
+                    vec![AuthoredMutation::CreateDirectory {
+                        path: path.clone(),
+                        metadata,
+                    }],
                     boundary_budget(),
                     &self.cancellation,
                 )
@@ -2124,7 +2241,9 @@ where
                 .ok_or_else(|| {
                     MountSourceError::Engine("create omitted file identity".to_owned())
                 })?;
-            checkout.publish_after_mutation(&self.cancellation).await?;
+            checkout
+                .publish_after_mutation(ViewChange::Bound(&path), &self.cancellation)
+                .await?;
             Ok(MountLookup {
                 node: MountNode {
                     file_id,
@@ -2154,7 +2273,7 @@ where
             let receipt = checkout
                 .apply_authored_transaction(
                     vec![AuthoredMutation::CreateSymbolicLink {
-                        path,
+                        path: path.clone(),
                         target,
                         metadata,
                     }],
@@ -2172,7 +2291,9 @@ where
                 .ok_or_else(|| {
                     MountSourceError::Engine("create omitted file identity".to_owned())
                 })?;
-            checkout.publish_after_mutation(&self.cancellation).await?;
+            checkout
+                .publish_after_mutation(ViewChange::Bound(&path), &self.cancellation)
+                .await?;
             Ok(MountLookup {
                 node: MountNode {
                     file_id,
@@ -2198,7 +2319,7 @@ where
             (MountNodeKind::Fifo, None) => (
                 FileKind::Fifo,
                 AuthoredMutation::CreateEmptySpecial {
-                    path,
+                    path: path.clone(),
                     kind: FileKind::Fifo,
                     metadata,
                 },
@@ -2206,7 +2327,7 @@ where
             (MountNodeKind::Socket, None) => (
                 FileKind::Socket,
                 AuthoredMutation::CreateEmptySpecial {
-                    path,
+                    path: path.clone(),
                     kind: FileKind::Socket,
                     metadata,
                 },
@@ -2214,7 +2335,7 @@ where
             (MountNodeKind::CharacterDevice, Some((major, minor))) => (
                 FileKind::CharacterDevice,
                 AuthoredMutation::CreateDevice {
-                    path,
+                    path: path.clone(),
                     kind: FileKind::CharacterDevice,
                     major,
                     minor,
@@ -2224,7 +2345,7 @@ where
             (MountNodeKind::BlockDevice, Some((major, minor))) => (
                 FileKind::BlockDevice,
                 AuthoredMutation::CreateDevice {
-                    path,
+                    path: path.clone(),
                     kind: FileKind::BlockDevice,
                     major,
                     minor,
@@ -2253,7 +2374,9 @@ where
                 .ok_or_else(|| {
                     MountSourceError::Engine("create omitted file identity".to_owned())
                 })?;
-            checkout.publish_after_mutation(&self.cancellation).await?;
+            checkout
+                .publish_after_mutation(ViewChange::Bound(&path), &self.cancellation)
+                .await?;
             Ok(MountLookup {
                 node: MountNode {
                     file_id,
@@ -2280,6 +2403,7 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let node = checkout.node_at(&path, &self.cancellation).await?;
             let mut authored = vec![AuthoredMutation::SetMetadata {
                 path: path.clone(),
                 metadata,
@@ -2294,7 +2418,9 @@ where
                 .apply_authored_transaction(authored, boundary_budget(), &self.cancellation)
                 .await
                 .map_err(facade_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(node), &self.cancellation)
+                .await
         })
     }
 
@@ -2377,6 +2503,7 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let node = checkout.node_at(&path, &self.cancellation).await?;
             checkout
                 .write_named_attribute(
                     path,
@@ -2388,7 +2515,9 @@ where
                 )
                 .await
                 .map_err(facade_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(node), &self.cancellation)
+                .await
         })
     }
 
@@ -2398,11 +2527,14 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let node = checkout.node_at(&path, &self.cancellation).await?;
             checkout
                 .remove_named_attribute(path, name, boundary_budget(), &self.cancellation)
                 .await
                 .map_err(facade_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(node), &self.cancellation)
+                .await
         })
     }
 
@@ -2416,11 +2548,14 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let node = checkout.node_at(&path, &self.cancellation).await?;
             checkout
                 .write_file(path, offset, bytes, boundary_budget(), &self.cancellation)
                 .await
                 .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(node), &self.cancellation)
+                .await
         })
     }
 
@@ -2429,11 +2564,14 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let node = checkout.node_at(&path, &self.cancellation).await?;
             checkout
                 .resize_file(path, logical_bytes, boundary_budget(), &self.cancellation)
                 .await
                 .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(node), &self.cancellation)
+                .await
         })
     }
 
@@ -2448,6 +2586,7 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let node = checkout.node_at(&path, &self.cancellation).await?;
             match operation {
                 MountRangeAllocation::PunchHole => {
                     checkout
@@ -2486,7 +2625,9 @@ where
                 }
             }
             .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(node), &self.cancellation)
+                .await
         })
     }
 
@@ -2503,12 +2644,13 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let node = checkout.node_at(&destination, &self.cancellation).await?;
             checkout
                 .clone_file_range(
                     crate::FileCloneRequest {
                         source,
                         source_offset,
-                        destination,
+                        destination: destination.clone(),
                         destination_offset,
                         length,
                     },
@@ -2517,7 +2659,9 @@ where
                 )
                 .await
                 .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(node), &self.cancellation)
+                .await
         })
     }
 
@@ -2544,7 +2688,9 @@ where
                 )
                 .await
                 .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(destination_file_id), &self.cancellation)
+                .await
         })
     }
 
@@ -2553,11 +2699,22 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let node = match expected {
+                Some(node) => node,
+                None => checkout.node_at(&path, &self.cancellation).await?,
+            };
             checkout
-                .remove(path, expected, boundary_budget(), &self.cancellation)
+                .remove(
+                    path.clone(),
+                    expected,
+                    boundary_budget(),
+                    &self.cancellation,
+                )
                 .await
                 .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Unbound(&path, node), &self.cancellation)
+                .await
         })
     }
 
@@ -2572,17 +2729,31 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let moved = checkout.node_at(&source, &self.cancellation).await?;
+            let replaced = checkout
+                .node_if_bound(&destination, &self.cancellation)
+                .await?;
             checkout
                 .rename(
-                    source,
-                    destination,
+                    source.clone(),
+                    destination.clone(),
                     replace,
                     boundary_budget(),
                     &self.cancellation,
                 )
                 .await
                 .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(
+                    ViewChange::Moved {
+                        from: &source,
+                        to: &destination,
+                        moved,
+                        replaced,
+                    },
+                    &self.cancellation,
+                )
+                .await
         })
     }
 
@@ -2596,11 +2767,19 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let node = checkout.node_at(&source, &self.cancellation).await?;
             checkout
-                .hard_link(source, destination, boundary_budget(), &self.cancellation)
+                .hard_link(
+                    source,
+                    destination.clone(),
+                    boundary_budget(),
+                    &self.cancellation,
+                )
                 .await
                 .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Linked(&destination, node), &self.cancellation)
+                .await
         })
     }
 
@@ -2649,7 +2828,7 @@ where
                 maximum_extent_spans: 65_536,
             };
             for _ in 0..3 {
-                let (mut candidate, epoch) = self.checkout.candidate().await?;
+                let (mut candidate, revision) = self.checkout.candidate().await?;
                 capture_subtree(
                     &mut candidate,
                     path.clone(),
@@ -2661,11 +2840,11 @@ where
                 .map_err(engine_error)?;
                 let mut checkout = self.checkout.lock().await;
                 checkout.ensure_publication_resolved()?;
-                if checkout.view_epoch.load(Ordering::Acquire) != epoch {
+                if checkout.revision() != revision {
                     continue;
                 }
-                checkout.checkout = candidate;
-                checkout.view_epoch.fetch_add(1, Ordering::AcqRel);
+                checkout.install_candidate(candidate);
+                checkout.record(&ViewChange::Everything);
                 return checkout
                     .publish_at_native_boundary(&self.cancellation)
                     .await;
@@ -2848,9 +3027,7 @@ mod tests {
     fn cancelled_lifecycle_capture_cannot_commit_late() -> Result<(), Box<dyn std::error::Error>> {
         let (source, _) =
             shared_sources_with_publication(FilesystemProfile::Portable, MountPublication::Manual)?;
-        let epoch = source
-            .view_epoch()
-            .ok_or_else(|| std::io::Error::other("missing checkout view epoch"))?;
+        let revision = source.checkout.revision();
         let candidate = source
             .runtime
             .block_on(|| async { source.checkout.lock().await.private_candidate() });
@@ -2861,9 +3038,9 @@ mod tests {
         drop(CancelCaptureOnDrop(Arc::clone(&request)));
         let result = source
             .runtime
-            .block_on(|| source.commit_host_capture(candidate, epoch, Some(&request)));
+            .block_on(|| source.commit_host_capture(candidate, revision, Some(&request)));
         assert!(result.is_err());
-        assert_eq!(source.view_epoch(), Some(epoch));
+        assert_eq!(source.checkout.revision(), revision);
         let request = Arc::new(CaptureCommitGate {
             cancellation: CancellationToken::new(),
             state: AtomicU8::new(CAPTURE_PENDING),
@@ -2881,9 +3058,9 @@ mod tests {
             .block_on(|| async { source.checkout.lock().await.private_candidate() });
         let result = source
             .runtime
-            .block_on(|| source.commit_host_capture(candidate, epoch, Some(&request)));
+            .block_on(|| source.commit_host_capture(candidate, revision, Some(&request)));
         assert!(result.is_err());
-        assert_eq!(source.view_epoch(), Some(epoch));
+        assert_eq!(source.checkout.revision(), revision);
         Ok(())
     }
 
@@ -2906,7 +3083,7 @@ mod tests {
             .build()?;
         runtime.block_on(async {
             let held = source.checkout.lock().await;
-            let epoch = source.checkout.view_epoch();
+            let revision = source.checkout.revision();
             let worker = Arc::clone(&source);
             let root = directory.path().to_path_buf();
             let capture = tokio::spawn(async move {
@@ -2946,7 +3123,7 @@ mod tests {
                 }
             })
             .await?;
-            assert_eq!(source.checkout.view_epoch(), epoch);
+            assert_eq!(source.checkout.revision(), revision);
             assert!(!source.checkout.lock().await.has_pending_mutations());
             Ok::<_, Box<dyn std::error::Error>>(())
         })?;
@@ -3120,7 +3297,7 @@ mod tests {
     fn direct_checkout_view_lease_excludes_concurrent_mutation()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = Arc::new(source(FilesystemProfile::Portable)?);
-        let lease = source.acquire_view_lease(source.view_epoch())?;
+        let lease = source.acquire_view_lease()?;
         let writer = Arc::clone(&source);
         let (completed, receive) = std::sync::mpsc::sync_channel(1);
         let task = std::thread::spawn(move || {
@@ -3239,7 +3416,9 @@ mod tests {
                         .map_err(engine_error)?;
                     tokio::task::yield_now().await;
                 }
-                checkout.publish_after_mutation(&source.cancellation).await
+                checkout
+                    .publish_after_mutation(ViewChange::Everything, &source.cancellation)
+                    .await
             })?;
         }
         done.store(true, Ordering::Release);
@@ -3291,11 +3470,114 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Portable)?;
         let binding = source.binding_epoch();
-        let cache = source.view_epoch();
-        source.create_file(&native_test_path("new-file"), metadata())?;
+        let created = native_test_path("new-file");
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        source.create_file(&created, metadata())?;
         assert_eq!(source.binding_epoch(), binding);
-        assert_ne!(source.view_epoch(), cache);
+        assert!(!source.unchanged_since(&created, None, stamp));
         let _lease = source.acquire_binding_lease(binding)?;
+        Ok(())
+    }
+
+    #[test]
+    fn view_changes_invalidate_exactly_the_lookups_they_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = source(FilesystemProfile::Portable)?;
+        let directory = native_test_path("d");
+        let other = native_test_path("e");
+        let child = |parent: &MountPath, name: &str| {
+            let name = native_test_path(name);
+            parent.child(name.components()[0].clone())
+        };
+        let (a, b, c, x) = (
+            child(&directory, "a"),
+            child(&directory, "b"),
+            child(&directory, "c"),
+            child(&other, "x"),
+        );
+        let directory_id = source
+            .create_directory(&directory, metadata())?
+            .node
+            .file_id;
+        let other_id = source.create_directory(&other, metadata())?.node.file_id;
+        let a_id = source.create_file(&a, metadata())?.node.file_id;
+        let b_id = source.create_file(&b, metadata())?.node.file_id;
+        let x_id = source.create_file(&x, metadata())?.node.file_id;
+        let current = |stamp| {
+            [
+                source.unchanged_since(&directory, Some(directory_id), stamp),
+                source.unchanged_since(&a, Some(a_id), stamp),
+                source.unchanged_since(&b, Some(b_id), stamp),
+                source.unchanged_since(&c, None, stamp),
+                source.unchanged_since(&other, Some(other_id), stamp),
+                source.unchanged_since(&x, Some(x_id), stamp),
+            ]
+        };
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        assert_eq!(current(stamp), [true; 6]);
+
+        source.write_range(&a, 0, Bytes::from_static(b"a"))?;
+        assert_eq!(current(stamp), [true, false, true, true, true, true]);
+
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        source.create_file(&c, metadata())?;
+        assert_eq!(current(stamp), [false, true, true, false, true, true]);
+
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        source.remove(&b, Some(b_id))?;
+        assert_eq!(current(stamp), [false, true, false, true, true, true]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_rebind_invalidates_every_lookup() -> Result<(), Box<dyn std::error::Error>> {
+        let (reader, writer) = tracking_sources(FilesystemProfile::Portable)?;
+        let (published, untouched) = (native_test_path("published"), native_test_path("untouched"));
+        writer.create_file(&published, metadata())?;
+        writer.sync()?;
+        let stamp = reader.view_stamp().ok_or("checkout has no view stamp")?;
+        assert!(reader.unchanged_since(&untouched, None, stamp));
+        reader.runtime.block_on(|| reader.refresh_async())?;
+        assert!(!reader.unchanged_since(&untouched, None, stamp));
+        assert!(!reader.unchanged_since(&MountPath::root(), None, stamp));
+        Ok(())
+    }
+
+    #[test]
+    fn a_write_through_one_name_invalidates_every_alias() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = source(FilesystemProfile::Portable)?;
+        let (first, alias) = (native_test_path("first"), native_test_path("alias"));
+        let file_id = source.create_file(&first, metadata())?.node.file_id;
+        source.hard_link(&first, &alias)?;
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        let attached = source.open_file(&first)?;
+        attached.write_range(0, Bytes::from_static(b"shared"))?;
+        assert!(!source.unchanged_since(&alias, Some(file_id), stamp));
+        Ok(())
+    }
+
+    #[test]
+    fn an_unrecorded_checkout_change_invalidates_every_lookup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = source(FilesystemProfile::Portable)?;
+        let path = native_test_path("external.bin");
+        let namespace = source.path(&path)?;
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        let untouched = native_test_path("untouched");
+        source.runtime.block_on(|| async {
+            let mut checkout = source.checkout.lock().await;
+            checkout
+                .create_file(
+                    namespace,
+                    Bytes::new(),
+                    boundary_budget(),
+                    &source.cancellation,
+                )
+                .await
+                .map(|_| ())
+        })?;
+        assert!(!source.unchanged_since(&untouched, None, stamp));
         Ok(())
     }
 

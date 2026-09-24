@@ -9,8 +9,9 @@
 
 use super::{
     DriverStartFailure, MountContentPin, MountFilesystem, MountLookup, MountNode, MountNodeKind,
-    MountPath, MountSourceError, NativeMountError, NativeMountRequest,
+    MountPath, MountSourceError, NativeMountError, NativeMountRequest, ViewStamp,
 };
+use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
 use crate::native_host::HostRoot;
 use std::collections::{HashMap, HashSet};
@@ -356,10 +357,11 @@ fn defer_host_capture(failure: &Mutex<PostOperationFailures>, path: MountPath) {
     lock_recover(failure).queue_capture(path, "host capture pending".to_owned());
 }
 
-/// One coherent source view: stable, with both epochs known.
+/// One coherent source view: stable, with its binding epoch and the stamp
+/// of its latest change known. Any change to the source yields another view.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SourceEpochs {
-    view: u64,
+    view: ViewStamp,
     binding: u64,
 }
 
@@ -368,7 +370,7 @@ fn source_epochs(source: &dyn MountFilesystem) -> Option<SourceEpochs> {
         return None;
     }
     Some(SourceEpochs {
-        view: source.view_epoch()?,
+        view: source.view_stamp()?,
         binding: source.binding_epoch()?,
     })
 }
@@ -508,7 +510,7 @@ impl ProjFsSession {
 
         // An absence can be cached only by a source that versions its view;
         // any later change of that view clears the cache before new lookups.
-        let negative_paths = source.view_epoch().map(|_| Mutex::new(None));
+        let negative_paths = source.view_stamp().map(|_| Mutex::new(None));
         let mut runtime = Box::new(Runtime {
             source,
             root: request.destination.clone(),
@@ -1282,6 +1284,7 @@ struct HostWindowsMetadata {
 #[derive(Clone, Copy)]
 struct ReadOnlyBinding {
     host: HostWindowsMetadata,
+    file_id: FileId,
     epochs: SourceEpochs,
 }
 
@@ -1678,9 +1681,8 @@ fn directory_snapshot(
 ) -> Result<Vec<ProjectedEntry>, HRESULT> {
     // Pin only while building the snapshot. Holding this lease for the native
     // directory handle's lifetime would block unrelated authored writes.
-    let epoch = source.view_epoch();
     let lease = source
-        .acquire_view_lease(epoch)
+        .acquire_view_lease()
         .map_err(|error| source_hresult(&error))?;
     let mut cursor = None;
     let mut seen_cursors = HashSet::new();
@@ -2255,8 +2257,13 @@ unsafe extern "system" fn notification(
                     && cache_generation.is_some()
                     && binding.host == host
                     && host.links == Some(1)
-                    && let Ok(_view_lease) = source.acquire_view_lease(Some(binding.epochs.view))
+                    && let Ok(_view_lease) = source.acquire_view_lease()
                     && source.binding_epoch() == Some(binding.epochs.binding)
+                    && source.unchanged_since(
+                        &capture_path,
+                        Some(binding.file_id),
+                        binding.epochs.view,
+                    )
                     && lock_recover(projection.as_ref()).generation == cache_generation
                 {
                     return Ok(());
@@ -2279,14 +2286,19 @@ unsafe extern "system" fn notification(
                     }
                     Some(_) => {
                         if let Some(epochs) = epochs_before
-                            && source_epochs(source.as_ref()) == Some(epochs)
+                            && source.view_is_stable()
+                            && source.binding_epoch() == Some(epochs.binding)
                             && !has_pending_capture(operation_failures.as_ref(), &capture_path)
                             && host.links == Some(1)
                         {
                             lock_recover(projection.as_ref()).remember_binding(
                                 cache_generation,
                                 capture_path,
-                                ReadOnlyBinding { host, epochs },
+                                ReadOnlyBinding {
+                                    host,
+                                    file_id: lookup.node.file_id,
+                                    epochs,
+                                },
                             );
                         }
                         Ok(())
@@ -2512,9 +2524,9 @@ fn callbacks() -> PRJ_CALLBACKS {
 mod tests {
     use super::{
         CONTENT_PIN_PROVIDER, CallbackGate, PostOperationFailures, ProjectedEntry, ProjectionCache,
-        ReadOnlyBinding, SourceEpochs, finish_cleanup, flush_callback_gate, placeholder_info,
-        placeholder_pin, record_post_operation_failure, recover_cache_only_destination,
-        remove_authenticated_destination, source_hresult,
+        ReadOnlyBinding, SourceEpochs, ViewStamp, finish_cleanup, flush_callback_gate,
+        placeholder_info, placeholder_pin, record_post_operation_failure,
+        recover_cache_only_destination, remove_authenticated_destination, source_hresult,
     };
     use crate::kernel::FileMetadata;
     use crate::model::{
@@ -2860,12 +2872,12 @@ mod tests {
             symlink_target: None,
         }]);
         let first = SourceEpochs {
-            view: 1,
+            view: ViewStamp::current(),
             binding: 1,
         };
         let next = SourceEpochs {
-            view: 2,
-            binding: 1,
+            binding: 2,
+            ..first
         };
         let mut cache = ProjectionCache::default();
 
@@ -2889,6 +2901,7 @@ mod tests {
                 created: 0,
                 modified: 0,
             },
+            file_id: crate::FileId::new(),
             epochs: first,
         };
         cache.remember_binding(stale_generation, path.clone(), binding);

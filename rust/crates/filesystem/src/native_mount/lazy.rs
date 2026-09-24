@@ -5,6 +5,7 @@ use super::view_gate::{
     ViewGate as SourceViewGate, ViewReadLease as SourceViewLease,
     ViewWriteLease as SourceMutationLease,
 };
+use super::view_ledger::{ViewChange, ViewStamp};
 use super::{
     CheckoutMountSource, MountAttributePage, MountAttributeWriteMode, MountContentPin,
     MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLookup, MountNode,
@@ -35,6 +36,7 @@ async fn stage_mount_promotion<A, O, D, S>(
     lazy: &LazyWorkspace<A, O, D, S>,
     authored: &CheckoutMountSource<A, O>,
     path: &str,
+    mounted: &MountPath,
     expected_source: FileId,
 ) -> Result<(), MountSourceError>
 where
@@ -43,8 +45,9 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    let promoted = authored.namespace_path(mounted)?;
     for _ in 0..MAXIMUM_PROMOTION_RETRIES {
-        let (mut candidate, epoch) = authored.shared_checkout().candidate().await?;
+        let (mut candidate, revision) = authored.shared_checkout().candidate().await?;
         let changed = lazy
             .stage_exact_into_checkout(
                 &mut candidate,
@@ -57,13 +60,16 @@ where
             .map_err(lazy_error)?;
         let mut checkout = authored.shared_checkout().lock().await;
         checkout.ensure_publication_resolved()?;
-        if checkout.view_epoch() != epoch {
+        if checkout.revision() != revision {
             continue;
         }
         if changed {
             checkout.install_candidate(candidate);
             checkout
-                .publish_after_mutation(authored.cancellation())
+                .publish_after_mutation(
+                    ViewChange::Promoted(&promoted, expected_source),
+                    authored.cancellation(),
+                )
                 .await?;
         }
         return Ok(());
@@ -72,7 +78,7 @@ where
 }
 
 struct StampedCursor<T> {
-    generation: (u64, u64, u64),
+    generation: (u64, u64),
     cursor: T,
 }
 
@@ -91,11 +97,7 @@ impl<T> CursorTable<T> {
         }
     }
 
-    fn remember(
-        &self,
-        generation: (u64, u64, u64),
-        cursor: T,
-    ) -> Result<Vec<u8>, MountSourceError> {
+    fn remember(&self, generation: (u64, u64), cursor: T) -> Result<Vec<u8>, MountSourceError> {
         let mut token = self.next.fetch_add(1, Ordering::Relaxed);
         if token == 0 {
             token = self.next.fetch_add(1, Ordering::Relaxed);
@@ -113,7 +115,7 @@ impl<T> CursorTable<T> {
 
     fn take(
         &self,
-        generation: (u64, u64, u64),
+        generation: (u64, u64),
         cursor: Option<&[u8]>,
     ) -> Result<Option<T>, MountSourceError> {
         let Some(cursor) = cursor else {
@@ -180,7 +182,7 @@ pub struct LazyMountSource<A, O, D, S> {
     authored: Arc<CheckoutMountSource<A, O>>,
     root: String,
     runtime: Arc<CallbackRuntime>,
-    cursors: CursorTable<LazyDirectoryCursor>,
+    cursors: CursorTable<(ViewStamp, LazyDirectoryCursor)>,
     source_view: Arc<SourceViewGate>,
     removals: Mutex<MountedRemovals>,
     detached: DetachedIdentities<A, O>,
@@ -302,7 +304,11 @@ where
 
     fn finish_detached_publication(&self) -> Result<(), MountSourceError> {
         let mut identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-        for entry in identities.values_mut() {
+        for (file_id, entry) in identities.iter_mut() {
+            if !entry.ready {
+                self.authored
+                    .record_projection_change(&ViewChange::Node(*file_id));
+            }
             entry.ready = true;
             if let Some(epoch) = entry.pending_epoch.take() {
                 entry.published_epoch = epoch;
@@ -545,11 +551,11 @@ where
             self.abort_detached_publication()?;
             return Err(lazy_error(error));
         }
-        self.authored
-            .shared_checkout()
-            .lock()
-            .await
-            .install_candidate(candidate);
+        {
+            let mut checkout = self.authored.shared_checkout().lock().await;
+            checkout.install_candidate(candidate);
+            checkout.record(&ViewChange::Everything);
+        }
         self.authored.sync_async_with_permit_force(permit).await?;
         if !self
             .lazy
@@ -791,12 +797,17 @@ where
             .is_some_and(|removed| *removed == file_id))
     }
 
-    fn record_removed(&self, path: String, file_id: FileId) -> Result<(), MountSourceError> {
+    fn record_removed(&self, path: &MountPath, file_id: FileId) -> Result<(), MountSourceError> {
+        let text = self.path(path)?;
         let mut removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-        if removals.paths.insert(path, file_id) != Some(file_id) {
+        if removals.paths.insert(text, file_id) != Some(file_id) {
             removals.epoch = removals.epoch.wrapping_add(1);
             self.cursors.clear();
         }
+        self.authored.record_projection_change(&ViewChange::Unbound(
+            &self.authored.namespace_path(path)?,
+            file_id,
+        ));
         Ok(())
     }
 
@@ -821,6 +832,8 @@ where
             .map_err(|_| MountSourceError::Stale)?
             .records
             .insert(record.file_id, (record, metadata));
+        self.authored
+            .record_projection_change(&ViewChange::Node(record.file_id));
         Ok(())
     }
 
@@ -832,20 +845,21 @@ where
         Ok(())
     }
 
-    async fn promote(&self, path: &str) -> Result<(), MountSourceError>
+    async fn promote(&self, mounted: &MountPath) -> Result<(), MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
         D: DemandSource + 'static,
         S: LazyWorkspaceStore,
     {
-        let lookup = self.lazy.lookup(path).await.map_err(lazy_error)?;
+        let path = self.path(mounted)?;
+        let lookup = self.lazy.lookup(&path).await.map_err(lazy_error)?;
         let expected_source = match lookup {
             LazyLookup::Source(node) => self.lazy.source_file_id(&node),
             LazyLookup::Authored { stat, .. } => stat.file_id,
             LazyLookup::Shadow { record, .. } => record.file_id,
         };
-        stage_mount_promotion(&self.lazy, &self.authored, path, expected_source).await
+        stage_mount_promotion(&self.lazy, &self.authored, &path, mounted, expected_source).await
     }
 
     fn promote_parents_locked(&self, path: &MountPath) -> Result<(), MountSourceError>
@@ -863,8 +877,7 @@ where
             if authored.is_some() {
                 continue;
             }
-            let text = self.path(&parent)?;
-            self.wait(|| async move { self.promote(&text).await })?;
+            self.wait(|| async { self.promote(&parent).await })?;
         }
         Ok(())
     }
@@ -878,17 +891,17 @@ where
 
     fn remember_cursor(
         &self,
-        generation: (u64, u64, u64),
-        cursor: LazyDirectoryCursor,
+        generation: (u64, u64),
+        cursor: (ViewStamp, LazyDirectoryCursor),
     ) -> Result<Vec<u8>, MountSourceError> {
         self.cursors.remember(generation, cursor)
     }
 
     fn take_cursor(
         &self,
-        generation: (u64, u64, u64),
+        generation: (u64, u64),
         cursor: Option<&[u8]>,
-    ) -> Result<Option<LazyDirectoryCursor>, MountSourceError> {
+    ) -> Result<Option<(ViewStamp, LazyDirectoryCursor)>, MountSourceError> {
         self.cursors.take(generation, cursor)
     }
 }
@@ -1095,7 +1108,7 @@ where
         if let Some(file) = promoted.as_ref() {
             return Ok(Some(Arc::clone(file)));
         }
-        let epoch = self.authored.shared_checkout().view_epoch();
+        let epoch = self.authored.shared_checkout().revision();
         if self.checked_authored_epoch.load(Ordering::Acquire) == epoch {
             return Ok(None);
         }
@@ -1141,8 +1154,14 @@ where
         let mut promoted = self.promoted.lock().map_err(|_| MountSourceError::Stale)?;
         if promoted.is_none() {
             self.runtime.wait(|| async {
-                stage_mount_promotion(&self.lazy, &self.authored, &self.path, self.expected_source)
-                    .await
+                stage_mount_promotion(
+                    &self.lazy,
+                    &self.authored,
+                    &self.path,
+                    &self.mount_path,
+                    self.expected_source,
+                )
+                .await
             })?;
             *promoted = Some(self.authored.open_file(&self.mount_path)?);
         }
@@ -1280,23 +1299,23 @@ where
         self.source_view.is_stable()
     }
 
-    fn view_epoch(&self) -> Option<u64> {
-        self.authored.view_epoch()
+    fn view_stamp(&self) -> Option<ViewStamp> {
+        self.source_view
+            .is_stable()
+            .then(|| self.authored.view_stamp())
+            .flatten()
+    }
+
+    fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
+        self.source_view.is_stable() && self.authored.unchanged_since(path, file_id, stamp)
     }
 
     fn binding_epoch(&self) -> Option<u64> {
         Some(self.source_view.generation())
     }
 
-    fn acquire_view_lease(
-        &self,
-        expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
-        let lease = self.view_lease(None)?;
-        if self.authored.view_epoch() != expected_epoch {
-            return Err(MountSourceError::Stale);
-        }
-        Ok(Box::new(lease))
+    fn acquire_view_lease(&self) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+        Ok(Box::new(self.view_lease(None)?))
     }
 
     fn acquire_binding_lease(
@@ -1539,18 +1558,21 @@ where
             if opaque && self.authored.lookup_async(path, owner).await?.is_none() {
                 return Err(MountSourceError::NotFound);
             }
-            let generation = (
-                lease.generation,
-                self.authored.shared_checkout().view_epoch(),
-                removal_epoch,
-            );
-            let cursor = self.take_cursor(generation, cursor)?;
+            let generation = (lease.generation, removal_epoch);
+            // A continuation stays exact while its directory's listing does.
+            let (stamp, cursor) = match self.take_cursor(generation, cursor)? {
+                Some((stamp, cursor)) => (stamp, Some(cursor)),
+                None => (ViewStamp::current(), None),
+            };
+            if !self.authored.unchanged_since(path, None, stamp) {
+                return Err(MountSourceError::Stale);
+            }
             let (page, state) = {
-                let mut checkout = self.authored.shared_checkout().lock().await;
-                checkout.ensure_publication_resolved()?;
+                let observation = self.authored.shared_checkout().observe(owner).await?;
+                observation.ensure_publication_resolved()?;
                 self.lazy
                     .list_directory_in_checkout(
-                        &mut checkout,
+                        &mut observation.observer(),
                         &text,
                         cursor,
                         maximum_entries,
@@ -1607,8 +1629,8 @@ where
                     metadata: lookup.metadata,
                 });
             }
-            if self.authored.shared_checkout().view_epoch() != generation.1
-                || self.removal_snapshot(&text)?.2 != generation.2
+            if !self.authored.unchanged_since(path, None, stamp)
+                || self.removal_snapshot(&text)?.2 != generation.1
             {
                 return Err(MountSourceError::Stale);
             }
@@ -1616,7 +1638,7 @@ where
                 entries,
                 next_cursor: page
                     .next
-                    .map(|cursor| self.remember_cursor(generation, cursor))
+                    .map(|cursor| self.remember_cursor(generation, (stamp, cursor)))
                     .transpose()?,
             })
         })
@@ -1879,7 +1901,7 @@ where
             }
             file_id
         };
-        self.record_removed(text, removed_id)
+        self.record_removed(path, removed_id)
     }
 
     fn rename(
@@ -1962,7 +1984,7 @@ where
         if let Some((record, metadata, file)) = replaced_open {
             self.record_removed_identity(record, metadata, file)?;
         }
-        self.record_removed(source_text, source_id)?;
+        self.record_removed(source, source_id)?;
         self.record_rebound(&destination_text)
     }
 
@@ -2104,12 +2126,10 @@ where
         if self.authored.lookup(path)?.is_some() {
             return Ok(());
         }
-        let text = self.path(path)?;
-        if self.is_removed(&text)? {
+        if self.is_removed(&self.path(path)?)? {
             return Err(MountSourceError::NotFound);
         }
-        self.wait(|| async move { self.promote(&text).await })?;
-        Ok(())
+        self.wait(|| self.promote(path))
     }
 
     /// Reads one range of a path's current content. A pin additionally
@@ -2920,34 +2940,32 @@ mod tests {
     #[test]
     fn abandoned_directory_cursors_are_bounded_and_cleared() {
         let cursors = CursorTable::new(2);
-        let first = cursors.remember((2, 1, 1), 1_u8).expect("first cursor");
-        let second = cursors.remember((2, 1, 1), 2_u8).expect("second cursor");
-        let third = cursors.remember((2, 1, 1), 3_u8).expect("third cursor");
+        let first = cursors.remember((2, 1), 1_u8).expect("first cursor");
+        let second = cursors.remember((2, 1), 2_u8).expect("second cursor");
+        let third = cursors.remember((2, 1), 3_u8).expect("third cursor");
 
         assert!(matches!(
-            cursors.take((2, 1, 1), Some(&first)),
+            cursors.take((2, 1), Some(&first)),
             Err(MountSourceError::Stale)
         ));
         assert_eq!(
-            cursors
-                .take((2, 1, 1), Some(&second))
-                .expect("second token"),
+            cursors.take((2, 1), Some(&second)).expect("second token"),
             Some(2)
         );
         assert_eq!(
-            cursors.take((2, 1, 1), Some(&third)).expect("third token"),
+            cursors.take((2, 1), Some(&third)).expect("third token"),
             Some(3)
         );
 
-        let stale = cursors.remember((2, 1, 1), 4_u8).expect("stale cursor");
+        let stale = cursors.remember((2, 1), 4_u8).expect("stale cursor");
         assert!(matches!(
-            cursors.take((2, 2, 1), Some(&stale)),
+            cursors.take((3, 1), Some(&stale)),
             Err(MountSourceError::Stale)
         ));
-        let retained = cursors.remember((2, 1, 1), 5_u8).expect("retained cursor");
+        let retained = cursors.remember((2, 1), 5_u8).expect("retained cursor");
         cursors.clear();
         assert!(matches!(
-            cursors.take((2, 1, 1), Some(&retained)),
+            cursors.take((2, 1), Some(&retained)),
             Err(MountSourceError::Stale)
         ));
     }

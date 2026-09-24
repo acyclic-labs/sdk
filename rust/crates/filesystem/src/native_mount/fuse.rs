@@ -2,7 +2,7 @@
 
 use super::{
     MountDirectoryEntry, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
-    MountPath, MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest,
+    MountPath, MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest, ViewStamp,
     metadata_or, system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
@@ -126,8 +126,8 @@ struct DirectoryHandle {
     binding_epoch: Option<u64>,
     cursor: Option<Vec<u8>>,
     entries: VecDeque<MountDirectoryEntry>,
-    /// Coherent source view the buffered entries were read in, if any.
-    entries_epoch: Option<u64>,
+    /// Source view the buffered entries were read after, if cacheable.
+    entries_stamp: Option<ViewStamp>,
     exhausted: bool,
     emitted: u64,
 }
@@ -135,7 +135,7 @@ struct DirectoryHandle {
 struct InodeEntry {
     bindings: Vec<MountPath>,
     lookup: MountLookup,
-    view_epoch: Option<u64>,
+    view_stamp: Option<ViewStamp>,
     lookup_references: u64,
     open_handles: u64,
     /// Version the kernel page cache was last admitted under.
@@ -148,18 +148,28 @@ impl InodeEntry {
     fn new(
         binding: MountPath,
         lookup: MountLookup,
-        view_epoch: Option<u64>,
+        view_stamp: Option<ViewStamp>,
         lookup_references: u64,
     ) -> Self {
         Self {
             bindings: vec![binding],
             lookup,
-            view_epoch,
+            view_stamp,
             lookup_references,
             open_handles: 0,
             cached_content: None,
             negative_children: HashSet::new(),
         }
+    }
+
+    /// Whether the cached record still describes the source through its
+    /// first binding.
+    fn is_current(&self, source: &dyn MountFilesystem) -> bool {
+        self.view_stamp.is_some_and(|stamp| {
+            self.bindings.first().is_some_and(|path| {
+                source.unchanged_since(path, Some(self.lookup.node.file_id), stamp)
+            })
+        })
     }
 
     /// Records the version a new handle opens and reports whether pages the
@@ -371,7 +381,7 @@ impl FuseSession {
         // Epochs are sampled before the root so that a concurrent change can
         // only make them older than the facts they label, never newer.
         let kernel_binding_epoch = source.binding_epoch();
-        let view_epoch = source.view_epoch();
+        let view_stamp = source.view_stamp();
         let root = source
             .lookup(&MountPath::root())
             .map_err(source_error)?
@@ -384,7 +394,7 @@ impl FuseSession {
         let mut by_inode = HashMap::new();
         by_inode.insert(
             ROOT_INODE,
-            InodeEntry::new(MountPath::root(), root, view_epoch, 1),
+            InodeEntry::new(MountPath::root(), root, view_stamp, 1),
         );
         let mut inode_by_file = HashMap::new();
         inode_by_file.insert(root.node.file_id, ROOT_INODE);
@@ -573,15 +583,13 @@ impl FuseProjectionState {
             entry.lookup = lookup;
             // Handle identity can intentionally outlive its namespace binding.
             // Never authorize path-cache reuse from a handle-relative lookup.
-            entry.view_epoch = None;
+            entry.view_stamp = None;
             return Ok(lookup);
         }
-        let epoch = stable_cache_epoch(self.source.view_is_stable(), self.source.view_epoch());
-        if epoch.is_some()
-            && self
-                .by_inode
-                .get(&inode)
-                .is_some_and(|entry| entry.view_epoch == epoch)
+        if self
+            .by_inode
+            .get(&inode)
+            .is_some_and(|entry| entry.is_current(self.source.as_ref()))
         {
             return self
                 .by_inode
@@ -706,7 +714,7 @@ impl FuseProjectionState {
         &mut self,
         path: MountPath,
         lookup: &MountLookup,
-        view_epoch: Option<u64>,
+        view_stamp: Option<ViewStamp>,
         lookup_reference: bool,
     ) -> Result<u64, i32> {
         if let Some(previous) = self.inode_by_path.get(&path).copied()
@@ -724,14 +732,14 @@ impl FuseProjectionState {
             &mut self.inode_by_file,
             path,
             lookup,
-            view_epoch,
+            view_stamp,
             lookup_reference,
         )
     }
 
     fn intern(&mut self, path: MountPath, lookup: &MountLookup) -> Result<u64, i32> {
-        let view_epoch = self.source.view_epoch();
-        self.intern_with_reference(path, lookup, view_epoch, true)
+        let view_stamp = self.source.view_stamp();
+        self.intern_with_reference(path, lookup, view_stamp, true)
     }
 
     fn release_lookup_reference(&mut self, inode: u64, references: u64) {
@@ -755,8 +763,13 @@ impl FuseProjectionState {
     }
 
     fn cached_lookup(&mut self, path: &MountPath) -> Option<(u64, MountLookup)> {
-        let epoch = stable_cache_epoch(self.source.view_is_stable(), self.source.view_epoch())?;
-        cached_projected_lookup(&mut self.by_inode, &self.inode_by_path, path, epoch)
+        let source = Arc::clone(&self.source);
+        cached_projected_lookup(
+            &mut self.by_inode,
+            &self.inode_by_path,
+            path,
+            |file_id, stamp| source.unchanged_since(path, Some(file_id), stamp),
+        )
     }
 
     fn coherent_lookup(&self, path: &MountPath) -> Result<CoherentSourceLookup, i32> {
@@ -774,7 +787,7 @@ impl FuseProjectionState {
                 &mut self.by_inode,
                 &mut self.inode_by_file,
                 lookup,
-                refreshed.cache_epoch,
+                refreshed.cache_stamp,
             )?;
             return Ok(lookup);
         }
@@ -791,7 +804,7 @@ impl FuseProjectionState {
                 }
                 let entry = self.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
                 entry.lookup = lookup;
-                entry.view_epoch = refreshed.cache_epoch;
+                entry.view_stamp = refreshed.cache_stamp;
                 return Ok(lookup);
             }
             self.remove_binding(inode, &path);
@@ -968,11 +981,12 @@ fn cached_projected_lookup(
     by_inode: &mut HashMap<u64, InodeEntry>,
     inode_by_path: &HashMap<MountPath, u64>,
     path: &MountPath,
-    view_epoch: u64,
+    unchanged_since: impl FnOnce(crate::FileId, ViewStamp) -> bool,
 ) -> Option<(u64, MountLookup)> {
     let inode = inode_by_path.get(path).copied()?;
     let entry = by_inode.get_mut(&inode)?;
-    if entry.view_epoch != Some(view_epoch) {
+    let stamp = entry.view_stamp?;
+    if !unchanged_since(entry.lookup.node.file_id, stamp) {
         return None;
     }
     entry.lookup_references = entry.lookup_references.saturating_add(1);
@@ -983,7 +997,7 @@ fn replace_root_lookup(
     by_inode: &mut HashMap<u64, InodeEntry>,
     inode_by_file: &mut HashMap<crate::FileId, u64>,
     lookup: MountLookup,
-    view_epoch: Option<u64>,
+    view_stamp: Option<ViewStamp>,
 ) -> Result<(), i32> {
     let previous = by_inode
         .get(&ROOT_INODE)
@@ -1005,7 +1019,7 @@ fn replace_root_lookup(
     }
     let root = by_inode.get_mut(&ROOT_INODE).ok_or(libc::ESTALE)?;
     root.lookup = lookup;
-    root.view_epoch = view_epoch;
+    root.view_stamp = view_stamp;
     Ok(())
 }
 
@@ -1017,7 +1031,7 @@ fn intern_projected(
     inode_by_file: &mut HashMap<crate::FileId, u64>,
     path: MountPath,
     lookup: &MountLookup,
-    view_epoch: Option<u64>,
+    view_stamp: Option<ViewStamp>,
     lookup_reference: bool,
 ) -> Result<u64, i32> {
     if let Some(inode) = inode_by_file.get(&lookup.node.file_id).copied() {
@@ -1030,7 +1044,7 @@ fn intern_projected(
             entry.bindings.push(path.clone());
         }
         entry.lookup = *lookup;
-        entry.view_epoch = view_epoch;
+        entry.view_stamp = view_stamp;
         if lookup_reference {
             entry.lookup_references = entry.lookup_references.saturating_add(1);
         }
@@ -1047,7 +1061,7 @@ fn intern_projected(
     inode_by_path.insert(path.clone(), inode);
     by_inode.insert(
         inode,
-        InodeEntry::new(path, *lookup, view_epoch, u64::from(lookup_reference)),
+        InodeEntry::new(path, *lookup, view_stamp, u64::from(lookup_reference)),
     );
     Ok(inode)
 }
@@ -1114,7 +1128,7 @@ impl DirectoryListing for ReplyDirectoryPlus {
 
 struct CoherentSourceLookup {
     lookup: Option<MountLookup>,
-    cache_epoch: Option<u64>,
+    cache_stamp: Option<ViewStamp>,
     binding_epoch: Option<u64>,
 }
 
@@ -1124,22 +1138,20 @@ fn coherent_source_lookup(
 ) -> Result<CoherentSourceLookup, i32> {
     let binding_epoch = source.binding_epoch();
     let lease = source.acquire_binding_lease(binding_epoch).map_err(errno)?;
-    let before = stable_cache_epoch(source.view_is_stable(), source.view_epoch());
+    // Sampled first: a concurrent native mutation of anything this lookup
+    // read records a later change, so the result can never validate over it.
+    let cache_stamp = source.view_stamp();
     let lookup = source.lookup(path).map_err(errno)?;
     if !source.view_is_stable() || source.binding_epoch() != binding_epoch {
         return Err(libc::ESTALE);
     }
-    let after = stable_cache_epoch(source.view_is_stable(), source.view_epoch());
-    // A concurrent native mutation invalidates this lookup for cache reuse,
-    // but cannot rebind a path while the source's external-view lease is held.
-    let cache_epoch = (before == after).then_some(after).flatten();
     // Never carry a view lease into the projection-state lock: a writer may
     // hold that lock while waiting for the view gate. Revalidate below after
     // taking the state lock instead.
     drop(lease);
     Ok(CoherentSourceLookup {
         lookup,
-        cache_epoch,
+        cache_stamp,
         binding_epoch,
     })
 }
@@ -1186,13 +1198,11 @@ impl FuseProjection {
         match lookup {
             Ok(refreshed) if refreshed.lookup.is_some() => {
                 let lookup = refreshed.lookup.unwrap_or_else(|| unreachable!());
-                let cache_epoch = refreshed
-                    .cache_epoch
-                    .filter(|epoch| source.view_epoch() == Some(*epoch));
-                let inode = match state.intern_with_reference(path, &lookup, cache_epoch, true) {
-                    Ok(inode) => inode,
-                    Err(error) => return reply.error(Errno::from_i32(error)),
-                };
+                let inode =
+                    match state.intern_with_reference(path, &lookup, refreshed.cache_stamp, true) {
+                        Ok(inode) => inode,
+                        Err(error) => return reply.error(Errno::from_i32(error)),
+                    };
                 match state.attr(inode, &lookup) {
                     Ok(attr) => reply.entry(&CACHE_TTL, &attr, Generation(0)),
                     Err(error) => reply.error(Errno::from_i32(error)),
@@ -1200,8 +1210,9 @@ impl FuseProjection {
             }
             Ok(refreshed)
                 if refreshed.lookup.is_none()
-                    && refreshed.cache_epoch.is_some()
-                    && source.view_epoch() == refreshed.cache_epoch =>
+                    && refreshed
+                        .cache_stamp
+                        .is_some_and(|stamp| source.unchanged_since(&path, None, stamp)) =>
             {
                 state.remove_path_cache(&path);
                 // A zero-inode LOOKUP response carries a negative-dentry TTL.
@@ -1260,13 +1271,10 @@ impl FuseProjection {
                     None => return reply.error(Errno::ESTALE),
                 }
             } else {
-                let epoch =
-                    stable_cache_epoch(state.source.view_is_stable(), state.source.view_epoch());
-                if epoch.is_some()
-                    && state
-                        .by_inode
-                        .get(&inode)
-                        .is_some_and(|entry| entry.view_epoch == epoch)
+                if state
+                    .by_inode
+                    .get(&inode)
+                    .is_some_and(|entry| entry.is_current(state.source.as_ref()))
                 {
                     return match state.node_attr(inode) {
                         Ok(attr) => reply.attr(&CACHE_TTL, &attr),
@@ -1303,7 +1311,7 @@ impl FuseProjection {
                                 .is_some_and(|lookup| lookup.node.file_id == *file_id) =>
                         {
                             found = result.lookup.map(|lookup| {
-                                (lookup, result.cache_epoch, Some(result.binding_epoch))
+                                (lookup, result.cache_stamp, Some(result.binding_epoch))
                             });
                             break;
                         }
@@ -1314,7 +1322,7 @@ impl FuseProjection {
                 found.ok_or(libc::ENOENT)
             }
         };
-        let (lookup, view_epoch, binding_epoch) = match refreshed {
+        let (lookup, view_stamp, binding_epoch) = match refreshed {
             Ok(value) => value,
             Err(error) => return reply.error(Errno::from_i32(error)),
         };
@@ -1334,11 +1342,6 @@ impl FuseProjection {
         if state.reject_stopping() {
             return reply.error(Errno::ENODEV);
         }
-        let view_epoch = if let Refresh::Paths { source, .. } = &refresh {
-            view_epoch.filter(|epoch| source.view_epoch() == Some(*epoch))
-        } else {
-            view_epoch
-        };
         let Some(entry) = state.by_inode.get_mut(&inode) else {
             return reply.error(Errno::ESTALE);
         };
@@ -1346,7 +1349,7 @@ impl FuseProjection {
             return reply.error(Errno::ESTALE);
         }
         entry.lookup = lookup;
-        entry.view_epoch = view_epoch;
+        entry.view_stamp = view_stamp;
         match state.attr(inode, &lookup) {
             Ok(attr) => reply.attr(&CACHE_TTL, &attr),
             Err(error) => reply.error(Errno::from_i32(error)),
@@ -1354,7 +1357,7 @@ impl FuseProjection {
     }
 
     fn open_parallel(&self, inode: u64, flags: i32, reply: ReplyOpen) {
-        let (source, path, file_id, stable_before, epoch_before, binding_before) = {
+        let (source, path, file_id, stamp_before, binding_before) = {
             let state = match self.state.lock() {
                 Ok(state) => state,
                 Err(_) => return reply.error(Errno::EIO),
@@ -1378,8 +1381,7 @@ impl FuseProjection {
                 Arc::clone(&state.source),
                 path,
                 file_id,
-                state.source.view_is_stable(),
-                state.source.view_epoch(),
+                state.source.view_stamp(),
                 state.source.binding_epoch(),
             )
         };
@@ -1397,20 +1399,20 @@ impl FuseProjection {
         if truncated && let Err(error) = open_file.resize(0) {
             return reply.error(Errno::from_i32(errno(error)));
         }
-        let epoch_after = source.view_epoch();
-        let stable_after = source.view_is_stable();
-        // O_TRUNC (and a lazy-file promotion during open) legitimately advances
-        // our own view epoch. Validate the attached handle instead of treating
+        // O_TRUNC (and a lazy-file promotion during open) legitimately
+        // changes the node. Validate the attached handle instead of treating
         // that authored mutation as an external rebind.
-        let refreshed = if truncated
-            || !coherent_view(stable_before, epoch_before, stable_after, epoch_after)
-        {
+        let unchanged = !truncated
+            && stamp_before
+                .is_some_and(|stamp| source.unchanged_since(&path, Some(file_id), stamp));
+        let (refreshed, view_stamp) = if unchanged {
+            (opened_lookup, stamp_before)
+        } else {
+            let stamp = source.view_stamp();
             match open_file.lookup() {
-                Ok(lookup) if lookup.node.file_id == file_id => lookup,
+                Ok(lookup) if lookup.node.file_id == file_id => (lookup, stamp),
                 _ => return reply.error(Errno::ESTALE),
             }
-        } else {
-            opened_lookup
         };
         // Lazy promotion and O_TRUNC may write while opening, so pin the
         // external binding only after those operations have completed.
@@ -1439,9 +1441,7 @@ impl FuseProjection {
             return reply.error(Errno::ESTALE);
         }
         entry.lookup = refreshed;
-        entry.view_epoch = (source.view_epoch() == epoch_after)
-            .then_some(epoch_after)
-            .flatten();
+        entry.view_stamp = view_stamp;
         entry.open_handles = entry.open_handles.saturating_add(1);
         let open_flags = state.file_open_flags(inode, &refreshed, flags);
         state.next_handle = state.next_handle.saturating_add(1).max(1);
@@ -1525,7 +1525,7 @@ impl FuseProjection {
                 // The write advances the source view. Until the handle-relative
                 // refresh below completes, no namespace lookup may reuse this
                 // cached record.
-                entry.view_epoch = None;
+                entry.view_stamp = None;
             }
             open_file
         };
@@ -1672,19 +1672,18 @@ impl FuseProjection {
                     directory.binding_epoch,
                 )
             };
-            let (page, view_epoch) = {
+            let (page, entries_stamp) = {
                 let _lease = source
                     .acquire_binding_lease(binding_epoch)
                     .map_err(|_| libc::ESTALE)?;
-                let before = stable_cache_epoch(source.view_is_stable(), source.view_epoch());
+                let stamp = source.view_stamp();
                 let page = source
                     .read_directory(&path, cursor.as_deref(), DIRECTORY_PAGE_SIZE)
                     .map_err(errno)?;
                 if !source.view_is_stable() || source.binding_epoch() != binding_epoch {
                     return Err(libc::ESTALE);
                 }
-                let after = stable_cache_epoch(source.view_is_stable(), source.view_epoch());
-                (page, (before == after).then_some(after).flatten())
+                (page, stamp)
             };
             let mut state = self.state.lock().map_err(|_| libc::EIO)?;
             let directory = state.directories.get_mut(&handle).ok_or(libc::ESTALE)?;
@@ -1693,7 +1692,7 @@ impl FuseProjection {
                 directory.exhausted = page.next_cursor.is_none();
                 directory.cursor = page.next_cursor;
                 directory.entries.extend(page.entries);
-                directory.entries_epoch = view_epoch;
+                directory.entries_stamp = entries_stamp;
             }
         }
     }
@@ -2525,7 +2524,7 @@ impl FuseProjectionState {
                 binding_epoch,
                 cursor: None,
                 entries: VecDeque::new(),
-                entries_epoch: None,
+                entries_stamp: None,
                 exhausted: false,
                 emitted: 0,
             },
@@ -2592,22 +2591,24 @@ impl FuseProjectionState {
                 }
             }
         }
-        let current_epoch =
-            stable_cache_epoch(self.source.view_is_stable(), self.source.view_epoch());
         let mut listed = false;
         loop {
             let Some(directory) = self.directories.get_mut(&handle) else {
                 return listing.error(Errno::from_i32(libc::ESTALE));
             };
-            // Buffered facts are current only while their source view is.
-            let view_epoch = directory
-                .entries_epoch
-                .filter(|epoch| Some(*epoch) == current_epoch);
             let next = directory.emitted.saturating_add(1);
             let Some(entry) = directory.entries.pop_front() else {
                 return listing.ok();
             };
             let child_path = directory.path.child(entry.name.clone());
+            // A buffered entry is current only while its directory's listing
+            // and its own node are.
+            let view_stamp = directory.entries_stamp.filter(|stamp| {
+                self.source.unchanged_since(&directory.path, None, *stamp)
+                    && self
+                        .source
+                        .unchanged_since(&child_path, Some(entry.node.file_id), *stamp)
+            });
             let page_lookup = MountLookup {
                 node: entry.node,
                 metadata: entry.metadata,
@@ -2615,7 +2616,7 @@ impl FuseProjectionState {
             // A page older than the current view may predate mounted writes
             // the kernel already applied; the projection's own record, which
             // every mounted write refreshes, must not be rolled back by it.
-            let lookup = if view_epoch.is_some() {
+            let lookup = if view_stamp.is_some() {
                 page_lookup
             } else {
                 self.inode_by_file
@@ -2626,7 +2627,7 @@ impl FuseProjectionState {
             let listed_attr = match self.intern_with_reference(
                 child_path,
                 &lookup,
-                view_epoch,
+                view_stamp,
                 L::COUNTS_LOOKUPS,
             ) {
                 Ok(child) => self
@@ -2646,7 +2647,7 @@ impl FuseProjectionState {
                     return listing.error(Errno::from_i32(error));
                 }
             };
-            let ttl = if view_epoch.is_some() {
+            let ttl = if view_stamp.is_some() {
                 CACHE_TTL
             } else {
                 Duration::ZERO
@@ -3001,7 +3002,7 @@ impl FuseProjectionState {
                     };
                     if let Some(entry) = self.by_inode.get_mut(&inode) {
                         entry.lookup = lookup;
-                        entry.view_epoch = self.source.view_epoch();
+                        entry.view_stamp = self.source.view_stamp();
                     }
                     Ok((
                         self.attr(inode, &lookup)?,
@@ -3239,19 +3240,6 @@ fn errno(error: MountSourceError) -> i32 {
     }
 }
 
-fn coherent_view(
-    stable_before: bool,
-    epoch_before: Option<u64>,
-    stable_after: bool,
-    epoch_after: Option<u64>,
-) -> bool {
-    stable_before && stable_after && epoch_before == epoch_after
-}
-
-fn stable_cache_epoch(stable: bool, epoch: Option<u64>) -> Option<u64> {
-    stable.then_some(epoch).flatten()
-}
-
 fn admit_open(writable: bool, flags: i32) -> Result<(), i32> {
     if flags & libc::O_TRUNC != 0 && !writable {
         Err(libc::EROFS)
@@ -3264,9 +3252,8 @@ fn admit_open(writable: bool, flags: i32) -> Result<(), i32> {
 mod tests {
     use super::{
         InodeEntry, KernelCacheItem, MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY, MountFilesystem,
-        MountLookup, MountNode, MountNodeKind, MountPath, ROOT_INODE, admit_open,
-        cached_projected_lookup, coherent_view, drain_kernel_cache_items, intern_projected,
-        replace_root_lookup, stable_cache_epoch,
+        MountLookup, MountNode, MountNodeKind, MountPath, ROOT_INODE, ViewStamp, admit_open,
+        cached_projected_lookup, drain_kernel_cache_items, intern_projected, replace_root_lookup,
     };
     use crate::kernel::{FileMetadata, MetadataField};
     use bytes::Bytes;
@@ -3337,7 +3324,7 @@ mod tests {
         let mut next_inode = ROOT_INODE + 1;
         let mut by_inode = HashMap::from([(
             ROOT_INODE,
-            InodeEntry::new(MountPath::root(), root, Some(1), 1),
+            InodeEntry::new(MountPath::root(), root, None, 1),
         )]);
         let mut inode_by_path = HashMap::from([(MountPath::root(), ROOT_INODE)]);
         let mut inode_by_file = HashMap::new();
@@ -3349,7 +3336,7 @@ mod tests {
                 &mut inode_by_file,
                 path,
                 lookup,
-                Some(1),
+                None,
                 true,
             )
         };
@@ -3517,31 +3504,20 @@ mod tests {
             },
             metadata: FileMetadata::default(),
         };
-        let mut by_inode = HashMap::from([(2, InodeEntry::new(path.clone(), lookup, Some(9), 0))]);
+        let stamp = ViewStamp::current();
+        let mut by_inode =
+            HashMap::from([(2, InodeEntry::new(path.clone(), lookup, Some(stamp), 0))]);
         let by_path = HashMap::from([(path.clone(), 2)]);
 
-        assert!(cached_projected_lookup(&mut by_inode, &by_path, &path, 8).is_none());
+        assert!(cached_projected_lookup(&mut by_inode, &by_path, &path, |_, _| false).is_none());
         assert_eq!(by_inode[&2].lookup_references, 0);
         assert_eq!(
-            cached_projected_lookup(&mut by_inode, &by_path, &path, 9),
+            cached_projected_lookup(&mut by_inode, &by_path, &path, |file_id, sampled| {
+                file_id == lookup.node.file_id && sampled == stamp
+            }),
             Some((2, lookup))
         );
         assert_eq!(by_inode[&2].lookup_references, 1);
-    }
-
-    #[test]
-    fn unknown_epochs_are_coherent_only_while_the_source_is_stable() {
-        assert!(coherent_view(true, None, true, None));
-        assert!(!coherent_view(false, None, true, None));
-        assert!(!coherent_view(true, None, false, None));
-        assert!(!coherent_view(true, Some(1), true, Some(2)));
-    }
-
-    #[test]
-    fn cache_is_unavailable_while_the_source_is_rebinding() {
-        assert_eq!(stable_cache_epoch(false, Some(9)), None);
-        assert_eq!(stable_cache_epoch(true, Some(9)), Some(9));
-        assert_eq!(stable_cache_epoch(true, None), None);
     }
 
     #[test]
@@ -3560,17 +3536,23 @@ mod tests {
         };
         let mut by_inode = HashMap::from([(
             ROOT_INODE,
-            InodeEntry::new(MountPath::root(), root(old_file), Some(1), 1),
+            InodeEntry::new(MountPath::root(), root(old_file), None, 1),
         )]);
         let mut inode_by_file = HashMap::from([(old_file, ROOT_INODE)]);
+        let stamp = ViewStamp::current();
 
-        replace_root_lookup(&mut by_inode, &mut inode_by_file, root(new_file), Some(2))?;
+        replace_root_lookup(
+            &mut by_inode,
+            &mut inode_by_file,
+            root(new_file),
+            Some(stamp),
+        )?;
 
         assert_eq!(by_inode[&ROOT_INODE].lookup.node.file_id, new_file);
         assert_eq!(by_inode[&ROOT_INODE].bindings, vec![MountPath::root()]);
         assert_eq!(inode_by_file.get(&new_file), Some(&ROOT_INODE));
         assert!(!inode_by_file.contains_key(&old_file));
-        assert_eq!(by_inode[&ROOT_INODE].view_epoch, Some(2));
+        assert_eq!(by_inode[&ROOT_INODE].view_stamp, Some(stamp));
         Ok(())
     }
 
@@ -3600,7 +3582,7 @@ mod tests {
             &mut inode_by_file,
             path.clone(),
             &lookup,
-            Some(1),
+            None,
             false,
         )?;
         assert_ne!(enumerated, 0);
@@ -3613,7 +3595,7 @@ mod tests {
             &mut inode_by_file,
             path,
             &lookup,
-            Some(1),
+            None,
             true,
         )?;
         assert_eq!(looked_up, enumerated);
@@ -3637,7 +3619,7 @@ mod tests {
                 &mut inode_by_file,
                 MountPath::root().child(b"overflow.bin".to_vec()),
                 &overflow,
-                Some(1),
+                None,
                 false,
             ),
             Err(libc::EOVERFLOW)

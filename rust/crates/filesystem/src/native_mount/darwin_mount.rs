@@ -8,7 +8,7 @@
 use super::{
     DriverStartFailure, MountAttributeWriteMode, MountDirectoryEntry, MountFilesystem, MountLookup,
     MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget,
-    MountSourceError, NativeMountError, NativeMountRequest, metadata_or, system_time_ns,
+    MountSourceError, NativeMountError, NativeMountRequest, ViewStamp, metadata_or, system_time_ns,
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
@@ -121,13 +121,13 @@ struct FileHandle {
 }
 
 struct FileObservation {
-    epochs: Option<CacheEpochs>,
+    stamp: Option<ViewStamp>,
     lookup: MountLookup,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct CacheEpochs {
-    view: u64,
+    view: ViewStamp,
     binding: u64,
 }
 
@@ -170,12 +170,17 @@ impl DirectoryHandle {
         self.revision = None;
     }
 
+    /// Whether buffered pages still describe the directory: its binding is
+    /// the same and nothing has changed its listing since they were read.
     fn is_current(&self, source: &dyn MountFilesystem) -> bool {
-        self.matches_epochs(cache_epochs(source))
-    }
-
-    fn matches_epochs(&self, epochs: Option<CacheEpochs>) -> bool {
-        self.epochs == epochs
+        match self.epochs {
+            Some(epochs) => {
+                source.view_is_stable()
+                    && source.binding_epoch() == Some(epochs.binding)
+                    && source.unchanged_since(&self.path, None, epochs.view)
+            }
+            None => cache_epochs(source).is_none(),
+        }
     }
 
     const fn can_reuse_pages(&self) -> bool {
@@ -298,9 +303,9 @@ impl ChangeClock {
     }
 }
 
+/// Lookups, each with the stamp it was resolved after.
 struct LookupCache {
-    epochs: Option<CacheEpochs>,
-    entries: HashMap<MountPath, Option<MountLookup>>,
+    entries: HashMap<MountPath, (Option<MountLookup>, ViewStamp)>,
 }
 
 fn cache_epochs(source: &dyn MountFilesystem) -> Option<CacheEpochs> {
@@ -308,7 +313,7 @@ fn cache_epochs(source: &dyn MountFilesystem) -> Option<CacheEpochs> {
         return None;
     }
     Some(CacheEpochs {
-        view: source.view_epoch()?,
+        view: source.view_stamp()?,
         binding: source.binding_epoch()?,
     })
 }
@@ -320,7 +325,6 @@ impl DarwinMountContext {
         metadata: &Metadata,
         root_file_id: FileId,
     ) -> Self {
-        let epochs = cache_epochs(source.as_ref());
         Self {
             source,
             writable,
@@ -330,7 +334,6 @@ impl DarwinMountContext {
             next_inode: AtomicU64::new(ROOT_INODE + 1),
             inodes: Mutex::new(HashMap::from([(root_file_id, ROOT_INODE)])),
             lookups: Mutex::new(LookupCache {
-                epochs,
                 entries: HashMap::new(),
             }),
             files: RwLock::new(HashMap::new()),
@@ -374,24 +377,24 @@ impl DarwinMountContext {
     }
 
     fn lookup(&self, path: &MountPath) -> Result<MountLookup, i32> {
-        let epochs = cache_epochs(self.source.as_ref());
-        if let Some(epochs) = epochs {
-            let mut cache = self.lookups.lock().map_err(|_| libc::EIO)?;
-            if cache.epochs != Some(epochs) {
-                cache.entries.clear();
-                cache.epochs = Some(epochs);
-            }
-            if let Some(cached) = cache.entries.get(path).copied()
-                && cache_epochs(self.source.as_ref()) == Some(epochs)
+        // Sampled first: a change to anything the lookup reads records a
+        // later position, so its result can never validate over the change.
+        let stamp = self.source.view_stamp();
+        if stamp.is_some() {
+            let cache = self.lookups.lock().map_err(|_| libc::EIO)?;
+            if let Some((cached, cached_stamp)) = cache.entries.get(path).copied()
+                && self.source.unchanged_since(
+                    path,
+                    cached.map(|lookup| lookup.node.file_id),
+                    cached_stamp,
+                )
             {
                 return cached.ok_or(libc::ENOENT);
             }
         }
         let lookup = self.source.lookup(path).map_err(|error| errno(&error))?;
-        if let Some(epochs) = epochs
-            && cache_epochs(self.source.as_ref()) == Some(epochs)
-        {
-            self.remember_lookup(path, lookup, epochs)?;
+        if let Some(stamp) = stamp {
+            self.remember_lookup(path, lookup, stamp)?;
         }
         lookup.ok_or(libc::ENOENT)
     }
@@ -401,10 +404,10 @@ impl DarwinMountContext {
         path: &MountPath,
         lookup: Option<MountLookup>,
     ) -> Result<(), i32> {
-        let Some(epochs) = cache_epochs(self.source.as_ref()) else {
+        let Some(stamp) = self.source.view_stamp() else {
             return Ok(());
         };
-        self.remember_lookup(path, lookup, epochs)?;
+        self.remember_lookup(path, lookup, stamp)?;
         Ok(())
     }
 
@@ -412,18 +415,14 @@ impl DarwinMountContext {
         &self,
         path: &MountPath,
         lookup: Option<MountLookup>,
-        epochs: CacheEpochs,
+        stamp: ViewStamp,
     ) -> Result<(), i32> {
         let mut lookups = self.lookups.lock().map_err(|_| libc::EIO)?;
-        if lookups.epochs != Some(epochs) {
-            lookups.entries.clear();
-            lookups.epochs = Some(epochs);
-        }
         if lookups.entries.len() >= MAXIMUM_LOOKUP_CACHE_ENTRIES {
             lookups.entries.clear();
         }
         lookups.entries.try_reserve(1).map_err(|_| libc::ENOMEM)?;
-        lookups.entries.insert(path.clone(), lookup);
+        lookups.entries.insert(path.clone(), (lookup, stamp));
         Ok(())
     }
 
@@ -433,12 +432,8 @@ impl DarwinMountContext {
             InitialHandleState::Written => self.ledger.latest(),
         };
         let file = self.source.open_file(path).map_err(|error| errno(&error))?;
-        let before = cache_epochs(self.source.as_ref());
+        let stamp = self.source.view_stamp();
         let lookup = file.lookup().map_err(|error| errno(&error))?;
-        let after = cache_epochs(self.source.as_ref());
-        let observed_epochs = (before.is_some() && before == after)
-            .then_some(after)
-            .flatten();
         let handle = self.allocate_handle()?;
         let mut files = self.files.write().map_err(|_| libc::EIO)?;
         files.try_reserve(1).map_err(|_| libc::ENOMEM)?;
@@ -447,10 +442,7 @@ impl DarwinMountContext {
             FileHandle {
                 file_id: lookup.node.file_id,
                 file,
-                observation: Arc::new(Mutex::new(FileObservation {
-                    epochs: observed_epochs,
-                    lookup,
-                })),
+                observation: Arc::new(Mutex::new(FileObservation { stamp, lookup })),
                 written: Arc::new(AtomicU64::new(written)),
             },
         );
@@ -523,19 +515,20 @@ impl DarwinMountContext {
             let entry = files.get(&handle).ok_or(libc::ESTALE)?;
             (Arc::clone(&entry.file), Arc::clone(&entry.observation))
         };
-        let epochs = cache_epochs(self.source.as_ref());
-        if let Some(epochs) = epochs {
+        {
             let observation = observation.lock().map_err(|_| libc::EIO)?;
-            if observation.epochs == Some(epochs) {
+            if observation.stamp.is_some_and(|stamp| {
+                self.source
+                    .unchanged_since(path, Some(observation.lookup.node.file_id), stamp)
+            }) {
                 return Ok((file, observation.lookup));
             }
         }
+        let stamp = self.source.view_stamp();
         let lookup = file.lookup().map_err(|error| errno(&error))?;
-        if let Some(epochs) = epochs
-            && cache_epochs(self.source.as_ref()) == Some(epochs)
-        {
+        if stamp.is_some() {
             let mut observation = observation.lock().map_err(|_| libc::EIO)?;
-            observation.epochs = Some(epochs);
+            observation.stamp = stamp;
             observation.lookup = lookup;
         }
         Ok((file, lookup))
@@ -1359,20 +1352,14 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
         if context.lookup(&path)?.node.kind != MountNodeKind::Directory {
             return Err(libc::ENOTDIR);
         }
-        if epochs.is_some() && cache_epochs(context.source.as_ref()) != epochs {
+        let directory = DirectoryHandle::new(path, binding_epoch, epochs);
+        if directory.can_reuse_pages() && !directory.is_current(context.source.as_ref()) {
             return Err(libc::ESTALE);
         }
         let allocated = context.allocate_handle()?;
         let mut directories = context.directories.lock().map_err(|_| libc::EIO)?;
         directories.try_reserve(1).map_err(|_| libc::ENOMEM)?;
-        directories.insert(
-            allocated,
-            Arc::new(Mutex::new(DirectoryHandle::new(
-                path,
-                binding_epoch,
-                epochs,
-            ))),
-        );
+        directories.insert(allocated, Arc::new(Mutex::new(directory)));
         unsafe { handle.write(allocated) };
         Ok(0)
     })
@@ -1422,7 +1409,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
             if let Some(checkpoint) = checkpoints.get(&directory.path)
                 && checkpoint.revision == context.namespace_revision.load(Ordering::Acquire)
                 && checkpoint.handle.emitted == offset
-                && checkpoint.handle.epochs == directory.epochs
+                && checkpoint.handle.binding_epoch == directory.binding_epoch
+                && checkpoint.handle.is_current(context.source.as_ref())
             {
                 *directory = checkpoint.handle.clone();
             }
@@ -2261,7 +2249,7 @@ mod tests {
     #[test]
     fn close_publishes_only_what_its_handle_wrote() -> TestResult {
         let (source, context) = checkout_context(MountPublication::CloseAndSync)?;
-        let epoch = || source.view_epoch().ok_or("checkout has no view epoch");
+        let epoch = || source.generation_id();
         let path = MountPath::root().child(b"published".to_vec());
         context
             .mutate(|| source.create_file(&path, FileMetadata::default()))
@@ -2271,7 +2259,7 @@ mod tests {
             .map_err(os)?;
         let before = epoch()?;
         context.flush_on_close(created).map_err(os)?;
-        assert!(epoch()? > before, "closing the creating handle publishes");
+        assert_ne!(epoch()?, before, "closing the creating handle publishes");
 
         let reader = context.open(&path, InitialHandleState::Clean).map_err(os)?;
         let before = epoch()?;
@@ -2286,7 +2274,7 @@ mod tests {
             .map_err(os)?;
         let before = epoch()?;
         context.flush_on_close(reader).map_err(os)?;
-        assert!(epoch()? > before, "a written handle's close publishes");
+        assert_ne!(epoch()?, before, "a written handle's close publishes");
         let before = epoch()?;
         context.flush_on_close(reader).map_err(os)?;
         context.sync().map_err(os)?;
@@ -2299,13 +2287,12 @@ mod tests {
                 file.write_range(0, Bytes::from_static(b"without a handle"))
             })
             .map_err(os)?;
-        let before = epoch()?;
         context.flush_on_close(reader).map_err(os)?;
-        assert!(epoch()? >= before);
         let before = epoch()?;
         context.sync().map_err(os)?;
-        assert!(
-            epoch()? > before,
+        assert_ne!(
+            epoch()?,
+            before,
             "a sync publishes every acknowledged write"
         );
         Ok(())
@@ -2314,7 +2301,7 @@ mod tests {
     #[test]
     fn manual_close_and_fsync_publish_nothing_until_sync() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
-        let epoch = || source.view_epoch().ok_or("checkout has no view epoch");
+        let epoch = || source.generation_id();
         let path = MountPath::root().child(b"manual".to_vec());
         context
             .mutate(|| source.create_file(&path, FileMetadata::default()))
@@ -2334,7 +2321,7 @@ mod tests {
         context.sync().map_err(os)?;
         assert_eq!(epoch()?, before, "manual close and fsync publish nothing");
         source.sync()?;
-        assert!(epoch()? > before, "an explicit mount sync publishes");
+        assert_ne!(epoch()?, before, "an explicit mount sync publishes");
         Ok(())
     }
 
@@ -2414,33 +2401,39 @@ mod tests {
     }
 
     #[test]
-    fn directory_continuation_requires_the_same_view_and_binding_epochs() {
-        let directory = DirectoryHandle::new(
-            MountPath::root(),
-            Some(11),
+    fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestResult {
+        let (source, _context) = checkout_context(MountPublication::Manual)?;
+        let nested = MountPath::root().child(b"nested".to_vec());
+        source.create_directory(&nested, FileMetadata::default())?;
+        let epochs = cache_epochs(source.as_ref()).ok_or("checkout has no view stamp")?;
+        let root = DirectoryHandle::new(MountPath::root(), Some(epochs.binding), Some(epochs));
+        let directory = DirectoryHandle::new(nested.clone(), Some(epochs.binding), Some(epochs));
+        let rebound = DirectoryHandle::new(
+            nested.clone(),
+            Some(epochs.binding + 1),
             Some(CacheEpochs {
-                view: 7,
-                binding: 11,
+                binding: epochs.binding + 1,
+                ..epochs
             }),
         );
-        assert!(directory.matches_epochs(Some(CacheEpochs {
-            view: 7,
-            binding: 11,
-        })));
-        assert!(!directory.matches_epochs(Some(CacheEpochs {
-            view: 8,
-            binding: 11,
-        })));
-        assert!(!directory.matches_epochs(Some(CacheEpochs {
-            view: 7,
-            binding: 12,
-        })));
-        assert!(!directory.matches_epochs(None));
+        assert!(root.is_current(source.as_ref()));
+        assert!(directory.is_current(source.as_ref()));
+        assert!(!rebound.is_current(source.as_ref()));
         assert!(directory.can_reuse_pages());
 
+        source.create_file(
+            &MountPath::root().child(b"sibling".to_vec()),
+            FileMetadata::default(),
+        )?;
+        assert!(!root.is_current(source.as_ref()));
+        assert!(directory.is_current(source.as_ref()));
+        source.create_file(&nested.child(b"child".to_vec()), FileMetadata::default())?;
+        assert!(!directory.is_current(source.as_ref()));
+
         let epochless = DirectoryHandle::new(MountPath::root(), None, None);
-        assert!(epochless.matches_epochs(None));
+        assert!(!epochless.is_current(source.as_ref()));
         assert!(!epochless.can_reuse_pages());
+        Ok(())
     }
 
     #[test]

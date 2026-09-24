@@ -10,7 +10,7 @@
 use super::{
     MountAttributePage, MountAttributeWriteMode, MountContentPin, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
-    MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError, MountViewLease,
+    MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError, MountViewLease, ViewStamp,
 };
 use crate::FileId;
 use crate::kernel::FileMetadata;
@@ -225,6 +225,8 @@ pub struct RoutedMountSource {
     /// mtime/ctime: kernels re-validate cached children when the parent
     /// changes, which is what makes a removed route disappear promptly.
     revision: AtomicI64,
+    /// Position of the latest route change in the order of view changes.
+    routes_changed: AtomicU64,
 }
 
 impl RoutedMountSource {
@@ -234,6 +236,7 @@ impl RoutedMountSource {
         Self {
             view_gate: Arc::new(RouteViewGate::default()),
             revision: AtomicI64::new(1),
+            routes_changed: AtomicU64::new(0),
             routes: RwLock::new(BTreeMap::new()),
             file_id_index: RwLock::new(HashMap::new()),
             root_id: FileId::new(),
@@ -375,6 +378,7 @@ impl RoutedMountSource {
 
     fn bump_revision(&self) {
         self.revision.fetch_add(1, Ordering::AcqRel);
+        ViewStamp::record(&self.routes_changed);
     }
 
     fn coherent_epoch_by(
@@ -397,11 +401,7 @@ impl RoutedMountSource {
         binding: bool,
     ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
         let mut lease = self.view_gate.read();
-        let epoch = if binding {
-            self.binding_epoch()
-        } else {
-            self.view_epoch()
-        };
+        let epoch = binding.then(|| self.binding_epoch()).flatten();
         if expected_epoch.is_some_and(|expected| Some(expected) != epoch) {
             return Err(MountSourceError::Stale);
         }
@@ -417,14 +417,10 @@ impl RoutedMountSource {
             children.push(if binding {
                 source.acquire_binding_lease(source.binding_epoch())?
             } else {
-                source.acquire_view_lease(source.view_epoch())?
+                source.acquire_view_lease()?
             });
         }
-        let current = if binding {
-            self.binding_epoch()
-        } else {
-            self.view_epoch()
-        };
+        let current = binding.then(|| self.binding_epoch()).flatten();
         if !self.view_is_stable() || current != epoch {
             return Err(MountSourceError::Stale);
         }
@@ -569,19 +565,34 @@ impl MountFilesystem for RoutedMountSource {
             .all(|route| route.source.view_is_stable())
     }
 
-    fn view_epoch(&self) -> Option<u64> {
-        Some(self.coherent_epoch_by(MountFilesystem::view_epoch))
+    fn view_stamp(&self) -> Option<ViewStamp> {
+        let routes = self.routes.read().unwrap_or_else(PoisonError::into_inner);
+        routes
+            .values()
+            .try_fold(ViewStamp::of(&self.routes_changed), |latest, route| {
+                route.source.view_stamp().map(|stamp| latest.max(stamp))
+            })
+    }
+
+    fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
+        stamp.precedes_none_of(&self.routes_changed)
+            && match self.route(path) {
+                Ok(None) => true,
+                Ok(Some(routed)) => routed.source.unchanged_since(
+                    &routed.sub_path,
+                    file_id.map(|file_id| remap_file_id(file_id, routed.tag)),
+                    stamp,
+                ),
+                Err(_) => false,
+            }
     }
 
     fn binding_epoch(&self) -> Option<u64> {
         Some(self.coherent_epoch_by(MountFilesystem::binding_epoch))
     }
 
-    fn acquire_view_lease(
-        &self,
-        expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
-        self.acquire_epoch_lease(expected_epoch, false)
+    fn acquire_view_lease(&self) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+        self.acquire_epoch_lease(None, false)
     }
 
     fn acquire_binding_lease(
@@ -1266,8 +1277,8 @@ mod tests {
         let router = Arc::new(RoutedMountSource::new());
         let route = component("a");
         router.add_route(route.clone(), memory_source()?)?;
-        let epoch = router.view_epoch();
-        let lease = router.acquire_view_lease(epoch)?;
+        let stamp = router.view_stamp().ok_or("router has no view stamp")?;
+        let lease = router.acquire_view_lease()?;
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         let writer = Arc::clone(&router);
@@ -1288,7 +1299,7 @@ mod tests {
         thread
             .join()
             .map_err(|_| std::io::Error::other("writer thread panicked"))?;
-        assert_ne!(router.view_epoch(), epoch);
+        assert!(!router.unchanged_since(&test_path("a"), None, stamp));
         Ok(())
     }
 
@@ -1301,10 +1312,13 @@ mod tests {
         router.add_route(first.clone(), memory_source()?)?;
         router.add_route(second.clone(), memory_source()?)?;
         let binding = router.binding_epoch();
-        let cache = router.view_epoch();
-        router.create_file(&test_path("first").child(component("file")), metadata())?;
+        let created = test_path("first").child(component("file"));
+        let untouched = test_path("second").child(component("file"));
+        let stamp = router.view_stamp().ok_or("router has no view stamp")?;
+        router.create_file(&created, metadata())?;
         assert_eq!(router.binding_epoch(), binding);
-        assert_ne!(router.view_epoch(), cache);
+        assert!(!router.unchanged_since(&created, None, stamp));
+        assert!(router.unchanged_since(&untouched, None, stamp));
         let _lease = router.acquire_binding_lease(binding)?;
         Ok(())
     }

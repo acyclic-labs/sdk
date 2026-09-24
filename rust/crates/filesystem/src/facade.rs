@@ -6889,13 +6889,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// A live checkout is observed at its current generation: advancing it is
     /// a mutation of the owner, never of an observer.
     pub(crate) fn observer(&self) -> CheckoutObserver<'_, A, O> {
-        let dependencies = if self.tracks_observations() {
-            self.dependencies.observing()
-        } else {
-            self.dependencies.independent()
-        };
+        if !self.tracks_observations() {
+            return self.inspector();
+        }
         CheckoutObserver {
-            checkout: self.replica(dependencies, CheckoutMode::read_only_pinned()),
+            checkout: self.replica(
+                self.dependencies.observing(),
+                CheckoutMode::read_only_pinned(),
+            ),
+            owner: PhantomData,
+        }
+    }
+
+    /// Creates a read-only view of this checkout's current candidate that
+    /// records no observation, for bookkeeping that is not a semantic read.
+    pub(crate) fn inspector(&self) -> CheckoutObserver<'_, A, O> {
+        CheckoutObserver {
+            checkout: self.replica(
+                self.dependencies.independent(),
+                CheckoutMode::read_only_pinned(),
+            ),
             owner: PhantomData,
         }
     }
