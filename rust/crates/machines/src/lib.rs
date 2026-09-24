@@ -189,8 +189,10 @@ pub enum Capability {
     LiveFork,
     SuspendResume,
     LiveMovement,
-    /// [`MachinesProvider::fork_machine`] copies a running machine's disk, but not its memory
-    /// or processes. [`Capability::LiveFork`] is the memory-and-disk form and takes precedence
+    /// [`MachinesProvider::fork_machine`] copies a running machine's persistent disk, but not
+    /// its memory or processes. Which paths are persistent is provider-defined: a provider whose
+    /// machines boot from an immutable image may copy only its declared data directory, the
+    /// rest being the image both boot from. [`Capability::LiveFork`] is the memory-and-disk form and takes precedence
     /// when a contract declares both.
     DiskFork,
 }
@@ -200,7 +202,8 @@ pub enum Capability {
 pub enum ForkFidelity {
     /// Children resume from the source's memory, processes, and disk at the fork instant.
     MemoryAndDisk,
-    /// Children boot fresh over a copy of the source's disk. No process or memory state is
+    /// Children boot fresh over a copy of the source's persistent disk (provider-defined; see
+    /// [`Capability::DiskFork`]) taken at one consistent instant. No process or memory state is
     /// inherited; the caller restarts its workload in each child, for example from durable
     /// history.
     DiskOnly,
@@ -573,13 +576,20 @@ pub trait MachinesProvider: Send + Sync {
     ///
     /// - [`ForkFidelity::MemoryAndDisk`] (declared by `LiveFork`): the source's memory,
     ///   running processes, and disk at one instant. [`ForkFidelity::DiskOnly`] (declared by
-    ///   `DiskFork`): a copy of the source's disk only; the child boots fresh and the caller
+    ///   `DiskFork`): a copy of the source's persistent disk only (see
+    ///   [`Capability::DiskFork`]); the child boots fresh and the caller
     ///   restarts its workload. The outcome reports which one ran; it always equals the
     ///   source contract's [`MachineContract::fork_fidelity`].
     /// - The source's exact [`MachineContract`] (image, capabilities, performance, policies,
     ///   budgets). `last_checkpoint` is `None`: no checkpoint was taken.
     /// - Anything in memory or on disk, including credentials and environment. A child that
     ///   needs its own identity must be re-provisioned after the fork.
+    /// - A provider may fan out by forking earlier children of the same call (for example
+    ///   when a machine can run only one fork at a time). A child forked from an earlier child
+    ///   inherits whatever that child executed after its own fork, so the children are
+    ///   memory-identical only if the workload does not advance while the fork is in progress,
+    ///   for example because it waits for a signal after the fork point. Every child is still
+    ///   reported as a child of `machine`.
     ///
     /// # Identity
     ///

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HttpMachinesProvider, Machines, MachinesTransportError, SimulatedMachines, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
+import { HttpMachinesProvider, Machines, MachinesTransportError, SimulatedMachines, forkFidelity, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
 
 const request = (idempotencyKey: string): CreateMachine => ({
   idempotencyKey,
@@ -105,6 +105,84 @@ describe("Machines simulation", () => {
     await provider.destroyCheckpoint(captured.checkpoint.id, "checkpoint-destroy-1");
     expect((await provider.inspectMachine(created.machine.id)).state).toBe("running");
     expect((await provider.inspectMachine(forked.machines[0]!.id)).state).toBe("running");
+  });
+
+  test("fork fidelity prefers live fork over disk fork", () => {
+    expect(forkFidelity(["live-fork", "disk-fork"])).toBe("memory-and-disk");
+    expect(forkFidelity(["disk-fork"])).toBe("disk-only");
+    expect(forkFidelity(["live-checkpoint"])).toBeNull();
+  });
+
+  test("simulator declares disk fork by default", async () => {
+    expect((await new SimulatedMachines().qualifyImage(request("q").image)).capabilities).toContain("disk-fork");
+  });
+
+  test("live-forks a running machine at the contract's fidelity and replays exactly", async () => {
+    const provider = new SimulatedMachines();
+    const created = await provider.create(request("live-source"));
+    if (created.kind !== "created") throw new Error("wrong create outcome");
+    const forked = await provider.forkMachine(created.machine.id, 2, "live-fork-1");
+    if (forked.kind !== "machine-forked") throw new Error("wrong fork outcome");
+    expect(forked.source).toBe(created.machine.id);
+    expect(forked.fidelity).toBe("memory-and-disk");
+    expect(forked.children.map((child) => child.contract)).toEqual([created.machine.contract, created.machine.contract]);
+    expect(new Set(forked.children.map((child) => child.id)).size).toBe(2);
+    expect(forked.children.every((child) => child.state === "running" && child.lastCheckpoint === null)).toBeTrue();
+    expect(await provider.forkMachine(created.machine.id, 2, "live-fork-1")).toEqual(forked);
+    await expect(provider.forkMachine(created.machine.id, 3, "live-fork-1")).rejects.toThrow("bound to another intent");
+    expect(await provider.recover(idempotencyKey("live-fork-1"))).toEqual(forked);
+    const machine = new Machines(provider).machine(created.machine.id);
+    const high = await machine.fork(1, idempotencyKey("live-fork-2"));
+    expect(high.fidelity).toBe("memory-and-disk");
+    expect(high.children).toHaveLength(1);
+  });
+
+  test("disk-fork-only contracts fork at disk-only fidelity", async () => {
+    const provider = new SimulatedMachines({ capabilities: ["disk-fork", "suspend-resume"] });
+    const created = await provider.create(request("disk-source"));
+    if (created.kind !== "created") throw new Error("wrong create outcome");
+    const forked = await provider.forkMachine(created.machine.id, 1, "disk-fork-1");
+    if (forked.kind !== "machine-forked") throw new Error("wrong fork outcome");
+    expect(forked.fidelity).toBe("disk-only");
+  });
+
+  test("live fork admission rejects unsupported contracts, non-running sources, bad counts, and early source destruction", async () => {
+    const unsupported = new SimulatedMachines({ capabilities: ["live-checkpoint"] });
+    const plain = await unsupported.create(request("plain"));
+    if (plain.kind !== "created") throw new Error("wrong create outcome");
+    await expect(unsupported.forkMachine(plain.machine.id, 1, "unsupported-fork")).rejects.toThrow("does not declare live fork");
+    const provider = new SimulatedMachines();
+    await expect(provider.forkMachine(machineId("missing"), 1, "missing-fork")).rejects.toThrow("resource not found");
+    const created = await provider.create(request("admission"));
+    if (created.kind !== "created") throw new Error("wrong create outcome");
+    for (const count of [0, 1025, 1.5]) await expect(provider.forkMachine(created.machine.id, count, `count-${count}`)).rejects.toThrow("1..=1024");
+    await provider.suspend(created.machine.id, "admission-suspend");
+    await expect(provider.forkMachine(created.machine.id, 1, "suspended-fork")).rejects.toThrow("only a running machine");
+    await provider.wake(created.machine.id, "admission-wake");
+    const forked = await provider.forkMachine(created.machine.id, 1, "join-fork");
+    if (forked.kind !== "machine-forked") throw new Error("wrong fork outcome");
+    await expect(provider.destroyMachine(created.machine.id, "early-destroy")).rejects.toThrow("live-fork children");
+    await provider.destroyMachine(forked.children[0]!.id, "child-destroy");
+    expect(await provider.destroyMachine(created.machine.id, "early-destroy")).toEqual({ kind: "machine-destroyed", machineId: created.machine.id });
+  });
+
+  test("managed transport decodes machine forks and rejects substituted evidence", async () => {
+    const simulated = new SimulatedMachines();
+    const created = await simulated.create(request("remote-fork"));
+    if (created.kind !== "created") throw new Error("wrong create outcome");
+    const forked = await simulated.forkMachine(created.machine.id, 2, "remote-fork-1");
+    if (forked.kind !== "machine-forked") throw new Error("wrong fork outcome");
+    const encode = (value: unknown) => JSON.stringify(value, (_key, item) => typeof item === "bigint" ? { $bigint: item.toString() } : item);
+    let seen: { url: string; body: unknown } | undefined;
+    const serve = (value: unknown) => new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async (input, init) => { seen = { url: String(input), body: JSON.parse(String(init?.body)) }; return new Response(encode(value)); } });
+    expect(await serve(forked).forkMachine(created.machine.id, 2, idempotencyKey("remote-fork-1"))).toEqual(forked);
+    expect(seen).toEqual({ url: "https://example.test/v1/machines/machines/fork", body: { machineId: created.machine.id, count: 2, idempotencyKey: "remote-fork-1" } });
+    expect((await new Machines(serve(forked)).machine(created.machine.id).fork(2, idempotencyKey("remote-fork-1"))).children.map((child) => child.id)).toEqual(forked.children.map((child) => child.id));
+    await expect(serve({ ...forked, source: "other" }).forkMachine(created.machine.id, 2, idempotencyKey("k"))).rejects.toThrow("substituted");
+    await expect(serve(forked).forkMachine(created.machine.id, 3, idempotencyKey("k"))).rejects.toThrow("substituted");
+    await expect(serve({ ...forked, fidelity: "disk-only" }).forkMachine(created.machine.id, 2, idempotencyKey("k"))).rejects.toThrow("fidelity");
+    await expect(serve({ ...forked, fidelity: "imaginary" }).forkMachine(created.machine.id, 2, idempotencyKey("k"))).rejects.toThrow("fidelity is invalid");
+    await expect(serve({ ...forked, children: [forked.children[0], forked.children[0]] }).forkMachine(created.machine.id, 2, idempotencyKey("k"))).rejects.toThrow("duplicated");
   });
 
   test("managed images cannot be constructed from mutable OCI tags", async () => {

@@ -17,6 +17,10 @@ export type Image =
   | { readonly kind: "checkpoint"; readonly checkpointId: CheckpointId };
 
 export type Capability = "elastic-cpu" | "elastic-memory" | "live-checkpoint" | "live-fork" | "suspend-resume" | "live-movement" | "disk-fork";
+/** What the children of one `forkMachine` inherited from their source: memory, processes, and disk, or a copy of the disk only (children boot fresh). */
+export type ForkFidelity = "memory-and-disk" | "disk-only";
+/** The fidelity a machine with `capabilities` forks at, or `null` when it cannot be forked live and the caller must fall back to checkpoint fork or a restart. `live-fork` takes precedence over `disk-fork`. */
+export function forkFidelity(capabilities: readonly Capability[]): ForkFidelity | null { return capabilities.includes("live-fork") ? "memory-and-disk" : capabilities.includes("disk-fork") ? "disk-only" : null; }
 export type CompatibilityPolicy = { readonly kind: "best-effort" } | { readonly kind: "require"; readonly capabilities: readonly Capability[] };
 export type Performance = "elastic" | "dedicated";
 export type SuspensionPolicy = { readonly kind: "manual" } | { readonly kind: "after-idle"; readonly milliseconds: number };
@@ -49,7 +53,7 @@ export type EventFact = { readonly kind: "state"; readonly state: MachineState }
 /** Sequence and timestamp remain exact and are rejected above Number.MAX_SAFE_INTEGER. */
 export interface MachineEvent { readonly machine: MachineId; readonly sequence: number; readonly observedAtUnixMs: number; readonly fact: EventFact }
 export interface UsageReceipt { readonly machine: MachineId; readonly startUnixMs: number; readonly endUnixMs: number; readonly elasticCpuNs: bigint; readonly dedicatedCpuNs: bigint; readonly privateResidentByteSeconds: bigint; readonly durablePrivateBytes: bigint; readonly lineageReceiptSha256: Uint8Array; readonly egressBytes: bigint; readonly receipt: Uint8Array }
-export type MutationOutcome = { readonly kind: "created"; readonly machine: MachineObservation } | { readonly kind: "checkpointed"; readonly checkpoint: CheckpointObservation } | { readonly kind: "forked"; readonly machines: readonly MachineObservation[] } | { readonly kind: "suspended" | "woken" | "machine-destroyed"; readonly machineId: MachineId } | { readonly kind: "suspension-policy-set"; readonly machineId: MachineId; readonly policy: SuspensionPolicy } | { readonly kind: "checkpoint-destroyed"; readonly checkpointId: CheckpointId };
+export type MutationOutcome = { readonly kind: "created"; readonly machine: MachineObservation } | { readonly kind: "checkpointed"; readonly checkpoint: CheckpointObservation } | { readonly kind: "forked"; readonly machines: readonly MachineObservation[] } | { readonly kind: "machine-forked"; readonly source: MachineId; readonly fidelity: ForkFidelity; readonly children: readonly MachineObservation[] } | { readonly kind: "suspended" | "woken" | "machine-destroyed"; readonly machineId: MachineId } | { readonly kind: "suspension-policy-set"; readonly machineId: MachineId; readonly policy: SuspensionPolicy } | { readonly kind: "checkpoint-destroyed"; readonly checkpointId: CheckpointId };
 
 /** Provider contract. Implementations must document their actual isolation and durability. */
 export interface MachinesProvider {
@@ -61,6 +65,14 @@ export interface MachinesProvider {
   checkpoint(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;
   inspectCheckpoint(checkpointId: CheckpointId): Promise<CheckpointObservation>;
   fork(checkpointId: CheckpointId, count: number, performance: Performance, key: IdempotencyKey): Promise<MutationOutcome>;
+  /**
+   * Forks a running machine into `count` (1..=1024) fresh children without an intermediate checkpoint. The source must be running (else a conflict) and its contract must declare
+   * `live-fork` or `disk-fork` (else unsupported; fall back to `checkpoint` plus `fork`, or a restart). Children inherit the source's exact contract with fresh identities and endpoints;
+   * open network connections are never carried over. Destroy children before their source: a provider may refuse to destroy a source with live children. Not atomic for `count > 1`:
+   * a provider may undo a failed attempt; replay `key` to finish, or cancel to undo, an indeterminate one. A provider may fan out by forking earlier children, which then inherit
+   * whatever those executed after their own fork. Resolves to a `machine-forked` outcome.
+   */
+  forkMachine(machineId: MachineId, count: number, key: IdempotencyKey): Promise<MutationOutcome>;
   suspend(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;
   wake(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;
   setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, key: IdempotencyKey): Promise<MutationOutcome>;
@@ -75,7 +87,7 @@ export interface MachinesProvider {
   watchOperation(operationId: OperationId): AsyncIterable<OperationObservation>;
 }
 
-const capabilities: readonly Capability[] = ["elastic-cpu", "elastic-memory", "live-checkpoint", "live-fork", "suspend-resume", "live-movement"];
+const allCapabilities: readonly Capability[] = ["elastic-cpu", "elastic-memory", "live-checkpoint", "live-fork", "suspend-resume", "live-movement", "disk-fork"];
 const revision = "2b58d52764ff9f662ec12b1aa029526543852dd34a13db4c878cfe5e0f13fc6a";
 const clone = <T>(value: T): T => structuredClone(value);
 const derivedId = <Value extends string>(domain: string, key: string, index = 0): Value => `${domain}:${key}:${index}` as Value;
@@ -100,7 +112,12 @@ function validateImage(image: Image): void {
   if (image.kind === "checkpoint" && image.checkpointId.length === 0) throw new Error("checkpoint identity is empty");
 }
 
-/** Deterministic bounded simulator with no OS execution, isolation, durability, or availability. */
+export interface SimulatedMachinesOptions {
+  /** Capabilities the simulator qualifies images with (default: every capability), for example without `live-fork` to exercise a caller's fallback path. Only admission and fork fidelity follow the set. */
+  readonly capabilities?: readonly Capability[];
+}
+
+/** Deterministic bounded simulator with no OS execution, isolation, durability, or availability. It refuses to destroy a live-fork source while any of its children is not destroyed. */
 export class SimulatedMachines implements MachinesProvider {
   readonly assurance = "process-local-simulation" as const;
   readonly #machines = new Map<MachineId, MachineObservation>();
@@ -108,16 +125,21 @@ export class SimulatedMachines implements MachinesProvider {
   readonly #events = new Map<MachineId, MachineEvent[]>();
   readonly #replays = new Map<IdempotencyKey, { readonly intent: string; readonly outcome: MutationOutcome }>();
   readonly #operations = new Map<OperationId, OperationObservation>();
+  /** Live-fork child to its source. */
+  readonly #forkSources = new Map<MachineId, MachineId>();
+  readonly #capabilities: readonly Capability[];
   #now = 1;
 
-  async qualifyImage(image: Image): Promise<ImageQualification> { validateImage(image); return clone({ image, capabilities, compatibilityRevisionHex: revision }); }
+  constructor(options: SimulatedMachinesOptions = {}) { this.#capabilities = Object.freeze([...new Set(options.capabilities ?? allCapabilities)]); }
+
+  async qualifyImage(image: Image): Promise<ImageQualification> { validateImage(image); return clone({ image, capabilities: this.#capabilities, compatibilityRevisionHex: revision }); }
   async create(request: CreateMachine): Promise<MutationOutcome> {
     validateImage(request.image);
     return this.#mutate(request.idempotencyKey, canonicalIntent(request), () => {
       if (this.#machines.size >= 1024) throw new Error("simulation machine limit reached");
-      if (request.compatibility.kind === "require" && request.compatibility.capabilities.some((value) => !capabilities.includes(value))) throw new Error("required capability is unavailable");
+      if (request.compatibility.kind === "require" && request.compatibility.capabilities.some((value) => !this.#capabilities.includes(value))) throw new Error("required capability is unavailable");
       const id = derivedId<MachineId>("machine", request.idempotencyKey); const now = this.#tick();
-      const contract: MachineContract = { image: clone(request.image), compatibility: clone(request.compatibility), performance: request.performance, suspension: clone(request.suspension), expiration: clone(request.expiration), networkPolicyDigestHex: request.networkPolicyDigestHex, budgets: clone(request.budgets), capabilities, compatibilityRevisionHex: revision };
+      const contract: MachineContract = { image: clone(request.image), compatibility: clone(request.compatibility), performance: request.performance, suspension: clone(request.suspension), expiration: clone(request.expiration), networkPolicyDigestHex: request.networkPolicyDigestHex, budgets: clone(request.budgets), capabilities: clone(this.#capabilities), compatibilityRevisionHex: revision };
       const machine: MachineObservation = { id, state: "running", contract, endpoints: [{ name: "default", uri: `memory://${id}` }], lastCheckpoint: null, createdAtUnixMs: now, changedAtUnixMs: now };
       this.#machines.set(id, machine); this.#event(id, { kind: "state", state: "running" }, now); return { kind: "created", machine };
     });
@@ -131,10 +153,11 @@ export class SimulatedMachines implements MachinesProvider {
   async checkpoint(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome> { return this.#mutate(key, `checkpoint:${machineId}`, () => { const source = this.#required(this.#machines, machineId); if (source.state !== "running" && source.state !== "suspended") throw new Error("machine is not checkpointable"); const id = derivedId<CheckpointId>("checkpoint", key); const now = this.#tick(); const checkpoint = { id, source: machineId, contract: clone(source.contract), forkable: true, createdAtUnixMs: now }; this.#checkpoints.set(id, checkpoint); this.#machines.set(machineId, { ...source, lastCheckpoint: id, changedAtUnixMs: now }); return { kind: "checkpointed", checkpoint }; }); }
   async inspectCheckpoint(checkpointId: CheckpointId): Promise<CheckpointObservation> { return clone(this.#required(this.#checkpoints, checkpointId)); }
   async fork(checkpointId: CheckpointId, count: number, performance: Performance, key: IdempotencyKey): Promise<MutationOutcome> { return this.#mutate(key, `fork:${checkpointId}:${count}:${performance}`, () => { if (!Number.isInteger(count) || count < 1 || count > 1024) throw new Error("fork count must be 1..=1024"); const checkpoint = this.#required(this.#checkpoints, checkpointId); if (!checkpoint.forkable) throw new Error("checkpoint no longer accepts forks"); if (this.#machines.size + count > 1024) throw new Error("simulation machine limit reached"); const machines = Array.from({ length: count }, (_unused, index) => { const id = derivedId<MachineId>("machine", key, index); const now = this.#tick(); const value = { id, state: "running" as const, contract: { ...clone(checkpoint.contract), image: { kind: "checkpoint" as const, checkpointId }, performance }, endpoints: [{ name: "default", uri: `memory://${id}` }], lastCheckpoint: checkpointId, createdAtUnixMs: now, changedAtUnixMs: now }; this.#machines.set(id, value); this.#event(id, { kind: "state", state: "running" }, now); return value; }); return { kind: "forked", machines }; }); }
+  async forkMachine(machineId: MachineId, count: number, key: IdempotencyKey): Promise<MutationOutcome> { return this.#mutate(key, `fork-machine:${machineId}:${count}`, () => { if (!Number.isInteger(count) || count < 1 || count > 1024) throw new Error("fork count must be 1..=1024"); const source = this.#required(this.#machines, machineId); const fidelity = forkFidelity(source.contract.capabilities); if (fidelity === null) throw new Error("machine contract does not declare live fork"); if (source.state !== "running") throw new Error("only a running machine can be forked"); if (this.#machines.size + count > 1024) throw new Error("simulation machine limit reached"); const children = Array.from({ length: count }, (_unused, index) => { const id = derivedId<MachineId>("machine", key, index); const now = this.#tick(); const value: MachineObservation = { id, state: "running", contract: clone(source.contract), endpoints: [{ name: "default", uri: `memory://${id}` }], lastCheckpoint: null, createdAtUnixMs: now, changedAtUnixMs: now }; this.#machines.set(id, value); this.#forkSources.set(id, machineId); this.#event(id, { kind: "state", state: "running" }, now); return value; }); return { kind: "machine-forked", source: machineId, fidelity, children }; }); }
   async suspend(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome> { return this.#transition(machineId, key, "running", "suspended", "suspended"); }
   async wake(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome> { return this.#transition(machineId, key, "suspended", "running", "woken"); }
   async setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, key: IdempotencyKey): Promise<MutationOutcome> { return this.#mutate(key, `policy:${machineId}:${JSON.stringify(policy)}`, () => { const value = this.#required(this.#machines, machineId); if (value.state === "destroyed") throw new Error("destroyed machine cannot change policy"); this.#machines.set(machineId, { ...value, contract: { ...value.contract, suspension: clone(policy) }, changedAtUnixMs: this.#tick() }); return { kind: "suspension-policy-set", machineId, policy }; }); }
-  async destroyMachine(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome> { return this.#mutate(key, `destroy-machine:${machineId}`, () => { const value = this.#required(this.#machines, machineId); if (value.state === "destroyed") return { kind: "machine-destroyed", machineId }; const now = this.#tick(); this.#machines.set(machineId, { ...value, state: "destroyed", changedAtUnixMs: now }); this.#event(machineId, { kind: "state", state: "destroyed" }, now); return { kind: "machine-destroyed", machineId }; }); }
+  async destroyMachine(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome> { return this.#mutate(key, `destroy-machine:${machineId}`, () => { const value = this.#required(this.#machines, machineId); if (value.state === "destroyed") return { kind: "machine-destroyed", machineId }; if ([...this.#forkSources].some(([child, source]) => source === machineId && this.#machines.get(child)?.state !== "destroyed")) throw new Error("machine has live-fork children; destroy them first"); const now = this.#tick(); this.#machines.set(machineId, { ...value, state: "destroyed", changedAtUnixMs: now }); this.#event(machineId, { kind: "state", state: "destroyed" }, now); return { kind: "machine-destroyed", machineId }; }); }
   async destroyCheckpoint(checkpointId: CheckpointId, key: IdempotencyKey): Promise<MutationOutcome> { return this.#mutate(key, `destroy-checkpoint:${checkpointId}`, () => { const value = this.#required(this.#checkpoints, checkpointId); this.#checkpoints.set(checkpointId, { ...value, forkable: false }); return { kind: "checkpoint-destroyed", checkpointId }; }); }
   async events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<{ readonly events: readonly MachineEvent[]; readonly nextSequence: number | null }> { this.#required(this.#machines, machineId); if (!Number.isInteger(limit) || limit < 1 || limit > 1024) throw new Error("event page limit must be 1..=1024"); const values = (this.#events.get(machineId) ?? []).filter((value) => afterSequence === null || value.sequence > afterSequence); const events = values.slice(0, limit); return clone({ events, nextSequence: values.length > limit ? events.at(-1)?.sequence ?? null : null }); }
   async usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { this.#required(this.#machines, machineId); if (!Number.isSafeInteger(startUnixMs) || !Number.isSafeInteger(endUnixMs) || startUnixMs >= endUnixMs) throw new Error("usage interval must be non-empty safe integers"); return { machine: machineId, startUnixMs, endUnixMs, elasticCpuNs: 0n, dedicatedCpuNs: 0n, privateResidentByteSeconds: 0n, durablePrivateBytes: 0n, lineageReceiptSha256: new Uint8Array(32), egressBytes: 0n, receipt: new Uint8Array() }; }
