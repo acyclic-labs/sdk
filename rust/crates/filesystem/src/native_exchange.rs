@@ -231,6 +231,7 @@ pub fn exchange_native_entries(left: &Path, right: &Path) -> Result<(), NativeEx
 /// Resolves the two crash windows in the Windows three-rename entry exchange.
 /// Other platforms exchange entries in one kernel operation and need no
 /// scratch recovery.
+#[cfg(any(feature = "native-mount", windows))]
 pub(crate) fn recover_native_entry_exchange(live: &Path) -> Result<(), NativeExchangeError> {
     #[cfg(windows)]
     {

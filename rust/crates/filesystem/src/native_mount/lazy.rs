@@ -922,7 +922,7 @@ struct LazyOpenFile<A, O, D, S> {
     detached: DetachedIdentities<A, O>,
     open_sources: OpenIdentityHandles,
     promoted: Mutex<Option<Arc<dyn MountOpenFile>>>,
-    checked_authored_epoch: AtomicU64,
+    checked_authored_revision: AtomicU64,
 }
 
 struct ViewBoundOpenFile<A, O> {
@@ -1108,12 +1108,13 @@ where
         if let Some(file) = promoted.as_ref() {
             return Ok(Some(Arc::clone(file)));
         }
-        let epoch = self.authored.shared_checkout().revision();
-        if self.checked_authored_epoch.load(Ordering::Acquire) == epoch {
+        let revision = self.authored.shared_checkout().revision();
+        if self.checked_authored_revision.load(Ordering::Acquire) == revision {
             return Ok(None);
         }
         let file = self.authored.attached_file_by_id(self.expected_source)?;
-        self.checked_authored_epoch.store(epoch, Ordering::Release);
+        self.checked_authored_revision
+            .store(revision, Ordering::Release);
         if let Some(file) = file {
             *promoted = Some(Arc::clone(&file));
             return Ok(Some(file));
@@ -1458,9 +1459,9 @@ where
                     detached: Arc::clone(&self.detached),
                     open_sources: Arc::clone(&self.open_sources),
                     promoted: Mutex::new(None),
-                    // The handle has not yet checked this checkout epoch.
+                    // The handle has not yet checked this checkout revision.
                     // A peer alias may already have staged this file ID.
-                    checked_authored_epoch: AtomicU64::new(0),
+                    checked_authored_revision: AtomicU64::new(0),
                 });
                 self.open_sources
                     .lock()

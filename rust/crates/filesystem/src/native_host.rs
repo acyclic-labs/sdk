@@ -15,6 +15,7 @@ use windows::Win32::Storage::FileSystem::FILE_BASIC_INFO;
 
 #[cfg(target_os = "linux")]
 #[derive(Debug, thiserror::Error)]
+#[cfg(any(feature = "native-mount", test))]
 pub(crate) enum LinuxMetadataError {
     #[error("Linux native metadata cannot represent {0}")]
     Unsupported(&'static str),
@@ -23,6 +24,7 @@ pub(crate) enum LinuxMetadataError {
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(any(feature = "native-mount", test))]
 pub(crate) struct LinuxMetadataTarget {
     inode: std::os::fd::OwnedFd,
 }
@@ -174,6 +176,7 @@ fn held_parent_leaf(root: &Dir, path: &Path) -> io::Result<(Dir, std::ffi::CStri
 
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
+#[cfg(any(feature = "native-mount", test))]
 impl LinuxMetadataTarget {
     fn open(root: &Dir, path: &Path) -> io::Result<Self> {
         use std::os::fd::{AsRawFd as _, FromRawFd as _};
@@ -290,13 +293,16 @@ impl LinuxMetadataTarget {
 #[cfg(target_os = "linux")]
 #[cfg(target_arch = "aarch64")]
 // libc does not expose SYS_fchmodat2 on aarch64 yet; asm-generic/unistd.h does.
+#[cfg(any(feature = "native-mount", test))]
 const LINUX_FCHMODAT2_SYSCALL: libc::c_long = 452;
 
 #[cfg(target_os = "linux")]
 #[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(feature = "native-mount", test))]
 const LINUX_FCHMODAT2_SYSCALL: libc::c_long = libc::SYS_fchmodat2;
 
 #[cfg(target_os = "linux")]
+#[cfg(any(feature = "native-mount", test))]
 fn validate_linux_metadata(
     observed: libc::stat,
     metadata: crate::kernel::FileMetadata,
@@ -351,6 +357,7 @@ fn validate_linux_metadata(
 
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
+#[cfg(any(feature = "native-mount", test))]
 fn linux_require_fchmodat2() -> Result<(), LinuxMetadataError> {
     // An invalid descriptor makes the capability probe non-mutating. A kernel
     // with fchmodat2 and AT_EMPTY_PATH support returns EBADF; an older kernel
@@ -377,6 +384,7 @@ fn linux_require_fchmodat2() -> Result<(), LinuxMetadataError> {
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(any(feature = "native-mount", test))]
 fn verify_linux_metadata(
     observed: libc::stat,
     metadata: crate::kernel::FileMetadata,
@@ -412,6 +420,7 @@ fn verify_linux_metadata(
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(any(feature = "native-mount", test))]
 fn linux_time_spec(
     field: crate::kernel::MetadataField<i64>,
 ) -> Result<libc::timespec, LinuxMetadataError> {
@@ -430,6 +439,7 @@ fn linux_time_spec(
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(any(feature = "native-mount", test))]
 fn linux_observed_ns(seconds: i64, nanos: i64) -> Result<i64, LinuxMetadataError> {
     seconds
         .checked_mul(1_000_000_000)
@@ -825,6 +835,7 @@ impl HostRoot {
     /// Binds metadata restoration to the current inode before deferred I/O.
     /// A later rename or path replacement cannot redirect the mutation.
     #[cfg(target_os = "linux")]
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn open_linux_metadata_target(
         &self,
         path: &Path,
@@ -882,6 +893,7 @@ impl HostRoot {
 
     #[cfg(unix)]
     #[allow(unsafe_code)]
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn create_fifo_held(&self, path: &Path, mode: u32) -> io::Result<()> {
         use std::os::fd::AsRawFd as _;
 
@@ -902,6 +914,7 @@ impl HostRoot {
         clippy::useless_conversion,
         reason = "libc file-type constants differ in width between Linux and macOS"
     )]
+    #[cfg(any(feature = "native-mount", all(test, target_os = "macos")))]
     pub(crate) fn create_device_held(
         &self,
         path: &Path,

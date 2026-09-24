@@ -1,5 +1,8 @@
-#![cfg_attr(not(target_os = "macos"), allow(missing_docs))]
-#![cfg(target_os = "macos")]
+#![cfg_attr(
+    not(all(target_os = "macos", feature = "native-mount")),
+    allow(missing_docs)
+)]
+#![cfg(all(target_os = "macos", feature = "native-mount"))]
 
 //! Local-only APFS native working-set preparation and capture benchmark.
 
