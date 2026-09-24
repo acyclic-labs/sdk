@@ -7128,7 +7128,7 @@ async fn handle_linux_mailbox_request(
     control: Arc<impl ConcurrentControlRequestDispatcher>,
     ledger: Arc<ControlLedger>,
 ) -> Result<(), String> {
-    let response = match read_linux_control_file_at(&exchange, "processing").await {
+    let response = match read_linux_control_file_at(&exchange, "processing") {
         Ok(request) if request.len() <= MAXIMUM_CONTROL_MESSAGE_BYTES => {
             match serde_json::from_slice::<ControlEnvelope<ControlRequest>>(&request) {
                 Ok(envelope) => dispatch_control_envelope(&control, &ledger, envelope).await,
@@ -7152,20 +7152,20 @@ async fn handle_linux_mailbox_request(
     ) else {
         return Ok(());
     };
-    let mut response_file = tokio::fs::File::from_std(std::fs::File::from(response_file));
-    if response_file.write_all(&encoded).await.is_err() || response_file.flush().await.is_err() {
+    if std::fs::File::from(response_file)
+        .write_all(&encoded)
+        .is_err()
+    {
         return Ok(());
     }
-    drop(response_file);
     let _ = rustix::fs::renameat(&*exchange, "response.pending", &*exchange, "response");
     Ok(())
 }
 
+/// Exchange files are bounded and live in a private runtime directory, so
+/// reading one directly is cheaper than a hop through the blocking pool.
 #[cfg(target_os = "linux")]
-async fn read_linux_control_file_at(
-    directory: &rustix::fd::OwnedFd,
-    name: &str,
-) -> io::Result<Vec<u8>> {
+fn read_linux_control_file_at(directory: &rustix::fd::OwnedFd, name: &str) -> io::Result<Vec<u8>> {
     let file = rustix::fs::openat(
         directory,
         name,
@@ -7183,15 +7183,14 @@ async fn read_linux_control_file_at(
             "Acyclic control message is not a regular file",
         ));
     }
-    let file = tokio::fs::File::from_std(std::fs::File::from(file));
+    let file = std::fs::File::from(file);
     let mut request = Vec::with_capacity(MAXIMUM_CONTROL_MESSAGE_BYTES.min(64 * 1024));
     file.take(
         u64::try_from(MAXIMUM_CONTROL_MESSAGE_BYTES)
             .unwrap_or(u64::MAX)
             .saturating_add(1),
     )
-    .read_to_end(&mut request)
-    .await?;
+    .read_to_end(&mut request)?;
     Ok(request)
 }
 
@@ -7569,39 +7568,20 @@ async fn dispatch_control_envelope(
             dispatch_control_request(control, envelope.request).await,
         );
     }
-    let begin = {
-        let ledger = Arc::clone(ledger);
-        let envelope = envelope.clone();
-        tokio::task::spawn_blocking(move || ledger.begin(&envelope)).await
-    };
-    match begin {
-        Err(error) => control_response_for(
-            &request_id,
-            Err(format!("Acyclic control replay worker failed: {error}")),
-        ),
-        Ok(Err(error)) => control_response_for(&request_id, Err(error)),
-        Ok(Ok(LedgerDecision::Completed(response))) => response,
-        Ok(Ok(LedgerDecision::Execute)) => {
+    // Ledger transitions are single unflushed appends, cheaper than handing
+    // them to a blocking worker.
+    match ledger.begin(&envelope) {
+        Err(error) => control_response_for(&request_id, Err(error)),
+        Ok(LedgerDecision::Completed(response)) => response,
+        Ok(LedgerDecision::Execute) => {
             let result = dispatch_control_request(control, envelope.request.clone()).await;
             let response = control_response_for(&request_id, result);
-            let completion = {
-                let ledger = Arc::clone(ledger);
-                let envelope = envelope.clone();
-                let response = response.clone();
-                tokio::task::spawn_blocking(move || ledger.complete(&envelope, response)).await
-            };
-            match completion {
+            match ledger.complete(&envelope, &response) {
+                Ok(()) => response,
                 Err(error) => control_response_for(
                     &request_id,
                     Err(format!(
-                        "Acyclic completed the operation but its replay worker failed: {error}"
-                    )),
-                ),
-                Ok(Ok(())) => response,
-                Ok(Err(error)) => control_response_for(
-                    &request_id,
-                    Err(format!(
-                        "Acyclic completed the operation but could not durably record its response: {error}"
+                        "Acyclic completed the operation but could not record its response: {error}"
                     )),
                 ),
             }
@@ -9757,9 +9737,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             name: format!("{host}:{event}"),
             arguments: input,
         };
-        let envelope = prepare_control_envelope(&data, request)
-            .await
-            .map_err(io::Error::other)?;
+        let envelope = ControlEnvelope::new(request);
         let response = if matches!(event.as_str(), "SessionStart" | "sessionStart") {
             // Session boundaries are the one cheap, deterministic place to advance
             // an idle service to the installed binary. Tool hooks stay on the direct
@@ -10896,10 +10874,7 @@ async fn send_control_request(
     data: &Path,
     request: &ControlRequest,
 ) -> Result<Value, ControlRequestError> {
-    let envelope = prepare_control_envelope(data, request.clone())
-        .await
-        .map_err(ControlRequestError::Unavailable)?;
-    send_control_envelope(data, &envelope).await
+    send_control_envelope(data, &ControlEnvelope::new(request.clone())).await
 }
 
 async fn send_control_envelope(
@@ -10928,10 +10903,7 @@ async fn send_control_request_once(
     data: &Path,
     request: &ControlRequest,
 ) -> Result<Value, ControlRequestError> {
-    let envelope = prepare_control_envelope(data, request.clone())
-        .await
-        .map_err(ControlRequestError::Unavailable)?;
-    send_control_envelope_once(data, &envelope).await
+    send_control_envelope_once(data, &ControlEnvelope::new(request.clone())).await
 }
 
 async fn send_control_envelope_once(
@@ -10939,23 +10911,6 @@ async fn send_control_envelope_once(
     envelope: &ControlEnvelope<ControlRequest>,
 ) -> Result<Value, ControlRequestError> {
     send_control_envelope_with_attempts(data, envelope, 1, CONTROL_PROBE_WAIT).await
-}
-
-async fn prepare_control_envelope(
-    data: &Path,
-    request: ControlRequest,
-) -> Result<ControlEnvelope<ControlRequest>, String> {
-    if matches!(
-        request.command,
-        ControlCommand::Ping | ControlCommand::Doctor | ControlCommand::Agents
-    ) {
-        Ok(ControlEnvelope::ephemeral(request))
-    } else {
-        let data = data.to_path_buf();
-        tokio::task::spawn_blocking(move || ControlEnvelope::new_for_install(&data, request))
-            .await
-            .map_err(|error| format!("Acyclic control operation allocator failed: {error}"))?
-    }
 }
 
 async fn send_control_envelope_with_attempts(
@@ -11314,16 +11269,9 @@ async fn send_linux_mailbox_request(
             rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
         )
         .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        let mut request_file = tokio::fs::File::from_std(std::fs::File::from(request_file));
-        request_file
+        std::fs::File::from(request_file)
             .write_all(encoded)
-            .await
             .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        request_file
-            .flush()
-            .await
-            .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        drop(request_file);
         rustix::fs::renameat(
             &*exchange_directory,
             "request.pending",
@@ -11331,24 +11279,41 @@ async fn send_linux_mailbox_request(
             "request",
         )
         .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+        // The service publishes its response by renaming it into the exchange.
+        // Each check for the response follows the watch, so none is missed.
+        let published = rustix::fs::inotify::init(
+            rustix::fs::inotify::CreateFlags::CLOEXEC | rustix::fs::inotify::CreateFlags::NONBLOCK,
+        )
+        .and_then(|published| {
+            rustix::fs::inotify::add_watch(
+                &published,
+                mailbox.join(&exchange_name),
+                rustix::fs::inotify::WatchFlags::MOVED_TO
+                    | rustix::fs::inotify::WatchFlags::ONLYDIR
+                    | rustix::fs::inotify::WatchFlags::DONT_FOLLOW,
+            )?;
+            Ok(published)
+        })
+        .map_err(errno_to_io)
+        .and_then(tokio::io::unix::AsyncFd::new)
+        .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
         let response = loop {
-            match read_linux_control_file_at(&exchange_directory, "response").await {
+            match read_linux_control_file_at(&exchange_directory, "response") {
                 Ok(response) if response.len() <= MAXIMUM_CONTROL_MESSAGE_BYTES => break response,
                 Ok(_) => {
                     return Err(ControlRequestError::Indeterminate(
                         "Acyclic control response exceeds the 4 MiB bound".to_owned(),
                     ));
                 }
-                Err(error)
-                    if error.kind() == io::ErrorKind::NotFound
-                        && tokio::time::Instant::now() < deadline =>
-                {
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    return Err(ControlRequestError::Indeterminate(
-                        "Acyclic service did not answer the filesystem control request".to_owned(),
-                    ));
+                    let mut ready = published
+                        .readable()
+                        .await
+                        .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+                    let mut events = [0_u8; 4096];
+                    while let Ok(Ok(_)) = ready.try_io(|published| {
+                        rustix::io::read(published.get_ref(), &mut events).map_err(errno_to_io)
+                    }) {}
                 }
                 Err(error) => return Err(ControlRequestError::Indeterminate(error.to_string())),
             }
@@ -11361,7 +11326,7 @@ async fn send_linux_mailbox_request(
         .ok()
         .and_then(|mut slot| slot.take());
     if let Some(exchange) = exchange {
-        tokio::task::spawn_blocking(move || remove_linux_mailbox_exchange(&exchange));
+        remove_linux_mailbox_exchange(&exchange);
     }
     match result {
         Ok(result) => result,
@@ -16844,7 +16809,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ephemeral_control_commands_still_require_exact_protocol_negotiation() {
+    async fn unledgered_control_commands_still_require_exact_protocol_negotiation() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let data = temporary.path().join("plugin-data");
         fs::create_dir(&data).expect("plugin data directory");
@@ -16854,7 +16819,7 @@ mod tests {
         let ledger = Arc::new(ControlLedger::open(&data).expect("ledger"));
 
         for command in [ControlCommand::Ping, ControlCommand::Agents] {
-            let mut envelope = ControlEnvelope::ephemeral(ControlRequest {
+            let mut envelope = ControlEnvelope::new(ControlRequest {
                 version: 1,
                 command,
                 cwd: temporary.path().to_path_buf(),
@@ -16871,7 +16836,7 @@ mod tests {
                 .executions
                 .load(std::sync::atomic::Ordering::SeqCst),
             0,
-            "invalid ephemeral envelopes must not reach the dispatcher"
+            "invalid unledgered envelopes must not reach the dispatcher"
         );
     }
 

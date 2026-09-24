@@ -78,6 +78,125 @@ fn packaged_non_filesystem_hook_process_cost() {
     );
 }
 
+/// Times every hook process end to end (spawn to exit with stdout collected)
+/// against a live service in an isolated state root: one session, a series of
+/// Bash tool calls, and one subagent spawn. Prints one JSON receipt line;
+/// `ACYCLIC_HOOK_LATENCY_PAIRS` sets the number of measured Bash calls.
+#[test]
+#[ignore = "local-only packaged hook latency receipt"]
+fn packaged_service_hook_latency_receipt() {
+    const WARMUP_PAIRS: usize = 5;
+    let pairs = std::env::var("ACYCLIC_HOOK_LATENCY_PAIRS")
+        .map_or(Ok(200), |pairs| pairs.parse::<usize>())
+        .expect("ACYCLIC_HOOK_LATENCY_PAIRS must be a count");
+    let temporary = test_tempdir("hook-service-latency-");
+    let workspace = temporary.path().join("workspace");
+    fs::create_dir(&workspace).expect("workspace");
+    let package = package_production_plugin(temporary.path());
+    let service = ServiceGuard::new(temporary.path());
+    let hook = |event: &str, fields: Value| {
+        let mut input = serde_json::json!({
+            "session_id": "latency-session",
+            "cwd": workspace,
+            "hook_event_name": event,
+        });
+        input
+            .as_object_mut()
+            .expect("hook input object")
+            .extend(fields.as_object().expect("hook fields").clone());
+        let input = serde_json::to_vec(&input).expect("hook input");
+        let mut process = command(&package.native);
+        process
+            .args(["__hook", "claude-code", event])
+            .current_dir(&workspace);
+        isolated_state(&mut process, temporary.path());
+        let started = Instant::now();
+        let output = output_with_stdin(&mut process, &input);
+        let elapsed = started.elapsed();
+        assert!(
+            output.status.success(),
+            "{event}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let response: Value = serde_json::from_slice(&output.stdout).expect("hook response");
+        assert!(
+            !response
+                .get("systemMessage")
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains("Acyclic is unavailable")),
+            "{event} failed: {response}"
+        );
+        elapsed
+    };
+    let mut samples = std::collections::BTreeMap::<&str, Vec<Duration>>::new();
+    let mut record = |label, elapsed| samples.entry(label).or_default().push(elapsed);
+    let none = || serde_json::json!({});
+    record(
+        "SessionStart (starts service)",
+        hook("SessionStart", none()),
+    );
+    for index in 0..WARMUP_PAIRS + pairs {
+        let tool = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_use_id": format!("bash-{index}"),
+            "tool_input": {"command": format!("git status --short # {index}")},
+        });
+        let pre = hook("PreToolUse", tool.clone());
+        let post = hook("PostToolUse", tool);
+        // A non-filesystem tool never leaves the hook process: the floor that
+        // process creation alone imposes on every hook.
+        let floor = hook("PreToolUse", serde_json::json!({"tool_name": "web.run"}));
+        if index >= WARMUP_PAIRS {
+            record("PreToolUse Bash", pre);
+            record("PostToolUse Bash", post);
+            record("process floor (no-op hook)", floor);
+        }
+    }
+    let spawn = serde_json::json!({
+        "tool_name": "Agent",
+        "tool_use_id": "spawn-1",
+        "tool_input": {"description": "latency", "prompt": "measure"},
+    });
+    let child = serde_json::json!({"agent_id": "latency-child", "agent_type": "general"});
+    record("PreToolUse Agent", hook("PreToolUse", spawn.clone()));
+    record("SubagentStart", hook("SubagentStart", child.clone()));
+    record("SubagentStop", hook("SubagentStop", child));
+    record("PostToolUse Agent", hook("PostToolUse", spawn));
+    record("SessionEnd", hook("SessionEnd", none()));
+    service.drain();
+    let events = samples
+        .into_iter()
+        .map(|(label, durations)| (label.to_owned(), latency_summary(durations)))
+        .collect::<serde_json::Map<_, _>>();
+    println!(
+        "{}",
+        serde_json::json!({
+            "schema": "acyclic-hook-latency-v1",
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "pairs": pairs,
+            "events": events,
+        })
+    );
+}
+
+fn latency_summary(mut durations: Vec<Duration>) -> Value {
+    durations.sort_unstable();
+    let percentile = |percent: usize| {
+        durations
+            .get((durations.len() * percent / 100).min(durations.len() - 1))
+            .expect("percentile sample")
+            .as_micros()
+    };
+    serde_json::json!({
+        "samples": durations.len(),
+        "medianMicros": percentile(50),
+        "p95Micros": percentile(95),
+        "minMicros": durations.first().expect("minimum sample").as_micros(),
+        "maxMicros": durations.last().expect("maximum sample").as_micros(),
+    })
+}
+
 #[test]
 fn repository_has_one_canonical_plugin_root() {
     let plugin = Path::new(env!("CARGO_MANIFEST_DIR"));
