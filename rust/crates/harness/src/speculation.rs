@@ -1113,6 +1113,10 @@ mod host {
         /// A speculation cancelled before its verdict settles by discarding every
         /// attempt workspace. A merge conflict fails the speculation and leaves the
         /// winner's fork intact for inspection.
+        ///
+        /// No workspace is discarded while a losing or cancelled attempt is still
+        /// stopping, since its worker may still be using its fork: settlement
+        /// returns [`Error::Conflict`] until every such attempt is terminal.
         pub async fn settle_speculation(
             &mut self,
             parent: OperationId,
@@ -1141,6 +1145,13 @@ mod host {
                 None => return Err(Error::Conflict("speculation has no verdict".into())),
             };
             if !state.settled {
+                if self.scheduler().children(parent).any(|(slot, attempt)| {
+                    attempt.phase != OperationPhase::Terminal && winner.as_deref() != Some(slot)
+                }) {
+                    return Err(Error::Conflict(
+                        "speculation attempts are still stopping".into(),
+                    ));
+                }
                 for (slot, attempt) in &plan.attempts {
                     if winner.as_ref() != Some(slot) {
                         workspaces
@@ -1688,6 +1699,24 @@ mod tests {
             Some(Outcome::Cancelled)
         );
         assert!(coordinator.pull(&worker()).await?.is_none());
+        assert!(matches!(
+            coordinator
+                .settle_speculation(NODE, &fake, &key("settle")?)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(
+            fake.state()?.discarded.is_empty(),
+            "a loser still stopping keeps its fork"
+        );
+        let running = attempt_id(1);
+        finish(&mut coordinator, &fences, &[(running, Outcome::Cancelled)]).await?;
+        assert!(
+            coordinator
+                .settle_speculation(NODE, &fake, &key("settle")?)
+                .await?
+                .is_some()
+        );
         Ok(())
     }
 
@@ -2031,6 +2060,17 @@ mod tests {
                 .await?,
             None
         );
+        let fake = workspaces(&[], &[]);
+        assert!(matches!(
+            coordinator
+                .settle_speculation(NODE, &fake, &key("settle")?)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(
+            fake.state()?.discarded.is_empty(),
+            "no fork is discarded while its attempt may still be running"
+        );
         finish(
             &mut coordinator,
             &fences,
@@ -2040,7 +2080,6 @@ mod tests {
             ],
         )
         .await?;
-        let fake = workspaces(&[], &[]);
         assert_eq!(
             coordinator
                 .settle_speculation(NODE, &fake, &key("settle")?)
