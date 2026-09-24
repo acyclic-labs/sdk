@@ -5291,6 +5291,7 @@ mod tests {
             self.cancel_on_page.store(true, Ordering::Relaxed);
         }
 
+        #[cfg(feature = "native-mount")]
         fn cancel_next_range(&self) {
             self.cancel_on_range.store(true, Ordering::Relaxed);
         }

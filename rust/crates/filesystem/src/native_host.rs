@@ -10,6 +10,7 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 use windows::Win32::Storage::FileSystem::FILE_BASIC_INFO;
 
 #[cfg(target_os = "linux")]
@@ -27,6 +28,7 @@ pub(crate) struct LinuxMetadataTarget {
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum WindowsMetadataError {
     #[error("Windows native metadata cannot represent {0}")]
@@ -37,6 +39,7 @@ pub(crate) enum WindowsMetadataError {
 
 /// A no-follow leaf handle pinned before metadata work is deferred.
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 pub(crate) struct WindowsMetadataTarget {
     file: cap_std::fs::File,
 }
@@ -831,6 +834,7 @@ impl HostRoot {
 
     /// Pins the exact Windows leaf before metadata restoration is deferred.
     #[cfg(windows)]
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn open_windows_metadata_target(
         &self,
         path: &Path,
@@ -1192,6 +1196,7 @@ fn macos_fstat(fd: std::os::fd::RawFd) -> io::Result<libc::stat> {
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 impl WindowsMetadataTarget {
     fn open(directory: &Dir, path: &Path) -> io::Result<Self> {
         use cap_std::fs::OpenOptionsExt as _;
@@ -1230,6 +1235,7 @@ impl WindowsMetadataTarget {
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 fn reject_unsupported_windows_metadata(
     metadata: crate::kernel::FileMetadata,
 ) -> Result<(), WindowsMetadataError> {
@@ -1269,6 +1275,7 @@ fn reject_unsupported_windows_metadata(
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 fn desired_windows_basic_info(
     metadata: crate::kernel::FileMetadata,
     current: FILE_BASIC_INFO,
@@ -1320,6 +1327,7 @@ fn desired_windows_basic_info(
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 fn verify_windows_basic_info(
     metadata: crate::kernel::FileMetadata,
     desired: FILE_BASIC_INFO,
@@ -1365,6 +1373,7 @@ fn verify_windows_basic_info(
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 #[allow(unsafe_code)]
 fn query_windows_basic_info(file: &cap_std::fs::File) -> io::Result<FILE_BASIC_INFO> {
     use std::mem::size_of;
@@ -1389,6 +1398,7 @@ fn query_windows_basic_info(file: &cap_std::fs::File) -> io::Result<FILE_BASIC_I
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 #[allow(unsafe_code)]
 fn set_windows_basic_info(
     file: &cap_std::fs::File,
@@ -1575,6 +1585,7 @@ async fn copy_windows_file_worker(
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 fn metadata_time(
     field: crate::kernel::MetadataField<i64>,
     current: i64,

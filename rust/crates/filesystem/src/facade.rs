@@ -8058,6 +8058,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         })
     }
 
+    #[cfg(feature = "native-mount")]
     pub(crate) fn detached_from_record(&self, record: FileRecord) -> DetachedFile<A, O> {
         DetachedFile::from_record(self.volume.clone(), record)
     }
@@ -9348,6 +9349,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
     /// Anchors a separately journaled lazy overlay to an exact checkout
     /// publication, even when the checkout's authored root is unchanged.
+    #[cfg(feature = "native-mount")]
     pub(crate) async fn commit_with_permit_even_if_clean(
         &mut self,
         operation_id: OperationId,
@@ -11049,6 +11051,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         Self { volume, record }
     }
 
+    #[cfg(feature = "native-mount")]
     pub(crate) const fn record(&self) -> FileRecord {
         self.record
     }
