@@ -1768,8 +1768,8 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
             ForkOptions::from_generation(base, IdempotencyKey::new()),
         )
         .await?;
-    first.write_text("/a.py", "a\n").await?;
-    second.write_text("/b.py", "b\n").await?;
+    first.write_text("/a.rs", "a\n").await?;
+    second.write_text("/b.rs", "b\n").await?;
 
     for (label, fork) in [("first", &first), ("second", &second)] {
         let plan = fork.join_into(&main).plan().await?;
@@ -1789,8 +1789,8 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
         };
         assert!(applied, "{label} join did not apply");
     }
-    assert_eq!(main.read("/a.py", 16).await?, Bytes::from_static(b"a\n"));
-    assert_eq!(main.read("/b.py", 16).await?, Bytes::from_static(b"b\n"));
+    assert_eq!(main.read("/a.rs", 16).await?, Bytes::from_static(b"a\n"));
+    assert_eq!(main.read("/b.rs", 16).await?, Bytes::from_static(b"b\n"));
     assert_eq!(
         main.read("/README.md", 16).await?,
         Bytes::from_static(b"base\n")
@@ -1810,7 +1810,7 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
     main.write_text("/README.md", "base\n").await?;
     let base = main.head().await?;
     let mut forks = Vec::new();
-    for (name, file) in [("fold-first", "a.py"), ("fold-second", "b.py")] {
+    for (name, file) in [("fold-first", "a.rs"), ("fold-second", "b.rs")] {
         let fork = main
             .fork(
                 name,
@@ -1843,10 +1843,10 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
         }
     }
     for path in [
-        "/pkg/a.py",
-        "/pkg/b.py",
-        "/pkg/nested/a.py",
-        "/pkg/nested/b.py",
+        "/pkg/a.rs",
+        "/pkg/b.rs",
+        "/pkg/nested/a.rs",
+        "/pkg/nested/b.rs",
     ] {
         let name = path.rsplit('/').next().expect("file name");
         assert_eq!(
@@ -1893,7 +1893,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
     };
     let first = fork("sibling-times-first", &base).await?;
     let second = fork("sibling-times-second", &base).await?;
-    for (workspace, file, modified_ns) in [(&first, "/pkg/a.py", 20), (&second, "/pkg/b.py", 30)] {
+    for (workspace, file, modified_ns) in [(&first, "/pkg/a.rs", 20), (&second, "/pkg/b.rs", 30)] {
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
         transaction.write_text(file, "x\n").await?;
         transaction
@@ -1915,11 +1915,11 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
         }
     }
     assert_eq!(
-        main.read("/pkg/a.py", 16).await?,
+        main.read("/pkg/a.rs", 16).await?,
         Bytes::from_static(b"x\n")
     );
     assert_eq!(
-        main.read("/pkg/b.py", 16).await?,
+        main.read("/pkg/b.rs", 16).await?,
         Bytes::from_static(b"x\n")
     );
     assert_eq!(main.stat("/pkg").await?.metadata.modified_ns, Some(30));

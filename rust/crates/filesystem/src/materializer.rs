@@ -1208,6 +1208,23 @@ fn native_attribute_fingerprint(
             hasher.update(&value.to_le_bytes());
         }
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        let attributes = desired.map_or_else(
+            || metadata.file_attributes(),
+            |value| {
+                if let Some(attributes) = value.windows_attributes {
+                    attributes
+                } else if value.readonly {
+                    metadata.file_attributes() | 1
+                } else {
+                    metadata.file_attributes() & !1
+                }
+            },
+        );
+        hasher.update(&attributes.to_le_bytes());
+    }
     Ok(Some(*hasher.finalize().as_bytes()))
 }
 

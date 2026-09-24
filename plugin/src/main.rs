@@ -12849,7 +12849,7 @@ mod tests {
             .expect("fork view");
         assert!(view.lookup("/README.md").await.is_ok());
         let initial_epoch = control.state.roots[&key].source_epoch;
-        fs::write(root.join("sibling.py"), "merged elsewhere\n").expect("root change");
+        fs::write(root.join("sibling.rs"), "merged elsewhere\n").expect("root change");
         let mut refreshed = false;
         for _ in 0..100 {
             control
@@ -12864,7 +12864,7 @@ mod tests {
         }
         assert!(refreshed, "the root watcher never reported the change");
         assert!(matches!(
-            view.lookup("/never-seen.py").await,
+            view.lookup("/never-seen.rs").await,
             Err(acyclic_fs::LazyWorkspaceError::NotFound)
         ));
         assert!(view.lookup("/README.md").await.is_ok());

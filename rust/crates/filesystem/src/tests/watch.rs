@@ -769,7 +769,7 @@ fn live_native_backend_saturation_fails_closed_and_recovers()
 
 /// A fork can create a directory that the physical source never had; the lazy
 /// source then observes it as a parent. That must mean "absent", not an I/O
-/// failure (it surfaced as EIO creating `handlers/refunds.py` in a fork).
+/// failure (it surfaced as EIO creating `handlers/refunds.rs` in a fork).
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_demand_watch_accepts_directories_absent_from_the_source()

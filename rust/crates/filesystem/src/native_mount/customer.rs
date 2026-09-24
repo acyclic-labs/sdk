@@ -619,12 +619,12 @@ mod live_view_tests {
                 .expect("lookup dir")
                 .expect("new directory is visible");
             assert_eq!(dir.node.kind, MountNodeKind::Directory);
-            write(fs, "/pkg/mod.py", b"x = 1\n");
+            write(fs, "/pkg/mod.rs", b"x = 1\n");
             write(fs, "/src/extra.rs", b"// new beside a source file\n");
 
             for page in [1, 2, 512] {
                 assert_eq!(list(fs, "/", page), ["README.md", "new.txt", "pkg", "src"]);
-                assert_eq!(list(fs, "/pkg", page), ["mod.py"]);
+                assert_eq!(list(fs, "/pkg", page), ["mod.rs"]);
                 assert_eq!(list(fs, "/src", page), ["extra.rs", "lib.rs"]);
             }
         })
