@@ -84,6 +84,9 @@ struct darwinfuse_server {
     client_conn_t       clients[DFUSE_MAX_CLIENTS];
     int                 num_clients;
 
+    /* Reply buffer for the single-threaded path; workers own their own */
+    uint8_t         *reply_buf;
+
     /* Thread pool (enabled by nfs4_server_set_multithreaded) */
     int              multithreaded;
     int              num_threads;
@@ -220,14 +223,17 @@ static void work_queue_shutdown(work_queue_t *wq)
 
 /* ---- RPC message processing (shared by ST and MT paths) ---- */
 
+/* Each thread that processes RPCs reuses one reply buffer of this size. */
+#define DFUSE_REPLY_BUFSIZE (DFUSE_XDR_MAXBUF + 4)
+
 /*
- * Process an RPC message and produce a reply buffer.
- * On success, sets *out_buf (caller must free) and *out_len.
- * Returns 0 on success, -1 on error.
+ * Process an RPC message into reply_buf on the calling thread, with the
+ * server's private data as the FUSE context.
+ * On success, sets *out_len. Returns 0 on success, -1 on error.
  */
 static int process_rpc_message(darwinfuse_server_t *srv, client_conn_t *c,
                                 uint8_t *payload, size_t payload_len,
-                                uint8_t **out_buf, size_t *out_len)
+                                uint8_t *reply_buf, size_t *out_len)
 {
     xdr_buf_t req;
     xdr_init(&req, payload, payload_len);
@@ -238,9 +244,7 @@ static int process_rpc_message(darwinfuse_server_t *srv, client_conn_t *c,
         return -1;
     }
 
-    uint8_t *reply_buf = malloc(DFUSE_XDR_MAXBUF + 4);
-    if (!reply_buf)
-        return -1;
+    darwinfuse_set_private_data(srv->private_data);
 
     xdr_buf_t rep;
     xdr_init(&rep, reply_buf + 4, DFUSE_XDR_MAXBUF);
@@ -260,7 +264,6 @@ static int process_rpc_message(darwinfuse_server_t *srv, client_conn_t *c,
         if (nfs4_dispatch_compound(&srv->config, &c->nfs_state,
                                     &ctx, &req, &rep) < 0) {
             DFUSE_ERR("COMPOUND dispatch failed");
-            free(reply_buf);
             return -1;
         }
     } else {
@@ -270,7 +273,6 @@ static int process_rpc_message(darwinfuse_server_t *srv, client_conn_t *c,
     uint32_t reply_len = (uint32_t)xdr_getpos(&rep);
     rpc_encode_record_mark(reply_buf, reply_len, 1);
 
-    *out_buf = reply_buf;
     *out_len = 4 + reply_len;
     return 0;
 }
@@ -307,16 +309,13 @@ static int write_reply(int fd, const uint8_t *buf, size_t len)
 /* Process one complete RPC message (single-threaded path) */
 static int handle_rpc_message(darwinfuse_server_t *srv, client_conn_t *c)
 {
-    uint8_t *reply_buf = NULL;
     size_t reply_len = 0;
 
     if (process_rpc_message(srv, c, c->payload_buf, c->payload_len,
-                             &reply_buf, &reply_len) < 0)
+                             srv->reply_buf, &reply_len) < 0)
         return -1;
 
-    int rc = write_reply(atomic_load(&c->fd), reply_buf, reply_len);
-    free(reply_buf);
-    return rc;
+    return write_reply(atomic_load(&c->fd), srv->reply_buf, reply_len);
 }
 
 /* ---- Worker thread (MT path) ---- */
@@ -327,27 +326,29 @@ static void *worker_thread_func(void *arg)
 
     DFUSE_LOG("Worker thread started (tid=%p)", (void *)pthread_self());
 
+    /* Without a reply buffer this worker answers nothing, as any failed
+     * reply allocation did, but still drains so inflight accounting and
+     * shutdown stay exact. */
+    uint8_t *reply_buf = malloc(DFUSE_REPLY_BUFSIZE);
+    if (!reply_buf)
+        DFUSE_ERR("Failed to allocate worker reply buffer");
+
     while (1) {
         nfs4_work_item_t *item = work_queue_pop(&srv->work_queue);
         if (!item) break;  /* shutdown — queue drained */
 
         client_conn_t *c = item->client;
 
-        if (!atomic_load(&c->closing)) {
-            /* Set thread-local FUSE context for this worker */
-            darwinfuse_set_private_data(srv->private_data);
-
-            uint8_t *reply_buf = NULL;
+        if (reply_buf && !atomic_load(&c->closing)) {
             size_t reply_len = 0;
 
             if (process_rpc_message(srv, c, item->payload, item->payload_len,
-                                     &reply_buf, &reply_len) == 0) {
+                                     reply_buf, &reply_len) == 0) {
                 pthread_mutex_lock(&c->write_lock);
                 int fd = atomic_load(&c->fd);
                 if (fd >= 0)
                     write_reply(fd, reply_buf, reply_len);
                 pthread_mutex_unlock(&c->write_lock);
-                free(reply_buf);
             }
         }
 
@@ -356,6 +357,7 @@ static void *worker_thread_func(void *arg)
         atomic_fetch_sub(&c->inflight, 1);
     }
 
+    free(reply_buf);
     DFUSE_LOG("Worker thread exiting (tid=%p)", (void *)pthread_self());
     return NULL;
 }
@@ -454,6 +456,7 @@ darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config,
 
     srv->config = *config;
     atomic_init(&srv->config.namespace_change, 1);
+    atomic_init(&srv->config.fallback_change, 0);
     arc4random_buf(srv->config.write_verifier, sizeof(srv->config.write_verifier));
     srv->listen_fd = -1;
     srv->wakeup_pipe[0] = -1;
@@ -518,6 +521,14 @@ fail:
 int nfs4_server_run(darwinfuse_server_t *srv)
 {
     int result = 0;
+
+    if (!srv->multithreaded) {
+        srv->reply_buf = malloc(DFUSE_REPLY_BUFSIZE);
+        if (!srv->reply_buf) {
+            DFUSE_ERR("Failed to allocate reply buffer");
+            return -1;
+        }
+    }
 
     /* Start thread pool if multi-threaded */
     if (srv->multithreaded) {
@@ -709,6 +720,8 @@ int nfs4_server_run(darwinfuse_server_t *srv)
         DFUSE_LOG("Thread pool stopped");
     }
 
+    free(srv->reply_buf);
+    srv->reply_buf = NULL;
     return result;
 }
 

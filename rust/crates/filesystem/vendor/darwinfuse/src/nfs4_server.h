@@ -23,7 +23,8 @@ typedef struct {
     uid_t       uid;            /* Owner UID (for access control) */
     gid_t       gid;            /* Owner GID */
     struct dfuse_inode_table_s  *inode_table;  /* dynamic inode table */
-    atomic_uint_fast64_t namespace_change; /* conservative directory change id */
+    atomic_uint_fast64_t namespace_change; /* READDIR continuation revision */
+    atomic_uint_fast64_t fallback_change;  /* change samples without ops->change */
     uint8_t write_verifier[8]; /* unique per mount, including in-process remounts */
 } darwinfuse_config_t;
 

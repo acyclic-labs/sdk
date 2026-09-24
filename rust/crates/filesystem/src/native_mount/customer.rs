@@ -688,6 +688,7 @@ where
             Arc::new(self.clone()),
             authored,
             root_text,
+            options.publication,
         )?);
         let destination = destination.into();
         let session = mount_native(

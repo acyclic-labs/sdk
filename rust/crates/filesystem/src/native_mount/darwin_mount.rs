@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -115,6 +115,9 @@ struct FileHandle {
     file_id: FileId,
     file: Arc<dyn MountOpenFile>,
     observation: Arc<Mutex<FileObservation>>,
+    /// Ledger sequence of the latest mutation through this handle; zero
+    /// until one completes.
+    written: Arc<AtomicU64>,
 }
 
 struct FileObservation {
@@ -193,6 +196,106 @@ struct DarwinMountContext {
     directories: Mutex<HashMap<u64, Arc<Mutex<DirectoryHandle>>>>,
     directory_checkpoints: Mutex<HashMap<MountPath, DirectoryCheckpoint>>,
     namespace_revision: AtomicU64,
+    ledger: FlushLedger,
+    change: ChangeClock,
+}
+
+/// Orders completed native mutations against source flushes.
+///
+/// A mutating callback advances `completed` only after its source call
+/// returns, so a flush that samples `completed` before it starts covers every
+/// mutation up to that sample. The ledger starts dirty because the state the
+/// mount opened over may be unpublished, and the first sync must cover it.
+struct FlushLedger {
+    completed: AtomicU64,
+    flushed: AtomicU64,
+    /// Serializes flushes: a waiter that a finished flush already covered
+    /// returns without flushing again, so concurrent syncs share one flush.
+    flushing: Mutex<()>,
+}
+
+impl FlushLedger {
+    const fn new() -> Self {
+        Self {
+            completed: AtomicU64::new(1),
+            flushed: AtomicU64::new(0),
+            flushing: Mutex::new(()),
+        }
+    }
+
+    /// Records one completed (or failed, possibly partial) mutation and
+    /// returns its sequence.
+    fn record(&self) -> u64 {
+        self.completed.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    fn latest(&self) -> u64 {
+        self.completed.load(Ordering::Acquire)
+    }
+
+    /// Makes every mutation up to `required` durable, flushing the source
+    /// only when no earlier successful flush already covers it.
+    fn flush_through(&self, required: u64, source: &dyn MountFilesystem) -> Result<(), i32> {
+        if self.flushed.load(Ordering::Acquire) >= required {
+            return Ok(());
+        }
+        let _flushing = self.flushing.lock().map_err(|_| libc::EIO)?;
+        if self.flushed.load(Ordering::Acquire) >= required {
+            return Ok(());
+        }
+        let covered = self.latest();
+        source.flush().map_err(|error| errno(&error))?;
+        self.flushed.fetch_max(covered, Ordering::AcqRel);
+        Ok(())
+    }
+}
+
+/// The NFS change attribute: one value for every object that advances
+/// whenever a later callback may observe different state and never repeats.
+///
+/// Source epochs cover every surface of the source; the ledger additionally
+/// covers mutations of this mount that a source without precise epochs does
+/// not report. Without a stable epoch every sample is new.
+struct ChangeClock {
+    state: Mutex<ChangeInputs>,
+}
+
+struct ChangeInputs {
+    epochs: Option<CacheEpochs>,
+    mutations: u64,
+    value: u64,
+}
+
+impl ChangeClock {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(ChangeInputs {
+                epochs: None,
+                mutations: 0,
+                value: 0,
+            }),
+        }
+    }
+
+    fn sample(&self, epochs: Option<CacheEpochs>, mutations: u64) -> u64 {
+        // Every field only moves forward, so a panicked holder cannot leave
+        // a state that repeats a value.
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if epochs.is_none() || epochs != state.epochs || mutations != state.mutations {
+            state.epochs = epochs;
+            state.mutations = mutations;
+            state.value += 1;
+        }
+        state.value
+    }
+
+    /// Marks state changed outside every observed input.
+    fn advance(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .value += 1;
+    }
 }
 
 struct LookupCache {
@@ -234,7 +337,14 @@ impl DarwinMountContext {
             directories: Mutex::new(HashMap::new()),
             directory_checkpoints: Mutex::new(HashMap::new()),
             namespace_revision: AtomicU64::new(0),
+            ledger: FlushLedger::new(),
+            change: ChangeClock::new(),
         }
+    }
+
+    fn change_attribute(&self) -> u64 {
+        self.change
+            .sample(cache_epochs(self.source.as_ref()), self.ledger.latest())
     }
 
     fn allocate_handle(&self) -> Result<u64, i32> {
@@ -317,7 +427,11 @@ impl DarwinMountContext {
         Ok(())
     }
 
-    fn open(&self, path: &MountPath) -> Result<u64, i32> {
+    fn open(&self, path: &MountPath, state: InitialHandleState) -> Result<u64, i32> {
+        let written = match state {
+            InitialHandleState::Clean => 0,
+            InitialHandleState::Written => self.ledger.latest(),
+        };
         let file = self.source.open_file(path).map_err(|error| errno(&error))?;
         let before = cache_epochs(self.source.as_ref());
         let lookup = file.lookup().map_err(|error| errno(&error))?;
@@ -337,26 +451,61 @@ impl DarwinMountContext {
                     epochs: observed_epochs,
                     lookup,
                 })),
+                written: Arc::new(AtomicU64::new(written)),
             },
         );
         Ok(handle)
     }
 
-    fn file(&self, handle: u64) -> Result<Arc<dyn MountOpenFile>, i32> {
-        self.files
-            .read()
-            .map_err(|_| libc::EIO)?
-            .get(&handle)
-            .map(|entry| Arc::clone(&entry.file))
-            .ok_or(libc::ESTALE)
+    /// The open handle's file and written marker, or a path-bound file
+    /// without a marker when `handle` is zero.
+    fn file_target(&self, path: &MountPath, handle: u64) -> Result<FileTarget, i32> {
+        if handle == 0 {
+            let file = self.source.open_file(path).map_err(|error| errno(&error))?;
+            return Ok(FileTarget {
+                file,
+                written: None,
+            });
+        }
+        let files = self.files.read().map_err(|_| libc::EIO)?;
+        let entry = files.get(&handle).ok_or(libc::ESTALE)?;
+        Ok(FileTarget {
+            file: Arc::clone(&entry.file),
+            written: Some(Arc::clone(&entry.written)),
+        })
     }
 
     fn file_or_open(&self, path: &MountPath, handle: u64) -> Result<Arc<dyn MountOpenFile>, i32> {
-        if handle == 0 {
-            self.source.open_file(path).map_err(|error| errno(&error))
-        } else {
-            self.file(handle)
+        self.file_target(path, handle).map(|target| target.file)
+    }
+
+    /// Runs one mutating callback and records its completion before the
+    /// reply, including a failed attempt that may have applied partially, so
+    /// a later sync covers it and the change attribute advances.
+    fn mutate<T>(&self, mutation: impl FnOnce() -> Result<T, MountSourceError>) -> Result<T, i32> {
+        self.admit_write()?;
+        let result = mutation().map_err(|error| errno(&error));
+        self.ledger.record();
+        result
+    }
+
+    /// Mutates one regular file through `handle` (or a path-bound file when
+    /// it is zero) and marks that handle written, so its close publishes
+    /// when the source publishes on close.
+    fn mutate_file<T>(
+        &self,
+        path: &MountPath,
+        handle: u64,
+        mutation: impl FnOnce(&dyn MountOpenFile) -> Result<T, MountSourceError>,
+    ) -> Result<T, i32> {
+        self.admit_write()?;
+        let target = self.file_target(path, handle)?;
+        let result = mutation(target.file.as_ref()).map_err(|error| errno(&error));
+        let sequence = self.ledger.record();
+        if let Some(written) = target.written {
+            written.fetch_max(sequence, Ordering::AcqRel);
         }
+        result
     }
 
     fn file_with_lookup(
@@ -462,20 +611,55 @@ impl DarwinMountContext {
         handle: u64,
         mutate: impl FnOnce(&mut FileMetadata) -> Result<(), i32>,
     ) -> Result<(), i32> {
-        self.admit_write()?;
         let current = self.lookup_handle(path, handle)?;
         let mut metadata = current.metadata;
         mutate(&mut metadata)?;
+        // Metadata of any node kind: only a handle names a regular file.
         if handle == 0 {
-            self.source
-                .set_attributes(path, metadata, None)
-                .map_err(|error| errno(&error))
+            self.mutate(|| self.source.set_attributes(path, metadata, None))
         } else {
-            self.file(handle)?
-                .set_attributes(metadata, None)
-                .map_err(|error| errno(&error))
+            self.mutate_file(path, handle, |file| file.set_attributes(metadata, None))
         }
     }
+
+    /// Publishes this handle's mutations when the source publishes on close.
+    fn flush_on_close(&self, handle: u64) -> Result<(), i32> {
+        if handle == 0 {
+            // Named-attribute opens carry no handle; their writes are
+            // recorded mutations that the next sync covers.
+            return Ok(());
+        }
+        let written = self
+            .files
+            .read()
+            .map_err(|_| libc::EIO)?
+            .get(&handle)
+            .ok_or(libc::ESTALE)?
+            .written
+            .load(Ordering::Acquire);
+        if written == 0 || !self.source.flush_on_handle_close() {
+            return Ok(());
+        }
+        self.ledger.flush_through(written, self.source.as_ref())
+    }
+
+    /// Publishes every mutation this mount has acknowledged.
+    fn sync(&self) -> Result<(), i32> {
+        self.ledger
+            .flush_through(self.ledger.latest(), self.source.as_ref())
+    }
+}
+
+struct FileTarget {
+    file: Arc<dyn MountOpenFile>,
+    written: Option<Arc<AtomicU64>>,
+}
+
+#[derive(Clone, Copy)]
+enum InitialHandleState {
+    Clean,
+    /// Created by this callback: unpublished until a sync covers it.
+    Written,
 }
 
 /// One process-owned high-level Darwin mount session.
@@ -557,13 +741,8 @@ impl DarwinMountSession {
         ));
         let destination = request.destination.clone();
         let destination_c = path_cstring(&destination).map_err(driver_errno)?;
-        let volume_name = format!(
-            "acyclic-fs-{}-{}",
-            std::process::id(),
-            hex::encode(request.mount_id.into_bytes())
-        );
-        let options = mount_options(request.writable, &volume_name, supports_named_attributes);
-        let arguments = fuse_arguments(&options).map_err(driver_errno)?;
+        let options = mount_options(request.writable, supports_named_attributes);
+        let arguments = fuse_arguments(&options);
         let argument_count = c_int::try_from(arguments.len())
             .map_err(|_| NativeMountError::Driver("too many Darwin mount arguments".to_owned()))?;
         // Transfer the Rust callback context only after every fallible argument
@@ -671,10 +850,12 @@ impl DarwinMountSession {
         }
     }
 
-    /// Drops the kernel's cached entry/attributes for one mount-relative
-    /// path (leading `/` optional), so a projection change — such as a
-    /// removed route — becomes visible before any cache timeout. Best
-    /// effort: transports that cannot invalidate report a driver error.
+    /// Marks one mount-relative path (leading `/` optional) changed by a
+    /// projection change such as a removed route. NFS offers no
+    /// server-initiated invalidation without delegations: the client drops
+    /// its cached names, attributes, and data at its next revalidation,
+    /// which the one-second attribute timeout bounds, and every open
+    /// revalidates immediately.
     pub(super) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
         let resources = self.resources.as_ref().ok_or_else(|| {
             NativeMountError::Driver("Darwin mount session has stopped".to_owned())
@@ -689,10 +870,11 @@ impl DarwinMountSession {
         // SAFETY: `driver_session` is the live bridge session this struct
         // owns until teardown, and `path` is a NUL-terminated string.
         // Reject continuation snapshots before the external invalidation can
-        // overlap a directory read.
-        unsafe {
-            (&*(resources.source_context as *const DarwinMountContext)).namespace_changed();
-        }
+        // overlap a directory read, and make the client's next revalidation
+        // discard what it cached.
+        let context = unsafe { &*(resources.source_context as *const DarwinMountContext) };
+        context.namespace_changed();
+        context.change.advance();
         let status = unsafe {
             acyclic_fs_darwin_mount_invalidate(
                 resources.driver_session as *mut c_void,
@@ -813,33 +995,27 @@ impl Drop for DarwinMountSession {
     }
 }
 
-fn mount_options(
-    writable: bool,
-    volume_name: &str,
-    supports_named_attributes: bool,
-) -> Vec<String> {
-    let mut options = vec![
-        if writable { "rw" } else { "ro" }.to_owned(),
-        "default_permissions".to_owned(),
-        "noatime".to_owned(),
-        "noforget".to_owned(),
-        "nobrowse".to_owned(),
-        format!("volname={volume_name}"),
-    ];
+/// Only options the loopback NFS mount honors: `DarwinFUSE` rejects any
+/// other rather than dropping it.
+fn mount_options(writable: bool, supports_named_attributes: bool) -> Vec<&'static CStr> {
+    let mut options = vec![c"nobrowse"];
+    if !writable {
+        options.push(c"ro");
+    }
     if supports_named_attributes {
-        options.push("namedattr".to_owned());
+        options.push(c"namedattr");
     }
     options
 }
 
-fn fuse_arguments(options: &[String]) -> Result<Vec<CString>, i32> {
+fn fuse_arguments(options: &[&CStr]) -> Vec<CString> {
     let mut arguments = Vec::with_capacity(options.len().saturating_mul(2).saturating_add(1));
-    arguments.push(CString::new("acyclic-fs").map_err(|_| libc::EINVAL)?);
+    arguments.push(c"acyclic-fs".to_owned());
     for option in options {
-        arguments.push(CString::new("-o").map_err(|_| libc::EINVAL)?);
-        arguments.push(CString::new(option.as_str()).map_err(|_| libc::EINVAL)?);
+        arguments.push(c"-o".to_owned());
+        arguments.push((*option).to_owned());
     }
-    Ok(arguments)
+    arguments
 }
 
 fn is_mounted(destination: &Path, _parent: &Metadata) -> Result<bool, String> {
@@ -1023,7 +1199,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_open(
         if flags & libc::O_ACCMODE != libc::O_RDONLY {
             context.admit_write()?;
         }
-        unsafe { handle.write(context.open(&mount_path(path)?)?) };
+        unsafe { handle.write(context.open(&mount_path(path)?, InitialHandleState::Clean)?) };
         Ok(0)
     })
 }
@@ -1040,15 +1216,15 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_create(
 ) -> c_int {
     ffi_status(|| {
         let context = context(address)?;
-        context.admit_write()?;
         let path = mount_path(path)?;
-        let lookup = context
-            .source
-            .create_file(&path, create_metadata(mode, mode::IFREG, uid, gid))
-            .map_err(|error| errno(&error))?;
+        let lookup = context.mutate(|| {
+            context
+                .source
+                .create_file(&path, create_metadata(mode, mode::IFREG, uid, gid))
+        })?;
         context.remember_current_lookup(&path, Some(lookup))?;
         context.namespace_changed();
-        unsafe { handle.write(context.open(&path)?) };
+        unsafe { handle.write(context.open(&path, InitialHandleState::Written)?) };
         Ok(0)
     })
 }
@@ -1108,15 +1284,12 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_write(
     offset: i64,
 ) -> c_int {
     ffi_status(|| {
-        let context = context(address)?;
-        context.admit_write()?;
         let length = bounded_length(length)?;
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         let bytes = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), length as usize) };
-        context
-            .file_or_open(&mount_path(path)?, handle)?
-            .write_range(offset, Bytes::copy_from_slice(bytes))
-            .map_err(|error| errno(&error))?;
+        context(address)?.mutate_file(&mount_path(path)?, handle, |file| {
+            file.write_range(offset, Bytes::copy_from_slice(bytes))
+        })?;
         c_int::try_from(length).map_err(|_| libc::EOVERFLOW)
     })
 }
@@ -1129,33 +1302,43 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_truncate(
     length: i64,
 ) -> c_int {
     ffi_status(|| {
-        let context = context(address)?;
-        context.admit_write()?;
         let length = u64::try_from(length).map_err(|_| libc::EINVAL)?;
-        if handle == 0 {
-            context
-                .source
-                .resize(&mount_path(path)?, length)
-                .map_err(|error| errno(&error))?;
-        } else {
-            context
-                .file(handle)?
-                .resize(length)
-                .map_err(|error| errno(&error))?;
-        }
+        context(address)?.mutate_file(&mount_path(path)?, handle, |file| file.resize(length))?;
         Ok(0)
     })
 }
 
+/// NFS CLOSE: publishes only what this handle wrote, and only for sources
+/// whose close is a publication boundary.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn acyclic_fs_darwin_mount_flush(address: usize, _handle: u64) -> c_int {
+unsafe extern "C" fn acyclic_fs_darwin_mount_flush(address: usize, handle: u64) -> c_int {
     ffi_status(|| {
-        context(address)?
-            .source
-            .flush()
-            .map_err(|error| errno(&error))?;
+        context(address)?.flush_on_close(handle)?;
         Ok(0)
     })
+}
+
+/// NFS COMMIT and stable WRITE. The client sends these for `fsync` and
+/// for its close-to-open flush alike, so each keeps the `fsync` guarantee:
+/// every acknowledged mutation is published once this returns.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(address: usize) -> c_int {
+    ffi_status(|| {
+        context(address)?.sync()?;
+        Ok(0)
+    })
+}
+
+/// Values no clock reaches (it counts from one), for a callback that cannot
+/// sample: each is new, so the client revalidates.
+static UNSAMPLED_CHANGE: AtomicU64 = AtomicU64::new(1 << 63);
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn acyclic_fs_darwin_mount_change(address: usize) -> u64 {
+    std::panic::catch_unwind(|| context(address).map(DarwinMountContext::change_attribute))
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_else(|| UNSAMPLED_CHANGE.fetch_add(1, Ordering::Relaxed))
 }
 
 #[unsafe(no_mangle)]
@@ -1426,14 +1609,12 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
 ) -> c_int {
     ffi_status(|| {
         let context = context(address)?;
-        context.admit_write()?;
-        context
-            .source
-            .create_directory(
-                &mount_path(path)?,
-                create_metadata(mode, mode::IFDIR, uid, gid),
-            )
-            .map_err(|error| errno(&error))?;
+        let path = mount_path(path)?;
+        context.mutate(|| {
+            context
+                .source
+                .create_directory(&path, create_metadata(mode, mode::IFDIR, uid, gid))
+        })?;
         context.namespace_changed();
         Ok(0)
     })
@@ -1447,7 +1628,6 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
 ) -> c_int {
     ffi_status(|| {
         let context = context(address)?;
-        context.admit_write()?;
         let path = mount_path(path)?;
         let lookup = context.lookup(&path)?;
         if (directory != 0) != (lookup.node.kind == MountNodeKind::Directory) {
@@ -1457,29 +1637,21 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
                 libc::ENOTDIR
             });
         }
-        let detached = if lookup.node.kind == MountNodeKind::Regular && lookup.node.link_count == 1
-        {
-            let has_open = context
+        let has_open = lookup.node.kind == MountNodeKind::Regular
+            && lookup.node.link_count == 1
+            && context
                 .files
                 .read()
                 .map_err(|_| libc::EIO)?
                 .values()
                 .any(|entry| entry.file_id == lookup.node.file_id);
-            has_open
-                .then(|| {
-                    context
-                        .source
-                        .detach_file(&path)
-                        .map_err(|error| errno(&error))
-                })
-                .transpose()?
-        } else {
-            None
-        };
-        context
-            .source
-            .remove(&path, Some(lookup.node.file_id))
-            .map_err(|error| errno(&error))?;
+        let detached = context.mutate(|| {
+            let detached = has_open
+                .then(|| context.source.detach_file(&path))
+                .transpose()?;
+            context.source.remove(&path, Some(lookup.node.file_id))?;
+            Ok(detached)
+        })?;
         context.namespace_changed();
         if let Some(detached) = detached {
             for entry in context
@@ -1505,18 +1677,15 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
 ) -> c_int {
     ffi_status(|| {
         let context = context(address)?;
-        context.admit_write()?;
         if flags & !RENAME_NOREPLACE != 0 {
             return Err(libc::EOPNOTSUPP);
         }
-        context
-            .source
-            .rename(
-                &mount_path(source)?,
-                &mount_path(destination)?,
-                flags & RENAME_NOREPLACE == 0,
-            )
-            .map_err(|error| errno(&error))?;
+        let (source, destination) = (mount_path(source)?, mount_path(destination)?);
+        context.mutate(|| {
+            context
+                .source
+                .rename(&source, &destination, flags & RENAME_NOREPLACE == 0)
+        })?;
         context.namespace_changed();
         Ok(0)
     })
@@ -1530,11 +1699,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_link(
 ) -> c_int {
     ffi_status(|| {
         let context = context(address)?;
-        context.admit_write()?;
-        context
-            .source
-            .hard_link(&mount_path(source)?, &mount_path(destination)?)
-            .map_err(|error| errno(&error))?;
+        let (source, destination) = (mount_path(source)?, mount_path(destination)?);
+        context.mutate(|| context.source.hard_link(&source, &destination))?;
         context.namespace_changed();
         Ok(0)
     })
@@ -1550,16 +1716,15 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
 ) -> c_int {
     ffi_status(|| {
         let context = context(address)?;
-        context.admit_write()?;
         let target = unsafe { CStr::from_ptr(target) }.to_bytes();
-        context
-            .source
-            .create_symbolic_link(
-                &mount_path(destination)?,
+        let destination = mount_path(destination)?;
+        context.mutate(|| {
+            context.source.create_symbolic_link(
+                &destination,
                 Bytes::copy_from_slice(target),
                 create_metadata(0o777, mode::IFLNK, uid, gid),
             )
-            .map_err(|error| errno(&error))?;
+        })?;
         context.namespace_changed();
         Ok(0)
     })
@@ -1602,7 +1767,6 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
 ) -> c_int {
     ffi_status(|| {
         let context = context(address)?;
-        context.admit_write()?;
         let kind = match mode & mode::IFMT {
             mode::IFIFO => MountNodeKind::Fifo,
             mode::IFSOCK => MountNodeKind::Socket,
@@ -1615,15 +1779,15 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
             MountNodeKind::CharacterDevice | MountNodeKind::BlockDevice
         )
         .then(|| super::device::split_device(device));
-        context
-            .source
-            .create_special(
-                &mount_path(path)?,
+        let path = mount_path(path)?;
+        context.mutate(|| {
+            context.source.create_special(
+                &path,
                 kind,
                 device,
                 create_metadata(mode, mode & mode::IFMT, uid, gid),
             )
-            .map_err(|error| errno(&error))?;
+        })?;
         context.namespace_changed();
         Ok(0)
     })
@@ -1723,7 +1887,6 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
 ) -> c_int {
     ffi_status(|| {
         let context = context(address)?;
-        context.admit_write()?;
         if length > MAXIMUM_CALLBACK_BYTES {
             return Err(libc::E2BIG);
         }
@@ -1734,15 +1897,12 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
             _ => return Err(libc::EINVAL),
         };
         let bytes = unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length) };
-        context
-            .source
-            .write_attribute(
-                &mount_path(path)?,
-                c_bytes(name)?,
-                Bytes::copy_from_slice(bytes),
-                mode,
-            )
-            .map_err(|error| errno(&error))?;
+        let (path, name) = (mount_path(path)?, c_bytes(name)?);
+        context.mutate(|| {
+            context
+                .source
+                .write_attribute(&path, name, Bytes::copy_from_slice(bytes), mode)
+        })?;
         Ok(0)
     })
 }
@@ -1797,11 +1957,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_removexattr(
 ) -> c_int {
     ffi_status(|| {
         let context = context(address)?;
-        context.admit_write()?;
-        context
-            .source
-            .remove_attribute(&mount_path(path)?, c_bytes(name)?)
-            .map_err(|error| errno(&error))?;
+        let (path, name) = (mount_path(path)?, c_bytes(name)?);
+        context.mutate(|| context.source.remove_attribute(&path, name))?;
         Ok(0)
     })
 }
@@ -1841,8 +1998,6 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_fallocate(
     length: i64,
 ) -> c_int {
     ffi_status(|| {
-        let context = context(address)?;
-        context.admit_write()?;
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         let length = u64::try_from(length).map_err(|_| libc::EINVAL)?;
         let (operation, permitted_flags) = if mode & FALLOC_FL_PUNCH_HOLE != 0 {
@@ -1868,9 +2023,9 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_fallocate(
         if mode & !permitted_flags != 0 {
             return Err(libc::EOPNOTSUPP);
         }
-        let file = context.file_or_open(&mount_path(path)?, handle)?;
-        file.allocate_range(offset, length, operation)
-            .map_err(|error| errno(&error))?;
+        context(address)?.mutate_file(&mount_path(path)?, handle, |file| {
+            file.allocate_range(offset, length, operation)
+        })?;
         Ok(0)
     })
 }
@@ -1892,31 +2047,32 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_copy_file_range(
             return Err(libc::EINVAL);
         }
         let context = context(address)?;
-        context.admit_write()?;
         let source_offset = u64::try_from(source_offset).map_err(|_| libc::EINVAL)?;
         let destination_offset = u64::try_from(destination_offset).map_err(|_| libc::EINVAL)?;
         let length = u64::try_from(length).map_err(|_| libc::EOVERFLOW)?;
         let source = context.file_or_open(&mount_path(source_path)?, source_handle)?;
-        let destination =
-            context.file_or_open(&mount_path(destination_path)?, destination_handle)?;
-        let source_lookup = source.lookup().map_err(|error| errno(&error))?;
-        let destination_lookup = destination.lookup().map_err(|error| errno(&error))?;
-        let length = length.min(
-            source_lookup
-                .node
-                .logical_bytes
-                .saturating_sub(source_offset),
-        );
-        context
-            .source
-            .clone_range_by_id(
-                source_lookup.node.file_id,
-                source_offset,
-                destination_lookup.node.file_id,
-                destination_offset,
-                length,
-            )
-            .map_err(|error| errno(&error))?;
+        let length = context.mutate_file(
+            &mount_path(destination_path)?,
+            destination_handle,
+            |destination| {
+                let source_lookup = source.lookup()?;
+                let destination_lookup = destination.lookup()?;
+                let length = length.min(
+                    source_lookup
+                        .node
+                        .logical_bytes
+                        .saturating_sub(source_offset),
+                );
+                context.source.clone_range_by_id(
+                    source_lookup.node.file_id,
+                    source_offset,
+                    destination_lookup.node.file_id,
+                    destination_offset,
+                    length,
+                )?;
+                Ok(length)
+            },
+        )?;
         i64::try_from(length).map_err(|_| libc::EOVERFLOW)
     })
 }
@@ -2041,13 +2197,26 @@ fn driver_errno(error: i32) -> NativeMountError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_mount::MountPublication;
 
-    #[test]
-    fn directory_page_rejects_a_native_mutation_between_reads()
-    -> Result<(), Box<dyn std::error::Error>> {
+    unsafe extern "C" {
+        fn nfs4_test_read_reply() -> c_int;
+        fn nfs4_test_change_attribute() -> c_int;
+    }
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    type MemorySource = crate::native_mount::CheckoutMountSource<
+        crate::facade::MemoryAuthorityBackend,
+        crate::facade::MemoryObjectBackend,
+    >;
+
+    /// A writable context over a fresh POSIX checkout.
+    fn checkout_context(
+        publication: MountPublication,
+    ) -> Result<(Arc<MemorySource>, DarwinMountContext), Box<dyn std::error::Error>> {
         use crate::Fs;
         use crate::model::{CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle};
-        use crate::native_mount::{CheckoutMountSource, MountPublication, SharedCheckout};
+        use crate::native_mount::SharedCheckout;
 
         let mut config = crate::model::VolumeConfig::portable(Lifecycle::Ephemeral);
         config.profile = FilesystemProfile::Posix;
@@ -2069,19 +2238,162 @@ mod tests {
                 .await
                 .map(|receipt| receipt.value)
         })?;
-        let shared = Arc::new(SharedCheckout::with_publication(
-            checkout,
-            MountPublication::Manual,
-        ));
-        let source = Arc::new(CheckoutMountSource::new(shared, config)?);
-        let root = MountPath::root();
-        let root_id = source.lookup(&root)?.ok_or("root absent")?.node.file_id;
+        let shared = Arc::new(SharedCheckout::with_publication(checkout, publication));
+        let source = Arc::new(MemorySource::new(shared, config)?);
+        let root_id = source
+            .lookup(&MountPath::root())?
+            .ok_or("root absent")?
+            .node
+            .file_id;
         let context = DarwinMountContext::new(
             Arc::clone(&source) as Arc<dyn MountFilesystem>,
             true,
             &std::fs::metadata(".")?,
             root_id,
         );
+        Ok((source, context))
+    }
+
+    fn os(error: i32) -> std::io::Error {
+        std::io::Error::from_raw_os_error(error)
+    }
+
+    #[test]
+    fn close_publishes_only_what_its_handle_wrote() -> TestResult {
+        let (source, context) = checkout_context(MountPublication::CloseAndSync)?;
+        let epoch = || source.view_epoch().ok_or("checkout has no view epoch");
+        let path = MountPath::root().child(b"published".to_vec());
+        context
+            .mutate(|| source.create_file(&path, FileMetadata::default()))
+            .map_err(os)?;
+        let created = context
+            .open(&path, InitialHandleState::Written)
+            .map_err(os)?;
+        let before = epoch()?;
+        context.flush_on_close(created).map_err(os)?;
+        assert!(epoch()? > before, "closing the creating handle publishes");
+
+        let reader = context.open(&path, InitialHandleState::Clean).map_err(os)?;
+        let before = epoch()?;
+        context.flush_on_close(reader).map_err(os)?;
+        context.sync().map_err(os)?;
+        assert_eq!(epoch()?, before, "a clean close or sync publishes nothing");
+
+        context
+            .mutate_file(&path, reader, |file| {
+                file.write_range(0, Bytes::from_static(b"through the handle"))
+            })
+            .map_err(os)?;
+        let before = epoch()?;
+        context.flush_on_close(reader).map_err(os)?;
+        assert!(epoch()? > before, "a written handle's close publishes");
+        let before = epoch()?;
+        context.flush_on_close(reader).map_err(os)?;
+        context.sync().map_err(os)?;
+        assert_eq!(epoch()?, before, "published writes are not published again");
+
+        // NFS may write under a stateid that names no open handle: that
+        // write does not dirty the handle, but a sync still covers it.
+        context
+            .mutate_file(&path, 0, |file| {
+                file.write_range(0, Bytes::from_static(b"without a handle"))
+            })
+            .map_err(os)?;
+        let before = epoch()?;
+        context.flush_on_close(reader).map_err(os)?;
+        assert!(epoch()? >= before);
+        let before = epoch()?;
+        context.sync().map_err(os)?;
+        assert!(
+            epoch()? > before,
+            "a sync publishes every acknowledged write"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn manual_close_and_fsync_publish_nothing_until_sync() -> TestResult {
+        let (source, context) = checkout_context(MountPublication::Manual)?;
+        let epoch = || source.view_epoch().ok_or("checkout has no view epoch");
+        let path = MountPath::root().child(b"manual".to_vec());
+        context
+            .mutate(|| source.create_file(&path, FileMetadata::default()))
+            .map_err(os)?;
+        let created = context
+            .open(&path, InitialHandleState::Written)
+            .map_err(os)?;
+        context
+            .mutate_file(&path, created, |file| {
+                file.write_range(0, Bytes::from_static(b"deferred"))
+            })
+            .map_err(os)?;
+        let reader = context.open(&path, InitialHandleState::Clean).map_err(os)?;
+        let before = epoch()?;
+        context.flush_on_close(reader).map_err(os)?;
+        context.flush_on_close(created).map_err(os)?;
+        context.sync().map_err(os)?;
+        assert_eq!(epoch()?, before, "manual close and fsync publish nothing");
+        source.sync()?;
+        assert!(epoch()? > before, "an explicit mount sync publishes");
+        Ok(())
+    }
+
+    #[test]
+    fn change_attribute_advances_exactly_when_state_may_differ() -> TestResult {
+        let (source, context) = checkout_context(MountPublication::Manual)?;
+        let idle = context.change_attribute();
+        assert_eq!(
+            context.change_attribute(),
+            idle,
+            "an idle mount keeps caches"
+        );
+
+        let path = MountPath::root().child(b"changing".to_vec());
+        context
+            .mutate(|| source.create_file(&path, FileMetadata::default()))
+            .map_err(os)?;
+        let created = context.change_attribute();
+        assert!(created > idle, "a mount mutation advances it");
+
+        source.write_range(&path, 0, Bytes::from_static(b"external"))?;
+        let written = context.change_attribute();
+        assert!(written > created, "another surface's write advances it");
+
+        context.change.advance();
+        let invalidated = context.change_attribute();
+        assert!(
+            invalidated > written,
+            "an external invalidation advances it"
+        );
+        assert_eq!(context.change_attribute(), invalidated);
+
+        let clock = ChangeClock::new();
+        assert_ne!(
+            clock.sample(None, 1),
+            clock.sample(None, 1),
+            "an unstable view never repeats a value"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn nfs_read_answers_short_reads_as_eof_in_place() {
+        // SAFETY: the test hook owns all callback state.
+        assert_eq!(unsafe { nfs4_test_read_reply() }, 0);
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn nfs_change_attribute_is_sampled_before_attributes() {
+        // SAFETY: the test hook owns all callback state.
+        assert_eq!(unsafe { nfs4_test_change_attribute() }, 0);
+    }
+
+    #[test]
+    fn directory_page_rejects_a_native_mutation_between_reads() -> TestResult {
+        let (source, context) = checkout_context(MountPublication::Manual)?;
+        let root = MountPath::root();
         let mut directory =
             DirectoryHandle::new(root, source.binding_epoch(), cache_epochs(source.as_ref()));
         ensure_directory_page(&context, &mut directory)

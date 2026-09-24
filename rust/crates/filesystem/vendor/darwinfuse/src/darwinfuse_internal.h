@@ -59,26 +59,34 @@
 #define DFUSE_READ_BUFSIZE  (256 * 1024)
 /* ---------- Thread pool ---------- */
 
-#define DFUSE_DEFAULT_THREADS   4
+/*
+ * Callbacks block on the filesystem, so parallel clients (compilers, test
+ * runners) need as many workers as they keep requests in flight.  Overflowing
+ * the queue drops the connection, so it holds well over the client's window.
+ */
+#define DFUSE_DEFAULT_THREADS   16
 #define DFUSE_MAX_THREADS       16
-#define DFUSE_WORK_QUEUE_MAX    64
+#define DFUSE_WORK_QUEUE_MAX    256
 
 /* ---------- Logging ---------- */
 
 /*
  * Operational logging is opt-in.  The NFS client issues several protocol
  * operations for one filesystem call, so unconditional stderr writes turn
- * this diagnostic path into the dominant mount cost.
+ * this diagnostic path into the dominant mount cost.  The DARWINFUSE_LOG
+ * path is read once, not per operation.
  */
+const char *darwinfuse_log_path(void);
+
 #define DFUSE_LOG(fmt, ...) do { \
-    const char *_lp = getenv("DARWINFUSE_LOG"); \
+    const char *_lp = darwinfuse_log_path(); \
     if (_lp) { FILE *_f = fopen(_lp, "a"); \
         if (_f) { fprintf(_f, "[DarwinFUSE] " fmt "\n", ##__VA_ARGS__); fclose(_f); } } \
 } while (0)
 
 #define DFUSE_ERR(fmt, ...) do { \
     fprintf(stderr, "[DarwinFUSE ERROR] " fmt "\n", ##__VA_ARGS__); \
-    const char *_lp = getenv("DARWINFUSE_LOG"); \
+    const char *_lp = darwinfuse_log_path(); \
     if (_lp) { FILE *_f = fopen(_lp, "a"); \
         if (_f) { fprintf(_f, "[DarwinFUSE ERROR] " fmt "\n", ##__VA_ARGS__); fclose(_f); } } \
 } while (0)

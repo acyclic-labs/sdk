@@ -26,6 +26,22 @@
 #include <pthread.h>
 #include <sys/wait.h>
 
+/* ---- Diagnostics ---- */
+
+static const char *log_path;
+static pthread_once_t log_path_once = PTHREAD_ONCE_INIT;
+
+static void log_path_init(void)
+{
+    log_path = getenv("DARWINFUSE_LOG");
+}
+
+const char *darwinfuse_log_path(void)
+{
+    pthread_once(&log_path_once, log_path_init);
+    return log_path;
+}
+
 /* ---- Thread-local FUSE context ---- */
 
 static __thread struct fuse_context tls_context;
@@ -35,19 +51,59 @@ struct fuse_context *fuse_get_context(void)
     return &tls_context;
 }
 
+/* NFS carries no requesting pid, and the client applies its caller's umask
+ * before sending a mode, so pid and umask stay zero.  (Sampling this
+ * process's umask would briefly clear it for every other thread.) */
 void darwinfuse_set_context(uid_t uid, gid_t gid)
 {
     tls_context.uid = uid;
     tls_context.gid = gid;
-    tls_context.pid = getpid();
-    mode_t m = umask(0);
-    umask(m);
-    tls_context.umask = m;
 }
 
 void darwinfuse_set_private_data(void *private_data)
 {
     tls_context.private_data = private_data;
+}
+
+/* ---- Argument parsing helpers ---- */
+
+typedef struct {
+    const char *mount_point;
+    int         nosuid;
+    int         nodev;
+    int         rdonly;
+    int         nobrowse;
+    int         namedattr;
+    int         foreground;
+    int         debug;
+    int         singlethreaded;
+} parsed_args_t;
+
+/* Reject what mount_nfs would not honor rather than dropping it silently. */
+static int parse_mount_opts(const char *opts, parsed_args_t *out)
+{
+    char buf[1024];
+    if (strlcpy(buf, opts, sizeof(buf)) >= sizeof(buf)) {
+        DFUSE_ERR("Mount options are too long");
+        return -1;
+    }
+
+    char *saveptr = NULL;
+    for (char *tok = strtok_r(buf, ",", &saveptr);
+         tok != NULL;
+         tok = strtok_r(NULL, ",", &saveptr))
+    {
+        if (strcmp(tok, "nosuid") == 0)       out->nosuid = 1;
+        else if (strcmp(tok, "nodev") == 0)   out->nodev = 1;
+        else if (strcmp(tok, "ro") == 0)      out->rdonly = 1;
+        else if (strcmp(tok, "nobrowse") == 0) out->nobrowse = 1;
+        else if (strcmp(tok, "namedattr") == 0) out->namedattr = 1;
+        else {
+            DFUSE_ERR("Unsupported mount option: %s", tok);
+            return -1;
+        }
+    }
+    return 0;
 }
 
 /* ---- Component API types ---- */
@@ -57,6 +113,7 @@ struct fuse_chan {
     dfuse_inode_table_t *inode_table;
     uint16_t             port;
     char                *mountpoint;
+    parsed_args_t        mount_args;
 };
 
 struct fuse_session {
@@ -93,95 +150,6 @@ static void *server_thread_func(void *arg)
     return NULL;
 }
 
-/* ---- Synthetic mount-time ops ---- */
-
-/*
- * Minimal FUSE operations used during mount_nfs.
- * Only needs to answer GETATTR/ACCESS on root so mount_nfs succeeds.
- * The real ops are attached later via fuse_new().
- */
-static int mount_getattr(const char *path, struct stat *st)
-{
-    memset(st, 0, sizeof(*st));
-    if (strcmp(path, "/") == 0) {
-        st->st_mode = S_IFDIR | 0755;
-        st->st_nlink = 2;
-        st->st_uid = getuid();
-        st->st_gid = getgid();
-        return 0;
-    }
-    return -ENOENT;
-}
-
-static int mount_access(const char *path, int mask)
-{
-    (void)mask;
-    if (strcmp(path, "/") == 0) return 0;
-    return -ENOENT;
-}
-
-static int mount_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-                          off_t offset, struct fuse_file_info *fi)
-{
-    (void)offset; (void)fi;
-    if (strcmp(path, "/") != 0) return -ENOENT;
-    filler(buf, ".", NULL, 0);
-    filler(buf, "..", NULL, 0);
-    return 0;
-}
-
-/* mount_nfs probes NFSv4 named-attribute support before fuse_new() attaches
- * the real callbacks.  Advertise an empty attribute namespace during that
- * bootstrap window; otherwise OPENATTR returns NOTSUPP and macOS permanently
- * falls back to AppleDouble files for this mount. */
-static int mount_listxattr(const char *path, char *list, size_t size)
-{
-    (void)path;
-    (void)list;
-    (void)size;
-    return 0;
-}
-
-static struct fuse_operations mount_ops = {
-    .getattr = mount_getattr,
-    .access  = mount_access,
-    .readdir = mount_readdir,
-    .listxattr = mount_listxattr,
-};
-
-/* ---- Argument parsing helpers ---- */
-
-typedef struct {
-    const char *mount_point;
-    int         nosuid;
-    int         nodev;
-    int         rdonly;
-    int         nobrowse;
-    int         namedattr;
-    int         foreground;
-    int         debug;
-    int         singlethreaded;
-} parsed_args_t;
-
-static void parse_mount_opts(const char *opts, parsed_args_t *out)
-{
-    char buf[1024];
-    strncpy(buf, opts, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
-
-    char *saveptr = NULL;
-    for (char *tok = strtok_r(buf, ",", &saveptr);
-         tok != NULL;
-         tok = strtok_r(NULL, ",", &saveptr))
-    {
-        if (strcmp(tok, "nosuid") == 0)       out->nosuid = 1;
-        else if (strcmp(tok, "nodev") == 0)   out->nodev = 1;
-        else if (strcmp(tok, "ro") == 0)      out->rdonly = 1;
-        else if (strcmp(tok, "nobrowse") == 0) out->nobrowse = 1;
-        else if (strcmp(tok, "namedattr") == 0) out->namedattr = 1;
-    }
-}
-
 static int parse_args(int argc, char *argv[], parsed_args_t *out)
 {
     memset(out, 0, sizeof(*out));
@@ -199,7 +167,8 @@ static int parse_args(int argc, char *argv[], parsed_args_t *out)
         for (int i = 2; i < argc; i++) {
             if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
                 i++;
-                parse_mount_opts(argv[i], out);
+                if (parse_mount_opts(argv[i], out) < 0)
+                    return -1;
             } else if (strcmp(argv[i], "-f") == 0) {
                 out->foreground = 1;
             } else if (strcmp(argv[i], "-d") == 0) {
@@ -220,7 +189,8 @@ static int parse_args(int argc, char *argv[], parsed_args_t *out)
                 out->singlethreaded = 1;
             } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
                 i++;
-                parse_mount_opts(argv[i], out);
+                if (parse_mount_opts(argv[i], out) < 0)
+                    return -1;
             } else if (argv[i][0] != '-') {
                 mountpoint = argv[i];
             }
@@ -240,9 +210,11 @@ static int parse_args(int argc, char *argv[], parsed_args_t *out)
 static int do_mount_nfs(uint16_t port, const char *mount_point,
                          const parsed_args_t *args)
 {
+    /* actimeo=1 matches libfuse's default one-second attribute and entry
+     * timeouts; the change attribute makes every revalidation exact. */
     char opts[512];
     int len = snprintf(opts, sizeof(opts),
-        "vers=4,tcp,noac,noacl,noresvport,"
+        "vers=4,tcp,actimeo=1,noacl,noresvport,"
         "rsize=262144,wsize=262144,"
         "soft,intr,retrycnt=0,"
         "port=%u",
@@ -324,81 +296,72 @@ struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args)
     /* Parse mount options from args */
     parsed_args_t mount_args;
     memset(&mount_args, 0, sizeof(mount_args));
-    mount_args.mount_point = mountpoint;
 
     if (args) {
         for (int i = 1; i < args->argc; i++) {
             if (strcmp(args->argv[i], "-o") == 0 && i + 1 < args->argc) {
                 i++;
-                parse_mount_opts(args->argv[i], &mount_args);
+                if (parse_mount_opts(args->argv[i], &mount_args) < 0)
+                    return NULL;
             }
         }
     }
 
-    /* Create inode table */
-    dfuse_inode_table_t *itable = dfuse_itable_create();
-    if (!itable) {
+    /* Create channel and inode table */
+    struct fuse_chan *ch = calloc(1, sizeof(*ch));
+    if (!ch) return NULL;
+    ch->mountpoint = strdup(mountpoint);
+    ch->inode_table = dfuse_itable_create();
+    if (!ch->mountpoint || !ch->inode_table) {
         DFUSE_ERR("Failed to create inode table");
+        dfuse_itable_destroy(ch->inode_table);
+        free(ch->mountpoint);
+        free(ch);
         return NULL;
     }
+    ch->mount_args = mount_args;
+    ch->mount_args.mount_point = ch->mountpoint;
 
-    /* Configure NFS server with synthetic mount-time ops */
+    /* Create NFS server; fuse_new() attaches the operations */
     darwinfuse_config_t config;
     memset(&config, 0, sizeof(config));
-    config.ops = &mount_ops;
-    config.user_data = NULL;
     config.uid = getuid();
     config.gid = getgid();
-    config.inode_table = itable;
+    config.inode_table = ch->inode_table;
 
-    /* Create NFS server */
-    uint16_t port = 0;
-    darwinfuse_server_t *srv = nfs4_server_create(&config, &port);
-    if (!srv) {
+    ch->server = nfs4_server_create(&config, &ch->port);
+    if (!ch->server) {
         DFUSE_ERR("Failed to create NFS server");
-        dfuse_itable_destroy(itable);
+        dfuse_itable_destroy(ch->inode_table);
+        free(ch->mountpoint);
+        free(ch);
         return NULL;
     }
 
-    /* Start temporary server thread for mount */
-    pthread_t srv_thread;
-    if (pthread_create(&srv_thread, NULL, server_thread_func, srv) != 0) {
-        DFUSE_ERR("Failed to create server thread");
-        nfs4_server_destroy(srv);
-        dfuse_itable_destroy(itable);
-        return NULL;
-    }
-
-    /* Mount */
-    darwinfuse_set_context(getuid(), getgid());
-    if (do_mount_nfs(port, mountpoint, &mount_args) < 0) {
-        DFUSE_ERR("Failed to mount NFS");
-        nfs4_server_stop(srv);
-        pthread_join(srv_thread, NULL);
-        nfs4_server_destroy(srv);
-        dfuse_itable_destroy(itable);
-        return NULL;
-    }
-
-    /* Stop temporary server thread */
-    nfs4_server_stop(srv);
-    pthread_join(srv_thread, NULL);
-
-    /* Create channel */
-    struct fuse_chan *ch = calloc(1, sizeof(*ch));
-    if (!ch) {
-        nfs4_server_destroy(srv);
-        dfuse_itable_destroy(itable);
-        return NULL;
-    }
-
-    ch->server = srv;
-    ch->inode_table = itable;
-    ch->port = port;
-    ch->mountpoint = strdup(mountpoint);
-
-    DFUSE_LOG("fuse_mount: mounted on %s (port %u)", mountpoint, port);
+    DFUSE_LOG("fuse_mount: prepared %s (port %u)", mountpoint, ch->port);
     return ch;
+}
+
+/*
+ * Mount a channel whose operations and private data are attached. A
+ * temporary event-loop thread answers mount_nfs; the kernel's connection
+ * then stays open for the caller's own event loop.
+ */
+static int mount_channel(struct fuse_chan *ch)
+{
+    pthread_t srv_thread;
+    if (pthread_create(&srv_thread, NULL, server_thread_func, ch->server) != 0) {
+        DFUSE_ERR("Failed to create server thread");
+        return -1;
+    }
+    int rc = do_mount_nfs(ch->port, ch->mountpoint, &ch->mount_args);
+    if (rc < 0)
+        DFUSE_ERR("Failed to mount NFS");
+    nfs4_server_stop(ch->server);
+    pthread_join(srv_thread, NULL);
+    if (rc == 0)
+        DFUSE_LOG("fuse_loop: mounted on %s (port %u)", ch->mountpoint, ch->port);
+    return rc;
 }
 
 void fuse_unmount(const char *mountpoint, struct fuse_chan *ch)
@@ -505,12 +468,19 @@ int fuse_loop(struct fuse *f)
     nfs4_server_set_private_data(f->chan->server,
                                   f->init_result ? f->init_result : f->user_data);
 
-    /* Restart and run the server event loop */
-    nfs4_server_restart(f->chan->server);
-
-    DFUSE_LOG("fuse_loop: running event loop (pid=%d)", getpid());
-    int rc = nfs4_server_run(f->chan->server);
-    DFUSE_LOG("fuse_loop: server exited");
+    /* Mount only now: every answer the NFS client caches must come from the
+     * attached operations.  Restart the event loop, then honor an exit
+     * requested meanwhile (fuse_exit() sets exited before it stops the
+     * server, so one of the two is always observed). */
+    int rc = mount_channel(f->chan);
+    if (rc == 0) {
+        nfs4_server_restart(f->chan->server);
+        if (!f->exited) {
+            DFUSE_LOG("fuse_loop: running event loop (pid=%d)", getpid());
+            rc = nfs4_server_run(f->chan->server);
+            DFUSE_LOG("fuse_loop: server exited");
+        }
+    }
 
     /* Call ops->destroy() */
     if (f->ops->destroy)
