@@ -266,6 +266,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "reduce decisions must execute through the reducer registry".into(),
             ));
         }
+        // A speculation node never runs on a worker: its verdict, settlement,
+        // merge-conflict failure, and cancellation are all recorded by the
+        // speculation methods or the scheduler itself. Any generic completion,
+        // whatever its outcome, could strand a committed verdict without a
+        // settlement record.
         let speculation_step = matches!(
             &event,
             SchedulerEvent::AttemptEvaluated { .. }
@@ -273,7 +278,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 | SchedulerEvent::SpeculationSettled { .. }
         ) || matches!(
             &event,
-            SchedulerEvent::Completed { operation_id, outcome: crate::Outcome::Succeeded(_), .. }
+            SchedulerEvent::Completed { operation_id, .. }
                 if self.scheduler.speculation_plan(*operation_id).is_some()
         );
         if speculation_step {

@@ -11,7 +11,11 @@
 //! 2. [`SchedulerEvent::Judged`] records the verdict bound to the digest of the exact
 //!    [`JudgeRequest`] and cancels every loser that is still running.
 //! 3. [`SchedulerEvent::SpeculationSettled`] records the merged target generation
-//!    after losers were discarded and the winner was merged.
+//!    after losers were discarded and the winner was merged. The winner's fork is
+//!    discarded only after this record is durable.
+//!
+//! A parent decision that cancels an undecided speculation cancels the node and
+//! its attempts at once; settling it then discards every attempt workspace.
 //!
 //! Nothing reaches the target workspace unless an attempt qualifies and the judge
 //! chooses it.
@@ -336,7 +340,8 @@ pub struct SpeculationState {
     pub verdict: Option<Verdict>,
     /// Digest of the judge request the verdict answered.
     pub judgment_digest: Option<[u8; 32]>,
-    /// Losers were discarded and the winner, if any, was merged.
+    /// Losers were discarded and the winner, if any, was merged; or, after a
+    /// cancellation before the verdict, every attempt workspace was discarded.
     pub settled: bool,
     /// Target generation produced by merging the winner.
     pub merged: Option<GenerationRef>,
@@ -639,18 +644,26 @@ impl Scheduler {
             .speculations
             .get(&parent)
             .ok_or_else(|| Error::NotFound(format!("speculation {parent}")))?;
-        let verdict = speculation
-            .verdict
-            .as_ref()
-            .ok_or_else(|| Error::Conflict("speculation has no verdict".into()))?;
         if speculation.settled {
             return Err(Error::Conflict("speculation is already settled".into()));
         }
-        let phase = self
+        let node = self
             .operations
             .get(&parent)
-            .map(|state| state.phase)
             .ok_or_else(|| Error::NotFound(format!("operation {parent}")))?;
+        let phase = node.phase;
+        let Some(verdict) = speculation.verdict.as_ref() else {
+            // A speculation cancelled before its verdict settles by discarding
+            // every attempt workspace; nothing is merged.
+            if phase == OperationPhase::Terminal
+                && node.outcome == Some(Outcome::Cancelled)
+                && merged.is_none()
+            {
+                self.speculations.entry(parent).or_default().settled = true;
+                return Ok(());
+            }
+            return Err(Error::Conflict("speculation has no verdict".into()));
+        };
         let outcome = match (&verdict.winner, &merged) {
             (Some(slot), Some(generation)) if phase == OperationPhase::Reconciling => {
                 generation.validate()?;
@@ -1089,11 +1102,17 @@ mod host {
             Ok(Some(verdict))
         }
 
-        /// Discards every loser workspace, merges the winner into the target, discards
-        /// the merged fork, and records the settlement. Returns the merged generation.
+        /// Discards every loser workspace, merges the winner into the target, records
+        /// the settlement, and only then discards the merged fork. Returns the merged
+        /// generation.
         ///
-        /// A merge conflict fails the speculation and leaves the winner's fork intact
-        /// for inspection.
+        /// The winner's fork outlives the merge until the settlement is durable, so a
+        /// retry after a crash between the two can still reopen it and replay the
+        /// idempotent merge. A settled retry only repeats the idempotent discard.
+        ///
+        /// A speculation cancelled before its verdict settles by discarding every
+        /// attempt workspace. A merge conflict fails the speculation and leaves the
+        /// winner's fork intact for inspection.
         pub async fn settle_speculation(
             &mut self,
             parent: OperationId,
@@ -1105,51 +1124,71 @@ mod host {
                 .speculation(parent)
                 .cloned()
                 .ok_or_else(|| Error::NotFound(format!("speculation {parent}")))?;
-            if state.settled {
-                return Ok(state.merged);
-            }
-            let verdict = state
-                .verdict
-                .ok_or_else(|| Error::Conflict("speculation has no verdict".into()))?;
             let plan = self
                 .scheduler()
                 .speculation_plan(parent)
                 .cloned()
                 .ok_or_else(|| Error::Invalid("operation is not a speculation".into()))?;
-            for (slot, attempt) in &plan.attempts {
-                if verdict.winner.as_ref() != Some(slot) {
-                    workspaces
-                        .discard(
-                            &attempt.workspace,
-                            &step_key(idempotency_key, &format!("discard:{slot}"))?,
-                        )
-                        .await?;
+            let winner = match &state.verdict {
+                Some(verdict) => verdict.winner.clone(),
+                None if self.scheduler().operation(parent).is_some_and(|node| {
+                    node.phase == OperationPhase::Terminal
+                        && node.outcome == Some(Outcome::Cancelled)
+                }) =>
+                {
+                    None
                 }
-            }
-            let merged = match &verdict.winner {
-                None => None,
-                Some(slot) => Some(
-                    self.merge_winner(
-                        parent,
-                        slot,
-                        &plan,
-                        &state.evaluations,
-                        workspaces,
-                        idempotency_key,
-                    )
-                    .await?,
-                ),
+                None => return Err(Error::Conflict("speculation has no verdict".into())),
             };
-            self.apply_internal(
-                parent,
-                step_key(idempotency_key, "settle")?,
-                SchedulerEvent::SpeculationSettled {
-                    operation_id: parent,
-                    merged: merged.clone(),
-                },
-            )
-            .await?;
-            Ok(merged)
+            if !state.settled {
+                for (slot, attempt) in &plan.attempts {
+                    if winner.as_ref() != Some(slot) {
+                        workspaces
+                            .discard(
+                                &attempt.workspace,
+                                &step_key(idempotency_key, &format!("discard:{slot}"))?,
+                            )
+                            .await?;
+                    }
+                }
+                let merged = match &winner {
+                    None => None,
+                    Some(slot) => Some(
+                        self.merge_winner(
+                            parent,
+                            slot,
+                            &plan,
+                            &state.evaluations,
+                            workspaces,
+                            idempotency_key,
+                        )
+                        .await?,
+                    ),
+                };
+                self.apply_internal(
+                    parent,
+                    step_key(idempotency_key, "settle")?,
+                    SchedulerEvent::SpeculationSettled {
+                        operation_id: parent,
+                        merged,
+                    },
+                )
+                .await?;
+            }
+            if let Some(slot) = &winner
+                && let Some(attempt) = plan.attempts.get(slot)
+            {
+                workspaces
+                    .discard(
+                        &attempt.workspace,
+                        &step_key(idempotency_key, &format!("discard:{slot}"))?,
+                    )
+                    .await?;
+            }
+            Ok(self
+                .scheduler()
+                .speculation(parent)
+                .and_then(|settled| settled.merged.clone()))
         }
 
         async fn merge_winner(
@@ -1173,15 +1212,6 @@ mod host {
                 .merge(attempt, &evaluation.generation, &plan.target, &merge_key)
                 .await
             {
-                Ok(generation) => {
-                    workspaces
-                        .discard(
-                            &attempt.workspace,
-                            &step_key(idempotency_key, &format!("discard:{slot}"))?,
-                        )
-                        .await?;
-                    Ok(generation)
-                }
                 Err(Error::Conflict(message)) => {
                     self.apply_internal(
                         parent,
@@ -1197,7 +1227,7 @@ mod host {
                     .await?;
                     Err(Error::Conflict(message))
                 }
-                Err(error) => Err(error),
+                result => result,
             }
         }
     }
@@ -1251,6 +1281,8 @@ mod tests {
         probes: BTreeMap<Vec<u8>, Vec<u8>>,
         merges: Vec<(Vec<u8>, GenerationRef)>,
         discarded: Vec<Vec<u8>>,
+        /// Workspaces whose next discard deletes them and then reports a crash.
+        crash_after_discard: BTreeSet<Vec<u8>>,
     }
 
     struct MemoryWorkspaces(Mutex<Recorded>);
@@ -1325,6 +1357,10 @@ mod tests {
             Box::pin(async move {
                 let key = attempt.workspace.as_resource().key().to_vec();
                 let mut state = self.state()?;
+                // Merges reopen the attempt fork, so a discarded fork cannot merge.
+                if state.discarded.contains(&key) {
+                    return Err(Error::NotFound("attempt workspace was discarded".into()));
+                }
                 if state.conflicting.contains(&key) {
                     return Err(Error::Conflict("both sides changed /x".into()));
                 }
@@ -1339,9 +1375,12 @@ mod tests {
             _: &'a IdempotencyKey,
         ) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
-                self.state()?
-                    .discarded
-                    .push(workspace.as_resource().key().to_vec());
+                let key = workspace.as_resource().key().to_vec();
+                let mut state = self.state()?;
+                state.discarded.push(key.clone());
+                if state.crash_after_discard.remove(&key) {
+                    return Err(Error::Storage("process stopped after the discard".into()));
+                }
                 Ok(())
             })
         }
@@ -1758,6 +1797,271 @@ mod tests {
                 .and_then(|state| state.merged.clone()),
             merged
         );
+        Ok(())
+    }
+
+    /// Runs two attempts to success and commits a verdict for `a`.
+    async fn decide_for_a(
+        coordinator: &mut DistributedCoordinator<MemoryStream>,
+        fake: &MemoryWorkspaces,
+    ) -> Result<()> {
+        let request = request(&["a", "b"], false, JudgeTiming::AllSettled)?;
+        coordinator
+            .open_speculation(&request, &key("speculate")?)
+            .await?;
+        let fences = start(coordinator, 2).await?;
+        finish(
+            coordinator,
+            &fences,
+            &[
+                (attempt_id(0), Outcome::Succeeded(json!("a done"))),
+                (attempt_id(1), Outcome::Succeeded(json!("b done"))),
+            ],
+        )
+        .await?;
+        for slot in ["a", "b"] {
+            coordinator
+                .evaluate_attempt(NODE, slot, fake, None, &key(&format!("eval-{slot}"))?)
+                .await?;
+        }
+        let verdict = coordinator
+            .judge_speculation(NODE, &FewestChangesJudge::new(), &key("judge")?)
+            .await?;
+        assert_eq!(verdict.and_then(|value| value.winner), Some("a".into()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn settle_retry_after_a_crash_following_the_winner_discard_still_settles() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let mut coordinator = open(&client, SwarmLimits::DOGFOOD).await?;
+        let fake = workspaces(&[("a", 1), ("b", 2)], &[]);
+        decide_for_a(&mut coordinator, &fake).await?;
+        fake.state()?.crash_after_discard.insert(b"a".to_vec());
+
+        // The process stops right after the winner's fork is deleted.
+        assert!(matches!(
+            coordinator
+                .settle_speculation(NODE, &fake, &key("settle")?)
+                .await,
+            Err(Error::Storage(_))
+        ));
+        let mut restarted = open(&client, SwarmLimits::DOGFOOD).await?;
+        let merged = restarted
+            .settle_speculation(NODE, &fake, &key("settle")?)
+            .await?;
+        assert!(merged.is_some());
+        let state = restarted
+            .scheduler()
+            .speculation(NODE)
+            .ok_or_else(|| Error::NotFound("speculation".into()))?;
+        assert!(state.settled);
+        assert_eq!(state.merged, merged);
+        assert!(matches!(
+            restarted
+                .scheduler()
+                .operation(NODE)
+                .and_then(|node| node.outcome.clone()),
+            Some(Outcome::Succeeded(_))
+        ));
+        assert_eq!(fake.state()?.merges.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn generic_completion_cannot_strand_a_committed_verdict() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let mut coordinator = open(&client, SwarmLimits::DOGFOOD).await?;
+        let fake = workspaces(&[("a", 1), ("b", 2)], &[]);
+        decide_for_a(&mut coordinator, &fake).await?;
+        for (index, outcome) in [
+            failed(),
+            Outcome::Indeterminate { operation_id: NODE },
+            Outcome::Cancelled,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(matches!(
+                coordinator
+                    .apply(
+                        NODE,
+                        key(&format!("bypass-{index}"))?,
+                        SchedulerEvent::Completed {
+                            operation_id: NODE,
+                            outcome,
+                            fence: None,
+                        },
+                    )
+                    .await,
+                Err(Error::Unauthorized(_))
+            ));
+        }
+        let merged = coordinator
+            .settle_speculation(NODE, &fake, &key("settle")?)
+            .await?;
+        assert!(merged.is_some());
+        assert!(matches!(
+            coordinator
+                .scheduler()
+                .operation(NODE)
+                .and_then(|node| node.outcome.clone()),
+            Some(Outcome::Succeeded(_))
+        ));
+        Ok(())
+    }
+
+    /// Declares a race whose direct child wins while a speculation under it is
+    /// still undecided, commits the race decision, and returns the leases.
+    async fn race_past_a_speculation(
+        coordinator: &mut DistributedCoordinator<MemoryStream>,
+    ) -> Result<BTreeMap<OperationId, LeaseFence>> {
+        let root = OperationId::from_bytes([1; 16]);
+        let sibling = OperationId::from_bytes([2; 16]);
+        let declare = |operation_id, parent, orchestration| OperationSpec {
+            operation_id,
+            parent,
+            owner: owner(),
+            entrypoint: entrypoint("example.agent"),
+            dependencies: BTreeSet::new(),
+            resources: ResourceRequest::default(),
+            placement: Value::Null,
+            orchestration,
+            state: Value::Null,
+        };
+        for (id, spec) in [
+            (root, declare(root, None, Orchestration::Race)),
+            (
+                sibling,
+                declare(
+                    sibling,
+                    Some(ParentLink {
+                        operation_id: root,
+                        slot: "direct".into(),
+                    }),
+                    Orchestration::Leaf,
+                ),
+            ),
+        ] {
+            let event = coordinator.scheduler().declare(spec)?;
+            coordinator
+                .apply(id, key(&format!("declare-{id}"))?, event)
+                .await?;
+        }
+        let mut speculation = request(&["a", "b"], false, JudgeTiming::AllSettled)?;
+        speculation.parent = Some(ParentLink {
+            operation_id: root,
+            slot: "speculate".into(),
+        });
+        coordinator
+            .open_speculation(&speculation, &key("speculate")?)
+            .await?;
+        let fences = start(coordinator, 4).await?;
+        let root_fence = fences
+            .get(&root)
+            .cloned()
+            .ok_or_else(|| Error::NotFound("root lease".into()))?;
+        coordinator
+            .apply(
+                root,
+                key("root-wait")?,
+                SchedulerEvent::WaitingForChildren {
+                    operation_id: root,
+                    fence: root_fence,
+                },
+            )
+            .await?;
+        finish(
+            coordinator,
+            &fences,
+            &[(sibling, Outcome::Succeeded(json!("direct done")))],
+        )
+        .await?;
+        let OrchestrationDecision::Complete { outcome, cancel } =
+            coordinator.scheduler().orchestration(root)
+        else {
+            return Err(Error::Conflict("race should be decided".into()));
+        };
+        assert_eq!(cancel, vec![NODE]);
+        let expected_revision = coordinator
+            .scheduler()
+            .operation(root)
+            .map_or(0, |state| state.revision);
+        coordinator
+            .apply(
+                root,
+                key("race")?,
+                SchedulerEvent::Orchestrated {
+                    operation_id: root,
+                    expected_revision,
+                    outcome,
+                    cancel,
+                    reducer: None,
+                    reduction_digest: None,
+                },
+            )
+            .await?;
+        Ok(fences)
+    }
+
+    #[tokio::test]
+    async fn race_parent_cancelling_an_undecided_speculation_cancels_its_attempts() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let mut coordinator = open(&client, SwarmLimits::DOGFOOD).await?;
+        let fences = race_past_a_speculation(&mut coordinator).await?;
+
+        let scheduler = coordinator.scheduler();
+        assert_eq!(
+            scheduler
+                .operation(NODE)
+                .and_then(|state| state.outcome.clone()),
+            Some(Outcome::Cancelled)
+        );
+        for index in 0..2 {
+            assert!(
+                scheduler
+                    .operation(attempt_id(index))
+                    .is_some_and(|state| state.cancellation_requested),
+                "every running attempt is asked to cancel"
+            );
+        }
+        assert_eq!(
+            coordinator
+                .judge_speculation(NODE, &FewestChangesJudge::new(), &key("judge")?)
+                .await?,
+            None
+        );
+        finish(
+            &mut coordinator,
+            &fences,
+            &[
+                (attempt_id(0), Outcome::Cancelled),
+                (attempt_id(1), Outcome::Cancelled),
+            ],
+        )
+        .await?;
+        let fake = workspaces(&[], &[]);
+        assert_eq!(
+            coordinator
+                .settle_speculation(NODE, &fake, &key("settle")?)
+                .await?,
+            None
+        );
+        {
+            let recorded = fake.state()?;
+            assert!(recorded.merges.is_empty());
+            for discarded in [&b"a"[..], b"b"] {
+                assert!(recorded.discarded.iter().any(|value| value == discarded));
+            }
+        }
+        assert!(
+            coordinator
+                .scheduler()
+                .speculation(NODE)
+                .is_some_and(|state| state.settled)
+        );
+        let reopened = open(&client, SwarmLimits::DOGFOOD).await?;
+        assert_eq!(reopened.scheduler(), coordinator.scheduler());
         Ok(())
     }
 

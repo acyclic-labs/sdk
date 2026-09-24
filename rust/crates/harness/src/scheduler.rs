@@ -312,7 +312,8 @@ pub enum SchedulerEvent {
         /// Nonterminal losers to cancel.
         cancel: Vec<OperationId>,
     },
-    /// Losers were discarded and the winner, if any, was merged into the target.
+    /// Losers were discarded and the winner, if any, was merged into the target;
+    /// or a speculation cancelled before its verdict had every attempt discarded.
     SpeculationSettled {
         /// Speculation node.
         operation_id: OperationId,
@@ -1081,15 +1082,21 @@ impl Scheduler {
     }
 
     /// Cancels one structured child on behalf of a committed parent decision.
+    ///
+    /// An undecided speculation node never runs on a worker, so nothing would
+    /// acknowledge a cancellation request on it: it is cancelled outright and its
+    /// attempts are cancelled with it. A decided speculation still settles.
     pub(crate) fn cancel_child(&mut self, child_id: OperationId) -> Result<()> {
         let mut terminalized = false;
+        let speculating = self.speculation_plan(child_id).is_some();
         let child = self.mutable(child_id)?;
         if matches!(
             child.phase,
             OperationPhase::WaitingForDependencies
                 | OperationPhase::WaitingForCapacity
                 | OperationPhase::Admitted
-        ) {
+        ) || (speculating && child.phase == OperationPhase::WaitingForChildren)
+        {
             child.reservation = None;
             child.phase = OperationPhase::Terminal;
             child.outcome = Some(Outcome::Cancelled);
@@ -1103,6 +1110,16 @@ impl Scheduler {
             .ok_or_else(|| Error::Invalid("operation revision exhausted".into()))?;
         if terminalized {
             self.completion_order.push(child_id);
+            if speculating {
+                let attempts = self
+                    .children(child_id)
+                    .filter(|(_, attempt)| attempt.phase != OperationPhase::Terminal)
+                    .map(|(_, attempt)| attempt.spec.operation_id)
+                    .collect::<Vec<_>>();
+                for attempt in attempts {
+                    self.cancel_child(attempt)?;
+                }
+            }
         }
         Ok(())
     }
