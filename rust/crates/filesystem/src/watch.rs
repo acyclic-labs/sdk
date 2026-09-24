@@ -817,47 +817,64 @@ impl NativeWatch {
     /// removes a uniquely named cookie inside the first excluded subtree that
     /// is a directory (creating the first one when none is), then waits for
     /// the cookie's ordered notification. Excluded cookies are never hints.
-    /// If delivery does not arrive within `timeout`, the watcher is
-    /// invalidated so the next poll demands an authenticated rescan.
+    ///
+    /// A fence either proves delivery or invalidates the watcher: when the
+    /// cookie cannot be placed, written, or observed within `timeout`, the
+    /// next poll demands an authenticated rescan instead.
     ///
     /// # Errors
     ///
-    /// Rejects a watcher without excluded subtrees, cookie I/O failures, or
-    /// poisoned synchronization.
+    /// Returns only poisoned synchronization.
     pub fn fence(&mut self, timeout: Duration) -> Result<(), NativeWatchError> {
+        let delivered = self.fence_cookie().is_ok_and(|cookie| {
+            self.await_cookie(&cookie, timeout)
+                .is_ok_and(|delivered| delivered)
+        });
+        let mut state = self
+            .shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?;
+        state.fence = None;
+        if !delivered && state.invalidation.is_none() {
+            state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
+        }
+        Ok(())
+    }
+
+    fn fence_cookie(&mut self) -> Result<PathBuf, NativeWatchError> {
         let (directory, host_directory) = self.fence_directory()?;
         self.watch_directory(&directory)?;
         self.fences = self.fences.wrapping_add(1);
-        let cookie = host_directory.join(format!(
+        Ok(host_directory.join(format!(
             ".acyclic-fence-{}-{}",
             std::process::id(),
             self.fences
-        ));
+        )))
+    }
+
+    /// Writes `cookie` and reports whether its notification arrived in time.
+    fn await_cookie(&self, cookie: &Path, timeout: Duration) -> Result<bool, NativeWatchError> {
         let mut state = self
             .shared
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         if state.invalidation.is_some() {
-            return Ok(());
+            return Ok(false);
         }
-        state.fence = Some(cookie.clone());
+        state.fence = Some(cookie.to_path_buf());
         drop(state);
-        let written =
-            std::fs::File::create_new(&cookie).and_then(|_| std::fs::remove_file(&cookie));
+        std::fs::File::create_new(cookie)
+            .and_then(|_| std::fs::remove_file(cookie))
+            .map_err(|error| NativeWatchError::Io(error.to_string()))?;
         let deadline = Instant::now() + timeout;
         let mut state = self
             .shared
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
-        if let Err(error) = written {
-            state.fence = None;
-            return Err(NativeWatchError::Io(error.to_string()));
-        }
         while state.fence.is_some() && state.invalidation.is_none() {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
-                break;
+                return Ok(false);
             }
             state = self
                 .fenced
@@ -865,8 +882,7 @@ impl NativeWatch {
                 .map_err(|_| NativeWatchError::StatePoisoned)?
                 .0;
         }
-        state.fence = None;
-        Ok(())
+        Ok(state.invalidation.is_none())
     }
 
     fn fence_directory(&self) -> Result<(NamespacePath, PathBuf), NativeWatchError> {

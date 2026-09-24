@@ -888,3 +888,26 @@ fn fence_queues_every_completed_write_and_hides_its_cookie()
     ));
     Ok(())
 }
+
+#[test]
+fn an_unplaceable_fence_demands_a_rescan_instead_of_failing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let mut watch = NativeWatch::open(
+        directory.path(),
+        NativeWatchOptions::new(VolumeLimits::default()),
+    )?;
+    let _ = watch.begin_rescan()?;
+    let _ = watch.finish_rescan()?;
+    watch.fence(std::time::Duration::from_secs(5))?;
+    assert!(matches!(
+        watch
+            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value,
+        WatchBatch::RescanRequired {
+            reason: WatchInvalidationReason::NativeRescanRequired,
+            ..
+        }
+    ));
+    Ok(())
+}
