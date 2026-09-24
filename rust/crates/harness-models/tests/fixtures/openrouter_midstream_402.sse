@@ -1,0 +1,4 @@
+data: {"id":"gen-2","provider":"OpenAI","model":"openai/gpt-5","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Par"},"finish_reason":null}]}
+
+data: {"id":"gen-2","object":"chat.completion.chunk","error":{"code":402,"message":"Insufficient credits. Add more using https://openrouter.ai/settings/credits"},"choices":[{"index":0,"delta":{"content":""},"finish_reason":"error"}]}
+

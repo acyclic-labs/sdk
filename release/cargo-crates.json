@@ -10,6 +10,7 @@
   "acyclic-harness-grpc",
   "acyclic-harness-http",
   "acyclic-harness-machines",
+  "acyclic-harness-models",
   "acyclic-labs-plugin",
   "acyclic-memory",
   "acyclic-conformance",

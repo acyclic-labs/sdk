@@ -1,0 +1,28 @@
+[package]
+name = "acyclic-harness-models"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Acyclic Harness model adapters for OpenAI-compatible endpoints such as OpenRouter"
+readme = "README.md"
+documentation = "https://docs.rs/acyclic-harness-models"
+
+[dependencies]
+acyclic-harness = { version = "0.1.0", path = "../harness", default-features = false, features = ["host"] }
+bytes.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+axum.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
