@@ -951,3 +951,29 @@ async fn refused_connection_is_retried_because_nothing_was_sent() {
         other => panic!("unexpected {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn stalled_error_body_still_classifies_by_status_and_says_why() {
+    let (base_url, _count) = serve_with(|| async {
+        Response::builder()
+            .status(403)
+            .body(Body::from_stream(stream::pending::<
+                Result<Bytes, std::io::Error>,
+            >()))
+            .unwrap()
+    })
+    .await;
+    let provider = plain(base_url, Duration::from_millis(200));
+    let events = tokio::time::timeout(
+        Duration::from_secs(10),
+        provider.stream(&request(Value::Null)).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("stalled error body is bounded by the idle timeout");
+    match events.as_slice() {
+        [Err(ProviderError::Unauthorized { message })] => {
+            assert!(message.contains("not received"), "{message}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
