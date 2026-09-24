@@ -6,9 +6,10 @@ use acyclic_harness::{
     resources::{ArtifactRef, CheckpointRef, ProviderRef, SandboxRef},
 };
 use acyclic_machines::{
-    CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey as MachinesKey, Image,
-    ImageQualification, MachineId, MachineObservation, MachinesProvider, MutationOutcome,
-    OperationId as MachinesOperationId, OperationObservation, ProviderError,
+    CheckpointId, CheckpointObservation, CreateMachine, ForkFidelity,
+    IdempotencyKey as MachinesKey, Image, ImageQualification, MachineId, MachineObservation,
+    MachinesProvider, MutationOutcome, OperationId as MachinesOperationId, OperationObservation,
+    ProviderError,
 };
 use std::{num::NonZeroU32, sync::Arc};
 
@@ -148,6 +149,47 @@ impl MachinesHost {
         }
     }
 
+    /// Forks a running sandbox into `count` fresh sandboxes without a checkpoint and reports
+    /// the fidelity the provider forked at; see
+    /// [`MachinesProvider::fork_machine`].
+    ///
+    /// Returns [`Error::Unsupported`] when the sandbox's contract declares no live fork, so
+    /// the caller can fall back to [`Self::checkpoint`] plus [`Self::fork`] or a restart. With
+    /// [`ForkFidelity::DiskOnly`] the children did not inherit running processes, and the
+    /// caller restarts its workload in each of them.
+    pub async fn fork_live(
+        &self,
+        operation_id: OperationId,
+        idempotency_key: &IdempotencyKey,
+        sandbox: &SandboxRef,
+        count: NonZeroU32,
+    ) -> Result<(ForkFidelity, Vec<SandboxRef>)> {
+        let source = self.machine_id(sandbox)?;
+        match self
+            .provider
+            .fork_machine(source, count, machines_key(idempotency_key)?)
+            .await
+            .map_err(|error| map_error(error, Some(operation_id)))?
+        {
+            MutationOutcome::MachineForked {
+                source: forked,
+                fidelity,
+                children,
+            } if forked == source => Ok((
+                fidelity,
+                children
+                    .into_iter()
+                    .map(|value| {
+                        SandboxRef::new(self.provider_ref.clone(), value.id.as_bytes(), None)
+                    })
+                    .collect::<Result<_>>()?,
+            )),
+            _ => Err(Error::Storage(
+                "Machines returned the wrong live fork outcome".into(),
+            )),
+        }
+    }
+
     /// Cancels a provider operation identified by the Machines admission contract.
     pub async fn cancel(&self, operation_id: MachinesOperationId) -> Result<OperationObservation> {
         self.provider
@@ -238,7 +280,8 @@ fn map_error(error: ProviderError, operation: Option<OperationId>) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_machines::SimulatedMachines;
+    use acyclic_machines::{Capability, SimulatedMachines};
+    use std::collections::BTreeSet;
 
     #[test]
     fn operation_indeterminate_preserves_the_exact_provider_operation() -> Result<()> {
@@ -277,6 +320,56 @@ mod tests {
             host.inspect(&foreign).await,
             Err(Error::Invalid(_))
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn live_fork_reaches_the_provider_through_the_trait() -> Result<()> {
+        let provider_ref = ProviderRef::new("example", "machines", "1")?;
+        let artifact = ArtifactRef::new(provider_ref.clone(), [1; 32], None)?;
+        let two = NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN);
+        for (capabilities, expected) in [
+            (
+                BTreeSet::from([Capability::LiveFork]),
+                Some(ForkFidelity::MemoryAndDisk),
+            ),
+            (
+                BTreeSet::from([Capability::DiskFork]),
+                Some(ForkFidelity::DiskOnly),
+            ),
+            (BTreeSet::new(), None),
+        ] {
+            let host = MachinesHost::new(
+                Arc::new(SimulatedMachines::with_capabilities(capabilities)),
+                provider_ref.clone(),
+            )?;
+            let sandbox = host
+                .create(
+                    OperationId::from_bytes([3; 16]),
+                    &IdempotencyKey::new("create-parent")?,
+                    &artifact,
+                    [2; 32],
+                    |_| {},
+                )
+                .await?;
+            let forked = host
+                .fork_live(
+                    OperationId::from_bytes([4; 16]),
+                    &IdempotencyKey::new("fork-parent")?,
+                    &sandbox,
+                    two,
+                )
+                .await;
+            match expected {
+                Some(fidelity) => {
+                    let (observed, children) = forked?;
+                    assert_eq!(observed, fidelity);
+                    assert_eq!(children.len(), 2);
+                    assert!(children.iter().all(|child| child != &sandbox));
+                }
+                None => assert!(matches!(forked, Err(Error::Unsupported(_)))),
+            }
+        }
         Ok(())
     }
 
