@@ -496,6 +496,17 @@ impl DaytonaApi {
             .await
     }
 
+    /// Sets the minutes a stopped sandbox is kept before automatic deletion, zero deleting it
+    /// as soon as it stops and a negative value disabling deletion:
+    /// `POST /sandbox/{idOrName}/autodelete/{minutes}`.
+    ///
+    /// # Errors
+    /// Maps transport failures and non-2xx statuses to [`ProviderError`].
+    pub async fn set_autodelete(&self, id: &str, minutes: i64) -> Result<(), ProviderError> {
+        self.empty(self.request(Method::POST, &format!("/sandbox/{id}/autodelete/{minutes}")))
+            .await
+    }
+
     /// Sets the idle auto-pause interval in minutes, zero disabling it (VM classes only):
     /// `POST /sandbox/{idOrName}/autopause/{minutes}`.
     ///
