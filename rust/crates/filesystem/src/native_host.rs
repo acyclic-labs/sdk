@@ -187,7 +187,7 @@ impl LinuxMetadataTarget {
                 // SAFETY: fchmodat2 with AT_EMPTY_PATH acts only on the held inode.
                 if unsafe {
                     libc::syscall(
-                        libc::SYS_fchmodat2,
+                        LINUX_FCHMODAT2_SYSCALL,
                         self.inode.as_raw_fd(),
                         c"".as_ptr(),
                         desired,
@@ -225,6 +225,15 @@ impl LinuxMetadataTarget {
         verify_linux_metadata(observed, metadata)
     }
 }
+
+#[cfg(target_os = "linux")]
+#[cfg(target_arch = "aarch64")]
+// libc does not expose SYS_fchmodat2 on aarch64 yet; asm-generic/unistd.h does.
+const LINUX_FCHMODAT2_SYSCALL: libc::c_long = 452;
+
+#[cfg(target_os = "linux")]
+#[cfg(not(target_arch = "aarch64"))]
+const LINUX_FCHMODAT2_SYSCALL: libc::c_long = libc::SYS_fchmodat2;
 
 #[cfg(target_os = "linux")]
 fn validate_linux_metadata(
@@ -287,7 +296,7 @@ fn linux_require_fchmodat2() -> Result<(), LinuxMetadataError> {
     // returns ENOSYS or EINVAL before any ownership change is attempted.
     let result = unsafe {
         libc::syscall(
-            libc::SYS_fchmodat2,
+            LINUX_FCHMODAT2_SYSCALL,
             -1,
             c"".as_ptr(),
             0,
