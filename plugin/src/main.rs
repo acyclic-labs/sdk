@@ -7569,39 +7569,20 @@ async fn dispatch_control_envelope(
             dispatch_control_request(control, envelope.request).await,
         );
     }
-    let begin = {
-        let ledger = Arc::clone(ledger);
-        let envelope = envelope.clone();
-        tokio::task::spawn_blocking(move || ledger.begin(&envelope)).await
-    };
-    match begin {
-        Err(error) => control_response_for(
-            &request_id,
-            Err(format!("Acyclic control replay worker failed: {error}")),
-        ),
-        Ok(Err(error)) => control_response_for(&request_id, Err(error)),
-        Ok(Ok(LedgerDecision::Completed(response))) => response,
-        Ok(Ok(LedgerDecision::Execute)) => {
+    // Ledger transitions are single unflushed appends, cheaper than handing
+    // them to a blocking worker.
+    match ledger.begin(&envelope) {
+        Err(error) => control_response_for(&request_id, Err(error)),
+        Ok(LedgerDecision::Completed(response)) => response,
+        Ok(LedgerDecision::Execute) => {
             let result = dispatch_control_request(control, envelope.request.clone()).await;
             let response = control_response_for(&request_id, result);
-            let completion = {
-                let ledger = Arc::clone(ledger);
-                let envelope = envelope.clone();
-                let response = response.clone();
-                tokio::task::spawn_blocking(move || ledger.complete(&envelope, response)).await
-            };
-            match completion {
+            match ledger.complete(&envelope, &response) {
+                Ok(()) => response,
                 Err(error) => control_response_for(
                     &request_id,
                     Err(format!(
-                        "Acyclic completed the operation but its replay worker failed: {error}"
-                    )),
-                ),
-                Ok(Ok(())) => response,
-                Ok(Err(error)) => control_response_for(
-                    &request_id,
-                    Err(format!(
-                        "Acyclic completed the operation but could not durably record its response: {error}"
+                        "Acyclic completed the operation but could not record its response: {error}"
                     )),
                 ),
             }
@@ -9757,9 +9738,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             name: format!("{host}:{event}"),
             arguments: input,
         };
-        let envelope = prepare_control_envelope(&data, request)
-            .await
-            .map_err(io::Error::other)?;
+        let envelope = ControlEnvelope::new(request);
         let response = if matches!(event.as_str(), "SessionStart" | "sessionStart") {
             // Session boundaries are the one cheap, deterministic place to advance
             // an idle service to the installed binary. Tool hooks stay on the direct
@@ -10896,10 +10875,7 @@ async fn send_control_request(
     data: &Path,
     request: &ControlRequest,
 ) -> Result<Value, ControlRequestError> {
-    let envelope = prepare_control_envelope(data, request.clone())
-        .await
-        .map_err(ControlRequestError::Unavailable)?;
-    send_control_envelope(data, &envelope).await
+    send_control_envelope(data, &ControlEnvelope::new(request.clone())).await
 }
 
 async fn send_control_envelope(
@@ -10928,10 +10904,7 @@ async fn send_control_request_once(
     data: &Path,
     request: &ControlRequest,
 ) -> Result<Value, ControlRequestError> {
-    let envelope = prepare_control_envelope(data, request.clone())
-        .await
-        .map_err(ControlRequestError::Unavailable)?;
-    send_control_envelope_once(data, &envelope).await
+    send_control_envelope_once(data, &ControlEnvelope::new(request.clone())).await
 }
 
 async fn send_control_envelope_once(
@@ -10939,23 +10912,6 @@ async fn send_control_envelope_once(
     envelope: &ControlEnvelope<ControlRequest>,
 ) -> Result<Value, ControlRequestError> {
     send_control_envelope_with_attempts(data, envelope, 1, CONTROL_PROBE_WAIT).await
-}
-
-async fn prepare_control_envelope(
-    data: &Path,
-    request: ControlRequest,
-) -> Result<ControlEnvelope<ControlRequest>, String> {
-    if matches!(
-        request.command,
-        ControlCommand::Ping | ControlCommand::Doctor | ControlCommand::Agents
-    ) {
-        Ok(ControlEnvelope::ephemeral(request))
-    } else {
-        let data = data.to_path_buf();
-        tokio::task::spawn_blocking(move || ControlEnvelope::new_for_install(&data, request))
-            .await
-            .map_err(|error| format!("Acyclic control operation allocator failed: {error}"))?
-    }
 }
 
 async fn send_control_envelope_with_attempts(
@@ -16844,7 +16800,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ephemeral_control_commands_still_require_exact_protocol_negotiation() {
+    async fn unledgered_control_commands_still_require_exact_protocol_negotiation() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let data = temporary.path().join("plugin-data");
         fs::create_dir(&data).expect("plugin data directory");
@@ -16854,7 +16810,7 @@ mod tests {
         let ledger = Arc::new(ControlLedger::open(&data).expect("ledger"));
 
         for command in [ControlCommand::Ping, ControlCommand::Agents] {
-            let mut envelope = ControlEnvelope::ephemeral(ControlRequest {
+            let mut envelope = ControlEnvelope::new(ControlRequest {
                 version: 1,
                 command,
                 cwd: temporary.path().to_path_buf(),
@@ -16871,7 +16827,7 @@ mod tests {
                 .executions
                 .load(std::sync::atomic::Ordering::SeqCst),
             0,
-            "invalid ephemeral envelopes must not reach the dispatcher"
+            "invalid unledgered envelopes must not reach the dispatcher"
         );
     }
 
