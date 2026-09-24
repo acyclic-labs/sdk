@@ -986,15 +986,15 @@ impl NativeMountSession {
 
     /// Drops the kernel's cached entry/attributes for one mount-relative
     /// path (leading `/` optional). Linux FUSE also invalidates resident
-    /// file data. This makes a projection change — such as a
-    /// removed route — visible immediately instead of after a cache timeout.
+    /// file data and the parent's cached listing, and retains all of these
+    /// until invalidated: a change made to the source around the mount —
+    /// such as a removed route — becomes visible through this call.
     /// Linux FUSE supports nested entries when the parent directory has a
-    /// cached inode; otherwise the entry becomes visible at cache expiry.
+    /// cached inode.
     ///
     /// # Errors
     ///
-    /// Returns a driver error when the transport cannot invalidate (the
-    /// change then becomes visible at the cache's own expiry).
+    /// Returns a driver error when the transport cannot invalidate.
     pub fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
         match &self.driver {
             #[cfg(target_os = "linux")]
@@ -1008,6 +1008,27 @@ impl NativeMountSession {
                     "invalidation is not implemented for this transport".to_owned(),
                 ))
             }
+            None => Err(NativeMountError::Driver("session is stopped".to_owned())),
+        }
+    }
+
+    /// Brings kernel caches in line with a rebound source.
+    ///
+    /// Linux FUSE retains entries, attributes, and file data until they are
+    /// invalidated. A mount owner that rebinds its source (for example by
+    /// advancing to a new head) calls this before exposing the new view; it
+    /// drops everything derived from the superseded binding and is a no-op
+    /// when the binding is unchanged. It is a no-op on other transports.
+    ///
+    /// # Errors
+    ///
+    /// Returns a driver error when the kernel rejects an invalidation.
+    pub fn revalidate(&self) -> Result<(), NativeMountError> {
+        match &self.driver {
+            #[cfg(target_os = "linux")]
+            Some(DriverSession::Fuse(session)) => session.revalidate(),
+            #[cfg(not(target_os = "linux"))]
+            Some(_) => Ok(()),
             None => Err(NativeMountError::Driver("session is stopped".to_owned())),
         }
     }
