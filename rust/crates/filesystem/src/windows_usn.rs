@@ -9,16 +9,12 @@
 #![allow(unsafe_code)]
 
 use crate::NativeRootIdentity;
-use crate::capture_root_identity;
-use std::ffi::OsString;
-use std::fs::{File, OpenOptions};
+use crate::native_host::HostRoot;
 use std::mem::size_of;
-use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
-use std::path::{Component, Path, Prefix};
+use std::path::Path;
 use thiserror::Error;
 use windows::Win32::Foundation::HANDLE;
-use windows::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Ioctl::{FSCTL_QUERY_USN_JOURNAL, USN_JOURNAL_DATA_V0};
 
@@ -134,12 +130,7 @@ pub enum WindowsUsnContinuity {
 pub fn capture_windows_usn_checkpoint(
     root: &Path,
 ) -> Result<WindowsUsnCheckpoint, WindowsUsnError> {
-    let canonical = root
-        .canonicalize()
-        .map_err(|error| WindowsUsnError::Io(error.to_string()))?;
-    let root_identity =
-        capture_root_identity(&canonical).map_err(|_| WindowsUsnError::RootIdentityUnavailable)?;
-    let journal = query_journal(&canonical)?;
+    let (root_identity, journal) = observe_root(root)?;
     Ok(WindowsUsnCheckpoint {
         root_identity,
         journal_id: journal.journal_id,
@@ -158,12 +149,7 @@ pub fn validate_windows_usn_checkpoint(
     root: &Path,
     checkpoint: WindowsUsnCheckpoint,
 ) -> Result<WindowsUsnContinuity, WindowsUsnError> {
-    let canonical = root
-        .canonicalize()
-        .map_err(|error| WindowsUsnError::Io(error.to_string()))?;
-    let observed =
-        capture_root_identity(&canonical).map_err(|_| WindowsUsnError::RootIdentityUnavailable)?;
-    let journal = query_journal(&canonical)?;
+    let (observed, journal) = observe_root(root)?;
     Ok(classify_continuity(observed, checkpoint, &journal))
 }
 
@@ -196,14 +182,25 @@ struct JournalSnapshot {
     next_usn: u64,
 }
 
-fn query_journal(root: &Path) -> Result<JournalSnapshot, WindowsUsnError> {
-    let volume = open_volume(root)?;
+/// Reads the root's identity and its volume's journal through one held
+/// handle on the root itself: the journal is exactly the root's volume's
+/// (mounted-folder volumes included), and querying through a directory
+/// handle needs no volume access, so no administrator rights.
+fn observe_root(root: &Path) -> Result<(NativeRootIdentity, JournalSnapshot), WindowsUsnError> {
+    let canonical = root
+        .canonicalize()
+        .map_err(|error| WindowsUsnError::Io(error.to_string()))?;
+    let root = HostRoot::open(&canonical).map_err(|_| WindowsUsnError::RootIdentityUnavailable)?;
+    Ok((root.identity(), query_journal(&root)?))
+}
+
+fn query_journal(root: &HostRoot) -> Result<JournalSnapshot, WindowsUsnError> {
     let mut data = USN_JOURNAL_DATA_V0::default();
     let mut returned = 0_u32;
     let output_size = u32::try_from(size_of::<USN_JOURNAL_DATA_V0>())
         .map_err(|_| WindowsUsnError::InvalidJournal)?;
-    let handle = HANDLE(volume.as_raw_handle().cast::<core::ffi::c_void>());
-    // SAFETY: `volume` owns a valid volume handle for the duration of the call;
+    let handle = HANDLE(root.directory_handle().as_raw_handle());
+    // SAFETY: `root` holds a valid directory handle for the duration of the call;
     // the output pointer references a correctly sized initialized structure;
     // no overlapped operation outlives these stack values.
     unsafe {
@@ -230,30 +227,6 @@ fn query_journal(root: &Path) -> Result<JournalSnapshot, WindowsUsnError> {
     })
 }
 
-fn open_volume(root: &Path) -> Result<File, WindowsUsnError> {
-    let drive = match root.components().next() {
-        Some(Component::Prefix(prefix)) => match prefix.kind() {
-            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => letter,
-            _ => return Err(WindowsUsnError::UnsupportedVolumePath),
-        },
-        _ => return Err(WindowsUsnError::UnsupportedVolumePath),
-    };
-    let mut path = OsString::from(r"\\.\");
-    path.push(char::from(drive).to_string());
-    path.push(":");
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0);
-    options.open(path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::PermissionDenied {
-            WindowsUsnError::PermissionDenied
-        } else {
-            WindowsUsnError::Io(error.to_string())
-        }
-    })
-}
-
 fn decode_u64(bytes: &[u8]) -> u64 {
     let mut value = [0_u8; 8];
     value.copy_from_slice(bytes);
@@ -266,15 +239,9 @@ pub enum WindowsUsnError {
     /// Checkpoint bytes are not the exact current canonical format.
     #[error("the Windows USN checkpoint is invalid")]
     InvalidCheckpoint,
-    /// The root does not resolve to one local drive-letter volume.
-    #[error("the Windows USN root is not on a supported local volume")]
-    UnsupportedVolumePath,
     /// The native root identity cannot be proven.
     #[error("the Windows USN root identity is unavailable")]
     RootIdentityUnavailable,
-    /// Querying the volume journal requires an elevated qualification host.
-    #[error("the Windows USN volume journal requires administrator access")]
-    PermissionDenied,
     /// The journal returned impossible or truncated metadata.
     #[error("the Windows USN journal metadata is invalid")]
     InvalidJournal,
@@ -375,7 +342,11 @@ mod tests {
         );
         let changed = root.path().join("changed");
         std::fs::write(&changed, b"changed")?;
-        File::open(&changed)?.sync_all()?;
+        // FlushFileBuffers requires write access to the flushed handle.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&changed)?
+            .sync_all()?;
         assert_eq!(
             validate_windows_usn_checkpoint(root.path(), checkpoint)?,
             WindowsUsnContinuity::BaselineRequired(WindowsUsnDiscontinuity::VolumeAdvanced)

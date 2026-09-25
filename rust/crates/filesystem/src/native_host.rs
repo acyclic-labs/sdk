@@ -472,6 +472,14 @@ impl HostRoot {
         self.identity
     }
 
+    /// The held root directory's handle, for volume queries that must be
+    /// bound to exactly this root.
+    #[cfg(windows)]
+    pub(crate) fn directory_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        use std::os::windows::io::AsHandle as _;
+        self.directory.as_handle()
+    }
+
     pub fn is_empty(&self) -> io::Result<bool> {
         Ok(self.directory.entries()?.next().is_none())
     }
