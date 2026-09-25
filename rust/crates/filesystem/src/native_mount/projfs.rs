@@ -111,7 +111,10 @@ struct ProjectedEntry {
     /// stays current only as long as the source proves unchanged.
     component: Vec<u8>,
     file_id: FileId,
+    /// The basic information enumeration reports, and with the pin exactly
+    /// the placeholder a lookup of this entry would write.
     info: PRJ_FILE_BASIC_INFO,
+    pin: Option<MountContentPin>,
     symlink_target: Option<bytes::Bytes>,
 }
 
@@ -478,6 +481,50 @@ impl ProjectionCache {
         {
             self.directory_entries -= replaced.entries.len();
         }
+    }
+
+    /// The placeholder a cached listing of `path`'s parent projected for
+    /// `path`, with its link target, while the source proves the listing
+    /// still describes both the parent and that entry. It is exactly what a
+    /// lookup of `path` would issue, so the lookup is not repeated.
+    fn listed_placeholder(
+        &self,
+        source: &dyn MountFilesystem,
+        path: &MountPath,
+    ) -> Option<(PRJ_PLACEHOLDER_INFO, Option<bytes::Bytes>)> {
+        let parent = path.parent()?;
+        let mut name = decode_utf16_name(path.components().last()?)?;
+        name.push(0);
+        let cached = self.directories.get(&parent)?;
+        // Listings are sorted in `ProjFS` name order, which also decides
+        // which listed name a differently cased request names.
+        let index = cached
+            .entries
+            .binary_search_by(|entry| {
+                // SAFETY: both NUL-terminated name buffers remain live for this call.
+                unsafe {
+                    PrjFileNameCompare(
+                        PCWSTR::from_raw(entry.name.as_ptr()),
+                        PCWSTR::from_raw(name.as_ptr()),
+                    )
+                }
+                .cmp(&0)
+            })
+            .ok()?;
+        let entry = cached.entries.get(index)?;
+        if !(cached.basis.still_describes(source, &parent, None)
+            && cached.basis.still_describes(
+                source,
+                &parent.child(entry.component.clone()),
+                Some(entry.file_id),
+            ))
+        {
+            return None;
+        }
+        Some((
+            pinned_placeholder(entry.info, entry.pin)?,
+            entry.symlink_target.clone(),
+        ))
     }
 
     fn remember_binding(&mut self, path: MountPath, binding: ReadOnlyBinding) {
@@ -1008,13 +1055,21 @@ fn placeholder_info(
     lookup: &MountLookup,
     pin: Option<MountContentPin>,
 ) -> Option<PRJ_PLACEHOLDER_INFO> {
+    pinned_placeholder(basic(lookup.node, Some(lookup.metadata))?, pin)
+}
+
+/// The placeholder for `info` that carries exactly `pin`.
+fn pinned_placeholder(
+    info: PRJ_FILE_BASIC_INFO,
+    pin: Option<MountContentPin>,
+) -> Option<PRJ_PLACEHOLDER_INFO> {
     let mut version = PRJ_PLACEHOLDER_VERSION_INFO::default();
     if let Some(pin) = pin {
         *version.ProviderID.first_chunk_mut()? = *CONTENT_PIN_PROVIDER;
         *version.ContentID.first_chunk_mut()? = pin.0;
     }
     Some(PRJ_PLACEHOLDER_INFO {
-        FileBasicInfo: basic(lookup.node, Some(lookup.metadata))?,
+        FileBasicInfo: info,
         VersionInfo: version,
         ..PRJ_PLACEHOLDER_INFO::default()
     })
@@ -1842,6 +1897,7 @@ fn directory_snapshot(
                 component: entry.name,
                 file_id: entry.node.file_id,
                 info,
+                pin: entry.pin,
                 symlink_target,
             });
         }
@@ -2002,28 +2058,36 @@ unsafe fn placeholder(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
     if let Err(error) = prune_negative_paths(runtime, context) {
         return error;
     }
-    let basis = ReadBasis::sample(runtime.source.as_ref());
-    let (node, pin) = match runtime.source.lookup_pinned(&path) {
-        Ok(Some(found)) => found,
-        Ok(None) | Err(MountSourceError::NotFound) => {
-            return report_absence(runtime, data, path, basis);
-        }
-        Err(error) => return source_hresult(&error),
-    };
-    let Some(placeholder) = placeholder_info(&node, pin) else {
-        return HR_NOT_SUPPORTED;
-    };
-    let symlink = if node.node.kind == MountNodeKind::SymbolicLink {
-        let target = match runtime.source.read_link(&path) {
-            Ok(target) => target,
+    let listed = lock_recover(runtime.projection.as_ref())
+        .listed_placeholder(runtime.source.as_ref(), &path);
+    let (placeholder, symlink_target) = if let Some(listed) = listed {
+        listed
+    } else {
+        let basis = ReadBasis::sample(runtime.source.as_ref());
+        let (node, pin) = match runtime.source.lookup_pinned(&path) {
+            Ok(Some(found)) => found,
+            Ok(None) | Err(MountSourceError::NotFound) => {
+                return report_absence(runtime, data, path, basis);
+            }
             Err(error) => return source_hresult(&error),
         };
-        let Some(target) = symlink_extended(&target) else {
-            return HR_INVALID_DATA;
+        let Some(placeholder) = placeholder_info(&node, pin) else {
+            return HR_NOT_SUPPORTED;
         };
-        Some(target)
-    } else {
-        None
+        let symlink_target = if node.node.kind == MountNodeKind::SymbolicLink {
+            match runtime.source.read_link(&path) {
+                Ok(target) => Some(target),
+                Err(error) => return source_hresult(&error),
+            }
+        } else {
+            None
+        };
+        (placeholder, symlink_target)
+    };
+    let symlink = match symlink_target.as_deref().map(symlink_extended) {
+        Some(Some(target)) => Some(target),
+        Some(None) => return HR_INVALID_DATA,
+        None => None,
     };
     let result = if let Some((_target, extended)) = symlink.as_ref() {
         PrjWritePlaceholderInfo2(
@@ -3080,6 +3144,17 @@ mod tests {
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn placeholder_hydrates_only_the_source_content_it_promised()
     -> Result<(), Box<dyn std::error::Error>> {
+        // A placeholder is written from a lookup, or from the listing that
+        // projected its name; either promises exactly the listed content.
+        for listed_first in [false, true] {
+            hydrates_only_promised_content(listed_first).await?;
+        }
+        Ok(())
+    }
+
+    async fn hydrates_only_promised_content(
+        listed_first: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         use crate::demand::native::NativeDemandSource;
         use std::io::Write as _;
 
@@ -3110,6 +3185,9 @@ mod tests {
                 MountOptions::read_write().publication(MountPublication::Manual),
             )
             .await?;
+        if listed_first {
+            assert_eq!(std::fs::read_dir(&destination)?.count(), 2);
+        }
         // Stat writes both placeholders without hydrating either.
         assert_eq!(std::fs::metadata(destination.join("changed.txt"))?.len(), 6);
         assert_eq!(std::fs::metadata(destination.join("stable.txt"))?.len(), 6);
@@ -3300,6 +3378,66 @@ mod tests {
         )?;
         assert!(cache.directory(source.as_ref(), &directory).is_none());
         assert_eq!(cache.directory_entries, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_listing_answers_placeholders_exactly_as_a_lookup_would()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        let directory = windows_path("directory");
+        let listed = directory.child(windows_name("Listed.txt"));
+        source.create_directory(&directory, FileMetadata::default())?;
+        source.create_file(&listed, FileMetadata::default())?;
+        source.write_range(&listed, 0, Bytes::from_static(b"listed"))?;
+        let mut cache = ProjectionCache::default();
+        let basis = ReadBasis::sample(source.as_ref()).ok_or("unversioned source")?;
+        let entries = super::directory_snapshot(source.as_ref(), &directory)
+            .map_err(|code| format!("snapshot failed: {code:?}"))?;
+        cache.remember_directory(basis, directory.clone(), Arc::from(entries));
+
+        let (lookup, pin) = source.lookup_pinned(&listed)?.ok_or("listed file absent")?;
+        let issued = placeholder_info(&lookup, pin).ok_or("no placeholder")?;
+        // Any spelling ProjFS matches to the listed name finds it.
+        for spelling in ["Listed.txt", "LISTED.TXT", "listed.txt"] {
+            let (placeholder, target) = cache
+                .listed_placeholder(source.as_ref(), &directory.child(windows_name(spelling)))
+                .ok_or("a listed name is answered from its listing")?;
+            assert_eq!(placeholder.FileBasicInfo.FileSize, 6);
+            assert_eq!(
+                (
+                    placeholder.FileBasicInfo.IsDirectory,
+                    placeholder.FileBasicInfo.FileSize,
+                    placeholder.FileBasicInfo.CreationTime,
+                    placeholder.FileBasicInfo.LastWriteTime,
+                    placeholder.FileBasicInfo.ChangeTime,
+                    placeholder.FileBasicInfo.FileAttributes,
+                    placeholder.VersionInfo.ProviderID,
+                    placeholder.VersionInfo.ContentID,
+                ),
+                (
+                    issued.FileBasicInfo.IsDirectory,
+                    issued.FileBasicInfo.FileSize,
+                    issued.FileBasicInfo.CreationTime,
+                    issued.FileBasicInfo.LastWriteTime,
+                    issued.FileBasicInfo.ChangeTime,
+                    issued.FileBasicInfo.FileAttributes,
+                    issued.VersionInfo.ProviderID,
+                    issued.VersionInfo.ContentID,
+                ),
+                "{spelling}"
+            );
+            assert!(target.is_none());
+        }
+        // An unlisted name is left to a lookup.
+        assert!(
+            cache
+                .listed_placeholder(source.as_ref(), &directory.child(windows_name("other")))
+                .is_none()
+        );
+        // A change to the listed node ends the listing's answer for it.
+        source.write_range(&listed, 0, Bytes::from_static(b"grown!!"))?;
+        assert!(cache.listed_placeholder(source.as_ref(), &listed).is_none());
         Ok(())
     }
 

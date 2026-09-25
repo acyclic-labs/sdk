@@ -456,7 +456,7 @@ impl RoutedMountSource {
         candidates.truncate(limit);
         let mut entries = Vec::with_capacity(candidates.len());
         for (name, source, tag) in candidates {
-            let Some(lookup) = source.lookup(&MountPath::root())? else {
+            let Some((lookup, pin)) = source.lookup_pinned(&MountPath::root())? else {
                 continue;
             };
             let remapped = self.remap_lookup(lookup, tag, &name);
@@ -464,6 +464,7 @@ impl RoutedMountSource {
                 name,
                 node: remapped.node,
                 metadata: remapped.metadata,
+                pin: pin.map(|pin| remap_content_pin(pin, tag)),
             });
         }
         let next_cursor = has_more
@@ -791,6 +792,7 @@ impl MountFilesystem for RoutedMountSource {
             .into_iter()
             .map(|mut entry| {
                 entry.node.file_id = remap_file_id(entry.node.file_id, routed.tag);
+                entry.pin = entry.pin.map(|pin| remap_content_pin(pin, routed.tag));
                 self.record_file_id(entry.node.file_id, routed.name.clone());
                 entry
             })
