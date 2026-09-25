@@ -45,7 +45,7 @@
     "clean": "bun -e \"import { rmSync } from 'node:fs'; for (const path of ['dist', 'tsconfig.tsbuildinfo']) rmSync(path, { recursive: true, force: true })\"",
     "build": "bun x tsc -p tsconfig.json",
     "build:clean": "bun run clean && bun run build",
-    "build:wasm": "cargo build --manifest-path ../../../Cargo.toml -p acyclic-fs-wasm --target wasm32-unknown-unknown --profile wasm-release --locked && wasm-bindgen ../../../target/wasm32-unknown-unknown/wasm-release/acyclic_fs_wasm.wasm --target web --out-dir generated/wasm --out-name acyclic_fs_wasm",
+    "build:wasm": "bun scripts/build-wasm.mjs",
     "check": "bun x tsc -p tsconfig.json --noEmit",
     "test": "bun run build && bun run test:composition && bun run test:s3",
     "test:composition": "bun test/node-memory.mjs",

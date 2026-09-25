@@ -78,10 +78,19 @@ if ((& $wasmBindgenBin --version) -ne 'wasm-bindgen 0.2.117') {
     throw 'The WASM build requires wasm-bindgen 0.2.117.'
 }
 $env:PATH = "$(Split-Path -Parent $wasmBindgenBin);$env:PATH"
-# The WASM build in `bun run check` uses sccache and rustc. Keep it out of the
-# concurrent native Cargo build window: on Windows the competing process load
-# can prevent sccache from spawning rustc at all.
-bun run check
+# web-sys's large feature set exceeds sccache's Windows rustc spawn path.
+# Keep native build caching, but invoke the WASM check directly through rustc.
+$rustcWrapper = $env:RUSTC_WRAPPER
+Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+try {
+    bun run check
+} finally {
+    if ($null -eq $rustcWrapper) {
+        Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+    } else {
+        $env:RUSTC_WRAPPER = $rustcWrapper
+    }
+}
 $release = Start-Background release @"
 `$env:CARGO_TARGET_DIR = '$ReleaseTargetDir'
 node scripts/build-product.mjs

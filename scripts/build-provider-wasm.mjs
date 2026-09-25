@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const providers = new Set(["stream", "objects", "machines"]);
+const providers = new Set(["filesystem", "stream", "objects", "machines"]);
 
 function bashExecutable() {
   if (process.platform !== "win32") return "bash";
@@ -44,9 +44,9 @@ export async function buildProviderWasm(name) {
   const manifest = join(root, "Cargo.toml");
   const metadata = JSON.parse(await run([cargo, "metadata", "--manifest-path", manifest,
     "--no-deps", "--format-version", "1", "--locked"], packageDir, "pipe"));
-  const artifact = `acyclic_${name}_wasm`;
+  const artifact = `acyclic_${name === "filesystem" ? "fs" : name}_wasm`;
   const wasm = join(metadata.target_directory, "wasm32-unknown-unknown", "wasm-release", `${artifact}.wasm`);
-  await run([cargo, "build", "--manifest-path", manifest, "-p", `acyclic-${name}-wasm`,
+  await run([cargo, "build", "--manifest-path", manifest, "-p", `acyclic-${name === "filesystem" ? "fs" : name}-wasm`,
     "--target", "wasm32-unknown-unknown", "--profile", "wasm-release", "--locked"], packageDir);
   await mkdir(output, { recursive: true });
   await run([bindgen, wasm, "--target", "web", "--out-dir", output, "--out-name", artifact], packageDir);
