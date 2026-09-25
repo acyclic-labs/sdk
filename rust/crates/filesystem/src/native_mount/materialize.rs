@@ -2,6 +2,7 @@
 
 #[cfg(any(target_os = "macos", windows))]
 use crate::ObjectId;
+use crate::heap_future::in_heap;
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, NameEncoding, NamespacePath,
 };
@@ -167,13 +168,16 @@ pub async fn materialize_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    materialize_checkout_with_mode(
-        checkout,
-        options,
-        budget,
-        cancellation,
-        MaterializeMode::DurableOutput,
-    )
+    in_heap(move || async move {
+        materialize_checkout_with_mode(
+            checkout,
+            options,
+            budget,
+            cancellation,
+            MaterializeMode::DurableOutput,
+        )
+        .await
+    })
     .await
 }
 

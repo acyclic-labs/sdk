@@ -15,6 +15,7 @@ use super::{
 use crate::async_storage::{AsyncObjectStore, BoxStorageFuture};
 use crate::cancellation::CancellationToken;
 use crate::foundation::{FileId, GenerationId};
+use crate::heap_future::in_heap;
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::ObjectId;
@@ -204,69 +205,72 @@ pub(crate) async fn apply_generation_mutations_retaining_async<S: AsyncObjectSto
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(GenerationMutationReceipt, Vec<Mutation>), GenerationMutationFailure> {
-    cancellation
-        .check()
-        .map_err(|_| OperationFailure::before_work(path_cancelled()))?;
-    preflight_generation_mutations(&operations, config)?;
-    let plan = MutationPlan::compile(operations, config.limits, budget)
-        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-    let mut work = plan.work();
-    let mut allocations = AllocationLedger::default();
-    allocations
-        .claim_bytes(plan.retained_allocation_bytes(), 0, &mut work, budget)
-        .map_err(|error| allocation_failure(error, work))?;
+    in_heap(move || async move {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(path_cancelled()))?;
+        preflight_generation_mutations(&operations, config)?;
+        let plan = MutationPlan::compile(operations, config.limits, budget)
+            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+        let mut work = plan.work();
+        let mut allocations = AllocationLedger::default();
+        allocations
+            .claim_bytes(plan.retained_allocation_bytes(), 0, &mut work, budget)
+            .map_err(|error| allocation_failure(error, work))?;
 
-    let (created_ids, created_id_bytes) = verify_created_identities(
-        FreshnessContext {
-            store,
-            generation,
-            config,
-            budget,
-            cancellation,
-        },
-        &plan,
-        &mut allocations,
-        &mut work,
-    )
-    .await?;
+        let (created_ids, created_id_bytes) = verify_created_identities(
+            FreshnessContext {
+                store,
+                generation,
+                config,
+                budget,
+                cancellation,
+            },
+            &plan,
+            &mut allocations,
+            &mut work,
+        )
+        .await?;
 
-    let lookups = load_initial_lookups(
-        FreshnessContext {
-            store,
-            generation,
-            config,
-            budget,
-            cancellation,
-        },
-        &plan,
-        &created_ids,
-        &mut allocations,
-        &mut work,
-    )
-    .await?;
-    drop(created_ids);
-    allocations
-        .release(created_id_bytes)
-        .map_err(|error| allocation_failure(error, work))?;
+        let lookups = load_initial_lookups(
+            FreshnessContext {
+                store,
+                generation,
+                config,
+                budget,
+                cancellation,
+            },
+            &plan,
+            &created_ids,
+            &mut allocations,
+            &mut work,
+        )
+        .await?;
+        drop(created_ids);
+        allocations
+            .release(created_id_bytes)
+            .map_err(|error| allocation_failure(error, work))?;
 
-    let mut state = TransactionState::new(&plan, lookups, config, allocations, work, budget)?;
-    state.simulate(store, &plan, config, cancellation).await?;
-    let plan_bytes = plan.retained_allocation_bytes();
-    let operations = plan.into_operations();
-    state
-        .allocations
-        .release(plan_bytes)
-        .map_err(|error| allocation_failure(error, state.work))?;
-    state
-        .rewrite_directories(store, config, cancellation)
-        .await?;
-    state
-        .verify_removed_directories(store, config, cancellation)
-        .await?;
-    let receipt = state
-        .rewrite_file_table(store, generation, config, cancellation)
-        .await?;
-    Ok((receipt, operations))
+        let mut state = TransactionState::new(&plan, lookups, config, allocations, work, budget)?;
+        state.simulate(store, &plan, config, cancellation).await?;
+        let plan_bytes = plan.retained_allocation_bytes();
+        let operations = plan.into_operations();
+        state
+            .allocations
+            .release(plan_bytes)
+            .map_err(|error| allocation_failure(error, state.work))?;
+        state
+            .rewrite_directories(store, config, cancellation)
+            .await?;
+        state
+            .verify_removed_directories(store, config, cancellation)
+            .await?;
+        let receipt = state
+            .rewrite_file_table(store, generation, config, cancellation)
+            .await?;
+        Ok((receipt, operations))
+    })
+    .await
 }
 
 /// Synchronous adapter over [`apply_generation_mutations_async`].
@@ -298,78 +302,81 @@ async fn verify_created_identities<S: AsyncObjectStore>(
     allocations: &mut AllocationLedger,
     work: &mut WorkCounters,
 ) -> Result<(Vec<FileId>, u64), GenerationMutationFailure> {
-    let created_count = plan
-        .operations()
-        .iter()
-        .filter(|operation| matches!(operation, Mutation::Create { .. }))
-        .count();
-    if created_count == 0 {
-        return Ok((Vec::new(), 0));
-    }
-    let mut created_ids =
-        reserve_exact::<FileId>(created_count, allocations, work, context.budget)?;
-    created_ids.extend(plan.operations().iter().filter_map(|operation| {
-        if let Mutation::Create { record, .. } = operation {
-            Some(record.file_id)
-        } else {
-            None
+    in_heap(move || async move {
+        let created_count = plan
+            .operations()
+            .iter()
+            .filter(|operation| matches!(operation, Mutation::Create { .. }))
+            .count();
+        if created_count == 0 {
+            return Ok((Vec::new(), 0));
         }
-    }));
-    let comparisons = Cell::new(0_u64);
-    created_ids.sort_unstable_by(|left, right| {
-        comparisons.set(comparisons.get().saturating_add(1));
-        left.cmp(right)
-    });
-    charge_items(work, comparisons.get(), context.budget)?;
-    let mut duplicate_examined = 0_u64;
-    for pair in created_ids.windows(2) {
-        duplicate_examined = duplicate_examined
-            .checked_add(1)
-            .ok_or_else(|| failed(WorkError::Overflow.into(), *work))?;
-        if let [left, right] = pair
-            && left == right
-        {
-            charge_items(work, duplicate_examined, context.budget)?;
+        let mut created_ids =
+            reserve_exact::<FileId>(created_count, allocations, work, context.budget)?;
+        created_ids.extend(plan.operations().iter().filter_map(|operation| {
+            if let Mutation::Create { record, .. } = operation {
+                Some(record.file_id)
+            } else {
+                None
+            }
+        }));
+        let comparisons = Cell::new(0_u64);
+        created_ids.sort_unstable_by(|left, right| {
+            comparisons.set(comparisons.get().saturating_add(1));
+            left.cmp(right)
+        });
+        charge_items(work, comparisons.get(), context.budget)?;
+        let mut duplicate_examined = 0_u64;
+        for pair in created_ids.windows(2) {
+            duplicate_examined = duplicate_examined
+                .checked_add(1)
+                .ok_or_else(|| failed(WorkError::Overflow.into(), *work))?;
+            if let [left, right] = pair
+                && left == right
+            {
+                charge_items(work, duplicate_examined, context.budget)?;
+                return Err(failed(
+                    GenerationMutationError::FileIdentityAlreadyExists,
+                    *work,
+                ));
+            }
+        }
+        charge_items(work, duplicate_examined, context.budget)?;
+        let created_bytes = logical_vec_bytes(&created_ids)?;
+        let freshness = lookup_file_records_async(
+            context.store,
+            context.generation.file_table,
+            &created_ids,
+            context.config.limits.maximum_mutations_per_batch,
+            decode_limits(context.config),
+            nested_budget(*work, context.budget, allocations.live_bytes())?,
+            context.cancellation,
+        )
+        .await
+        .map_err(|failure| {
+            nested_failure(
+                *work,
+                *failure.work,
+                allocations.live_bytes(),
+                failure.error.into(),
+            )
+        })?;
+        *work = merge_nested(
+            *work,
+            freshness.work,
+            allocations.live_bytes(),
+            context.budget,
+        )?;
+        if freshness.records.iter().any(Option::is_some) {
             return Err(failed(
                 GenerationMutationError::FileIdentityAlreadyExists,
                 *work,
             ));
         }
-    }
-    charge_items(work, duplicate_examined, context.budget)?;
-    let created_bytes = logical_vec_bytes(&created_ids)?;
-    let freshness = lookup_file_records_async(
-        context.store,
-        context.generation.file_table,
-        &created_ids,
-        context.config.limits.maximum_mutations_per_batch,
-        decode_limits(context.config),
-        nested_budget(*work, context.budget, allocations.live_bytes())?,
-        context.cancellation,
-    )
+        drop(freshness);
+        Ok((created_ids, created_bytes))
+    })
     .await
-    .map_err(|failure| {
-        nested_failure(
-            *work,
-            *failure.work,
-            allocations.live_bytes(),
-            failure.error.into(),
-        )
-    })?;
-    *work = merge_nested(
-        *work,
-        freshness.work,
-        allocations.live_bytes(),
-        context.budget,
-    )?;
-    if freshness.records.iter().any(Option::is_some) {
-        return Err(failed(
-            GenerationMutationError::FileIdentityAlreadyExists,
-            *work,
-        ));
-    }
-    drop(freshness);
-    Ok((created_ids, created_bytes))
 }
 
 async fn load_initial_lookups<S: AsyncObjectStore>(
@@ -379,15 +386,18 @@ async fn load_initial_lookups<S: AsyncObjectStore>(
     allocations: &mut AllocationLedger,
     work: &mut WorkCounters,
 ) -> Result<InitialLookups, GenerationMutationFailure> {
-    let (paths, path_bytes) = load_path_lookups(&context, plan, allocations, work).await?;
-    let (identities, identity_bytes) =
-        load_identity_lookups(&context, plan, created_ids, allocations, work).await?;
-    Ok(InitialLookups {
-        paths,
-        path_bytes,
-        identities,
-        identity_bytes,
+    in_heap(move || async move {
+        let (paths, path_bytes) = load_path_lookups(&context, plan, allocations, work).await?;
+        let (identities, identity_bytes) =
+            load_identity_lookups(&context, plan, created_ids, allocations, work).await?;
+        Ok(InitialLookups {
+            paths,
+            path_bytes,
+            identities,
+            identity_bytes,
+        })
     })
+    .await
 }
 
 async fn load_path_lookups<S: AsyncObjectStore>(
@@ -801,158 +811,46 @@ impl TransactionState {
         config: VolumeConfig,
         cancellation: &CancellationToken,
     ) -> Result<(), GenerationMutationFailure> {
-        for (ordinal, operation) in plan.operations().iter().enumerate() {
-            let order = u32::try_from(ordinal)
-                .map_err(|_| failed(GenerationMutationError::InconsistentState, self.work))?;
-            match operation {
-                Mutation::Create { record, .. } => self.create(plan, ordinal, *record, order)?,
-                Mutation::Restore { record, .. } => self.restore(plan, ordinal, *record, order)?,
-                Mutation::Remove {
-                    expected_file_id, ..
-                } => {
-                    let expected = match expected_file_id {
-                        MetadataField::Unavailable => None,
-                        MetadataField::Value(value) => Some(*value),
-                    };
-                    self.remove(plan, ordinal, expected, order)?;
-                }
-                Mutation::Rename {
-                    source,
-                    destination,
-                    replace,
-                } => self.rename(plan, ordinal, source, destination, *replace, order)?,
-                Mutation::Link { .. } => self.link(plan, ordinal, order)?,
-                Mutation::SetMetadata { metadata, .. } => {
-                    let binding = self.source_binding(ordinal)?;
-                    self.record_mut(binding.file_id)?.working.metadata = *metadata;
-                }
-                Mutation::Write {
-                    offset,
-                    length,
-                    content,
-                    content_offset,
-                    ..
-                } => {
-                    self.mutate_regular(
-                        store,
-                        ordinal,
-                        RegularMutation::Write {
-                            offset: *offset,
-                            length: *length,
-                            content: *content,
-                            content_offset: *content_offset,
-                        },
-                        config,
-                        cancellation,
-                    )
-                    .await?;
-                }
-                Mutation::ValidateRegular { .. } => {
-                    let binding = self.source_binding(ordinal)?;
-                    if binding.kind != FileKind::Regular {
-                        return Err(failed(
-                            GenerationMutationError::InconsistentState,
-                            self.work,
-                        ));
+        in_heap(move || async move {
+            for (ordinal, operation) in plan.operations().iter().enumerate() {
+                let order = u32::try_from(ordinal)
+                    .map_err(|_| failed(GenerationMutationError::InconsistentState, self.work))?;
+                match operation {
+                    Mutation::Create { record, .. } => {
+                        self.create(plan, ordinal, *record, order)?;
                     }
-                }
-                Mutation::Resize { logical_bytes, .. } => {
-                    self.mutate_regular(
-                        store,
-                        ordinal,
-                        RegularMutation::Resize {
-                            logical_bytes: *logical_bytes,
-                        },
-                        config,
-                        cancellation,
-                    )
-                    .await?;
-                }
-                Mutation::ZeroRange {
-                    offset,
-                    length,
-                    allocated,
-                    extend,
-                    ..
-                } => {
-                    self.mutate_regular(
-                        store,
-                        ordinal,
-                        RegularMutation::ZeroRange {
-                            offset: *offset,
-                            length: *length,
-                            allocated: *allocated,
-                            extend: *extend,
-                        },
-                        config,
-                        cancellation,
-                    )
-                    .await?;
-                }
-                Mutation::Preallocate {
-                    offset,
-                    length,
-                    keep_size,
-                    ..
-                } => {
-                    self.mutate_regular(
-                        store,
-                        ordinal,
-                        RegularMutation::Preallocate {
-                            offset: *offset,
-                            length: *length,
-                            keep_size: *keep_size,
-                        },
-                        config,
-                        cancellation,
-                    )
-                    .await?;
-                }
-                Mutation::CloneRange {
-                    source_offset,
-                    destination_offset,
-                    length,
-                    ..
-                } => {
-                    self.clone_regular(
-                        store,
-                        ordinal,
-                        *source_offset,
-                        *destination_offset,
-                        *length,
-                        config,
-                        cancellation,
-                    )
-                    .await?;
-                }
-                Mutation::File { file_id, mutation } => match mutation {
-                    FileMutation::ReplaceRecord { record } => {
-                        let binding = self.identity_binding(*file_id)?;
-                        if binding.kind != record.kind || binding.kind == FileKind::Directory {
-                            return Err(failed(
-                                GenerationMutationError::InconsistentState,
-                                self.work,
-                            ));
-                        }
-                        let link_count = self.record(*file_id)?.working.link_count;
-                        self.record_mut(*file_id)?.working = FileRecord {
-                            link_count,
-                            ..*record
+                    Mutation::Restore { record, .. } => {
+                        self.restore(plan, ordinal, *record, order)?;
+                    }
+                    Mutation::Remove {
+                        expected_file_id, ..
+                    } => {
+                        let expected = match expected_file_id {
+                            MetadataField::Unavailable => None,
+                            MetadataField::Value(value) => Some(*value),
                         };
+                        self.remove(plan, ordinal, expected, order)?;
                     }
-                    FileMutation::SetMetadata { metadata } => {
-                        self.identity_binding(*file_id)?;
-                        self.record_mut(*file_id)?.working.metadata = *metadata;
+                    Mutation::Rename {
+                        source,
+                        destination,
+                        replace,
+                    } => self.rename(plan, ordinal, source, destination, *replace, order)?,
+                    Mutation::Link { .. } => self.link(plan, ordinal, order)?,
+                    Mutation::SetMetadata { metadata, .. } => {
+                        let binding = self.source_binding(ordinal)?;
+                        self.record_mut(binding.file_id)?.working.metadata = *metadata;
                     }
-                    FileMutation::Write {
+                    Mutation::Write {
                         offset,
                         length,
                         content,
                         content_offset,
+                        ..
                     } => {
-                        self.mutate_regular_id(
+                        self.mutate_regular(
                             store,
-                            *file_id,
+                            ordinal,
                             RegularMutation::Write {
                                 offset: *offset,
                                 length: *length,
@@ -964,8 +862,8 @@ impl TransactionState {
                         )
                         .await?;
                     }
-                    FileMutation::ValidateRegular => {
-                        let binding = self.identity_binding(*file_id)?;
+                    Mutation::ValidateRegular { .. } => {
+                        let binding = self.source_binding(ordinal)?;
                         if binding.kind != FileKind::Regular {
                             return Err(failed(
                                 GenerationMutationError::InconsistentState,
@@ -973,10 +871,10 @@ impl TransactionState {
                             ));
                         }
                     }
-                    FileMutation::Resize { logical_bytes } => {
-                        self.mutate_regular_id(
+                    Mutation::Resize { logical_bytes, .. } => {
+                        self.mutate_regular(
                             store,
-                            *file_id,
+                            ordinal,
                             RegularMutation::Resize {
                                 logical_bytes: *logical_bytes,
                             },
@@ -985,15 +883,16 @@ impl TransactionState {
                         )
                         .await?;
                     }
-                    FileMutation::ZeroRange {
+                    Mutation::ZeroRange {
                         offset,
                         length,
                         allocated,
                         extend,
+                        ..
                     } => {
-                        self.mutate_regular_id(
+                        self.mutate_regular(
                             store,
-                            *file_id,
+                            ordinal,
                             RegularMutation::ZeroRange {
                                 offset: *offset,
                                 length: *length,
@@ -1005,14 +904,15 @@ impl TransactionState {
                         )
                         .await?;
                     }
-                    FileMutation::Preallocate {
+                    Mutation::Preallocate {
                         offset,
                         length,
                         keep_size,
+                        ..
                     } => {
-                        self.mutate_regular_id(
+                        self.mutate_regular(
                             store,
-                            *file_id,
+                            ordinal,
                             RegularMutation::Preallocate {
                                 offset: *offset,
                                 length: *length,
@@ -1023,29 +923,146 @@ impl TransactionState {
                         )
                         .await?;
                     }
-                },
-                Mutation::CloneFileRange {
-                    source_file_id,
-                    source_offset,
-                    destination_file_id,
-                    destination_offset,
-                    length,
-                } => {
-                    self.clone_regular_ids(
-                        store,
-                        *source_file_id,
-                        *source_offset,
-                        *destination_file_id,
-                        *destination_offset,
-                        *length,
-                        config,
-                        cancellation,
-                    )
-                    .await?;
+                    Mutation::CloneRange {
+                        source_offset,
+                        destination_offset,
+                        length,
+                        ..
+                    } => {
+                        self.clone_regular(
+                            store,
+                            ordinal,
+                            *source_offset,
+                            *destination_offset,
+                            *length,
+                            config,
+                            cancellation,
+                        )
+                        .await?;
+                    }
+                    Mutation::File { file_id, mutation } => match mutation {
+                        FileMutation::ReplaceRecord { record } => {
+                            let binding = self.identity_binding(*file_id)?;
+                            if binding.kind != record.kind || binding.kind == FileKind::Directory {
+                                return Err(failed(
+                                    GenerationMutationError::InconsistentState,
+                                    self.work,
+                                ));
+                            }
+                            let link_count = self.record(*file_id)?.working.link_count;
+                            self.record_mut(*file_id)?.working = FileRecord {
+                                link_count,
+                                ..*record
+                            };
+                        }
+                        FileMutation::SetMetadata { metadata } => {
+                            self.identity_binding(*file_id)?;
+                            self.record_mut(*file_id)?.working.metadata = *metadata;
+                        }
+                        FileMutation::Write {
+                            offset,
+                            length,
+                            content,
+                            content_offset,
+                        } => {
+                            self.mutate_regular_id(
+                                store,
+                                *file_id,
+                                RegularMutation::Write {
+                                    offset: *offset,
+                                    length: *length,
+                                    content: *content,
+                                    content_offset: *content_offset,
+                                },
+                                config,
+                                cancellation,
+                            )
+                            .await?;
+                        }
+                        FileMutation::ValidateRegular => {
+                            let binding = self.identity_binding(*file_id)?;
+                            if binding.kind != FileKind::Regular {
+                                return Err(failed(
+                                    GenerationMutationError::InconsistentState,
+                                    self.work,
+                                ));
+                            }
+                        }
+                        FileMutation::Resize { logical_bytes } => {
+                            self.mutate_regular_id(
+                                store,
+                                *file_id,
+                                RegularMutation::Resize {
+                                    logical_bytes: *logical_bytes,
+                                },
+                                config,
+                                cancellation,
+                            )
+                            .await?;
+                        }
+                        FileMutation::ZeroRange {
+                            offset,
+                            length,
+                            allocated,
+                            extend,
+                        } => {
+                            self.mutate_regular_id(
+                                store,
+                                *file_id,
+                                RegularMutation::ZeroRange {
+                                    offset: *offset,
+                                    length: *length,
+                                    allocated: *allocated,
+                                    extend: *extend,
+                                },
+                                config,
+                                cancellation,
+                            )
+                            .await?;
+                        }
+                        FileMutation::Preallocate {
+                            offset,
+                            length,
+                            keep_size,
+                        } => {
+                            self.mutate_regular_id(
+                                store,
+                                *file_id,
+                                RegularMutation::Preallocate {
+                                    offset: *offset,
+                                    length: *length,
+                                    keep_size: *keep_size,
+                                },
+                                config,
+                                cancellation,
+                            )
+                            .await?;
+                        }
+                    },
+                    Mutation::CloneFileRange {
+                        source_file_id,
+                        source_offset,
+                        destination_file_id,
+                        destination_offset,
+                        length,
+                    } => {
+                        self.clone_regular_ids(
+                            store,
+                            *source_file_id,
+                            *source_offset,
+                            *destination_file_id,
+                            *destination_offset,
+                            *length,
+                            config,
+                            cancellation,
+                        )
+                        .await?;
+                    }
                 }
             }
-        }
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     async fn mutate_regular<S: AsyncObjectStore>(
@@ -1057,7 +1074,7 @@ impl TransactionState {
         cancellation: &CancellationToken,
     ) -> Result<(), GenerationMutationFailure> {
         let binding = self.source_binding(operation)?;
-        Box::pin(self.mutate_regular_id(store, binding.file_id, mutation, config, cancellation))
+        self.mutate_regular_id(store, binding.file_id, mutation, config, cancellation)
             .await
     }
 
@@ -1117,18 +1134,21 @@ impl TransactionState {
         config: VolumeConfig,
         cancellation: &CancellationToken,
     ) -> Result<(), GenerationMutationFailure> {
-        let source = self.binding(operation, 0)?;
-        let destination = self.binding(operation, 1)?;
-        self.clone_regular_ids(
-            store,
-            source.file_id,
-            source_offset,
-            destination.file_id,
-            destination_offset,
-            length,
-            config,
-            cancellation,
-        )
+        in_heap(move || async move {
+            let source = self.binding(operation, 0)?;
+            let destination = self.binding(operation, 1)?;
+            self.clone_regular_ids(
+                store,
+                source.file_id,
+                source_offset,
+                destination.file_id,
+                destination_offset,
+                length,
+                config,
+                cancellation,
+            )
+            .await
+        })
         .await
     }
 
@@ -1144,44 +1164,47 @@ impl TransactionState {
         config: VolumeConfig,
         cancellation: &CancellationToken,
     ) -> Result<(), GenerationMutationFailure> {
-        let source = self.identity_binding(source_file_id)?;
-        let destination = self.identity_binding(destination_file_id)?;
-        if source.kind != FileKind::Regular || destination.kind != FileKind::Regular {
-            return Err(failed(
-                GenerationMutationError::InconsistentState,
-                self.work,
-            ));
-        }
-        let source_payload = self.record(source_file_id)?.working.payload;
-        let destination_payload = self.record(destination_file_id)?.working.payload;
-        let receipt = apply_regular_clone_async(
-            store,
-            source_payload,
-            source_offset,
-            destination_payload,
-            destination_offset,
-            length,
-            config,
-            nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| {
-            nested_failure(
-                self.work,
-                *failure.work,
-                self.allocations.live_bytes(),
-                failure.error.into(),
+        in_heap(move || async move {
+            let source = self.identity_binding(source_file_id)?;
+            let destination = self.identity_binding(destination_file_id)?;
+            if source.kind != FileKind::Regular || destination.kind != FileKind::Regular {
+                return Err(failed(
+                    GenerationMutationError::InconsistentState,
+                    self.work,
+                ));
+            }
+            let source_payload = self.record(source_file_id)?.working.payload;
+            let destination_payload = self.record(destination_file_id)?.working.payload;
+            let receipt = apply_regular_clone_async(
+                store,
+                source_payload,
+                source_offset,
+                destination_payload,
+                destination_offset,
+                length,
+                config,
+                nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
+                cancellation,
             )
-        })?;
-        self.work = merge_nested(
-            self.work,
-            receipt.work,
-            self.allocations.live_bytes(),
-            self.budget,
-        )?;
-        self.record_mut(destination_file_id)?.working.payload = receipt.destination;
-        Ok(())
+            .await
+            .map_err(|failure| {
+                nested_failure(
+                    self.work,
+                    *failure.work,
+                    self.allocations.live_bytes(),
+                    failure.error.into(),
+                )
+            })?;
+            self.work = merge_nested(
+                self.work,
+                receipt.work,
+                self.allocations.live_bytes(),
+                self.budget,
+            )?;
+            self.record_mut(destination_file_id)?.working.payload = receipt.destination;
+            Ok(())
+        })
+        .await
     }
 
     #[allow(
@@ -1707,87 +1730,90 @@ impl TransactionState {
         config: VolumeConfig,
         cancellation: &CancellationToken,
     ) -> Result<(), GenerationMutationFailure> {
-        let comparisons = Cell::new(0_u64);
-        self.directory_edits.sort_unstable_by(|left, right| {
-            comparisons.set(comparisons.get().saturating_add(1));
-            left.directory_id
-                .cmp(&right.directory_id)
-                .then_with(|| left.order.cmp(&right.order))
-        });
-        charge_items(&mut self.work, comparisons.get(), self.budget)?;
-        let mut cursor = 0;
-        while cursor < self.directory_edits.len() {
-            cancellation
-                .check()
-                .map_err(|_| failed(path_cancelled(), self.work))?;
-            let directory_id = self.directory_edits[cursor].directory_id;
-            let start = cursor;
-            cursor += 1;
-            while cursor < self.directory_edits.len()
-                && self.directory_edits[cursor].directory_id == directory_id
-            {
+        in_heap(move || async move {
+            let comparisons = Cell::new(0_u64);
+            self.directory_edits.sort_unstable_by(|left, right| {
+                comparisons.set(comparisons.get().saturating_add(1));
+                left.directory_id
+                    .cmp(&right.directory_id)
+                    .then_with(|| left.order.cmp(&right.order))
+            });
+            charge_items(&mut self.work, comparisons.get(), self.budget)?;
+            let mut cursor = 0;
+            while cursor < self.directory_edits.len() {
+                cancellation
+                    .check()
+                    .map_err(|_| failed(path_cancelled(), self.work))?;
+                let directory_id = self.directory_edits[cursor].directory_id;
+                let start = cursor;
                 cursor += 1;
-            }
-            let mut mutations = reserve_exact::<TreeMutation>(
-                cursor - start,
-                &mut self.allocations,
-                &mut self.work,
-                self.budget,
-            )?;
-            let mutation_bytes = logical_vec_bytes(&mutations)?;
-            let retained_name_bytes =
-                self.directory_edits[start..cursor]
-                    .iter()
-                    .try_fold(0_u64, |total, edit| {
-                        total
-                            .checked_add(edit.retained_name_bytes)
-                            .ok_or_else(|| failed(WorkError::Overflow.into(), self.work))
-                    })?;
-            for edit in &mut self.directory_edits[start..cursor] {
-                mutations.push(edit.mutation.take().ok_or_else(|| {
-                    failed(GenerationMutationError::InconsistentState, self.work)
-                })?);
-            }
-            let directory = self.record(directory_id)?.working;
-            let FilePayload::Directory { entries } = directory.payload else {
-                return Err(failed(GenerationMutationError::MissingParent, self.work));
-            };
-            let receipt = apply_tree_mutations_async(
-                store,
-                entries,
-                mutations,
-                config.limits.maximum_mutations_per_batch,
-                decode_limits(config),
-                nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| {
-                nested_failure(
+                while cursor < self.directory_edits.len()
+                    && self.directory_edits[cursor].directory_id == directory_id
+                {
+                    cursor += 1;
+                }
+                let mut mutations = reserve_exact::<TreeMutation>(
+                    cursor - start,
+                    &mut self.allocations,
+                    &mut self.work,
+                    self.budget,
+                )?;
+                let mutation_bytes = logical_vec_bytes(&mutations)?;
+                let retained_name_bytes =
+                    self.directory_edits[start..cursor]
+                        .iter()
+                        .try_fold(0_u64, |total, edit| {
+                            total
+                                .checked_add(edit.retained_name_bytes)
+                                .ok_or_else(|| failed(WorkError::Overflow.into(), self.work))
+                        })?;
+                for edit in &mut self.directory_edits[start..cursor] {
+                    mutations.push(edit.mutation.take().ok_or_else(|| {
+                        failed(GenerationMutationError::InconsistentState, self.work)
+                    })?);
+                }
+                let directory = self.record(directory_id)?.working;
+                let FilePayload::Directory { entries } = directory.payload else {
+                    return Err(failed(GenerationMutationError::MissingParent, self.work));
+                };
+                let receipt = apply_tree_mutations_async(
+                    store,
+                    entries,
+                    mutations,
+                    config.limits.maximum_mutations_per_batch,
+                    decode_limits(config),
+                    nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| {
+                    nested_failure(
+                        self.work,
+                        *failure.work,
+                        self.allocations.live_bytes(),
+                        failure.error.into(),
+                    )
+                })?;
+                self.work = merge_nested(
                     self.work,
-                    *failure.work,
+                    receipt.work,
                     self.allocations.live_bytes(),
-                    failure.error.into(),
-                )
-            })?;
-            self.work = merge_nested(
-                self.work,
-                receipt.work,
-                self.allocations.live_bytes(),
-                self.budget,
-            )?;
-            self.allocations
-                .release(
-                    mutation_bytes
-                        .checked_add(retained_name_bytes)
-                        .ok_or_else(|| failed(WorkError::Overflow.into(), self.work))?,
-                )
-                .map_err(|error| allocation_failure(error, self.work))?;
-            self.record_mut(directory_id)?.working.payload = FilePayload::Directory {
-                entries: receipt.root,
-            };
-        }
-        Ok(())
+                    self.budget,
+                )?;
+                self.allocations
+                    .release(
+                        mutation_bytes
+                            .checked_add(retained_name_bytes)
+                            .ok_or_else(|| failed(WorkError::Overflow.into(), self.work))?,
+                    )
+                    .map_err(|error| allocation_failure(error, self.work))?;
+                self.record_mut(directory_id)?.working.payload = FilePayload::Directory {
+                    entries: receipt.root,
+                };
+            }
+            Ok(())
+        })
+        .await
     }
 
     async fn verify_removed_directories<S: AsyncObjectStore>(
@@ -1866,87 +1892,90 @@ impl TransactionState {
         config: VolumeConfig,
         cancellation: &CancellationToken,
     ) -> Result<GenerationMutationReceipt, GenerationMutationFailure> {
-        let mutation_count = self
-            .records
-            .iter()
-            .filter(|record| {
-                matches!(
-                    (record.base, record.present),
-                    (None, true) | (Some(_), false)
-                ) || matches!(
-                    (record.base, record.present),
-                    (Some(expected), true) if expected != record.working
+        in_heap(move || async move {
+            let mutation_count = self
+                .records
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        (record.base, record.present),
+                        (None, true) | (Some(_), false)
+                    ) || matches!(
+                        (record.base, record.present),
+                        (Some(expected), true) if expected != record.working
+                    )
+                })
+                .count();
+            charge_items(
+                &mut self.work,
+                u64::try_from(self.records.len()).unwrap_or(u64::MAX),
+                self.budget,
+            )?;
+            if mutation_count == 0 {
+                let root = self.clone_generation_root(generation, generation.file_table)?;
+                return Ok(GenerationMutationReceipt {
+                    root,
+                    work: self.work,
+                });
+            }
+            let mut mutations = reserve_exact::<FileTableMutation>(
+                mutation_count,
+                &mut self.allocations,
+                &mut self.work,
+                self.budget,
+            )?;
+            let mutation_bytes = logical_vec_bytes(&mutations)?;
+            for record in &self.records {
+                match (record.base, record.present) {
+                    (None, true) => mutations.push(FileTableMutation::Insert(record.working)),
+                    (Some(expected), false) => mutations.push(FileTableMutation::Remove {
+                        file_id: expected.file_id,
+                        expected: Some(expected),
+                    }),
+                    (Some(expected), true) if expected != record.working => {
+                        mutations.push(FileTableMutation::Replace {
+                            expected,
+                            replacement: record.working,
+                        });
+                    }
+                    (None, false) | (Some(_), true) => {}
+                }
+            }
+            let receipt = apply_file_table_mutations_async(
+                store,
+                generation.file_table,
+                mutations,
+                u32::try_from(mutation_count)
+                    .map_err(|_| failed(WorkError::Overflow.into(), self.work))?,
+                decode_limits(config),
+                nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| {
+                nested_failure(
+                    self.work,
+                    *failure.work,
+                    self.allocations.live_bytes(),
+                    failure.error.into(),
                 )
-            })
-            .count();
-        charge_items(
-            &mut self.work,
-            u64::try_from(self.records.len()).unwrap_or(u64::MAX),
-            self.budget,
-        )?;
-        if mutation_count == 0 {
-            let root = self.clone_generation_root(generation, generation.file_table)?;
-            return Ok(GenerationMutationReceipt {
+            })?;
+            self.work = merge_nested(
+                self.work,
+                receipt.work,
+                self.allocations.live_bytes(),
+                self.budget,
+            )?;
+            self.allocations
+                .release(mutation_bytes)
+                .map_err(|error| allocation_failure(error, self.work))?;
+            let root = self.clone_generation_root(generation, receipt.root)?;
+            Ok(GenerationMutationReceipt {
                 root,
                 work: self.work,
-            });
-        }
-        let mut mutations = reserve_exact::<FileTableMutation>(
-            mutation_count,
-            &mut self.allocations,
-            &mut self.work,
-            self.budget,
-        )?;
-        let mutation_bytes = logical_vec_bytes(&mutations)?;
-        for record in &self.records {
-            match (record.base, record.present) {
-                (None, true) => mutations.push(FileTableMutation::Insert(record.working)),
-                (Some(expected), false) => mutations.push(FileTableMutation::Remove {
-                    file_id: expected.file_id,
-                    expected: Some(expected),
-                }),
-                (Some(expected), true) if expected != record.working => {
-                    mutations.push(FileTableMutation::Replace {
-                        expected,
-                        replacement: record.working,
-                    });
-                }
-                (None, false) | (Some(_), true) => {}
-            }
-        }
-        let receipt = apply_file_table_mutations_async(
-            store,
-            generation.file_table,
-            mutations,
-            u32::try_from(mutation_count)
-                .map_err(|_| failed(WorkError::Overflow.into(), self.work))?,
-            decode_limits(config),
-            nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| {
-            nested_failure(
-                self.work,
-                *failure.work,
-                self.allocations.live_bytes(),
-                failure.error.into(),
-            )
-        })?;
-        self.work = merge_nested(
-            self.work,
-            receipt.work,
-            self.allocations.live_bytes(),
-            self.budget,
-        )?;
-        self.allocations
-            .release(mutation_bytes)
-            .map_err(|error| allocation_failure(error, self.work))?;
-        let root = self.clone_generation_root(generation, receipt.root)?;
-        Ok(GenerationMutationReceipt {
-            root,
-            work: self.work,
+            })
         })
+        .await
     }
 
     fn clone_generation_root(

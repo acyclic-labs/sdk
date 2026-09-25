@@ -8,6 +8,7 @@ use super::{
     decode_extent_page, encode_extent_page,
 };
 use crate::cancellation::CancellationToken;
+use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRetention,
@@ -180,58 +181,61 @@ pub async fn apply_extent_mutations_async<S: crate::AsyncObjectStore>(
     options: ExtentMutationOptions,
     cancellation: &CancellationToken,
 ) -> Result<ExtentMutationReceipt, ExtentMutationFailure> {
-    cancellation.check().map_err(|_| {
-        OperationFailure::before_work(ExtentMutationError::Storage(ObjectStoreError::Cancelled))
-    })?;
-    let ExtentMutationOptions {
-        maximum_mutations,
-        limits,
-        budget,
-    } = options;
-    validate_request(root, mutations, maximum_mutations, limits)?;
-    let plan = compile_patch_plan(old_logical_bytes, mutations, budget)?;
-    let final_size = plan.final_size;
-    let mut allocations = AllocationLedger::default();
-    let mut work = plan.work;
-    allocations
-        .claim_bytes(plan.live_allocation_bytes, 0, &mut work, budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let maximum_visited = usize::try_from(limits.maximum_visited_pages)
-        .map_err(|_| OperationFailure::new(ExtentMutationError::InvalidLimits, work))?;
-    let visited = VisitedObjectSet::new(maximum_visited, &mut allocations, &mut work, budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let mut context = Context {
-        store,
-        limits,
-        budget,
-        work,
-        allocations,
-        visited,
-        patches: plan.patches,
-        maximum_seen_height: 0,
-        cancellation,
-    };
-    let summaries = context
-        .rewrite(root, 0, old_logical_bytes, final_size)
-        .await
-        .map_err(|error| OperationFailure::new(error, context.work))?;
-    let new_root = context
-        .finish_root(summaries)
-        .await
-        .map_err(|error| OperationFailure::new(error, context.work))?;
-    context
-        .visited
-        .release(&mut context.allocations)
-        .map_err(|error| OperationFailure::new(error.into(), context.work))?;
-    context
-        .allocations
-        .release(plan.live_allocation_bytes)
-        .map_err(|error| OperationFailure::new(error.into(), context.work))?;
-    Ok(ExtentMutationReceipt {
-        root: new_root,
-        logical_bytes: final_size,
-        work: context.work,
+    in_heap(move || async move {
+        cancellation.check().map_err(|_| {
+            OperationFailure::before_work(ExtentMutationError::Storage(ObjectStoreError::Cancelled))
+        })?;
+        let ExtentMutationOptions {
+            maximum_mutations,
+            limits,
+            budget,
+        } = options;
+        validate_request(root, mutations, maximum_mutations, limits)?;
+        let plan = compile_patch_plan(old_logical_bytes, mutations, budget)?;
+        let final_size = plan.final_size;
+        let mut allocations = AllocationLedger::default();
+        let mut work = plan.work;
+        allocations
+            .claim_bytes(plan.live_allocation_bytes, 0, &mut work, budget)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        let maximum_visited = usize::try_from(limits.maximum_visited_pages)
+            .map_err(|_| OperationFailure::new(ExtentMutationError::InvalidLimits, work))?;
+        let visited = VisitedObjectSet::new(maximum_visited, &mut allocations, &mut work, budget)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        let mut context = Context {
+            store,
+            limits,
+            budget,
+            work,
+            allocations,
+            visited,
+            patches: plan.patches,
+            maximum_seen_height: 0,
+            cancellation,
+        };
+        let summaries = context
+            .rewrite(root, 0, old_logical_bytes, final_size)
+            .await
+            .map_err(|error| OperationFailure::new(error, context.work))?;
+        let new_root = context
+            .finish_root(summaries)
+            .await
+            .map_err(|error| OperationFailure::new(error, context.work))?;
+        context
+            .visited
+            .release(&mut context.allocations)
+            .map_err(|error| OperationFailure::new(error.into(), context.work))?;
+        context
+            .allocations
+            .release(plan.live_allocation_bytes)
+            .map_err(|error| OperationFailure::new(error.into(), context.work))?;
+        Ok(ExtentMutationReceipt {
+            root: new_root,
+            logical_bytes: final_size,
+            work: context.work,
+        })
     })
+    .await
 }
 
 fn validate_request(

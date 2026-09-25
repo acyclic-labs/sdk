@@ -6,6 +6,7 @@ use super::{
 };
 use crate::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
+use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::ByteRange;
 use bytes::Bytes;
@@ -46,26 +47,29 @@ pub async fn read_file_range_async<S: AsyncObjectStore>(
     request: FileRangeRequest,
     cancellation: &CancellationToken,
 ) -> Result<FileRangeRead, FileRangeReadFailure> {
-    cancellation
-        .check()
-        .map_err(|_| failed(FileRangeReadError::Cancelled, WorkCounters::default()))?;
-    if request.record.kind != FileKind::Regular {
-        return Err(failed(
-            FileRangeReadError::NotRegular,
-            WorkCounters::default(),
-        ));
-    }
-    match request.record.payload {
-        FilePayload::InlineRegular(data) => read_inline(data.as_bytes(), &request),
-        FilePayload::Regular {
-            logical_bytes,
-            extents,
-        } => read_sparse(store, logical_bytes, extents, &request, cancellation).await,
-        _ => Err(failed(
-            FileRangeReadError::NotRegular,
-            WorkCounters::default(),
-        )),
-    }
+    in_heap(move || async move {
+        cancellation
+            .check()
+            .map_err(|_| failed(FileRangeReadError::Cancelled, WorkCounters::default()))?;
+        if request.record.kind != FileKind::Regular {
+            return Err(failed(
+                FileRangeReadError::NotRegular,
+                WorkCounters::default(),
+            ));
+        }
+        match request.record.payload {
+            FilePayload::InlineRegular(data) => read_inline(data.as_bytes(), &request),
+            FilePayload::Regular {
+                logical_bytes,
+                extents,
+            } => read_sparse(store, logical_bytes, extents, &request, cancellation).await,
+            _ => Err(failed(
+                FileRangeReadError::NotRegular,
+                WorkCounters::default(),
+            )),
+        }
+    })
+    .await
 }
 
 fn read_inline(

@@ -3132,13 +3132,11 @@ mod tests {
         Ok(())
     }
 
-    /// `ProjFS` calls back on threads it creates with the executable's
-    /// default stack. Listing a lazy workspace needs more than that in an
-    /// unoptimized build, so this fails unless callbacks run on the
-    /// provider's own stack.
+    /// A live projection lists a lazy workspace's unauthored source entries.
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn lazy_listing_runs_on_the_provider_stack() -> Result<(), Box<dyn std::error::Error>> {
+    async fn a_lazy_workspace_lists_through_the_projection()
+    -> Result<(), Box<dyn std::error::Error>> {
         use crate::demand::native::NativeDemandSource;
 
         let root = tempfile::tempdir()?;
