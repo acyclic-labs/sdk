@@ -12195,10 +12195,6 @@ fn install_claude_hooks(executable: &Path, project: bool) -> Result<PathBuf, Str
                 "SubagentStop",
                 "SessionEnd",
             ] {
-                let command = format!(
-                    "{} __hook claude-code {event}",
-                    shell_command_path(executable)
-                );
                 let entries = hooks
                     .entry(event.to_owned())
                     .or_insert_with(|| json!([]))
@@ -12208,11 +12204,14 @@ fn install_claude_hooks(executable: &Path, project: bool) -> Result<PathBuf, Str
                 if matches!(event, "PreToolUse" | "PostToolUse" | "PostToolUseFailure") {
                     group.insert("matcher".to_owned(), Value::String(".*".to_owned()));
                 }
+                // Exec form: Claude Code spawns the executable directly
+                // instead of through bash, Git Bash or PowerShell.
                 group.insert(
                     "hooks".to_owned(),
                     json!([{
                         "type": "command",
-                        "command": command,
+                        "command": executable,
+                        "args": ["__hook", "claude-code", event],
                         "timeout": claude_hook_timeout(event),
                         "statusMessage": "Acyclic is routing the workspace"
                     }]),
@@ -12289,27 +12288,19 @@ fn is_acyclic_claude_hook_group(event: &str, group: &Value) -> bool {
     else {
         return false;
     };
-    let timeout = hook.get("timeout").and_then(Value::as_u64);
-    let owned_timeout = timeout == Some(claude_hook_timeout(event))
-        || event == "SessionEnd" && timeout == Some(120);
-    if hook.len() != 4
+    if hook.len() != 5
         || hook.get("type").and_then(Value::as_str) != Some("command")
-        || !owned_timeout
+        || hook.get("args") != Some(&json!(["__hook", "claude-code", event]))
+        || hook.get("timeout").and_then(Value::as_u64) != Some(claude_hook_timeout(event))
         || hook.get("statusMessage").and_then(Value::as_str)
             != Some("Acyclic is routing the workspace")
     {
         return false;
     }
-    let suffix = format!(" __hook claude-code {event}");
-    let Some(executable) = hook
-        .get("command")
+    hook.get("command")
         .and_then(Value::as_str)
-        .and_then(|command| command.strip_suffix(&suffix))
-    else {
-        return false;
-    };
-    Path::new(executable.trim_matches(['\'', '"']))
-        .file_name()
+        .map(Path::new)
+        .and_then(Path::file_name)
         .and_then(|name| name.to_str())
         .is_some_and(|name| {
             name.eq_ignore_ascii_case("acyclic") || name.eq_ignore_ascii_case("acyclic.exe")
@@ -19482,8 +19473,9 @@ mod tests {
                 "hooks".to_owned(),
                 json!([{
                     "type": "command",
-                    "command": format!("'/deleted/plugin/bin/acyclic' __hook claude-code {event}"),
-                    "timeout": 120,
+                    "command": "/deleted/plugin/bin/acyclic",
+                    "args": ["__hook", "claude-code", event],
+                    "timeout": claude_hook_timeout(event),
                     "statusMessage": "Acyclic is routing the workspace"
                 }]),
             );
@@ -19495,7 +19487,8 @@ mod tests {
         let similar_but_foreign = json!({
             "hooks": [{
                 "type":"command",
-                "command":"acyclic __hook claude-code SessionStart",
+                "command":"acyclic",
+                "args":["__hook", "claude-code", "SessionStart"],
                 "timeout":120,
                 "statusMessage":"different"
             }]
