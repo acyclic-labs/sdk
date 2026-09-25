@@ -10,8 +10,8 @@ use super::{
 use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
-    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRetention, ObjectStoreError,
-    object_digest,
+    HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRetention,
+    ObjectStoreError,
 };
 use bytes::Bytes;
 use std::mem::size_of;
@@ -1256,20 +1256,17 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
             ..WorkCounters::default()
         })?;
         hashed_work.verify(self.budget)?;
-        let object = ObjectId {
-            kind: ObjectKind::ExtentPage,
-            digest: object_digest(ObjectKind::ExtentPage, &encoded),
-        };
+        let hashed = HashedObject::new(ObjectKind::ExtentPage, Bytes::from(encoded));
+        let object = hashed.object_id();
         self.work = hashed_work;
         let prospective = self.work.checked_add(WorkCounters {
             page_writes: 1,
             ..WorkCounters::default()
         })?;
         let remaining = prospective.remaining(self.budget)?;
-        let receipt = match crate::AsyncObjectStore::put(
+        let receipt = match crate::AsyncObjectStore::put_hashed(
             self.store,
-            object,
-            Bytes::from(encoded),
+            hashed,
             remaining,
             self.cancellation,
         )

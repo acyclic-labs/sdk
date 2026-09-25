@@ -140,7 +140,7 @@ pub use acyclic_objects::{LocalDurability as LocalObjectsDurability, LocalObject
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
 pub use async_storage::{
     AsyncAuthorityStore, AsyncObjectStore, GenerationFork, GenerationForkSource,
-    ImmediateAuthorityStore, ImmediateObjectStore,
+    ImmediateAuthorityStore, ImmediateObjectStore, PublicationScope,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
@@ -322,7 +322,7 @@ pub use speculation::{
 pub use storage::{
     AppendOutcome, AuthorityFailure, AuthorityReceipt, AuthorityResult, AuthorityStore,
     AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome, GuardedAppend,
-    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectKind, ObjectRead,
+    HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectKind, ObjectRead,
     ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStore,
     ObjectStoreError, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
     object_digest,

@@ -61,8 +61,8 @@ use crate::performance::{
 };
 use crate::storage::{
     AppendOutcome, AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome,
-    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRequest, ObjectReadRetention,
-    ObjectStoreError, PublicationPermit, ReplayLimit, object_digest,
+    HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRequest,
+    ObjectReadRetention, ObjectStoreError, PublicationPermit, ReplayLimit,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use acyclic_native_runtime::OwnershipAnchor;
@@ -2917,6 +2917,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .inner
             .objects
             .flush_before_publish(
+                crate::PublicationScope::Everything,
                 remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
                 cancellation,
             )
@@ -4160,7 +4161,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let drained = self
             .inner
             .objects
-            .flush_before_publish(remaining(work, budget)?, cancellation)
+            .flush_before_publish(
+                crate::PublicationScope::Everything,
+                remaining(work, budget)?,
+                cancellation,
+            )
             .await
             .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
         work = add(work, drained.work)?;
@@ -4332,10 +4337,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         prospective
             .verify(budget)
             .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let object = ObjectId {
-            kind,
-            digest: object_digest(kind, &encoded),
-        };
+        let hashed = HashedObject::new(kind, Bytes::from(encoded));
+        let object = hashed.object_id();
         let live_bytes = semantic.peak_allocation_bytes;
         let mut backend_budget = remaining(prospective, budget)?;
         // `prospective.verify` above proves the encoded buffer fits the
@@ -4344,7 +4347,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let receipt = self
             .inner
             .objects
-            .put(object, Bytes::from(encoded), backend_budget, cancellation)
+            .put_hashed(hashed, backend_budget, cancellation)
             .await
             .map_err(|failure| {
                 merge_simultaneous_failure(

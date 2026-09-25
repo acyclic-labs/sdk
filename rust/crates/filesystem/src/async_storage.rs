@@ -288,6 +288,17 @@ pub trait ImmediateAuthorityStore: AuthorityStore {}
 
 impl<T: ImmediateAuthorityStore + ?Sized> ImmediateAuthorityStore for Arc<T> {}
 
+/// The objects one authority record makes reachable, which must be durable
+/// before the record is appended.
+#[derive(Clone, Copy, Debug)]
+pub enum PublicationScope<'a> {
+    /// The complete authenticated closure of one published generation.
+    Closure(&'a [ObjectId]),
+    /// Every object admitted so far, for a record whose closure was not
+    /// enumerated.
+    Everything,
+}
+
 /// Nonblocking immutable-object contract suitable for `IndexedDB` and remote I/O.
 pub trait AsyncObjectStore: StorageProvider {
     /// Returns one exact decoded immutable representation when resident.
@@ -325,6 +336,20 @@ pub trait AsyncObjectStore: StorageProvider {
         cancellation: &CancellationToken,
     ) -> impl Future<Output = ObjectResult<()>> + StorageFuture;
 
+    /// Asynchronously admits one object whose identity its construction
+    /// already proved. A store that verifies digests on admission may skip
+    /// hashing the same bytes again; the default verifies through
+    /// [`Self::put`].
+    fn put_hashed(
+        &self,
+        object: crate::storage::HashedObject,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = ObjectResult<()>> + StorageFuture {
+        let (object_id, bytes) = object.into_parts();
+        self.put(object_id, bytes, budget, cancellation)
+    }
+
     /// Asynchronously admits an ordered bounded group of verified immutable objects.
     ///
     /// Implementations with a real batch primitive override this method. A
@@ -346,12 +371,13 @@ pub trait AsyncObjectStore: StorageProvider {
         }
     }
 
-    /// Makes every previously admitted immutable object crash-durable before
-    /// an authority record may reference it. Ordinary stores already provide
+    /// Makes every admitted object in `scope` crash-durable before an
+    /// authority record may reference it. Ordinary stores already provide
     /// that guarantee from `put`/`put_many`; a bounded staging adapter overrides
     /// this boundary to group physical writes without changing publication.
     fn flush_before_publish(
         &self,
+        _scope: PublicationScope<'_>,
         _budget: WorkBudget,
         _cancellation: &CancellationToken,
     ) -> impl Future<Output = ObjectResult<()>> + StorageFuture {

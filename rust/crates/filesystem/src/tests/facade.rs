@@ -6,6 +6,7 @@ use crate::memory::MemoryObjectStore as TestMemoryObjectStore;
 use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy, VolumeLimits,
 };
+use crate::storage::object_digest;
 use crate::storage::{AuthorityFailure, AuthorityResult, AuthorityStore};
 use crate::storage::{
     ObjectFailure, ObjectRead, ObjectReadRequest, ObjectResult, ObjectStore, ObjectWrite,

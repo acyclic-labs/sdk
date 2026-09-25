@@ -7,7 +7,7 @@ use super::{CanonicalDecodeError, DecodeLimits};
 use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
-    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError, object_digest,
+    HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
 };
 use bytes::Bytes;
 use std::marker::PhantomData;
@@ -965,20 +965,17 @@ where
             self.allocations.release(allocation)?;
             return Err(Error::Work(error));
         }
-        let object = ObjectId {
-            kind: F::kind(),
-            digest: object_digest(F::kind(), &encoded),
-        };
+        let hashed = HashedObject::new(F::kind(), Bytes::from(encoded));
+        let object = hashed.object_id();
         self.work = hashed_work;
         let prospective = self.work.checked_add(WorkCounters {
             page_writes: 1,
             ..WorkCounters::default()
         })?;
         let remaining = prospective.remaining(self.budget)?;
-        let receipt = match crate::AsyncObjectStore::put(
+        let receipt = match crate::AsyncObjectStore::put_hashed(
             self.store,
-            object,
-            Bytes::from(encoded),
+            hashed,
             remaining,
             self.cancellation,
         )

@@ -15,7 +15,7 @@ use crate::cancellation::CancellationToken;
 use crate::model::VolumeConfig;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
-    ByteRange, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError, object_digest,
+    ByteRange, HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
 };
 use bytes::Bytes;
 use std::io::Cursor;
@@ -1235,17 +1235,15 @@ async fn put_extent_page_async<S: AsyncObjectStore>(
     hashed
         .verify(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let object = ObjectId {
-        kind: ObjectKind::ExtentPage,
-        digest: object_digest(ObjectKind::ExtentPage, &encoded),
-    };
+    let hashed_object = HashedObject::new(ObjectKind::ExtentPage, Bytes::from(encoded));
+    let object = hashed_object.object_id();
     let mut backend_budget = remaining(hashed, budget)?;
     backend_budget.peak_allocation_bytes = backend_budget
         .peak_allocation_bytes
         .checked_sub(encoded_bytes)
         .ok_or_else(|| OperationFailure::new(RegularMutationError::RangeOverflow, hashed))?;
     let receipt = store
-        .put(object, Bytes::from(encoded), backend_budget, cancellation)
+        .put_hashed(hashed_object, backend_budget, cancellation)
         .await
         .map_err(|failure| {
             simultaneous_failure(hashed, *failure.work, encoded_bytes, failure.error.into())

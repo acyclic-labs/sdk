@@ -8,6 +8,7 @@ use crate::memory::MemoryObjectStore;
 use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, Lifecycle, UnicodePolicy, VolumeLimits,
 };
+use crate::storage::object_digest;
 use crate::storage::{ByteRange, ObjectStore};
 
 fn config() -> VolumeConfig {
