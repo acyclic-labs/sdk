@@ -148,40 +148,20 @@ test("IndexedDB preserves enqueue order across restart and isolates database nam
   expect(await new IndexedDbClientStore({ indexedDB, databaseName: "other-client" }).load()).toEqual([]);
 });
 
-test("IndexedDB migration keeps version-one records ahead of newly enqueued commands", async () => {
+test("IndexedDB refuses an outbox database of another schema version", async () => {
   const indexedDB = new IDBFactory();
-  const opening = indexedDB.open("legacy-client", 1);
+  const opening = indexedDB.open("other-schema-client", 1);
   opening.onupgradeneeded = () => {
     opening.result.createObjectStore("outbox", { keyPath: "operationId" });
-    opening.result.createObjectStore("cursors", { keyPath: "authority" });
   };
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
     opening.onsuccess = () => resolve(opening.result);
     opening.onerror = () => reject(opening.error);
   });
-  const legacy: ClientCommand = {
-    operationId: "ffffffff-ffff-ffff-ffff-ffffffffffff" as OperationId,
-    authority,
-    kind: "legacy",
-    payload: {},
-  };
-  const transaction = database.transaction("outbox", "readwrite");
-  transaction.objectStore("outbox").put({ operationId: legacy.operationId, bytes: 1, command: legacy });
-  await new Promise<void>((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
-  });
   database.close();
 
-  const migrated = new IndexedDbClientStore({ indexedDB, databaseName: "legacy-client" });
-  const current: ClientCommand = {
-    operationId: "00000000-0000-0000-0000-000000000000" as OperationId,
-    authority,
-    kind: "current",
-    payload: {},
-  };
-  await migrated.put(current);
-  expect(await migrated.load()).toEqual([legacy, current]);
+  const store = new IndexedDbClientStore({ indexedDB, databaseName: "other-schema-client" });
+  await expect(store.load()).rejects.toBeDefined();
 });
 
 test("rebase waits for an in-flight submit before publishing the new replay epoch", async () => {

@@ -59,7 +59,6 @@ export type {
   NativeMount,
   NativePathComponent,
   NativeSourceOptions,
-  NativeSourceResult,
   NativeWorkspaceMount,
   NativeWorkspaceMountOptions,
   NativeWorkspaceMountPublication,

@@ -1114,19 +1114,22 @@ async fn open_database(database_name: &str) -> Result<Database, IndexedDbOpenErr
     Database::open(database_name)
         .with_version(DATABASE_VERSION)
         .with_on_upgrade_needed(|event, database| {
-            if event.old_version() > 0.5 && event.old_version() < 1.5 {
-                database.delete_object_store(OBJECTS)?;
-                database.delete_object_store(OBJECT_METADATA)?;
+            // Only a new database is created here: one of any other schema
+            // version is refused rather than converted.
+            if event.old_version() > 0.5 {
+                return Err(indexed_db_futures::error::Error::from(js_sys::Error::new(
+                    "unsupported Acyclic IndexedDB filesystem schema version",
+                )));
             }
-            if event.old_version() < 2.0 {
-                database.create_object_store(OBJECTS).build()?;
-                database.create_object_store(OBJECT_METADATA).build()?;
-                database.create_object_store(AUTHORITY_HEADS).build()?;
-                database.create_object_store(AUTHORITY_COMMITS).build()?;
-                database.create_object_store(AUTHORITY_OPERATIONS).build()?;
-            }
-            if event.old_version() < 3.0 {
-                database.create_object_store(AUTHORITY_GATES).build()?;
+            for store in [
+                OBJECTS,
+                OBJECT_METADATA,
+                AUTHORITY_HEADS,
+                AUTHORITY_COMMITS,
+                AUTHORITY_OPERATIONS,
+                AUTHORITY_GATES,
+            ] {
+                database.create_object_store(store).build()?;
             }
             Ok(())
         })
@@ -1189,15 +1192,15 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             let gates = transaction
                 .object_store(AUTHORITY_GATES)
                 .map_err(|error| Self::backend(error, read_admission))?;
-            let gate =
-                Self::get_fixed(&gates, &key, GATE_BYTES, cancellation, read_admission).await?;
-            if gate.is_none() {
-                let encoded_gate = encode_publication_gate(free_publication_gate());
-                Self::add_fixed(&gates, &key, &encoded_gate, cancellation, read_admission).await?;
-                transaction
-                    .commit()
-                    .await
-                    .map_err(|error| Self::backend(error, read_admission))?;
+            // Every authority is created together with its publication gate.
+            if Self::get_fixed(&gates, &key, GATE_BYTES, cancellation, read_admission)
+                .await?
+                .is_none()
+            {
+                return Err(Self::corrupt(
+                    "authority has no publication gate",
+                    read_admission,
+                ));
             }
             return Ok(AuthorityReceipt {
                 value: CreateAuthorityOutcome::Existing(head),

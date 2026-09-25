@@ -31,7 +31,6 @@ pub struct MultiRootMergeRoot {
     pub source_workspace_id: WorkspaceId,
     /// Optional filtered compatibility fork authenticated as a direct child of
     /// `source_workspace_id`. Ordinary filesystem joins leave this absent.
-    #[serde(default)]
     pub merge_workspace_id: Option<WorkspaceId>,
     /// Child generation captured when planning began.
     pub source_generation: GenerationId,
@@ -43,7 +42,6 @@ pub struct MultiRootMergeRoot {
     pub base_generation: GenerationId,
     /// Caller-selected child-wins binding paths pinned with the publication
     /// journal. This does not alter ordinary filesystem merge semantics.
-    #[serde(default)]
     pub child_wins_bindings: BTreeSet<String>,
 }
 
@@ -116,18 +114,14 @@ pub struct MultiRootPublication {
     /// Roots known durable under the commit decision.
     pub published_roots: BTreeSet<WorkspaceRootId>,
     /// Exact durable generation produced for each published root.
-    #[serde(default)]
     pub published_generations: BTreeMap<WorkspaceRootId, GenerationId>,
     /// Per-root reservations acquired before the commit decision.
     pub fences: BTreeMap<WorkspaceRootId, MultiRootFence>,
     /// Immutable typed conflicts pinned during validation.
-    #[serde(default)]
     pub conflicts: BTreeMap<WorkspaceRootId, crate::MergePlan>,
     /// Parent generations containing the durable conflict projection.
-    #[serde(default)]
     pub projected_roots: BTreeMap<WorkspaceRootId, GenerationId>,
     /// Conflict keys explicitly accepted from the projected working copy.
-    #[serde(default)]
     pub declared_conflicts: BTreeMap<WorkspaceRootId, BTreeSet<ConflictKey>>,
     /// Root that observed unexpected target state, if paused.
     pub paused_root: Option<WorkspaceRootId>,

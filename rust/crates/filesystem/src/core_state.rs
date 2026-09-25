@@ -532,29 +532,6 @@ fn read_json_bounded<T: DeserializeOwned>(
         .map_err(LocalCoreStateStoreError::Json)
 }
 
-fn read_recoverable_bounded<T: DeserializeOwned>(
-    paths: &RecordPaths,
-    maximum_bytes: u64,
-) -> Result<Option<T>, LocalCoreStateStoreError> {
-    match read_json_bounded(&paths.current, maximum_bytes) {
-        Ok(Some(value)) => Ok(Some(value)),
-        Ok(None) => match read_json_bounded(&paths.previous, maximum_bytes) {
-            Ok(Some(value)) => {
-                promote_previous(paths)?;
-                Ok(Some(value))
-            }
-            other => other,
-        },
-        Err(current_error) => match read_json_bounded(&paths.previous, maximum_bytes) {
-            Ok(Some(value)) => {
-                promote_previous(paths)?;
-                Ok(Some(value))
-            }
-            _ => Err(current_error),
-        },
-    }
-}
-
 fn write_journaled<T: Serialize>(
     paths: &RecordPaths,
     value: &T,
@@ -1274,8 +1251,8 @@ impl CoreLog {
         }
         let paths = key.paths(root);
         let value = match maximum_bytes {
-            Some(maximum_bytes) => read_recoverable_bounded::<Option<T>>(&paths, maximum_bytes)?,
-            None => read_recoverable::<Option<T>>(&paths)?,
+            Some(maximum_bytes) => read_json_bounded::<Option<T>>(&paths.current, maximum_bytes)?,
+            None => read_json::<Option<T>>(&paths.current)?,
         }
         .flatten();
         self.residents()
@@ -1539,9 +1516,6 @@ fn live_context_ids(
         let Some(stem) = name.strip_suffix(".json") else {
             continue;
         };
-        if stem.ends_with(".previous") || stem.ends_with(".next") {
-            continue;
-        }
         let Ok(bytes) = hex::decode(stem) else {
             continue;
         };
@@ -2144,7 +2118,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_survives_reopen_and_recovers_previous_record() {
+    async fn state_survives_reopen() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let store = LocalCoreStateStore::new(directory.path());
         let namespace = store.namespace().expect("admitted namespace");
@@ -2167,10 +2141,9 @@ mod tests {
         WorkspaceLineageStore::load(&store, workspace())
             .await
             .expect("write the record back");
-        let paths = namespace.record("lineage", &workspace().into_bytes());
-        std::fs::copy(&paths.current, &paths.previous).expect("preserve previous record");
-        std::fs::write(&paths.current, b"torn").expect("simulate torn current record");
-        std::fs::write(&paths.temporary, b"uncommitted").expect("simulate temporary record");
+        let current = namespace
+            .record("lineage", &workspace().into_bytes())
+            .current;
         let reopened = LocalCoreStateStore::new(directory.path());
         assert_eq!(
             WorkspaceLineageStore::load(&reopened, workspace())
@@ -2179,8 +2152,8 @@ mod tests {
             Some(state)
         );
         assert!(
-            read_json::<WorkspaceLineageRecord>(&paths.current)
-                .expect("repaired current")
+            read_json::<WorkspaceLineageRecord>(&current)
+                .expect("written-back record")
                 .is_some()
         );
     }
@@ -2509,10 +2482,10 @@ mod tests {
         ] {
             let paths = context_paths(&namespace, context.context_id);
             std::fs::create_dir_all(&paths.directory).expect("context directory");
-            write_journaled(&paths, &context).expect("write unindexed context");
+            write_journaled(&paths, &context).expect("write context");
         }
         std::fs::write(context_paths(&namespace, unrelated_id).current, b"not-json")
-            .expect("corrupt unrelated unindexed record");
+            .expect("corrupt unrelated record");
 
         assert_eq!(
             WorkspaceContextStore::discard_subtree(&store, parent_id, child_id, 1)
@@ -2900,60 +2873,6 @@ mod tests {
                 Some(state)
             );
         }
-    }
-
-    #[tokio::test]
-    async fn owner_recovers_a_torn_lazy_workspace_record() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let owner = LocalCoreStateStore::open_owned(directory.path()).expect("owner");
-        let state = lazy_state(workspace(), 1);
-        assert!(
-            owner
-                .compare_and_swap_lazy_workspace(workspace(), 0, state.clone())
-                .await
-                .expect("initial binding")
-        );
-        drop(owner);
-        LocalCoreStateStore::new(directory.path())
-            .load_lazy_workspace(workspace())
-            .await
-            .expect("write the binding back");
-
-        let current = {
-            let namespace = LocalCoreStateStore::new(directory.path())
-                .namespace()
-                .expect("admitted namespace");
-            let paths = namespace.record(LAZY_WORKSPACE_FAMILY, &workspace().into_bytes());
-            std::fs::copy(&paths.current, &paths.previous).expect("preserve previous record");
-            std::fs::write(&paths.current, b"torn").expect("simulate torn current record");
-            paths.current.clone()
-        };
-
-        let owner = LocalCoreStateStore::open_owned(directory.path()).expect("reopened owner");
-        assert_eq!(
-            owner
-                .load_lazy_workspace(workspace())
-                .await
-                .expect("recover binding"),
-            Some(state.clone())
-        );
-        assert_eq!(
-            read_json::<LazyWorkspaceState>(&current).expect("repaired current"),
-            Some(state.clone())
-        );
-        assert!(
-            owner
-                .compare_and_swap_lazy_workspace(
-                    workspace(),
-                    1,
-                    LazyWorkspaceState {
-                        revision: 2,
-                        ..state
-                    },
-                )
-                .await
-                .expect("swap recovered binding")
-        );
     }
 
     #[tokio::test]

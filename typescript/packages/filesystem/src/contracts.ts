@@ -1152,9 +1152,9 @@ export interface NativeWorkspaceMount {
 export interface NativeFsWorkspace extends FsWorkspace {
   joinInto(target: FsWorkspace, options: JoinOptions): Promise<ResolvableFsJoinPlan>;
   mount(destination: string, options: NativeWorkspaceMountOptions): Promise<NativeWorkspaceMount>;
-  sourceState(): Promise<NativeSourceResult>;
-  reconcileSource(): Promise<NativeSourceResult>;
-  rescanSource(): Promise<NativeSourceResult>;
+  sourceState(): Promise<SourceResult>;
+  reconcileSource(): Promise<SourceResult>;
+  rescanSource(): Promise<SourceResult>;
   seal(): Promise<FsGeneration>;
 }
 
@@ -1189,11 +1189,6 @@ export interface SourceResult {
   readonly reason: SourceInvalidationReason | undefined;
   readonly generationId: Uint8Array | undefined;
 }
-
-/** @deprecated Use SourceStatus; source state is shared by native and hosted workspaces. */
-export type NativeSourceStatus = SourceStatus;
-/** @deprecated Use SourceResult; source state is shared by native and hosted workspaces. */
-export type NativeSourceResult = SourceResult;
 
 export interface WasmBindings {
   default(

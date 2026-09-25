@@ -2712,44 +2712,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
-    /// Opens an existing volume through the workspace API without changing
-    /// its stable identity or durable state.
-    ///
-    /// This is the migration boundary for consumers created before named
-    /// workspaces existed. The supplied name is descriptive; the existing
-    /// volume remains the sole durable identity.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid names, absent volumes, and malformed creation state.
-    pub async fn open_volume_workspace(
-        &self,
-        name: impl AsRef<str>,
-        volume_id: VolumeId,
-    ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
-        let name = crate::WorkspaceName::new(name)?;
-        let volume = self
-            .open_volume(volume_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?
-            .value;
-        volume
-            .resolve_head_generation(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
-        Ok(crate::Workspace {
-            name,
-            id: crate::WorkspaceId::from_volume_id(volume_id),
-            volume,
-            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-            source: None,
-        })
-    }
-
     /// Adopts an already authenticated volume into the workspace facade.
     ///
-    /// This avoids reopening durable creation state when a compatibility
-    /// consumer already owns the volume returned by creation or migration.
+    /// This avoids reopening durable creation state when a consumer already
+    /// owns the volume returned by its creation.
     ///
     /// # Errors
     ///

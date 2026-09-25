@@ -106,12 +106,7 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
     const factory = options.indexedDB ?? globalThis.indexedDB;
     if (factory === undefined) throw new Error("IndexedDB is not available");
     if (options.databaseName.trim() === "") throw new TypeError("databaseName is required");
-    this.#database = openClientDatabase(
-      factory,
-      options.databaseName,
-      this.#maximumCommands,
-      this.#maximumBytes,
-    );
+    this.#database = openClientDatabase(factory, options.databaseName);
   }
 
   async load(): Promise<readonly ClientCommand[]> {
@@ -571,66 +566,23 @@ function canonicalStructuredValue(value: unknown, ancestors: Set<object>): unkno
   }
 }
 
-function openClientDatabase(
-  factory: IDBFactory,
-  name: string,
-  maximumCommands: number,
-  maximumBytes: number,
-): Promise<IDBDatabase> {
+function openClientDatabase(factory: IDBFactory, name: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const opening = factory.open(name, 2);
     opening.onupgradeneeded = event => {
-      const database = opening.result;
-      if (!database.objectStoreNames.contains("outbox")) database.createObjectStore("outbox", { keyPath: "operationId" });
-      if (!database.objectStoreNames.contains("cursors")) database.createObjectStore("cursors", { keyPath: "authority" });
-      if ((event as IDBVersionChangeEvent).oldVersion === 1) {
-        migrateVersionOneOutbox(
-          opening.transaction!.objectStore("outbox"),
-          opening.transaction!,
-          maximumCommands,
-          maximumBytes,
-        );
+      // Only a new database is created: one of another schema version is
+      // refused rather than converted.
+      if ((event as IDBVersionChangeEvent).oldVersion !== 0) {
+        opening.transaction!.abort();
+        return;
       }
+      opening.result.createObjectStore("outbox", { keyPath: "operationId" });
+      opening.result.createObjectStore("cursors", { keyPath: "authority" });
     };
     opening.onsuccess = () => resolve(opening.result);
     opening.onerror = () => reject(opening.error ?? new Error("IndexedDB open failed"));
     opening.onblocked = () => reject(new Error("IndexedDB upgrade is blocked"));
   });
-}
-
-function migrateVersionOneOutbox(
-  store: IDBObjectStore,
-  transaction: IDBTransaction,
-  maximumCommands: number,
-  maximumBytes: number,
-): void {
-  let sequence = 0;
-  let totalBytes = 0;
-  const cursorRequest = store.openCursor();
-  cursorRequest.onsuccess = () => {
-    const cursor = cursorRequest.result;
-    if (cursor === null) return;
-    try {
-      const record = cursor.value as { operationId: string; command: ClientCommand };
-      const command = cloneStructuredValue(record.command, new Set()) as ClientCommand;
-      const bytes = structuredSize(command);
-      sequence += 1;
-      totalBytes += bytes;
-      if (sequence > maximumCommands || totalBytes > maximumBytes) {
-        transaction.abort();
-        return;
-      }
-      cursor.update({
-        operationId: record.operationId,
-        bytes,
-        sequence,
-        command,
-      });
-      cursor.continue();
-    } catch {
-      transaction.abort();
-    }
-  };
 }
 
 function request<T>(operation: IDBRequest<T>): Promise<T> {

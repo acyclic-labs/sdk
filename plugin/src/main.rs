@@ -47,6 +47,7 @@ use std::io::{self, BufRead, Read, Seek, Write};
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
+#[cfg(any(test, not(target_os = "linux")))]
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
@@ -1602,7 +1603,6 @@ struct RootBinding {
     repository_workspace_id: [u8; 16],
     source_identity: [u8; 16],
     source_epoch: u64,
-    #[serde(default)]
     native_root_identity: [u8; 16],
 }
 
@@ -1610,7 +1610,6 @@ struct RootBinding {
 struct RouteRoot {
     root_id: [u8; 16],
     repository_workspace_id: [u8; 16],
-    #[serde(default)]
     published_generation: [u8; 32],
 }
 
@@ -1631,11 +1630,8 @@ struct Route {
     context_id: [u8; 16],
     root_id: [u8; 16],
     parent_agent_id: String,
-    #[serde(default)]
     roots: BTreeMap<String, RouteRoot>,
-    #[serde(default)]
     mount_path: PathBuf,
-    #[serde(default)]
     lifecycle: RouteLifecycle,
 }
 
@@ -1676,18 +1672,13 @@ impl RouteLifecycle {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct PendingSpawn {
     parent_agent_id: String,
-    #[serde(default)]
     tool_use_id: String,
-    #[serde(default)]
     active_root_id: Option<[u8; 16]>,
     expires_at_millis: u64,
     workspace_name: String,
     fork_key: [u8; 16],
-    #[serde(default)]
     roots: BTreeMap<String, RouteRoot>,
-    #[serde(default)]
     mount_path: PathBuf,
-    #[serde(default)]
     lifecycle: PendingSpawnLifecycle,
 }
 
@@ -1714,9 +1705,7 @@ impl PendingSpawn {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct LeaseRecord {
     agent_id: String,
-    #[serde(default)]
     turn_id: String,
-    #[serde(default)]
     tool_name: String,
     roots: BTreeMap<String, RootLeaseRecord>,
     expires_at_millis: u64,
@@ -1742,7 +1731,6 @@ struct DiscardAgent {
     agent_id: String,
     path: PathBuf,
     repository_workspace_ids: Vec<[u8; 16]>,
-    #[serde(default)]
     mount_detached: bool,
     workspaces: VecDeque<DiscardWorkspace>,
 }
@@ -1811,21 +1799,16 @@ struct AdapterState {
     root_session_id: String,
     active: bool,
     root_agent_id: String,
-    #[serde(default)]
     root_turns: BTreeSet<String>,
     root_context_id: [u8; 16],
     root_id: [u8; 16],
-    #[serde(default)]
     roots: BTreeMap<String, RootBinding>,
-    #[serde(default)]
     pending_root_registration: bool,
-    #[serde(default)]
     pending_root_adoptions: BTreeSet<String>,
     routes: BTreeMap<String, Route>,
     turns: BTreeMap<String, String>,
     pending: VecDeque<PendingSpawn>,
     leases: BTreeMap<String, LeaseRecord>,
-    #[serde(default)]
     pending_discards: BTreeMap<String, PendingDiscard>,
 }
 
@@ -7024,11 +7007,8 @@ struct ControlRequest {
     version: u32,
     command: ControlCommand,
     cwd: PathBuf,
-    #[serde(default)]
     argv: Vec<String>,
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     arguments: Value,
 }
 
@@ -7424,11 +7404,7 @@ fn errno_to_io(error: rustix::io::Errno) -> io::Error {
     io::Error::from_raw_os_error(error.raw_os_error())
 }
 
-#[cfg(unix)]
-#[allow(
-    unsafe_code,
-    reason = "geteuid has no preconditions and reads no memory"
-)]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn unix_control_socket_path(data: &Path) -> PathBuf {
     unix_control_runtime_directory().join(format!(
         "service-{}.sock",
@@ -10978,76 +10954,10 @@ async fn service_is_ready_for_identity(data: &Path, identity: &str) -> Result<bo
             }
             Ok(false)
         }
-        Err(ControlRequestError::ProtocolMismatch(_)) => {
-            drop(drain_legacy_service(data, None).await?);
-            clear_obsolete_runtime_state(data)?;
-            Ok(false)
-        }
         Err(error) => Err(format!(
             "cannot safely identify the Acyclic service: {error}"
         )),
     }
-}
-
-async fn drain_legacy_service(
-    data: &Path,
-    expected_identity: Option<&str>,
-) -> Result<ServiceLock, String> {
-    let ping = ping_request()?;
-    let active = send_legacy_control_request_once(data, &ping)
-        .await
-        .map_err(|error| format!("cannot identify the legacy Acyclic service: {error}"))?;
-    let binary_identity = active
-        .get("identity")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "legacy Acyclic service omitted its identity".to_owned())?
-        .to_owned();
-    let instance_id = active
-        .get("instanceId")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let drain_identity = instance_id
-        .clone()
-        .unwrap_or_else(|| binary_identity.clone());
-    if expected_identity.is_some_and(|expected| expected != drain_identity) {
-        return Err("refusing to drain a replacement Acyclic service".to_owned());
-    }
-    let published_identity = fs::read_to_string(data.join("service.identity"))
-        .map_err(|error| format!("cannot authenticate the legacy Acyclic service: {error}"))?;
-    if published_identity != drain_identity {
-        return Err("legacy Acyclic endpoint does not match its published identity".to_owned());
-    }
-    let drain_id = uuid::Uuid::new_v4().to_string();
-    let arguments = instance_id.as_ref().map_or_else(
-        || json!({"identity":binary_identity,"drainId":drain_id}),
-        |instance_id| {
-            json!({"identity":binary_identity,"instanceId":instance_id,"drainId":drain_id})
-        },
-    );
-    let shutdown = ControlRequest {
-        version: 1,
-        command: ControlCommand::Shutdown,
-        cwd: env::current_dir().map_err(display)?,
-        argv: Vec::new(),
-        name: String::new(),
-        arguments,
-    };
-    match send_legacy_control_request_once(data, &shutdown).await {
-        Ok(_) | Err(ControlRequestError::Indeterminate(_)) => {}
-        Err(error) => return Err(format!("cannot drain the legacy Acyclic service: {error}")),
-    }
-    let mut endpoint_closed = false;
-    for _ in 0..250 {
-        if !endpoint_closed && send_legacy_control_request_once(data, &ping).await.is_err() {
-            endpoint_closed = true;
-        }
-        if endpoint_closed && let Some(lock) = acquire_service_lock(data)? {
-            verify_service_drain_completion(data, &drain_identity, &drain_id)?;
-            return Ok(lock);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    Err("legacy Acyclic service did not drain; durable state was preserved".to_owned())
 }
 
 fn clear_obsolete_runtime_state(data: &Path) -> Result<(), String> {
@@ -11273,17 +11183,15 @@ fn read_bounded_rpc_line(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>, S
 enum ControlRequestError {
     Unavailable(String),
     Indeterminate(String),
-    ProtocolMismatch(String),
     Response(String),
 }
 
 impl std::fmt::Display for ControlRequestError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unavailable(message)
-            | Self::Indeterminate(message)
-            | Self::ProtocolMismatch(message)
-            | Self::Response(message) => formatter.write_str(message),
+            Self::Unavailable(message) | Self::Indeterminate(message) | Self::Response(message) => {
+                formatter.write_str(message)
+            }
         }
     }
 }
@@ -11344,49 +11252,8 @@ async fn send_control_envelope_with_attempts(
         .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
     encoded.push(b'\n');
     #[cfg(target_os = "linux")]
-    match send_linux_mailbox_request(
+    return send_linux_mailbox_request(
         data,
-        &encoded,
-        &envelope.request_id,
-        remaining_control_wait(deadline)?,
-    )
-    .await
-    {
-        Ok(response) => return Ok(response),
-        Err(error @ ControlRequestError::Unavailable(_)) => {
-            // Releases before the mailbox transport served this same authenticated
-            // endpoint over a private Unix socket. During a live binary handoff the
-            // old process must keep its mounts, so a new client falls back until that
-            // process exits. New services expose only the mailbox.
-            // Once a mailbox exists, the request may already have executed. Never
-            // replay a potentially mutating command over the legacy socket.
-            if linux_control_mailbox_path(data).is_dir() {
-                return Err(error);
-            }
-        }
-        Err(error) => return Err(error),
-    }
-    #[cfg(target_os = "linux")]
-    let socket_path = unix_control_socket_path(data);
-    #[cfg(target_os = "linux")]
-    let stream = tokio::time::timeout(
-        CONTROL_PROBE_WAIT.min(remaining_control_wait(deadline)?),
-        tokio::net::UnixStream::connect(socket_path),
-    )
-    .await
-    .map_err(|_| {
-        ControlRequestError::Unavailable(
-            "Acyclic service connection exceeded the probe deadline".to_owned(),
-        )
-    })?
-    .map_err(|error| {
-        ControlRequestError::Unavailable(format!(
-            "Acyclic service is not running through either Linux control transport: {error}"
-        ))
-    })?;
-    #[cfg(target_os = "linux")]
-    return exchange_control_stream(
-        stream,
         &encoded,
         &envelope.request_id,
         remaining_control_wait(deadline)?,
@@ -11467,6 +11334,7 @@ fn remaining_control_wait(
     Ok(deadline - now)
 }
 
+#[cfg(not(target_os = "linux"))]
 async fn exchange_control_stream(
     mut stream: impl AsyncRead + AsyncWrite + Unpin,
     encoded: &[u8],
@@ -11504,95 +11372,6 @@ async fn exchange_control_stream(
     }
     response.pop();
     decode_control_response(&response, request_id)
-}
-
-async fn exchange_legacy_control_stream(
-    mut stream: impl AsyncRead + AsyncWrite + Unpin,
-    request: &ControlRequest,
-) -> Result<Value, ControlRequestError> {
-    let mut encoded = serde_json::to_vec(request)
-        .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-    encoded.push(b'\n');
-    let exchange = async {
-        stream
-            .write_all(&encoded)
-            .await
-            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
-        stream
-            .flush()
-            .await
-            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
-        let mut response = Vec::new();
-        BufReader::new(stream)
-            .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
-            .read_until(b'\n', &mut response)
-            .await
-            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
-        Ok::<_, ControlRequestError>(response)
-    };
-    let mut response = tokio::time::timeout(CONTROL_PROBE_WAIT, exchange)
-        .await
-        .map_err(|_| {
-            ControlRequestError::Indeterminate(
-                "legacy Acyclic service did not answer before the probe deadline".to_owned(),
-            )
-        })??;
-    if response.len() > MAXIMUM_CONTROL_MESSAGE_BYTES || response.last() != Some(&b'\n') {
-        return Err(ControlRequestError::Indeterminate(
-            "invalid response from legacy Acyclic service".to_owned(),
-        ));
-    }
-    response.pop();
-    let response: Value = serde_json::from_slice(&response)
-        .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
-    if response.get("version").and_then(Value::as_u64) != Some(1) {
-        return Err(ControlRequestError::ProtocolMismatch(
-            "legacy Acyclic service returned an unexpected protocol version".to_owned(),
-        ));
-    }
-    if response.get("ok").and_then(Value::as_bool) == Some(true) {
-        Ok(response.get("result").cloned().unwrap_or(Value::Null))
-    } else {
-        Err(ControlRequestError::Response(
-            response
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("legacy Acyclic service request failed")
-                .to_owned(),
-        ))
-    }
-}
-
-async fn send_legacy_control_request_once(
-    data: &Path,
-    request: &ControlRequest,
-) -> Result<Value, ControlRequestError> {
-    #[cfg(unix)]
-    {
-        let stream = tokio::time::timeout(
-            CONTROL_PROBE_WAIT,
-            tokio::net::UnixStream::connect(unix_control_socket_path(data)),
-        )
-        .await
-        .map_err(|_| {
-            ControlRequestError::Unavailable(
-                "legacy Acyclic service connection exceeded the probe deadline".to_owned(),
-            )
-        })?
-        .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        exchange_legacy_control_stream(stream, request).await
-    }
-    #[cfg(windows)]
-    {
-        let pipe = format!(
-            r"\\.\pipe\acyclic-{}",
-            short_hash(data.as_os_str().to_string_lossy().as_bytes())
-        );
-        let stream = tokio::net::windows::named_pipe::ClientOptions::new()
-            .open(&pipe)
-            .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        exchange_legacy_control_stream(stream, request).await
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -11764,13 +11543,6 @@ fn decode_control_response(
     let response: Value = serde_json::from_slice(response)
         .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
     if response.get("requestId").and_then(Value::as_str) != Some(request_id.as_str()) {
-        if response.get("version").and_then(Value::as_u64) == Some(1)
-            && response.get("ok").and_then(Value::as_bool).is_some()
-        {
-            return Err(ControlRequestError::ProtocolMismatch(
-                "the running Acyclic service uses the legacy control protocol".to_owned(),
-            ));
-        }
         return Err(ControlRequestError::Indeterminate(
             "Acyclic control response does not match the request identity".to_owned(),
         ));
@@ -12155,9 +11927,6 @@ async fn drain_service(
                 "Acyclic service lock is held without a reachable endpoint; state was preserved"
                     .to_owned()
             }),
-        Err(ControlRequestError::ProtocolMismatch(_)) => {
-            drain_legacy_service(data, expected_identity).await
-        }
         Err(error) => Err(format!(
             "cannot safely identify the Acyclic service: {error}"
         )),
@@ -12718,9 +12487,7 @@ struct CodexPluginOwnership {
     marketplace_root: PathBuf,
     added_marketplace: bool,
     plugin_was_installed: bool,
-    #[serde(default)]
     config_path: Option<PathBuf>,
-    #[serde(default)]
     prior_default_permissions: Option<String>,
 }
 
@@ -15510,126 +15277,6 @@ mod tests {
             .expect("service drain thread");
     }
 
-    struct LegacyServiceDispatcher {
-        identity: String,
-        upgrade: Arc<tokio::sync::Notify>,
-        drain_id: Arc<Mutex<Option<String>>>,
-    }
-
-    impl ControlRequestDispatcher for LegacyServiceDispatcher {
-        async fn dispatch_request(&mut self, request: ControlRequest) -> Result<Value, String> {
-            match request.command {
-                ControlCommand::Ping => Ok(json!({"identity": self.identity})),
-                ControlCommand::Shutdown => {
-                    let expected = request
-                        .arguments
-                        .get("identity")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| "legacy shutdown omitted the binary identity".to_owned())?;
-                    if expected != self.identity {
-                        return Err("legacy shutdown targeted another binary".to_owned());
-                    }
-                    if request.arguments.get("instanceId").is_some() {
-                        return Err("legacy service cannot accept an instance identity".to_owned());
-                    }
-                    let drain_id = request
-                        .arguments
-                        .get("drainId")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| "legacy shutdown omitted the drain identity".to_owned())?;
-                    *self
-                        .drain_id
-                        .lock()
-                        .map_err(|_| "legacy drain identity lock is poisoned".to_owned())? =
-                        Some(drain_id.to_owned());
-                    let upgrade = Arc::clone(&self.upgrade);
-                    tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        upgrade.notify_waiters();
-                    });
-                    Ok(json!({"draining": true}))
-                }
-                _ => Err("legacy test service only supports lifecycle requests".to_owned()),
-            }
-        }
-    }
-
-    #[cfg(any(unix, windows))]
-    #[test]
-    fn service_drain_transitions_a_pre_instance_identity_service() {
-        std::thread::Builder::new()
-            .name("plugin-legacy-service-drain".to_owned())
-            .stack_size(32 * 1024 * 1024)
-            .spawn(|| {
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("test runtime")
-                    .block_on(async {
-                        let temporary = tempfile::tempdir().expect("temporary directory");
-                        let data = temporary.path().join("state");
-                        let lock = acquire_service_lock(&data)
-                            .expect("legacy service lock")
-                            .expect("uncontended legacy service lock");
-                        let identity = "legacy-service-binary".to_owned();
-                        let marker = ServiceIdentityMarker::create(&data, &identity)
-                            .expect("legacy identity marker");
-                        let upgrade = Arc::new(tokio::sync::Notify::new());
-                        let drain_id = Arc::new(Mutex::new(None));
-                        let control = Arc::new(AsyncMutex::new(LegacyServiceDispatcher {
-                            identity: identity.clone(),
-                            upgrade: Arc::clone(&upgrade),
-                            drain_id: Arc::clone(&drain_id),
-                        }));
-                        let endpoint = start_control_endpoint(Arc::clone(&control), &data)
-                            .await
-                            .expect("legacy control endpoint");
-                        let service_data = data.clone();
-                        let service_identity = identity.clone();
-                        let service = tokio::spawn(async move {
-                            upgrade.notified().await;
-                            endpoint.shutdown().await.expect("legacy endpoint shutdown");
-                            drop(control);
-                            let requested_drain = drain_id
-                                .lock()
-                                .expect("legacy drain identity lock")
-                                .clone()
-                                .expect("legacy drain request");
-                            write_service_drain_completion(
-                                &service_data,
-                                &service_identity,
-                                &requested_drain,
-                                &Ok(()),
-                            )
-                            .expect("legacy drain completion");
-                            drop(marker);
-                            drop(lock);
-                        });
-
-                        let mismatch = drain_service(&data, Some("replacement-service")).await;
-                        assert!(matches!(
-                            mismatch,
-                            Err(error) if error == "refusing to drain a replacement Acyclic service"
-                        ));
-                        assert!(
-                            acquire_service_lock(&data)
-                                .expect("legacy service lock")
-                                .is_none(),
-                            "identity mismatch must leave the legacy service running"
-                        );
-                        let fence = drain_service(&data, Some(&identity))
-                            .await
-                            .expect("legacy service transition");
-                        service.await.expect("legacy service task");
-                        assert!(!data.join("service.identity").exists());
-                        drop(fence);
-                    });
-            })
-            .expect("test thread")
-            .join()
-            .expect("legacy service drain thread");
-    }
-
     #[cfg(any(unix, windows))]
     #[test]
     fn failed_identity_publication_releases_endpoint_service_and_root() {
@@ -17196,64 +16843,6 @@ mod tests {
             Arc::try_unwrap(control).is_ok(),
             "endpoint retained disconnected dispatch state"
         );
-    }
-
-    #[tokio::test]
-    async fn legacy_wire_is_probe_only_and_detected_by_v2() {
-        let request = ControlRequest {
-            version: 1,
-            command: ControlCommand::Ping,
-            cwd: PathBuf::from("legacy-probe"),
-            argv: Vec::new(),
-            name: String::new(),
-            arguments: Value::Null,
-        };
-        let (client, mut server) = tokio::io::duplex(16 * 1024);
-        let legacy_peer = tokio::spawn(async move {
-            let mut line = String::new();
-            BufReader::new(&mut server)
-                .read_line(&mut line)
-                .await
-                .expect("legacy request");
-            let request: ControlRequest = serde_json::from_str(&line).expect("bare request");
-            assert!(matches!(request.command, ControlCommand::Ping));
-            server
-                .write_all(b"{\"version\":1,\"ok\":true,\"result\":{\"identity\":\"legacy\"}}\n")
-                .await
-                .expect("legacy response");
-        });
-        let response = exchange_legacy_control_stream(client, &request)
-            .await
-            .expect("legacy probe");
-        assert_eq!(response["identity"], "legacy");
-        legacy_peer.await.expect("legacy peer");
-
-        let envelope = ControlEnvelope::new(request);
-        let request_id = envelope.request_id.clone();
-        let mut encoded = serde_json::to_vec(&envelope).expect("v2 envelope");
-        encoded.push(b'\n');
-        let (client, mut server) = tokio::io::duplex(16 * 1024);
-        let rejecting_peer = tokio::spawn(async move {
-            let mut ignored = String::new();
-            BufReader::new(&mut server)
-                .read_line(&mut ignored)
-                .await
-                .expect("v2 request");
-            server
-                .write_all(b"{\"version\":1,\"ok\":false,\"error\":\"unsupported request\"}\n")
-                .await
-                .expect("legacy rejection");
-        });
-        let error = exchange_control_stream(
-            client,
-            &encoded,
-            &request_id,
-            std::time::Duration::from_secs(1),
-        )
-        .await
-        .expect_err("v2 must classify the legacy peer");
-        assert!(matches!(error, ControlRequestError::ProtocolMismatch(_)));
-        rejecting_peer.await.expect("rejecting peer");
     }
 
     #[tokio::test]
@@ -19713,10 +19302,10 @@ mod tests {
 
     #[test]
     fn adapter_state_requires_the_current_explicit_schema() {
-        let legacy = serde_json::from_value::<AdapterState>(json!({
+        let incomplete = serde_json::from_value::<AdapterState>(json!({
             "version": 1,
-            "root_session_id": "legacy-session",
-            "root_agent_id": "legacy-agent",
+            "root_session_id": "session",
+            "root_agent_id": "agent",
             "root_path": "root",
             "root_workspace_name": "workspace",
             "root_context_id": vec![0; 16],
@@ -19727,8 +19316,8 @@ mod tests {
             "pending": []
         }));
         assert!(
-            legacy.is_err(),
-            "legacy state must not be silently migrated"
+            incomplete.is_err(),
+            "state without the current schema must be refused"
         );
         let unsupported = AdapterState {
             version: ADAPTER_STATE_VERSION + 1,

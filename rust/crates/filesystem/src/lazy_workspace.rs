@@ -117,7 +117,6 @@ impl LazyOverlayId {
 
 /// Durable constant-size binding for one sparse workspace.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(try_from = "LazyWorkspaceStateRecord")]
 pub struct LazyWorkspaceState {
     /// Serialization schema.
     pub schema_version: u32,
@@ -209,79 +208,6 @@ pub enum PendingLazyRemoveKind {
         /// The checkout publication whose result decides this overlay.
         idempotency_key: IdempotencyKey,
     },
-}
-
-/// Schema 5 (released in 0.1.0) differs only in its pending-removal layout.
-const LAZY_STATE_SCHEMA_V5: u32 = 5;
-
-#[derive(Deserialize)]
-struct LazyWorkspaceStateRecord {
-    schema_version: u32,
-    revision: u64,
-    workspace_id: WorkspaceId,
-    parent_workspace_id: Option<WorkspaceId>,
-    source: SourceReference,
-    overlay: LazyOverlayId,
-    shadows: LazyShadowId,
-    pending_remove: Option<PendingLazyRemoveRecord>,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum PendingLazyRemoveRecord {
-    Current(PendingLazyRemove),
-    V5 {
-        prior_overlay: LazyOverlayId,
-        tombstone_overlay: LazyOverlayId,
-        kind: PendingLazyRemoveKind,
-    },
-}
-
-impl TryFrom<LazyWorkspaceStateRecord> for LazyWorkspaceState {
-    type Error = &'static str;
-
-    fn try_from(record: LazyWorkspaceStateRecord) -> Result<Self, Self::Error> {
-        let (schema_version, pending_remove) = match (record.schema_version, record.pending_remove)
-        {
-            (LAZY_STATE_SCHEMA_V5, None) => (LAZY_STATE_SCHEMA, None),
-            // Schema 5 prepared shadows in place and never rolled them back, so
-            // the current shadows are exactly what its recovery would keep.
-            (
-                LAZY_STATE_SCHEMA_V5,
-                Some(PendingLazyRemoveRecord::V5 {
-                    prior_overlay,
-                    tombstone_overlay,
-                    kind,
-                }),
-            ) => (
-                LAZY_STATE_SCHEMA,
-                Some(PendingLazyRemove {
-                    prior_overlay,
-                    prior_shadows: record.shadows,
-                    prepared_overlay: tombstone_overlay,
-                    kind,
-                }),
-            ),
-            (LAZY_STATE_SCHEMA_V5, Some(PendingLazyRemoveRecord::Current(_))) => {
-                return Err("schema 5 lazy state has a current pending removal");
-            }
-            (schema, None) => (schema, None),
-            (schema, Some(PendingLazyRemoveRecord::Current(pending))) => (schema, Some(pending)),
-            (_, Some(PendingLazyRemoveRecord::V5 { .. })) => {
-                return Err("lazy state has a schema 5 pending removal");
-            }
-        };
-        Ok(Self {
-            schema_version,
-            revision: record.revision,
-            workspace_id: record.workspace_id,
-            parent_workspace_id: record.parent_workspace_id,
-            source: record.source,
-            overlay: record.overlay,
-            shadows: record.shadows,
-            pending_remove,
-        })
-    }
 }
 
 /// One immutable node in the persistent source-knowledge index.
@@ -6874,86 +6800,6 @@ mod tests {
         assert_eq!(after.shadows, before.shadows);
         assert!(after.pending_remove.is_none());
         assert!(root.stat("/directory").await.expect("directory").authored);
-    }
-
-    #[tokio::test]
-    async fn open_migrates_released_schema_five_state() {
-        let fs = Fs::memory();
-        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
-        let store = MemoryLazyWorkspaceStore::default();
-        let root = LazyWorkspace::attach(&fs, "root", Arc::clone(&source), store.clone())
-            .await
-            .expect("attach");
-        root.write("/file.txt", Bytes::from_static(b"authored"))
-            .await
-            .expect("write");
-        let prior = root.state().await.expect("state");
-        let mut idle = serde_json::to_value(&prior).expect("encode");
-        idle["schema_version"] = LAZY_STATE_SCHEMA_V5.into();
-        assert_eq!(
-            serde_json::from_value::<LazyWorkspaceState>(idle).expect("idle schema 5"),
-            prior
-        );
-
-        let LazyLookup::Authored { stat, .. } = root.lookup("/file.txt").await.expect("authored")
-        else {
-            panic!("expected authored file");
-        };
-        let record = root
-            .workspace()
-            .record_by_id(stat.file_id)
-            .await
-            .expect("authored record");
-        let staged_shadows = root
-            .insert_shadow(prior.shadows, stat.file_id, record, stat.metadata)
-            .await
-            .expect("staged identity shadow");
-        let tombstone = root
-            .insert_overlay(
-                prior.overlay,
-                "/file.txt".to_owned(),
-                LazyOverlayChange::Tombstone,
-            )
-            .await
-            .expect("tombstone");
-        let mut pending = serde_json::to_value(LazyWorkspaceState {
-            revision: prior.revision + 1,
-            overlay: tombstone,
-            shadows: staged_shadows,
-            pending_remove: None,
-            ..prior.clone()
-        })
-        .expect("encode");
-        pending["schema_version"] = LAZY_STATE_SCHEMA_V5.into();
-        pending["pending_remove"] = serde_json::json!({
-            "path": "/file.txt",
-            "prior_overlay": prior.overlay,
-            "tombstone_overlay": tombstone,
-            "kind": PendingLazyRemoveKind::Authored {
-                idempotency_key: IdempotencyKey::from_bytes([0x35; 16]),
-            },
-        });
-        let pending = serde_json::from_value::<LazyWorkspaceState>(pending).expect("schema 5");
-        assert!(
-            store
-                .compare_and_swap_lazy_workspace(root.workspace().id(), prior.revision, pending)
-                .await
-                .expect("prepare")
-        );
-
-        let reopened = LazyWorkspace::open(
-            fs.open_workspace("root").await.expect("workspace"),
-            source,
-            store,
-        )
-        .await
-        .expect("reopen migrated state");
-        let recovered = reopened.state().await.expect("recovered state");
-        assert_eq!(recovered.schema_version, LAZY_STATE_SCHEMA);
-        assert_eq!(recovered.overlay, prior.overlay);
-        assert_eq!(recovered.shadows, staged_shadows);
-        assert!(recovered.pending_remove.is_none());
-        assert!(reopened.stat("/file.txt").await.expect("file").authored);
     }
 
     #[tokio::test]

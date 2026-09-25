@@ -148,18 +148,6 @@ const JOURNAL_REWRITE_SLACK: u64 = 1024 * 1024;
 /// slot and publishes it by writing its generation frame last, so the active
 /// slot only ever changes by appending past its end.
 const JOURNAL_SLOTS: [&str; 2] = ["control-ledger-v6.a", "control-ledger-v6.b"];
-/// State of earlier releases, which no current binary reads.
-const OBSOLETE_STATE: [&str; 9] = [
-    "control-ledger-v3.json",
-    "control-ledger-v3.next",
-    "control-client-v2.json",
-    "control-client-v2.next",
-    "control-client-v2.lock",
-    "control-ledger-v4.a",
-    "control-ledger-v4.b",
-    "control-ledger-v5.a",
-    "control-ledger-v5.b",
-];
 /// Little-endian record length, then the digest of the record.
 const FRAME_HEADER_BYTES: usize = 8 + 32;
 const GENERATION_FRAME_BYTES: usize = FRAME_HEADER_BYTES + 1 + 8;
@@ -668,11 +656,6 @@ impl ControlLedger {
     }
 
     fn open_at(data: &Path, now: Instant) -> Result<Self, String> {
-        for name in OBSOLETE_STATE {
-            // Nothing reads these files, so one an old client still holds open
-            // is simply removed by a later start.
-            let _ = fs::remove_file(data.join(name));
-        }
         let [first, second] = JOURNAL_SLOTS.map(|name| {
             fs::OpenOptions::new()
                 .create(true)
@@ -1084,23 +1067,6 @@ mod tests {
         let mut predictable = envelope;
         predictable.operation = OperationId(uuid::Uuid::now_v7());
         assert!(predictable.validate().is_err());
-    }
-
-    #[test]
-    fn opening_removes_state_of_earlier_releases() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        for name in OBSOLETE_STATE {
-            fs::write(temporary.path().join(name), b"obsolete").expect("obsolete state");
-        }
-        let unrelated = temporary.path().join("adapter-state.a");
-        fs::write(&unrelated, b"kept").expect("unrelated state");
-        drop(ControlLedger::open(temporary.path()).expect("ledger"));
-        assert!(
-            OBSOLETE_STATE
-                .iter()
-                .all(|name| !temporary.path().join(name).exists())
-        );
-        assert_eq!(fs::read(unrelated).expect("unrelated state"), b"kept");
     }
 
     #[test]

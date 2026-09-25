@@ -769,8 +769,7 @@ async fn attach_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             || latest.maximum_paths != options.maximum_paths
             || latest.maximum_extent_spans != options.maximum_extent_spans
             || latest.maximum_queued_changes != options.maximum_queued_changes
-            || (latest.schema_version == 1 && !options.excluded_paths.is_empty())
-            || (latest.schema_version >= 2 && latest.capture_policy != capture_policy)
+            || latest.capture_policy != capture_policy
         {
             return Err(SourceError::BindingMismatch);
         }
@@ -779,7 +778,6 @@ async fn attach_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         workspace,
         head,
         SourceFact {
-            schema_version: 2,
             volume_id: workspace.volume.id(),
             root_identity: root_identity.to_bytes(),
             mode: durable_mode(options.mode),
@@ -1051,8 +1049,7 @@ fn validate_source_fact_binding<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         || fact.maximum_paths != session.capture.maximum_paths
         || fact.maximum_extent_spans != session.capture.maximum_extent_spans
         || fact.maximum_queued_changes != session.maximum_queued_changes
-        || (fact.schema_version == 1 && session.capture_policy != CapturePolicy::allow_all())
-        || (fact.schema_version >= 2 && fact.capture_policy != session.capture_policy.fingerprint())
+        || fact.capture_policy != session.capture_policy.fingerprint()
     {
         return Err(SourceError::BindingMismatch);
     }
@@ -1217,7 +1214,6 @@ fn source_fact<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation_id: crate::GenerationId,
 ) -> SourceFact {
     SourceFact {
-        schema_version: 2,
         volume_id: session.workspace.volume.id(),
         root_identity: session.watcher.root_identity().to_bytes(),
         mode: durable_mode(session.mode),

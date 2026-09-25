@@ -25,6 +25,8 @@ import type {
   NativeRawJoinPlan,
   NativeRawJoinResult,
   NativeRawSourceResult,
+  SourceResult,
+  SourceStatus,
   NativeRawWorkspace,
   NativeRawWorkspaceCommit,
   NativeRawWorkspaceMount,
@@ -36,8 +38,6 @@ import type {
   NativeNamespacePath,
   CaptureResult,
   NativeWorkspaceMount,
-  NativeSourceResult,
-  NativeSourceStatus,
   WorkspaceDirectoryPage,
   WorkspaceExtentPlan,
   WorkspaceName,
@@ -1084,13 +1084,13 @@ function adaptWorkspace(raw: NativeRawWorkspace): NativeFsWorkspace {
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       return parseWorkspaceDelete(await raw.delete(idempotencyKey));
     },
-    async sourceState(): Promise<NativeSourceResult> {
+    async sourceState(): Promise<SourceResult> {
       return parseSourceResult(await raw.sourceState());
     },
-    async reconcileSource(): Promise<NativeSourceResult> {
+    async reconcileSource(): Promise<SourceResult> {
       return parseSourceResult(await raw.reconcileSource());
     },
-    async rescanSource(): Promise<NativeSourceResult> {
+    async rescanSource(): Promise<SourceResult> {
       return parseSourceResult(await raw.rescanSource());
     },
     async seal(): Promise<FsGeneration> {
@@ -1329,7 +1329,7 @@ function parseWorkspaceDelete(status: string): WorkspaceDeleteStatus {
   return status;
 }
 
-function parseSourceResult(value: NativeRawSourceResult): NativeSourceResult {
+function parseSourceResult(value: NativeRawSourceResult): SourceResult {
   const { status } = value;
   if (
     status !== "none" &&
@@ -1341,7 +1341,7 @@ function parseSourceResult(value: NativeRawSourceResult): NativeSourceResult {
   ) {
     throw new TypeError("native source has an invalid status");
   }
-  const typedStatus: NativeSourceStatus = status;
+  const typedStatus: SourceStatus = status;
   const reason = value.reason;
   if (
     reason !== undefined &&

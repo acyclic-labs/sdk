@@ -86,7 +86,6 @@ pub enum OperationWindowPhase {
         /// Newest coalesced parent, if the parent advanced.
         pending_parent: Option<GenerationId>,
         /// Parent observed after this reconciliation ticket was claimed.
-        #[serde(default)]
         subsequent_parent: Option<GenerationId>,
     },
 }
