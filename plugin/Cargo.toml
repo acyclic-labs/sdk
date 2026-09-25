@@ -1,6 +1,6 @@
 [package]
 name = "acyclic-plugin"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -18,8 +18,8 @@ name = "acyclic"
 path = "src/main.rs"
 
 [dependencies]
-acyclic-fs = { path = "../rust/crates/filesystem", version = "=0.1.2", features = ["local", "native-watch", "native-mount"] }
-acyclic-native-runtime = { path = "../rust/crates/native-runtime", version = "=0.1.2" }
+acyclic-fs = { path = "../rust/crates/filesystem", version = "=0.1.3", features = ["local", "native-watch", "native-mount"] }
+acyclic-native-runtime = { path = "../rust/crates/native-runtime", version = "=0.1.3" }
 base64 = "0.22.1"
 blake3.workspace = true
 fs2.workspace = true

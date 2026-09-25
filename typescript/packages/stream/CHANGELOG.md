@@ -1,5 +1,9 @@
 # @acyclic-labs/stream changelog
 
+## 0.1.3 - 2026-09-25
+
+- Rebuilds the stream contracts and client from the qualified SDK 0.1.3 source.
+
 ## 0.1.2 - 2026-09-25
 
 - Aligns the stream contracts and client with the 0.1.2 SDK release.
