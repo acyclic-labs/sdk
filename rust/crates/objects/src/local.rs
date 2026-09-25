@@ -19,19 +19,38 @@ use tokio::sync::{Mutex, mpsc};
 
 use crate::{
     BufferedObject, Condition, DeleteResult, ExternalBody, GetRequest, LocalBodyLocation,
-    LocalBodyReference, MemoryObjects, ObjectsError, ObjectsProvider, ProviderListPage, PutRequest,
-    ReadTarget, wire,
+    LocalBodyReference, LocalBodyRelocations, MemoryObjects, ObjectsError, ObjectsProvider,
+    ProviderListPage, PutRequest, ReadTarget, wire,
 };
 
-const JOURNAL_MAGIC: &[u8; 23] = b"ACYCLIC-OBJECTS-LOCAL\0\x03";
+const JOURNAL_MAGIC: &[u8; 23] = b"ACYCLIC-OBJECTS-LOCAL\0\x04";
 const JOURNAL_HEADER_BYTES: u64 = 55;
+const JOURNAL_FILE: &str = "mutations.log";
+/// Replacement journal written by compaction. Only a completed, synchronized file is ever
+/// renamed over [`JOURNAL_FILE`]; a crash-left one is truncated by the next compaction.
+const COMPACTION_FILE: &str = "mutations.log.compacting";
+/// Record length, inline body length, and a BLAKE3 checksum over both lengths, the record,
+/// and the inline bodies.
+const FRAME_HEADER_BYTES: u64 = 4 + 4 + 32;
 const MAXIMUM_RECORD_BYTES: usize = 2 * 1_024 * 1_024;
+/// Bodies no larger than this are committed inside their journal frame: one append and one
+/// flush make the object durable. Larger bodies are published as segments first, at the cost
+/// of a segment flush and a directory flush. Measured: at this bound an inline put still costs
+/// about a third of a segment put, and compaction stays under one percent of puts; above
+/// it, compaction pauses reach the 99th percentile.
+const MAXIMUM_INLINE_BODY_BYTES: usize = 64 * 1_024;
+/// A batch frame carries at most one bounded batch of bodies.
+const MAXIMUM_FRAME_BODY_BYTES: usize = MAXIMUM_SEGMENT_BYTES;
+/// Inline bytes that make compaction due once they also outweigh the rest of the journal,
+/// which amortizes each rewrite over at least as many bytes as it copies.
+const MINIMUM_COMPACTION_INLINE_BYTES: u64 = 8 * 1_024 * 1_024;
 const SEGMENT_MAGIC: &[u8; 24] = b"ACYCLIC-OBJECT-SEGMENT\0\x02";
 const SEGMENT_HEADER_BYTES: usize = SEGMENT_MAGIC.len() + 4;
 const SEGMENT_RECORD_BYTES: usize = 32 + 8;
 const MAXIMUM_SEGMENT_BODIES: usize = 1_024;
 const MAXIMUM_SEGMENT_BYTES: usize = 4 * 1024 * 1024;
 const REPLAY_PIPELINE_RECORDS: usize = 32;
+const JOURNAL_BUFFER_BYTES: usize = 256 * 1_024;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// How journal frames and immutable bodies are made durable before they become observable.
@@ -100,15 +119,33 @@ pub enum LocalObjectsError {
     Io(#[from] std::io::Error),
 }
 
+struct Journal {
+    file: File,
+    /// Header plus every acknowledged frame.
+    bytes: u64,
+    /// Inline body bytes carried by those frames, live or not.
+    inline_bytes: u64,
+}
+
+impl Journal {
+    /// Whether compaction would reclaim at least as many bytes as it copies.
+    fn compaction_due(&self) -> bool {
+        self.inline_bytes >= MINIMUM_COMPACTION_INLINE_BYTES
+            && self.inline_bytes >= self.bytes.saturating_sub(self.inline_bytes)
+    }
+}
+
 struct Persistence {
     root: PathBuf,
-    journal: StdMutex<File>,
+    journal: StdMutex<Journal>,
     journal_operations: AtomicU64,
     poisoned: AtomicBool,
     #[cfg(test)]
     fault_after_bytes: AtomicU64,
     #[cfg(test)]
     fault_sync_once: AtomicBool,
+    #[cfg(test)]
+    fault_compaction: StdMutex<Option<CompactionStep>>,
     #[cfg(test)]
     blocking_work: StdMutex<Option<BlockingWorkHook>>,
     limits: LocalObjectsLimits,
@@ -126,6 +163,7 @@ impl Drop for Persistence {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum BlockingWork {
     CollectGarbage,
+    CompactJournal,
     PersistSegment,
 }
 
@@ -136,20 +174,109 @@ struct BlockingWorkHook {
     release: std::sync::mpsc::Receiver<()>,
 }
 
-struct GarbageCollectionWork {
+/// A compaction step after which a test simulates process death: the store stops, and
+/// nothing is cleaned up.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompactionStep {
+    SegmentsPersisted,
+    ReplacementWritten,
+    ReplacementSynced,
+    JournalClosed,
+    Renamed,
+}
+
+/// Where one new body is committed. The choice is made purely by size: a body no larger
+/// than [`MAXIMUM_INLINE_BODY_BYTES`] rides in the frame that commits it, and a larger body
+/// is first published in a segment.
+#[derive(Clone, Copy)]
+enum Placement {
+    Inline,
+    Segment { id: [u8; 32], offset: u64 },
+}
+
+impl Placement {
+    fn record(self) -> stored_body::Location {
+        match self {
+            Self::Inline => stored_body::Location::Inline(InlineBody {}),
+            Self::Segment { id, offset } => stored_body::Location::Segment(SegmentBody {
+                id: id.to_vec(),
+                offset,
+            }),
+        }
+    }
+
+    /// The committed location, consuming the next appended inline offset for an inline body.
+    fn location(self, inline_offsets: &mut impl Iterator<Item = u64>) -> Option<LocalBodyLocation> {
+        match self {
+            Self::Inline => inline_offsets
+                .next()
+                .map(|offset| LocalBodyLocation::Journal { offset }),
+            Self::Segment { id, offset } => Some(LocalBodyLocation::Segment { id, offset }),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Maintenance {
+    /// Compact only when [`Journal::compaction_due`] holds.
+    CompactIfDue,
+    /// Compact any inline bytes, then reclaim unreachable segments.
+    CollectGarbage { maximum_candidates: u64 },
+}
+
+/// Exclusive physical maintenance. It owns the body-I/O and mutation fences until its
+/// blocking worker finishes, so a cancelled caller can neither expose a half-relocated
+/// store nor release root ownership while files are being rewritten.
+struct MaintenanceWork {
     _body_io: tokio::sync::OwnedRwLockWriteGuard<()>,
     _mutation: tokio::sync::OwnedMutexGuard<()>,
+    compact: bool,
+    /// Segment reclamation's candidate bound, when segments are reclaimed.
+    maximum_candidates: Option<u64>,
+    semantic: MemoryObjects,
     live_bodies: BTreeSet<LocalBodyReference>,
-    maximum_candidates: u64,
     // Keep persistence last so root ownership is published only after the operation guards drop.
     persistence: Arc<Persistence>,
 }
 
-impl GarbageCollectionWork {
+impl MaintenanceWork {
     fn run(&self) -> Result<LocalObjectsGarbageCollection, LocalObjectsError> {
-        self.persistence
-            .collect_garbage(&self.live_bodies, self.maximum_candidates)
+        let mut report = LocalObjectsGarbageCollection::default();
+        let mut live_bodies = self.live_bodies.clone();
+        if self.compact {
+            let compaction = self.persistence.compact_journal(&self.live_bodies)?;
+            self.semantic.relocate_local_bodies(&compaction.relocations);
+            live_bodies = live_bodies
+                .into_iter()
+                .map(|mut body| {
+                    if let Some(destination) = compaction
+                        .relocations
+                        .get(&(body.location.clone(), body.digest))
+                    {
+                        body.location.clone_from(destination);
+                    }
+                    body
+                })
+                .collect();
+            report.journal_bytes_reclaimed = compaction.bytes_reclaimed;
+        }
+        if let Some(maximum_candidates) = self.maximum_candidates {
+            let physical = self
+                .persistence
+                .collect_garbage(&live_bodies, maximum_candidates)?;
+            report.segments_examined = physical.segments_examined;
+            report.segments_removed = physical.segments_removed;
+            report.temporary_files_removed = physical.temporary_files_removed;
+        }
+        Ok(report)
     }
+}
+
+/// Live inline bodies moved into segments by one compaction.
+struct JournalCompaction {
+    relocations: LocalBodyRelocations,
+    bytes_reclaimed: u64,
 }
 
 impl Persistence {
@@ -167,6 +294,193 @@ impl Persistence {
             self.limits.maximum_object_bytes,
             self.limits.durability,
         )
+    }
+
+    /// Moves every live inline body into segments and rewrites the journal without inline
+    /// bytes, then atomically replaces it.
+    ///
+    /// Every record keeps its place, so replay reproduces the same sequence of states. An
+    /// inline body referenced by `live_bodies` becomes a segment reference; any other is
+    /// reclaimed, which recovery rejects if a live object still references it. New segments
+    /// are durable before the replacement journal is written, and the replacement is
+    /// synchronized before it is renamed over the journal, so a crash at any step recovers
+    /// either the old journal with its inline bodies or the new one with its segments.
+    fn compact_journal(
+        &self,
+        live_bodies: &BTreeSet<LocalBodyReference>,
+    ) -> Result<JournalCompaction, LocalObjectsError> {
+        #[cfg(test)]
+        self.block_work(BlockingWork::CompactJournal);
+        let journal_path = self.root.join(JOURNAL_FILE);
+        let mut inline = BTreeMap::new();
+        for body in live_bodies {
+            if let LocalBodyLocation::Journal { offset } = body.location {
+                inline.entry(body.digest).or_insert((offset, body.length));
+            }
+        }
+        let source = File::open(&journal_path)?;
+        let mut destinations = BTreeMap::new();
+        let mut chunk = Vec::new();
+        let mut chunk_bytes = 0_usize;
+        for (digest, (offset, length)) in inline {
+            if !chunk.is_empty()
+                && (chunk.len() == MAXIMUM_SEGMENT_BODIES
+                    || chunk_bytes.saturating_add(length) > MAXIMUM_SEGMENT_BYTES)
+            {
+                self.persist_relocated(&mut chunk, &mut destinations)?;
+                chunk_bytes = 0;
+            }
+            chunk.push((
+                digest,
+                read_journal_body(&source, offset, &digest, length)
+                    .map_err(|_| LocalObjectsError::Corrupt)?,
+            ));
+            chunk_bytes = chunk_bytes.saturating_add(length);
+        }
+        if !chunk.is_empty() {
+            self.persist_relocated(&mut chunk, &mut destinations)?;
+        }
+        drop(source);
+        let relocations = live_bodies
+            .iter()
+            .filter(|body| matches!(body.location, LocalBodyLocation::Journal { .. }))
+            .map(|body| {
+                destinations
+                    .get(&body.digest)
+                    .map(|destination| ((body.location.clone(), body.digest), destination.clone()))
+                    .ok_or(LocalObjectsError::Corrupt)
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        #[cfg(test)]
+        self.fault_compaction(CompactionStep::SegmentsPersisted)?;
+
+        let expected_bytes = self
+            .journal
+            .lock()
+            .map_err(|_| LocalObjectsError::Unavailable)?
+            .bytes;
+        let (replacement, bytes) =
+            self.write_compacted_journal(&journal_path, expected_bytes, &relocations)?;
+        let mut journal = self
+            .journal
+            .lock()
+            .map_err(|_| LocalObjectsError::Unavailable)?;
+        // Windows refuses to replace a file while any handle to it is open, so the old
+        // journal closes first. From here on a failure poisons the store until reopen,
+        // which recovers whichever complete journal the rename left in place.
+        drop(std::mem::replace(&mut journal.file, replacement));
+        #[cfg(test)]
+        self.fault_compaction(CompactionStep::JournalClosed)?;
+        if let Err(error) = acyclic_native_runtime::durable_rename(
+            &self.root.join(COMPACTION_FILE),
+            &journal_path,
+            acyclic_native_runtime::RenameMode::Replace,
+        ) {
+            self.poisoned.store(true, Ordering::Release);
+            return Err(error.into());
+        }
+        #[cfg(test)]
+        self.fault_compaction(CompactionStep::Renamed)?;
+        let bytes_reclaimed = journal.bytes.saturating_sub(bytes);
+        journal.bytes = bytes;
+        journal.inline_bytes = 0;
+        Ok(JournalCompaction {
+            relocations,
+            bytes_reclaimed,
+        })
+    }
+
+    fn persist_relocated(
+        &self,
+        chunk: &mut Vec<([u8; 32], bytes::Bytes)>,
+        destinations: &mut BTreeMap<[u8; 32], LocalBodyLocation>,
+    ) -> Result<(), LocalObjectsError> {
+        let (id, offsets) = persist_segment(&self.root, chunk, self.limits.durability)?;
+        for ((digest, _), offset) in chunk.drain(..).zip(offsets) {
+            destinations.insert(digest, LocalBodyLocation::Segment { id, offset });
+        }
+        Ok(())
+    }
+
+    /// Writes and synchronizes the replacement journal: the same header and records in the
+    /// same order, with every inline body relocated or reclaimed.
+    fn write_compacted_journal(
+        &self,
+        journal_path: &Path,
+        expected_bytes: u64,
+        relocations: &LocalBodyRelocations,
+    ) -> Result<(File, u64), LocalObjectsError> {
+        let mut source =
+            std::io::BufReader::with_capacity(JOURNAL_BUFFER_BYTES, File::open(journal_path)?);
+        let mut header = [0_u8; JOURNAL_MAGIC.len() + 4 * 8];
+        source.read_exact(&mut header)?;
+        let replacement = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(self.root.join(COMPACTION_FILE))?;
+        let mut output = std::io::BufWriter::with_capacity(JOURNAL_BUFFER_BYTES, &replacement);
+        output.write_all(&header)?;
+        let mut position = JOURNAL_HEADER_BYTES;
+        let mut bytes = JOURNAL_HEADER_BYTES;
+        loop {
+            let frame = match next_frame(&mut source)? {
+                FrameRead::End => break,
+                FrameRead::Torn => return Err(LocalObjectsError::Corrupt),
+                FrameRead::Complete(frame) => frame,
+            };
+            let bodies_start = position
+                .checked_add(FRAME_HEADER_BYTES)
+                .and_then(|value| value.checked_add(frame.record.len() as u64))
+                .ok_or(LocalObjectsError::Corrupt)?;
+            position = position
+                .checked_add(frame.encoded_bytes())
+                .ok_or(LocalObjectsError::Corrupt)?;
+            let encoded = if frame.bodies.is_empty() {
+                encode_frame(&frame.record, &[])?
+            } else {
+                let mut record = MutationRecord::decode(frame.record.as_slice())
+                    .map_err(|_| LocalObjectsError::Corrupt)?;
+                compact_record(
+                    record
+                        .operation
+                        .as_mut()
+                        .ok_or(LocalObjectsError::Corrupt)?,
+                    bodies_start,
+                    relocations,
+                )?;
+                encode_frame(&record.encode_to_vec(), &[])?
+            };
+            output.write_all(&encoded)?;
+            bytes = bytes
+                .checked_add(encoded.len() as u64)
+                .ok_or(LocalObjectsError::Corrupt)?;
+        }
+        if position != expected_bytes {
+            return Err(LocalObjectsError::Corrupt);
+        }
+        output.flush()?;
+        drop(output);
+        #[cfg(test)]
+        self.fault_compaction(CompactionStep::ReplacementWritten)?;
+        sync_file(&replacement, self.limits.durability)?;
+        #[cfg(test)]
+        self.fault_compaction(CompactionStep::ReplacementSynced)?;
+        Ok((replacement, bytes))
+    }
+
+    #[cfg(test)]
+    fn fault_compaction(&self, step: CompactionStep) -> Result<(), LocalObjectsError> {
+        let mut fault = self
+            .fault_compaction
+            .lock()
+            .map_err(|_| LocalObjectsError::Unavailable)?;
+        if *fault == Some(step) {
+            *fault = None;
+            self.poisoned.store(true, Ordering::Release);
+            return Err(LocalObjectsError::Unavailable);
+        }
+        Ok(())
     }
 
     fn persist_segment(
@@ -226,6 +540,40 @@ pub struct LocalObjectsGarbageCollection {
     pub segments_removed: u64,
     /// Crash-left temporary publication files removed.
     pub temporary_files_removed: u64,
+    /// Journal bytes reclaimed by compaction, which moves live inline bodies into segments
+    /// and drops the rest.
+    pub journal_bytes_reclaimed: u64,
+}
+
+/// A body record inside one immutable segment file.
+#[derive(Clone, PartialEq, Message)]
+struct SegmentBody {
+    #[prost(bytes = "vec", tag = "1")]
+    id: Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    offset: u64,
+}
+
+/// The body's bytes follow the record in its own frame, in record order.
+#[derive(Clone, Copy, PartialEq, Message)]
+struct InlineBody {}
+
+/// Compaction dropped the body's inline bytes because nothing referenced them.
+#[derive(Clone, Copy, PartialEq, Message)]
+struct ReclaimedBody {}
+
+mod stored_body {
+    use super::{InlineBody, ReclaimedBody, SegmentBody};
+
+    #[derive(Clone, PartialEq, prost::Oneof)]
+    pub(super) enum Location {
+        #[prost(message, tag = "4")]
+        Segment(SegmentBody),
+        #[prost(message, tag = "5")]
+        Inline(InlineBody),
+        #[prost(message, tag = "6")]
+        Reclaimed(ReclaimedBody),
+    }
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -236,10 +584,8 @@ struct PutRecord {
     body_digest: Vec<u8>,
     #[prost(uint64, tag = "3")]
     body_length: u64,
-    #[prost(bytes = "vec", tag = "4")]
-    segment_id: Vec<u8>,
-    #[prost(uint64, tag = "5")]
-    segment_offset: u64,
+    #[prost(oneof = "stored_body::Location", tags = "4, 5, 6")]
+    body: Option<stored_body::Location>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -256,10 +602,18 @@ struct UploadPartRecord {
     body_digest: Vec<u8>,
     #[prost(uint64, tag = "3")]
     body_length: u64,
-    #[prost(bytes = "vec", tag = "4")]
-    segment_id: Vec<u8>,
-    #[prost(uint64, tag = "5")]
-    segment_offset: u64,
+    #[prost(oneof = "stored_body::Location", tags = "4, 5, 6")]
+    body: Option<stored_body::Location>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct CompleteMultipartRecord {
+    #[prost(message, optional, tag = "1")]
+    request: Option<wire::CompleteMultipartRequest>,
+    /// Digest of the published body, or empty when the completion fails before hashing.
+    /// Replay never re-reads part bodies, which reclamation may since have removed.
+    #[prost(bytes = "vec", tag = "2")]
+    body_digest: Vec<u8>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -272,7 +626,7 @@ struct MutationRecord {
 }
 
 mod mutation_record {
-    use super::{PutBatchRecord, PutRecord, UploadPartRecord, wire};
+    use super::{CompleteMultipartRecord, PutBatchRecord, PutRecord, UploadPartRecord, wire};
 
     #[derive(Clone, PartialEq, prost::Oneof)]
     pub(super) enum Operation {
@@ -297,7 +651,7 @@ mod mutation_record {
         #[prost(message, tag = "10")]
         UploadPart(UploadPartRecord),
         #[prost(message, tag = "11")]
-        CompleteMultipart(wire::CompleteMultipartRequest),
+        CompleteMultipart(CompleteMultipartRecord),
         #[prost(message, tag = "12")]
         AbortMultipart(wire::AbortMultipartRequest),
         #[prost(message, tag = "13")]
@@ -314,8 +668,10 @@ impl LocalObjects {
 
     /// Reclaims physical bodies not referenced by any live bucket, snapshot, or multipart upload.
     ///
-    /// The provider's exclusive root ownership fences concurrent mutation. Every retained
-    /// segment is authenticated before any unreachable file is removed.
+    /// Live inline bodies first move into segments while the journal is compacted, which
+    /// drops every inline byte. The provider's exclusive root ownership fences concurrent
+    /// mutation. Every retained segment is authenticated before any unreachable file is
+    /// removed.
     pub async fn collect_garbage(
         &self,
         maximum_candidates: u64,
@@ -325,16 +681,62 @@ impl LocalObjects {
                 "garbage-collection candidate bound must be positive",
             ));
         }
+        self.maintain(Maintenance::CollectGarbage { maximum_candidates })
+            .await
+    }
+
+    /// Compacts the journal before an inline write once compaction is due, so inline bytes
+    /// stay bounded by the rest of the journal.
+    async fn compact_if_due(&self) -> Result<(), ObjectsError> {
+        let due = self
+            .persistence
+            .journal
+            .lock()
+            .map_err(|_| ObjectsError::Unavailable)?
+            .compaction_due();
+        if due {
+            self.maintain(Maintenance::CompactIfDue)
+                .await
+                .map_err(|_| ObjectsError::Unavailable)?;
+        }
+        Ok(())
+    }
+
+    async fn maintain(
+        &self,
+        maintenance: Maintenance,
+    ) -> Result<LocalObjectsGarbageCollection, LocalObjectsError> {
         let body_io = Arc::clone(&self.body_io).write_owned().await;
         let mutation = Arc::clone(&self.mutation).lock_owned().await;
         self.check_available()
             .map_err(|_| LocalObjectsError::Unavailable)?;
+        let compact = {
+            let journal = self
+                .persistence
+                .journal
+                .lock()
+                .map_err(|_| LocalObjectsError::Unavailable)?;
+            match maintenance {
+                Maintenance::CompactIfDue => journal.compaction_due(),
+                Maintenance::CollectGarbage { .. } => journal.inline_bytes != 0,
+            }
+        };
+        let maximum_candidates = match maintenance {
+            // A writer that raced another's compaction finds nothing left to do.
+            Maintenance::CompactIfDue if !compact => {
+                return Ok(LocalObjectsGarbageCollection::default());
+            }
+            Maintenance::CompactIfDue => None,
+            Maintenance::CollectGarbage { maximum_candidates } => Some(maximum_candidates),
+        };
         let live_bodies = self.semantic.local_body_references().await;
-        let work = GarbageCollectionWork {
+        let work = MaintenanceWork {
             _body_io: body_io,
             _mutation: mutation,
-            live_bodies,
+            compact,
             maximum_candidates,
+            semantic: self.semantic.clone(),
+            live_bodies,
             persistence: Arc::clone(&self.persistence),
         };
         tokio::task::spawn_blocking(move || work.run())
@@ -345,7 +747,9 @@ impl LocalObjects {
     /// Opens or creates one exclusively owned durable provider and replays its valid prefix.
     ///
     /// A torn final journal frame is discarded. Corruption in a complete frame fails closed.
-    /// Immutable bodies are segmented, authenticated, and range-read without whole-body loading.
+    /// Bodies up to 64 KiB ride in the journal frame that commits them and are authenticated
+    /// on every read; larger bodies are segmented, authenticated, and range-read without
+    /// whole-body loading.
     pub async fn open(
         root: impl AsRef<Path>,
         limits: LocalObjectsLimits,
@@ -427,10 +831,10 @@ impl LocalObjects {
                 .truncate(false)
                 .read(true)
                 .write(true)
-                .open(recovery_root.join("mutations.log"))?;
+                .open(recovery_root.join(JOURNAL_FILE))?;
             initialize_or_validate_header(&mut journal, &recovery_root, limits)?;
-            let operations = decode_replay(&mut journal, limits, &records)?;
-            Ok::<_, LocalObjectsError>((journal, operations))
+            let replayed = decode_replay(&mut journal, limits, &records)?;
+            Ok::<_, LocalObjectsError>((journal, replayed))
         });
         let mut replay_error = None;
         while let Some(record) = receiver.recv().await {
@@ -440,7 +844,7 @@ impl LocalObjects {
                 replay_error = Some(error);
             }
         }
-        let (journal, journal_operations) = recovery
+        let (file, replayed) = recovery
             .await
             .map_err(|_| LocalObjectsError::Unavailable)??;
         if let Some(error) = replay_error {
@@ -457,13 +861,19 @@ impl LocalObjects {
             semantic,
             persistence: Arc::new(Persistence {
                 root,
-                journal: StdMutex::new(journal),
-                journal_operations: AtomicU64::new(journal_operations),
+                journal: StdMutex::new(Journal {
+                    file,
+                    bytes: replayed.bytes,
+                    inline_bytes: replayed.inline_bytes,
+                }),
+                journal_operations: AtomicU64::new(replayed.operations),
                 poisoned: AtomicBool::new(false),
                 #[cfg(test)]
                 fault_after_bytes: AtomicU64::new(u64::MAX),
                 #[cfg(test)]
                 fault_sync_once: AtomicBool::new(false),
+                #[cfg(test)]
+                fault_compaction: StdMutex::new(None),
                 #[cfg(test)]
                 blocking_work: StdMutex::new(None),
                 limits,
@@ -476,42 +886,44 @@ impl LocalObjects {
     }
 
     fn append(&self, operation: mutation_record::Operation) -> Result<(), ObjectsError> {
-        self.append_count(operation, 1)
+        self.append_frame(operation, 1, &[]).map(|_| ())
     }
 
-    fn append_count(
+    /// Appends and synchronizes one frame carrying `operation` and its inline `bodies`, in
+    /// record order, and returns the journal offset of each body.
+    fn append_frame(
         &self,
         operation: mutation_record::Operation,
         operation_count: u64,
-    ) -> Result<(), ObjectsError> {
+        bodies: &[&[u8]],
+    ) -> Result<Vec<u64>, ObjectsError> {
         self.check_available()?;
-        let payload = MutationRecord {
+        let record = MutationRecord {
             operation: Some(operation),
         }
         .encode_to_vec();
-        if payload.len() > MAXIMUM_RECORD_BYTES {
+        if record.len() > MAXIMUM_RECORD_BYTES {
             return Err(ObjectsError::Invalid("local mutation record is too large"));
         }
+        let frame = encode_frame(&record, bodies)
+            .map_err(|_| ObjectsError::Invalid("local mutation frame is too large"))?;
         let mut journal = self.persistence.journal.lock().map_err(|_| {
             self.persistence.poisoned.store(true, Ordering::Release);
             ObjectsError::Unavailable
         })?;
-        let frame_bytes = 36_u64
-            .checked_add(payload.len() as u64)
-            .ok_or(ObjectsError::Capacity)?;
         let operations = self.persistence.journal_operations.load(Ordering::Acquire);
+        let frame_start = journal.bytes;
+        let frame_end = frame_start
+            .checked_add(frame.len() as u64)
+            .ok_or(ObjectsError::Capacity)?;
         if operations
             .checked_add(operation_count)
             .is_none_or(|count| count > self.persistence.limits.maximum_journal_operations)
-            || journal
-                .metadata()
-                .map_err(|_| ObjectsError::Unavailable)?
-                .len()
-                .checked_add(frame_bytes)
-                .is_none_or(|bytes| bytes > self.persistence.limits.maximum_journal_bytes)
+            || frame_end > self.persistence.limits.maximum_journal_bytes
         {
             return Err(ObjectsError::Capacity);
         }
+        let durability = self.persistence.limits.durability;
         #[cfg(test)]
         let result = match self
             .persistence
@@ -524,30 +936,47 @@ impl LocalObjects {
                     .fault_sync_once
                     .swap(false, Ordering::AcqRel) =>
             {
-                append_frame_with_sync(&mut journal, &payload, |_| {
+                write_frame_with_sync(&mut journal.file, &frame, |_| {
                     Err(std::io::Error::other("injected journal sync failure"))
                 })
             }
-            u64::MAX => append_frame(&mut journal, &payload, self.persistence.limits.durability),
-            offset => append_frame_with_fault(
-                &mut journal,
-                &payload,
-                self.persistence.limits.durability,
-                offset,
-            ),
+            u64::MAX => write_frame(&mut journal.file, &frame, durability),
+            offset => write_frame_with_fault(&mut journal.file, &frame, durability, offset),
         };
         #[cfg(not(test))]
-        let result = append_frame(&mut journal, &payload, self.persistence.limits.durability);
+        let result = write_frame(&mut journal.file, &frame, durability);
         if result.is_err() {
             // The frame may be partial, or complete without a confirmed sync.
             // No later mutation may be acknowledged behind that uncertain tail.
             self.persistence.poisoned.store(true, Ordering::Release);
             return Err(ObjectsError::Unavailable);
         }
+        // Every offset lies inside the frame, whose end was bounded above.
+        let bodies_start = frame_start + FRAME_HEADER_BYTES + record.len() as u64;
+        let mut offset = bodies_start;
+        let mut offsets = Vec::with_capacity(bodies.len());
+        for body in bodies {
+            offsets.push(offset);
+            offset += body.len() as u64;
+        }
+        journal.bytes = frame_end;
+        journal.inline_bytes += offset - bodies_start;
         self.persistence
             .journal_operations
             .fetch_add(operation_count, Ordering::Release);
-        Ok(())
+        Ok(offsets)
+    }
+
+    async fn persist_body_segment(
+        &self,
+        digest: [u8; 32],
+        body: bytes::Bytes,
+    ) -> Result<Placement, ObjectsError> {
+        let (id, offsets) = self.persist_segment(vec![(digest, body)]).await?;
+        Ok(Placement::Segment {
+            id,
+            offset: *offsets.first().ok_or(ObjectsError::Unavailable)?,
+        })
     }
 
     async fn persist_segment(
@@ -616,25 +1045,29 @@ impl ObjectsProvider for LocalObjects {
     }
 
     async fn put(&self, request: PutRequest) -> Result<wire::ObjectVersion, ObjectsError> {
+        self.compact_if_due().await?;
         let _body_io = self.body_io.read().await;
         self.check_available()?;
         let body_length = request.body.len();
         let digest = *blake3::hash(&request.body).as_bytes();
-        // A recorded failure must not publish a new immutable body during a
-        // retry. The mutation lock protects the idempotency decision.
-        {
-            let _mutation = self.mutation.lock().await;
-            if let Some(outcome) = self.semantic.recorded_put(&request, &digest).await
-                && outcome.is_err()
+        let placement = if body_length > MAXIMUM_INLINE_BODY_BYTES {
+            // A recorded failure must not publish a new immutable body during a
+            // retry. The mutation lock protects the idempotency decision.
             {
-                return outcome;
+                let _mutation = self.mutation.lock().await;
+                if let Some(outcome) = self.semantic.recorded_put(&request, &digest).await
+                    && outcome.is_err()
+                {
+                    return outcome;
+                }
             }
-        }
-        // Immutable body publication can overlap other puts. The mutation lock
-        // still orders every journal intent and semantic state transition.
-        let bodies = vec![(digest, request.body.clone())];
-        let (segment_id, offsets) = self.persist_segment(bodies).await?;
-        let segment_offset = *offsets.first().ok_or(ObjectsError::Unavailable)?;
+            // Immutable body publication can overlap other puts. The mutation lock
+            // still orders every journal intent and semantic state transition.
+            self.persist_body_segment(digest, request.body.clone())
+                .await?
+        } else {
+            Placement::Inline
+        };
         let _mutation = self.mutation.lock().await;
         self.check_available()?;
         // A recorded retry has already been journaled. Successful retries
@@ -642,19 +1075,15 @@ impl ObjectsProvider for LocalObjects {
         if let Some(outcome) = self.semantic.recorded_put(&request, &digest).await {
             return outcome;
         }
-        self.append(mutation_record::Operation::Put(PutRecord {
-            header: Some(wire::PutObjectHeader {
-                bucket: Some(request.bucket.clone()),
-                object_key: request.object_key.clone(),
-                metadata: Some(request.metadata.clone()),
-                preconditions: request.condition.clone().map(Condition::wire),
-                mutation: mutation(request.idempotency_key.clone()),
-            }),
-            body_digest: digest.to_vec(),
-            body_length: request.body.len() as u64,
-            segment_id: segment_id.to_vec(),
-            segment_offset,
-        }))?;
+        let inline = matches!(placement, Placement::Inline).then_some(request.body.as_ref());
+        let offsets = self.append_frame(
+            mutation_record::Operation::Put(put_record(&request, &digest, placement.record())),
+            1,
+            inline.as_slice(),
+        )?;
+        let location = placement
+            .location(&mut offsets.into_iter())
+            .ok_or(ObjectsError::Unavailable)?;
         self.semantic
             .put_external(
                 request,
@@ -662,10 +1091,7 @@ impl ObjectsProvider for LocalObjects {
                     root: self.persistence.root.clone(),
                     digest,
                     length: body_length,
-                    location: LocalBodyLocation::Segment {
-                        id: segment_id,
-                        offset: segment_offset,
-                    },
+                    location,
                 },
             )
             .await
@@ -685,6 +1111,9 @@ impl ObjectsProvider for LocalObjects {
         if !self.segment_batch_is_bounded(&requests) {
             return self.put_batch_partitioned(requests).await;
         }
+        if let Err(error) = self.compact_if_due().await {
+            return vec![Err(error); requests.len()];
+        }
         let _body_io = self.body_io.read().await;
         if let Err(error) = self.check_available() {
             return vec![Err(error); requests.len()];
@@ -701,27 +1130,24 @@ impl ObjectsProvider for LocalObjects {
             }
         }
         if pending.is_empty() {
-            return outcomes
-                .into_iter()
-                .map(|outcome| outcome.unwrap_or(Err(ObjectsError::Unavailable)))
-                .collect();
+            return settle_puts(outcomes, &[], &ObjectsError::Unavailable);
         }
+        // Bodies above the inline bound share one segment with one physical copy per
+        // digest; every other body rides in the batch frame itself.
         let mut unique_bodies = Vec::new();
         let mut body_indices = BTreeMap::new();
-        let mut pending_body_indices = Vec::with_capacity(pending.len());
+        let mut segment_indices = Vec::with_capacity(pending.len());
         for (_, request, digest) in &pending {
+            if request.body.len() <= MAXIMUM_INLINE_BODY_BYTES {
+                segment_indices.push(None);
+                continue;
+            }
             let body_index = if let Some(index) = body_indices.get(digest) {
                 if unique_bodies
                     .get(*index)
                     .is_none_or(|(_, body): &([u8; 32], bytes::Bytes)| body != &request.body)
                 {
-                    for (index, _, _) in pending {
-                        outcomes[index] = Some(Err(ObjectsError::Unavailable));
-                    }
-                    return outcomes
-                        .into_iter()
-                        .map(|outcome| outcome.unwrap_or(Err(ObjectsError::Unavailable)))
-                        .collect();
+                    return settle_puts(outcomes, &pending, &ObjectsError::Unavailable);
                 }
                 *index
             } else {
@@ -730,52 +1156,63 @@ impl ObjectsProvider for LocalObjects {
                 body_indices.insert(*digest, index);
                 index
             };
-            pending_body_indices.push(body_index);
+            segment_indices.push(Some(body_index));
         }
-        let (segment_id, unique_offsets) = match self.persist_segment(unique_bodies).await {
-            Ok(segment) => segment,
-            Err(error) => {
-                for (index, _, _) in pending {
-                    outcomes[index] = Some(Err(error.clone()));
+        let segment = if unique_bodies.is_empty() {
+            None
+        } else {
+            match self.persist_segment(unique_bodies).await {
+                Ok(segment) => Some(segment),
+                Err(error) => {
+                    return settle_puts(outcomes, &pending, &error);
                 }
-                return outcomes
-                    .into_iter()
-                    .map(|outcome| outcome.unwrap_or(Err(ObjectsError::Unavailable)))
-                    .collect();
             }
         };
+        let placements = segment_indices
+            .into_iter()
+            .map(|index| match (index, &segment) {
+                (None, _) => Some(Placement::Inline),
+                (Some(index), Some((id, offsets))) => offsets
+                    .get(index)
+                    .map(|&offset| Placement::Segment { id: *id, offset }),
+                (Some(_), None) => None,
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(placements) = placements else {
+            return settle_puts(outcomes, &pending, &ObjectsError::Unavailable);
+        };
+        let mut inline = Vec::new();
         let records = pending
             .iter()
-            .zip(pending_body_indices.iter())
-            .map(|((_, request, digest), body_index)| PutRecord {
-                header: Some(wire::PutObjectHeader {
-                    bucket: Some(request.bucket.clone()),
-                    object_key: request.object_key.clone(),
-                    metadata: Some(request.metadata.clone()),
-                    preconditions: request.condition.clone().map(Condition::wire),
-                    mutation: mutation(request.idempotency_key.clone()),
-                }),
-                body_digest: digest.to_vec(),
-                body_length: u64::try_from(request.body.len()).unwrap_or(u64::MAX),
-                segment_id: segment_id.to_vec(),
-                segment_offset: unique_offsets[*body_index],
+            .zip(&placements)
+            .map(|((_, request, digest), placement)| {
+                if matches!(placement, Placement::Inline) {
+                    inline.push(request.body.as_ref());
+                }
+                put_record(request, digest, placement.record())
             })
             .collect::<Vec<_>>();
         let operation_count = u64::try_from(records.len()).unwrap_or(u64::MAX);
-        if let Err(error) = self.append_count(
+        let inline_offsets = match self.append_frame(
             mutation_record::Operation::PutBatch(PutBatchRecord { puts: records }),
             operation_count,
+            &inline,
         ) {
-            for (index, _, _) in pending {
-                outcomes[index] = Some(Err(error.clone()));
+            Ok(offsets) => offsets,
+            Err(error) => {
+                return settle_puts(outcomes, &pending, &error);
             }
-            return outcomes
-                .into_iter()
-                .map(|outcome| outcome.unwrap_or(Err(ObjectsError::Unavailable)))
-                .collect();
-        }
-        for ((index, request, digest), body_index) in pending.into_iter().zip(pending_body_indices)
-        {
+        };
+        // The append returned exactly one offset per inline body, in record order.
+        let mut inline_offsets = inline_offsets.into_iter();
+        let locations = placements
+            .into_iter()
+            .map(|placement| placement.location(&mut inline_offsets));
+        for ((index, request, digest), location) in pending.into_iter().zip(locations) {
+            let Some(location) = location else {
+                outcomes[index] = Some(Err(ObjectsError::Unavailable));
+                continue;
+            };
             let length = request.body.len();
             outcomes[index] = Some(
                 self.semantic
@@ -785,19 +1222,13 @@ impl ObjectsProvider for LocalObjects {
                             root: self.persistence.root.clone(),
                             digest,
                             length,
-                            location: LocalBodyLocation::Segment {
-                                id: segment_id,
-                                offset: unique_offsets[body_index],
-                            },
+                            location,
                         },
                     )
                     .await,
             );
         }
-        outcomes
-            .into_iter()
-            .map(|outcome| outcome.unwrap_or(Err(ObjectsError::Unavailable)))
-            .collect()
+        settle_puts(outcomes, &[], &ObjectsError::Unavailable)
     }
 
     async fn get(&self, request: GetRequest) -> Result<BufferedObject, ObjectsError> {
@@ -953,22 +1384,31 @@ impl ObjectsProvider for LocalObjects {
         self.check_available()?;
         let body_length = body.len();
         let digest = *blake3::hash(&body).as_bytes();
-        let bodies = vec![(digest, body.clone())];
-        let (segment_id, offsets) = self.persist_segment(bodies).await?;
-        let segment_offset = *offsets.first().ok_or(ObjectsError::Unavailable)?;
-        self.append(mutation_record::Operation::UploadPart(UploadPartRecord {
-            header: Some(wire::UploadPartHeader {
-                bucket: Some(bucket.clone()),
-                object_key: object_key.clone(),
-                upload_id: upload_id.clone(),
-                part_number,
-                mutation: mutation(idempotency_key.clone()),
+        let placement = if body_length > MAXIMUM_INLINE_BODY_BYTES {
+            self.persist_body_segment(digest, body.clone()).await?
+        } else {
+            Placement::Inline
+        };
+        let inline = matches!(placement, Placement::Inline).then_some(body.as_ref());
+        let offsets = self.append_frame(
+            mutation_record::Operation::UploadPart(UploadPartRecord {
+                header: Some(wire::UploadPartHeader {
+                    bucket: Some(bucket.clone()),
+                    object_key: object_key.clone(),
+                    upload_id: upload_id.clone(),
+                    part_number,
+                    mutation: mutation(idempotency_key.clone()),
+                }),
+                body_digest: digest.to_vec(),
+                body_length: body_length as u64,
+                body: Some(placement.record()),
             }),
-            body_digest: digest.to_vec(),
-            body_length: body.len() as u64,
-            segment_id: segment_id.to_vec(),
-            segment_offset,
-        }))?;
+            1,
+            inline.as_slice(),
+        )?;
+        let location = placement
+            .location(&mut offsets.into_iter())
+            .ok_or(ObjectsError::Unavailable)?;
         self.semantic
             .upload_part_external(
                 bucket,
@@ -979,10 +1419,7 @@ impl ObjectsProvider for LocalObjects {
                     root: self.persistence.root.clone(),
                     digest,
                     length: body_length,
-                    location: LocalBodyLocation::Segment {
-                        id: segment_id,
-                        offset: segment_offset,
-                    },
+                    location,
                 },
                 idempotency_key,
             )
@@ -1010,17 +1447,32 @@ impl ObjectsProvider for LocalObjects {
         idempotency_key: Option<String>,
     ) -> Result<wire::ObjectVersion, ObjectsError> {
         let _mutation = self.mutation.lock().await;
+        self.check_available()?;
+        let digest = self
+            .semantic
+            .multipart_completion_digest(&bucket, &object_key, &upload_id, &parts)
+            .await?;
         self.append(mutation_record::Operation::CompleteMultipart(
-            wire::CompleteMultipartRequest {
-                bucket: Some(bucket.clone()),
-                object_key: object_key.clone(),
-                upload_id: upload_id.clone(),
-                parts: parts.clone(),
-                mutation: mutation(idempotency_key.clone()),
+            CompleteMultipartRecord {
+                request: Some(wire::CompleteMultipartRequest {
+                    bucket: Some(bucket.clone()),
+                    object_key: object_key.clone(),
+                    upload_id: upload_id.clone(),
+                    parts: parts.clone(),
+                    mutation: mutation(idempotency_key.clone()),
+                }),
+                body_digest: digest.map(|digest| digest.to_vec()).unwrap_or_default(),
             },
         ))?;
         self.semantic
-            .complete_multipart(bucket, object_key, upload_id, parts, idempotency_key)
+            .complete_multipart_with_digest(
+                bucket,
+                object_key,
+                upload_id,
+                parts,
+                idempotency_key,
+                digest,
+            )
             .await
     }
 
@@ -1102,6 +1554,40 @@ fn mutation(idempotency_key: Option<String>) -> Option<wire::MutationIdentity> {
     idempotency_key.map(|idempotency_key| wire::MutationIdentity { idempotency_key })
 }
 
+/// Fails every `failed` batch entry with `error` and returns every outcome in request order.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "every pending index comes from enumerate() over the requests that sized outcomes"
+)]
+fn settle_puts(
+    mut outcomes: Vec<Option<Result<wire::ObjectVersion, ObjectsError>>>,
+    failed: &[(usize, PutRequest, [u8; 32])],
+    error: &ObjectsError,
+) -> Vec<Result<wire::ObjectVersion, ObjectsError>> {
+    for (index, _, _) in failed {
+        outcomes[*index] = Some(Err(error.clone()));
+    }
+    outcomes
+        .into_iter()
+        .map(|outcome| outcome.unwrap_or(Err(ObjectsError::Unavailable)))
+        .collect()
+}
+
+fn put_record(request: &PutRequest, digest: &[u8; 32], body: stored_body::Location) -> PutRecord {
+    PutRecord {
+        header: Some(wire::PutObjectHeader {
+            bucket: Some(request.bucket.clone()),
+            object_key: request.object_key.clone(),
+            metadata: Some(request.metadata.clone()),
+            preconditions: request.condition.clone().map(Condition::wire),
+            mutation: mutation(request.idempotency_key.clone()),
+        }),
+        body_digest: digest.to_vec(),
+        body_length: request.body.len() as u64,
+        body: Some(body),
+    }
+}
+
 fn idempotency(mutation: Option<wire::MutationIdentity>) -> Option<String> {
     mutation.map(|value| value.idempotency_key)
 }
@@ -1123,56 +1609,204 @@ fn required<T>(value: Option<T>) -> Result<T, LocalObjectsError> {
     value.ok_or(LocalObjectsError::Corrupt)
 }
 
+/// Durable journal state recovered by replay.
+struct ReplayedJournal {
+    operations: u64,
+    bytes: u64,
+    inline_bytes: u64,
+}
+
+/// One complete journal record and the journal offset of each of its inline bodies.
+struct ReplayRecord {
+    operation: mutation_record::Operation,
+    inline_offsets: Vec<u64>,
+}
+
 fn decode_replay(
     journal: &mut File,
     limits: LocalObjectsLimits,
-    records: &mpsc::Sender<mutation_record::Operation>,
-) -> Result<u64, LocalObjectsError> {
+    records: &mpsc::Sender<ReplayRecord>,
+) -> Result<ReplayedJournal, LocalObjectsError> {
     journal.seek(SeekFrom::Start(JOURNAL_HEADER_BYTES))?;
-    let mut operations = 0_u64;
-    loop {
-        let frame_start = journal.stream_position()?;
-        let Some(payload) = read_frame(journal, frame_start, limits.durability)? else {
-            break;
+    let mut replayed = ReplayedJournal {
+        operations: 0,
+        bytes: JOURNAL_HEADER_BYTES,
+        inline_bytes: 0,
+    };
+    let mut reader = std::io::BufReader::with_capacity(JOURNAL_BUFFER_BYTES, &*journal);
+    let torn = loop {
+        let frame = match next_frame(&mut reader)? {
+            FrameRead::End => break false,
+            FrameRead::Torn => break true,
+            FrameRead::Complete(frame) => frame,
         };
-        let record =
-            MutationRecord::decode(payload.as_slice()).map_err(|_| LocalObjectsError::Corrupt)?;
-        let operation_count = match record.operation.as_ref() {
-            Some(mutation_record::Operation::PutBatch(batch)) => {
+        let bodies_start = replayed
+            .bytes
+            .checked_add(FRAME_HEADER_BYTES)
+            .and_then(|value| value.checked_add(frame.record.len() as u64))
+            .ok_or(LocalObjectsError::Corrupt)?;
+        replayed.bytes = replayed
+            .bytes
+            .checked_add(frame.encoded_bytes())
+            .ok_or(LocalObjectsError::Corrupt)?;
+        let mut operation = required(
+            MutationRecord::decode(frame.record.as_slice())
+                .map_err(|_| LocalObjectsError::Corrupt)?
+                .operation,
+        )?;
+        let operation_count = match &operation {
+            mutation_record::Operation::PutBatch(batch) => {
                 if !put_batch_record_is_bounded(batch) {
                     return Err(LocalObjectsError::Corrupt);
                 }
                 u64::try_from(batch.puts.len()).map_err(|_| LocalObjectsError::Corrupt)?
             }
-            Some(_) => 1,
-            None => return Err(LocalObjectsError::Corrupt),
+            _ => 1,
         };
-        if operation_count == 0 {
-            return Err(LocalObjectsError::Corrupt);
-        }
-        operations = operations
+        replayed.operations = replayed
+            .operations
             .checked_add(operation_count)
             .ok_or(LocalObjectsError::Corrupt)?;
-        if operations > limits.maximum_journal_operations
-            || journal.stream_position()? > limits.maximum_journal_bytes
+        if replayed.operations > limits.maximum_journal_operations
+            || replayed.bytes > limits.maximum_journal_bytes
         {
             return Err(LocalObjectsError::Corrupt);
         }
+        let inline_offsets =
+            authenticate_inline_bodies(&mut operation, bodies_start, &frame.bodies)?;
+        replayed.inline_bytes = replayed
+            .inline_bytes
+            .checked_add(frame.bodies.len() as u64)
+            .ok_or(LocalObjectsError::Corrupt)?;
         records
-            .blocking_send(required(record.operation)?)
+            .blocking_send(ReplayRecord {
+                operation,
+                inline_offsets,
+            })
             .map_err(|_| LocalObjectsError::Unavailable)?;
+    };
+    drop(reader);
+    if torn {
+        journal.set_len(replayed.bytes)?;
+        sync_file_data(journal, limits.durability)?;
     }
     journal.seek(SeekFrom::End(0))?;
-    Ok(operations)
+    Ok(replayed)
+}
+
+/// Every body a record commits, in frame order: digest, length, and location.
+fn record_bodies(
+    operation: &mut mutation_record::Operation,
+) -> Vec<(&[u8], u64, &mut Option<stored_body::Location>)> {
+    match operation {
+        mutation_record::Operation::Put(put) => {
+            vec![(&put.body_digest, put.body_length, &mut put.body)]
+        }
+        mutation_record::Operation::PutBatch(batch) => batch
+            .puts
+            .iter_mut()
+            .map(|put| (put.body_digest.as_slice(), put.body_length, &mut put.body))
+            .collect(),
+        mutation_record::Operation::UploadPart(part) => {
+            vec![(&part.body_digest, part.body_length, &mut part.body)]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Proves a frame's body section is exactly its record's inline bodies, each within the
+/// inline bound and matching its digest, and returns each body's journal offset.
+fn authenticate_inline_bodies(
+    operation: &mut mutation_record::Operation,
+    bodies_start: u64,
+    bodies: &[u8],
+) -> Result<Vec<u64>, LocalObjectsError> {
+    let mut offsets = Vec::new();
+    let mut position = 0_usize;
+    for (digest, length, location) in record_bodies(operation) {
+        if !matches!(location, Some(stored_body::Location::Inline(_))) {
+            continue;
+        }
+        let length = usize::try_from(length).map_err(|_| LocalObjectsError::Corrupt)?;
+        let end = position
+            .checked_add(length)
+            .ok_or(LocalObjectsError::Corrupt)?;
+        let body = bodies
+            .get(position..end)
+            .ok_or(LocalObjectsError::Corrupt)?;
+        if length > MAXIMUM_INLINE_BODY_BYTES || blake3::hash(body).as_bytes() != digest {
+            return Err(LocalObjectsError::Corrupt);
+        }
+        offsets.push(
+            bodies_start
+                .checked_add(position as u64)
+                .ok_or(LocalObjectsError::Corrupt)?,
+        );
+        position = end;
+    }
+    if position != bodies.len() {
+        return Err(LocalObjectsError::Corrupt);
+    }
+    Ok(offsets)
+}
+
+/// Rewrites every inline body of a compacted record: to its relocated segment when live,
+/// otherwise to reclaimed.
+fn compact_record(
+    operation: &mut mutation_record::Operation,
+    bodies_start: u64,
+    relocations: &LocalBodyRelocations,
+) -> Result<(), LocalObjectsError> {
+    let mut offset = bodies_start;
+    for (digest, length, location) in record_bodies(operation) {
+        if !matches!(location, Some(stored_body::Location::Inline(_))) {
+            continue;
+        }
+        *location = Some(
+            match relocations.get(&(LocalBodyLocation::Journal { offset }, parse_digest(digest)?)) {
+                Some(LocalBodyLocation::Segment { id, offset }) => {
+                    stored_body::Location::Segment(SegmentBody {
+                        id: id.to_vec(),
+                        offset: *offset,
+                    })
+                }
+                Some(_) => return Err(LocalObjectsError::Corrupt),
+                None => stored_body::Location::Reclaimed(ReclaimedBody {}),
+            },
+        );
+        offset = offset
+            .checked_add(length)
+            .ok_or(LocalObjectsError::Corrupt)?;
+    }
+    Ok(())
+}
+
+/// Resolves a replayed record's body location, consuming the next inline offset when the
+/// body is inline.
+fn replayed_location(
+    body: Option<stored_body::Location>,
+    inline_offsets: &mut impl Iterator<Item = u64>,
+) -> Result<LocalBodyLocation, LocalObjectsError> {
+    Ok(match required(body)? {
+        stored_body::Location::Segment(segment) => LocalBodyLocation::Segment {
+            id: parse_digest(&segment.id)?,
+            offset: segment.offset,
+        },
+        stored_body::Location::Inline(_) => LocalBodyLocation::Journal {
+            offset: inline_offsets.next().ok_or(LocalObjectsError::Corrupt)?,
+        },
+        stored_body::Location::Reclaimed(_) => LocalBodyLocation::Reclaimed,
+    })
 }
 
 #[allow(clippy::too_many_lines)]
 async fn replay_operation(
     root: &Path,
     semantic: &MemoryObjects,
-    operation: mutation_record::Operation,
+    record: ReplayRecord,
 ) -> Result<(), LocalObjectsError> {
-    match operation {
+    let mut inline_offsets = record.inline_offsets.into_iter();
+    match record.operation {
         mutation_record::Operation::CreateBucket(request) => {
             replay_effect(
                 &semantic
@@ -1188,7 +1822,7 @@ async fn replay_operation(
             )?;
         }
         mutation_record::Operation::Put(record) => {
-            replay_put(root, semantic, record).await?;
+            replay_put(root, semantic, record, &mut inline_offsets).await?;
         }
         mutation_record::Operation::Delete(request) => {
             replay_effect(
@@ -1255,7 +1889,7 @@ async fn replay_operation(
         mutation_record::Operation::UploadPart(record) => {
             let header = required(record.header)?;
             let digest = parse_digest(&record.body_digest)?;
-            let segment_id = parse_digest(&record.segment_id)?;
+            let location = replayed_location(record.body, &mut inline_offsets)?;
             let length =
                 usize::try_from(record.body_length).map_err(|_| LocalObjectsError::Corrupt)?;
             replay_effect(
@@ -1269,25 +1903,29 @@ async fn replay_operation(
                             root: root.to_path_buf(),
                             digest,
                             length,
-                            location: LocalBodyLocation::Segment {
-                                id: segment_id,
-                                offset: record.segment_offset,
-                            },
+                            location,
                         },
                         idempotency(header.mutation),
                     )
                     .await,
             )?;
         }
-        mutation_record::Operation::CompleteMultipart(request) => {
+        mutation_record::Operation::CompleteMultipart(record) => {
+            let request = required(record.request)?;
+            let digest = if record.body_digest.is_empty() {
+                None
+            } else {
+                Some(parse_digest(&record.body_digest)?)
+            };
             replay_effect(
                 &semantic
-                    .complete_multipart(
+                    .complete_multipart_with_digest(
                         required(request.bucket)?,
                         request.object_key,
                         request.upload_id,
                         request.parts,
                         idempotency(request.mutation),
+                        digest,
                     )
                     .await,
             )?;
@@ -1309,9 +1947,13 @@ async fn replay_operation(
                 return Err(LocalObjectsError::Corrupt);
             }
             for record in batch.puts {
-                replay_put(root, semantic, record).await?;
+                replay_put(root, semantic, record, &mut inline_offsets).await?;
             }
         }
+    }
+    // Replay consumes exactly the offsets decoding authenticated.
+    if inline_offsets.next().is_some() {
+        return Err(LocalObjectsError::Corrupt);
     }
     Ok(())
 }
@@ -1330,14 +1972,12 @@ async fn replay_put(
     root: &Path,
     semantic: &MemoryObjects,
     record: PutRecord,
+    inline_offsets: &mut impl Iterator<Item = u64>,
 ) -> Result<(), LocalObjectsError> {
     let header = required(record.header)?;
     let digest = parse_digest(&record.body_digest)?;
     let length = usize::try_from(record.body_length).map_err(|_| LocalObjectsError::Corrupt)?;
-    let location = LocalBodyLocation::Segment {
-        id: parse_digest(&record.segment_id)?,
-        offset: record.segment_offset,
-    };
+    let location = replayed_location(record.body, inline_offsets)?;
     replay_effect(
         &semantic
             .put_external(
@@ -1441,41 +2081,77 @@ fn validate_header(
     Ok(())
 }
 
-fn append_frame(
+fn write_frame(
     journal: &mut File,
-    payload: &[u8],
+    frame: &[u8],
     durability: LocalDurability,
 ) -> std::io::Result<()> {
-    append_frame_with_sync(journal, payload, |file| sync_file_data(file, durability))
+    write_frame_with_sync(journal, frame, |file| sync_file_data(file, durability))
 }
 
-fn append_frame_with_sync(
+fn write_frame_with_sync(
     journal: &mut File,
-    payload: &[u8],
+    frame: &[u8],
     sync: impl FnOnce(&File) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
-    let frame = encode_frame(payload)?;
-    journal.write_all(&frame)?;
+    journal.write_all(frame)?;
     sync(journal)
 }
 
-fn encode_frame(payload: &[u8]) -> std::io::Result<Vec<u8>> {
-    let length = u32::try_from(payload.len())
-        .map_err(|_| std::io::Error::other("local mutation record is too large"))?;
-    let capacity = 36_usize
-        .checked_add(payload.len())
-        .ok_or_else(|| std::io::Error::other("local mutation record is too large"))?;
-    let mut frame = Vec::with_capacity(capacity);
-    frame.extend_from_slice(&length.to_le_bytes());
-    frame.extend_from_slice(blake3::hash(payload).as_bytes());
-    frame.extend_from_slice(payload);
+fn frame_checksum(lengths: &[u8; 8], record: &[u8], bodies: &[&[u8]]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(lengths);
+    hasher.update(record);
+    for body in bodies {
+        hasher.update(body);
+    }
+    *hasher.finalize().as_bytes()
+}
+
+/// Encodes one frame: the record and body-section lengths, a checksum over both lengths,
+/// the record, and the bodies, then the record and its inline bodies in record order.
+fn encode_frame(record: &[u8], bodies: &[&[u8]]) -> std::io::Result<Vec<u8>> {
+    let body_bytes = bodies
+        .iter()
+        .try_fold(0_usize, |total, body| total.checked_add(body.len()))
+        .filter(|bytes| *bytes <= MAXIMUM_FRAME_BODY_BYTES)
+        .ok_or_else(|| std::io::Error::other("local mutation bodies are too large"))?;
+    if record.is_empty() || record.len() > MAXIMUM_RECORD_BYTES {
+        return Err(std::io::Error::other(
+            "local mutation record is out of bounds",
+        ));
+    }
+    let mut lengths = [0_u8; 8];
+    let (record_length, body_length) = lengths.split_at_mut(4);
+    record_length.copy_from_slice(
+        &u32::try_from(record.len())
+            .map_err(|_| std::io::Error::other("local mutation record is too large"))?
+            .to_le_bytes(),
+    );
+    body_length.copy_from_slice(
+        &u32::try_from(body_bytes)
+            .map_err(|_| std::io::Error::other("local mutation bodies are too large"))?
+            .to_le_bytes(),
+    );
+    let checksum = frame_checksum(&lengths, record, bodies);
+    let mut frame = Vec::with_capacity(
+        (lengths.len() + checksum.len())
+            .saturating_add(record.len())
+            .saturating_add(body_bytes),
+    );
+    frame.extend_from_slice(&lengths);
+    frame.extend_from_slice(&checksum);
+    frame.extend_from_slice(record);
+    for body in bodies {
+        frame.extend_from_slice(body);
+    }
     Ok(frame)
 }
 
 #[cfg(test)]
-fn append_frame_with_fault(
+fn write_frame_with_fault(
     journal: &mut File,
-    payload: &[u8],
+    frame: &[u8],
     durability: LocalDurability,
     fault_after_bytes: u64,
 ) -> std::io::Result<()> {
@@ -1508,45 +2184,63 @@ fn append_frame_with_fault(
         file: journal,
         remaining: fault_after_bytes,
     };
-    let frame = encode_frame(payload)?;
-    writer.write_all(&frame)?;
+    writer.write_all(frame)?;
     if writer.remaining == 0 {
         return Err(std::io::Error::other("injected post-write journal failure"));
     }
     sync_file_data(writer.file, durability)
 }
 
-fn read_frame(
-    journal: &mut File,
-    frame_start: u64,
-    durability: LocalDurability,
-) -> Result<Option<Vec<u8>>, LocalObjectsError> {
-    let mut length = [0; 4];
-    if journal.read(&mut length[..1])? == 0 {
-        return Ok(None);
+/// One complete, checksummed journal frame.
+struct Frame {
+    record: Vec<u8>,
+    bodies: Vec<u8>,
+}
+
+impl Frame {
+    fn encoded_bytes(&self) -> u64 {
+        FRAME_HEADER_BYTES + self.record.len() as u64 + self.bodies.len() as u64
     }
-    if !read_exact_or_torn(journal, &mut length[1..])? {
-        journal.set_len(frame_start)?;
-        sync_file_data(journal, durability)?;
-        return Ok(None);
+}
+
+enum FrameRead {
+    Complete(Frame),
+    /// The journal ends inside this frame: a crash tore its append.
+    Torn,
+    End,
+}
+
+fn next_frame(reader: &mut impl Read) -> Result<FrameRead, LocalObjectsError> {
+    let mut lengths = [0_u8; 8];
+    if reader.read(&mut lengths[..1])? == 0 {
+        return Ok(FrameRead::End);
     }
-    let length = u32::from_le_bytes(length) as usize;
-    if length == 0 || length > MAXIMUM_RECORD_BYTES {
+    let mut checksum = [0_u8; 32];
+    if !read_exact_or_torn(reader, &mut lengths[1..])?
+        || !read_exact_or_torn(reader, &mut checksum)?
+    {
+        return Ok(FrameRead::Torn);
+    }
+    let [r0, r1, r2, r3, b0, b1, b2, b3] = lengths;
+    let record_length = usize::try_from(u32::from_le_bytes([r0, r1, r2, r3]))
+        .map_err(|_| LocalObjectsError::Corrupt)?;
+    let body_length = usize::try_from(u32::from_le_bytes([b0, b1, b2, b3]))
+        .map_err(|_| LocalObjectsError::Corrupt)?;
+    if record_length == 0
+        || record_length > MAXIMUM_RECORD_BYTES
+        || body_length > MAXIMUM_FRAME_BODY_BYTES
+    {
         return Err(LocalObjectsError::Corrupt);
     }
-    let mut checksum = [0; 32];
-    let mut payload = vec![0; length];
-    for part in [&mut checksum[..], &mut payload[..]] {
-        if !read_exact_or_torn(journal, part)? {
-            journal.set_len(frame_start)?;
-            sync_file_data(journal, durability)?;
-            return Ok(None);
-        }
+    let mut record = vec![0; record_length];
+    let mut bodies = vec![0; body_length];
+    if !read_exact_or_torn(reader, &mut record)? || !read_exact_or_torn(reader, &mut bodies)? {
+        return Ok(FrameRead::Torn);
     }
-    if blake3::hash(&payload).as_bytes() != &checksum {
+    if frame_checksum(&lengths, &record, &[&bodies]) != checksum {
         return Err(LocalObjectsError::Corrupt);
     }
-    Ok(Some(payload))
+    Ok(FrameRead::Complete(Frame { record, bodies }))
 }
 
 fn read_exact_or_torn(reader: &mut impl Read, bytes: &mut [u8]) -> std::io::Result<bool> {
@@ -1703,35 +2397,41 @@ fn validate_segment_file(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-struct ValidatedSegmentRecord {
-    digest: [u8; 32],
-    length: u64,
-}
+/// Authenticated body lengths of one segment, keyed by offset and digest: an empty body
+/// shares its offset with the body that follows it.
+type ValidatedSegmentRecords = BTreeMap<(u64, [u8; 32]), u64>;
 
+/// Authenticates every segment a live body references and returns their identities.
+///
+/// Journal-resident bodies were authenticated when replay decoded or an append wrote them.
+/// A live reclaimed body means compaction dropped bytes that were still reachable.
 fn validate_referenced_segments(
     root: &Path,
     bodies: &BTreeSet<LocalBodyReference>,
     maximum_object_bytes: u64,
-) -> Result<(), LocalObjectsError> {
+) -> Result<BTreeSet<[u8; 32]>, LocalObjectsError> {
     let mut validated_segments = BTreeMap::new();
     for body in bodies {
-        let LocalBodyLocation::Segment { id, offset } = &body.location;
+        let (id, offset) = match &body.location {
+            LocalBodyLocation::Segment { id, offset } => (id, offset),
+            LocalBodyLocation::Journal { .. } => continue,
+            LocalBodyLocation::Reclaimed => return Err(LocalObjectsError::Corrupt),
+        };
         if !validated_segments.contains_key(id) {
             let records =
                 validate_segment_records(&segment_path(root, id), id, maximum_object_bytes)?;
             validated_segments.insert(*id, records);
         }
         let expected_length = u64::try_from(body.length).map_err(|_| LocalObjectsError::Corrupt)?;
-        if !validated_segments.get(id).is_some_and(|records| {
-            records.get(offset).is_some_and(|record| {
-                record.digest == body.digest && record.length == expected_length
-            })
-        }) {
+        if validated_segments
+            .get(id)
+            .and_then(|records| records.get(&(*offset, body.digest)))
+            != Some(&expected_length)
+        {
             return Err(LocalObjectsError::Corrupt);
         }
     }
-    Ok(())
+    Ok(validated_segments.into_keys().collect())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1739,7 +2439,7 @@ fn validate_segment_records(
     path: &Path,
     expected_id: &[u8; 32],
     maximum_object_bytes: u64,
-) -> Result<BTreeMap<u64, ValidatedSegmentRecord>, LocalObjectsError> {
+) -> Result<ValidatedSegmentRecords, LocalObjectsError> {
     let mut file = File::open(path).map_err(|_| LocalObjectsError::Corrupt)?;
     let actual_length = file
         .metadata()
@@ -1797,10 +2497,7 @@ fn validate_segment_records(
         let offset = file
             .stream_position()
             .map_err(|_| LocalObjectsError::Corrupt)?;
-        if records
-            .insert(offset, ValidatedSegmentRecord { digest, length })
-            .is_some()
-        {
+        if records.insert((offset, digest), length).is_some() {
             return Err(LocalObjectsError::Corrupt);
         }
         body_bytes = body_bytes
@@ -1853,30 +2550,7 @@ fn collect_physical_garbage(
     let mut candidates = 0_u64;
     let mut temporary = Vec::new();
     let segments = scan_segments(root, maximum_candidates, &mut candidates, &mut temporary)?;
-    let live_segments = live_bodies
-        .iter()
-        .map(|body| match body.location {
-            LocalBodyLocation::Segment { id, .. } => id,
-        })
-        .collect::<BTreeSet<_>>();
-    let mut validated_segments = BTreeMap::new();
-    for id in &live_segments {
-        validated_segments.insert(
-            *id,
-            validate_segment_records(&segment_path(root, id), id, maximum_object_bytes)?,
-        );
-    }
-    for body in live_bodies {
-        let LocalBodyLocation::Segment { id, offset } = body.location;
-        let expected_length = u64::try_from(body.length).map_err(|_| LocalObjectsError::Corrupt)?;
-        if !validated_segments.get(&id).is_some_and(|records| {
-            records.get(&offset).is_some_and(|record| {
-                record.digest == body.digest && record.length == expected_length
-            })
-        }) {
-            return Err(LocalObjectsError::Corrupt);
-        }
-    }
+    let live_segments = validate_referenced_segments(root, live_bodies, maximum_object_bytes)?;
     let mut report = LocalObjectsGarbageCollection {
         segments_examined: u64::try_from(segments.len()).unwrap_or(u64::MAX),
         ..LocalObjectsGarbageCollection::default()
@@ -1979,10 +2653,21 @@ pub(crate) fn read_body_at(
     start: usize,
     end: usize,
 ) -> Result<bytes::Bytes, ObjectsError> {
-    let LocalBodyLocation::Segment { id, offset } = location;
     if start > end || end > expected_length {
         return Err(ObjectsError::Invalid("invalid range"));
     }
+    let (id, offset) = match location {
+        LocalBodyLocation::Segment { id, offset } => (id, offset),
+        LocalBodyLocation::Journal { offset } => {
+            let journal =
+                File::open(root.join(JOURNAL_FILE)).map_err(|_| ObjectsError::Unavailable)?;
+            return Ok(
+                read_journal_body(&journal, *offset, expected_digest, expected_length)?
+                    .slice(start..end),
+            );
+        }
+        LocalBodyLocation::Reclaimed => return Err(ObjectsError::Unavailable),
+    };
     let file = File::open(segment_path(root, id)).map_err(|_| ObjectsError::Unavailable)?;
     if !segment_record_matches(
         &file,
@@ -2009,10 +2694,23 @@ pub(crate) async fn read_body_at_async(
     start: usize,
     end: usize,
 ) -> Result<bytes::Bytes, ObjectsError> {
-    let LocalBodyLocation::Segment { id, offset } = location;
     if start > end || end > expected_length {
         return Err(ObjectsError::Invalid("invalid range"));
     }
+    let (id, offset) = match location {
+        LocalBodyLocation::Segment { id, offset } => (id, offset),
+        LocalBodyLocation::Journal { offset } => {
+            let (journal, offset, digest) = (root.join(JOURNAL_FILE), *offset, *expected_digest);
+            let body = acyclic_native_runtime::run_blocking_io(move || {
+                let journal = File::open(journal).map_err(|_| ObjectsError::Unavailable)?;
+                read_journal_body(&journal, offset, &digest, expected_length)
+            })
+            .await
+            .map_err(|_| ObjectsError::Unavailable)??;
+            return Ok(body.slice(start..end));
+        }
+        LocalBodyLocation::Reclaimed => return Err(ObjectsError::Unavailable),
+    };
     let segment = segment_path(root, id);
     let (file, file_length) = acyclic_native_runtime::run_blocking_io(move || {
         let file = File::open(segment)?;
@@ -2193,7 +2891,21 @@ pub(crate) fn hash_body_at(
     location: &LocalBodyLocation,
     hasher: &mut blake3::Hasher,
 ) -> Result<(), ObjectsError> {
-    let LocalBodyLocation::Segment { id, offset } = location;
+    let (id, offset) = match location {
+        LocalBodyLocation::Segment { id, offset } => (id, offset),
+        LocalBodyLocation::Journal { offset } => {
+            let journal =
+                File::open(root.join(JOURNAL_FILE)).map_err(|_| ObjectsError::Unavailable)?;
+            hasher.update(&read_journal_body(
+                &journal,
+                *offset,
+                expected_digest,
+                expected_length,
+            )?);
+            return Ok(());
+        }
+        LocalBodyLocation::Reclaimed => return Err(ObjectsError::Unavailable),
+    };
     let file = File::open(segment_path(root, id)).map_err(|_| ObjectsError::Unavailable)?;
     if !segment_record_matches(
         &file,
@@ -2219,6 +2931,60 @@ pub(crate) fn hash_body_at(
         hasher.update(buffer.get(..read).ok_or(ObjectsError::Unavailable)?);
     }
     Ok(())
+}
+
+/// Reads one whole journal-resident body and proves it matches its digest. Inline bodies are
+/// small, so every read of one, ranged or not, is authenticated.
+fn read_journal_body(
+    journal: &File,
+    offset: u64,
+    expected_digest: &[u8; 32],
+    expected_length: usize,
+) -> Result<bytes::Bytes, ObjectsError> {
+    if expected_length > MAXIMUM_INLINE_BODY_BYTES {
+        return Err(ObjectsError::Unavailable);
+    }
+    let mut body = vec![0_u8; expected_length];
+    read_exact_at_unsequenced(journal, offset, &mut body)?;
+    if blake3::hash(&body).as_bytes() != expected_digest {
+        return Err(ObjectsError::Unavailable);
+    }
+    Ok(body.into())
+}
+
+/// Positional read outside the native per-file operation sequencer. An inline body never
+/// changes once its frame is appended, so its read must not queue behind the flush of a
+/// later append to the same journal.
+fn read_exact_at_unsequenced(
+    file: &File,
+    offset: u64,
+    bytes: &mut [u8],
+) -> Result<(), ObjectsError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt as _;
+        file.read_exact_at(bytes, offset)
+            .map_err(|_| ObjectsError::Unavailable)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt as _;
+        let mut offset = offset;
+        let mut bytes = bytes;
+        while !bytes.is_empty() {
+            let count = file
+                .seek_read(bytes, offset)
+                .map_err(|_| ObjectsError::Unavailable)?;
+            if count == 0 {
+                return Err(ObjectsError::Unavailable);
+            }
+            offset = offset
+                .checked_add(count as u64)
+                .ok_or(ObjectsError::Unavailable)?;
+            bytes = bytes.get_mut(count..).ok_or(ObjectsError::Unavailable)?;
+        }
+        Ok(())
+    }
 }
 
 fn segment_path(root: &Path, id: &[u8; 32]) -> PathBuf {
@@ -2289,6 +3055,47 @@ fn sync_parent(path: &Path, durability: LocalDurability) -> Result<(), LocalObje
 mod tests {
     use super::*;
 
+    fn small_put(bucket: &wire::BucketRef, key: &str, body: &'static [u8]) -> PutRequest {
+        PutRequest {
+            bucket: bucket.clone(),
+            object_key: key.into(),
+            body: bytes::Bytes::from_static(body),
+            metadata: wire::ObjectMetadata::default(),
+            condition: None,
+            idempotency_key: None,
+        }
+    }
+
+    /// A body one byte above the inline bound, so it is published as a segment.
+    fn segment_body(fill: u8) -> bytes::Bytes {
+        bytes::Bytes::from(vec![fill; MAXIMUM_INLINE_BODY_BYTES + 1])
+    }
+
+    /// Every complete frame of a journal file: its start and its record and body ranges.
+    fn journal_frames(
+        journal: &[u8],
+    ) -> Vec<(usize, std::ops::Range<usize>, std::ops::Range<usize>)> {
+        let mut frames = Vec::new();
+        let mut cursor = usize::try_from(JOURNAL_HEADER_BYTES).unwrap_or_else(|_| unreachable!());
+        while cursor < journal.len() {
+            let length = |at: usize| {
+                journal
+                    .get(at..at + 4)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .map(u32::from_le_bytes)
+                    .and_then(|length| usize::try_from(length).ok())
+                    .unwrap_or_else(|| unreachable!())
+            };
+            let record_start = cursor + usize::try_from(FRAME_HEADER_BYTES).unwrap_or_default();
+            let bodies_start = record_start + length(cursor);
+            let frame_end = bodies_start + length(cursor + 4);
+            frames.push((cursor, record_start..bodies_start, bodies_start..frame_end));
+            cursor = frame_end;
+        }
+        assert_eq!(cursor, journal.len());
+        frames
+    }
+
     #[test]
     fn cancelled_background_work_retains_ownership_until_physical_io_stops()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2299,7 +3106,11 @@ mod tests {
             .build()?;
 
         runtime.block_on(async move {
-            for operation in [BlockingWork::PersistSegment, BlockingWork::CollectGarbage] {
+            for operation in [
+                BlockingWork::PersistSegment,
+                BlockingWork::CompactJournal,
+                BlockingWork::CollectGarbage,
+            ] {
                 let root = tempfile::tempdir()?;
                 let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
                 let ownership = Arc::clone(&lifecycle).lock_owned().await;
@@ -2309,6 +3120,15 @@ mod tests {
                     OwnershipAnchor::new(ownership),
                 )
                 .await?;
+                if operation == BlockingWork::CompactJournal {
+                    // Leave inline bytes for garbage collection to compact.
+                    let bucket = provider
+                        .create_bucket("compacted".into(), None)
+                        .await?
+                        .bucket
+                        .ok_or("bucket reference")?;
+                    provider.put(small_put(&bucket, "inline", b"x")).await?;
+                }
                 let (started_tx, started_rx) = tokio::sync::oneshot::channel();
                 let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
                 *provider
@@ -2334,8 +3154,8 @@ mod tests {
                                     )])
                                     .await;
                             }
-                            BlockingWork::CollectGarbage => {
-                                let _ = provider.collect_garbage(1).await;
+                            BlockingWork::CompactJournal | BlockingWork::CollectGarbage => {
+                                let _ = provider.collect_garbage(16).await;
                             }
                         }
                     }
@@ -2344,7 +3164,7 @@ mod tests {
                 started_rx.await?;
                 work.abort();
                 assert!(work.await.is_err_and(|error| error.is_cancelled()));
-                if operation == BlockingWork::CollectGarbage {
+                if operation != BlockingWork::PersistSegment {
                     assert!(
                         Arc::clone(&provider.body_io).try_read_owned().is_err(),
                         "cancelled garbage collection must keep body publication fenced"
@@ -2811,7 +3631,7 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|_| unreachable!());
             std::mem::replace(
-                &mut *journal,
+                &mut journal.file,
                 File::open(journal_path).unwrap_or_else(|_| unreachable!()),
             )
         };
@@ -2819,11 +3639,12 @@ mod tests {
             provider.create_bucket("faulted".into(), None).await,
             Err(ObjectsError::Unavailable)
         );
-        *provider
+        provider
             .persistence
             .journal
             .lock()
-            .unwrap_or_else(|_| unreachable!()) = writable;
+            .unwrap_or_else(|_| unreachable!())
+            .file = writable;
         assert_eq!(
             provider.create_bucket("after-fault".into(), None).await,
             Err(ObjectsError::Unavailable)
@@ -2855,14 +3676,17 @@ mod tests {
             )),
         }
         .encode_to_vec();
-        let frame_bytes = 36 + payload.len();
+        let frame_bytes = encode_frame(&payload, &[])
+            .unwrap_or_else(|_| unreachable!())
+            .len();
         for offset in [
             0,
             2,
             4,
+            8,
             20,
-            36,
-            37,
+            40,
+            41,
             frame_bytes / 2,
             frame_bytes - 1,
             frame_bytes,
@@ -3133,14 +3957,7 @@ mod tests {
             )),
         }
         .encode_to_vec();
-        let mut frame = Vec::with_capacity(36 + payload.len());
-        frame.extend_from_slice(
-            &u32::try_from(payload.len())
-                .unwrap_or_else(|_| unreachable!())
-                .to_le_bytes(),
-        );
-        frame.extend_from_slice(blake3::hash(&payload).as_bytes());
-        frame.extend_from_slice(&payload);
+        let frame = encode_frame(&payload, &[]).unwrap_or_else(|_| unreachable!());
 
         for prefix in 1..frame.len() {
             let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
@@ -3239,9 +4056,9 @@ mod tests {
             .open(journal_path)
             .unwrap_or_else(|_| unreachable!());
         journal
-            .write_all(&encode_frame(&invalid).unwrap_or_else(|_| unreachable!()))
+            .write_all(&encode_frame(&invalid, &[]).unwrap_or_else(|_| unreachable!()))
             .unwrap_or_else(|_| unreachable!());
-        let valid = encode_frame(&valid).unwrap_or_else(|_| unreachable!());
+        let valid = encode_frame(&valid, &[]).unwrap_or_else(|_| unreachable!());
         for _ in 0..REPLAY_PIPELINE_RECORDS * 4 {
             journal.write_all(&valid).unwrap_or_else(|_| unreachable!());
         }
@@ -3497,7 +4314,7 @@ mod tests {
                 "object".into(),
                 upload.upload_id.clone(),
                 1,
-                bytes::Bytes::from_static(b"multipart body"),
+                segment_body(8),
                 None,
             )
             .await
@@ -3524,7 +4341,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oversized_public_batch_is_partitioned_into_bounded_segments() {
+    async fn oversized_public_batch_is_partitioned_into_bounded_frames() {
         let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
         let limits = LocalObjectsLimits::default();
         let provider = LocalObjects::open(root.path(), limits)
@@ -3547,27 +4364,37 @@ mod tests {
             })
             .collect();
         assert!(provider.put_batch(requests).await.iter().all(Result::is_ok));
+        drop(provider);
 
-        let segments = scan_segments(root.path(), 16, &mut 0, &mut Vec::new())
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(segments.len(), 2);
-        let mut record_counts = segments
+        let journal = fs::read(root.path().join(JOURNAL_FILE)).unwrap_or_else(|_| unreachable!());
+        let batch_sizes = journal_frames(&journal)
             .into_iter()
-            .map(|(id, path)| {
-                validate_segment_records(&path, &id, limits.maximum_object_bytes)
-                    .unwrap_or_else(|_| unreachable!())
-                    .len()
+            .filter_map(|(_, record, _)| {
+                match MutationRecord::decode(journal.get(record)?)
+                    .ok()?
+                    .operation?
+                {
+                    mutation_record::Operation::PutBatch(batch) => Some(batch.puts.len()),
+                    _ => None,
+                }
             })
             .collect::<Vec<_>>();
-        record_counts.sort_unstable();
-        assert_eq!(record_counts, [1, MAXIMUM_SEGMENT_BODIES]);
+        assert_eq!(batch_sizes, [MAXIMUM_SEGMENT_BODIES, 1]);
+        assert_eq!(
+            fs::read_dir(root.path().join("segments"))
+                .unwrap_or_else(|_| unreachable!())
+                .count(),
+            0,
+            "small bodies ride in their batch frames"
+        );
     }
 
     #[tokio::test]
     async fn invalid_large_body_never_shares_a_live_segment() {
         let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
         let limits = LocalObjectsLimits {
-            maximum_object_bytes: 4,
+            maximum_object_bytes: u64::try_from(MAXIMUM_INLINE_BODY_BYTES + 1)
+                .unwrap_or_else(|_| unreachable!()),
             ..LocalObjectsLimits::default()
         };
         let provider = LocalObjects::open(root.path(), limits)
@@ -3582,20 +4409,14 @@ mod tests {
         let results = provider
             .put_batch(vec![
                 PutRequest {
-                    bucket: bucket.clone(),
-                    object_key: "invalid".into(),
-                    body: bytes::Bytes::from_static(b"too large"),
-                    metadata: wire::ObjectMetadata::default(),
+                    body: vec![1; MAXIMUM_INLINE_BODY_BYTES + 2].into(),
                     condition: Some(Condition::IfAbsent),
-                    idempotency_key: None,
+                    ..small_put(&bucket, "invalid", b"")
                 },
                 PutRequest {
-                    bucket,
-                    object_key: "valid".into(),
-                    body: bytes::Bytes::from_static(b"ok"),
-                    metadata: wire::ObjectMetadata::default(),
+                    body: segment_body(2),
                     condition: Some(Condition::IfAbsent),
-                    idempotency_key: None,
+                    ..small_put(&bucket, "valid", b"")
                 },
             ])
             .await;
@@ -3635,10 +4456,13 @@ mod tests {
             .unwrap_or_else(|_| unreachable!())
             .bucket
             .unwrap_or_else(|| unreachable!());
-        let bodies = [
-            bytes::Bytes::from_static(b"first segmented body"),
-            bytes::Bytes::from_static(b"second segmented body"),
-        ];
+        let bodies = [b"first segmented body".as_slice(), b"second segmented body"].map(|prefix| {
+            let mut body = segment_body(0).to_vec();
+            body.get_mut(..prefix.len())
+                .unwrap_or_else(|| unreachable!())
+                .copy_from_slice(prefix);
+            bytes::Bytes::from(body)
+        });
         let requests = bodies
             .iter()
             .enumerate()
@@ -3730,7 +4554,7 @@ mod tests {
             .unwrap_or_else(|_| unreachable!())
             .bucket
             .unwrap_or_else(|| unreachable!());
-        let body = bytes::Bytes::from_static(b"one shared physical body");
+        let body = segment_body(3);
         let before = provider
             .persistence
             .journal_operations
@@ -3866,7 +4690,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::too_many_lines)]
     async fn truncated_segment_with_live_empty_body_fails_reopen() {
         let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
         let limits = LocalObjectsLimits::default();
@@ -3881,25 +4704,16 @@ mod tests {
             .unwrap_or_else(|| unreachable!());
         let results = provider
             .put_batch(vec![
-                PutRequest {
-                    bucket: bucket.clone(),
-                    object_key: "empty".into(),
-                    body: bytes::Bytes::new(),
-                    metadata: wire::ObjectMetadata::default(),
-                    condition: None,
-                    idempotency_key: None,
-                },
-                PutRequest {
-                    bucket,
-                    object_key: "nonempty".into(),
-                    body: bytes::Bytes::from_static(b"body"),
-                    metadata: wire::ObjectMetadata::default(),
-                    condition: None,
-                    idempotency_key: None,
-                },
+                small_put(&bucket, "empty", b""),
+                small_put(&bucket, "nonempty", b"body"),
             ])
             .await;
         assert!(results.iter().all(Result::is_ok));
+        // Compaction relocates both inline bodies into one segment.
+        provider
+            .collect_garbage(16)
+            .await
+            .unwrap_or_else(|_| unreachable!());
         let empty = provider
             .semantic
             .local_body_references()
@@ -3907,7 +4721,9 @@ mod tests {
             .into_iter()
             .find(|body| body.length == 0)
             .unwrap_or_else(|| unreachable!());
-        let LocalBodyLocation::Segment { id, .. } = empty.location;
+        let LocalBodyLocation::Segment { id, .. } = empty.location else {
+            unreachable!()
+        };
         assert!(
             read_body_at(
                 root.path(),
@@ -3921,17 +4737,11 @@ mod tests {
         );
         drop(provider);
 
-        let segment = fs::read_dir(root.path().join("segments"))
-            .unwrap_or_else(|_| unreachable!())
-            .next()
-            .unwrap_or_else(|| unreachable!())
-            .unwrap_or_else(|_| unreachable!())
-            .path();
         let empty_record_end = u64::try_from(SEGMENT_HEADER_BYTES + 2 * SEGMENT_RECORD_BYTES)
             .unwrap_or_else(|_| unreachable!());
         OpenOptions::new()
             .write(true)
-            .open(segment)
+            .open(segment_path(root.path(), &id))
             .unwrap_or_else(|_| unreachable!())
             .set_len(empty_record_end)
             .unwrap_or_else(|_| unreachable!());
@@ -3956,65 +4766,53 @@ mod tests {
             .unwrap_or_else(|| unreachable!());
         let results = provider
             .put_batch(vec![
+                small_put(&bucket, "empty", b""),
                 PutRequest {
-                    bucket: bucket.clone(),
-                    object_key: "empty".into(),
-                    body: bytes::Bytes::new(),
-                    metadata: wire::ObjectMetadata::default(),
-                    condition: None,
-                    idempotency_key: None,
-                },
-                PutRequest {
-                    bucket,
-                    object_key: "body".into(),
-                    body: bytes::Bytes::from_static(b"body"),
-                    metadata: wire::ObjectMetadata::default(),
-                    condition: None,
-                    idempotency_key: None,
+                    body: segment_body(1),
+                    ..small_put(&bucket, "body", b"")
                 },
             ])
             .await;
         assert!(results.iter().all(Result::is_ok));
         drop(provider);
 
-        let journal_path = root.path().join("mutations.log");
+        let journal_path = root.path().join(JOURNAL_FILE);
         let original = fs::read(&journal_path).unwrap_or_else(|_| unreachable!());
-        let mut cursor = usize::try_from(JOURNAL_HEADER_BYTES).unwrap_or_else(|_| unreachable!());
-        let mut last_frame = None;
-        while cursor < original.len() {
-            let length = original
-                .get(cursor..cursor + 4)
-                .and_then(|bytes| bytes.try_into().ok())
-                .map(u32::from_le_bytes)
-                .and_then(|length| usize::try_from(length).ok())
-                .unwrap_or_else(|| unreachable!());
-            let payload_start = cursor + 36;
-            let frame_end = payload_start + length;
-            last_frame = Some((cursor, payload_start, frame_end));
-            cursor = frame_end;
-        }
-        assert_eq!(cursor, original.len());
-        let (frame_start, payload_start, frame_end) = last_frame.unwrap_or_else(|| unreachable!());
-        let mut record = MutationRecord::decode(
-            original
-                .get(payload_start..frame_end)
-                .unwrap_or_else(|| unreachable!()),
-        )
-        .unwrap_or_else(|_| unreachable!());
+        let (frame_start, record_range, bodies_range) = journal_frames(&original)
+            .pop()
+            .unwrap_or_else(|| unreachable!());
+        assert!(
+            bodies_range.is_empty(),
+            "an empty body adds no inline bytes"
+        );
+        let mut record =
+            MutationRecord::decode(original.get(record_range).unwrap_or_else(|| unreachable!()))
+                .unwrap_or_else(|_| unreachable!());
         let Some(mutation_record::Operation::PutBatch(batch)) = record.operation.as_mut() else {
             unreachable!();
         };
+        let segment = batch
+            .puts
+            .iter()
+            .find_map(|put| match &put.body {
+                Some(stored_body::Location::Segment(segment)) => Some(segment.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| unreachable!());
         let empty = batch
             .puts
             .iter_mut()
             .find(|put| put.body_length == 0)
             .unwrap_or_else(|| unreachable!());
-        empty.segment_offset = 0;
+        empty.body = Some(stored_body::Location::Segment(SegmentBody {
+            offset: 0,
+            ..segment
+        }));
         let mut forged = original
             .get(..frame_start)
             .unwrap_or_else(|| unreachable!())
             .to_vec();
-        let frame = encode_frame(&record.encode_to_vec()).unwrap_or_else(|_| unreachable!());
+        let frame = encode_frame(&record.encode_to_vec(), &[]).unwrap_or_else(|_| unreachable!());
         forged.write_all(&frame).unwrap_or_else(|_| unreachable!());
         fs::write(journal_path, forged).unwrap_or_else(|_| unreachable!());
         assert!(matches!(
@@ -4036,7 +4834,10 @@ mod tests {
             replay_operation(
                 root.path(),
                 &semantic,
-                mutation_record::Operation::PutBatch(oversized_count),
+                ReplayRecord {
+                    operation: mutation_record::Operation::PutBatch(oversized_count),
+                    inline_offsets: Vec::new(),
+                },
             )
             .await,
             Err(LocalObjectsError::Corrupt)
@@ -4053,7 +4854,10 @@ mod tests {
             replay_operation(
                 root.path(),
                 &semantic,
-                mutation_record::Operation::PutBatch(oversized_bytes),
+                ReplayRecord {
+                    operation: mutation_record::Operation::PutBatch(oversized_bytes),
+                    inline_offsets: Vec::new(),
+                },
             )
             .await,
             Err(LocalObjectsError::Corrupt)
@@ -4132,6 +4936,984 @@ mod tests {
                 .unwrap_or_else(|_| unreachable!())
                 .count(),
             0
+        );
+    }
+
+    async fn read_object(
+        provider: &LocalObjects,
+        target: ReadTarget,
+        key: &str,
+        range: Option<(u64, Option<u64>)>,
+    ) -> Result<bytes::Bytes, ObjectsError> {
+        provider
+            .get(GetRequest {
+                target,
+                object_key: key.into(),
+                version_id: None,
+                range,
+                if_match: None,
+                if_none_match: None,
+                maximum_bytes: u64::MAX,
+            })
+            .await
+            .map(|object| object.body)
+    }
+
+    fn segment_count(root: &Path) -> usize {
+        fs::read_dir(root.join("segments"))
+            .unwrap_or_else(|_| unreachable!())
+            .count()
+    }
+
+    fn inline_bytes(provider: &LocalObjects) -> u64 {
+        provider
+            .persistence
+            .journal
+            .lock()
+            .unwrap_or_else(|_| unreachable!())
+            .inline_bytes
+    }
+
+    #[tokio::test]
+    async fn small_bodies_commit_in_one_journal_frame_without_segments() {
+        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let limits = LocalObjectsLimits::default();
+        let provider = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let bucket = provider
+            .create_bucket("inline".into(), None)
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .bucket
+            .unwrap_or_else(|| unreachable!());
+        let largest_inline = bytes::Bytes::from(
+            (0..MAXIMUM_INLINE_BODY_BYTES)
+                .map(|index| u8::try_from(index % 251).unwrap_or_default())
+                .collect::<Vec<_>>(),
+        );
+        let journal_path = root.path().join(JOURNAL_FILE);
+        for (key, body) in [
+            ("empty", bytes::Bytes::new()),
+            ("small", bytes::Bytes::from_static(b"small inline body")),
+            ("largest", largest_inline.clone()),
+        ] {
+            let before = fs::metadata(&journal_path)
+                .unwrap_or_else(|_| unreachable!())
+                .len();
+            provider
+                .put(PutRequest {
+                    body: body.clone(),
+                    ..small_put(&bucket, key, b"")
+                })
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            let journal = fs::read(&journal_path).unwrap_or_else(|_| unreachable!());
+            let (start, _, bodies) = journal_frames(&journal)
+                .pop()
+                .unwrap_or_else(|| unreachable!());
+            assert_eq!(start as u64, before, "{key} appends exactly one frame");
+            assert_eq!(journal.get(bodies), Some(body.as_ref()), "{key}");
+        }
+        assert_eq!(segment_count(root.path()), 0);
+        assert_eq!(
+            inline_bytes(&provider),
+            u64::try_from(17 + MAXIMUM_INLINE_BODY_BYTES).unwrap_or_default()
+        );
+
+        provider
+            .put(PutRequest {
+                body: segment_body(9),
+                ..small_put(&bucket, "segmented", b"")
+            })
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(segment_count(root.path()), 1, "one byte over the bound");
+        drop(provider);
+
+        let reopened = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let target = ReadTarget::Bucket(bucket);
+        assert_eq!(
+            read_object(&reopened, target.clone(), "empty", None).await,
+            Ok(bytes::Bytes::new())
+        );
+        assert_eq!(
+            read_object(&reopened, target.clone(), "small", Some((6, Some(11)))).await,
+            Ok(bytes::Bytes::from_static(b"inline"))
+        );
+        assert_eq!(
+            read_object(&reopened, target.clone(), "largest", None).await,
+            Ok(largest_inline)
+        );
+        assert_eq!(
+            read_object(&reopened, target, "segmented", None).await,
+            Ok(segment_body(9))
+        );
+    }
+
+    #[tokio::test]
+    async fn inline_reads_use_their_offset_and_authenticate_the_body() {
+        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let limits = LocalObjectsLimits::default();
+        let provider = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let bucket = provider
+            .create_bucket("indexed".into(), None)
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .bucket
+            .unwrap_or_else(|| unreachable!());
+        provider
+            .put(small_put(&bucket, "indexed", b"indexed inline body"))
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let body = provider
+            .semantic
+            .local_body_references()
+            .await
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| unreachable!());
+        let LocalBodyLocation::Journal { offset } = body.location else {
+            unreachable!()
+        };
+        let journal_path = root.path().join(JOURNAL_FILE);
+        let journal = fs::read(&journal_path).unwrap_or_else(|_| unreachable!());
+        let (_, _, bodies) = journal_frames(&journal)
+            .pop()
+            .unwrap_or_else(|| unreachable!());
+        assert_eq!(
+            offset, bodies.start as u64,
+            "the index names the exact bytes"
+        );
+
+        // Flip one body byte in place: the read authenticates the whole body.
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&journal_path)
+            .unwrap_or_else(|_| unreachable!());
+        let flipped = journal
+            .get(bodies.start)
+            .copied()
+            .unwrap_or_else(|| unreachable!())
+            ^ 1;
+        acyclic_native_runtime::write_all_at(&file, offset, &[flipped])
+            .unwrap_or_else(|_| unreachable!());
+        drop(file);
+        assert_eq!(
+            read_object(
+                &provider,
+                ReadTarget::Bucket(bucket),
+                "indexed",
+                Some((8, Some(13)))
+            )
+            .await,
+            Err(ObjectsError::Unavailable)
+        );
+        drop(provider);
+        assert!(matches!(
+            LocalObjects::open(root.path(), limits).await,
+            Err(LocalObjectsError::Corrupt)
+        ));
+    }
+
+    #[tokio::test]
+    async fn power_loss_inside_an_inline_put_recovers_at_every_byte() {
+        let template = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let limits = LocalObjectsLimits::default();
+        let provider = LocalObjects::open(template.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let bucket = provider
+            .create_bucket("torn-inline".into(), None)
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .bucket
+            .unwrap_or_else(|| unreachable!());
+        provider
+            .put(small_put(
+                &bucket,
+                "before",
+                b"acknowledged before the tear",
+            ))
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        provider
+            .put(small_put(&bucket, "torn", b"torn inline body"))
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        drop(provider);
+        let journal =
+            fs::read(template.path().join(JOURNAL_FILE)).unwrap_or_else(|_| unreachable!());
+        let (frame_start, _, bodies) = journal_frames(&journal)
+            .pop()
+            .unwrap_or_else(|| unreachable!());
+        assert_eq!(bodies.end, journal.len());
+
+        for surviving in frame_start..=journal.len() {
+            let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+            fs::create_dir(root.path().join("segments")).unwrap_or_else(|_| unreachable!());
+            fs::write(
+                root.path().join(JOURNAL_FILE),
+                journal.get(..surviving).unwrap_or_else(|| unreachable!()),
+            )
+            .unwrap_or_else(|_| unreachable!());
+            let recovered = LocalObjects::open(root.path(), limits)
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            let target = ReadTarget::Bucket(bucket.clone());
+            assert_eq!(
+                read_object(&recovered, target.clone(), "before", None).await,
+                Ok(bytes::Bytes::from_static(b"acknowledged before the tear")),
+                "surviving {surviving}"
+            );
+            let torn = read_object(&recovered, target.clone(), "torn", None).await;
+            if surviving == journal.len() {
+                assert_eq!(torn, Ok(bytes::Bytes::from_static(b"torn inline body")));
+            } else {
+                assert_eq!(torn, Err(ObjectsError::NotFound), "surviving {surviving}");
+                assert_eq!(
+                    fs::metadata(root.path().join(JOURNAL_FILE))
+                        .unwrap_or_else(|_| unreachable!())
+                        .len(),
+                    frame_start as u64,
+                    "recovery removes the torn frame"
+                );
+            }
+            recovered
+                .put(small_put(&bucket, "after", b"after recovery"))
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            drop(recovered);
+            let reopened = LocalObjects::open(root.path(), limits)
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            assert_eq!(
+                read_object(&reopened, target, "after", None).await,
+                Ok(bytes::Bytes::from_static(b"after recovery")),
+                "surviving {surviving}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_inline_append_at_every_byte_fails_closed_until_reopen() {
+        let probe = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let limits = LocalObjectsLimits::default();
+        let body = b"inline body under fault";
+        let frame_bytes = {
+            let provider = LocalObjects::open(probe.path(), limits)
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            let bucket = provider
+                .create_bucket("faulted-inline".into(), None)
+                .await
+                .unwrap_or_else(|_| unreachable!())
+                .bucket
+                .unwrap_or_else(|| unreachable!());
+            provider
+                .put(small_put(&bucket, "faulted", body))
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            let journal =
+                fs::read(probe.path().join(JOURNAL_FILE)).unwrap_or_else(|_| unreachable!());
+            let (start, _, bodies) = journal_frames(&journal)
+                .pop()
+                .unwrap_or_else(|| unreachable!());
+            bodies.end - start
+        };
+        for offset in 0..=frame_bytes {
+            let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+            let provider = LocalObjects::open(root.path(), limits)
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            let bucket = provider
+                .create_bucket("faulted-inline".into(), None)
+                .await
+                .unwrap_or_else(|_| unreachable!())
+                .bucket
+                .unwrap_or_else(|| unreachable!());
+            provider
+                .persistence
+                .fault_after_bytes
+                .store(offset as u64, Ordering::Release);
+            assert_eq!(
+                provider.put(small_put(&bucket, "faulted", body)).await,
+                Err(ObjectsError::Unavailable),
+                "offset {offset}"
+            );
+            assert_eq!(
+                read_object(
+                    &provider,
+                    ReadTarget::Bucket(bucket.clone()),
+                    "faulted",
+                    None
+                )
+                .await,
+                Err(ObjectsError::Unavailable),
+                "offset {offset}"
+            );
+            drop(provider);
+            let recovered = LocalObjects::open(root.path(), limits)
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            // A complete frame whose flush failed may survive; a partial one never does.
+            let expected = if offset == frame_bytes {
+                Ok(bytes::Bytes::from_static(body))
+            } else {
+                Err(ObjectsError::NotFound)
+            };
+            assert_eq!(
+                read_object(&recovered, ReadTarget::Bucket(bucket), "faulted", None).await,
+                expected,
+                "offset {offset}"
+            );
+            assert_eq!(segment_count(root.path()), 0);
+        }
+    }
+
+    struct CompactionFixture {
+        root: tempfile::TempDir,
+        bucket: wire::BucketRef,
+        snapshot: wire::SnapshotRef,
+        dead_body: &'static [u8],
+    }
+
+    /// Large enough that reclaiming it outweighs the segment references compaction adds.
+    static DEAD_BODY: [u8; 4_096] = [0xde; 4_096];
+
+    const LIVE_BODIES: [(&str, &[u8]); 3] = [
+        ("first", b"first live inline body"),
+        ("second", b"second live inline body"),
+        ("duplicate", b"first live inline body"),
+    ];
+
+    /// Live inline bodies, a snapshot-only inline body, a dead inline body, an empty body,
+    /// and a segment body.
+    async fn compaction_fixture(limits: LocalObjectsLimits) -> (LocalObjects, CompactionFixture) {
+        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let provider = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let bucket = provider
+            .create_bucket("compaction".into(), None)
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .bucket
+            .unwrap_or_else(|| unreachable!());
+        for (key, body) in LIVE_BODIES {
+            provider
+                .put(small_put(&bucket, key, body))
+                .await
+                .unwrap_or_else(|_| unreachable!());
+        }
+        let results = provider
+            .put_batch(vec![
+                small_put(&bucket, "empty", b""),
+                small_put(&bucket, "snapshotted", b"only a snapshot keeps this"),
+                PutRequest {
+                    body: segment_body(4),
+                    ..small_put(&bucket, "segmented", b"")
+                },
+            ])
+            .await;
+        assert!(results.iter().all(Result::is_ok));
+        let snapshot = provider
+            .snapshot(bucket.clone(), None)
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .snapshot
+            .unwrap_or_else(|| unreachable!());
+        let snapshotted = results
+            .get(1)
+            .cloned()
+            .unwrap_or_else(|| unreachable!())
+            .unwrap_or_else(|_| unreachable!());
+        provider
+            .delete(
+                bucket.clone(),
+                "snapshotted".into(),
+                Some(snapshotted.version_id),
+                None,
+                None,
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let dead_body = &DEAD_BODY;
+        let dead = provider
+            .put(small_put(&bucket, "dead", dead_body))
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        provider
+            .delete(
+                bucket.clone(),
+                "dead".into(),
+                Some(dead.version_id),
+                None,
+                None,
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        (
+            provider,
+            CompactionFixture {
+                root,
+                bucket,
+                snapshot,
+                dead_body,
+            },
+        )
+    }
+
+    async fn assert_compaction_fixture(provider: &LocalObjects, fixture: &CompactionFixture) {
+        let bucket = ReadTarget::Bucket(fixture.bucket.clone());
+        for (key, body) in LIVE_BODIES {
+            assert_eq!(
+                read_object(provider, bucket.clone(), key, None).await,
+                Ok(bytes::Bytes::from_static(body)),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            read_object(provider, bucket.clone(), "empty", None).await,
+            Ok(bytes::Bytes::new())
+        );
+        assert_eq!(
+            read_object(provider, bucket.clone(), "segmented", Some((1, Some(3)))).await,
+            Ok(bytes::Bytes::from_static(&[4; 3]))
+        );
+        for key in ["snapshotted", "dead"] {
+            assert_eq!(
+                read_object(provider, bucket.clone(), key, None).await,
+                Err(ObjectsError::NotFound),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            read_object(
+                provider,
+                ReadTarget::Snapshot(fixture.snapshot.clone()),
+                "snapshotted",
+                None
+            )
+            .await,
+            Ok(bytes::Bytes::from_static(b"only a snapshot keeps this"))
+        );
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
+    #[tokio::test]
+    async fn compaction_relocates_live_inline_bodies_and_reclaims_the_rest() {
+        let limits = LocalObjectsLimits::default();
+        let (provider, fixture) = compaction_fixture(limits).await;
+        let root = fixture.root.path();
+        let journal_path = root.join(JOURNAL_FILE);
+        let before = fs::read(&journal_path).unwrap_or_else(|_| unreachable!());
+        assert!(contains(&before, fixture.dead_body));
+        assert_eq!(segment_count(root), 1);
+
+        let report = provider
+            .collect_garbage(16)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let after = fs::read(&journal_path).unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            report.journal_bytes_reclaimed,
+            (before.len() - after.len()) as u64
+        );
+        assert!(report.journal_bytes_reclaimed > 0);
+        assert_eq!(inline_bytes(&provider), 0);
+        assert!(!contains(&after, fixture.dead_body), "dead bytes are gone");
+        assert!(
+            journal_frames(&after)
+                .into_iter()
+                .all(|(_, _, bodies)| bodies.is_empty())
+        );
+        assert_eq!(
+            journal_frames(&after).len(),
+            journal_frames(&before).len(),
+            "every record keeps its place"
+        );
+        // The original segment plus one holding the live inline bodies, one copy per digest.
+        assert_eq!(report.segments_removed, 0);
+        assert_eq!(segment_count(root), 2);
+        assert!(
+            provider
+                .semantic
+                .local_body_references()
+                .await
+                .iter()
+                .all(|body| matches!(body.location, LocalBodyLocation::Segment { .. }))
+        );
+        assert_compaction_fixture(&provider, &fixture).await;
+
+        // A second collection has nothing inline left to compact.
+        let again = provider
+            .collect_garbage(16)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(again.journal_bytes_reclaimed, 0);
+        assert_eq!(fs::read(&journal_path).ok(), Some(after));
+        drop(provider);
+
+        let reopened = LocalObjects::open(root, limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(inline_bytes(&reopened), 0);
+        assert_compaction_fixture(&reopened, &fixture).await;
+        // Puts after compaction still land inline, and the store keeps compacting.
+        reopened
+            .put(small_put(&fixture.bucket, "after", b"after compaction"))
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert!(inline_bytes(&reopened) > 0);
+        reopened
+            .collect_garbage(16)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        drop(reopened);
+        let reopened = LocalObjects::open(root, limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_compaction_fixture(&reopened, &fixture).await;
+        assert_eq!(
+            read_object(
+                &reopened,
+                ReadTarget::Bucket(fixture.bucket.clone()),
+                "after",
+                None
+            )
+            .await,
+            Ok(bytes::Bytes::from_static(b"after compaction"))
+        );
+    }
+
+    #[tokio::test]
+    async fn process_death_at_every_compaction_step_recovers_exactly() {
+        let limits = LocalObjectsLimits::default();
+        for step in [
+            CompactionStep::SegmentsPersisted,
+            CompactionStep::ReplacementWritten,
+            CompactionStep::ReplacementSynced,
+            CompactionStep::JournalClosed,
+            CompactionStep::Renamed,
+        ] {
+            let (provider, fixture) = compaction_fixture(limits).await;
+            let root = fixture.root.path();
+            *provider
+                .persistence
+                .fault_compaction
+                .lock()
+                .unwrap_or_else(|_| unreachable!()) = Some(step);
+            assert!(
+                matches!(
+                    provider.collect_garbage(16).await,
+                    Err(LocalObjectsError::Unavailable)
+                ),
+                "{step:?}"
+            );
+            assert_eq!(
+                read_object(
+                    &provider,
+                    ReadTarget::Bucket(fixture.bucket.clone()),
+                    "first",
+                    None
+                )
+                .await,
+                Err(ObjectsError::Unavailable),
+                "{step:?}: a dead process serves nothing"
+            );
+            drop(provider);
+
+            let recovered = LocalObjects::open(root, limits)
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            assert_eq!(
+                inline_bytes(&recovered) == 0,
+                step == CompactionStep::Renamed,
+                "{step:?}: only a completed rename publishes the compacted journal"
+            );
+            assert_compaction_fixture(&recovered, &fixture).await;
+            recovered
+                .collect_garbage(16)
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            assert_compaction_fixture(&recovered, &fixture).await;
+            drop(recovered);
+            let reopened = LocalObjects::open(root, limits)
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            assert_eq!(inline_bytes(&reopened), 0, "{step:?}");
+            assert_compaction_fixture(&reopened, &fixture).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn inline_bytes_stay_bounded_by_automatic_compaction() {
+        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let limits = LocalObjectsLimits::default();
+        let provider = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let bucket = provider
+            .create_bucket("bounded".into(), None)
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .bucket
+            .unwrap_or_else(|| unreachable!());
+        let bound = MINIMUM_COMPACTION_INLINE_BYTES + MAXIMUM_INLINE_BODY_BYTES as u64;
+        let puts = 2 * MINIMUM_COMPACTION_INLINE_BYTES / MAXIMUM_INLINE_BODY_BYTES as u64 + 4;
+        let mut compactions = 0;
+        for index in 0..puts {
+            let mut body = vec![0_u8; MAXIMUM_INLINE_BODY_BYTES];
+            body.get_mut(..8)
+                .unwrap_or_else(|| unreachable!())
+                .copy_from_slice(&index.to_le_bytes());
+            let before = inline_bytes(&provider);
+            provider
+                .put(PutRequest {
+                    body: body.into(),
+                    ..small_put(&bucket, &format!("object-{}", index % 16), b"")
+                })
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            let after = inline_bytes(&provider);
+            if after < before {
+                compactions += 1;
+            }
+            assert!(after <= bound, "inline bytes {after} exceed {bound}");
+        }
+        assert!(compactions >= 1);
+        drop(provider);
+        let reopened = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        for index in puts - 16..puts {
+            let body = read_object(
+                &reopened,
+                ReadTarget::Bucket(bucket.clone()),
+                &format!("object-{}", index % 16),
+                Some((0, Some(7))),
+            )
+            .await;
+            assert_eq!(body.as_deref(), Ok(index.to_le_bytes().as_slice()));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_inline_puts_reads_and_compaction_stay_exact() {
+        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let limits = LocalObjectsLimits::default();
+        let provider = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let bucket = provider
+            .create_bucket("concurrent-inline".into(), None)
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .bucket
+            .unwrap_or_else(|| unreachable!());
+        let body =
+            |writer: usize, index: usize| format!("writer {writer} body {index}").into_bytes();
+        let mut tasks = Vec::new();
+        for writer in 0..4 {
+            let provider = provider.clone();
+            let bucket = bucket.clone();
+            tasks.push(tokio::spawn(async move {
+                for index in 0..24 {
+                    let key = format!("{writer}/{index}");
+                    provider
+                        .put(PutRequest {
+                            body: body(writer, index).into(),
+                            ..small_put(&bucket, &key, b"")
+                        })
+                        .await?;
+                    let read =
+                        read_object(&provider, ReadTarget::Bucket(bucket.clone()), &key, None)
+                            .await?;
+                    assert_eq!(read.as_ref(), body(writer, index).as_slice());
+                }
+                Ok::<_, ObjectsError>(())
+            }));
+        }
+        let collector = {
+            let provider = provider.clone();
+            tokio::spawn(async move {
+                for _ in 0..8 {
+                    provider.collect_garbage(64).await?;
+                    tokio::task::yield_now().await;
+                }
+                Ok::<_, LocalObjectsError>(())
+            })
+        };
+        for task in tasks {
+            assert_eq!(task.await.ok(), Some(Ok(())));
+        }
+        assert!(matches!(collector.await, Ok(Ok(()))));
+        drop(provider);
+        let reopened = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        for writer in 0..4 {
+            for index in 0..24 {
+                assert_eq!(
+                    read_object(
+                        &reopened,
+                        ReadTarget::Bucket(bucket.clone()),
+                        &format!("{writer}/{index}"),
+                        None
+                    )
+                    .await
+                    .as_deref(),
+                    Ok(body(writer, index).as_slice())
+                );
+            }
+        }
+    }
+
+    /// Replaces the last frame of `root`'s journal with `record` and `bodies`.
+    fn forge_last_frame(root: &Path, record: &MutationRecord, bodies: &[&[u8]]) {
+        let journal_path = root.join(JOURNAL_FILE);
+        let journal = fs::read(&journal_path).unwrap_or_else(|_| unreachable!());
+        let (start, _, _) = journal_frames(&journal)
+            .pop()
+            .unwrap_or_else(|| unreachable!());
+        let mut forged = journal
+            .get(..start)
+            .unwrap_or_else(|| unreachable!())
+            .to_vec();
+        forged.extend_from_slice(
+            &encode_frame(&record.encode_to_vec(), bodies).unwrap_or_else(|_| unreachable!()),
+        );
+        fs::write(journal_path, forged).unwrap_or_else(|_| unreachable!());
+    }
+
+    #[tokio::test]
+    async fn replay_rejects_forged_inline_frames() {
+        let limits = LocalObjectsLimits::default();
+        let body = b"authentic inline body";
+        let oversized = vec![5_u8; MAXIMUM_INLINE_BODY_BYTES + 1];
+        type Forgery<'a> = (&'a str, fn(&mut PutRecord), Vec<&'a [u8]>);
+        let cases: [Forgery<'_>; 5] = [
+            (
+                "extra body byte",
+                |_| {},
+                vec![body.as_slice(), b"!".as_slice()],
+            ),
+            ("missing body", |_| {}, Vec::new()),
+            (
+                "wrong digest",
+                |_| {},
+                vec![b"authentic inline bodY".as_slice()],
+            ),
+            (
+                "over the inline bound",
+                |put| {
+                    put.body_length =
+                        u64::try_from(MAXIMUM_INLINE_BODY_BYTES + 1).unwrap_or_default();
+                    put.body_digest = blake3::hash(&[5_u8; MAXIMUM_INLINE_BODY_BYTES + 1])
+                        .as_bytes()
+                        .to_vec();
+                },
+                vec![oversized.as_slice()],
+            ),
+            (
+                "live reclaimed body",
+                |put| put.body = Some(stored_body::Location::Reclaimed(ReclaimedBody {})),
+                Vec::new(),
+            ),
+        ];
+        for (case, forge, bodies) in cases {
+            let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+            let provider = LocalObjects::open(root.path(), limits)
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            let bucket = provider
+                .create_bucket("forged".into(), None)
+                .await
+                .unwrap_or_else(|_| unreachable!())
+                .bucket
+                .unwrap_or_else(|| unreachable!());
+            provider
+                .put(small_put(&bucket, "forged", body))
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            drop(provider);
+            let journal =
+                fs::read(root.path().join(JOURNAL_FILE)).unwrap_or_else(|_| unreachable!());
+            let (_, record, _) = journal_frames(&journal)
+                .pop()
+                .unwrap_or_else(|| unreachable!());
+            let mut record =
+                MutationRecord::decode(journal.get(record).unwrap_or_else(|| unreachable!()))
+                    .unwrap_or_else(|_| unreachable!());
+            let Some(mutation_record::Operation::Put(put)) = record.operation.as_mut() else {
+                unreachable!()
+            };
+            forge(put);
+            forge_last_frame(root.path(), &record, &bodies);
+            assert!(
+                matches!(
+                    LocalObjects::open(root.path(), limits).await,
+                    Err(LocalObjectsError::Corrupt)
+                ),
+                "{case}"
+            );
+        }
+    }
+
+    /// A completion's journal record carries its digest, so replay never re-reads parts that
+    /// garbage collection removed after the completed version was deleted.
+    #[tokio::test]
+    async fn deleted_multipart_completion_replays_after_its_parts_are_reclaimed() {
+        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let limits = LocalObjectsLimits::default();
+        let provider = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let bucket = provider
+            .create_bucket("reclaimed-parts".into(), None)
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .bucket
+            .unwrap_or_else(|| unreachable!());
+        for (key, body) in [
+            ("segment", segment_body(6)),
+            ("inline", bytes::Bytes::from_static(b"inline part")),
+        ] {
+            let upload = provider
+                .create_multipart(
+                    bucket.clone(),
+                    key.into(),
+                    wire::ObjectMetadata::default(),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            let part = provider
+                .upload_part(
+                    bucket.clone(),
+                    key.into(),
+                    upload.upload_id.clone(),
+                    1,
+                    body,
+                    None,
+                )
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            let version = provider
+                .complete_multipart(
+                    bucket.clone(),
+                    key.into(),
+                    upload.upload_id,
+                    vec![part],
+                    None,
+                )
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            provider
+                .delete(
+                    bucket.clone(),
+                    key.into(),
+                    Some(version.version_id),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap_or_else(|_| unreachable!());
+        }
+        let report = provider
+            .collect_garbage(16)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(report.segments_removed, 1);
+        assert_eq!(segment_count(root.path()), 0);
+        drop(provider);
+        let reopened = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        for key in ["segment", "inline"] {
+            assert_eq!(
+                read_object(&reopened, ReadTarget::Bucket(bucket.clone()), key, None).await,
+                Err(ObjectsError::NotFound)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn staged_inline_parts_survive_compaction_and_complete() {
+        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let limits = LocalObjectsLimits::default();
+        let provider = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let bucket = provider
+            .create_bucket("staged-parts".into(), None)
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .bucket
+            .unwrap_or_else(|| unreachable!());
+        let upload = provider
+            .create_multipart(
+                bucket.clone(),
+                "object".into(),
+                wire::ObjectMetadata::default(),
+                None,
+                None,
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let part = provider
+            .upload_part(
+                bucket.clone(),
+                "object".into(),
+                upload.upload_id.clone(),
+                1,
+                bytes::Bytes::from_static(b"staged inline part"),
+                None,
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(segment_count(root.path()), 0);
+        provider
+            .collect_garbage(16)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            segment_count(root.path()),
+            1,
+            "the staged part moved to a segment"
+        );
+        let version = provider
+            .complete_multipart(
+                bucket.clone(),
+                "object".into(),
+                upload.upload_id,
+                vec![part],
+                None,
+            )
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            version.etag,
+            format!("\"{}\"", blake3::hash(b"staged inline part").to_hex())
+        );
+        drop(provider);
+        let reopened = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            read_object(&reopened, ReadTarget::Bucket(bucket), "object", None).await,
+            Ok(bytes::Bytes::from_static(b"staged inline part"))
         );
     }
 }
