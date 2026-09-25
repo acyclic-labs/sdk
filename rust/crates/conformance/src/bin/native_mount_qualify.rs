@@ -1974,6 +1974,14 @@ mod receipt_tests {
         std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
         assert!(verify_receipt(&args).is_err());
         document = valid_extension;
+        let duplicate_case = receipt_array(&mut document, "cases")?
+            .last()
+            .cloned()
+            .ok_or("missing future case")?;
+        receipt_array(&mut document, "cases")?.push(duplicate_case);
+        std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
+        assert!(verify_receipt(&args).is_err());
+        receipt_array(&mut document, "cases")?.pop();
         *receipt_array(&mut document, "cases")?
             .last_mut()
             .and_then(|case| case.get_mut("status"))

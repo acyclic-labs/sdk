@@ -19324,6 +19324,14 @@ mod tests {
                 "name":"future-case","status":"passed","elapsed_ms":1,"reason":null
             }));
         assert!(valid_platform_receipt(&expanded, "exact-digest"));
+        let mut duplicate_case = expanded.clone();
+        duplicate_case["cases"]
+            .as_array_mut()
+            .expect("cases")
+            .push(json!({
+                "name":"future-case","status":"passed","elapsed_ms":1,"reason":null
+            }));
+        assert!(!valid_platform_receipt(&duplicate_case, "exact-digest"));
         expanded["cases"][3]["status"] = json!("failed");
         assert!(!valid_platform_receipt(&expanded, "exact-digest"));
         let mut missing_coverage = canonical.clone();
