@@ -12,6 +12,8 @@ use acyclic_harness::{
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
+mod speculation;
+
 /// Resolved mutable workspace head and immutable generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceObservation {
