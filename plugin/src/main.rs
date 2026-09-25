@@ -5528,13 +5528,22 @@ impl ControlPlane {
 
     #[cfg(test)]
     async fn shutdown(self) -> Result<(), String> {
-        self.close().await.map(drop)
+        self.close(false).await.map(drop)
     }
 
     /// Shuts the session down and hands back what it knows of its state
-    /// slots, for a terminal save.
-    async fn close(mut self) -> Result<StateSlots, String> {
-        self.make_durable().await?;
+    /// slots. `terminal_save` says the caller follows a successful close with
+    /// a flushed save of the whole session, which then makes every earlier
+    /// save durable; otherwise the close leaves nothing unflushed itself.
+    async fn close(mut self, terminal_save: bool) -> Result<StateSlots, String> {
+        // Only finishing a lease or publishing a mount builds a durable
+        // effect on the session's state, and nothing may build one on a save
+        // a power loss could still undo. A close with neither saves nothing
+        // until the terminal save.
+        let has_leases = !self.state.leases.is_empty();
+        if has_leases || !self.mounts.is_empty() || !self.pending_mounts.is_empty() {
+            self.make_durable().await?;
+        }
         #[cfg(test)]
         let root_released = if self.owns_local_root {
             self.fs.local_root_release_barrier()
@@ -5592,8 +5601,10 @@ impl ControlPlane {
                     }
                 }
             }
-            self.state.leases.clear();
-            self.persist()?;
+            if has_leases {
+                self.state.leases.clear();
+                self.persist()?;
+            }
             let mounts = std::mem::take(&mut self.mounts);
             let mut first_error = None;
             for (agent_id, mount) in mounts {
@@ -5626,6 +5637,10 @@ impl ControlPlane {
             first_error.map_or(Ok(()), Err)
         }
         .await;
+        let result = match result {
+            Ok(()) if !terminal_save => self.make_durable().await,
+            result => result,
+        };
         let slots = self.slots;
         // The shared service owns the physical root-release boundary. A standalone test control
         // owns its root directly, so it waits here after dropping every provider handle.
@@ -8067,7 +8082,7 @@ impl ServiceControl {
             .ok_or_else(|| "Acyclic native hook session is not registered".to_owned())?;
         let mut terminal_state = control.state.clone();
         let directory = control.data.clone();
-        let mut slots = match control.close().await {
+        let mut slots = match control.close(deactivate).await {
             Ok(slots) => slots,
             Err(shutdown_error) => {
                 let recovered = ControlPlane::open_with(
@@ -8627,7 +8642,7 @@ impl SessionHandle {
                             Ok(current) => {
                                 let mut terminal_state = current.state.clone();
                                 let directory = current.data.clone();
-                                match current.close().await {
+                                match current.close(deactivate).await {
                                     Ok(mut slots) => {
                                         if deactivate {
                                             terminal_state.active = false;
@@ -13527,6 +13542,44 @@ mod tests {
             name: format!("{host}:{event}"),
             arguments: Value::Object(arguments),
         }
+    }
+
+    #[test]
+    fn a_session_ending_after_an_unflushed_save_keeps_it_in_its_terminal_state() {
+        run_large_stack("terminal-save-covers-unflushed", terminal_save_case);
+    }
+
+    async fn terminal_save_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        let data = temporary.path().join("state");
+        fs::create_dir_all(&root).expect("root");
+        let service = ConcurrentServiceControl::open(data.clone())
+            .await
+            .expect("service");
+        for (event, extra) in [
+            ("SessionStart", json!({})),
+            // Saved unflushed, the last effect of its request.
+            ("UserPromptSubmit", json!({"turn_id":"last-turn"})),
+            // Nothing is mounted or leased, so only its terminal save flushes.
+            ("SessionEnd", json!({})),
+        ] {
+            service
+                .dispatch_request(native_hook_request("codex", event, "session", &root, extra))
+                .await
+                .expect(event);
+        }
+        service.shutdown().await.expect("service shutdown");
+        let directory = data
+            .join("sessions")
+            .join(blake3::hash(b"session").to_hex().as_str());
+        let (slots, [_, _, unflushed]) = StateSlots::read(&directory).expect("slots");
+        let state = load_saved_state(&directory).expect("terminal session state");
+        assert!(!state.active);
+        assert!(state.root_turns.contains("last-turn"));
+        // The terminal save is the newest flushed save; the unflushed slot
+        // holds an older generation and is never loaded again.
+        assert!(unflushed.generation() < slots.flushed.into_iter().max().flatten());
     }
 
     #[test]
