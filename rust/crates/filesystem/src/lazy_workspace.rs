@@ -4430,6 +4430,13 @@ where
         metadata: crate::WorkspaceMetadata,
     ) -> LazyFuture<'a, Result<LazyShadowId, LazyWorkspaceError>> {
         Box::pin(async move {
+            // A shadow outlives the checkout whose objects it names, which
+            // publication need not flush: make them durable first, so no
+            // durable shadow ever names content a crash could lose.
+            self.workspace
+                .make_records_durable(std::slice::from_ref(&record))
+                .await
+                .map_err(workspace_error)?;
             insert_immutable_treap(
                 &ShadowTreap(&self.store),
                 root,
@@ -5896,6 +5903,131 @@ mod tests {
             root.lookup("/file.txt").await,
             Err(LazyWorkspaceError::NotFound)
         ));
+    }
+
+    /// A mounted removal shadows an identity whose content only an
+    /// unpublished checkout staged; publication then flushes a generation
+    /// without it. The shadow must never outlive that content across a
+    /// power loss, which drops everything staged and unflushed.
+    #[cfg(all(feature = "native-mount", feature = "local", any(unix, windows)))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_shadowed_identity_keeps_its_content_across_power_loss() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let fs_root = directory.path().join("fs");
+        let state_root = directory.path().join("state");
+        let content = Bytes::from(vec![0x5a; 256 * 1024]);
+        let cancellation = CancellationToken::new();
+        let removal = IdempotencyKey::new();
+        let path = NamespacePath::new(
+            vec![LogicalName::new(NameEncoding::Utf8, b"removed.bin".to_vec(), 255).expect("name")],
+            crate::model::VolumeLimits::default(),
+        )
+        .expect("path");
+        let shadowed;
+        {
+            let fs = Fs::local(crate::LocalOptions::new(&fs_root))
+                .await
+                .expect("fs");
+            let released = fs.local_root_release_barrier().expect("release barrier");
+            let root = LazyWorkspace::attach(
+                &fs,
+                "power-loss-shadow",
+                Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
+                crate::core_state::LocalCoreStateStore::new(&state_root),
+            )
+            .await
+            .expect("attach");
+            // A mounted write stages content in the checkout, then the file
+            // is removed before any publication, as `rm` after a write does.
+            let mut checkout = root
+                .workspace()
+                .checkout(
+                    crate::model::GenerationSelector::Head,
+                    crate::model::CheckoutMode::tracking_transaction(),
+                )
+                .await
+                .expect("checkout");
+            checkout
+                .create_file(
+                    path.clone(),
+                    content.clone(),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .expect("stage content");
+            let identity = checkout
+                .lookup_no_follow_with_metadata(&path, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .expect("lookup")
+                .value
+                .expect("staged file");
+            checkout
+                .remove(path.clone(), None, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .expect("remove");
+            root.prepare_mount_removals(&[], &[(identity.record, identity.metadata)], removal)
+                .await
+                .expect("shadow the removed identity");
+            checkout
+                .commit_with_permit_even_if_clean(
+                    removal.operation_id(),
+                    crate::PublicationPermit::Unrestricted,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .expect("publish without the removed file");
+            assert!(root.finish_mount_removals().await.expect("finish"));
+            shadowed = identity.record;
+            // Power loss: nothing staged survives the engine.
+            drop((checkout, root, fs));
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while !released.is_released() {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("release");
+        }
+        let fs = Fs::local(crate::LocalOptions::new(&fs_root))
+            .await
+            .expect("reopen");
+        let reopened = LazyWorkspace::open(
+            fs.open_workspace("power-loss-shadow")
+                .await
+                .expect("workspace"),
+            Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
+            crate::core_state::LocalCoreStateStore::new(&state_root),
+        )
+        .await
+        .expect("reopen lazy");
+        let state = reopened.state().await.expect("state");
+        let shadow = reopened
+            .shadow_record_measured(
+                state.shadows,
+                shadowed.file_id,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect("shadow lookup")
+            .value
+            .expect("the removed identity stays shadowed");
+        let read = reopened
+            .workspace()
+            .detached_record(shadow.0)
+            .read_range(
+                crate::ByteRange {
+                    offset: 0,
+                    length: u64::try_from(content.len()).expect("length"),
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect("the shadowed identity's content survived");
+        assert_eq!(read.value.bytes, content);
     }
 
     #[tokio::test]

@@ -73,12 +73,12 @@ pub use checkpoint::{
     CheckpointError, CheckpointFailure, CheckpointReceipt, CheckpointRequest, build_checkpoint,
     build_checkpoint_async,
 };
-#[cfg(feature = "s3-http")]
-pub(crate) use closure::prove_blob_closure_async;
 pub use closure::{
     ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure,
     prove_generation_closure_async,
 };
+#[cfg(feature = "s3-http")]
+pub(crate) use closure::{prove_blob_closure_async, prove_record_closure_async};
 pub use codec::{CanonicalDecodeError, DecodeLimits};
 pub use export::{
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,

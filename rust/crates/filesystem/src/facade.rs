@@ -2981,6 +2981,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         ))
     }
 
+    /// Makes every object `records` reach durable, so a record another
+    /// durable store keeps, such as a removed identity a lazy workspace still
+    /// resolves, never outlives its content across a crash.
+    pub(crate) async fn make_records_durable(
+        &self,
+        config: VolumeConfig,
+        records: &[FileRecord],
+        cancellation: &CancellationToken,
+    ) -> Result<(), FsError> {
+        let (closure, work) = crate::kernel::prove_record_closure_async(
+            &self.inner.objects,
+            records,
+            closure_limits(config),
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| FsError::from(failure.error))?;
+        self.inner
+            .objects
+            .flush_before_publish(
+                crate::PublicationScope::Closure(&closure),
+                remaining(work, WorkBudget::UNBOUNDED).map_err(|failure| failure.error)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| FsError::from(failure.error))?;
+        Ok(())
+    }
+
     pub(crate) async fn retain_workspace_generation(
         &self,
         volume: &Volume<A, O>,
