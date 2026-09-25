@@ -25,7 +25,6 @@ cargo test --workspace `
 cargo test -p acyclic-fs --no-default-features `
     --features local,memory,native-watch --locked
 cargo test --workspace --all-features --no-run --locked
-cargo test -p acyclic-plugin --locked
 cargo clippy -p acyclic-plugin --all-targets --all-features --locked -- -D warnings
 cargo build -p acyclic-fs-napi --locked
 node scripts/build-product.mjs
