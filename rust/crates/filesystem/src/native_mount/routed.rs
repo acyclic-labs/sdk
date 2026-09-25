@@ -9,7 +9,7 @@
 
 use super::view_ledger::ViewObservers;
 use super::{
-    MountAttributePage, MountAttributeWriteMode, MountContentPin, MountDirectoryEntry,
+    ContentSink, MountAttributePage, MountAttributeWriteMode, MountContentPin, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
     MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError, MountViewLease,
     ViewObserver, ViewStamp,
@@ -741,8 +741,10 @@ impl MountFilesystem for RoutedMountSource {
         path: &MountPath,
         pin: MountContentPin,
         offset: u64,
-        length: u32,
-    ) -> Result<Bytes, MountSourceError> {
+        length: u64,
+        piece: u32,
+        sink: &mut ContentSink<'_>,
+    ) -> Result<(), MountSourceError> {
         let Some(routed) = self.route(path)? else {
             return Err(MountSourceError::Invalid(
                 "the synthetic mount root has no content".to_owned(),
@@ -753,6 +755,8 @@ impl MountFilesystem for RoutedMountSource {
             remap_content_pin(pin, routed.tag),
             offset,
             length,
+            piece,
+            sink,
         )
     }
 

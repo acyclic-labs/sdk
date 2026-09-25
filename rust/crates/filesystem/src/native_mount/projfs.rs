@@ -15,6 +15,7 @@ use super::{
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
 use crate::native_host::HostRoot;
+use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -1410,8 +1411,33 @@ fn host_windows_metadata(
     path: &MountPath,
 ) -> Result<HostWindowsMetadata, MountSourceError> {
     use cap_std::fs::MetadataExt as _;
+    /// A `ProjFS` placeholder's own tag, which describes it without redirecting.
+    const IO_REPARSE_TAG_PROJFS: u32 = 0x9000_001C;
 
     let host_path = host_relative_path(path)?;
+    // One query answers a name that no reparse point redirects, without
+    // opening every component on the way.
+    if let Some(information) = root
+        .stat_information_by_name(&host_path)
+        .map_err(|error| MountSourceError::Engine(error.to_string()))?
+        && (information.ReparseTag == 0 || information.ReparseTag == IO_REPARSE_TAG_PROJFS)
+    {
+        return Ok(HostWindowsMetadata {
+            identity: crate::NativeRootIdentity {
+                device: root.identity().device,
+                object: u64::try_from(information.FileId).map_err(|_| {
+                    MountSourceError::Invalid("Windows file identity is negative".to_owned())
+                })?,
+            },
+            links: Some(information.NumberOfLinks),
+            size: u64::try_from(information.EndOfFile).map_err(|_| {
+                MountSourceError::Invalid("Windows file size is negative".to_owned())
+            })?,
+            attributes: information.FileAttributes,
+            created: information.CreationTime,
+            modified: information.LastWriteTime,
+        });
+    }
     let metadata = root
         .symlink_metadata_held(&host_path)
         .map_err(|error| MountSourceError::Engine(error.to_string()))?;
@@ -2033,50 +2059,84 @@ unsafe fn file_data(
         return HR_INVALID_DATA;
     };
     let pin = placeholder_pin(data);
-    // Immutable hydration reads take the source's own read gate. Keeping them
-    // off the mutation callback queue lets concurrent compiler reads proceed.
-    // A placeholder is hydrated before any rename or link, so its projected
-    // path always names the content it promised.
-    let read = |offset, length| match pin {
-        Some(pin) => runtime.source.read_pinned(&path, pin, offset, length),
-        None => runtime.source.read_range(&path, offset, length),
-    };
     let chunk = length.min(HYDRATION_CHUNK_BYTES);
     let buffer = PrjAllocateAlignedBuffer(data.NamespaceVirtualizationContext, chunk as usize);
     if buffer.is_null() {
         return HR_OUT_OF_MEMORY;
     }
-    let mut written = 0_u32;
-    let result = loop {
-        let remaining = length - written;
-        if remaining == 0 {
-            break HR_OK;
-        }
-        let count = remaining.min(chunk);
-        let Some(offset) = byte_offset.checked_add(u64::from(written)) else {
-            break HR_INVALID_DATA;
-        };
-        let bytes = match read(offset, count) {
-            Ok(bytes) if bytes.len() == count as usize => bytes,
-            Ok(_) => break HR_INVALID_DATA,
-            Err(error) => break source_hresult(&error),
+    // Each piece is written at its offset; the range is complete only when
+    // the pieces cover it exactly.
+    let written = std::cell::Cell::new(0_u64);
+    let write_failure = std::cell::Cell::new(None);
+    let mut write = |offset: u64, bytes: Bytes| -> Result<(), MountSourceError> {
+        let fits = u32::try_from(bytes.len()).ok().filter(|count| {
+            *count <= chunk && byte_offset.checked_add(written.get()) == Some(offset)
+        });
+        let Some(count) = fits else {
+            write_failure.set(Some(HR_INVALID_DATA));
+            return Err(MountSourceError::Invalid(
+                "hydration piece out of order".to_owned(),
+            ));
         };
         // SAFETY: ProjFS allocated `chunk >= count` aligned bytes and both
         // buffers are live and non-overlapping for the synchronous write.
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast::<u8>(), bytes.len());
-        if let Err(error) = PrjWriteFileData(
-            data.NamespaceVirtualizationContext,
-            &raw const data.DataStreamId,
-            buffer,
-            offset,
-            count,
-        ) {
-            break error.code();
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast::<u8>(), bytes.len());
+            PrjWriteFileData(
+                data.NamespaceVirtualizationContext,
+                &raw const data.DataStreamId,
+                buffer,
+                offset,
+                count,
+            )
         }
-        written += count;
+        .map_err(|error| {
+            write_failure.set(Some(error.code()));
+            MountSourceError::Engine("PrjWriteFileData failed".to_owned())
+        })?;
+        written.set(written.get() + u64::from(count));
+        Ok(())
+    };
+    // Immutable hydration reads take the source's own read gate. Keeping them
+    // off the mutation callback queue lets concurrent compiler reads proceed.
+    // A placeholder is hydrated before any rename or link, so its projected
+    // path always names the content it promised.
+    let read = if let Some(pin) = pin {
+        runtime.source.read_pinned(
+            &path,
+            pin,
+            byte_offset,
+            u64::from(length),
+            chunk,
+            &mut write,
+        )
+    } else {
+        let mut result = Ok(());
+        // A short read ends the content; the length check below rejects it.
+        while let Some(remaining) = u64::from(length)
+            .checked_sub(written.get())
+            .filter(|remaining| *remaining > 0 && result.is_ok())
+        {
+            let before = written.get();
+            let count = u32::try_from(remaining).unwrap_or(u32::MAX).min(chunk);
+            let offset = byte_offset + before;
+            result = runtime
+                .source
+                .read_range(&path, offset, count)
+                .and_then(|bytes| write(offset, bytes));
+            if written.get() - before < u64::from(count) {
+                break;
+            }
+        }
+        result
     };
     PrjFreeAlignedBuffer(buffer);
-    result
+    match (read, write_failure.get()) {
+        (_, Some(failure)) => failure,
+        (Err(error), None) => source_hresult(&error),
+        (Ok(()), None) if written.get() == u64::from(length) => HR_OK,
+        (Ok(()), None) => HR_INVALID_DATA,
+    }
 }
 
 unsafe fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {

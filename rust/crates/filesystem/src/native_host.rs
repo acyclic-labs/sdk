@@ -173,6 +173,29 @@ impl HostStat {
     }
 }
 
+/// `path` as the UTF-16 name a kernel call resolves relative to a held
+/// directory, with its byte length; `None` for the directory itself or any
+/// component that is not a plain name.
+#[cfg(windows)]
+fn relative_kernel_name(path: &Path) -> Option<(Vec<u16>, u16)> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    let mut name = Vec::new();
+    for component in path.components() {
+        let std::path::Component::Normal(component) = component else {
+            return None;
+        };
+        if !name.is_empty() {
+            name.push(u16::from(b'\\'));
+        }
+        name.extend(component.encode_wide());
+    }
+    let length = u16::try_from(name.len() * 2)
+        .ok()
+        .filter(|length| *length > 0)?;
+    Some((name, length))
+}
+
 /// The instant one `FILETIME` names, as the standard library reads it.
 #[cfg(windows)]
 fn windows_time(ticks: u64) -> cap_std::time::SystemTime {
@@ -930,9 +953,45 @@ impl HostRoot {
     /// root. `None` when the path names the root itself or crosses or ends
     /// in any reparse point, which only the held walk may resolve.
     #[cfg(windows)]
-    #[allow(unsafe_code)]
     fn stat_by_name(&self, path: &Path) -> io::Result<Option<HostStat>> {
-        use std::os::windows::ffi::OsStrExt as _;
+        use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
+
+        let Some(information) = self.stat_information_by_name(path)? else {
+            return Ok(None);
+        };
+        if information.ReparseTag != 0 {
+            return Ok(None);
+        }
+        let unsigned =
+            |value: i64| u64::try_from(value).map_err(|_| io::Error::other("negative stat field"));
+        Ok(Some(HostStat {
+            file_type: if information.FileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+                cap_std::fs::FileType::dir()
+            } else {
+                cap_std::fs::FileType::file()
+            },
+            len: unsigned(information.EndOfFile)?,
+            attributes: information.FileAttributes,
+            creation_time: unsigned(information.CreationTime)?,
+            last_access_time: unsigned(information.LastAccessTime)?,
+            last_write_time: unsigned(information.LastWriteTime)?,
+            // A path without reparse points never leaves the root's volume.
+            volume_serial_number: u32::try_from(self.identity.device).ok(),
+            file_index: Some(unsigned(information.FileId)?),
+        }))
+    }
+
+    /// One `FileStatInformation` query naming `path` relative to the held
+    /// root, which no reparse point may redirect; its object's own reparse
+    /// tag is reported, not resolved. `None` when the path names the root
+    /// itself or redirection was refused, which only the held walk may
+    /// resolve. A name the query answers lies on the root's volume.
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    pub(crate) fn stat_information_by_name(
+        &self,
+        path: &Path,
+    ) -> io::Result<Option<windows::Wdk::Storage::FileSystem::FILE_STAT_INFORMATION>> {
         use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
         use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
         use windows::Wdk::Storage::FileSystem::{
@@ -942,26 +1001,12 @@ impl HostRoot {
             HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, RtlNtStatusToDosError,
             UNICODE_STRING,
         };
-        use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
         use windows::Win32::System::IO::IO_STATUS_BLOCK;
         const REPARSE_POINT_ENCOUNTERED: NTSTATUS = NTSTATUS(0xC000_050B_u32.cast_signed());
 
-        let mut name = Vec::new();
-        for component in path.components() {
-            let std::path::Component::Normal(component) = component else {
-                return Ok(None);
-            };
-            if !name.is_empty() {
-                name.push(u16::from(b'\\'));
-            }
-            name.extend(component.encode_wide());
-        }
-        let Ok(length) = u16::try_from(name.len() * 2) else {
+        let Some((mut name, length)) = relative_kernel_name(path) else {
             return Ok(None);
         };
-        if length == 0 {
-            return Ok(None);
-        }
         let name = UNICODE_STRING {
             Length: length,
             MaximumLength: length,
@@ -1001,26 +1046,7 @@ impl HostRoot {
                 i32::try_from(code).map_err(|_| io::Error::other("unmapped stat status"))?,
             ));
         }
-        if information.ReparseTag != 0 {
-            return Ok(None);
-        }
-        let unsigned =
-            |value: i64| u64::try_from(value).map_err(|_| io::Error::other("negative stat field"));
-        Ok(Some(HostStat {
-            file_type: if information.FileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
-                cap_std::fs::FileType::dir()
-            } else {
-                cap_std::fs::FileType::file()
-            },
-            len: unsigned(information.EndOfFile)?,
-            attributes: information.FileAttributes,
-            creation_time: unsigned(information.CreationTime)?,
-            last_access_time: unsigned(information.LastAccessTime)?,
-            last_write_time: unsigned(information.LastWriteTime)?,
-            // A path without reparse points never leaves the root's volume.
-            volume_serial_number: u32::try_from(self.identity.device).ok(),
-            file_index: Some(unsigned(information.FileId)?),
-        }))
+        Ok(Some(information))
     }
 
     /// Reads leaf metadata while refusing every intermediate link or reparse point.
@@ -1049,6 +1075,10 @@ impl HostRoot {
     }
 
     pub fn open_file(&self, path: &Path) -> io::Result<cap_std::fs::File> {
+        #[cfg(windows)]
+        if let Some(file) = self.open_file_by_name(path)? {
+            return Ok(file);
+        }
         let mut options = OpenOptions::new();
         options
             .read(true)
@@ -1067,6 +1097,82 @@ impl HostRoot {
             }
         }
         self.directory.open_with(path, &options)
+    }
+
+    /// Opens `path` for reading with one `NtCreateFile` relative to the held
+    /// root, which no reparse point may redirect; a final reparse point is
+    /// opened as itself, as the held walk opens it. `None` when the path
+    /// names the root itself or redirection was refused, which only the held
+    /// walk may resolve.
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    fn open_file_by_name(&self, path: &Path) -> io::Result<Option<cap_std::fs::File>> {
+        use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _};
+        use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
+        use windows::Wdk::Storage::FileSystem::{
+            FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+            FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
+        };
+        use windows::Win32::Foundation::{
+            HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, RtlNtStatusToDosError,
+            UNICODE_STRING,
+        };
+        use windows::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE,
+        };
+        use windows::Win32::System::IO::IO_STATUS_BLOCK;
+        const REPARSE_POINT_ENCOUNTERED: NTSTATUS = NTSTATUS(0xC000_050B_u32.cast_signed());
+
+        let Some((mut name, length)) = relative_kernel_name(path) else {
+            return Ok(None);
+        };
+        let name = UNICODE_STRING {
+            Length: length,
+            MaximumLength: length,
+            Buffer: windows::core::PWSTR(name.as_mut_ptr()),
+        };
+        let attributes = OBJECT_ATTRIBUTES {
+            Length: u32::try_from(std::mem::size_of::<OBJECT_ATTRIBUTES>())
+                .map_err(|_| io::Error::other("object attributes size"))?,
+            RootDirectory: HANDLE(self.directory.as_handle().as_raw_handle()),
+            ObjectName: &raw const name,
+            Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+            ..OBJECT_ATTRIBUTES::default()
+        };
+        let mut status_block = IO_STATUS_BLOCK::default();
+        let mut handle = HANDLE::default();
+        // SAFETY: every pointer names a live, correctly sized value for this
+        // synchronous call, and the held root handle outlives it.
+        let status = unsafe {
+            NtCreateFile(
+                &raw mut handle,
+                FILE_GENERIC_READ,
+                &raw const attributes,
+                &raw mut status_block,
+                None,
+                FILE_ATTRIBUTE_NORMAL,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                FILE_OPEN,
+                FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
+                None,
+                0,
+            )
+        };
+        if status == REPARSE_POINT_ENCOUNTERED {
+            return Ok(None);
+        }
+        if status.is_err() {
+            // SAFETY: a pure status-code translation.
+            let code = unsafe { RtlNtStatusToDosError(status) };
+            return Err(io::Error::from_raw_os_error(
+                i32::try_from(code).map_err(|_| io::Error::other("unmapped open status"))?,
+            ));
+        }
+        // SAFETY: the call succeeded, so `handle` is a new handle this
+        // function exclusively owns.
+        let file = unsafe { File::from_raw_handle(handle.0) };
+        Ok(Some(cap_std::fs::File::from_std(file)))
     }
 
     pub fn create_file(&self, path: &Path) -> io::Result<File> {
@@ -3529,6 +3635,48 @@ mod windows_clone_tests {
                     "a reparse point is stat'ed on its own"
                 );
             }
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_file_opened_by_name_is_the_one_the_held_walk_opens() -> std::io::Result<()> {
+        use std::io::Read as _;
+
+        let temporary = tempfile::tempdir()?;
+        std::fs::create_dir(temporary.path().join("directory"))?;
+        std::fs::write(temporary.path().join("directory").join("file"), b"payload")?;
+        let root = HostRoot::open(temporary.path())?;
+        for path in [Path::new("directory/file"), Path::new("DIRECTORY/FILE")] {
+            let mut opened = root
+                .open_file_by_name(path)?
+                .ok_or_else(|| std::io::Error::other("a plain path is opened by name"))?;
+            let held = root.symlink_metadata(path)?;
+            let metadata = opened.metadata()?;
+            assert_eq!(
+                cap_primitives::fs::_WindowsByHandle::file_index(&metadata),
+                cap_primitives::fs::_WindowsByHandle::file_index(&held)
+            );
+            let mut read = Vec::new();
+            opened.read_to_end(&mut read)?;
+            assert_eq!(read, b"payload");
+        }
+        assert!(root.open_file_by_name(Path::new(""))?.is_none());
+        assert!(root.open_file_by_name(Path::new("directory")).is_err());
+        assert_eq!(
+            root.open_file(Path::new("directory/missing"))
+                .map_err(|error| error.kind())
+                .err(),
+            Some(std::io::ErrorKind::NotFound)
+        );
+        // Only the held walk may resolve a reparse point on the way.
+        match std::os::windows::fs::symlink_dir(
+            temporary.path().join("directory"),
+            temporary.path().join("link"),
+        ) {
+            Ok(()) => assert!(root.open_file_by_name(Path::new("link/file"))?.is_none()),
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
             Err(error) => return Err(error),
         }

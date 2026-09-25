@@ -7,7 +7,7 @@ use super::view_gate::{
 };
 use super::view_ledger::{Installed, ViewChange, ViewStamp};
 use super::{
-    CheckoutMountSource, MountAttributePage, MountAttributeWriteMode, MountContentPin,
+    CheckoutMountSource, ContentSink, MountAttributePage, MountAttributeWriteMode, MountContentPin,
     MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLookup, MountNode,
     MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget,
     MountSourceError, MountViewLease, ViewObserver, capture_root_identity,
@@ -1778,7 +1778,19 @@ where
         offset: u64,
         length: u32,
     ) -> Result<Bytes, MountSourceError> {
-        self.read_content(path, None, offset, length)
+        let mut read = Bytes::new();
+        self.read_content(
+            path,
+            None,
+            offset,
+            u64::from(length),
+            length,
+            &mut |_, bytes| {
+                read = bytes;
+                Ok(())
+            },
+        )?;
+        Ok(read)
     }
 
     fn read_pinned(
@@ -1786,9 +1798,11 @@ where
         path: &MountPath,
         pin: MountContentPin,
         offset: u64,
-        length: u32,
-    ) -> Result<Bytes, MountSourceError> {
-        self.read_content(path, Some(pin), offset, length)
+        length: u64,
+        piece: u32,
+        sink: &mut ContentSink<'_>,
+    ) -> Result<(), MountSourceError> {
+        self.read_content(path, Some(pin), offset, length, piece, sink)
     }
 
     fn seek(
@@ -2442,53 +2456,103 @@ where
     /// Reads one range of a path's current content. A pin additionally
     /// requires still source-backed content to be exactly the pinned
     /// version; content authored through the mount since is its newer state.
+    /// Streams one range of `path`'s content through `sink`; with `pin`,
+    /// only the content that pin promised.
     fn read_content(
         &self,
         path: &MountPath,
         pin: Option<MountContentPin>,
         offset: u64,
-        length: u32,
-    ) -> Result<Bytes, MountSourceError> {
+        length: u64,
+        piece: u32,
+        sink: &mut ContentSink<'_>,
+    ) -> Result<(), MountSourceError> {
         let _lease = self.view_lease(None)?;
         if let Some(file) = self.detached_for_path(path)? {
-            return file.read_range(offset, length);
+            return stream_pieces(offset, length, piece, sink, |offset, length| {
+                file.read_range(offset, length)
+            });
         }
-        if self.authored.lookup(path)?.is_some() {
-            return self.authored.read_range(path, offset, length);
-        }
-        let path = self.path(path)?;
-        if self.is_removed(&path)? {
-            return Err(MountSourceError::NotFound);
-        }
-        self.wait(|| async move {
-            let (lookup, source) = self
-                .lazy
-                .inspect_unauthored(&path, None)
-                .await
-                .map_err(lazy_error)?;
-            match (lookup, source) {
-                (LazyLookup::Source(node), Some(source)) => {
-                    if pin.is_some_and(|pin| pin != source_content_pin(source, &node)) {
-                        return Err(MountSourceError::Stale);
-                    }
-                    self.lazy
-                        .open_source_file(&path, source, node)
-                        .await
-                        .and_then(|file| {
-                            file.read_range(
-                                offset,
-                                u64::from(length),
-                                &crate::CancellationToken::new(),
-                            )
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error.into())
-                        })
-                }
-                _ => self.lazy.read_range(&path, offset, u64::from(length)).await,
+        let text = self.path(path)?;
+        let owner = SourceViewGate::callback_owner();
+        // The lookup that projected this name remembered its resolution,
+        // which answers here while the view proves it current.
+        let resolved = self.wait(|| async {
+            match self.resolve(path, &text, owner).await? {
+                Resolution::Authored(_) => Ok(None),
+                Resolution::Absent => Err(MountSourceError::NotFound),
+                Resolution::Unauthored(lookup, source) => Ok(Some((lookup, source))),
             }
-            .map_err(lazy_error)
-        })
+        })?;
+        match resolved {
+            None => stream_pieces(offset, length, piece, sink, |offset, length| {
+                self.authored.read_range(path, offset, length)
+            }),
+            Some((LazyLookup::Source(node), Some(source))) => {
+                if pin.is_some_and(|pin| pin != source_content_pin(source, &node)) {
+                    return Err(MountSourceError::Stale);
+                }
+                // One held source file serves the whole range; each read
+                // proves it still is the pinned version.
+                let file = self.wait(|| async {
+                    self.lazy
+                        .open_source_file(&text, source, node)
+                        .await
+                        .map_err(lazy_error)
+                })?;
+                stream_pieces(offset, length, piece, sink, |offset, length| {
+                    file.read_range(offset, u64::from(length), &crate::CancellationToken::new())
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| lazy_error(failure.error.into()))
+                })
+            }
+            Some(_) => stream_pieces(offset, length, piece, sink, |offset, length| {
+                self.wait(|| async {
+                    self.lazy
+                        .read_range(&text, offset, u64::from(length))
+                        .await
+                        .map_err(lazy_error)
+                })
+            }),
+        }
     }
+}
+
+/// Delivers `length` bytes from `offset` to `sink` in pieces of at most
+/// `piece` bytes, each read by `read`, until the content ends.
+fn stream_pieces(
+    offset: u64,
+    length: u64,
+    piece: u32,
+    sink: &mut ContentSink<'_>,
+    mut read: impl FnMut(u64, u32) -> Result<Bytes, MountSourceError>,
+) -> Result<(), MountSourceError> {
+    let end = offset
+        .checked_add(length)
+        .ok_or_else(|| MountSourceError::Invalid("content range overflows".to_owned()))?;
+    let mut next = offset;
+    while next < end {
+        let wanted = u32::try_from(end - next)
+            .unwrap_or(u32::MAX)
+            .min(piece.max(1));
+        let bytes = read(next, wanted)?;
+        let read_length = u64::try_from(bytes.len())
+            .map_err(|_| MountSourceError::Invalid("content piece overflows".to_owned()))?;
+        if read_length > u64::from(wanted) {
+            return Err(MountSourceError::Invalid(
+                "source returned more than was asked".to_owned(),
+            ));
+        }
+        if read_length == 0 {
+            break;
+        }
+        sink(next, bytes)?;
+        next += read_length;
+        if read_length < u64::from(wanted) {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// Binds one source node's exact content version into an opaque pin.
