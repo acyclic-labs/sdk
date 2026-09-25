@@ -1839,8 +1839,12 @@ struct ControlPlane {
     physical_roots: BTreeMap<String, Arc<SharedPhysicalRoot>>,
     mounts: BTreeMap<String, LocalMount>,
     pending_mounts: BTreeMap<[u8; 16], LocalMount>,
+    /// The last save was left unflushed; see [`Survives::ServiceCrash`].
+    unflushed: bool,
     #[cfg(test)]
     owns_local_root: bool,
+    #[cfg(test)]
+    fail_next_flush: bool,
     #[cfg(test)]
     fail_next_unmount: BTreeSet<String>,
     #[cfg(test)]
@@ -1914,8 +1918,11 @@ impl ControlPlane {
             physical_roots: BTreeMap::new(),
             mounts: BTreeMap::new(),
             pending_mounts: BTreeMap::new(),
+            unflushed: false,
             #[cfg(test)]
             owns_local_root: false,
+            #[cfg(test)]
+            fail_next_flush: false,
             #[cfg(test)]
             fail_next_unmount: BTreeSet::new(),
             #[cfg(test)]
@@ -2920,7 +2927,10 @@ impl ControlPlane {
                 lifecycle: PendingSpawnLifecycle::Preparing,
             });
             self.persist()?;
-            if let Err(error) = self.prepare_pending_spawn(fork_key.into_bytes()).await {
+            if let Err(error) = self
+                .prepare_pending_spawn(fork_key.into_bytes(), Survives::ServiceCrash)
+                .await
+            {
                 let cleanup = self.discard_pending_spawn(fork_key.into_bytes()).await;
                 return match cleanup {
                     Ok(()) => Err(error),
@@ -3685,8 +3695,23 @@ impl ControlPlane {
             }
         }
         self.state.leases.remove(&tool_use_id);
-        // The operation is already closed in the store; a lost close leaves
-        // the expired lease a service crash here would, which recovery closes.
+        let propagated = if sync_error.is_none() && !expired {
+            let mut propagated = Ok(());
+            for root_id in finished_roots {
+                propagated = self
+                    .propagate_parent_advance(&record.agent_id, root_id)
+                    .await;
+                if propagated.is_err() {
+                    break;
+                }
+            }
+            propagated
+        } else {
+            Ok(())
+        };
+        // The close is saved last, so that it is the request's final effect;
+        // the operation is already closed in the store, and recovery closes a
+        // lease whose close was lost.
         self.persist_unflushed()
             .map_err(|error| format!("cannot persist the closed tool lease: {error}"))?;
         if let Some(error) = sync_error {
@@ -3703,10 +3728,7 @@ impl ControlPlane {
         if expired {
             return Err("filesystem tool lease expired; late writes were fenced".to_owned());
         }
-        for root_id in finished_roots {
-            self.propagate_parent_advance(&record.agent_id, root_id)
-                .await?;
-        }
+        propagated?;
         if conflicts.is_empty() {
             Ok(json!({}))
         } else {
@@ -3853,15 +3875,9 @@ impl ControlPlane {
                 .get_mut(&agent_id)
                 .ok_or_else(|| "subagent route disappeared during stop".to_owned())?
                 .lifecycle = RouteLifecycle::Frozen;
+            self.persist()?;
             candidate = (route.parent_agent_id != self.state.root_agent_id)
                 .then_some(route.parent_agent_id);
-            // Finishing an ancestor's stop unmounts and freezes it durably, so
-            // only the last freeze may be left unflushed.
-            if candidate.is_some() {
-                self.persist()?;
-            } else {
-                self.persist_unflushed()?;
-            }
         }
         Ok(())
     }
@@ -4019,7 +4035,13 @@ impl ControlPlane {
     /// to spawn it. `SubagentStart` is advisory in several hosts, while the
     /// spawn tool hook is a blocking boundary. Preparing here therefore closes
     /// the isolation gap without paying for a throwaway probe mount.
-    async fn prepare_pending_spawn(&mut self, fork_key: [u8; 16]) -> Result<(), String> {
+    /// Prepares a spawn's child workspaces and mount. `prepared` is how the
+    /// final mark is saved: unflushed only when it ends the request.
+    async fn prepare_pending_spawn(
+        &mut self,
+        fork_key: [u8; 16],
+        prepared: Survives,
+    ) -> Result<(), String> {
         let pending = self
             .state
             .pending
@@ -4188,10 +4210,10 @@ impl ControlPlane {
             .find(|candidate| candidate.fork_key == fork_key)
             .ok_or_else(|| "pending spawn disappeared after mount".to_owned())?
             .lifecycle = PendingSpawnLifecycle::Prepared;
-        // Nothing durable follows before SubagentStart flushes the route; a
-        // lost mark leaves the flushed mount mark, from which recovery mounts
-        // again.
-        self.persist_unflushed()
+        match prepared {
+            Survives::ServiceCrash => self.persist_unflushed(),
+            Survives::PowerLoss => self.persist(),
+        }
     }
 
     fn pending_active_root(&self, pending: &PendingSpawn) -> Result<WorkspaceRootId, String> {
@@ -4240,7 +4262,8 @@ impl ControlPlane {
             if expires_at <= now || lifecycle == PendingSpawnLifecycle::Discarding {
                 self.discard_pending_spawn(fork_key).await?;
             } else {
-                self.prepare_pending_spawn(fork_key).await?;
+                self.prepare_pending_spawn(fork_key, Survives::PowerLoss)
+                    .await?;
             }
         }
         Ok(())
@@ -5472,17 +5495,41 @@ impl ControlPlane {
         Ok(())
     }
 
-    fn persist(&self) -> Result<(), String> {
-        save_state(&self.data, &self.state, Survives::PowerLoss)
+    fn persist(&mut self) -> Result<(), String> {
+        save_state(&self.data, &self.state, Survives::PowerLoss)?;
+        // A flushed save is a whole snapshot, so it covers any unflushed one.
+        self.unflushed = false;
+        Ok(())
     }
 
-    /// Saves a transition that is the last effect of its operation; see
+    /// Saves the last transition of a request without flushing it; see
     /// [`Survives::ServiceCrash`].
-    fn persist_unflushed(&self) -> Result<(), String> {
-        save_state(&self.data, &self.state, Survives::ServiceCrash)
+    fn persist_unflushed(&mut self) -> Result<(), String> {
+        save_state(&self.data, &self.state, Survives::ServiceCrash)?;
+        self.unflushed = true;
+        Ok(())
+    }
+
+    /// Flushes an unflushed save. Every request starts here, so nothing ever
+    /// acts on a transition that a power loss could still undo.
+    async fn make_durable(&mut self) -> Result<(), String> {
+        if !self.unflushed {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_flush) {
+            return Err("injected adapter-state flush failure".to_owned());
+        }
+        let data = self.data.clone();
+        tokio::task::spawn_blocking(move || flush_state_slot(&data, ADAPTER_STATE_SLOTS[2]))
+            .await
+            .map_err(display)??;
+        self.unflushed = false;
+        Ok(())
     }
 
     async fn shutdown(mut self) -> Result<(), String> {
+        self.make_durable().await?;
         #[cfg(test)]
         let root_released = if self.owns_local_root {
             self.fs.local_root_release_barrier()
@@ -6390,10 +6437,11 @@ const ADAPTER_STATE_SLOTS: [&str; 3] = ["adapter-state.a", "adapter-state.b", "a
 /// The failures an adapter-state transition must survive.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Survives {
-    /// Written without a flush. Only a transition that no later durable effect
-    /// depends on may be saved this way: losing it to a power loss leaves the
-    /// state a service crash just before it leaves, which recovery handles,
-    /// and the next flushed save, a whole snapshot, makes it durable anyway.
+    /// Written without a flush, as the last action of a request. Nothing acts
+    /// on it until it is durable: the session flushes it before its next
+    /// request and before publishing it to other sessions, and loading a
+    /// session makes it durable first. Losing it to a power loss therefore
+    /// leaves exactly the state that a crash just before it leaves.
     ServiceCrash,
     /// Flushed before the caller continues.
     PowerLoss,
@@ -6472,8 +6520,11 @@ fn ordered_state_slots(data: &Path) -> Result<[(&'static str, StateSlot); 3], St
 }
 
 fn load_state(data: &Path) -> Result<AdapterState, String> {
-    let [(_, flushed), (_, other), (_, unflushed)] = ordered_state_slots(data)?;
+    let [(_, flushed), (_, other), (unflushed_name, unflushed)] = ordered_state_slots(data)?;
     let newest = if unflushed.generation() > flushed.generation() {
+        // A process that exited before flushing its last save leaves it only
+        // in memory; nothing may act on it before it is durable.
+        flush_state_slot(data, unflushed_name)?;
         unflushed
     } else {
         flushed
@@ -6535,6 +6586,16 @@ fn save_state(data: &Path, state: &AdapterState, survives: Survives) -> Result<(
         }
     }
     Ok(())
+}
+
+/// Makes an unflushed save durable.
+fn flush_state_slot(data: &Path, name: &str) -> Result<(), String> {
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(data.join(name))
+        .map_err(display)?;
+    sync_file(&file, Durability::Full).map_err(display)?;
+    sync_parent(data, Durability::Full).map_err(display)
 }
 
 /// When the session last completed a save, for newest-first recovery order.
@@ -7965,7 +8026,7 @@ impl ServiceControl {
         }
         if deactivate {
             terminal_state.active = false;
-            save_state(&directory, &terminal_state, Survives::ServiceCrash)?;
+            save_state(&directory, &terminal_state, Survives::PowerLoss)?;
         }
         Ok(())
     }
@@ -8518,11 +8579,27 @@ impl SessionHandle {
                             Some(control) => dispatch_session_request(control, request).await,
                             None => Err("Acyclic session actor has no workspace".to_owned()),
                         };
-                        let next = control.as_ref().map(|control| control.state.clone());
-                        if let Ok(mut snapshot) = actor_snapshot.write() {
-                            *snapshot = next;
+                        // Other sessions see only durable state: an unflushed
+                        // save is published once flushed, after the reply.
+                        let mut pending = Some((response, result));
+                        if control.as_ref().is_some_and(|control| control.unflushed)
+                            && let Some((response, result)) = pending.take()
+                        {
+                            let _ = response.send(result);
                         }
-                        let _ = response.send(result);
+                        let durable = match control.as_mut() {
+                            Some(control) => control.make_durable().await.is_ok(),
+                            None => true,
+                        };
+                        if durable {
+                            let next = control.as_ref().map(|control| control.state.clone());
+                            if let Ok(mut snapshot) = actor_snapshot.write() {
+                                *snapshot = next;
+                            }
+                        }
+                        if let Some((response, result)) = pending {
+                            let _ = response.send(result);
+                        }
                     }
                     SessionCommand::Shutdown {
                         deactivate,
@@ -8543,7 +8620,7 @@ impl SessionHandle {
                                             save_state(
                                                 &directory,
                                                 &terminal_state,
-                                                Survives::ServiceCrash,
+                                                Survives::PowerLoss,
                                             )
                                         } else {
                                             Ok(())
@@ -9275,6 +9352,7 @@ async fn dispatch_session_request(
     control: &mut ControlPlane,
     request: ControlRequest,
 ) -> Result<Value, String> {
+    control.make_durable().await?;
     if request.command == ControlCommand::Hook {
         let (host, event) = request
             .name
@@ -17084,6 +17162,56 @@ mod tests {
             0,
             "invalid unledgered envelopes must not reach the dispatcher"
         );
+    }
+
+    #[tokio::test]
+    async fn no_request_runs_on_top_of_an_unflushed_transition() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        let root = temporary.path().join("root");
+        fs::create_dir(&root).expect("root directory");
+        let mut control = ControlPlane::open(data.clone())
+            .await
+            .expect("control plane");
+        control
+            .session_start(json!({"session_id":"session","cwd":root}))
+            .await
+            .expect("session start");
+        let prompt = |turn: &str| ControlRequest {
+            version: 1,
+            command: ControlCommand::Hook,
+            cwd: root.clone(),
+            argv: Vec::new(),
+            name: "codex:UserPromptSubmit".to_owned(),
+            arguments: json!({"session_id":"session","cwd":root,"turn_id":turn}),
+        };
+        dispatch_session_request(&mut control, prompt("first"))
+            .await
+            .expect("first prompt");
+        assert!(
+            control.unflushed,
+            "a remembered root turn is saved unflushed"
+        );
+
+        // Until the transition is durable, no later request may act on it.
+        control.fail_next_flush = true;
+        let refused = dispatch_session_request(&mut control, prompt("second"))
+            .await
+            .expect_err("a request must wait for the previous transition to be durable");
+        assert!(refused.contains("flush"), "{refused}");
+        assert!(!control.state.root_turns.contains("second"));
+        assert!(control.unflushed);
+
+        dispatch_session_request(&mut control, prompt("second"))
+            .await
+            .expect("second prompt once the first is durable");
+        assert!(control.state.root_turns.contains("second"));
+        control
+            .shutdown()
+            .await
+            .expect("shutdown flushes the last transition");
+        let reopened = load_state(&data).expect("durable state");
+        assert!(reopened.root_turns.contains("second"));
     }
 
     #[tokio::test]
