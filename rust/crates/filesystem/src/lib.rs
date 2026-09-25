@@ -145,7 +145,7 @@ pub use async_storage::{
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub use core_state::{LocalCoreStateStore, LocalCoreStateStoreError};
+pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
 #[cfg(feature = "distributed")]
 pub use distributed::{ProviderObjectStore, StreamAuthorityStore};
 pub use distributed_fs::DistributedFs;

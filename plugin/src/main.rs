@@ -2815,12 +2815,15 @@ impl ControlPlane {
             self.fail_after_root_intent = false;
             return Err("injected failure after root registration intent".to_owned());
         }
-        self.distributed
+        // Lineage and context commit as one change set.
+        let (store, durability) = self.store.defer_durability();
+        let distributed = DistributedFs::new(self.fs.clone(), store);
+        distributed
             .lineage()
             .register_root(workspace.workspace())
             .await
             .map_err(display)?;
-        self.distributed
+        distributed
             .contexts()
             .register_root(
                 context_id,
@@ -2835,10 +2838,13 @@ impl ControlPlane {
             )
             .await
             .map_err(display)?;
+        durability.commit().await.map_err(display)?;
         self.state.pending_root_registration = false;
         self.roots.insert(root_key(root_id), workspace);
         self.physical_roots.insert(root_key(root_id), physical);
-        self.persist()?;
+        // Losing this save leaves the flushed intent, from which restore_root
+        // repeats both registrations idempotently.
+        self.persist_unflushed()?;
         Ok(json!({
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
@@ -4081,6 +4087,10 @@ impl ControlPlane {
         }
         let mut route_roots = pending.roots.clone();
         if pending.lifecycle == PendingSpawnLifecycle::Preparing {
+            // Every root's fork binding, lineage, and the child context commit
+            // as one change set, durable before the mount mark below.
+            let (store, durability) = self.store.defer_durability();
+            let distributed = DistributedFs::new(self.fs.clone(), store);
             fs::create_dir_all(&pending.mount_path).map_err(display)?;
             if pending
                 .mount_path
@@ -4109,13 +4119,11 @@ impl ControlPlane {
                     source_binding.native_root_identity,
                     &source_binding.path,
                 )?;
-                let parent_workspace = self
-                    .distributed
+                let parent_workspace = distributed
                     .workspace(parent_root.workspace_id)
                     .await
                     .map_err(display)?;
-                let parent_lazy = self
-                    .distributed
+                let parent_lazy = distributed
                     .open_lazy(parent_workspace, source)
                     .await
                     .map_err(display)?;
@@ -4126,7 +4134,7 @@ impl ControlPlane {
                     .fork(&child_name, derived_idempotency_key(fork_key, *root_id))
                     .await
                     .map_err(display)?;
-                self.distributed
+                distributed
                     .lineage()
                     .register_existing_child(
                         parent_lazy.workspace(),
@@ -4152,11 +4160,12 @@ impl ControlPlane {
                     },
                 );
             }
-            self.distributed
+            distributed
                 .contexts()
                 .register_child(pending.context_id(), parent_context_id, context_roots)
                 .await
                 .map_err(display)?;
+            durability.commit().await.map_err(display)?;
             let prepared = self
                 .state
                 .pending
@@ -18785,6 +18794,31 @@ mod tests {
             expected_workspace
         );
         resumed_initial.shutdown().await.expect("initial shutdown");
+
+        // A power loss after the root registered loses the unflushed final
+        // save; recovery repeats the registration against the durable intent.
+        let registered_data = temporary.path().join("registered-plugin-data");
+        let mut registered = ControlPlane::open(registered_data.clone())
+            .await
+            .expect("registered control plane");
+        registered
+            .session_start(json!({"session_id":"registered","cwd":first}))
+            .await
+            .expect("registered root");
+        assert!(!registered.state.pending_root_registration);
+        let expected_context = registered.state.root_context_id;
+        drop(registered);
+        fs::remove_file(registered_data.join(ADAPTER_STATE_SLOTS[2]))
+            .expect("lose the unflushed final save");
+        let reregistered = ControlPlane::open(registered_data)
+            .await
+            .expect("repeat the root registration");
+        assert!(!reregistered.state.pending_root_registration);
+        assert_eq!(reregistered.state.root_context_id, expected_context);
+        reregistered
+            .shutdown()
+            .await
+            .expect("reregistered shutdown");
 
         let mut control = ControlPlane::open(data.clone())
             .await

@@ -2,7 +2,9 @@
 //!
 //! Distributed deployments can implement the small CAS traits over their
 //! authority stream. Embedded native deployments use this companion namespace:
-//! one lock and one recoverable JSON record per workspace and state family.
+//! one recoverable JSON record per workspace and state family. Contexts,
+//! lineage, and lazy-workspace bindings change through one write-ahead log
+//! (`CoreLog`); every other family locks and journals each record.
 //! Keeping the implementation here prevents adapters from inventing separate
 //! lineage, lease, and Git-compatibility databases.
 
@@ -24,7 +26,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use uuid::Uuid;
@@ -59,6 +62,8 @@ async fn run_local_transaction<T: Send + 'static>(
 pub struct LocalCoreStateStore {
     root: PathBuf,
     ownership: Ownership,
+    /// Open while this handle's commits defer durability.
+    deferral: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Clone, Debug)]
@@ -73,34 +78,12 @@ enum Ownership {
 #[derive(Debug)]
 struct Owner {
     _lock: OwnerLock,
-    /// Durable `lazy-workspaces` records, `None` when absent.
-    ///
-    /// The mutex serializes every owned access to that family's files, so
-    /// owned access needs no per-record file lock. An entry exists only while
-    /// it equals the durable record: a miss fills under the mutex, and a
-    /// compare-and-swap removes its entry before writing and inserts the
-    /// replacement only once it is durable. A failed or panicking write leaves
-    /// the entry absent, so even a poisoned map holds only exact entries.
-    lazy_workspaces: Mutex<HashMap<WorkspaceId, Option<LazyWorkspaceState>>>,
-    /// Workspace-context log, opened by the first context transaction. Its
-    /// mutex replaces the log's file lock for every owned context access.
-    context_log: Mutex<Option<ContextLog>>,
-}
-
-impl Owner {
-    fn context_log(&self) -> MutexGuard<'_, Option<ContextLog>> {
-        // A transaction that panics has taken the log, so a poisoned slot is
-        // empty and the next transaction replays.
-        self.context_log
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn lazy_workspaces(&self) -> MutexGuard<'_, HashMap<WorkspaceId, Option<LazyWorkspaceState>>> {
-        self.lazy_workspaces
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
+    /// Every logged record read or committed so far, `None` when absent.
+    /// Only the log changes it, under the log's mutex.
+    residents: Arc<RwLock<Residents>>,
+    /// Core-state log, opened by the first logged transaction. Its mutex
+    /// replaces the log's file lock for every owned logged access.
+    log: Mutex<Option<CoreLog>>,
 }
 
 /// One held `owner.lock`, released when dropped.
@@ -147,6 +130,16 @@ impl Drop for OwnerLock {
 struct Namespace {
     root: PathBuf,
     admission: Admission,
+    durability: Durability,
+}
+
+/// When a transaction's log commits become durable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Durability {
+    /// Before the commit returns.
+    Flushed,
+    /// With the next flush of the log.
+    Deferred,
 }
 
 #[derive(Debug)]
@@ -175,6 +168,7 @@ impl LocalCoreStateStore {
         Self {
             root: root.into(),
             ownership: Ownership::Shared,
+            deferral: None,
         }
     }
 
@@ -183,7 +177,7 @@ impl LocalCoreStateStore {
     ///
     /// Fails with [`LocalCoreStateStoreError::OwnershipConflict`] while another
     /// store owns the namespace or has a transaction in flight. An owner serves
-    /// lazy-workspace bindings from memory after their first load.
+    /// logged records from memory after their first load.
     pub fn open_owned(root: impl Into<PathBuf>) -> Result<Self, LocalCoreStateStoreError> {
         let root = root.into();
         let lock = OwnerLock::acquire(&root, LockMode::Exclusive)?;
@@ -191,10 +185,28 @@ impl LocalCoreStateStore {
             root,
             ownership: Ownership::Owned(Arc::new(Owner {
                 _lock: lock,
-                lazy_workspaces: Mutex::default(),
-                context_log: Mutex::default(),
+                residents: Arc::default(),
+                log: Mutex::default(),
             })),
+            deferral: None,
         })
+    }
+
+    /// Returns a handle whose context, lineage, and lazy-workspace commits
+    /// defer durability until [`DeferredDurability::commit`], so a sequence of
+    /// commits costs one flush.
+    ///
+    /// Deferred commits are visible at once and stay atomic and ordered: a
+    /// crash before the flush loses a suffix of them. Once the returned guard
+    /// commits or drops, the handle and its clones flush every commit again.
+    /// Only an owner defers; a shared handle's commits stay flushed.
+    pub fn defer_durability(&self) -> (Self, DeferredDurability) {
+        let deferral = Arc::new(AtomicBool::new(true));
+        let store = Self {
+            deferral: Some(Arc::clone(&deferral)),
+            ..self.clone()
+        };
+        (store.clone(), DeferredDurability { store, deferral })
     }
 
     /// Returns the namespace root.
@@ -210,9 +222,19 @@ impl LocalCoreStateStore {
             },
             Ownership::Owned(owner) => Admission::Owned(Arc::clone(owner)),
         };
+        let deferred = matches!(admission, Admission::Owned(_))
+            && self
+                .deferral
+                .as_ref()
+                .is_some_and(|deferral| deferral.load(Ordering::Acquire));
         Ok(Namespace {
             root: self.root.clone(),
             admission,
+            durability: if deferred {
+                Durability::Deferred
+            } else {
+                Durability::Flushed
+            },
         })
     }
 
@@ -223,25 +245,6 @@ impl LocalCoreStateStore {
     ) -> Result<T, LocalCoreStateStoreError> {
         let store = self.clone();
         run_local_transaction(move || operation(&store.namespace()?)).await
-    }
-
-    /// Returns an owner's cached binding (`Some(None)` caches absence).
-    ///
-    /// A compare-and-swap holds the cache across durable I/O, so contention
-    /// falls back to a transaction that waits off the executor.
-    fn cached_lazy_workspace(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Option<Option<LazyWorkspaceState>> {
-        let Ownership::Owned(owner) = &self.ownership else {
-            return None;
-        };
-        owner
-            .lazy_workspaces
-            .try_lock()
-            .ok()?
-            .get(&workspace_id)
-            .cloned()
     }
 
     /// Lists materialization operation ids with durable recovery state.
@@ -329,50 +332,6 @@ impl Namespace {
             operations.insert(OperationId::from_bytes(bytes));
         }
         Ok(operations.into_iter().collect())
-    }
-
-    fn load_lazy_workspace(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Result<Option<LazyWorkspaceState>, LocalCoreStateStoreError> {
-        let paths = self.record(LAZY_WORKSPACE_FAMILY, &workspace_id.into_bytes());
-        let Admission::Owned(owner) = &self.admission else {
-            return read_locked(&paths);
-        };
-        let mut records = owner.lazy_workspaces();
-        if let Some(state) = records.get(&workspace_id) {
-            return Ok(state.clone());
-        }
-        let state = read_recoverable(&paths)?;
-        records.insert(workspace_id, state.clone());
-        Ok(state)
-    }
-
-    fn compare_and_swap_lazy_workspace(
-        &self,
-        workspace_id: WorkspaceId,
-        expected_revision: u64,
-        replacement: LazyWorkspaceState,
-    ) -> Result<bool, LocalCoreStateStoreError> {
-        let paths = self.record(LAZY_WORKSPACE_FAMILY, &workspace_id.into_bytes());
-        let Admission::Owned(owner) = &self.admission else {
-            return compare_and_swap(&paths, expected_revision, &replacement, |state| {
-                state.revision
-            });
-        };
-        let mut records = owner.lazy_workspaces();
-        let current = match records.remove(&workspace_id) {
-            Some(current) => current,
-            None => read_recoverable(&paths)?,
-        };
-        if current.as_ref().map_or(0, |state| state.revision) != expected_revision {
-            records.insert(workspace_id, current);
-            return Ok(false);
-        }
-        std::fs::create_dir_all(&paths.directory)?;
-        write_journaled(&paths, &replacement)?;
-        records.insert(workspace_id, Some(replacement));
-        Ok(true)
     }
 }
 
@@ -671,6 +630,32 @@ fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
     }
 }
 
+/// Guard for a [`LocalCoreStateStore::defer_durability`] scope.
+#[must_use = "deferred commits are durable only once committed"]
+#[derive(Debug)]
+pub struct DeferredDurability {
+    store: LocalCoreStateStore,
+    deferral: Arc<AtomicBool>,
+}
+
+impl DeferredDurability {
+    /// Ends the scope and makes every commit made through the log so far
+    /// durable.
+    pub async fn commit(self) -> Result<(), LocalCoreStateStoreError> {
+        self.deferral.store(false, Ordering::Release);
+        self.store
+            .transaction(|root| root.with_log(CoreLog::flush))
+            .await
+    }
+}
+
+impl Drop for DeferredDurability {
+    fn drop(&mut self) {
+        // Abandoned commits become durable with the log's next flush.
+        self.deferral.store(false, Ordering::Release);
+    }
+}
+
 /// Journaled companion-state failure.
 #[derive(Debug, Error)]
 pub enum LocalCoreStateStoreError {
@@ -704,10 +689,7 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         &self,
         workspace_id: WorkspaceId,
     ) -> Result<Option<WorkspaceLineageRecord>, Self::Error> {
-        self.transaction(move |namespace| {
-            read_locked(&namespace.record("lineage", &workspace_id.into_bytes()))
-        })
-        .await
+        self.load_logged(workspace_id).await
     }
 
     async fn compare_and_swap(
@@ -716,13 +698,8 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         expected_revision: u64,
         replacement: WorkspaceLineageRecord,
     ) -> Result<bool, Self::Error> {
-        self.transaction(move |namespace| {
-            compare_and_swap(
-                &namespace.record("lineage", &workspace_id.into_bytes()),
-                expected_revision,
-                &replacement,
-                |record| record.revision,
-            )
+        self.compare_and_swap_logged(workspace_id, expected_revision, replacement, |record| {
+            record.revision
         })
         .await
     }
@@ -735,18 +712,15 @@ impl WorkspaceContextStore for LocalCoreStateStore {
         &self,
         context_id: WorkspaceContextId,
     ) -> Result<Option<WorkspaceContext>, Self::Error> {
-        self.transaction(move |root| {
-            root.with_context_log(|_| read_recoverable(&context_record_paths(root, context_id)))
-        })
-        .await
+        self.load_logged(context_id).await
     }
 
     async fn list(&self) -> Result<Vec<WorkspaceContext>, Self::Error> {
         self.transaction(move |root| {
-            root.with_context_log(|log| {
-                let contexts = load_all_contexts(root)?;
-                if !context_children_index_ready(root)? {
-                    log.commit(root, &ContextChange::index(contexts.iter().cloned()))?;
+            root.with_log(|log| {
+                let contexts = load_all_contexts(root, log)?;
+                if !context_children_index_ready(root, log)? {
+                    log.commit(root, index_change(contexts.iter().cloned())?)?;
                 }
                 Ok(contexts)
             })
@@ -775,15 +749,15 @@ impl WorkspaceContextStore for LocalCoreStateStore {
         require_exact_set: bool,
     ) -> Result<bool, Self::Error> {
         self.transaction(move |root| {
-            root.with_context_log(|log| {
-                if require_exact_set && context_record_ids(root)?.len() != expected_revisions.len()
+            root.with_log(|log| {
+                if require_exact_set
+                    && live_context_ids(root, log)?.len() != expected_revisions.len()
                 {
                     return Ok(false);
                 }
                 let mut before = BTreeMap::new();
                 for (context_id, expected) in &expected_revisions {
-                    let current: Option<WorkspaceContext> =
-                        read_recoverable(&context_record_paths(root, *context_id))?;
+                    let current = log.get::<WorkspaceContext>(root, *context_id)?;
                     if current.as_ref().map_or(0, |record| record.revision) != *expected {
                         return Ok(false);
                     }
@@ -799,8 +773,9 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 {
                     return Ok(false);
                 }
-                if !context_children_index_ready(root)? {
-                    log.commit(root, &ContextChange::index(load_all_contexts(root)?))?;
+                if !context_children_index_ready(root, log)? {
+                    let contexts = load_all_contexts(root, log)?;
+                    log.commit(root, index_change(contexts)?)?;
                 }
                 let affected_parents = before
                     .values()
@@ -809,8 +784,8 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                     .collect::<BTreeSet<_>>();
                 let mut children = WorkspaceContextChildren::new();
                 for parent in affected_parents {
-                    let current = read_recoverable(&context_children_paths(root, parent))?;
-                    children.insert(parent, current.unwrap_or_default());
+                    let current = log.get::<ContextChildren>(root, parent)?;
+                    children.insert(parent, current.unwrap_or_default().0);
                 }
                 for (context_id, replacement) in &after {
                     update_context_children(
@@ -819,20 +794,14 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                         Some(replacement),
                     );
                 }
-                log.commit(
-                    root,
-                    &ContextChange {
-                        contexts: after
-                            .into_iter()
-                            .map(|(context_id, record)| (context_id, Some(record)))
-                            .collect(),
-                        children: children
-                            .into_iter()
-                            .map(|(parent, descendants)| (parent, Some(descendants)))
-                            .collect(),
-                        installs_index: false,
-                    },
-                )?;
+                let mut change = Change::default();
+                for (context_id, record) in after {
+                    change.put(context_id, Some(record));
+                }
+                for (parent, descendants) in children {
+                    change.put_children(parent, Some(descendants))?;
+                }
+                log.commit(root, change)?;
                 Ok(true)
             })
         })
@@ -846,14 +815,14 @@ impl WorkspaceContextStore for LocalCoreStateStore {
         maximum: u32,
     ) -> Result<WorkspaceContextDiscardOutcome, Self::Error> {
         self.transaction(move |root_path| {
-            root_path.with_context_log(|log| {
-                if !context_children_index_ready(root_path)? {
+            root_path.with_log(|log| {
+                if !context_children_index_ready(root_path, log)? {
                     return Ok(WorkspaceContextDiscardOutcome::IncompatibleState);
                 }
-                let root: Option<WorkspaceContext> =
-                    read_recoverable(&context_record_paths(root_path, child))?;
+                let root = log.get::<WorkspaceContext>(root_path, child)?;
                 let discarded = match plan_local_context_subtree_discard(
                     root_path,
+                    log,
                     root.as_ref(),
                     parent,
                     child,
@@ -864,9 +833,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 };
                 let mut records = BTreeMap::from_iter(root.map(|record| (child, record)));
                 for context_id in discarded.iter().copied().filter(|id| *id != child) {
-                    let Some(record) =
-                        read_recoverable(&context_record_paths(root_path, context_id))?
-                    else {
+                    let Some(record) = log.get::<WorkspaceContext>(root_path, context_id)? else {
                         return Ok(WorkspaceContextDiscardOutcome::IncompatibleState);
                     };
                     records.insert(context_id, record);
@@ -893,23 +860,16 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 let WorkspaceContextDiscardOutcome::Discarded(discarded) = &outcome else {
                     return Ok(outcome);
                 };
-                let mut contexts = BTreeMap::new();
+                let mut change = Change::default();
                 for context_id in discarded {
                     let replacement = records.get(context_id).cloned().ok_or_else(|| {
                         LocalCoreStateStoreError::ContextTransaction(
                             "discarded context replacement is absent".to_owned(),
                         )
                     })?;
-                    contexts.insert(*context_id, Some(replacement));
+                    change.put(*context_id, Some(replacement));
                 }
-                log.commit(
-                    root_path,
-                    &ContextChange {
-                        contexts,
-                        children: BTreeMap::new(),
-                        installs_index: false,
-                    },
-                )?;
+                log.commit(root_path, change)?;
                 Ok(outcome)
             })
         })
@@ -921,111 +881,327 @@ const WORKSPACE_CONTEXT_FAMILY: &str = "workspace-contexts-v2";
 const CONTEXT_CHILDREN_FAMILY: &str = "workspace-context-children-v1";
 const CONTEXT_CHILDREN_INDEX_FAMILY: &str = "workspace-context-children-index-v1";
 const CONTEXT_CHILD_COUNT_FAMILY: &str = "workspace-context-child-counts-v1";
-const CONTEXT_LOG_FAMILY: &str = "workspace-context-log-v1";
+const LINEAGE_FAMILY: &str = "lineage";
+const CORE_LOG_FAMILY: &str = "core-state-log-v1";
 const LEGACY_CONTEXT_TRANSACTION_FAMILY: &str = "workspace-context-transactions-v2";
-/// Commits an owner keeps in its context log before flushing their records.
-const OWNED_CONTEXT_CHECKPOINT: u64 = 256;
+/// Commits an owner keeps in its log before writing their records back. Tests
+/// checkpoint every few commits so crash tests cover owned checkpoints.
+const OWNED_CHECKPOINT: u64 = if cfg!(test) { 3 } else { 256 };
+
+impl LocalCoreStateStore {
+    /// Loads one logged record, from an owner's memory when it is resident.
+    async fn load_logged<T: Logged>(
+        &self,
+        id: T::Id,
+    ) -> Result<Option<T>, LocalCoreStateStoreError> {
+        if let Ownership::Owned(owner) = &self.ownership
+            && let Some(value) = owner.resident::<T>(id)
+        {
+            return Ok(value);
+        }
+        self.transaction(move |root| root.with_log(|log| log.get::<T>(root, id)))
+            .await
+    }
+
+    /// Commits `replacement` only while the record is at `expected_revision`
+    /// (`0` means absent).
+    async fn compare_and_swap_logged<T: Logged>(
+        &self,
+        id: T::Id,
+        expected_revision: u64,
+        replacement: T,
+        revision: impl Fn(&T) -> u64 + Send + 'static,
+    ) -> Result<bool, LocalCoreStateStoreError> {
+        self.transaction(move |root| {
+            root.with_log(|log| {
+                if log.get::<T>(root, id)?.as_ref().map_or(0, &revision) != expected_revision {
+                    return Ok(false);
+                }
+                let mut change = Change::default();
+                change.put(id, Some(replacement));
+                log.commit(root, change)?;
+                Ok(true)
+            })
+        })
+        .await
+    }
+}
+
+impl Owner {
+    /// Returns a resident record (`Some(None)` for a known absence) without
+    /// touching the log. Every commit and every replay updates residents
+    /// before its transaction ends, so a resident record is never stale.
+    fn resident<T: Logged>(&self, id: T::Id) -> Option<Option<T>> {
+        let residents = self.residents.read().ok()?;
+        let value = residents.get(&T::key(id))?;
+        Some(value.as_ref().and_then(T::from_value).cloned())
+    }
+
+    fn log(&self) -> MutexGuard<'_, Option<CoreLog>> {
+        // A transaction that panics has taken the log, so a poisoned slot is
+        // empty and the next transaction reopens and replays.
+        self.log.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
 
 impl Namespace {
-    /// Runs one workspace-context transaction over a replayed context log.
+    /// Runs one transaction over the replayed core-state log.
     ///
-    /// An owner serializes its transactions on its own mutex and keeps its log
-    /// open between them, replaying a predecessor's log only once; a shared
-    /// store takes the log's file lock and replays whatever a crashed
-    /// transaction left. A failed transaction drops the log, so the next one
-    /// replays and truncates any torn tail before appending.
-    fn with_context_log<T>(
+    /// An owner serializes its transactions on its own mutex, keeps its log
+    /// open between them, and replays a predecessor's log only when it opens
+    /// it; a due checkpoint runs before the next transaction rather than inside
+    /// the commit that made it due, so a committed change is never reported as
+    /// failed. A shared store takes the log's file lock and replays and
+    /// checkpoints whatever an earlier transaction or owner left.
+    fn with_log<T>(
         &self,
-        operation: impl FnOnce(&mut ContextLog) -> Result<T, LocalCoreStateStoreError>,
+        operation: impl FnOnce(&mut CoreLog) -> Result<T, LocalCoreStateStoreError>,
     ) -> Result<T, LocalCoreStateStoreError> {
         match &self.admission {
-            Admission::Shared { .. } => with_lock(&context_log_paths(self), || {
-                operation(&mut ContextLog::open(self, 1)?)
+            Admission::Shared { .. } => with_lock(&core_log_paths(self), || {
+                operation(&mut CoreLog::open(self, Arc::default())?)
             }),
             Admission::Owned(owner) => {
-                let mut slot = owner.context_log();
-                let mut log = match slot.take() {
+                let mut slot = owner.log();
+                let mut log = match slot.take().filter(|log| !log.broken) {
                     Some(log) => log,
-                    None => ContextLog::open(self, OWNED_CONTEXT_CHECKPOINT)?,
+                    None => CoreLog::open(self, Arc::clone(&owner.residents))?,
                 };
-                let value = operation(&mut log)?;
+                let result = if log.sequence >= OWNED_CHECKPOINT {
+                    log.checkpoint(self)
+                } else {
+                    Ok(())
+                }
+                .and_then(|()| operation(&mut log));
                 *slot = Some(log);
-                Ok(value)
+                result
             }
         }
     }
 }
 
-/// Complete after-images of the workspace-context records one commit changes.
-///
-/// `None` removes a record. Replaying a change is idempotent.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-struct ContextChange {
-    contexts: BTreeMap<WorkspaceContextId, Option<WorkspaceContext>>,
-    children: BTreeMap<WorkspaceContextId, Option<BTreeSet<WorkspaceContextId>>>,
-    installs_index: bool,
+/// Identity of one record served through the core-state log.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+enum RecordKey {
+    Context(WorkspaceContextId),
+    Children(WorkspaceContextId),
+    ChildCount(WorkspaceContextId),
+    ChildIndex,
+    Lineage(WorkspaceId),
+    LazyWorkspace(WorkspaceId),
 }
 
-impl ContextChange {
-    /// Installs the child index derived from every context.
-    fn index(records: impl IntoIterator<Item = WorkspaceContext>) -> Self {
-        Self {
-            contexts: BTreeMap::new(),
-            children: context_children(records)
-                .into_iter()
-                .map(|(parent, descendants)| (parent, Some(descendants)))
-                .collect(),
-            installs_index: true,
+impl RecordKey {
+    fn paths(self, root: &Namespace) -> RecordPaths<'_> {
+        match self {
+            Self::Context(id) => root.record(WORKSPACE_CONTEXT_FAMILY, &id.into_bytes()),
+            Self::Children(id) => root.record(CONTEXT_CHILDREN_FAMILY, &id.into_bytes()),
+            Self::ChildCount(id) => root.record(CONTEXT_CHILD_COUNT_FAMILY, &id.into_bytes()),
+            Self::ChildIndex => root.record(CONTEXT_CHILDREN_INDEX_FAMILY, &[0; 16]),
+            Self::Lineage(id) => root.record(LINEAGE_FAMILY, &id.into_bytes()),
+            Self::LazyWorkspace(id) => root.record(LAZY_WORKSPACE_FAMILY, &id.into_bytes()),
         }
     }
 }
 
+/// One logged record's value; its variant always matches its key's.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+enum RecordValue {
+    Context(WorkspaceContext),
+    Children(ContextChildren),
+    ChildCount(ContextChildCount),
+    ChildIndex(ContextChildIndex),
+    Lineage(WorkspaceLineageRecord),
+    LazyWorkspace(LazyWorkspaceState),
+}
+
+impl RecordValue {
+    /// Encodes a record file: the bare value, or `null` for an absence.
+    fn encode(value: Option<&Self>) -> Result<Vec<u8>, serde_json::Error> {
+        match value {
+            None => serde_json::to_vec(&()),
+            Some(Self::Context(value)) => serde_json::to_vec(value),
+            Some(Self::Children(value)) => serde_json::to_vec(value),
+            Some(Self::ChildCount(value)) => serde_json::to_vec(value),
+            Some(Self::ChildIndex(value)) => serde_json::to_vec(value),
+            Some(Self::Lineage(value)) => serde_json::to_vec(value),
+            Some(Self::LazyWorkspace(value)) => serde_json::to_vec(value),
+        }
+    }
+}
+
+/// A record type served through the core-state log, bound to its key.
+trait Logged: Clone + Serialize + DeserializeOwned + Send + 'static {
+    type Id: Copy + Send + 'static;
+
+    fn key(id: Self::Id) -> RecordKey;
+    fn into_value(self) -> RecordValue;
+    fn from_value(value: &RecordValue) -> Option<&Self>;
+}
+
+macro_rules! logged {
+    ($type:ty, $id:ty, $variant:ident, |$key:ident| $record:expr) => {
+        impl Logged for $type {
+            type Id = $id;
+
+            fn key($key: $id) -> RecordKey {
+                $record
+            }
+
+            fn into_value(self) -> RecordValue {
+                RecordValue::$variant(self)
+            }
+
+            fn from_value(value: &RecordValue) -> Option<&Self> {
+                match value {
+                    RecordValue::$variant(value) => Some(value),
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+/// Direct children of one context.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+struct ContextChildren(BTreeSet<WorkspaceContextId>);
+
+/// Number of direct children of one context, read before its bucket.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+struct ContextChildCount(u64);
+
+/// Marks the child index as complete for every context.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+struct ContextChildIndex(u16);
+
+logged!(WorkspaceContext, WorkspaceContextId, Context, |id| {
+    RecordKey::Context(id)
+});
+logged!(ContextChildren, WorkspaceContextId, Children, |id| {
+    RecordKey::Children(id)
+});
+logged!(ContextChildCount, WorkspaceContextId, ChildCount, |id| {
+    RecordKey::ChildCount(id)
+});
+logged!(ContextChildIndex, (), ChildIndex, |_id| {
+    RecordKey::ChildIndex
+});
+logged!(WorkspaceLineageRecord, WorkspaceId, Lineage, |id| {
+    RecordKey::Lineage(id)
+});
+logged!(LazyWorkspaceState, WorkspaceId, LazyWorkspace, |id| {
+    RecordKey::LazyWorkspace(id)
+});
+
+/// Complete after-images of the records one commit changes; `None` records
+/// an absence. Replaying a change is idempotent.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+struct Change(Vec<(RecordKey, Option<RecordValue>)>);
+
+impl Change {
+    fn put<T: Logged>(&mut self, id: T::Id, value: Option<T>) {
+        self.0.push((T::key(id), value.map(T::into_value)));
+    }
+
+    /// Replaces a child bucket together with the count read before it.
+    fn put_children(
+        &mut self,
+        parent: WorkspaceContextId,
+        descendants: Option<BTreeSet<WorkspaceContextId>>,
+    ) -> Result<(), LocalCoreStateStoreError> {
+        let count = descendants
+            .as_ref()
+            .map(|descendants| {
+                u64::try_from(descendants.len())
+                    .map(ContextChildCount)
+                    .map_err(|_| {
+                        LocalCoreStateStoreError::ContextTransaction(
+                            "workspace-context child count exceeds durable representation"
+                                .to_owned(),
+                        )
+                    })
+            })
+            .transpose()?;
+        self.put(parent, descendants.map(ContextChildren));
+        self.put(parent, count);
+        Ok(())
+    }
+}
+
+/// Installs the child index derived from every context.
+fn index_change(
+    records: impl IntoIterator<Item = WorkspaceContext>,
+) -> Result<Change, LocalCoreStateStoreError> {
+    let mut change = Change::default();
+    for (parent, descendants) in context_children(records) {
+        change.put_children(parent, Some(descendants))?;
+    }
+    change.put((), Some(ContextChildIndex(1)));
+    Ok(change)
+}
+
 /// One log line: `<blake3 hex> <frame json>`.
 #[derive(Serialize, Deserialize)]
-struct ContextLogFrame<C> {
+struct LogFrame<C> {
     epoch: Uuid,
     sequence: u64,
     change: C,
 }
 
-/// Write-ahead log that commits a multi-record workspace-context change with
-/// one flush.
+type Residents = HashMap<RecordKey, Option<RecordValue>>;
+
+/// Write-ahead log through which workspace contexts, their child index,
+/// lineage, and lazy-workspace bindings change.
 ///
-/// A change is committed once its checksummed frame is flushed; its records
-/// are then written in place without flushing. Until a checkpoint flushes
-/// those records and truncates the log, a crash of the process or the machine
-/// is repaired by replaying the log before any record is read, so a reader
-/// observes every record of a change or none of them. This needs no directory
-/// flush on Windows: in-place writes keep each record's directory entry, and a
-/// new record file is flushed through its own handle exactly as the journaled
-/// single-record path relies on.
+/// A change is committed once its checksummed frame is flushed. The change is
+/// then resident in memory, and its record files are written back only by a
+/// checkpoint, which flushes the log, writes and flushes every changed record,
+/// and only then truncates the log into a new epoch. Every opener replays the
+/// log's valid prefix into memory and checkpoints it before any record is
+/// read, so a crash of the process or the machine exposes every record of a
+/// change or none of them.
 ///
-/// Frames carry the log's epoch and a consecutive sequence. Replay applies the
-/// valid prefix and stops at a torn tail, which can only be a frame whose flush
-/// never returned and whose records were therefore never written. A checkpoint
-/// starts a new epoch, so frames a not-yet-durable truncation leaves behind are
-/// never replayed after a newer frame.
+/// Record files are only ever rewritten in place, and an absent record is
+/// written as `null` rather than deleted, so recovery never depends on a
+/// directory update becoming durable: on Windows, which has no directory
+/// flush, a checkpoint needs only each record file flushed through its own
+/// handle, exactly as the journaled single-record path relies on.
+///
+/// Frames carry the log's epoch and a consecutive sequence. Replay stops at
+/// the first torn or out-of-sequence frame, which can only follow the last
+/// flush, so its changes were never written back. A checkpoint starts a new
+/// epoch, so frames a not-yet-durable truncation leaves behind are never
+/// replayed after a newer frame.
+///
+/// A deferred commit is appended without a flush; it becomes durable together
+/// with the next flush of the log, and a crash before then loses it together
+/// with every later frame.
 #[derive(Debug)]
-struct ContextLog {
+struct CoreLog {
     file: File,
+    /// Bytes appended to the log.
+    length: u64,
+    /// Bytes of the log known to be durable.
+    flushed: u64,
     epoch: Uuid,
     sequence: u64,
-    checkpoint_after: u64,
-    unflushed: BTreeSet<PathBuf>,
+    residents: Arc<RwLock<Residents>>,
+    dirty: BTreeSet<RecordKey>,
+    /// The log may hold a frame whose outcome is unknown, so it must be
+    /// reopened and replayed before it is used again.
+    broken: bool,
 }
 
-impl ContextLog {
-    fn open(root: &Namespace, checkpoint_after: u64) -> Result<Self, LocalCoreStateStoreError> {
-        for family in [
-            WORKSPACE_CONTEXT_FAMILY,
-            CONTEXT_CHILDREN_FAMILY,
-            CONTEXT_CHILDREN_INDEX_FAMILY,
-            CONTEXT_CHILD_COUNT_FAMILY,
-            CONTEXT_LOG_FAMILY,
-        ] {
-            std::fs::create_dir_all(root.family(family))?;
-        }
-        let paths = context_log_paths(root);
+impl CoreLog {
+    fn open(
+        root: &Namespace,
+        residents: Arc<RwLock<Residents>>,
+    ) -> Result<Self, LocalCoreStateStoreError> {
+        let paths = core_log_paths(root);
+        std::fs::create_dir_all(&paths.directory)?;
         let mut file = match OpenOptions::new()
             .read(true)
             .write(true)
@@ -1044,134 +1220,192 @@ impl ContextLog {
         };
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
+        // A frame found here may have been appended by a process that never
+        // flushed it, so the checkpoint below flushes the log first.
         let mut log = Self {
             file,
+            length: bytes.len() as u64,
+            flushed: 0,
             epoch: Uuid::now_v7(),
             sequence: 0,
-            checkpoint_after,
-            unflushed: BTreeSet::new(),
+            residents,
+            dirty: BTreeSet::new(),
+            broken: false,
         };
+        log.residents().clear();
         let legacy = legacy_context_change(root)?;
         if bytes.is_empty() && legacy.is_none() {
             return Ok(log);
         }
-        if let Some(change) = &legacy {
-            log.apply(root, change)?;
+        let settles_legacy = legacy.is_some();
+        for change in legacy.into_iter().chain(replayable_changes(&bytes)) {
+            log.apply(change);
         }
-        for change in replayable_changes(&bytes) {
-            log.apply(root, &change)?;
-        }
-        log.checkpoint()?;
-        if legacy.is_some() {
+        log.checkpoint(root)?;
+        if settles_legacy {
             remove_record(&root.record(LEGACY_CONTEXT_TRANSACTION_FAMILY, &[0; 16]))?;
         }
         Ok(log)
     }
 
-    /// Durably commits `change`, then applies it.
-    fn commit(
+    fn residents(&self) -> RwLockWriteGuard<'_, Residents> {
+        self.residents
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Reads one record from memory, or from its file on first use.
+    fn get<T: Logged>(
         &mut self,
         root: &Namespace,
-        change: &ContextChange,
-    ) -> Result<(), LocalCoreStateStoreError> {
-        let frame = serde_json::to_vec(&ContextLogFrame {
+        id: T::Id,
+    ) -> Result<Option<T>, LocalCoreStateStoreError> {
+        self.get_bounded(root, id, None)
+    }
+
+    /// Reads one record, refusing a file larger than `maximum_bytes`.
+    fn get_bounded<T: Logged>(
+        &mut self,
+        root: &Namespace,
+        id: T::Id,
+        maximum_bytes: Option<u64>,
+    ) -> Result<Option<T>, LocalCoreStateStoreError> {
+        let key = T::key(id);
+        if let Some(value) = self.residents().get(&key) {
+            return Ok(value.as_ref().and_then(T::from_value).cloned());
+        }
+        let paths = key.paths(root);
+        let value = match maximum_bytes {
+            Some(maximum_bytes) => read_recoverable_bounded::<Option<T>>(&paths, maximum_bytes)?,
+            None => read_recoverable::<Option<T>>(&paths)?,
+        }
+        .flatten();
+        self.residents()
+            .insert(key, value.clone().map(T::into_value));
+        Ok(value)
+    }
+
+    /// Keys of resident records that satisfy `select`.
+    fn resident_keys<K>(&self, select: impl Fn(RecordKey) -> Option<K>) -> Vec<K> {
+        self.residents
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .filter_map(|key| select(*key))
+            .collect()
+    }
+
+    /// Commits `change`, durably unless `root` defers durability.
+    ///
+    /// A failed append is cut back off the log and flushed away, so the change
+    /// is reported failed only when it can never be replayed; if that repair
+    /// fails too, the log is marked broken and the outcome is unknown.
+    fn commit(&mut self, root: &Namespace, change: Change) -> Result<(), LocalCoreStateStoreError> {
+        let frame = serde_json::to_vec(&LogFrame {
             epoch: self.epoch,
             sequence: self.sequence,
-            change,
+            change: &change,
         })?;
         let mut line = blake3::hash(&frame).to_hex().as_bytes().to_vec();
         line.push(b' ');
         line.extend_from_slice(&frame);
         line.push(b'\n');
-        crash_point("before frame");
-        self.file.write_all(&line)?;
-        crash_point("frame written");
-        self.file.sync_data()?;
-        crash_point("frame flushed");
+        let deferred = root.durability == Durability::Deferred;
+        if let Err(error) = self.append(&line, deferred) {
+            let length = self.length;
+            self.broken = self
+                .file
+                .set_len(length)
+                .and_then(|()| self.file.seek(SeekFrom::Start(length)).map(drop))
+                .and_then(|()| self.file.sync_data())
+                .is_err();
+            return Err(error.into());
+        }
         self.sequence += 1;
-        self.apply(root, change)?;
-        if self.sequence >= self.checkpoint_after {
-            self.checkpoint()?;
+        self.apply(change);
+        Ok(())
+    }
+
+    fn append(&mut self, line: &[u8], deferred: bool) -> std::io::Result<()> {
+        crash_point("before frame", self.flushed);
+        self.file.write_all(line)?;
+        let length = self.length + line.len() as u64;
+        crash_point("frame written", self.flushed);
+        if !deferred {
+            self.file.sync_data()?;
+            self.flushed = length;
+            crash_point("frame flushed", self.flushed);
+        }
+        self.length = length;
+        Ok(())
+    }
+
+    /// Makes every appended frame durable.
+    fn flush(&mut self) -> Result<(), LocalCoreStateStoreError> {
+        if self.flushed < self.length {
+            self.file.sync_data()?;
+            self.flushed = self.length;
+            crash_point("frames flushed", self.flushed);
         }
         Ok(())
     }
 
-    /// Writes a committed change's records in place without flushing them.
-    fn apply(
-        &mut self,
-        root: &Namespace,
-        change: &ContextChange,
-    ) -> Result<(), LocalCoreStateStoreError> {
-        for (context_id, record) in &change.contexts {
-            self.write(&context_record_paths(root, *context_id), record.as_ref())?;
+    /// Makes a committed change resident; its files are written back later.
+    fn apply(&mut self, change: Change) {
+        let mut residents = self
+            .residents
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (key, value) in change.0 {
+            residents.insert(key, value);
+            self.dirty.insert(key);
         }
-        for (parent, descendants) in &change.children {
-            let count = descendants
-                .as_ref()
-                .map(|descendants| {
-                    u64::try_from(descendants.len()).map_err(|_| {
-                        LocalCoreStateStoreError::ContextTransaction(
-                            "workspace-context child count exceeds durable representation"
-                                .to_owned(),
-                        )
-                    })
-                })
-                .transpose()?;
-            self.write(&context_children_paths(root, *parent), descendants.as_ref())?;
-            self.write(&context_children_count_paths(root, *parent), count.as_ref())?;
-        }
-        if change.installs_index {
-            self.write(&context_children_marker_paths(root), Some(&1_u16))?;
-        }
-        Ok(())
     }
 
-    fn write<T: Serialize>(
-        &mut self,
-        paths: &RecordPaths,
-        value: Option<&T>,
-    ) -> Result<(), LocalCoreStateStoreError> {
-        if let Some(value) = value {
-            std::fs::write(&paths.current, serde_json::to_vec(value)?)?;
-        } else {
-            remove_if_present(&paths.temporary)?;
-            remove_if_present(&paths.previous)?;
-            remove_if_present(&paths.current)?;
-        }
-        self.unflushed.insert(paths.current.clone());
-        crash_point("record written");
-        Ok(())
-    }
-
-    /// Flushes every applied record, then truncates the log into a new epoch.
-    fn checkpoint(&mut self) -> Result<(), LocalCoreStateStoreError> {
+    /// Flushes the log, writes back and flushes every changed record, then
+    /// truncates the log into a new epoch.
+    fn checkpoint(&mut self, root: &Namespace) -> Result<(), LocalCoreStateStoreError> {
+        self.flush()?;
         let mut directories = BTreeSet::new();
-        for path in std::mem::take(&mut self.unflushed) {
-            match OpenOptions::new().write(true).open(&path) {
-                Ok(file) => file.sync_all()?,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-            crash_point("record flushed");
-            if let Some(directory) = path.parent() {
-                directories.insert(directory.to_path_buf());
-            }
+        for key in &self.dirty {
+            let bytes = RecordValue::encode(
+                self.residents
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(key)
+                    .and_then(Option::as_ref),
+            )?;
+            let paths = key.paths(root);
+            std::fs::create_dir_all(&paths.directory)?;
+            let mut file = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&paths.current)?;
+            file.write_all(&bytes)?;
+            crash_point("record written", self.flushed);
+            file.sync_all()?;
+            crash_point("record flushed", self.flushed);
+            directories.insert(paths.directory);
         }
         for directory in directories {
             sync_directory(&directory)?;
         }
         self.file.set_len(0)?;
         self.file.seek(SeekFrom::Start(0))?;
-        crash_point("log truncated");
+        self.length = 0;
+        self.flushed = 0;
+        crash_point("log truncated", self.flushed);
         self.epoch = Uuid::now_v7();
         self.sequence = 0;
+        self.dirty.clear();
         Ok(())
     }
 }
 
 /// Decodes the log's valid prefix: frames of the first frame's epoch in
 /// consecutive sequence, each intact.
-fn replayable_changes(bytes: &[u8]) -> Vec<ContextChange> {
+fn replayable_changes(bytes: &[u8]) -> Vec<Change> {
     let mut changes = Vec::new();
     let mut epoch = None;
     for line in bytes.split_inclusive(|byte| *byte == b'\n') {
@@ -1187,7 +1421,7 @@ fn replayable_changes(bytes: &[u8]) -> Vec<ContextChange> {
         if blake3::hash(frame).to_hex().as_bytes() != checksum {
             break;
         }
-        let Ok(frame) = serde_json::from_slice::<ContextLogFrame<ContextChange>>(frame) else {
+        let Ok(frame) = serde_json::from_slice::<LogFrame<Change>>(frame) else {
             break;
         };
         if *epoch.get_or_insert(frame.epoch) != frame.epoch
@@ -1206,7 +1440,7 @@ enum LegacyContextTransactionPhase {
     Committed,
 }
 
-/// Two-phase journal written before the context log existed.
+/// Two-phase journal written before the core-state log existed.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct LegacyContextTransaction {
     version: u16,
@@ -1221,9 +1455,7 @@ struct LegacyContextTransaction {
 
 /// Converts an interrupted legacy transaction into the change that settles
 /// it: a prepared one rolls back, a committed one rolls forward.
-fn legacy_context_change(
-    root: &Namespace,
-) -> Result<Option<ContextChange>, LocalCoreStateStoreError> {
+fn legacy_context_change(root: &Namespace) -> Result<Option<Change>, LocalCoreStateStoreError> {
     let Some(journal) = read_recoverable::<LegacyContextTransaction>(
         &root.record(LEGACY_CONTEXT_TRANSACTION_FAMILY, &[0; 16]),
     )?
@@ -1235,31 +1467,32 @@ fn legacy_context_change(
             "unsupported workspace-context transaction version".to_owned(),
         ));
     }
-    Ok(Some(match journal.phase {
-        LegacyContextTransactionPhase::Prepared => ContextChange {
-            contexts: journal.before,
-            children: journal.before_children,
-            installs_index: false,
-        },
-        LegacyContextTransactionPhase::Committed => ContextChange {
-            contexts: journal
-                .after
-                .into_iter()
-                .map(|(context_id, record)| (context_id, Some(record)))
-                .collect(),
-            children: journal
-                .after_children
-                .into_iter()
-                .map(|(parent, descendants)| (parent, Some(descendants)))
-                .collect(),
-            installs_index: false,
-        },
-    }))
+    let mut change = Change::default();
+    match journal.phase {
+        LegacyContextTransactionPhase::Prepared => {
+            for (context_id, record) in journal.before {
+                change.put(context_id, record);
+            }
+            for (parent, descendants) in journal.before_children {
+                change.put_children(parent, descendants)?;
+            }
+        }
+        LegacyContextTransactionPhase::Committed => {
+            for (context_id, record) in journal.after {
+                change.put(context_id, Some(record));
+            }
+            for (parent, descendants) in journal.after_children {
+                change.put_children(parent, Some(descendants))?;
+            }
+        }
+    }
+    Ok(Some(change))
 }
 
-/// Aborts the process at the configured crash point of a crash-atomicity test.
+/// Aborts the process at the configured crash point of a crash-atomicity test,
+/// reporting the point and how many log bytes were durable.
 #[cfg(test)]
-fn crash_point(label: &str) {
+fn crash_point(label: &str, flushed: u64) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static REACHED: AtomicU64 = AtomicU64::new(0);
     let Some(target) = std::env::var_os("ACYCLIC_CORE_STATE_CRASH_POINT") else {
@@ -1268,41 +1501,29 @@ fn crash_point(label: &str) {
     let reached = REACHED.fetch_add(1, Ordering::SeqCst) + 1;
     if target.to_str().and_then(|target| target.parse().ok()) == Some(reached) {
         if let Some(report) = std::env::var_os("ACYCLIC_CORE_STATE_CRASH_REPORT") {
-            let _ = std::fs::write(report, label);
+            let _ = std::fs::write(report, format!("{label}\n{flushed}"));
         }
         std::process::abort();
     }
 }
 
 #[cfg(not(test))]
-fn crash_point(_label: &str) {}
+fn crash_point(_label: &str, _flushed: u64) {}
 
-fn context_log_paths(root: &Namespace) -> RecordPaths<'_> {
-    root.record(CONTEXT_LOG_FAMILY, &[0; 16])
+fn core_log_paths(root: &Namespace) -> RecordPaths<'_> {
+    root.record(CORE_LOG_FAMILY, &[0; 16])
 }
 
-fn context_record_paths(root: &Namespace, context_id: WorkspaceContextId) -> RecordPaths<'_> {
-    root.record(WORKSPACE_CONTEXT_FAMILY, &context_id.into_bytes())
-}
-
-fn context_children_paths(root: &Namespace, parent: WorkspaceContextId) -> RecordPaths<'_> {
-    root.record(CONTEXT_CHILDREN_FAMILY, &parent.into_bytes())
-}
-
-fn context_children_marker_paths(root: &Namespace) -> RecordPaths<'_> {
-    root.record(CONTEXT_CHILDREN_INDEX_FAMILY, &[0; 16])
-}
-
-fn context_children_count_paths(root: &Namespace, parent: WorkspaceContextId) -> RecordPaths<'_> {
-    root.record(CONTEXT_CHILD_COUNT_FAMILY, &parent.into_bytes())
-}
-
-fn context_children_index_ready(root: &Namespace) -> Result<bool, LocalCoreStateStoreError> {
-    Ok(read_recoverable::<u16>(&context_children_marker_paths(root))?.is_some())
+fn context_children_index_ready(
+    root: &Namespace,
+    log: &mut CoreLog,
+) -> Result<bool, LocalCoreStateStoreError> {
+    Ok(log.get::<ContextChildIndex>(root, ())?.is_some())
 }
 
 fn plan_local_context_subtree_discard(
     root_path: &Namespace,
+    log: &mut CoreLog,
     root: Option<&WorkspaceContext>,
     parent: WorkspaceContextId,
     child: WorkspaceContextId,
@@ -1326,8 +1547,9 @@ fn plan_local_context_subtree_discard(
         if !seen.insert(context_id) || seen.len() > maximum {
             return Ok(Err(WorkspaceContextDiscardOutcome::TraversalLimit));
         }
-        let count = read_recoverable::<u64>(&context_children_count_paths(root_path, context_id))?
-            .unwrap_or(0);
+        let count = log
+            .get::<ContextChildCount>(root_path, context_id)?
+            .map_or(0, |count| count.0);
         let remaining = maximum.saturating_sub(seen.len() + pending.len());
         if count > remaining as u64 {
             return Ok(Err(WorkspaceContextDiscardOutcome::TraversalLimit));
@@ -1343,11 +1565,10 @@ fn plan_local_context_subtree_discard(
                     "workspace-context child bucket bound overflowed".to_owned(),
                 )
             })?;
-        let descendants: BTreeSet<WorkspaceContextId> = read_recoverable_bounded(
-            &context_children_paths(root_path, context_id),
-            maximum_bucket_bytes,
-        )?
-        .unwrap_or_default();
+        let descendants = log
+            .get_bounded::<ContextChildren>(root_path, context_id, Some(maximum_bucket_bytes))?
+            .unwrap_or_default()
+            .0;
         if usize::try_from(count) != Ok(descendants.len()) {
             return Ok(Err(WorkspaceContextDiscardOutcome::IncompatibleState));
         }
@@ -1358,16 +1579,18 @@ fn plan_local_context_subtree_discard(
     Ok(Ok(selected))
 }
 
-fn context_record_ids(
+/// Every context present in memory or on disk, absent ones excluded.
+fn live_context_ids(
     root: &Namespace,
+    log: &mut CoreLog,
 ) -> Result<Vec<WorkspaceContextId>, LocalCoreStateStoreError> {
     let entries = match std::fs::read_dir(root.family(WORKSPACE_CONTEXT_FAMILY)) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Ok(entries) => Some(entries),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.into()),
     };
-    let mut ids = Vec::new();
-    for entry in entries {
+    let mut ids = BTreeSet::new();
+    for entry in entries.into_iter().flatten() {
         let name = entry?.file_name();
         let Some(name) = name.to_str() else { continue };
         let Some(stem) = name.strip_suffix(".json") else {
@@ -1382,17 +1605,30 @@ fn context_record_ids(
         let Ok(bytes) = <[u8; 16]>::try_from(bytes) else {
             continue;
         };
-        ids.push(WorkspaceContextId::from_bytes(bytes));
+        ids.insert(WorkspaceContextId::from_bytes(bytes));
     }
-    ids.sort_unstable_by_key(|id| id.into_bytes());
-    Ok(ids)
+    ids.extend(log.resident_keys(|key| match key {
+        RecordKey::Context(context_id) => Some(context_id),
+        _ => None,
+    }));
+    let mut live = Vec::with_capacity(ids.len());
+    for context_id in ids {
+        if log.get::<WorkspaceContext>(root, context_id)?.is_some() {
+            live.push(context_id);
+        }
+    }
+    live.sort_unstable_by_key(|id| id.into_bytes());
+    Ok(live)
 }
 
-fn load_all_contexts(root: &Namespace) -> Result<Vec<WorkspaceContext>, LocalCoreStateStoreError> {
-    context_record_ids(root)?
+fn load_all_contexts(
+    root: &Namespace,
+    log: &mut CoreLog,
+) -> Result<Vec<WorkspaceContext>, LocalCoreStateStoreError> {
+    live_context_ids(root, log)?
         .into_iter()
         .map(|id| {
-            read_recoverable(&context_record_paths(root, id))?.ok_or_else(|| {
+            log.get::<WorkspaceContext>(root, id)?.ok_or_else(|| {
                 LocalCoreStateStoreError::ContextTransaction(
                     "workspace context disappeared during locked discovery".to_owned(),
                 )
@@ -1590,11 +1826,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         &self,
         workspace_id: WorkspaceId,
     ) -> Result<Option<LazyWorkspaceState>, Self::Error> {
-        if let Some(state) = self.cached_lazy_workspace(workspace_id) {
-            return Ok(state);
-        }
-        self.transaction(move |namespace| namespace.load_lazy_workspace(workspace_id))
-            .await
+        self.load_logged(workspace_id).await
     }
 
     async fn compare_and_swap_lazy_workspace(
@@ -1603,8 +1835,8 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         expected_revision: u64,
         replacement: LazyWorkspaceState,
     ) -> Result<bool, Self::Error> {
-        self.transaction(move |namespace| {
-            namespace.compare_and_swap_lazy_workspace(workspace_id, expected_revision, replacement)
+        self.compare_and_swap_logged(workspace_id, expected_revision, replacement, |state| {
+            state.revision
         })
         .await
     }
@@ -1721,7 +1953,7 @@ mod tests {
         let held_id = workspace();
         let other_id = WorkspaceId::from_bytes([0x55; 16]);
         let namespace = store.namespace().expect("admitted namespace");
-        let paths = namespace.record("lineage", &held_id.into_bytes());
+        let paths = namespace.record(GIT_COMPAT_NAMESPACE, &held_id.into_bytes());
         std::fs::create_dir_all(&paths.directory).expect("lock directory");
         let held = OpenOptions::new()
             .create(true)
@@ -1732,12 +1964,11 @@ mod tests {
             .expect("held record lock");
         held.lock_exclusive().expect("hold record lock");
 
-        let contender =
-            tokio::spawn(async move { WorkspaceLineageStore::load(&store, held_id).await });
+        let contender = tokio::spawn(async move { GitCompatStore::load(&store, held_id).await });
         let unrelated = LocalCoreStateStore::new(directory.path());
         tokio::time::timeout(
             Duration::from_secs(2),
-            WorkspaceLineageStore::load(&unrelated, other_id),
+            GitCompatStore::load(&unrelated, other_id),
         )
         .await
         .expect("unrelated record must not stall")
@@ -1780,6 +2011,18 @@ mod tests {
             assert!(Instant::now() < deadline, "admitted transaction was lost");
             tokio::task::yield_now().await;
         }
+    }
+
+    fn context_paths(namespace: &Namespace, id: WorkspaceContextId) -> RecordPaths<'_> {
+        RecordKey::Context(id).paths(namespace)
+    }
+
+    fn children_paths(namespace: &Namespace, id: WorkspaceContextId) -> RecordPaths<'_> {
+        RecordKey::Children(id).paths(namespace)
+    }
+
+    fn count_paths(namespace: &Namespace, id: WorkspaceContextId) -> RecordPaths<'_> {
+        RecordKey::ChildCount(id).paths(namespace)
     }
 
     fn workspace() -> WorkspaceId {
@@ -1839,6 +2082,9 @@ mod tests {
                 .await
                 .expect("initial write")
         );
+        WorkspaceLineageStore::load(&store, workspace())
+            .await
+            .expect("write the record back");
         let paths = namespace.record("lineage", &workspace().into_bytes());
         std::fs::copy(&paths.current, &paths.previous).expect("preserve previous record");
         std::fs::write(&paths.current, b"torn").expect("simulate torn current record");
@@ -1961,11 +2207,8 @@ mod tests {
             );
         }
 
-        std::fs::write(
-            context_record_paths(&namespace, unrelated_id).current,
-            b"not-json",
-        )
-        .expect("corrupt unrelated record");
+        std::fs::write(context_paths(&namespace, unrelated_id).current, b"not-json")
+            .expect("corrupt unrelated record");
 
         assert_eq!(
             WorkspaceContextStore::discard_subtree(&store, parent_id, child_id, 1)
@@ -2006,12 +2249,10 @@ mod tests {
                     .expect("register context")
             );
         }
-        write_journaled(
-            &context_children_count_paths(&namespace, child_id),
-            &10_000_u64,
-        )
-        .expect("write oversized child count");
-        let bucket = context_children_paths(&namespace, child_id);
+        let count = count_paths(&namespace, child_id);
+        std::fs::create_dir_all(&count.directory).expect("child count directory");
+        write_journaled(&count, &10_000_u64).expect("write oversized child count");
+        let bucket = children_paths(&namespace, child_id);
         std::fs::create_dir_all(&bucket.directory).expect("child bucket directory");
         std::fs::write(&bucket.current, b"not-json").expect("corrupt oversized child bucket");
 
@@ -2046,9 +2287,10 @@ mod tests {
                     .expect("register context")
             );
         }
-        write_journaled(&context_children_count_paths(&namespace, child_id), &1_u64)
-            .expect("write understated child count");
-        let bucket = context_children_paths(&namespace, child_id);
+        let count = count_paths(&namespace, child_id);
+        std::fs::create_dir_all(&count.directory).expect("child count directory");
+        write_journaled(&count, &1_u64).expect("write understated child count");
+        let bucket = children_paths(&namespace, child_id);
         std::fs::create_dir_all(&bucket.directory).expect("child bucket directory");
         std::fs::write(&bucket.current, vec![b' '; 1_000_000])
             .expect("write oversized child bucket");
@@ -2086,15 +2328,12 @@ mod tests {
                 WorkspaceContextState::Active,
             ),
         ] {
-            let paths = context_record_paths(&namespace, context.context_id);
+            let paths = context_paths(&namespace, context.context_id);
             std::fs::create_dir_all(&paths.directory).expect("context directory");
             write_journaled(&paths, &context).expect("write legacy context");
         }
-        std::fs::write(
-            context_record_paths(&namespace, unrelated_id).current,
-            b"not-json",
-        )
-        .expect("corrupt unrelated legacy record");
+        std::fs::write(context_paths(&namespace, unrelated_id).current, b"not-json")
+            .expect("corrupt unrelated legacy record");
 
         assert_eq!(
             WorkspaceContextStore::discard_subtree(&store, parent_id, child_id, 1)
@@ -2126,8 +2365,7 @@ mod tests {
             .expect("context directory");
         std::fs::create_dir_all(directory.path().join("workspace-context-transactions-v2"))
             .expect("transaction directory");
-        write_journaled(&context_record_paths(&namespace, context_id), &before)
-            .expect("initial context");
+        write_journaled(&context_paths(&namespace, context_id), &before).expect("initial context");
         write_journaled(
             &namespace.record(LEGACY_CONTEXT_TRANSACTION_FAMILY, &[0; 16]),
             &LegacyContextTransaction {
@@ -2140,7 +2378,7 @@ mod tests {
             },
         )
         .expect("prepared transaction");
-        write_journaled(&context_record_paths(&namespace, context_id), &after)
+        write_journaled(&context_paths(&namespace, context_id), &after)
             .expect("partial application");
 
         assert_eq!(
@@ -2161,7 +2399,7 @@ mod tests {
         let mut child =
             workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
         child.parent_context_id = Some(parent_id);
-        let marker = context_children_marker_paths(&namespace);
+        let marker = RecordKey::ChildIndex.paths(&namespace);
         std::fs::create_dir_all(&marker.directory).expect("index directory");
         write_journaled(&marker, &1_u16).expect("initialize child index");
         let journal = LegacyContextTransaction {
@@ -2181,8 +2419,8 @@ mod tests {
             &journal,
         )
         .expect("prepared transaction");
-        let record = context_record_paths(&namespace, child_id);
-        let bucket = context_children_paths(&namespace, parent_id);
+        let record = context_paths(&namespace, child_id);
+        let bucket = children_paths(&namespace, parent_id);
         for directory in [&record.directory, &bucket.directory] {
             std::fs::create_dir_all(directory).expect("record directory");
         }
@@ -2196,10 +2434,9 @@ mod tests {
             None
         );
         assert_eq!(
-            read_recoverable::<BTreeSet<WorkspaceContextId>>(&context_children_paths(
-                &namespace, parent_id,
-            ))
-            .expect("read recovered child bucket"),
+            read_recoverable::<Option<ContextChildren>>(&children_paths(&namespace, parent_id))
+                .expect("read recovered child bucket")
+                .flatten(),
             None
         );
     }
@@ -2226,8 +2463,7 @@ mod tests {
             .expect("context directory");
         std::fs::create_dir_all(directory.path().join("workspace-context-transactions-v2"))
             .expect("transaction directory");
-        write_journaled(&context_record_paths(&namespace, context_id), &before)
-            .expect("initial context");
+        write_journaled(&context_paths(&namespace, context_id), &before).expect("initial context");
         write_journaled(
             &namespace.record(LEGACY_CONTEXT_TRANSACTION_FAMILY, &[0; 16]),
             &LegacyContextTransaction {
@@ -2654,6 +2890,10 @@ mod tests {
                 .expect("initial binding")
         );
         drop(owner);
+        LocalCoreStateStore::new(directory.path())
+            .load_lazy_workspace(workspace())
+            .await
+            .expect("write the binding back");
 
         let current = {
             let namespace = LocalCoreStateStore::new(directory.path())
@@ -2692,46 +2932,224 @@ mod tests {
         );
     }
 
-    const CRASH_PARENT: WorkspaceContextId = WorkspaceContextId::from_bytes([0x41; 16]);
-    const CRASH_CHILD: WorkspaceContextId = WorkspaceContextId::from_bytes([0x42; 16]);
-    const CRASH_OPERATIONS: usize = 5;
-
-    /// Every context record a crash-atomicity reader can observe.
-    #[derive(Debug, PartialEq)]
-    struct ContextSnapshot {
-        contexts: Vec<WorkspaceContext>,
-        children: Option<BTreeSet<WorkspaceContextId>>,
-        child_count: Option<u64>,
-        index_ready: bool,
+    #[tokio::test]
+    async fn committed_change_survives_a_failing_checkpoint() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let owner = LocalCoreStateStore::open_owned(directory.path()).expect("owner");
+        for revision in 1..OWNED_CHECKPOINT {
+            assert!(
+                owner
+                    .compare_and_swap_lazy_workspace(
+                        workspace(),
+                        revision - 1,
+                        lazy_state(workspace(), revision),
+                    )
+                    .await
+                    .expect("commit below the checkpoint threshold")
+            );
+        }
+        assert!(
+            WorkspaceLineageStore::load(&owner, CRASH_WORKSPACE)
+                .await
+                .expect("absent lineage becomes resident")
+                .is_none()
+        );
+        // The lineage family's directory cannot be created, so the checkpoint
+        // that the last commit makes due fails.
+        std::fs::write(directory.path().join(LINEAGE_FAMILY), b"obstacle").expect("obstacle");
+        let record = crash_lineage();
+        assert!(
+            WorkspaceLineageStore::compare_and_swap(&owner, CRASH_WORKSPACE, 0, record.clone())
+                .await
+                .expect("the commit that makes a checkpoint due succeeds")
+        );
+        assert!(
+            WorkspaceLineageStore::load(&owner, CRASH_WORKSPACE)
+                .await
+                .is_ok(),
+            "resident reads need no checkpoint"
+        );
+        assert!(
+            owner
+                .compare_and_swap_lazy_workspace(
+                    workspace(),
+                    OWNED_CHECKPOINT - 1,
+                    lazy_state(workspace(), OWNED_CHECKPOINT),
+                )
+                .await
+                .is_err(),
+            "the next transaction reports the failed checkpoint"
+        );
+        std::fs::remove_file(directory.path().join(LINEAGE_FAMILY)).expect("remove obstacle");
+        assert!(
+            owner
+                .compare_and_swap_lazy_workspace(
+                    workspace(),
+                    OWNED_CHECKPOINT - 1,
+                    lazy_state(workspace(), OWNED_CHECKPOINT),
+                )
+                .await
+                .expect("the retried checkpoint succeeds")
+        );
+        drop(owner);
+        assert_eq!(
+            WorkspaceLineageStore::load(
+                &LocalCoreStateStore::new(directory.path()),
+                CRASH_WORKSPACE
+            )
+            .await
+            .expect("durable lineage"),
+            Some(record)
+        );
     }
 
-    /// Recovers `root` through `store` and reads every record without writing.
-    fn context_snapshot(store: &LocalCoreStateStore) -> ContextSnapshot {
+    #[tokio::test]
+    async fn deferred_commits_are_visible_at_once_and_durable_on_commit() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let owner = LocalCoreStateStore::open_owned(directory.path()).expect("owner");
+        let (deferred, durability) = owner.defer_durability();
+        assert!(
+            deferred
+                .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1))
+                .await
+                .expect("deferred commit")
+        );
+        assert_eq!(
+            owner
+                .load_lazy_workspace(workspace())
+                .await
+                .expect("visible deferred commit"),
+            Some(lazy_state(workspace(), 1))
+        );
+        durability.commit().await.expect("flush deferred commits");
+        assert!(
+            deferred
+                .compare_and_swap_lazy_workspace(workspace(), 1, lazy_state(workspace(), 2))
+                .await
+                .expect("commit after the scope ended")
+        );
+        let log = {
+            let namespace = owner.namespace().expect("admitted namespace");
+            core_log_paths(&namespace).current
+        };
+        let bytes = std::fs::read(&log).expect("read core log");
+        assert_eq!(
+            replayable_changes(&bytes).len(),
+            2,
+            "both frames are in the log"
+        );
+        drop((owner, deferred));
+        assert_eq!(
+            LocalCoreStateStore::new(directory.path())
+                .load_lazy_workspace(workspace())
+                .await
+                .expect("durable binding"),
+            Some(lazy_state(workspace(), 2))
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_rollback_records_absence_without_deleting_files() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let namespace = store.namespace().expect("admitted namespace");
+        let context = workspace_context(
+            directory.path(),
+            CRASH_CHILD,
+            1,
+            WorkspaceContextState::Active,
+        );
+        let record = RecordKey::Context(CRASH_CHILD).paths(&namespace);
+        std::fs::create_dir_all(&record.directory).expect("context directory");
+        write_journaled(&record, &context).expect("partial legacy application");
+        let journal = namespace.record(LEGACY_CONTEXT_TRANSACTION_FAMILY, &[0; 16]);
+        std::fs::create_dir_all(&journal.directory).expect("journal directory");
+        write_journaled(
+            &journal,
+            &LegacyContextTransaction {
+                version: 1,
+                phase: LegacyContextTransactionPhase::Prepared,
+                before: [(CRASH_CHILD, None)].into_iter().collect(),
+                after: [(CRASH_CHILD, context)].into_iter().collect(),
+                before_children: BTreeMap::new(),
+                after_children: WorkspaceContextChildren::new(),
+            },
+        )
+        .expect("prepared legacy journal");
+        let current = record.current.clone();
+        drop(namespace);
+
+        assert!(
+            WorkspaceContextStore::list(&store)
+                .await
+                .expect("settle legacy journal")
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::read(&current).expect("rolled-back record stays in place"),
+            b"null"
+        );
+    }
+
+    const CRASH_PARENT: WorkspaceContextId = WorkspaceContextId::from_bytes([0x41; 16]);
+    const CRASH_CHILD: WorkspaceContextId = WorkspaceContextId::from_bytes([0x42; 16]);
+    const CRASH_WORKSPACE: WorkspaceId = WorkspaceId::from_bytes([0x43; 16]);
+    /// Commits of the crash script, grouped by what one caller acknowledges;
+    /// the multi-commit group runs through one deferred-durability scope.
+    const CRASH_GROUPS: [std::ops::Range<usize>; 6] = [0..1, 1..2, 2..5, 5..6, 6..7, 7..8];
+
+    fn crash_lineage() -> WorkspaceLineageRecord {
+        WorkspaceLineageRecord {
+            version: 1,
+            revision: 1,
+            ready: true,
+            workspace_id: CRASH_WORKSPACE,
+            workspace_name: "crash-child".to_owned(),
+            parent_workspace_id: Some(workspace()),
+            parent_workspace_name: Some("durable".to_owned()),
+            fork_generation: crate::GenerationId::new(Digest::from_bytes([5; 32])),
+            initial_generation: crate::GenerationId::new(Digest::from_bytes([6; 32])),
+        }
+    }
+
+    /// Every logged record the crash script changes.
+    #[derive(Debug, PartialEq)]
+    struct CoreSnapshot {
+        contexts: Vec<WorkspaceContext>,
+        children: Option<ContextChildren>,
+        child_count: Option<ContextChildCount>,
+        index_ready: bool,
+        lineage: Option<WorkspaceLineageRecord>,
+        lazy: Option<LazyWorkspaceState>,
+    }
+
+    /// Recovers the namespace through `store` and reads every scripted record.
+    fn core_snapshot(store: &LocalCoreStateStore) -> CoreSnapshot {
         let namespace = store.namespace().expect("admitted namespace");
         namespace
-            .with_context_log(|_| {
-                Ok(ContextSnapshot {
-                    contexts: load_all_contexts(&namespace)?,
-                    children: read_recoverable(&context_children_paths(&namespace, CRASH_PARENT))?,
-                    child_count: read_recoverable(&context_children_count_paths(
-                        &namespace,
-                        CRASH_PARENT,
-                    ))?,
-                    index_ready: context_children_index_ready(&namespace)?,
+            .with_log(|log| {
+                Ok(CoreSnapshot {
+                    contexts: load_all_contexts(&namespace, log)?,
+                    children: log.get::<ContextChildren>(&namespace, CRASH_PARENT)?,
+                    child_count: log.get::<ContextChildCount>(&namespace, CRASH_PARENT)?,
+                    index_ready: context_children_index_ready(&namespace, log)?,
+                    lineage: log.get::<WorkspaceLineageRecord>(&namespace, CRASH_WORKSPACE)?,
+                    lazy: log.get::<LazyWorkspaceState>(&namespace, CRASH_WORKSPACE)?,
                 })
             })
             .expect("recovered snapshot")
     }
 
-    /// Runs one step of the crash script: index, register a parent, register
-    /// its child, freeze the child, discard the child.
-    fn crash_operation(store: &LocalCoreStateStore, operation: usize) {
+    /// Runs one commit of the crash script: index, register a parent, register
+    /// its child with the child's lineage and binding, freeze the child,
+    /// advance the binding, discard the child.
+    fn crash_step(store: &LocalCoreStateStore, step: usize) {
         let source = std::env::temp_dir();
         let parent = workspace_context(&source, CRASH_PARENT, 1, WorkspaceContextState::Active);
         let mut child = workspace_context(&source, CRASH_CHILD, 1, WorkspaceContextState::Active);
         child.parent_context_id = Some(CRASH_PARENT);
         let committed = futures::executor::block_on(async {
-            match operation {
+            match step {
                 0 => WorkspaceContextStore::list(store).await.map(|_| true),
                 1 => {
                     store
@@ -2752,6 +3170,24 @@ mod tests {
                         .await
                 }
                 3 => {
+                    WorkspaceLineageStore::compare_and_swap(
+                        store,
+                        CRASH_WORKSPACE,
+                        0,
+                        crash_lineage(),
+                    )
+                    .await
+                }
+                4 => {
+                    store
+                        .compare_and_swap_lazy_workspace(
+                            CRASH_WORKSPACE,
+                            0,
+                            lazy_state(CRASH_WORKSPACE, 1),
+                        )
+                        .await
+                }
+                5 => {
                     child.revision = 2;
                     child.state = WorkspaceContextState::Frozen;
                     store
@@ -2762,13 +3198,22 @@ mod tests {
                         )
                         .await
                 }
+                6 => {
+                    store
+                        .compare_and_swap_lazy_workspace(
+                            CRASH_WORKSPACE,
+                            1,
+                            lazy_state(CRASH_WORKSPACE, 2),
+                        )
+                        .await
+                }
                 _ => WorkspaceContextStore::discard_subtree(store, CRASH_PARENT, CRASH_CHILD, 8)
                     .await
                     .map(|outcome| matches!(outcome, WorkspaceContextDiscardOutcome::Discarded(_))),
             }
         })
-        .expect("crash script operation");
-        assert!(committed, "crash script operation {operation} was rejected");
+        .expect("crash script step");
+        assert!(committed, "crash script step {step} was rejected");
     }
 
     fn crash_store(root: &Path, owned: bool) -> LocalCoreStateStore {
@@ -2780,7 +3225,7 @@ mod tests {
     }
 
     #[test]
-    fn context_crash_child_runs_until_its_crash_point() -> Result<(), Box<dyn std::error::Error>> {
+    fn core_crash_child_runs_until_its_crash_point() -> Result<(), Box<dyn std::error::Error>> {
         let Some(root) = std::env::var_os("ACYCLIC_CORE_STATE_CRASH_ROOT") else {
             return Ok(());
         };
@@ -2790,45 +3235,37 @@ mod tests {
             Path::new(&root),
             std::env::var_os("ACYCLIC_CORE_STATE_CRASH_OWNED").is_some(),
         );
-        for operation in 0..CRASH_OPERATIONS {
-            crash_operation(&store, operation);
-            std::fs::write(&acknowledged, (operation + 1).to_string())?;
+        for group in CRASH_GROUPS {
+            if group.len() == 1 {
+                crash_step(&store, group.start);
+            } else {
+                let (deferred, durability) = store.defer_durability();
+                for step in group.clone() {
+                    crash_step(&deferred, step);
+                }
+                futures::executor::block_on(durability.commit())?;
+            }
+            std::fs::write(&acknowledged, group.end.to_string())?;
         }
         Ok(())
     }
 
-    /// Simulates losing every write not yet flushed: records named by the log
-    /// read back torn, and a frame whose flush never returned is torn in half.
-    fn lose_unflushed_writes(root: &Path, frame_unflushed: bool) {
+    /// Simulates losing every write not yet flushed: the log keeps its durable
+    /// prefix and half of the next frame, and every record a durable frame
+    /// names reads back torn.
+    fn lose_unflushed_writes(root: &Path, flushed: usize) {
         let store = LocalCoreStateStore::new(root);
         let namespace = store.namespace().expect("admitted namespace");
-        let log = context_log_paths(&namespace).current;
-        let mut bytes = std::fs::read(&log).expect("read context log");
-        if frame_unflushed {
-            let body = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
-            let start = body
-                .iter()
-                .rposition(|byte| *byte == b'\n')
-                .map_or(0, |newline| newline + 1);
-            bytes.truncate(start + (bytes.len() - start) / 2);
-            std::fs::write(&log, &bytes).expect("tear unflushed frame");
-            return;
-        }
-        for change in replayable_changes(&bytes) {
-            let mut torn = change
-                .contexts
-                .keys()
-                .map(|context_id| context_record_paths(&namespace, *context_id).current)
-                .collect::<Vec<_>>();
-            for parent in change.children.keys() {
-                torn.push(context_children_paths(&namespace, *parent).current);
-                torn.push(context_children_count_paths(&namespace, *parent).current);
-            }
-            if change.installs_index {
-                torn.push(context_children_marker_paths(&namespace).current);
-            }
-            for path in torn {
-                std::fs::write(path, b"{\"torn").expect("tear unflushed record");
+        let log = core_log_paths(&namespace).current;
+        let mut bytes = std::fs::read(&log).expect("read core log");
+        let torn = flushed + (bytes.len().saturating_sub(flushed)) / 2;
+        bytes.truncate(torn);
+        std::fs::write(&log, &bytes).expect("tear unflushed frames");
+        for change in replayable_changes(bytes.get(..flushed).unwrap_or(&bytes)) {
+            for (key, _) in change.0 {
+                let paths = key.paths(&namespace);
+                std::fs::create_dir_all(&paths.directory).expect("record directory");
+                std::fs::write(paths.current, b"{\"torn").expect("tear unflushed record");
             }
         }
     }
@@ -2846,18 +3283,18 @@ mod tests {
         }
     }
 
-    /// Kills a writer at every crash point of every context commit, with and
-    /// without losing unflushed writes, and requires each recovery to expose
-    /// exactly the acknowledged operations, or those plus the one in flight
-    /// once its frame reached the log.
-    fn assert_context_commits_are_crash_atomic(owned: bool) {
+    /// Kills a writer at every crash point of every commit, then recovers both
+    /// what the killed process left and what a power loss would leave. Each
+    /// recovery must expose exactly the state after some prefix of the
+    /// script's commits: at least every acknowledged commit, and at most the
+    /// ones in flight.
+    fn assert_core_commits_are_crash_atomic(owned: bool) {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let reference = directory.path().join("reference");
-        let reference_store = crash_store(&reference, owned);
-        let mut snapshots = vec![context_snapshot(&reference_store)];
-        for operation in 0..CRASH_OPERATIONS {
-            crash_operation(&reference_store, operation);
-            snapshots.push(context_snapshot(&reference_store));
+        let reference_store = crash_store(&directory.path().join("reference"), owned);
+        let mut snapshots = vec![core_snapshot(&reference_store)];
+        for step in 0..CRASH_GROUPS[CRASH_GROUPS.len() - 1].end {
+            crash_step(&reference_store, step);
+            snapshots.push(core_snapshot(&reference_store));
         }
         drop(reference_store);
 
@@ -2874,7 +3311,7 @@ mod tests {
             child
                 .args([
                     "--exact",
-                    "core_state::tests::context_crash_child_runs_until_its_crash_point",
+                    "core_state::tests::core_crash_child_runs_until_its_crash_point",
                     "--nocapture",
                 ])
                 .env("ACYCLIC_CORE_STATE_CRASH_ROOT", &root)
@@ -2893,51 +3330,42 @@ mod tests {
                     "a crash child reported success after aborting"
                 );
                 assert_eq!(
-                    context_snapshot(&crash_store(&root, owned)),
-                    snapshots[CRASH_OPERATIONS]
+                    core_snapshot(&crash_store(&root, owned)),
+                    snapshots[snapshots.len() - 1]
                 );
                 break;
             }
             crashes += 1;
-            let label = std::fs::read_to_string(&report).expect("crash point label");
-            let done = std::fs::read_to_string(&acknowledged)
+            let report = std::fs::read_to_string(&report).expect("crash point report");
+            let (label, flushed) = report.split_once('\n').expect("crash point fields");
+            let flushed = flushed.parse().expect("durable log length");
+            let done: usize = std::fs::read_to_string(&acknowledged)
                 .map_or(0, |count| count.parse().expect("acknowledged count"));
-            // The frame is the commit point: once it is written, a killed
-            // process leaves it for replay; only a flush survives power loss.
-            let frame_written = label != "before frame";
-            let frame_flushed = frame_written && label != "frame written";
-            let expected = |committed: bool| {
-                snapshots
-                    .get(done + usize::from(committed))
-                    .expect("expected snapshot")
-            };
+            let in_flight = CRASH_GROUPS
+                .iter()
+                .find(|group| group.start == done)
+                .expect("in-flight group");
             let lost = run.join("power-loss");
             copy_tree(&root, &lost);
-            assert_eq!(
-                &context_snapshot(&crash_store(&root, !owned)),
-                expected(frame_written),
-                "kill at point {point} ({label}) after {done} operations"
-            );
-            lose_unflushed_writes(&lost, frame_written && !frame_flushed);
-            assert_eq!(
-                &context_snapshot(&crash_store(&lost, owned)),
-                expected(frame_flushed),
-                "power loss at point {point} ({label}) after {done} operations"
-            );
+            lose_unflushed_writes(&lost, flushed);
+            for (recovered, outcome) in [(&root, "kill"), (&lost, "power loss")] {
+                let snapshot = core_snapshot(&crash_store(recovered, !owned));
+                assert!(
+                    snapshots[done..=in_flight.end].contains(&snapshot),
+                    "{outcome} at point {point} ({label}) after {done} commits exposed {snapshot:?}"
+                );
+            }
         }
-        assert!(
-            crashes > 2 * CRASH_OPERATIONS,
-            "crash points were not exercised"
-        );
+        assert!(crashes > 16, "crash points were not exercised");
     }
 
     #[test]
-    fn owned_context_commits_are_crash_atomic() {
-        assert_context_commits_are_crash_atomic(true);
+    fn owned_core_commits_are_crash_atomic() {
+        assert_core_commits_are_crash_atomic(true);
     }
 
     #[test]
-    fn shared_context_commits_are_crash_atomic() {
-        assert_context_commits_are_crash_atomic(false);
+    fn shared_core_commits_are_crash_atomic() {
+        assert_core_commits_are_crash_atomic(false);
     }
 }
