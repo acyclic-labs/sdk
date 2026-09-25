@@ -1886,7 +1886,7 @@ impl ControlPlane {
         let fs = LocalFs::local(LocalOptions::new(data.join("filesystem")))
             .await
             .map_err(display)?;
-        let store = LocalCoreStateStore::new(data.join("core-state"));
+        let store = LocalCoreStateStore::open_owned(data.join("core-state")).map_err(display)?;
         let mut control =
             Self::open_with(data.clone(), data, fs, store, SharedRootRegistry::default()).await?;
         control.owns_local_root = true;
@@ -7629,7 +7629,7 @@ impl ServiceResources {
             .map_err(display)?;
         let binary_identity = service_identity()?;
         let resources = Self {
-            store: LocalCoreStateStore::new(data.join("core-state")),
+            store: LocalCoreStateStore::open_owned(data.join("core-state")).map_err(display)?,
             shared_roots: SharedRootRegistry::default(),
             binary_identity,
             instance_id: uuid::Uuid::new_v4().to_string(),
@@ -14418,7 +14418,7 @@ mod tests {
         let local = LocalFs::local(LocalOptions::new(data.join("filesystem")))
             .await
             .expect("local filesystem");
-        let store = LocalCoreStateStore::new(data.join("core-state"));
+        let store = LocalCoreStateStore::open_owned(data.join("core-state")).expect("state owner");
         let shared_roots = SharedRootRegistry::default();
         let mut control = ControlPlane::open_with(
             data.clone(),
@@ -16935,7 +16935,7 @@ mod tests {
                 data.clone(),
                 data.clone(),
                 fs.clone(),
-                LocalCoreStateStore::new(data.join("core-state")),
+                LocalCoreStateStore::open_owned(data.join("core-state")).expect("state owner"),
                 SharedRootRegistry::default(),
             )
             .await
