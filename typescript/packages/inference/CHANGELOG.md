@@ -1,5 +1,9 @@
 # @acyclic-labs/inference changelog
 
+## 0.1.3 - 2026-09-25
+
+- Adds the OpenAI-compatible model adapter and OpenRouter dialect.
+
 ## 0.1.2 - 2026-09-25
 
 - Aligns the inference contracts and client with the 0.1.2 SDK release.
