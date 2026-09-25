@@ -3084,7 +3084,10 @@ impl ControlPlane {
             tool_use_id.clone(),
             LeaseRecord::from_leases(agent_id, turn_id, tool_name, leases),
         );
-        if let Err(error) = self.persist() {
+        // The record is the request's last transition. Losing it leaves the
+        // opened leases unrecorded, as a crash before this save does, and the
+        // store fences and reconciles them when they expire.
+        if let Err(error) = self.persist_unflushed() {
             let leases = self
                 .state
                 .leases
@@ -3550,7 +3553,10 @@ impl ControlPlane {
         }
         self.state.turns.insert(turn_id, agent_id.clone());
         self.state.routes.insert(agent_id.clone(), route);
-        if let Err(error) = self.persist() {
+        // The route is the request's last transition. Losing it leaves the
+        // prepared spawn, as a crash before this save does, which recovery
+        // prepares again or discards.
+        if let Err(error) = self.persist_unflushed() {
             self.state.routes.remove(&agent_id);
             self.state.turns.retain(|_, bound| bound != &agent_id);
             self.state.pending.push_front(consumed);
