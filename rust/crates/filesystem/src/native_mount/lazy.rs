@@ -4302,6 +4302,10 @@ mod tests {
         let reread = demand.lookups();
         assert!(reread > read, "a reported change reads the source again");
         assert_eq!(size(&b)?, Some(5));
+        // FSEvents may coalesce these changes into one event on the root
+        // that names no item, which rightly reports everything; only the
+        // other hosts name each change exactly.
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(
             demand.lookups(),
             reread,
