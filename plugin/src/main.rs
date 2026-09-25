@@ -2573,7 +2573,7 @@ impl ControlPlane {
             self.roots.insert(
                 key.clone(),
                 self.distributed
-                    .open_lazy(workspace, Arc::clone(&source))
+                    .open_or_attach_lazy(workspace, Arc::clone(&source))
                     .await
                     .map_err(display)?,
             );
@@ -2778,8 +2778,12 @@ impl ControlPlane {
             .await?;
         let source = Arc::clone(&physical.source);
         let source_reference = source.reference();
-        let workspace = self
-            .distributed
+        // The root's binding, lineage, and context commit as one change set
+        // with one flush. The durable intent below precedes it, so recovery
+        // can repeat all three, binding the root afresh if its attach was lost.
+        let (store, durability) = self.store.defer_durability();
+        let distributed = DistributedFs::new(self.fs.clone(), store);
+        let workspace = distributed
             .attach_lazy_with_config(
                 &workspace_name,
                 Arc::clone(&source),
@@ -2819,9 +2823,6 @@ impl ControlPlane {
             self.fail_after_root_intent = false;
             return Err("injected failure after root registration intent".to_owned());
         }
-        // Lineage and context commit as one change set.
-        let (store, durability) = self.store.defer_durability();
-        let distributed = DistributedFs::new(self.fs.clone(), store);
         distributed
             .lineage()
             .register_root(workspace.workspace())
@@ -18864,6 +18865,17 @@ mod tests {
             .expect("root intent")
             .repository_workspace_id;
         drop(initial);
+        // Only the root's attach reached the core log, unflushed: a power loss
+        // leaves the flushed intent without the binding.
+        let core_log = initial_data
+            .join("core-state")
+            .join("core-state-log-v1")
+            .join(format!("{}.json", "0".repeat(32)));
+        assert!(
+            fs::metadata(&core_log).expect("core log").len() > 0,
+            "the deferred attach reached the core log"
+        );
+        fs::write(&core_log, b"").expect("lose the unflushed attach");
         let resumed_initial = ControlPlane::open(initial_data)
             .await
             .expect("finish pending initial root registration");

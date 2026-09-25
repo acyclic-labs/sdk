@@ -115,6 +115,21 @@ impl<A, O, S> DistributedFs<A, O, S> {
         LazyWorkspace::open(workspace, source, self.store.clone()).await
     }
 
+    /// Reopens a workspace against its unresolved source, binding it afresh
+    /// when its attach never became durable; see [`LazyWorkspace::open_or_attach`].
+    pub async fn open_or_attach_lazy<D: DemandSource + 'static>(
+        &self,
+        workspace: Workspace<A, O>,
+        source: Arc<D>,
+    ) -> Result<LazyWorkspace<A, O, D, S>, LazyWorkspaceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+        S: LazyWorkspaceStore + Clone,
+    {
+        LazyWorkspace::open_or_attach(workspace, source, self.store.clone()).await
+    }
+
     /// Composes the SDK-owned all-roots publication state machine.
     pub fn publications<P: MultiRootPublisher, R: MultiRootPublicationAuthorizer>(
         &self,

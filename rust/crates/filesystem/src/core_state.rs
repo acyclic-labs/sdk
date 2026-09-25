@@ -23,6 +23,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{File, OpenOptions};
+use std::hash::Hash;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -64,6 +65,7 @@ pub struct LocalCoreStateStore {
     ownership: Ownership,
     /// Open while this handle's commits defer durability.
     deferral: Option<Arc<AtomicBool>>,
+    nodes: Arc<NodeMemo>,
 }
 
 #[derive(Clone, Debug)]
@@ -169,6 +171,7 @@ impl LocalCoreStateStore {
             root: root.into(),
             ownership: Ownership::Shared,
             deferral: None,
+            nodes: Arc::default(),
         }
     }
 
@@ -189,6 +192,7 @@ impl LocalCoreStateStore {
                 log: Mutex::default(),
             })),
             deferral: None,
+            nodes: Arc::default(),
         })
     }
 
@@ -1818,6 +1822,141 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
     }
 }
 
+/// Entries retained per cache generation before the older generation is dropped.
+const NODE_CACHE_GENERATION: usize = 16_384;
+
+/// Two-generation bounded memo: an entry read since the last rotation
+/// survives the next one, so hot treap spines stay resident.
+#[derive(Debug)]
+struct Generations<K, V> {
+    current: HashMap<K, V>,
+    previous: HashMap<K, V>,
+}
+
+impl<K: Copy + Eq + Hash, V: Clone> Generations<K, V> {
+    fn new() -> Self {
+        Self {
+            current: HashMap::new(),
+            previous: HashMap::new(),
+        }
+    }
+
+    fn get(&mut self, key: &K) -> Option<V> {
+        if let Some(value) = self.current.get(key) {
+            return Some(value.clone());
+        }
+        let value = self.previous.remove(key)?;
+        self.insert(*key, value.clone());
+        Some(value)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        if self.current.len() >= NODE_CACHE_GENERATION {
+            self.previous = std::mem::take(&mut self.current);
+        }
+        self.current.insert(key, value);
+    }
+}
+
+/// Immutable overlay and shadow nodes this store and its clones have read or
+/// written.
+///
+/// A node's identifier is the digest of its verified encoding, so a memoized
+/// node can never be stale: eviction only costs a reload.
+#[derive(Debug)]
+struct NodeMemo {
+    overlays: Mutex<Generations<LazyOverlayId, LazyOverlay>>,
+    shadows: Mutex<Generations<crate::LazyShadowId, crate::LazyShadow>>,
+}
+
+impl Default for NodeMemo {
+    fn default() -> Self {
+        Self {
+            overlays: Mutex::new(Generations::new()),
+            shadows: Mutex::new(Generations::new()),
+        }
+    }
+}
+
+/// An immutable content-addressed lazy node.
+trait LazyNode: Clone + PartialEq + Serialize + DeserializeOwned + Send + 'static {
+    type Id: Copy + Eq + Hash + Send + 'static;
+    const FAMILY: &'static str;
+
+    fn address(id: Self::Id) -> [u8; 32];
+    fn memo(nodes: &NodeMemo) -> MutexGuard<'_, Generations<Self::Id, Self>>;
+}
+
+impl LazyNode for LazyOverlay {
+    type Id = LazyOverlayId;
+    const FAMILY: &'static str = "lazy-overlays";
+
+    fn address(id: Self::Id) -> [u8; 32] {
+        id.into_bytes()
+    }
+
+    fn memo(nodes: &NodeMemo) -> MutexGuard<'_, Generations<Self::Id, Self>> {
+        nodes
+            .overlays
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl LazyNode for crate::LazyShadow {
+    type Id = crate::LazyShadowId;
+    const FAMILY: &'static str = "lazy-shadows-v1";
+
+    fn address(id: Self::Id) -> [u8; 32] {
+        id.into_bytes()
+    }
+
+    fn memo(nodes: &NodeMemo) -> MutexGuard<'_, Generations<Self::Id, Self>> {
+        nodes.shadows.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl LocalCoreStateStore {
+    async fn load_node<T: LazyNode>(
+        &self,
+        id: T::Id,
+    ) -> Result<Option<T>, LocalCoreStateStoreError> {
+        if let Some(value) = T::memo(&self.nodes).get(&id) {
+            return Ok(Some(value));
+        }
+        let value = self
+            .transaction(move |namespace| {
+                load_content_addressed::<T>(namespace, T::FAMILY, T::address(id))
+            })
+            .await?;
+        if let Some(value) = &value {
+            T::memo(&self.nodes).insert(id, value.clone());
+        }
+        Ok(value)
+    }
+
+    async fn put_node<T: LazyNode>(
+        &self,
+        id: T::Id,
+        value: T,
+    ) -> Result<(), LocalCoreStateStoreError> {
+        if let Some(existing) = T::memo(&self.nodes).get(&id) {
+            return if existing == value {
+                Ok(())
+            } else {
+                Err(LocalCoreStateStoreError::Integrity)
+            };
+        }
+        let stored = value.clone();
+        self.transaction(move |namespace| {
+            put_content_addressed(namespace, T::FAMILY, T::address(id), &stored)
+        })
+        .await?;
+        T::memo(&self.nodes).insert(id, value);
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl LazyWorkspaceStore for LocalCoreStateStore {
     type Error = LocalCoreStateStoreError;
@@ -1845,10 +1984,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         &self,
         overlay: LazyOverlayId,
     ) -> Result<Option<LazyOverlay>, Self::Error> {
-        self.transaction(move |namespace| {
-            load_content_addressed(namespace, "lazy-overlays", overlay.into_bytes())
-        })
-        .await
+        self.load_node(overlay).await
     }
 
     async fn put_lazy_overlay(
@@ -1856,20 +1992,14 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         overlay: LazyOverlayId,
         value: LazyOverlay,
     ) -> Result<(), Self::Error> {
-        self.transaction(move |namespace| {
-            put_content_addressed(namespace, "lazy-overlays", overlay.into_bytes(), &value)
-        })
-        .await
+        self.put_node(overlay, value).await
     }
 
     async fn load_lazy_shadow(
         &self,
         shadow: crate::LazyShadowId,
     ) -> Result<Option<crate::LazyShadow>, Self::Error> {
-        self.transaction(move |namespace| {
-            load_content_addressed(namespace, "lazy-shadows-v1", shadow.into_bytes())
-        })
-        .await
+        self.load_node(shadow).await
     }
 
     async fn put_lazy_shadow(
@@ -1877,10 +2007,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         shadow: crate::LazyShadowId,
         value: crate::LazyShadow,
     ) -> Result<(), Self::Error> {
-        self.transaction(move |namespace| {
-            put_content_addressed(namespace, "lazy-shadows-v1", shadow.into_bytes(), &value)
-        })
-        .await
+        self.put_node(shadow, value).await
     }
 }
 
@@ -2131,9 +2258,93 @@ mod tests {
         )
         .expect("tamper overlay");
         assert!(matches!(
-            LazyWorkspaceStore::load_lazy_overlay(&store, overlay).await,
+            LazyWorkspaceStore::load_lazy_overlay(
+                &LocalCoreStateStore::new(directory.path()),
+                overlay
+            )
+            .await,
             Err(LocalCoreStateStoreError::Integrity)
         ));
+    }
+
+    #[tokio::test]
+    async fn immutable_nodes_are_served_from_memory_after_first_use() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::open_owned(directory.path()).expect("owner");
+        let overlay = LazyOverlay::default();
+        let overlay_id = LazyOverlayId::from_bytes(
+            *blake3::hash(&serde_json::to_vec(&overlay).expect("encode overlay")).as_bytes(),
+        );
+        let shadow = crate::LazyShadow::default();
+        let shadow_id: crate::LazyShadowId = serde_json::from_value(serde_json::json!(
+            blake3::hash(&serde_json::to_vec(&shadow).expect("encode shadow")).as_bytes()
+        ))
+        .expect("shadow id");
+        store
+            .put_lazy_overlay(overlay_id, overlay.clone())
+            .await
+            .expect("put overlay");
+        store
+            .put_lazy_shadow(shadow_id, shadow.clone())
+            .await
+            .expect("put shadow");
+        std::fs::remove_dir_all(directory.path().join("lazy-overlays")).expect("drop overlays");
+        std::fs::remove_dir_all(directory.path().join("lazy-shadows-v1")).expect("drop shadows");
+        let clone = store.clone();
+        assert_eq!(
+            clone
+                .load_lazy_overlay(overlay_id)
+                .await
+                .expect("memoized overlay"),
+            Some(overlay)
+        );
+        assert_eq!(
+            clone
+                .load_lazy_shadow(shadow_id)
+                .await
+                .expect("memoized shadow"),
+            Some(shadow)
+        );
+        assert!(
+            matches!(
+                clone
+                    .put_lazy_overlay(
+                        overlay_id,
+                        serde_json::from_value(serde_json::json!({
+                            "Node": {
+                                "path": "/different",
+                                "priority": 0,
+                                "change": "Tombstone",
+                                "left": vec![0_u8; 32],
+                                "right": vec![0_u8; 32]
+                            }
+                        }))
+                        .expect("different overlay"),
+                    )
+                    .await,
+                Err(LocalCoreStateStoreError::Integrity)
+            ),
+            "a memoized address still rejects a different value"
+        );
+    }
+
+    #[test]
+    fn node_memo_rotation_keeps_recently_used_entries() {
+        let mut generations = Generations::new();
+        for key in 0..NODE_CACHE_GENERATION {
+            generations.insert(key, key);
+        }
+        generations.insert(NODE_CACHE_GENERATION, NODE_CACHE_GENERATION);
+        assert_eq!(generations.get(&0), Some(0));
+        for key in NODE_CACHE_GENERATION + 1..2 * NODE_CACHE_GENERATION {
+            generations.insert(key, key);
+        }
+        assert_eq!(
+            generations.get(&0),
+            Some(0),
+            "a promoted entry survives rotation"
+        );
+        assert_eq!(generations.get(&1), None, "an unused entry is evicted");
     }
 
     #[tokio::test]
