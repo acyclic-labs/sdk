@@ -1644,32 +1644,48 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     ));
     assert_eq!(detached_attributes.value.entries.len(), 1);
     assert_eq!(detached_attributes.value.entries[0].name, attribute);
-    through_every_detached_cut!(detached.write_range(
-        256,
-        Bytes::from_static(b"detached atomic retry"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    through_every_detached_cut!(detached.zero_range(
-        ByteRange {
-            offset: 512,
-            length: 32,
+    through_every_detached_cut!(detached.change_content(
+        ContentChange::Write {
+            offset: 256,
+            bytes: Bytes::from_static(b"detached atomic retry")
         },
-        true,
-        false,
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    through_every_detached_cut!(detached.preallocate(
-        ByteRange {
-            offset: 768,
-            length: 32,
+    through_every_detached_cut!(detached.change_content(
+        ContentChange::ZeroRange {
+            range: ByteRange {
+                offset: 512,
+                length: 32,
+            },
+            allocated: true,
+            extend: false
         },
-        false,
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    through_every_detached_cut!(detached.resize(2_048, WorkBudget::UNBOUNDED, &cancellation,));
+    through_every_detached_cut!(detached.change_content(
+        ContentChange::Preallocate {
+            range: ByteRange {
+                offset: 768,
+                length: 32,
+            },
+            keep_size: false
+        },
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ));
+    through_every_detached_cut!(detached.change_content(
+        ContentChange::Resize {
+            logical_bytes: 2_048
+        },
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ));
     through_every_detached_cut!(detached.remove_named_attribute(
         attribute.clone(),
         WorkBudget::UNBOUNDED,
@@ -3014,32 +3030,49 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
         .ok_or("lookup blocked")??;
     assert!(absent.value.record.is_none());
 
-    poll_ready(detached.write_range(
-        0,
-        Bytes::from_static(b"open"),
+    poll_ready(detached.change_content(
+        ContentChange::Write {
+            offset: 0,
+            bytes: Bytes::from_static(b"open"),
+        },
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("detached write blocked")??;
-    poll_ready(detached.write_range(4, Bytes::new(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("detached empty write blocked")??;
-    poll_ready(detached.preallocate(
-        ByteRange {
-            offset: 128,
-            length: 64,
+    poll_ready(detached.change_content(
+        ContentChange::Write {
+            offset: 4,
+            bytes: Bytes::new(),
         },
-        false,
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("detached empty write blocked")??;
+    poll_ready(detached.change_content(
+        ContentChange::Preallocate {
+            range: ByteRange {
+                offset: 128,
+                length: 64,
+            },
+            keep_size: false,
+        },
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("detached preallocation blocked")??;
-    poll_ready(detached.zero_range(
-        ByteRange {
-            offset: 64,
-            length: 16,
+    poll_ready(detached.change_content(
+        ContentChange::ZeroRange {
+            range: ByteRange {
+                offset: 64,
+                length: 16,
+            },
+            allocated: false,
+            extend: false,
         },
-        false,
-        false,
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -3055,8 +3088,13 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
     .ok_or("detached read blocked")??;
     assert_eq!(&read.value.bytes[..4], b"open");
     assert_eq!(&read.value.bytes[64..80], &[0; 16]);
-    poll_ready(detached.resize(192, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("detached resize blocked")??;
+    poll_ready(detached.change_content(
+        ContentChange::Resize { logical_bytes: 192 },
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("detached resize blocked")??;
     assert_eq!(detached.logical_bytes(), 192);
     poll_ready(detached.remove_named_attribute(
         attribute.clone(),
@@ -6629,9 +6667,12 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         FsError::FileRead(FileRangeReadError::InvalidRange)
     ));
     assert_eq!(*detached_read_failure.work, WorkCounters::default());
-    let detached_failure = poll_ready(detached.write_range(
-        0,
-        Bytes::from_static(b"12345"),
+    let detached_failure = poll_ready(detached.change_content(
+        ContentChange::Write {
+            offset: 0,
+            bytes: Bytes::from_static(b"12345"),
+        },
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -7665,9 +7706,12 @@ fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
         "cancelled detached read"
     );
     cancelled!(
-        detached.write_range(
-            0,
-            Bytes::from_static(b"x"),
+        detached.change_content(
+            ContentChange::Write {
+                offset: 0,
+                bytes: Bytes::from_static(b"x")
+            },
+            None,
             WorkBudget::UNBOUNDED,
             &cancelled_token,
         ),

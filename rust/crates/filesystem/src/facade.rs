@@ -12320,153 +12320,105 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         })
     }
 
-    /// Writes caller bytes into the detached sparse file.
+    /// Applies one content change and, when `metadata` is given, replaces
+    /// the complete metadata in the same detached record transition: the
+    /// visible record changes only if both succeed. A detached file has no
+    /// other file to clone from, so that change cannot be expressed.
     ///
     /// # Errors
     ///
-    /// Returns typed range, blob, mutation, storage, cancellation, allocation,
-    /// or bounded-work failures.
-    pub async fn write_range(
+    /// Returns measured blob, encoding, mutation, storage, cancellation,
+    /// allocation, or bounded-work failures.
+    pub async fn change_content(
         &mut self,
-        offset: u64,
-        bytes: Bytes,
+        change: ContentChange<std::convert::Infallible>,
+        metadata: Option<FileMetadata>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        if bytes.is_empty() {
-            return Ok(FsReceipt {
-                value: (),
-                work: WorkCounters::default(),
-            });
-        }
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-            > self.volume.config.limits.maximum_read_bytes
-        {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let mut source = std::io::Cursor::new(bytes);
-        let blob = stage_content_for_volume(
-            &self.volume,
-            &mut source,
-            maximum_blob_bytes,
-            budget,
-            cancellation,
-        )
-        .await?;
-        let mut work = blob.work;
-        let mutation = self
-            .mutate_regular(
-                RegularMutation::Write {
+        let mut work = WorkCounters::default();
+        let mutation = match change {
+            ContentChange::Write { bytes, .. } if bytes.is_empty() => None,
+            ContentChange::Write { offset, bytes } => {
+                if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                    > self.volume.config.limits.maximum_read_bytes
+                {
+                    return Err(OperationFailure::before_work(FsError::FileRead(
+                        FileRangeReadError::InvalidRange,
+                    )));
+                }
+                let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                let mut source = std::io::Cursor::new(bytes);
+                let blob = stage_content_for_volume(
+                    &self.volume,
+                    &mut source,
+                    maximum_blob_bytes,
+                    budget,
+                    cancellation,
+                )
+                .await?;
+                work = blob.work;
+                Some(RegularMutation::Write {
                     offset,
                     length: blob.value.logical_bytes,
                     content: blob.value.root,
                     content_offset: 0,
-                },
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, mutation.work)?;
-        Ok(FsReceipt { value: (), work })
-    }
-
-    /// Changes detached logical file length.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed mutation, storage, cancellation, allocation, or work failures.
-    pub async fn resize(
-        &mut self,
-        logical_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        self.mutate_regular(
-            RegularMutation::Resize { logical_bytes },
-            budget,
-            cancellation,
-        )
-        .await
-    }
-
-    /// Replaces one detached range with a hole or allocated zeros.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed mutation, storage, cancellation, allocation, or work failures.
-    pub async fn zero_range(
-        &mut self,
-        range: ByteRange,
-        allocated: bool,
-        extend: bool,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        self.mutate_regular(
-            RegularMutation::ZeroRange {
+                })
+            }
+            ContentChange::Resize { logical_bytes } => {
+                Some(RegularMutation::Resize { logical_bytes })
+            }
+            ContentChange::ZeroRange {
+                range,
+                allocated,
+                extend,
+            } => Some(RegularMutation::ZeroRange {
                 offset: range.offset,
                 length: range.length,
                 allocated,
                 extend,
-            },
-            budget,
-            cancellation,
-        )
-        .await
-    }
-
-    /// Allocates detached sparse holes while preserving content.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed unsupported keep-size, mutation, storage, cancellation,
-    /// allocation, or work failures.
-    pub async fn preallocate(
-        &mut self,
-        range: ByteRange,
-        keep_size: bool,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        self.mutate_regular(
-            RegularMutation::Preallocate {
+            }),
+            ContentChange::Preallocate { range, keep_size } => Some(RegularMutation::Preallocate {
                 offset: range.offset,
                 length: range.length,
                 keep_size,
-            },
-            budget,
-            cancellation,
-        )
-        .await
-    }
-
-    async fn mutate_regular(
-        &mut self,
-        mutation: RegularMutation,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        let receipt = apply_regular_mutation_async(
-            &self.volume.fs.inner.objects,
-            self.record.payload,
-            mutation,
-            self.volume.config,
-            budget,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| {
-            OperationFailure::new(FsError::DetachedMutation(failure.error), *failure.work)
-        })?;
-        self.record.payload = receipt.payload;
-        Ok(FsReceipt {
-            value: (),
-            work: receipt.work,
-        })
+            }),
+            ContentChange::CloneFrom { source, .. } => match source {},
+        };
+        let payload = match mutation {
+            Some(mutation) => {
+                let receipt = apply_regular_mutation_async(
+                    &self.volume.fs.inner.objects,
+                    self.record.payload,
+                    mutation,
+                    self.volume.config,
+                    remaining(work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, FsError::DetachedMutation))?;
+                work = add(work, receipt.work)?;
+                receipt.payload
+            }
+            None => self.record.payload,
+        };
+        let metadata_id = match metadata {
+            Some(metadata) => {
+                let encoded = encode_file_metadata(metadata)
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
+                let (metadata_id, stored) = self
+                    .volume
+                    .fs
+                    .put_encoded(ObjectKind::Metadata, encoded, work, budget, cancellation)
+                    .await?;
+                work = stored;
+                metadata_id
+            }
+            None => self.record.metadata,
+        };
+        self.record.payload = payload;
+        self.record.metadata = metadata_id;
+        Ok(FsReceipt { value: (), work })
     }
 }
 
