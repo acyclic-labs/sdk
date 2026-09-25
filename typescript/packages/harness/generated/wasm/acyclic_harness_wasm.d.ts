@@ -25,7 +25,7 @@ export class WasmReducer {
     conversationJson(): string;
     /**
      * Returns the same bounded page with Rust-owned JS integer projection:
-     * revisions and cursors stay BigInt, validated file lengths become Number.
+     * revisions and cursors stay `BigInt`, validated file lengths become Number.
      */
     conversationPage(after_sequence: bigint, limit: number): any;
     /**
@@ -136,7 +136,7 @@ export function decodeAttachmentManifest(manifest: any, bytes: Uint8Array, item_
 
 /**
  * Parses canonical JSON without passing full-width integer literals through
- * JavaScript Number. Large serde integers are returned as BigInt.
+ * JavaScript Number. Large serde integers are returned as `BigInt`.
  */
 export function decodeCanonicalJson(bytes: Uint8Array): any;
 
@@ -166,7 +166,7 @@ export function encodeAttachmentManifest(items: any): Uint8Array;
 /**
  * Serializes a plain JavaScript data value through Rust's canonical JSON
  * representation. Unsafe integer Numbers are rejected before conversion;
- * callers must supply BigInt for exact full-width identities and counters.
+ * callers must supply `BigInt` for exact full-width identities and counters.
  */
 export function encodeCanonicalJson(value: any): Uint8Array;
 

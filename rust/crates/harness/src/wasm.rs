@@ -1,4 +1,8 @@
 //! Thin JavaScript host for the exact native reducer.
+#![allow(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen's exported ABI owns JavaScript values and byte buffers"
+)]
 
 use crate::wire_codec::{decode_command, encode_apply_result, protocol_identity};
 use crate::{
@@ -33,7 +37,11 @@ pub fn derive_operation_uuid(operation: &str, label: &str) -> Result<String, JsV
     digest.update(label.as_bytes());
     let digest = digest.finalize();
     let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
+    bytes.copy_from_slice(
+        digest
+            .get(..16)
+            .ok_or_else(|| JsValue::from_str("SHA-256 digest is incomplete"))?,
+    );
     bytes[6] = (bytes[6] & 15) | 80;
     bytes[8] = (bytes[8] & 63) | 128;
     Ok(uuid::Uuid::from_bytes(bytes).to_string())
@@ -47,7 +55,12 @@ pub fn uuid_from_digest_half(digest: &[u8], second: bool) -> Result<String, JsVa
     if digest.len() != 32 {
         return Err(JsValue::from_str("action digest must contain 32 bytes"));
     }
-    let selected = if second { &digest[16..] } else { &digest[..16] };
+    let selected = if second {
+        digest.get(16..)
+    } else {
+        digest.get(..16)
+    }
+    .ok_or_else(|| JsValue::from_str("action digest is incomplete"))?;
     let identity =
         uuid::Uuid::from_slice(selected).map_err(|error| JsValue::from_str(&error.to_string()))?;
     if identity.is_nil() {
@@ -57,7 +70,7 @@ pub fn uuid_from_digest_half(digest: &[u8], second: bool) -> Result<String, JsVa
 }
 
 /// Parses canonical JSON without passing full-width integer literals through
-/// JavaScript Number. Large serde integers are returned as BigInt.
+/// JavaScript Number. Large serde integers are returned as `BigInt`.
 #[wasm_bindgen(js_name = decodeCanonicalJson)]
 pub fn decode_canonical_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     let value = parse_json_bytes(bytes)?;
@@ -91,8 +104,7 @@ fn reject_out_of_range_integer_tokens(bytes: &[u8]) -> Result<(), JsValue> {
     let mut offset = 0;
     let mut quoted = false;
     let mut escaped = false;
-    while offset < bytes.len() {
-        let byte = bytes[offset];
+    while let Some(&byte) = bytes.get(offset) {
         if quoted {
             if escaped {
                 escaped = false;
@@ -114,15 +126,15 @@ fn reject_out_of_range_integer_tokens(bytes: &[u8]) -> Result<(), JsValue> {
             continue;
         }
         let start = offset;
-        while offset < bytes.len()
-            && matches!(
-                bytes[offset],
-                b'0'..=b'9' | b'+' | b'-' | b'.' | b'e' | b'E'
-            )
+        while bytes
+            .get(offset)
+            .is_some_and(|byte| matches!(byte, b'0'..=b'9' | b'+' | b'-' | b'.' | b'e' | b'E'))
         {
             offset += 1;
         }
-        let token = &bytes[start..offset];
+        let token = bytes
+            .get(start..offset)
+            .ok_or_else(|| JsValue::from_str("JSON token range is invalid"))?;
         if !token.iter().any(|part| matches!(*part, b'.' | b'e' | b'E')) {
             let text = std::str::from_utf8(token)
                 .map_err(|_| JsValue::from_str("JSON integer token is not UTF-8"))?;
@@ -138,7 +150,7 @@ fn reject_out_of_range_integer_tokens(bytes: &[u8]) -> Result<(), JsValue> {
 
 /// Serializes a plain JavaScript data value through Rust's canonical JSON
 /// representation. Unsafe integer Numbers are rejected before conversion;
-/// callers must supply BigInt for exact full-width identities and counters.
+/// callers must supply `BigInt` for exact full-width identities and counters.
 #[wasm_bindgen(js_name = encodeCanonicalJson)]
 pub fn encode_canonical_json(value: JsValue) -> Result<Vec<u8>, JsValue> {
     let value = js_json_value(&value)?;
@@ -202,6 +214,10 @@ pub fn validate_identity(kind: &str, value: &str) -> Result<String, JsValue> {
     Ok(normalized)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exhaustive traversal owns JS JSON admission"
+)]
 fn snapshot_js_json(
     value: &JsValue,
     depth: usize,
@@ -225,7 +241,11 @@ fn snapshot_js_json(
             ));
         }
         let admitted = if number.fract() == 0.0 {
-            serde_json::Value::from(number as i64)
+            let exact = number
+                .to_string()
+                .parse::<i64>()
+                .map_err(|_| JsValue::from_str("JSON integer is outside the exact range"))?;
+            serde_json::Value::from(exact)
         } else {
             serde_json::Value::Number(
                 serde_json::Number::from_f64(number)
@@ -242,7 +262,7 @@ fn snapshot_js_json(
             value
                 .unchecked_ref::<js_sys::BigInt>()
                 .to_string(10)
-                .map_err(|error| JsValue::from(error))?,
+                .map_err(JsValue::from)?,
         )
         .as_string()
         .ok_or_else(|| JsValue::from_str("BigInt spelling is invalid"))?;
@@ -374,7 +394,11 @@ fn conversation_page_data(
     let mut end = start;
     let mut bytes_used = 0_usize;
     while end < conversation.messages.len() && end - start < limit as usize {
-        let size = crate::contract::canonical_json_bytes(&conversation.messages[end])
+        let message = conversation
+            .messages
+            .get(end)
+            .ok_or_else(|| JsValue::from_str("conversation page cursor is invalid"))?;
+        let size = crate::contract::canonical_json_bytes(message)
             .map_err(js_error)?
             .len();
         if bytes_used.saturating_add(size) > 8 * 1024 * 1024 - 1_024 {
@@ -392,7 +416,10 @@ fn conversation_page_data(
         agent: conversation.agent,
         event_revision: reducer.revision(),
         total_messages,
-        messages: &conversation.messages[start..end],
+        messages: conversation
+            .messages
+            .get(start..end)
+            .ok_or_else(|| JsValue::from_str("conversation page range is invalid"))?,
         next_sequence: (end < conversation.messages.len()).then_some(end as u64),
     })
 }
@@ -401,6 +428,10 @@ fn conversation_page_data(
 /// returned object is detached and canonically shaped by Rust serde; context
 /// supplies `Limits` for messages and the open ticket for resolutions.
 #[wasm_bindgen(js_name = validateContract)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exhaustive v2 contract admission dispatch"
+)]
 pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result<JsValue, JsValue> {
     // serde-wasm-bindgen otherwise coerces NaN/Infinity inside generic JSON
     // fields to null before the Rust contract can reject them. Admit the
@@ -439,7 +470,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
                 ("tool_calls_per_step", value.tool_calls_per_step as u64),
                 ("context_messages", value.context_messages as u64),
             ] {
-                set_js_field(&js, key, &JsValue::from_f64(bound as f64))?;
+                set_js_field(&js, key, &exact_js_number(bound)?)?;
             }
             Ok(js)
         }
@@ -874,7 +905,7 @@ impl WasmReducer {
     }
 
     /// Returns the same bounded page with Rust-owned JS integer projection:
-    /// revisions and cursors stay BigInt, validated file lengths become Number.
+    /// revisions and cursors stay `BigInt`, validated file lengths become Number.
     #[wasm_bindgen(js_name = conversationPage)]
     pub fn conversation_page(&self, after_sequence: u64, limit: u32) -> Result<JsValue, JsValue> {
         let page = conversation_page_data(&self.reducer, after_sequence, limit)?;
@@ -1002,6 +1033,19 @@ fn to_js_admitted<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
     Ok(js)
 }
 
+fn exact_js_number(value: u64) -> Result<JsValue, JsValue> {
+    if value > 9_007_199_254_740_991 {
+        return Err(JsValue::from_str(
+            "integer exceeds JavaScript Number precision",
+        ));
+    }
+    let number = value
+        .to_string()
+        .parse::<f64>()
+        .map_err(|_| JsValue::from_str("integer cannot be projected to JavaScript"))?;
+    Ok(JsValue::from_f64(number))
+}
+
 fn set_js_field(js: &JsValue, key: &str, value: &JsValue) -> Result<(), JsValue> {
     let key = JsValue::from_str(key);
     if js.is_instance_of::<js_sys::Map>() {
@@ -1026,7 +1070,7 @@ fn normalize_descriptor_lengths(js: &JsValue, value: &serde_json::Value) -> Resu
                 set_js_field(
                     js,
                     "byte_length",
-                    &JsValue::from_f64(descriptor.byte_length() as f64),
+                    &exact_js_number(descriptor.byte_length())?,
                 )?;
             }
             for (key, child) in fields {
@@ -1041,7 +1085,9 @@ fn normalize_descriptor_lengths(js: &JsValue, value: &serde_json::Value) -> Resu
         }
         serde_json::Value::Array(items) => {
             for (index, child) in items.iter().enumerate() {
-                let js_child = js_sys::Reflect::get(js, &JsValue::from_f64(index as f64))?;
+                let index = u32::try_from(index)
+                    .map_err(|_| JsValue::from_str("JS array index exceeds u32"))?;
+                let js_child = js_sys::Reflect::get(js, &JsValue::from_f64(f64::from(index)))?;
                 normalize_descriptor_lengths(&js_child, child)?;
             }
         }
