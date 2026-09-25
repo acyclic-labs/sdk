@@ -786,8 +786,9 @@ fn mount_bench(args: &[String]) -> Result<(), Failure> {
         let engine = LocalFs::local(local_options(work.join("store"))?)
             .await
             .map_err(engine_err("open store"))?;
-        let distributed =
-            DistributedFs::new(engine, LocalCoreStateStore::new(work.join("core-state")));
+        let state = LocalCoreStateStore::open_owned(work.join("core-state"))
+            .map_err(engine_err("open core state"))?;
+        let distributed = DistributedFs::new(engine, state);
         let demand = NativeDemandSource::open(&source, profile, VolumeLimits::default())
             .await
             .map_err(engine_err("open source"))?;
