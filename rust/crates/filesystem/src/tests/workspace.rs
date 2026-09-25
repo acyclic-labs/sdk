@@ -2082,6 +2082,77 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
     Ok(())
 }
 
+/// Checks that a fork's authority lineage is exactly the one separate fork
+/// and append commits would leave: the source's lineage through the source
+/// generation, for a fork of the published head, then the fork's first
+/// generation, located at its position. A fork of the fork's head then
+/// shares that lineage in turn.
+async fn assert_fork_lineage_exact(
+    stream: &Arc<acyclic_stream::MemoryStream>,
+    main: &crate::Workspace<
+        crate::distributed::StreamAuthorityStore<CutStream>,
+        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+    >,
+    source: &crate::Generation<
+        crate::distributed::StreamAuthorityStore<CutStream>,
+        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+    >,
+    fork: &crate::Workspace<
+        crate::distributed::StreamAuthorityStore<CutStream>,
+        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+    >,
+    independent: bool,
+) -> Result<(), Box<dyn Error>> {
+    let store = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream));
+    let authority =
+        |workspace: WorkspaceId| crate::kernel::volume_authority_id(workspace.volume_id());
+    let head = fork.head().await?.id();
+    let mut expected = if independent {
+        Vec::new()
+    } else {
+        let source_lineage = store.generation_lineage(authority(main.id())).await?;
+        let at = store
+            .generation_locator(authority(main.id()), source.id())
+            .await?;
+        assert_eq!(
+            store
+                .generation_locator(authority(fork.id()), source.id())
+                .await?,
+            at
+        );
+        source_lineage[..usize::try_from(at)?].to_vec()
+    };
+    expected.push(head);
+    assert_eq!(
+        store.generation_lineage(authority(fork.id())).await?,
+        expected
+    );
+    assert_eq!(
+        store.generation_locator(authority(fork.id()), head).await?,
+        u64::try_from(expected.len())?
+    );
+    // A fork of the fork's published head reuses that lineage.
+    let grandchild = fork
+        .fork(
+            "grandchild",
+            ForkOptions::from_generation(
+                fork.head().await?,
+                IdempotencyKey::from_bytes([0x71; 16]),
+            ),
+        )
+        .await?;
+    assert_eq!(
+        grandchild.read("/base.txt", 16).await?,
+        Bytes::from_static(b"base")
+    );
+    let grandchild_lineage = store.generation_lineage(authority(grandchild.id())).await?;
+    assert_eq!(
+        grandchild_lineage.get(..expected.len()),
+        Some(&expected[..])
+    );
+    Ok(())
+}
+
 /// Forks one generation through every provider cut, before calls and after
 /// commits, checking the durable state after each interruption and that a
 /// retry with the same key completes the same workspace. Returns the commits
@@ -2116,8 +2187,9 @@ async fn fork_through_every_cut(advance_source: bool) -> Result<usize, Box<dyn E
                 assert_fork_state_exact(&stream, &source, main.id().volume_id(), destination)
                     .await?;
             if !fired {
-                attempt?;
+                let fork = attempt?;
                 assert!(complete);
+                assert_fork_lineage_exact(&stream, &main, &source, &fork, advance_source).await?;
                 assert!(creation_operation(&stream, destination, key).await?);
                 uninterrupted_commits.get_or_insert(committed);
                 break;
@@ -2142,6 +2214,7 @@ async fn fork_through_every_cut(advance_source: bool) -> Result<usize, Box<dyn E
                 .fork("agent", ForkOptions::from_generation(source.clone(), key))
                 .await?;
             assert_eq!(again.head().await?.id(), retried.head().await?.id());
+            assert_fork_lineage_exact(&stream, &main, &source, &retried, advance_source).await?;
             assert!(
                 creation_operation(&stream, destination, key).await?,
                 "the fork's creation is not found by its operation"
@@ -2152,10 +2225,11 @@ async fn fork_through_every_cut(advance_source: bool) -> Result<usize, Box<dyn E
 }
 
 #[tokio::test]
-async fn a_fork_of_the_head_is_exact_at_every_provider_cut() -> Result<(), Box<dyn Error>> {
-    // The fork of a published head shares its lineage, so its creation
-    // record follows the commit that creates both authorities.
-    assert_eq!(fork_through_every_cut(false).await?, 2);
+async fn a_fork_of_the_head_is_one_commit_and_exact_at_every_provider_cut()
+-> Result<(), Box<dyn Error>> {
+    // The fork of a published head shares its lineage, which the same
+    // commit extends with the new workspace's first generation.
+    assert_eq!(fork_through_every_cut(false).await?, 1);
     Ok(())
 }
 
@@ -2246,9 +2320,8 @@ async fn a_local_fork_survives_power_loss_at_every_journal_cut() -> Result<(), B
         frame = end;
     }
     assert_eq!(frame, journal.len(), "fork frames do not end the journal");
-    // The fork of the published head is two commits: both authorities,
-    // then the creation record.
-    assert_eq!(cuts.len(), 1 + 4 * 2, "the fork did not append two frames");
+    // The fork of the published head is one commit.
+    assert_eq!(cuts.len(), 1 + 4, "the fork did not append one frame");
     for length in cuts {
         cut_journal(root, &journal, length)?;
         let fs = Fs::local(crate::LocalOptions::new(root)).await?;

@@ -289,8 +289,10 @@ pub struct CommittedFork {
     pub destination: StreamPath,
     /// Exclusive inherited prefix end.
     pub forked_at: u64,
-    /// Initial destination tail.
+    /// Destination tail after the fork and its records.
     pub tail: u64,
+    /// Records appended after the inherited prefix, carrying the envelope ID.
+    pub records: Vec<Record>,
 }
 
 /// Logical trim fact retained in a committed envelope.
@@ -358,7 +360,10 @@ pub enum CommitMutation {
         /// Opaque records.
         records: Vec<Bytes>,
     },
-    /// Fork one pre-commit prefix.
+    /// Fork one pre-commit prefix into a new destination, then append
+    /// `records` to that destination, all at the commit's one
+    /// linearization point. A commit changes each path once, so this is
+    /// the only way to create a path from a prefix and extend it together.
     Fork {
         /// Source.
         source: StreamPath,
@@ -366,6 +371,8 @@ pub enum CommitMutation {
         destination: StreamPath,
         /// Exact source prefix end.
         at_tail: u64,
+        /// Opaque records appended after the prefix; may be empty.
+        records: Vec<Bytes>,
     },
     /// Advance one path's logical trim point.
     Trim {

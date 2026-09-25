@@ -335,6 +335,7 @@ impl StreamProvider for MemoryStream {
                     destination: receipt.destination.clone(),
                     forked_at,
                     tail: forked_at,
+                    records: Vec::new(),
                 })],
             },
         );
@@ -1154,11 +1155,13 @@ fn commit_digest(request: &CommitRequest) -> [u8; 32] {
                 source,
                 destination,
                 at_tail,
+                records,
             } => {
                 hash.update([2]);
                 hash_path(&mut hash, source);
                 hash_path(&mut hash, destination);
                 hash.update(at_tail.to_le_bytes());
+                hash_records(&mut hash, records);
             }
             CommitMutation::Trim { path, before } => {
                 hash.update([3]);
@@ -1218,8 +1221,14 @@ fn normalize_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
         return Err(StreamError::LimitExceeded);
     }
     for mutation in &request.mutations {
-        if let CommitMutation::Append { records, .. } = mutation {
-            validate_records(records)?;
+        match mutation {
+            CommitMutation::Append { records, .. } => validate_records(records)?,
+            CommitMutation::Fork { records, .. } if !records.is_empty() => {
+                validate_records(records)?;
+            }
+            CommitMutation::Fork { .. }
+            | CommitMutation::Trim { .. }
+            | CommitMutation::Delete { .. } => {}
         }
     }
     validate_commit_size(request)?;
@@ -1263,11 +1272,13 @@ fn validate_commit_size(request: &CommitRequest) -> Result<(), StreamError> {
             CommitMutation::Fork {
                 source,
                 destination,
+                records,
                 ..
             } => {
                 add_path_size(&mut total, source)?;
                 add_path_size(&mut total, destination)?;
                 add_size(&mut total, 8)?;
+                add_records_size(&mut total, records)?;
             }
             CommitMutation::Trim { path, .. } => {
                 add_path_size(&mut total, path)?;
@@ -1291,11 +1302,7 @@ fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {
                 Some(CommitCondition::Tail { .. } | CommitCondition::Absent { .. }) => {}
                 _ => return Err(StreamError::InvalidArgument),
             },
-            CommitMutation::Fork {
-                source: _,
-                destination,
-                at_tail: _,
-            } => {
+            CommitMutation::Fork { destination, .. } => {
                 if !matches!(
                     conditions.get(destination),
                     Some(CommitCondition::Absent { .. })
@@ -1398,7 +1405,9 @@ fn reserve_coordinated(
             }
             current = path.parent();
         }
-        if let CommitMutation::Append { records: batch, .. } = mutation {
+        if let CommitMutation::Append { records: batch, .. }
+        | CommitMutation::Fork { records: batch, .. } = mutation
+        {
             records = records.saturating_add(batch.len());
             bytes = bytes.saturating_add(batch.iter().map(Bytes::len).sum::<usize>());
         }
@@ -1456,27 +1465,46 @@ fn apply_coordinated(
                 source,
                 destination,
                 at_tail,
+                records,
             } => {
                 let (history, source_tail) = before.get(&source).ok_or(StreamError::NotFound)?;
                 if at_tail > *source_tail {
                     return Err(StreamError::InvalidArgument);
                 }
+                let records = build_records(at_tail, records, commit_id)?;
                 ensure_path(state, &destination);
-                let stream = state
-                    .paths
-                    .get_mut(&destination)
-                    .ok_or(StreamError::Unavailable)?;
-                stream.history = Some(Arc::new(History::Prefix {
-                    source: history.clone(),
-                    tail: at_tail,
-                }));
-                stream.tail = at_tail;
-                stream.changed.send_replace(at_tail);
+                let tail = {
+                    let stream = state
+                        .paths
+                        .get_mut(&destination)
+                        .ok_or(StreamError::Unavailable)?;
+                    let prefix = Arc::new(History::Prefix {
+                        source: history.clone(),
+                        tail: at_tail,
+                    });
+                    stream.history = Some(if records.is_empty() {
+                        prefix
+                    } else {
+                        Arc::new(History::Batch {
+                            parent: Some(prefix),
+                            records: Arc::from(records.clone()),
+                        })
+                    });
+                    stream.tail = records.last().map_or(at_tail, |record| record.sequence + 1);
+                    stream.changed.send_replace(stream.tail);
+                    stream.tail
+                };
+                state.record_count += records.len();
+                state.payload_bytes += records
+                    .iter()
+                    .map(|record| record.value.len())
+                    .sum::<usize>();
                 committed.push(CommittedMutation::Fork(CommittedFork {
                     source,
                     destination,
                     forked_at: at_tail,
-                    tail: at_tail,
+                    tail,
+                    records,
                 }));
             }
             CommitMutation::Trim { path, before } => {
@@ -1732,6 +1760,7 @@ mod tests {
                 source: source.clone(),
                 destination: path("runs/a")?,
                 at_tail: 1,
+                records: Vec::new(),
             }],
             idempotency_key: key(b"commit")?,
         };

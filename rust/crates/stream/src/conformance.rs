@@ -5,8 +5,8 @@ use futures::StreamExt as _;
 
 use crate::{
     AppendOutcome, AppendRequest, ChildrenRequest, CommitCondition, CommitConflict, CommitMutation,
-    CommitOutcome, CommitRequest, ForkRequest, IdempotencyKey, IdempotencyOutcome, ReadRequest,
-    StreamError, StreamPath, StreamProvider,
+    CommitOutcome, CommitRequest, CommittedMutation, ForkRequest, IdempotencyKey,
+    IdempotencyOutcome, ReadRequest, StreamError, StreamPath, StreamProvider,
 };
 
 /// Canonical language-neutral Stream conformance inventory.
@@ -218,6 +218,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             source: source.clone(),
             destination: committed_path,
             at_tail: 2,
+            records: Vec::new(),
         }],
         idempotency_key: key(b"stream-commit")?,
     };
@@ -237,7 +238,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     {
         return Err("coordinated commit replay or envelope changed".into());
     }
-    verify_stale_tail_condition(provider, source.clone()).await?;
+    verify_commit_forks(provider, source.clone()).await?;
     let absent = path("conformance/absent-tail")?;
     let absent_key = key(b"stream-absent-tail")?;
     let absent_request = CommitRequest {
@@ -284,6 +285,16 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     Ok(())
 }
 
+/// A stale tail condition changes nothing, and a fork mutation extends
+/// its new path with records in the same commit.
+async fn verify_commit_forks(
+    provider: &dyn StreamProvider,
+    source: StreamPath,
+) -> Result<(), String> {
+    verify_stale_tail_condition(provider, source.clone()).await?;
+    verify_fork_with_records(provider, source).await
+}
+
 async fn verify_stale_tail_condition(
     provider: &dyn StreamProvider,
     source: StreamPath,
@@ -309,6 +320,7 @@ async fn verify_stale_tail_condition(
                 source: source.clone(),
                 destination: stale_path.clone(),
                 at_tail: 2,
+                records: Vec::new(),
             }],
             idempotency_key: key(b"stream-stale-commit")?,
         })
@@ -319,6 +331,91 @@ async fn verify_stale_tail_condition(
         || provider.tail(source).await.map_err(|err| error(&err))? != 2
     {
         return Err("stale tail condition mutated a coordinated commit".into());
+    }
+    Ok(())
+}
+
+/// A fork mutation appends its records after the inherited prefix, in the
+/// same commit, and its committed fact carries them.
+async fn verify_fork_with_records(
+    provider: &dyn StreamProvider,
+    source: StreamPath,
+) -> Result<(), String> {
+    let destination = path("conformance/forked-and-extended")?;
+    let request = CommitRequest {
+        conditions: vec![
+            CommitCondition::Tail {
+                path: source.clone(),
+                expected: 2,
+            },
+            CommitCondition::Absent {
+                path: destination.clone(),
+            },
+        ],
+        mutations: vec![CommitMutation::Fork {
+            source,
+            destination: destination.clone(),
+            at_tail: 1,
+            records: vec![
+                Bytes::from_static(b"extended"),
+                Bytes::from_static(b"again"),
+            ],
+        }],
+        idempotency_key: key(b"stream-fork-with-records")?,
+    };
+    let committed = provider
+        .commit(request.clone())
+        .await
+        .map_err(|err| error(&err))?;
+    let CommitOutcome::Committed(envelope) = &committed else {
+        return Err("fork with records conflicted".into());
+    };
+    let [CommittedMutation::Fork(fork)] = envelope.mutations.as_slice() else {
+        return Err("fork with records did not commit one fork fact".into());
+    };
+    let appended = fork
+        .records
+        .iter()
+        .map(|record| (record.sequence, record.value.clone(), record.commit_id))
+        .collect::<Vec<_>>();
+    if fork.forked_at != 1
+        || fork.tail != 3
+        || appended
+            != [
+                (1, Bytes::from_static(b"extended"), envelope.commit_id),
+                (2, Bytes::from_static(b"again"), envelope.commit_id),
+            ]
+    {
+        return Err("fork with records did not append after the inherited prefix".into());
+    }
+    let values = provider
+        .read(ReadRequest {
+            path: destination.clone(),
+            from: 0,
+            limit: 8,
+        })
+        .await
+        .map_err(|err| error(&err))?
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|record| record.map(|record| record.value))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| error(&err))?;
+    if values
+        != [
+            Bytes::from_static(b"one"),
+            Bytes::from_static(b"extended"),
+            Bytes::from_static(b"again"),
+        ]
+        || provider
+            .tail(destination)
+            .await
+            .map_err(|err| error(&err))?
+            != 3
+        || provider.commit(request).await.map_err(|err| error(&err))? != committed
+    {
+        return Err("fork with records history or replay changed".into());
     }
     Ok(())
 }

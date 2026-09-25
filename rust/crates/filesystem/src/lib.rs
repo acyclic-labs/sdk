@@ -142,7 +142,7 @@ pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLi
 pub use async_storage::{
     AsyncAuthorityStore, AsyncObjectStore, GenerationFork, GenerationForkSource,
     ImmediateAuthorityStore, ImmediateObjectStore, PublicationScope, WorkspaceForkCommit,
-    WorkspaceForkOutcome,
+    WorkspaceForkOutcome, append_first_record, commit_workspace_fork_in_steps,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};

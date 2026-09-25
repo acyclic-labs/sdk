@@ -174,7 +174,10 @@ const MAXIMUM_FIRST_RECORD_BYTES: u64 = 4 * 1024;
 /// can depend on it, then the destination authority and its creation record.
 /// Every step is idempotent, so a retry after a crash at any step, or after
 /// a combined commit, completes exactly the missing steps.
-pub(crate) async fn commit_workspace_fork_in_steps<S: AsyncAuthorityStore + ?Sized>(
+///
+/// This is the default [`AsyncAuthorityStore::commit_workspace_fork`], for
+/// backends that commit what they can atomically and resolve the rest here.
+pub async fn commit_workspace_fork_in_steps<S: AsyncAuthorityStore + ?Sized>(
     store: &S,
     fork: WorkspaceForkCommit,
     budget: WorkBudget,
@@ -240,7 +243,11 @@ pub(crate) async fn commit_workspace_fork_in_steps<S: AsyncAuthorityStore + ?Siz
 /// if needed. Answers whether the authority's first record is exactly that
 /// commit, including one an earlier attempt or a combined commit wrote under
 /// another retry identity. The receipt's work includes `prior`.
-pub(crate) async fn append_first_record<S: AsyncAuthorityStore + ?Sized>(
+///
+/// This is the default
+/// [`AsyncAuthorityStore::create_authority_with_first_record`], for backends
+/// that resolve an existing authority here.
+pub async fn append_first_record<S: AsyncAuthorityStore + ?Sized>(
     store: &S,
     authority: AuthorityId,
     commit: ProposedCommit,

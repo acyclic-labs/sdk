@@ -53,7 +53,7 @@ export class MemoryStreamProvider implements StreamProvider {
       const commitId = await this.#id(digest);
       this.#paths.set(destination, { records: parent.records.slice(0, index(forkedAt)), trimPoint: parent.trimPoint, retired: false });
       const receipt = { source, destination, forkedAt, tail: forkedAt, commitId: commitId.slice() as CommitId };
-      this.#commits.set(bytesKey(commitId), { commitId: commitId.slice() as CommitId, mutations: [{ type: "fork", source, destination, forkedAt, tail: forkedAt }] });
+      this.#commits.set(bytesKey(commitId), { commitId: commitId.slice() as CommitId, mutations: [{ type: "fork", source, destination, forkedAt, tail: forkedAt, records: [] }] });
       return receipt;
     });
   }
@@ -138,9 +138,13 @@ export class MemoryStreamProvider implements StreamProvider {
           if (this.#paths.has(mutation.fork.destination)) throw new StreamError("destination_exists", "fork destination already exists or is retired");
           const source = this.#active(mutation.fork.source);
           if (mutation.fork.atTail < source.trimPoint || mutation.fork.atTail > BigInt(source.records.length)) throw new StreamError("prefix_not_retained", "requested prefix is not retained");
-          this.#paths.set(mutation.fork.destination, { records: source.records.slice(0, index(mutation.fork.atTail)), trimPoint: source.trimPoint, retired: false });
-          forks.push({ path: mutation.fork.destination, tail: mutation.fork.atTail });
-          mutations.push({ type: "fork", source: mutation.fork.source, destination: mutation.fork.destination, forkedAt: mutation.fork.atTail, tail: mutation.fork.atTail });
+          const appended = mutation.fork.values.map((value, itemIndex) => ({ sequence: mutation.fork.atTail + BigInt(itemIndex), value: value.slice(), commitId: commitId.slice() as CommitId }));
+          const state = { records: [...source.records.slice(0, index(mutation.fork.atTail)), ...appended], trimPoint: source.trimPoint, retired: false };
+          this.#paths.set(mutation.fork.destination, state);
+          const tail = BigInt(state.records.length);
+          forks.push({ path: mutation.fork.destination, tail });
+          mutations.push({ type: "fork", source: mutation.fork.source, destination: mutation.fork.destination, forkedAt: mutation.fork.atTail, tail, records: appended });
+          changed.add(mutation.fork.destination);
         } else if ("trim" in mutation) {
           const state = this.#active(mutation.trim.path);
           sequence(mutation.trim.before);
