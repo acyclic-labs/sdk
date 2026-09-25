@@ -116,22 +116,36 @@ install -m 0644 node_modules/@acyclic-labs/harness/generated/wasm/acyclic_harnes
 bun test test 2>&1 | tee "$work/typescript-package-test.log"
 
 cd "$root"
-# Stage the exact public dependency closure. Harness cannot be registry-verified
-# until Stream is published, so test the extracted archives together and keep the
-# release order explicit.
-metadata="$("$cargo_bin" metadata --locked --no-deps --format-version 1)"
-harness_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-harness").version)')"
-dependency_names=(acyclic-native-runtime acyclic-objects acyclic-stream acyclic-fs acyclic-machines)
-for name in "${dependency_names[@]}"; do
-  [[ "$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name===process.argv[1])?.version ?? "")' "$name")" == "$harness_version" ]]
+# Stage the public Harness dependency closure from the same source as receipt
+# verification, including optional adapters.
+closure_output="$(bun scripts/harness-package-closure.mjs)"
+mapfile -t closure <<< "$closure_output"
+harness_version=""
+dependency_names=()
+for entry in "${closure[@]}"; do
+  IFS=$'\t' read -r name version <<< "$entry"
+  if [[ "$name" == "acyclic-harness" ]]; then
+    harness_version="$version"
+  else
+    dependency_names+=("$name")
+  fi
+done
+[[ -n "$harness_version" ]]
+for entry in "${closure[@]}"; do
+  IFS=$'\t' read -r name version <<< "$entry"
+  [[ "$version" == "$harness_version" ]] || { echo "Harness dependency version mismatch: $name" >&2; exit 1; }
 done
 package_target="$work/package-target"
 cargo_package_target="$package_target"
 if [[ "$cargo_bin" == "cargo.exe" ]]; then
   cargo_package_target="$(wslpath -w "$cargo_package_target")"
 fi
+package_arguments=()
+for name in "${dependency_names[@]}" acyclic-harness; do
+  package_arguments+=(-p "$name")
+done
 "$cargo_bin" package --locked --no-verify --allow-dirty --target-dir "$cargo_package_target" \
-  -p acyclic-native-runtime -p acyclic-objects -p acyclic-stream -p acyclic-fs -p acyclic-machines -p acyclic-harness
+  "${package_arguments[@]}"
 harness_crate="$package_target/package/acyclic-harness-$harness_version.crate"
 
 mkdir "$work/crates"

@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import { harnessPackageClosure } from "./harness-package-closure.mjs";
 
 if (process.argv.length !== 5) {
   throw new Error("usage: run-harness-conformance.mjs ARTIFACT_DIR REPORT.json RECEIPT.json");
@@ -52,23 +53,9 @@ const command = (executable, args, input) => {
   if (result.status !== 0) throw new Error(`${executable} failed: ${result.stderr || result.stdout}`);
   return result.stdout.trim();
 };
-const metadata = JSON.parse(command("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"]));
-const packages = new Map(metadata.packages.map(item => [item.name, item]));
-const publicCrates = new Set(JSON.parse(readFileSync("release/cargo-crates.json", "utf8")));
-const closure = new Set();
-const include = name => {
-  if (closure.has(name)) return;
-  const item = packages.get(name);
-  if (!item || !publicCrates.has(name)) throw new Error(`missing public Harness dependency: ${name}`);
-  closure.add(name);
-  for (const dependency of item.dependencies) {
-    if (dependency.kind !== "dev" && publicCrates.has(dependency.name)) include(dependency.name);
-  }
-};
-include("acyclic-harness");
 const expectedArtifacts = [
   "acyclic-harness.tgz",
-  ...[...closure].map(name => `${name}-${packages.get(name).version}.crate`),
+  ...harnessPackageClosure().map(({ name, version }) => `${name}-${version}.crate`),
 ].sort();
 
 const artifacts = readdirSync(artifactDirectory)
@@ -114,6 +101,7 @@ const markers = new Map([
 const harnessCases = suite.cases.filter(item => item.family === "harness");
 if (harnessCases.length !== markers.size) throw new Error("executable marker map does not exactly cover the Harness suite");
 command("cargo", ["build", "--quiet", "--locked", "-p", "acyclic-conformance", "--bin", "harness-conformance"]);
+const metadata = JSON.parse(command("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"]));
 const runnerBinary = resolve(metadata.target_directory, `debug/harness-conformance${process.platform === "win32" ? ".exe" : ""}`);
 const hash = bytes => command(runnerBinary, ["digest"], bytes);
 const cases = harnessCases.map(item => {
