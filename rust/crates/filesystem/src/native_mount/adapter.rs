@@ -136,7 +136,7 @@ impl Wake for ParkedCallback {
 }
 
 impl ParkedCallback {
-    fn poll_to_completion<F: Future>(mut future: Pin<Box<F>>) -> F::Output {
+    fn poll_to_completion<F: Future + Unpin>(mut future: F) -> F::Output {
         let parked = Arc::new(Self {
             thread: std::thread::current(),
             woken: AtomicBool::new(false),
@@ -144,7 +144,7 @@ impl ParkedCallback {
         let waker = Waker::from(Arc::clone(&parked));
         let mut context = Context::from_waker(&waker);
         loop {
-            if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+            if let Poll::Ready(output) = Pin::new(&mut future).poll(&mut context) {
                 return output;
             }
             while !parked.woken.swap(false, Ordering::Acquire) {
@@ -173,7 +173,13 @@ impl CallbackRuntime {
     }
 
     fn block_on<F: Future>(&self, create: impl FnOnce() -> F) -> F::Output {
-        let future = Box::pin(async { create().await });
+        // Polled in place, the callback would otherwise draw on the calling
+        // task's cooperative budget. On a current-thread runtime that budget
+        // refills only when the calling task yields, which it cannot do
+        // while blocked here: once spent, every Tokio resource would report
+        // Pending and wake at once, forever.
+        // The future is built in its heap allocation, never on this stack.
+        let future = tokio::task::unconstrained(Box::pin(async { create().await }));
         let poll = || {
             let _runtime = self.handle.enter();
             // This thread serves exactly this callback until it completes.
@@ -3649,6 +3655,25 @@ mod tests {
         profile: FilesystemProfile,
     ) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
         shared_sources_with_publication(profile, MountPublication::CloseAndSync)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_place_callback_outlasts_its_callers_cooperative_budget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = CallbackRuntime::create()?;
+        let lock = tokio::sync::Mutex::new(());
+        // Each acquisition spends cooperative budget; far more than one
+        // task's budget must complete while the calling task is blocked.
+        let acquired = runtime.wait(|| async {
+            let mut acquired = 0_u32;
+            for _ in 0..4_096 {
+                drop(lock.lock().await);
+                acquired += 1;
+            }
+            Ok(acquired)
+        });
+        assert_eq!(acquired?, 4_096);
+        Ok(())
     }
 
     #[test]
