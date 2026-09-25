@@ -60,7 +60,7 @@ pub(super) fn run() {
         _ => Err(
             "usage: qualify fixture <dir> [--with-fifo] | roundtrip <src> <work> \
              | corpus <dir> <files> <mb> | bench <src> <work> [rounds] \
-             | mount-bench <work> [files] [file-bytes]"
+             | mount-bench <work> [files] [file-bytes] [threads]"
                 .into(),
         ),
     };
@@ -768,6 +768,10 @@ fn mount_bench(args: &[String]) -> Result<(), Failure> {
     let work = PathBuf::from(args.first().ok_or("mount-bench: missing <work>")?);
     let files: u64 = args.get(1).map_or(Ok(2_000), |value| value.parse())?;
     let file_bytes: u64 = args.get(2).map_or(Ok(4_096), |value| value.parse())?;
+    let threads: u64 = args.get(3).map_or(Ok(1), |value| value.parse())?;
+    if threads == 0 {
+        return Err("mount-bench: threads must be positive".into());
+    }
     let source = work.join("src");
     let native_writes = work.join("native-writes");
     let mount_dir = work.join("mnt");
@@ -811,9 +815,18 @@ fn mount_bench(args: &[String]) -> Result<(), Failure> {
     // Nothing below may leave the mount attached.
     let measured = (|| -> Result<_, Failure> {
         let payload = corpus_payload(file_bytes);
-        let native = workload(&source, &native_writes, files, &payload)?;
-        let cold = workload(&mount_dir, &mount_dir.join("writes-cold"), files, &payload)?;
-        let warm = workload(&mount_dir, &mount_dir.join("writes-warm"), files, &payload)?;
+        let native = workload(&source, &native_writes, files, &payload, threads)?;
+        let mounted = |writes| {
+            workload(
+                &mount_dir,
+                &mount_dir.join(writes),
+                files,
+                &payload,
+                threads,
+            )
+        };
+        let cold = mounted("writes-cold")?;
+        let warm = mounted("writes-warm")?;
         Ok((native, cold, warm))
     })();
     let unmounted = runtime
@@ -843,6 +856,7 @@ fn mount_bench(args: &[String]) -> Result<(), Failure> {
             "platform": std::env::consts::OS,
             "files": files,
             "fileBytes": file_bytes,
+            "threads": threads,
             "phases": phases,
         })
     );
@@ -850,18 +864,24 @@ fn mount_bench(args: &[String]) -> Result<(), Failure> {
 }
 
 /// Times directory listing, stat, full reads, and fresh writes over the
-/// corpus under `root`, returning microseconds per operation for each phase.
-fn workload(root: &Path, writes: &Path, files: u64, payload: &[u8]) -> Result<[f64; 4], Failure> {
-    let per_op = |started: Instant, operations: u64| {
-        started.elapsed().as_secs_f64() * 1e6 / operations.max(1) as f64
-    };
+/// corpus under `root`, returning wall-clock microseconds per operation for
+/// each phase. Each phase's operations are split evenly across `threads`.
+fn workload(
+    root: &Path,
+    writes: &Path,
+    files: u64,
+    payload: &[u8],
+    threads: u64,
+) -> Result<[f64; 4], Failure> {
     let directories = files.div_ceil(100);
-    let started = Instant::now();
-    let mut listed = 0;
-    for directory in 0..directories {
+    let listed = std::sync::atomic::AtomicU64::new(0);
+    let list = timed_phase(directories, threads, |directory| {
         let path = root.join(corpus_directory(directory));
-        listed += fs::read_dir(&path).map_err(io_at("list", &path))?.count() as u64;
-    }
+        let count = fs::read_dir(&path).map_err(io_at("list", &path))?.count();
+        listed.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    })?;
+    let listed = listed.into_inner();
     if listed != files {
         return Err(format!(
             "listed {listed} of {files} corpus files under {}",
@@ -869,32 +889,54 @@ fn workload(root: &Path, writes: &Path, files: u64, payload: &[u8]) -> Result<[f
         )
         .into());
     }
-    let list = per_op(started, directories);
-    let started = Instant::now();
-    for index in 0..files {
+    let stat = timed_phase(files, threads, |index| {
         let path = root.join(corpus_file(index));
         if fs::metadata(&path).map_err(io_at("stat", &path))?.len() != payload.len() as u64 {
             return Err(format!("corpus file {index} has the wrong length").into());
         }
-    }
-    let stat = per_op(started, files);
-    let started = Instant::now();
-    for index in 0..files {
+        Ok(())
+    })?;
+    let read = timed_phase(files, threads, |index| {
         let path = root.join(corpus_file(index));
         if fs::read(&path).map_err(io_at("read", &path))? != payload {
             return Err(format!("corpus file {index} differs from its payload").into());
         }
-    }
-    let read = per_op(started, files);
-    let written = files.min(500);
+        Ok(())
+    })?;
     fs::create_dir_all(writes).map_err(io_at("create", writes))?;
-    let started = Instant::now();
-    for index in 0..written {
+    let write = timed_phase(files.min(500), threads, |index| {
         let path = writes.join(format!("file-{index:07}.dat"));
-        fs::write(&path, payload).map_err(io_at("write", &path))?;
-    }
-    let write = per_op(started, written);
+        fs::write(&path, payload).map_err(io_at("write", &path))
+    })?;
     Ok([list, stat, read, write])
+}
+
+/// Runs `operation` for every index below `operations`, interleaved across
+/// `threads`, and returns wall-clock microseconds per operation.
+fn timed_phase(
+    operations: u64,
+    threads: u64,
+    operation: impl Fn(u64) -> Result<(), Failure> + Sync,
+) -> Result<f64, Failure> {
+    let started = Instant::now();
+    std::thread::scope(|scope| {
+        let workers = (0..threads)
+            .map(|first| {
+                let operation = &operation;
+                scope.spawn(move || {
+                    (first..operations)
+                        .step_by(usize::try_from(threads).unwrap_or(usize::MAX))
+                        .try_for_each(operation)
+                })
+            })
+            .collect::<Vec<_>>();
+        workers.into_iter().try_for_each(|worker| {
+            worker
+                .join()
+                .map_err(|_| Failure::from("mount-bench worker panicked"))?
+        })
+    })?;
+    Ok(started.elapsed().as_secs_f64() * 1e6 / operations.max(1) as f64)
 }
 
 fn io_at<'a>(operation: &'a str, path: &'a Path) -> impl FnOnce(std::io::Error) -> Failure + 'a {
