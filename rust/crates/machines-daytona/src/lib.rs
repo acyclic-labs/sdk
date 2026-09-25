@@ -1603,16 +1603,18 @@ const NOT_QUIESCENT: i64 = 75;
 ///
 /// `tar` reads files one after another, so a workspace written during the read yields files
 /// from different moments. The script archives, then re-reads the tree the same way (both
-/// reads stream to stdout, so `tar` pads them identically) and compares checksums; it keeps the archive only when both reads agree (and `tar` saw no file change
-/// under it), which means nothing changed across the whole read. It retries up to `attempts`
-/// times, one second apart, and exits [`NOT_QUIESCENT`] otherwise.
+/// reads stream to stdout, so `tar` pads them identically) and compares checksums. It keeps
+/// the archive only when both reads agree and neither `tar` saw a file change under it (a
+/// failed re-read appends a marker to its stream, so its checksum can never match), which
+/// means nothing changed across the whole read. It retries up to `attempts` times, one second
+/// apart, and exits [`NOT_QUIESCENT`] otherwise.
 fn quiescent_archive_script(workspace: &str, tar_path: &str, attempts: u32) -> String {
     let (workspace, tar) = (shell_quote(workspace), shell_quote(tar_path));
     format!(
         "mkdir -p {workspace} || exit 1; i=0; \
          while :; do \
            if tar -C {workspace} -cf - . > {tar}; then \
-             a=$(cksum < {tar}) && b=$(tar -C {workspace} -cf - . | cksum) && [ \"$a\" = \"$b\" ] && break; \
+             a=$(cksum < {tar}) && b=$({{ tar -C {workspace} -cf - . || echo changed; }} | cksum) && [ \"$a\" = \"$b\" ] && break; \
            else r=$?; [ $r -eq 1 ] || {{ rm -f {tar}; exit $r; }}; fi; \
            i=$((i+1)); if [ $i -ge {attempts} ]; then rm -f {tar}; exit {NOT_QUIESCENT}; fi; \
            sleep 1; \
@@ -2568,28 +2570,48 @@ mod tests {
         assert!(status.success());
         assert!(dir.join("out.tar.gz").exists());
 
-        // A workspace written throughout never yields an archive.
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let writer = {
-            let (stop, file) = (Arc::clone(&stop), workspace.join("busy"));
-            std::thread::spawn(move || {
-                let mut n = 0_u64;
-                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                    n += 1;
-                    std::fs::write(&file, n.to_string().repeat(4096)).unwrap();
-                }
-            })
-        };
-        std::fs::remove_file(dir.join("out.tar.gz")).unwrap();
-        let status = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&script)
-            .status()
+        // Shadow `tar` so the workspace changes, or a read reports a change, deterministically
+        // between the two reads of every attempt instead of racing a writer thread.
+        let real_tar = std::process::Command::new("sh")
+            .args(["-c", "command -v tar"])
+            .output()
             .unwrap();
-        stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        writer.join().unwrap();
-        assert_eq!(status.code(), Some(i32::try_from(NOT_QUIESCENT).unwrap()));
-        assert!(!dir.join("out.tar.gz").exists() && !tar.exists());
+        let real_tar = String::from_utf8(real_tar.stdout).unwrap();
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let run_with_tar = |after_each_read: &str| {
+            use std::os::unix::fs::PermissionsExt;
+            let shim = bin.join("tar");
+            std::fs::write(
+                &shim,
+                format!(
+                    "#!/bin/sh\n{} \"$@\" || exit $?\n{after_each_read}\n",
+                    real_tar.trim()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = std::fs::remove_file(dir.join("out.tar.gz"));
+            let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+            let status = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&script)
+                .env("PATH", path)
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(i32::try_from(NOT_QUIESCENT).unwrap()));
+            assert!(!dir.join("out.tar.gz").exists() && !tar.exists());
+        };
+        // A workspace written between the two reads of every attempt never yields an archive.
+        let busy = workspace.join("busy");
+        run_with_tar(&format!("echo x >> '{}'", busy.display()));
+        // Nor does one whose re-read sees a file change under it (`tar` exits 1) even though
+        // both reads come out byte-identical.
+        let calls = dir.join("calls");
+        run_with_tar(&format!(
+            "echo x >> '{c}'; [ $(wc -l < '{c}') -eq 1 ] || {{ : > '{c}'; exit 1; }}",
+            c = calls.display()
+        ));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
