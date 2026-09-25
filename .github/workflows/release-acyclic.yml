@@ -234,6 +234,15 @@ jobs:
           pattern: native-mount-*
           path: release/native-mount
           merge-multiple: true
+      - name: Restore executable modes after artifact download
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GitHub artifacts preserve bytes, but not executable mode.
+          for binary in release/binaries/acyclic-{linux,darwin}-*/*/acyclic; do
+            test -f "$binary"
+            chmod 755 "$binary"
+          done
       - name: Verify native receipts against release artifacts
         run: |
           qualifier=release/binaries/acyclic-linux-x64-gnu/linux-x64-gnu/native-mount-qualify
