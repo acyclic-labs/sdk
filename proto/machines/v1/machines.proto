@@ -43,6 +43,11 @@ enum Capability {
   CAPABILITY_LIVE_FORK = 4;
   CAPABILITY_SUSPEND_RESUME = 5;
   CAPABILITY_LIVE_MOVEMENT = 6;
+  // ForkMachine copies a running machine's persistent disk, but not its memory or processes,
+  // into fresh children. Which paths are persistent is provider-defined: a provider whose
+  // machines boot from an immutable image may copy only its declared data directory. CAPABILITY_LIVE_FORK is the memory-and-disk form and takes precedence
+  // when both are declared.
+  CAPABILITY_DISK_FORK = 7;
 }
 enum CompatibilityMode {
   COMPATIBILITY_MODE_UNSPECIFIED = 0;
@@ -128,6 +133,19 @@ message ForkCheckpointRequest {
   CheckpointId checkpoint = 3;
   uint32 count = 4;
   Performance performance = 5;
+}
+// Forks a running machine, without an intermediate checkpoint, into `count` fresh
+// children. Admission requires CAPABILITY_LIVE_FORK or CAPABILITY_DISK_FORK in the source
+// machine's contract; a provider or machine without either rejects with UNIMPLEMENTED so
+// callers fall back to Checkpoint + Fork or a restart. The admitted ForkFidelity states
+// what the children inherited. Children inherit the source's exact MachineContract and
+// receive fresh MachineIds and endpoints; open network connections are never carried over.
+// See the acyclic-machines crate documentation for the complete semantics.
+message ForkMachineRequest {
+  ProtocolVersion protocol = 1;
+  IdempotencyKey idempotency_key = 2;
+  MachineId machine = 3;
+  uint32 count = 4;
 }
 message SetSuspensionPolicyRequest {
   ProtocolVersion protocol = 1;
@@ -227,6 +245,21 @@ message ForkAdmission {
   OperationId operation = 3;
   MachineContract contract = 4;
 }
+enum ForkFidelity {
+  FORK_FIDELITY_UNSPECIFIED = 0;
+  // Children resume from the source's memory, processes, and disk at the fork instant.
+  FORK_FIDELITY_MEMORY_AND_DISK = 1;
+  // Children boot fresh over a copy of the source's persistent disk (provider-defined; see
+  // CAPABILITY_DISK_FORK) taken at one consistent instant; no process state is inherited.
+  FORK_FIDELITY_DISK_ONLY = 2;
+}
+message ForkMachineAdmission {
+  MachineId source = 1;
+  repeated MachineId children = 2;
+  OperationId operation = 3;
+  MachineContract contract = 4;
+  ForkFidelity fidelity = 5;
+}
 message PolicyAdmission {
   MachineId machine = 1;
   OperationId operation = 2;
@@ -248,6 +281,7 @@ message RecoveredAdmission {
     MutationAdmission destroy_machine = 7;
     PolicyAdmission set_suspension_policy = 8;
     MutationAdmission destroy_checkpoint = 9;
+    ForkMachineAdmission fork_machine = 10;
   }
 }
 
@@ -308,6 +342,7 @@ service MachinesService {
   rpc Create(CreateMachineRequest) returns (MachineAdmission);
   rpc Checkpoint(CheckpointMachineRequest) returns (CheckpointAdmission);
   rpc Fork(ForkCheckpointRequest) returns (ForkAdmission);
+  rpc ForkMachine(ForkMachineRequest) returns (ForkMachineAdmission);
   rpc Suspend(MachineMutationRequest) returns (MutationAdmission);
   rpc Wake(MachineMutationRequest) returns (MutationAdmission);
   rpc SetSuspensionPolicy(SetSuspensionPolicyRequest) returns (PolicyAdmission);
