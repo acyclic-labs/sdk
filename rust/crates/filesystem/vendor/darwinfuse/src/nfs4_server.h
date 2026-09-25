@@ -24,7 +24,7 @@ typedef struct {
     gid_t       gid;            /* Owner GID */
     struct dfuse_inode_table_s  *inode_table;  /* dynamic inode table */
     atomic_uint_fast64_t namespace_change; /* READDIR continuation revision */
-    atomic_uint_fast64_t fallback_change;  /* change samples without ops->change */
+    atomic_uint_fast64_t fresh_change;     /* counter behind unlabeled change values */
     uint8_t write_verifier[8]; /* unique per mount, including in-process remounts */
 } darwinfuse_config_t;
 

@@ -1045,7 +1045,9 @@ impl NativeMountSession {
     /// to the source around the mount, such as a removed route, becomes
     /// visible through this call.
     /// Linux FUSE supports nested entries when the parent directory has a
-    /// cached inode.
+    /// cached inode. The macOS NFS client cannot be told to drop its caches:
+    /// it sees the change at its next revalidation, which every open performs
+    /// and cached names and attributes undergo within one second.
     ///
     /// # Errors
     ///

@@ -238,17 +238,24 @@ struct fuse_operations {
     int (*fsetattr_x) (const char *, struct setattr_x *,
                        struct fuse_file_info *);
 #endif /* __APPLE__ */
-
-    /* --- DarwinFUSE extensions --- */
-    /*
-     * NFSv4 change attribute (RFC 7530 s5.4) shared by every object.  A
-     * result may repeat an earlier one only while no callback can observe
-     * different names, attributes, or data.  The NFS client caches for at
-     * most one second and trusts cached data while this value is unchanged;
-     * without it every sample is new, so cached data is never reused.
-     */
-    uint64_t (*change) (void);
 };
+
+/*
+ * DarwinFUSE extension: the NFSv4 change attribute (RFC 7530 s5.4) travels
+ * in the struct stat it labels, from getattr, fgetattr, and readdir alike.
+ * A filesystem stores a nonzero label below FUSE_CHANGE_UNLABELED that
+ * differs from every label it gave the object before whenever the object's
+ * attributes, listing, or data may differ.  The NFS client trusts cached
+ * state while the label is unchanged and revalidates at most a second later.
+ * Zero means unlabeled: every report is then new, so nothing is trusted
+ * past a revalidation.
+ */
+#ifdef __APPLE__
+#define FUSE_STAT_CHANGE(st)   ((uint64_t)(st)->st_qspare[0])
+#else
+#define FUSE_STAT_CHANGE(st)   ((void)(st), UINT64_C(0))
+#endif
+#define FUSE_CHANGE_UNLABELED  (UINT64_C(1) << 63)
 
 /* ---- High-level API (fuse_main) ---- */
 

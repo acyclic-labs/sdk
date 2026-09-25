@@ -15,6 +15,7 @@
 #include "darwinfuse_internal.h"
 #include "fuse_context.h"
 #include "inode_table.h"
+#include "rpc.h"
 
 #include <fuse.h>
 
@@ -153,6 +154,30 @@ static int ensure_open_file_capacity(nfs4_conn_state_t *conn)
 }
 
 /*
+ * Track one open under a fresh stateid, with the FUSE handle fi names (none
+ * when fi is NULL). Returns 0, or -1 when the open cannot be tracked.
+ */
+static int track_open(nfs4_conn_state_t *conn, dfuse_ino_t ino,
+                      const struct fuse_file_info *fi, nfs4_stateid_t *sid)
+{
+    int rc = -1;
+    pthread_mutex_lock(&conn->lock);
+    if (ensure_open_file_capacity(conn) == 0) {
+        conn->open_seqid++;
+        sid->seqid = conn->open_seqid;
+        arc4random_buf(sid->other, sizeof(sid->other));
+        nfs4_open_file_t *of = &conn->open_files[conn->open_file_count++];
+        of->stateid = *sid;
+        of->ino = ino;
+        of->fuse_fh = fi ? fi->fh : 0;
+        of->flags = fi ? fi->flags : 0;
+        rc = 0;
+    }
+    pthread_mutex_unlock(&conn->lock);
+    return rc;
+}
+
+/*
  * Find an open file entry by stateid.
  */
 static nfs4_open_file_t *find_open_file(nfs4_conn_state_t *conn,
@@ -276,21 +301,27 @@ static inline int bitmap_isset(const uint32_t *bitmap, int nwords, int bit)
     return (bitmap[word] >> (bit % 32)) & 1;
 }
 
-/*
- * NFSv4 change attribute (RFC 7530 s5.4), one value for every object.
- * Callers sample it before observing the state it labels: a concurrent
- * mutation then pairs newer state with an older value, which only makes the
- * client revalidate once more.  Without a change callback every sample is
- * new, so the client never trusts cached state past a revalidation.
- */
-static uint64_t change_attribute(const darwinfuse_config_t *config)
+/* A change attribute (RFC 7530 s5.4) never reported before.  These have
+ * the top bit set, so they never equal a filesystem's own label. */
+static uint64_t fresh_change(const darwinfuse_config_t *config)
 {
-    if (config->ops->change)
-        return config->ops->change();
-    return atomic_fetch_add_explicit(
-               (atomic_uint_fast64_t *)&config->fallback_change,
-               1,
-               memory_order_relaxed) + 1;
+    return FUSE_CHANGE_UNLABELED |
+           (atomic_fetch_add_explicit(
+                (atomic_uint_fast64_t *)&config->fresh_change,
+                1,
+                memory_order_relaxed) + 1);
+}
+
+/* The change attribute of the object st describes: the label the
+ * filesystem carried with st, else a fresh value, so the client never
+ * trusts unlabeled cached state past a revalidation. */
+static uint64_t change_attribute(const darwinfuse_config_t *config,
+                                 const struct stat *st)
+{
+    uint64_t label = FUSE_STAT_CHANGE(st);
+    if (label != 0 && label < FUSE_CHANGE_UNLABELED)
+        return label;
+    return fresh_change(config);
 }
 
 static uint64_t namespace_change(const darwinfuse_config_t *config)
@@ -299,14 +330,16 @@ static uint64_t namespace_change(const darwinfuse_config_t *config)
 }
 
 /* Record a completed namespace mutation: retire READDIR continuations and
- * return the directory change attribute that follows it. */
+ * return a change value after it.  Change info is always reported
+ * non-atomic, so the client revalidates the directory rather than trusting
+ * these values as its attribute. */
 static uint64_t namespace_changed(const darwinfuse_config_t *config)
 {
     atomic_fetch_add_explicit(
         (atomic_uint_fast64_t *)&config->namespace_change,
         1,
         memory_order_acq_rel);
-    return change_attribute(config);
+    return fresh_change(config);
 }
 
 static void encode_cookie_verifier(uint64_t revision, uint8_t verifier[8])
@@ -325,15 +358,29 @@ static int readdir_cookie_is_current(uint64_t cookie,
     return memcmp(verifier, expected, sizeof(expected)) == 0;
 }
 
-static void encode_change_info(xdr_buf_t *reply,
-                               uint64_t before,
-                               uint64_t after)
+/*
+ * change_info4 (RFC 7530 s3.3.5).  Atomic info whose `before` matches the
+ * client's cached directory change lets it keep its cached names; anything
+ * else makes it revalidate the directory.  A mutation is never reported
+ * atomic: another surface may have changed the directory alongside it.
+ */
+static void encode_change_info(xdr_buf_t *reply, int atomic,
+                               uint64_t before, uint64_t after)
 {
-    /* Multiple NFS workers may mutate separate directories concurrently, so
-     * the global conservative change sequence is intentionally non-atomic. */
-    xdr_encode_bool(reply, 0);
+    xdr_encode_bool(reply, atomic);
     xdr_encode_uint64(reply, before);
     xdr_encode_uint64(reply, after);
+}
+
+/* The change attribute of the directory at path, or 0 when unknown. */
+static uint64_t directory_change(const darwinfuse_config_t *config,
+                                 const char *path)
+{
+    struct stat st;
+    memset(&st, 0, sizeof(st));
+    if (!config->ops->getattr || config->ops->getattr(path, &st) != 0)
+        return 0;
+    return change_attribute(config, &st);
 }
 
 /*
@@ -344,15 +391,13 @@ static void encode_change_info(xdr_buf_t *reply,
 /*
  * type_override: 0 = auto-detect from st_mode, otherwise use this NFS type
  * (e.g. NF4ATTRDIR, NF4NAMEDATTR for xattr virtual inodes)
- * change: change_attribute() sampled before st was obtained
  */
 static void encode_fattr4(xdr_buf_t *xdr,
                            const struct stat *st,
                            const uint32_t *req_bitmap, int req_nwords,
                            const uint8_t *fh, uint32_t fh_len,
                            const darwinfuse_config_t *config,
-                           uint32_t type_override,
-                           uint64_t change)
+                           uint32_t type_override)
 {
     /* Compute effective bitmap (intersection of requested and supported) */
     uint32_t eff[2] = {0, 0};
@@ -420,7 +465,7 @@ static void encode_fattr4(xdr_buf_t *xdr,
     }
 
     if (ATTR_SET(FATTR4_CHANGE)) {
-        xdr_encode_uint64(&attr, change);
+        xdr_encode_uint64(&attr, change_attribute(config, st));
     }
 
     if (ATTR_SET(FATTR4_SIZE)) {
@@ -801,6 +846,75 @@ static uint32_t handle_lookupp(const darwinfuse_config_t *config,
     return NFS4_OK;
 }
 
+/*
+ * Attributes of the current filehandle's object, as GETATTR, VERIFY, and
+ * NVERIFY report them. type_override is as for encode_fattr4().
+ */
+static uint32_t current_attributes(const darwinfuse_config_t *config,
+                                   nfs4_conn_state_t *conn,
+                                   const nfs4_request_ctx_t *ctx,
+                                   struct stat *st, uint32_t *type_override)
+{
+    dfuse_ino_t ino = fh_get_ino(ctx->current_fh, ctx->current_fh_len);
+    if (ino == 0) return NFS4ERR_BADHANDLE;
+
+    dfuse_ino_type_t ino_type = dfuse_itable_type(config->inode_table, ino);
+
+    memset(st, 0, sizeof(*st));
+    *type_override = 0;
+
+    if (ino_type == DFUSE_INO_ATTRDIR) {
+        /* Named attribute directory — synthetic stat */
+        st->st_mode = S_IFDIR | 0755;
+        st->st_nlink = 2;
+        st->st_uid = config->uid;
+        st->st_gid = config->gid;
+        *type_override = NF4ATTRDIR;
+        return NFS4_OK;
+    }
+    if (ino_type == DFUSE_INO_NAMEDATTR) {
+        /* Named attribute — get size via getxattr */
+        char *file_path = xattr_file_path(config, ino);
+        char *attr_name = dfuse_itable_attr_name_dup(config->inode_table, ino);
+        if (!file_path || !attr_name) {
+            free(file_path);
+            free(attr_name);
+            return NFS4ERR_STALE;
+        }
+
+        st->st_mode = S_IFREG | 0644;
+        st->st_nlink = 1;
+        st->st_uid = config->uid;
+        st->st_gid = config->gid;
+
+        if (config->ops->getxattr) {
+            int sz = FUSE_GETXATTR(config->ops, file_path, attr_name, NULL, 0);
+            if (sz >= 0)
+                st->st_size = sz;
+        }
+        free(file_path);
+        free(attr_name);
+        *type_override = NF4NAMEDATTR;
+        return NFS4_OK;
+    }
+
+    /* Regular file/directory */
+    char *path = dfuse_itable_path_dup(config->inode_table, ino);
+    if (!path) return NFS4ERR_STALE;
+
+    int rc;
+    struct fuse_file_info fi;
+    if (config->ops->fgetattr && open_file_info(conn, NULL, ino, &fi)) {
+        rc = config->ops->fgetattr(path, st, &fi);
+    } else if (config->ops->getattr) {
+        rc = config->ops->getattr(path, st);
+    } else {
+        rc = -ENOTSUP;
+    }
+    free(path);
+    return errno_to_nfs4(rc);
+}
+
 static uint32_t handle_getattr(const darwinfuse_config_t *config,
                                 nfs4_conn_state_t *conn,
                                 nfs4_request_ctx_t *ctx,
@@ -812,72 +926,14 @@ static uint32_t handle_getattr(const darwinfuse_config_t *config,
     decode_bitmap(req, req_bitmap, &req_nwords);
     if (req->error) return NFS4ERR_INVAL;
 
-    dfuse_ino_t ino = fh_get_ino(ctx->current_fh, ctx->current_fh_len);
-    if (ino == 0) return NFS4ERR_BADHANDLE;
-
-    dfuse_ino_type_t ino_type = dfuse_itable_type(config->inode_table, ino);
-
-    uint64_t change = change_attribute(config);
     struct stat st;
-    memset(&st, 0, sizeof(st));
-    uint32_t type_override = 0;
-
-    if (ino_type == DFUSE_INO_ATTRDIR) {
-        /* Named attribute directory — synthetic stat */
-        st.st_mode = S_IFDIR | 0755;
-        st.st_nlink = 2;
-        st.st_uid = config->uid;
-        st.st_gid = config->gid;
-        type_override = NF4ATTRDIR;
-    } else if (ino_type == DFUSE_INO_NAMEDATTR) {
-        /* Named attribute — get size via getxattr */
-        char *file_path = xattr_file_path(config, ino);
-        char *attr_name = dfuse_itable_attr_name_dup(config->inode_table, ino);
-        if (!file_path || !attr_name) {
-            free(file_path);
-            free(attr_name);
-            return NFS4ERR_STALE;
-        }
-
-        st.st_mode = S_IFREG | 0644;
-        st.st_nlink = 1;
-        st.st_uid = config->uid;
-        st.st_gid = config->gid;
-
-        if (config->ops->getxattr) {
-            int sz = FUSE_GETXATTR(config->ops, file_path, attr_name, NULL, 0);
-            if (sz >= 0)
-                st.st_size = sz;
-        }
-        free(file_path);
-        free(attr_name);
-        type_override = NF4NAMEDATTR;
-    } else {
-        /* Regular file/directory */
-        char *path = dfuse_itable_path_dup(config->inode_table, ino);
-        if (!path) return NFS4ERR_STALE;
-
-        int rc;
-        struct fuse_file_info fi;
-        if (config->ops->fgetattr && open_file_info(conn, NULL, ino, &fi)) {
-            rc = config->ops->fgetattr(path, &st, &fi);
-        } else {
-            if (!config->ops->getattr) {
-                free(path);
-                return NFS4ERR_NOTSUPP;
-            }
-            rc = config->ops->getattr(path, &st);
-        }
-        if (rc != 0) {
-            free(path);
-            return errno_to_nfs4(rc);
-        }
-        free(path);
-    }
+    uint32_t type_override;
+    uint32_t status = current_attributes(config, conn, ctx, &st, &type_override);
+    if (status != NFS4_OK) return status;
 
     encode_fattr4(rep, &st, req_bitmap, req_nwords,
                   ctx->current_fh, ctx->current_fh_len, config,
-                  type_override, change);
+                  type_override);
     return NFS4_OK;
 }
 
@@ -1080,7 +1136,55 @@ setattr_reply:
     return NFS4_OK;
 }
 
+static int caller_in_group(const struct fuse_context *caller, gid_t gid)
+{
+    if (caller->gid == gid)
+        return 1;
+    gid_t groups[RPC_AUTH_SYS_MAX_GROUPS];
+    int count = fuse_getgroups(RPC_AUTH_SYS_MAX_GROUPS, groups);
+    for (int i = 0; i < count; i++) {
+        if (groups[i] == gid)
+            return 1;
+    }
+    return 0;
+}
+
+/*
+ * ACCESS4 rights a caller holds on an object, by the default_permissions
+ * rules the Linux FUSE mount also enforces: the caller's AUTH_SYS identity
+ * selects the owner, group, or other mode bits.  Root holds every right
+ * except executing a file no one may execute.  A directory's write bit
+ * grants deleting its entries; deleting a non-directory is decided by the
+ * directory that holds it, so the file itself never withholds DELETE.
+ */
+static uint32_t access_granted(const struct stat *st,
+                               const struct fuse_context *caller)
+{
+    int directory = S_ISDIR(st->st_mode);
+    unsigned bits;
+    if (caller->uid == 0) {
+        bits = 06 | ((directory || (st->st_mode & 0111)) ? 01 : 0);
+    } else if (caller->uid == st->st_uid) {
+        bits = (st->st_mode >> 6) & 07;
+    } else if (caller_in_group(caller, st->st_gid)) {
+        bits = (st->st_mode >> 3) & 07;
+    } else {
+        bits = st->st_mode & 07;
+    }
+
+    uint32_t granted = directory ? 0 : ACCESS4_DELETE;
+    if (bits & 04)
+        granted |= ACCESS4_READ;
+    if (bits & 02)
+        granted |= ACCESS4_MODIFY | ACCESS4_EXTEND |
+                   (directory ? ACCESS4_DELETE : 0);
+    if (bits & 01)
+        granted |= directory ? ACCESS4_LOOKUP : ACCESS4_EXECUTE;
+    return granted;
+}
+
 static uint32_t handle_access(const darwinfuse_config_t *config,
+
                                nfs4_conn_state_t *conn,
                                nfs4_request_ctx_t *ctx,
                                xdr_buf_t *req, xdr_buf_t *rep)
@@ -1091,35 +1195,38 @@ static uint32_t handle_access(const darwinfuse_config_t *config,
     dfuse_ino_t ino = fh_get_ino(ctx->current_fh, ctx->current_fh_len);
     if (ino == 0) return NFS4ERR_BADHANDLE;
     dfuse_ino_type_t type = dfuse_itable_type(config->inode_table, ino);
-    int is_named_attribute = type == DFUSE_INO_NAMEDATTR;
-    int is_attribute_inode = type == DFUSE_INO_ATTRDIR || is_named_attribute;
+    int is_attribute_inode = type == DFUSE_INO_ATTRDIR ||
+                             type == DFUSE_INO_NAMEDATTR;
     char *path = is_attribute_inode
         ? xattr_file_path(config, ino)
         : fh_to_path(config, ctx->current_fh, ctx->current_fh_len);
     if (!path) return NFS4ERR_STALE;
 
-    /* Named attributes are synthetic inodes. Authorize them against their
-     * owning file rather than passing the inode table's synthetic path to the
-     * source callback. Attribute streams are data, not executables. */
-    uint32_t granted = is_named_attribute
-        ? requested & ~ACCESS4_EXECUTE
-        : requested;
-
-    if (config->ops->access) {
-        int mask = 0;
-        if (requested & (ACCESS4_READ | ACCESS4_LOOKUP))
-            mask |= R_OK;
-        if (requested & (ACCESS4_MODIFY | ACCESS4_EXTEND | ACCESS4_DELETE))
-            mask |= W_OK;
-        if (!is_attribute_inode && requested & ACCESS4_EXECUTE)
-            mask |= X_OK;
-
-        int rc = config->ops->access(path, mask);
-        if (rc != 0)
-            granted = 0;
+    /* Attribute inodes are synthetic: authorize them against their owning
+     * file rather than passing the inode table's synthetic path to the
+     * filesystem. */
+    if (!config->ops->getattr) {
+        free(path);
+        return NFS4ERR_NOTSUPP;
     }
-
+    struct stat st;
+    memset(&st, 0, sizeof(st));
+    int rc = config->ops->getattr(path, &st);
     free(path);
+    if (rc != 0) return errno_to_nfs4(rc);
+
+    uint32_t granted = access_granted(&st, fuse_get_context());
+    if (is_attribute_inode) {
+        /* An attribute directory and its streams carry the owning file's
+         * read and write rights; streams are data, never executable. */
+        uint32_t rights = 0;
+        if (granted & ACCESS4_READ)
+            rights |= ACCESS4_READ | ACCESS4_LOOKUP;
+        if (granted & ACCESS4_MODIFY)
+            rights |= ACCESS4_MODIFY | ACCESS4_EXTEND | ACCESS4_DELETE;
+        granted = rights;
+    }
+    granted &= requested;
 
     /* Encode: supported, access */
     xdr_encode_uint32(rep, requested);  /* supported */
@@ -1214,7 +1321,6 @@ static uint32_t handle_readdir(const darwinfuse_config_t *config,
     uint64_t directory_revision = namespace_change(config);
     if (!readdir_cookie_is_current(cookie, cookieverf, directory_revision))
         return NFS4ERR_BAD_COOKIE;
-    uint64_t change = change_attribute(config);
 
     /* Encode cookieverf */
     size_t reply_start = xdr_getpos(rep);
@@ -1315,7 +1421,7 @@ static uint32_t handle_readdir(const darwinfuse_config_t *config,
                 xdr_encode_uint64(&entry, entry_cookie);
                 xdr_encode_string(&entry, p);
                 encode_fattr4(&entry, &na_st, attr_bitmap, attr_nwords,
-                              efh, efh_len, config, NF4NAMEDATTR, change);
+                              efh, efh_len, config, NF4NAMEDATTR);
                 size_t entry_len = xdr_getpos(&entry);
                 size_t response_len = xdr_getpos(rep) - reply_start;
                 if (entry.error || entry_len + 8U > xdr_remaining(rep) ||
@@ -1421,7 +1527,8 @@ static uint32_t handle_readdir(const darwinfuse_config_t *config,
         xdr_encode_uint64(&entry, e->cookie);
         xdr_encode_string(&entry, e->name);
         encode_fattr4(&entry, &e->attributes, attr_bitmap, attr_nwords,
-                      efh, efh_len, config, 0, change);
+                      efh, efh_len, config, 0);
+
         size_t entry_len = xdr_getpos(&entry);
         size_t response_len = xdr_getpos(rep) - reply_start;
         if (entry.error || entry_len + 8U > xdr_remaining(rep) ||
@@ -2010,8 +2117,10 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
                              nfs4_request_ctx_t *ctx,
                              xdr_buf_t *req, xdr_buf_t *rep)
 {
-    uint64_t change_before = change_attribute(config);
+    uint64_t change_before = fresh_change(config);
     uint64_t change_after = change_before;
+    /* The parent's change when this OPEN leaves it unchanged, else 0 */
+    uint64_t unchanged_directory = 0;
 
     /* Decode OPEN4args */
     xdr_decode_uint32(req);    /* seqid — unused */
@@ -2111,23 +2220,10 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
                 config->inode_table, cur_ino, filename);
             if (target_ino == 0) return NFS4ERR_SERVERFAULT;
 
-            /* Generate stateid for namedattr */
+            /* No FUSE file handle backs a named attribute */
             nfs4_stateid_t sid;
-
-            pthread_mutex_lock(&conn->lock);
-            conn->open_seqid++;
-            sid.seqid = conn->open_seqid;
-            arc4random_buf(sid.other, sizeof(sid.other));
-
-            if (ensure_open_file_capacity(conn) == 0) {
-                nfs4_open_file_t *of =
-                    &conn->open_files[conn->open_file_count++];
-                of->stateid = sid;
-                of->ino = target_ino;
-                of->fuse_fh = 0;  /* no FUSE file handle for xattrs */
-                of->flags = 0;
-            }
-            pthread_mutex_unlock(&conn->lock);
+            if (track_open(conn, target_ino, NULL, &sid) < 0)
+                return NFS4ERR_RESOURCE;
 
             fh_set_ino(ctx->current_fh, &ctx->current_fh_len, target_ino);
 
@@ -2136,7 +2232,7 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
             xdr_encode_opaque_fixed(rep, sid.other, 12);
             if (created_namedattr)
                 change_after = namespace_changed(config);
-            encode_change_info(rep, change_before, change_after);
+            encode_change_info(rep, 0, change_before, change_after);
             xdr_encode_uint32(rep, 0x00000004);
             xdr_encode_uint32(rep, 0);
             xdr_encode_uint32(rep, OPEN_DELEGATE_NONE);
@@ -2147,9 +2243,12 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
         char *dir_path = fh_to_path(config, ctx->current_fh, ctx->current_fh_len);
         if (!dir_path) return NFS4ERR_STALE;
 
-        /* Build target path */
+        /* Build target path.  Sample the parent's change before anything
+         * is created: if the parent then changes, the stale value only
+         * makes the client revalidate it. */
         char path_buf[1024];
         build_child_path(path_buf, sizeof(path_buf), dir_path, filename);
+        uint64_t directory = directory_change(config, dir_path);
         free(dir_path);
 
         if (opentype == OPEN4_CREATE) {
@@ -2181,28 +2280,15 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
                 }
                 if (rc == 0) {
                     change_after = namespace_changed(config);
-                    /* Store the fuse_fh */
+                    /* Store the fuse_fh; an untracked handle could
+                     * never be closed, so release it instead. */
                     target_ino = dfuse_itable_get_or_create(config->inode_table, path_buf);
-                    if (target_ino == 0) return NFS4ERR_SERVERFAULT;
-                    target_path = dfuse_itable_path_dup(config->inode_table, target_ino);
-
-                    /* Generate a stateid */
                     nfs4_stateid_t sid;
-
-                    pthread_mutex_lock(&conn->lock);
-                    conn->open_seqid++;
-                    sid.seqid = conn->open_seqid;
-                    arc4random_buf(sid.other, sizeof(sid.other));
-
-                    /* Store open file */
-                    if (ensure_open_file_capacity(conn) == 0) {
-                        nfs4_open_file_t *of = &conn->open_files[conn->open_file_count++];
-                        of->stateid = sid;
-                        of->ino = target_ino;
-                        of->fuse_fh = fi.fh;
-                        of->flags = fi.flags;
+                    if (target_ino == 0 || track_open(conn, target_ino, &fi, &sid) < 0) {
+                        if (config->ops->release)
+                            config->ops->release(path_buf, &fi);
+                        return NFS4ERR_RESOURCE;
                     }
-                    pthread_mutex_unlock(&conn->lock);
 
                     /* Set current FH */
                     fh_set_ino(ctx->current_fh, &ctx->current_fh_len, target_ino);
@@ -2210,11 +2296,10 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
                     /* Encode OPEN4resok */
                     xdr_encode_uint32(rep, sid.seqid);
                     xdr_encode_opaque_fixed(rep, sid.other, 12);
-                    encode_change_info(rep, change_before, change_after);
+                    encode_change_info(rep, 0, change_before, change_after);
                     xdr_encode_uint32(rep, 0x00000004);  /* OPEN4_RESULT_CONFIRM */
                     xdr_encode_uint32(rep, 0);    /* attrset bitmap (empty) */
                     xdr_encode_uint32(rep, OPEN_DELEGATE_NONE);
-                    free(target_path);
                     return NFS4_OK;
                 }
                 /* create failed — fall through to try open if EEXIST,
@@ -2239,6 +2324,7 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
         /* Allocate an inode only for a target that exists */
         uint32_t status = open_target_status(config, path_buf);
         if (status != NFS4_OK) return status;
+        unchanged_directory = directory;
 
         target_ino = dfuse_itable_get_or_create(config->inode_table, path_buf);
         if (target_ino == 0) return NFS4ERR_SERVERFAULT;
@@ -2280,23 +2366,15 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
         return NFS4ERR_EXIST;
     }
 
-    /* Generate a stateid */
+    /* Store open file tracking; an untracked handle could never be
+     * closed, so release it instead. */
     nfs4_stateid_t sid;
-
-    pthread_mutex_lock(&conn->lock);
-    conn->open_seqid++;
-    sid.seqid = conn->open_seqid;
-    arc4random_buf(sid.other, sizeof(sid.other));
-
-    /* Store open file tracking */
-    if (ensure_open_file_capacity(conn) == 0) {
-        nfs4_open_file_t *of = &conn->open_files[conn->open_file_count++];
-        of->stateid = sid;
-        of->ino = target_ino;
-        of->fuse_fh = fi.fh;
-        of->flags = fi.flags;
+    if (track_open(conn, target_ino, &fi, &sid) < 0) {
+        if (config->ops->release)
+            config->ops->release(target_path, &fi);
+        free(target_path);
+        return NFS4ERR_RESOURCE;
     }
-    pthread_mutex_unlock(&conn->lock);
 
     /* Set current FH to opened file */
     fh_set_ino(ctx->current_fh, &ctx->current_fh_len, target_ino);
@@ -2306,7 +2384,10 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
     xdr_encode_uint32(rep, sid.seqid);
     xdr_encode_opaque_fixed(rep, sid.other, 12);
 
-    encode_change_info(rep, change_before, change_after);
+    if (unchanged_directory != 0)
+        encode_change_info(rep, 1, unchanged_directory, unchanged_directory);
+    else
+        encode_change_info(rep, 0, change_before, change_after);
 
     /* rflags: OPEN4_RESULT_CONFIRM (need open_confirm for v4.0) */
     xdr_encode_uint32(rep, 0x00000004);
@@ -2359,6 +2440,40 @@ static uint32_t handle_open_confirm(const darwinfuse_config_t *config,
     return NFS4ERR_BAD_STATEID;
 }
 
+/* Flush, then release, one open's FUSE handle.  Both callbacks act on the
+ * handle, so an open whose name was removed meanwhile still releases. */
+static void close_open_file(const darwinfuse_config_t *config,
+                            const nfs4_open_file_t *of)
+{
+    char *path = dfuse_itable_path_dup(config->inode_table, of->ino);
+    const char *name = path ? path : "";
+    struct fuse_file_info fi;
+    memset(&fi, 0, sizeof(fi));
+    fi.fh = of->fuse_fh;
+    fi.flags = of->flags;
+    if (config->ops->flush)
+        config->ops->flush(name, &fi);
+    if (config->ops->release)
+        config->ops->release(name, &fi);
+    free(path);
+}
+
+void nfs4_release_open_files(const darwinfuse_config_t *config,
+                             nfs4_conn_state_t *conn)
+{
+    pthread_mutex_lock(&conn->lock);
+    nfs4_open_file_t *open_files = conn->open_files;
+    int count = conn->open_file_count;
+    conn->open_files = NULL;
+    conn->open_file_count = 0;
+    conn->open_file_cap = 0;
+    pthread_mutex_unlock(&conn->lock);
+
+    for (int i = 0; i < count; i++)
+        close_open_file(config, &open_files[i]);
+    free(open_files);
+}
+
 static uint32_t handle_close(const darwinfuse_config_t *config,
                               nfs4_conn_state_t *conn,
                               nfs4_request_ctx_t *ctx,
@@ -2371,18 +2486,13 @@ static uint32_t handle_close(const darwinfuse_config_t *config,
     xdr_decode_opaque_fixed(req, sid_other, 12);
 
     /* Find open file, copy state, and remove under lock */
-    uint64_t local_fh = 0;
-    int local_flags = 0;
-    dfuse_ino_t local_ino = 0;
+    nfs4_open_file_t closed;
     int found = 0;
 
     pthread_mutex_lock(&conn->lock);
     for (int i = 0; i < conn->open_file_count; i++) {
         if (memcmp(conn->open_files[i].stateid.other, sid_other, 12) == 0) {
-            nfs4_open_file_t *of = &conn->open_files[i];
-            local_fh = of->fuse_fh;
-            local_flags = of->flags;
-            local_ino = of->ino;
+            closed = conn->open_files[i];
             found = 1;
 
             /* Remove from array */
@@ -2396,19 +2506,7 @@ static uint32_t handle_close(const darwinfuse_config_t *config,
 
     if (found) {
         /* Call FUSE flush + release callbacks WITHOUT holding lock */
-        char *path = dfuse_itable_path_dup(config->inode_table, local_ino);
-        if (path) {
-            struct fuse_file_info fi;
-            memset(&fi, 0, sizeof(fi));
-            fi.fh = local_fh;
-            fi.flags = local_flags;
-
-            if (config->ops->flush)
-                config->ops->flush(path, &fi);
-            if (config->ops->release)
-                config->ops->release(path, &fi);
-            free(path);
-        }
+        close_open_file(config, &closed);
 
         /* Return invalidated stateid */
         xdr_encode_uint32(rep, sid_seqid + 1);
@@ -2936,25 +3034,16 @@ int nfs4_test_read_reply(void)
     return status;
 }
 
-/* GETATTR labels attributes with a change value sampled before it observes
- * them, and without a change callback no two samples repeat. */
-static uint64_t change_test_value;
-static int change_test_observed;
-static int change_test_sampled_late;
-
-static uint64_t change_test_change(void)
-{
-    if (change_test_observed)
-        change_test_sampled_late = 1;
-    return change_test_value;
-}
+/* GETATTR reports the change label the filesystem carried with the
+ * attributes, and an unlabeled object never reports the same value twice. */
+static uint64_t change_test_label;
 
 static int change_test_getattr(const char *path, struct stat *st)
 {
     (void)path;
     memset(st, 0, sizeof(*st));
     st->st_mode = S_IFREG | 0644;
-    change_test_observed = 1;
+    st->st_qspare[0] = (int64_t)change_test_label;
     return 0;
 }
 
@@ -2970,7 +3059,6 @@ static uint64_t change_test_getattr_change(const darwinfuse_config_t *config,
     xdr_encode_uint32(&request, 1u << FATTR4_CHANGE);
     xdr_reset(&request);
     xdr_init(&reply, reply_bytes, sizeof(reply_bytes));
-    change_test_observed = 0;
     if (handle_getattr(config, conn, ctx, &request, &reply) != NFS4_OK)
         return 0;
     xdr_reset(&reply);
@@ -2993,7 +3081,6 @@ int nfs4_test_change_attribute(void)
     memset(&conn, 0, sizeof(conn));
     pthread_mutex_init(&conn.lock, NULL);
     ops.getattr = change_test_getattr;
-    ops.change = change_test_change;
     config.ops = &ops;
     config.inode_table = dfuse_itable_create();
     if (!config.inode_table)
@@ -3003,19 +3090,22 @@ int nfs4_test_change_attribute(void)
     fh_set_ino(ctx.current_fh, &ctx.current_fh_len, ino);
 
     int status = 0;
-    change_test_value = UINT64_C(0x1122334455667788);
-    change_test_sampled_late = 0;
-    if (change_test_getattr_change(&config, &conn, &ctx) != change_test_value)
+    change_test_label = UINT64_C(0x1122334455667788);
+    if (change_test_getattr_change(&config, &conn, &ctx) != change_test_label ||
+        change_test_getattr_change(&config, &conn, &ctx) != change_test_label)
         status = 2;
-    else if (change_test_sampled_late)
-        status = 3;
     else {
-        ops.change = NULL;
+        /* Unlabeled, and a label in the reserved half, are both fresh. */
+        change_test_label = 0;
         uint64_t first = change_test_getattr_change(&config, &conn, &ctx);
+        change_test_label = FUSE_CHANGE_UNLABELED | 1;
         uint64_t second = change_test_getattr_change(&config, &conn, &ctx);
-        if (first == 0 || second == 0 || first == second)
-            status = 4;
+        uint64_t third = change_test_getattr_change(&config, &conn, &ctx);
+        if (first == 0 || first == second || second == third ||
+            first < FUSE_CHANGE_UNLABELED)
+            status = 3;
     }
+
     pthread_mutex_destroy(&conn.lock);
     dfuse_itable_destroy(config.inode_table);
     return status;
@@ -3028,7 +3118,7 @@ static uint32_t handle_create(const darwinfuse_config_t *config,
                                nfs4_request_ctx_t *ctx,
                                xdr_buf_t *req, xdr_buf_t *rep)
 {
-    uint64_t change_before = change_attribute(config);
+    uint64_t change_before = fresh_change(config);
 
     /* Current FH must be a directory */
     char *dir_path = fh_to_path(config, ctx->current_fh, ctx->current_fh_len);
@@ -3135,7 +3225,7 @@ static uint32_t handle_create(const darwinfuse_config_t *config,
     if (child_ino == 0) return NFS4ERR_SERVERFAULT;
     fh_set_ino(ctx->current_fh, &ctx->current_fh_len, child_ino);
 
-    encode_change_info(rep, change_before, change_after);
+    encode_change_info(rep, 0, change_before, change_after);
 
     /* attrset bitmap (empty) */
     xdr_encode_uint32(rep, 0);
@@ -3150,7 +3240,7 @@ static uint32_t handle_remove(const darwinfuse_config_t *config,
                                nfs4_request_ctx_t *ctx,
                                xdr_buf_t *req, xdr_buf_t *rep)
 {
-    uint64_t change_before = change_attribute(config);
+    uint64_t change_before = fresh_change(config);
 
     dfuse_ino_t dir_ino = fh_get_ino(ctx->current_fh, ctx->current_fh_len);
     if (dir_ino == 0) return NFS4ERR_BADHANDLE;
@@ -3171,7 +3261,7 @@ static uint32_t handle_remove(const darwinfuse_config_t *config,
         free(file_path);
         if (rc != 0) return errno_to_nfs4(rc);
 
-        encode_change_info(rep, change_before, namespace_changed(config));
+        encode_change_info(rep, 0, change_before, namespace_changed(config));
         return NFS4_OK;
     }
 
@@ -3203,7 +3293,7 @@ static uint32_t handle_remove(const darwinfuse_config_t *config,
 
     dfuse_itable_remove(config->inode_table, child_path);
 
-    encode_change_info(rep, change_before, namespace_changed(config));
+    encode_change_info(rep, 0, change_before, namespace_changed(config));
 
     return NFS4_OK;
 }
@@ -3215,7 +3305,7 @@ static uint32_t handle_rename(const darwinfuse_config_t *config,
                                nfs4_request_ctx_t *ctx,
                                xdr_buf_t *req, xdr_buf_t *rep)
 {
-    uint64_t change_before = change_attribute(config);
+    uint64_t change_before = fresh_change(config);
 
     /* Saved FH = source directory, current FH = target directory */
     char *src_dir = dfuse_itable_path_dup(config->inode_table,
@@ -3252,8 +3342,8 @@ static uint32_t handle_rename(const darwinfuse_config_t *config,
 
     /* Encode: source_cinfo, target_cinfo */
     uint64_t change_after = namespace_changed(config);
-    encode_change_info(rep, change_before, change_after);
-    encode_change_info(rep, change_before, change_after);
+    encode_change_info(rep, 0, change_before, change_after);
+    encode_change_info(rep, 0, change_before, change_after);
 
     return NFS4_OK;
 }
@@ -3265,7 +3355,7 @@ static uint32_t handle_link(const darwinfuse_config_t *config,
                              nfs4_request_ctx_t *ctx,
                              xdr_buf_t *req, xdr_buf_t *rep)
 {
-    uint64_t change_before = change_attribute(config);
+    uint64_t change_before = fresh_change(config);
 
     /* Saved FH = existing file, current FH = target directory */
     char *existing = dfuse_itable_path_dup(config->inode_table,
@@ -3295,7 +3385,7 @@ static uint32_t handle_link(const darwinfuse_config_t *config,
     free(existing);
     if (rc != 0) return errno_to_nfs4(rc);
 
-    encode_change_info(rep, change_before, namespace_changed(config));
+    encode_change_info(rep, 0, change_before, namespace_changed(config));
 
     return NFS4_OK;
 }
@@ -3426,7 +3516,9 @@ static uint32_t handle_renew(const darwinfuse_config_t *config,
 }
 
 /*
- * LOCK — grant all byte-range locks immediately (single-user server).
+ * LOCK, LOCKT, LOCKU.  The only client is the local kernel, which checks
+ * every lock against the locks all its processes hold before it asks the
+ * server, so no request reaching this server can conflict: granting is exact.
  */
 static uint32_t handle_lock(const darwinfuse_config_t *config,
                              nfs4_conn_state_t *conn,
@@ -3530,17 +3622,58 @@ static uint32_t handle_secinfo(const darwinfuse_config_t *config,
     return NFS4_OK;
 }
 
-static uint32_t handle_verify(const darwinfuse_config_t *config,
-                               nfs4_conn_state_t *conn,
-                               nfs4_request_ctx_t *ctx,
-                               xdr_buf_t *req, xdr_buf_t *rep)
+/*
+ * VERIFY and NVERIFY (RFC 7530 s16.35, s16.15): compare the client's
+ * attribute values with the current object's, encoded the same way.
+ * VERIFY succeeds when every value matches; NVERIFY when any differs.
+ */
+static uint32_t verify_attributes(const darwinfuse_config_t *config,
+                                  nfs4_conn_state_t *conn,
+                                  nfs4_request_ctx_t *ctx,
+                                  xdr_buf_t *req, int expect_same)
 {
-    (void)config; (void)conn; (void)rep;
-    uint32_t bm[2] = {0};
-    int nw = 0;
-    decode_bitmap(req, bm, &nw);
-    xdr_skip_opaque(req);
-    return NFS4_OK;
+    uint32_t bitmap[2] = {0, 0};
+    uint32_t words = xdr_decode_uint32(req);
+    for (uint32_t i = 0; i < words; i++) {
+        uint32_t word = xdr_decode_uint32(req);
+        if (i < 2)
+            bitmap[i] = word;
+        else if (word != 0)
+            return NFS4ERR_ATTRNOTSUPP;
+    }
+    int nwords = words < 2 ? (int)words : 2;
+    uint8_t expected[4096];
+    uint32_t expected_len = xdr_decode_opaque(req, expected, sizeof(expected));
+    if (req->error || expected_len > sizeof(expected)) return NFS4ERR_INVAL;
+    for (int i = 0; i < nwords; i++) {
+        if (bitmap[i] & ~supported_bitmap[i])
+            return NFS4ERR_ATTRNOTSUPP;
+    }
+    if (bitmap_isset(bitmap, nwords, FATTR4_RDATTR_ERROR))
+        return NFS4ERR_INVAL;
+
+    struct stat st;
+    uint32_t type_override;
+    uint32_t status = current_attributes(config, conn, ctx, &st, &type_override);
+    if (status != NFS4_OK) return status;
+
+    uint8_t actual_buf[4096 + 16];
+    xdr_buf_t actual;
+    xdr_init(&actual, actual_buf, sizeof(actual_buf));
+    encode_fattr4(&actual, &st, bitmap, nwords, ctx->current_fh,
+                  ctx->current_fh_len, config, type_override);
+    xdr_reset(&actual);
+    uint32_t actual_words = xdr_decode_uint32(&actual);
+    for (uint32_t i = 0; i < actual_words; i++)
+        xdr_decode_uint32(&actual);
+    uint32_t actual_len = xdr_decode_uint32(&actual);
+    if (actual.error) return NFS4ERR_SERVERFAULT;
+
+    int same = actual_len == expected_len &&
+               memcmp(actual.data + actual.pos, expected, expected_len) == 0;
+    if (expect_same)
+        return same ? NFS4_OK : NFS4ERR_NOT_SAME;
+    return same ? NFS4ERR_SAME : NFS4_OK;
 }
 
 /* ---- OPENATTR (named attributes / xattr) ---- */
@@ -3629,7 +3762,217 @@ static uint32_t handle_open_downgrade(const darwinfuse_config_t *config,
     return NFS4_OK;
 }
 
+/* ACCESS applies the caller's AUTH_SYS identity to the mode bits. */
+static struct stat access_test_attributes;
+
+static int access_test_getattr(const char *path, struct stat *st)
+{
+    (void)path;
+    *st = access_test_attributes;
+    return 0;
+}
+
+static uint32_t access_test_granted(const darwinfuse_config_t *config,
+                                    nfs4_conn_state_t *conn,
+                                    nfs4_request_ctx_t *ctx,
+                                    mode_t mode, uid_t caller,
+                                    unsigned ngroups, const gid_t *groups)
+{
+    uint8_t request_bytes[4];
+    uint8_t reply_bytes[8];
+    xdr_buf_t request, reply;
+    access_test_attributes.st_mode = mode;
+    access_test_attributes.st_uid = 501;
+    access_test_attributes.st_gid = 20;
+    darwinfuse_set_context(caller, 99, ngroups, groups);
+    xdr_init(&request, request_bytes, sizeof(request_bytes));
+    xdr_encode_uint32(&request, 0x3f);
+    xdr_reset(&request);
+    xdr_init(&reply, reply_bytes, sizeof(reply_bytes));
+    if (handle_access(config, conn, ctx, &request, &reply) != NFS4_OK)
+        return UINT32_MAX;
+    xdr_reset(&reply);
+    if (xdr_decode_uint32(&reply) != 0x3f)
+        return UINT32_MAX;
+    return xdr_decode_uint32(&reply);
+}
+
+int nfs4_test_access_rights(void)
+{
+    struct fuse_operations ops;
+    darwinfuse_config_t config;
+    nfs4_request_ctx_t ctx;
+    nfs4_conn_state_t conn;
+    memset(&ops, 0, sizeof(ops));
+    memset(&config, 0, sizeof(config));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&conn, 0, sizeof(conn));
+    memset(&access_test_attributes, 0, sizeof(access_test_attributes));
+    ops.getattr = access_test_getattr;
+    config.ops = &ops;
+    config.inode_table = dfuse_itable_create();
+    if (!config.inode_table)
+        return 1;
+    dfuse_ino_t ino = dfuse_itable_get_or_create(config.inode_table,
+                                                 "/access-test");
+    fh_set_ino(ctx.current_fh, &ctx.current_fh_len, ino);
+
+    const gid_t staff[] = {20};
+    const uint32_t write = ACCESS4_MODIFY | ACCESS4_EXTEND;
+    int status = 0;
+    if (access_test_granted(&config, &conn, &ctx, S_IFREG | 0644, 501, 0, NULL)
+        != (ACCESS4_READ | write | ACCESS4_DELETE))
+        status = 2;
+    else if (access_test_granted(&config, &conn, &ctx, S_IFREG | 0644, 502, 0,
+                                 NULL) != (ACCESS4_READ | ACCESS4_DELETE))
+        status = 3;
+    else if (access_test_granted(&config, &conn, &ctx, S_IFREG | 0070, 502, 1,
+                                 staff) != (ACCESS4_READ | write |
+                                            ACCESS4_EXECUTE | ACCESS4_DELETE))
+        status = 4;
+    else if (access_test_granted(&config, &conn, &ctx, S_IFREG | 0644, 0, 0,
+                                 NULL) != (ACCESS4_READ | write | ACCESS4_DELETE))
+        status = 5;
+    else if (access_test_granted(&config, &conn, &ctx, S_IFREG | 0100, 0, 0,
+                                 NULL) != (ACCESS4_READ | write |
+                                           ACCESS4_EXECUTE | ACCESS4_DELETE))
+        status = 6;
+    else if (access_test_granted(&config, &conn, &ctx, S_IFDIR | 0555, 501, 0,
+                                 NULL) != (ACCESS4_READ | ACCESS4_LOOKUP))
+        status = 7;
+    else if (access_test_granted(&config, &conn, &ctx, S_IFDIR | 0700, 501, 0,
+                                 NULL) != 0x1f)
+        status = 8;
+    darwinfuse_set_context(0, 0, 0, NULL);
+    dfuse_itable_destroy(config.inode_table);
+    return status;
+}
+
+/* VERIFY matches exactly the current attribute values; NVERIFY inverts. */
+static int verify_test_getattr(const char *path, struct stat *st)
+{
+    (void)path;
+    memset(st, 0, sizeof(*st));
+    st->st_mode = S_IFREG | 0640;
+    st->st_size = 1234;
+    return 0;
+}
+
+static uint32_t verify_test_run(const darwinfuse_config_t *config,
+                                nfs4_conn_state_t *conn,
+                                nfs4_request_ctx_t *ctx,
+                                int expect_same, uint64_t size, uint32_t mode)
+{
+    uint8_t request_bytes[40];
+    xdr_buf_t request;
+    xdr_init(&request, request_bytes, sizeof(request_bytes));
+    xdr_encode_uint32(&request, 2);
+    xdr_encode_uint32(&request, 1u << FATTR4_SIZE);
+    xdr_encode_uint32(&request, 1u << (FATTR4_MODE - 32));
+    xdr_encode_uint32(&request, 12);
+    xdr_encode_uint64(&request, size);
+    xdr_encode_uint32(&request, mode);
+    xdr_reset(&request);
+    return verify_attributes(config, conn, ctx, &request, expect_same);
+}
+
+int nfs4_test_verify_attributes(void)
+{
+    struct fuse_operations ops;
+    darwinfuse_config_t config;
+    nfs4_request_ctx_t ctx;
+    nfs4_conn_state_t conn;
+    memset(&ops, 0, sizeof(ops));
+    memset(&config, 0, sizeof(config));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&conn, 0, sizeof(conn));
+    ops.getattr = verify_test_getattr;
+    config.ops = &ops;
+    config.inode_table = dfuse_itable_create();
+    if (!config.inode_table)
+        return 1;
+    dfuse_ino_t ino = dfuse_itable_get_or_create(config.inode_table,
+                                                 "/verify-test");
+    fh_set_ino(ctx.current_fh, &ctx.current_fh_len, ino);
+
+    int status = 0;
+    if (verify_test_run(&config, &conn, &ctx, 1, 1234, 0640) != NFS4_OK)
+        status = 2;
+    else if (verify_test_run(&config, &conn, &ctx, 1, 1235, 0640) != NFS4ERR_NOT_SAME)
+        status = 3;
+    else if (verify_test_run(&config, &conn, &ctx, 0, 1234, 0640) != NFS4ERR_SAME)
+        status = 4;
+    else if (verify_test_run(&config, &conn, &ctx, 0, 1234, 0600) != NFS4_OK)
+        status = 5;
+    dfuse_itable_destroy(config.inode_table);
+    return status;
+}
+
+/* Teardown releases every tracked open's handle exactly once, including an
+ * open whose name was removed. */
+static unsigned release_test_flushes;
+static unsigned release_test_releases;
+static uint64_t release_test_handles;
+
+static int release_test_flush(const char *path, struct fuse_file_info *fi)
+{
+    (void)path;
+    (void)fi;
+    release_test_flushes++;
+    return 0;
+}
+
+static int release_test_release(const char *path, struct fuse_file_info *fi)
+{
+    (void)path;
+    release_test_releases++;
+    release_test_handles += fi->fh;
+    return 0;
+}
+
+int nfs4_test_release_open_files(void)
+{
+    struct fuse_operations ops;
+    darwinfuse_config_t config;
+    nfs4_conn_state_t conn;
+    memset(&ops, 0, sizeof(ops));
+    memset(&config, 0, sizeof(config));
+    memset(&conn, 0, sizeof(conn));
+    pthread_mutex_init(&conn.lock, NULL);
+    ops.flush = release_test_flush;
+    ops.release = release_test_release;
+    config.ops = &ops;
+    config.inode_table = dfuse_itable_create();
+    if (!config.inode_table)
+        return 1;
+    dfuse_ino_t kept = dfuse_itable_get_or_create(config.inode_table, "/kept");
+    dfuse_ino_t removed = dfuse_itable_get_or_create(config.inode_table,
+                                                     "/removed");
+    dfuse_itable_remove(config.inode_table, "/removed");
+    struct fuse_file_info first = {.fh = 3};
+    struct fuse_file_info second = {.fh = 4};
+    nfs4_stateid_t sid;
+    release_test_flushes = release_test_releases = 0;
+    release_test_handles = 0;
+
+    int status = 0;
+    if (track_open(&conn, kept, &first, &sid) != 0 ||
+        track_open(&conn, removed, &second, &sid) != 0)
+        status = 2;
+    else {
+        nfs4_release_open_files(&config, &conn);
+        nfs4_release_open_files(&config, &conn);
+        if (release_test_releases != 2 || release_test_flushes != 2 ||
+            release_test_handles != 7 || conn.open_file_count != 0)
+            status = 3;
+    }
+    pthread_mutex_destroy(&conn.lock);
+    dfuse_itable_destroy(config.inode_table);
+    return status;
+}
+
 /* ---- COMPOUND Dispatcher ---- */
+
 
 int nfs4_dispatch_compound(const darwinfuse_config_t *config,
                             nfs4_conn_state_t *conn,
@@ -3777,8 +4120,10 @@ int nfs4_dispatch_compound(const darwinfuse_config_t *config,
             status = handle_secinfo(config, conn, ctx, request, reply);
             break;
         case OP_VERIFY:
+            status = verify_attributes(config, conn, ctx, request, 1);
+            break;
         case OP_NVERIFY:
-            status = handle_verify(config, conn, ctx, request, reply);
+            status = verify_attributes(config, conn, ctx, request, 0);
             break;
         default:
             DFUSE_LOG("  unsupported op %u", opnum);

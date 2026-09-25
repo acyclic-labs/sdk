@@ -48,7 +48,6 @@ typedef struct {
     size_t              payload_len;    /* expected payload length */
     size_t              payload_read;   /* bytes of payload read so far */
     int                 last_fragment;
-    nfs4_conn_state_t   nfs_state;
     pthread_mutex_t     write_lock;     /* serialize reply writes */
     _Atomic int         inflight;       /* in-flight work items (MT mode) */
     _Atomic int         closing;        /* disconnect pending (MT mode) */
@@ -84,6 +83,11 @@ struct darwinfuse_server {
     client_conn_t       clients[DFUSE_MAX_CLIENTS];
     int                 num_clients;
 
+    /* NFSv4 state belongs to the client, not to one connection (RFC 7530
+     * s9.1): after the kernel reconnects, its stateids still name the
+     * opens they named before. */
+    nfs4_conn_state_t   client_state;
+
     /* Reply buffer for the single-threaded path; workers own their own */
     uint8_t         *reply_buf;
 
@@ -116,14 +120,6 @@ static void client_init(client_conn_t *c, int fd)
     atomic_store(&c->fd, fd);
     c->read_state = CLIENT_STATE_READ_MARK;
 
-    /* Allocate initial open file tracking array */
-    c->nfs_state.open_files = calloc(OPEN_FILES_INITIAL_CAP,
-                                      sizeof(nfs4_open_file_t));
-    c->nfs_state.open_file_cap = OPEN_FILES_INITIAL_CAP;
-    c->nfs_state.open_file_count = 0;
-
-    /* Initialize mutexes */
-    pthread_mutex_init(&c->nfs_state.lock, NULL);
     pthread_mutex_init(&c->write_lock, NULL);
 
     /* MT state */
@@ -140,13 +136,6 @@ static void client_close(client_conn_t *c)
     }
     free(c->payload_buf);
     c->payload_buf = NULL;
-    free(c->nfs_state.open_files);
-    c->nfs_state.open_files = NULL;
-    c->nfs_state.open_file_count = 0;
-    c->nfs_state.open_file_cap = 0;
-
-    /* Destroy mutexes */
-    pthread_mutex_destroy(&c->nfs_state.lock);
     pthread_mutex_destroy(&c->write_lock);
 }
 
@@ -256,12 +245,13 @@ static int process_rpc_message(darwinfuse_server_t *srv, client_conn_t *c,
     } else if (rpc_hdr.procedure == NFSPROC4_NULL) {
         rpc_encode_reply_accepted(&rep, rpc_hdr.xid);
     } else if (rpc_hdr.procedure == NFSPROC4_COMPOUND) {
-        darwinfuse_set_context(rpc_hdr.cred_uid, rpc_hdr.cred_gid);
+        darwinfuse_set_context(rpc_hdr.cred_uid, rpc_hdr.cred_gid,
+                               rpc_hdr.cred_ngroups, rpc_hdr.cred_groups);
         rpc_encode_reply_accepted(&rep, rpc_hdr.xid);
 
         nfs4_request_ctx_t ctx;
         memset(&ctx, 0, sizeof(ctx));
-        if (nfs4_dispatch_compound(&srv->config, &c->nfs_state,
+        if (nfs4_dispatch_compound(&srv->config, &srv->client_state,
                                     &ctx, &req, &rep) < 0) {
             DFUSE_ERR("COMPOUND dispatch failed");
             return -1;
@@ -456,7 +446,7 @@ darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config,
 
     srv->config = *config;
     atomic_init(&srv->config.namespace_change, 1);
-    atomic_init(&srv->config.fallback_change, 0);
+    atomic_init(&srv->config.fresh_change, 0);
     arc4random_buf(srv->config.write_verifier, sizeof(srv->config.write_verifier));
     srv->listen_fd = -1;
     srv->wakeup_pipe[0] = -1;
@@ -505,6 +495,7 @@ darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config,
     *port = ntohs(addr.sin_port);
 
     set_nonblocking(srv->listen_fd);
+    pthread_mutex_init(&srv->client_state.lock, NULL);
     srv->running = 1;
 
     DFUSE_LOG("NFS server listening on 127.0.0.1:%u", *port);
@@ -758,6 +749,11 @@ void nfs4_server_destroy(darwinfuse_server_t *srv)
 
     for (int i = 0; i < srv->num_clients; i++)
         client_close(&srv->clients[i]);
+
+    /* Every connection is gone; release the handles its opens still hold. */
+    nfs4_release_open_files(&srv->config, &srv->client_state);
+    free(srv->client_state.open_files);
+    pthread_mutex_destroy(&srv->client_state.lock);
 
     if (srv->listen_fd >= 0) close(srv->listen_fd);
     if (srv->wakeup_pipe[0] >= 0) close(srv->wakeup_pipe[0]);

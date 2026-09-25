@@ -283,6 +283,13 @@ int nfs4_dispatch_compound(const darwinfuse_config_t *config,
                            xdr_buf_t *request,
                            xdr_buf_t *reply);
 
+/*
+ * Flush and release every open's FUSE handle and forget the opens: the
+ * server is shutting down, so no client can close them any more.
+ */
+void nfs4_release_open_files(const darwinfuse_config_t *config,
+                             nfs4_conn_state_t *conn);
+
 /* Callback-level regression hook used by the macOS Rust test suite. */
 int nfs4_test_exclusive_replay_identity(void);
 int nfs4_test_namedattr_exclusive_replay_identity(void);
@@ -290,5 +297,8 @@ int nfs4_test_readdir_cookie_verifier(void);
 int nfs4_test_sync_acknowledgement(void);
 int nfs4_test_read_reply(void);
 int nfs4_test_change_attribute(void);
+int nfs4_test_access_rights(void);
+int nfs4_test_verify_attributes(void);
+int nfs4_test_release_open_files(void);
 
 #endif /* DARWINFUSE_NFS4_OPS_H */

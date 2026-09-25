@@ -205,6 +205,26 @@ struct DetachedMountState<A, O> {
 }
 
 impl<A, O> DetachedMountState<A, O> {
+    /// Stamps a content change's times, as every native write does, then
+    /// records the change.
+    async fn record_content_change(
+        &mut self,
+        ledger: &ViewLedger,
+        cancellation: &CancellationToken,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        if stamp_content_change(&mut self.metadata)? {
+            self.file
+                .set_attributes(self.metadata, None, boundary_budget(), cancellation)
+                .await
+                .map_err(engine_error)?;
+        }
+        self.record_change(ledger)
+    }
+
     /// Advances the identity's own publication epoch and invalidates every
     /// cached lookup of the identity, under the lock its lookups take.
     fn record_change(&mut self, ledger: &ViewLedger) -> Result<(), MountSourceError>
@@ -324,6 +344,13 @@ impl<A, O> SharedCheckout<A, O> {
         let view = self.view_gate.read_for_callback(owner, None).await?;
         let state = self.state.read().await;
         Ok(SharedCheckoutObservation { _view: view, state })
+    }
+
+    /// Whether a native durability request (`fsync`, or a close that
+    /// publishes) publishes; [`MountPublication::Manual`] leaves every
+    /// publication to an explicit sync or unmount.
+    pub(super) async fn publishes_at_native_boundary(&self) -> bool {
+        self.state.read().await.publishes_at_native_boundary()
     }
 
     /// Copies the current candidate and the revision it belongs to, for an
@@ -447,6 +474,32 @@ impl<A, O> SharedCheckoutState<A, O> {
         result
     }
 
+    /// Stamps a file's modification and status-change times, as a native
+    /// write, truncation, or allocation does, then publishes the change like
+    /// any mutation. Times a profile does not represent stay unavailable.
+    pub(super) async fn publish_after_content_change(
+        &mut self,
+        file_id: FileId,
+        cancellation: &CancellationToken,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let mut metadata = self
+            .read_metadata_by_id(file_id, boundary_budget(), cancellation)
+            .await
+            .map_err(engine_error)?
+            .value;
+        if stamp_content_change(&mut metadata)? {
+            self.set_metadata_by_id(file_id, metadata, boundary_budget(), cancellation)
+                .await
+                .map_err(engine_error)?;
+        }
+        self.publish_after_mutation(ViewChange::Node(file_id), cancellation)
+            .await
+    }
+
     /// Records exactly what one mutation changed, then publishes it when the
     /// policy publishes every mutation.
     pub(super) async fn publish_after_mutation(
@@ -473,10 +526,14 @@ impl<A, O> SharedCheckoutState<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        if self.publication != MountPublication::Manual {
+        if self.publishes_at_native_boundary() {
             self.seal(cancellation).await?;
         }
         Ok(())
+    }
+
+    fn publishes_at_native_boundary(&self) -> bool {
+        self.publication != MountPublication::Manual
     }
 
     /// Rejects later mutation while one publication has an unresolved result.
@@ -726,7 +783,9 @@ where
                 .await
                 .map(|_| ())
                 .map_err(engine_error)?;
-            state.record_change(&self.ledger)
+            state
+                .record_content_change(&self.ledger, &self.cancellation)
+                .await
         })
     }
 
@@ -739,7 +798,9 @@ where
                 .await
                 .map(|_| ())
                 .map_err(engine_error)?;
-            state.record_change(&self.ledger)
+            state
+                .record_content_change(&self.ledger, &self.cancellation)
+                .await
         })
     }
 
@@ -774,7 +835,9 @@ where
             }
             .map(|_| ())
             .map_err(engine_error)?;
-            state.record_change(&self.ledger)
+            state
+                .record_content_change(&self.ledger, &self.cancellation)
+                .await
         })
     }
 
@@ -1009,7 +1072,7 @@ where
                 .await
                 .map_err(engine_error)?;
             checkout
-                .publish_after_mutation(ViewChange::Node(self.file_id), &self.cancellation)
+                .publish_after_content_change(self.file_id, &self.cancellation)
                 .await
         })
     }
@@ -1028,7 +1091,7 @@ where
                 .await
                 .map_err(engine_error)?;
             checkout
-                .publish_after_mutation(ViewChange::Node(self.file_id), &self.cancellation)
+                .publish_after_content_change(self.file_id, &self.cancellation)
                 .await
         })
     }
@@ -1082,7 +1145,7 @@ where
             }
             .map_err(engine_error)?;
             checkout
-                .publish_after_mutation(ViewChange::Node(self.file_id), &self.cancellation)
+                .publish_after_content_change(self.file_id, &self.cancellation)
                 .await
         })
     }
@@ -1883,7 +1946,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     .cancellation
                     .check()
                     .map_err(|error| MountSourceError::Engine(error.to_string()))?;
-                if checkout.publication != MountPublication::Manual {
+                if checkout.publishes_at_native_boundary() {
                     return Err(MountSourceError::Invalid(
                         "lifecycle capture requires manual publication".to_owned(),
                     ));
@@ -2554,7 +2617,7 @@ where
                 .await
                 .map_err(engine_error)?;
             checkout
-                .publish_after_mutation(ViewChange::Node(node), &self.cancellation)
+                .publish_after_content_change(node, &self.cancellation)
                 .await
         })
     }
@@ -2570,7 +2633,7 @@ where
                 .await
                 .map_err(engine_error)?;
             checkout
-                .publish_after_mutation(ViewChange::Node(node), &self.cancellation)
+                .publish_after_content_change(node, &self.cancellation)
                 .await
         })
     }
@@ -2626,7 +2689,7 @@ where
             }
             .map_err(engine_error)?;
             checkout
-                .publish_after_mutation(ViewChange::Node(node), &self.cancellation)
+                .publish_after_content_change(node, &self.cancellation)
                 .await
         })
     }
@@ -2660,7 +2723,7 @@ where
                 .await
                 .map_err(engine_error)?;
             checkout
-                .publish_after_mutation(ViewChange::Node(node), &self.cancellation)
+                .publish_after_content_change(node, &self.cancellation)
                 .await
         })
     }
@@ -2689,7 +2752,7 @@ where
                 .await
                 .map_err(engine_error)?;
             checkout
-                .publish_after_mutation(ViewChange::Node(destination_file_id), &self.cancellation)
+                .publish_after_content_change(destination_file_id, &self.cancellation)
                 .await
         })
     }
@@ -2785,6 +2848,11 @@ where
 
     fn flush(&self) -> Result<(), MountSourceError> {
         self.runtime.wait(|| async {
+            // A manual checkout publishes nothing here, so it never excludes
+            // every callback just to decide that.
+            if !self.checkout.publishes_at_native_boundary().await {
+                return Ok(());
+            }
             let mut checkout = self.checkout.lock().await;
             checkout
                 .publish_at_native_boundary(&self.cancellation)
@@ -2887,6 +2955,24 @@ fn mount_node(record: FileRecord) -> MountNode {
         link_count: record.link_count,
         device,
     }
+}
+
+/// Sets every modification and status-change time the metadata represents
+/// to now, and returns whether it represents either.
+fn stamp_content_change(metadata: &mut FileMetadata) -> Result<bool, MountSourceError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|since| i64::try_from(since.as_nanos()).ok())
+        .ok_or_else(|| MountSourceError::Engine("the clock is outside file time".to_owned()))?;
+    let mut stamped = false;
+    for time in [&mut metadata.modified_ns, &mut metadata.changed_ns] {
+        if let crate::kernel::MetadataField::Value(time) = time {
+            *time = now;
+            stamped = true;
+        }
+    }
+    Ok(stamped)
 }
 
 fn engine_error(error: impl std::fmt::Display) -> MountSourceError {

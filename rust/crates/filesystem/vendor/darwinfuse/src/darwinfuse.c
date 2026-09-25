@@ -15,6 +15,7 @@
 #include "darwinfuse_internal.h"
 #include "fuse_context.h"
 #include "inode_table.h"
+#include "rpc.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +46,8 @@ const char *darwinfuse_log_path(void)
 /* ---- Thread-local FUSE context ---- */
 
 static __thread struct fuse_context tls_context;
+static __thread gid_t tls_groups[RPC_AUTH_SYS_MAX_GROUPS];
+static __thread unsigned tls_ngroups;
 
 struct fuse_context *fuse_get_context(void)
 {
@@ -54,10 +57,15 @@ struct fuse_context *fuse_get_context(void)
 /* NFS carries no requesting pid, and the client applies its caller's umask
  * before sending a mode, so pid and umask stay zero.  (Sampling this
  * process's umask would briefly clear it for every other thread.) */
-void darwinfuse_set_context(uid_t uid, gid_t gid)
+void darwinfuse_set_context(uid_t uid, gid_t gid,
+                            unsigned ngroups, const gid_t *groups)
 {
     tls_context.uid = uid;
     tls_context.gid = gid;
+    tls_ngroups = ngroups < RPC_AUTH_SYS_MAX_GROUPS
+        ? ngroups : RPC_AUTH_SYS_MAX_GROUPS;
+    if (tls_ngroups > 0)
+        memcpy(tls_groups, groups, tls_ngroups * sizeof(*groups));
 }
 
 void darwinfuse_set_private_data(void *private_data)
@@ -628,7 +636,7 @@ int fuse_main_real(int argc, char *argv[],
               getuid(), geteuid(), args.mount_point, args.foreground);
 
     /* Set initial FUSE context */
-    darwinfuse_set_context(getuid(), getgid());
+    darwinfuse_set_context(getuid(), getgid(), 0, NULL);
     darwinfuse_set_private_data(user_data);
 
     /* Create dynamic inode table */
@@ -817,9 +825,16 @@ int fuse_main(int argc, char *argv[],
     return fuse_main_real(argc, argv, op, sizeof(*op), user_data);
 }
 
+/* The requesting caller's supplementary groups (libfuse semantics), not
+ * this process's. With size 0, returns how many there are. */
 int fuse_getgroups(int size, gid_t list[])
 {
-    return getgroups(size, list);
+    if (size == 0)
+        return (int)tls_ngroups;
+    if (size < 0 || (unsigned)size < tls_ngroups)
+        return -ERANGE;
+    memcpy(list, tls_groups, tls_ngroups * sizeof(*list));
+    return (int)tls_ngroups;
 }
 
 int fuse_interrupted(void)

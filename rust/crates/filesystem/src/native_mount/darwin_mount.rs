@@ -72,6 +72,8 @@ struct NativeStat {
     device: u64,
     block_size: u32,
     flags: u32,
+    /// NFS change attribute: see [`ChangeLabels`].
+    change: u64,
 }
 
 #[repr(C)]
@@ -202,7 +204,7 @@ struct DarwinMountContext {
     directory_checkpoints: Mutex<HashMap<MountPath, DirectoryCheckpoint>>,
     namespace_revision: AtomicU64,
     ledger: FlushLedger,
-    change: ChangeClock,
+    changes: ChangeLabels,
 }
 
 /// Orders completed native mutations against source flushes.
@@ -255,51 +257,83 @@ impl FlushLedger {
     }
 }
 
-/// The NFS change attribute: one value for every object that advances
-/// whenever a later callback may observe different state and never repeats.
+/// Per-object NFS change attributes (RFC 7530 s5.4).
 ///
-/// Source epochs cover every surface of the source; the ledger additionally
-/// covers mutations of this mount that a source without precise epochs does
-/// not report. Without a stable epoch every sample is new.
-struct ChangeClock {
-    state: Mutex<ChangeInputs>,
+/// A node keeps its label while the source reports nothing that node's
+/// attributes, listing, or name depend on changed since the label was
+/// issued; otherwise it gets a fresh one. Labels come from one counter and
+/// are never reissued, so a stale cached value can never match again, and a
+/// write to one file leaves every other object's cached state valid.
+struct ChangeLabels {
+    next: AtomicU64,
+    labels: Mutex<HashMap<FileId, IssuedLabel>>,
 }
 
-struct ChangeInputs {
-    epochs: Option<CacheEpochs>,
-    mutations: u64,
-    value: u64,
+#[derive(Clone, Copy)]
+struct IssuedLabel {
+    label: u64,
+    /// Sampled before the attributes the label was issued for.
+    stamp: ViewStamp,
+    binding: Option<u64>,
 }
 
-impl ChangeClock {
-    const fn new() -> Self {
+impl ChangeLabels {
+    fn new() -> Self {
         Self {
-            state: Mutex::new(ChangeInputs {
-                epochs: None,
-                mutations: 0,
-                value: 0,
-            }),
+            next: AtomicU64::new(1),
+            labels: Mutex::new(HashMap::new()),
         }
     }
 
-    fn sample(&self, epochs: Option<CacheEpochs>, mutations: u64) -> u64 {
-        // Every field only moves forward, so a panicked holder cannot leave
-        // a state that repeats a value.
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if epochs.is_none() || epochs != state.epochs || mutations != state.mutations {
-            state.epochs = epochs;
-            state.mutations = mutations;
-            state.value += 1;
+    /// The label for `file_id`'s attributes as observed at `path` after
+    /// `stamp` was sampled; a source without stamps gets a fresh label every
+    /// time, so its cached state is never trusted past a revalidation.
+    fn label(
+        &self,
+        source: &dyn MountFilesystem,
+        path: &MountPath,
+        file_id: FileId,
+        stamp: Option<ViewStamp>,
+    ) -> u64 {
+        let Some(stamp) = stamp else {
+            return self.fresh();
+        };
+        let binding = source.binding_epoch();
+        // Labels only ever move to fresh values, so a panicked holder
+        // cannot leave one that repeats.
+        let mut labels = self.labels.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(issued) = labels.get(&file_id)
+            && issued.binding == binding
+            && source.unchanged_since(path, Some(file_id), issued.stamp)
+        {
+            return issued.label;
         }
-        state.value
+        if labels.len() >= MAXIMUM_LOOKUP_CACHE_ENTRIES {
+            labels.clear();
+        }
+        let label = self.fresh();
+        labels.insert(
+            file_id,
+            IssuedLabel {
+                label,
+                stamp,
+                binding,
+            },
+        );
+        label
     }
 
-    /// Marks state changed outside every observed input.
-    fn advance(&self) {
-        self.state
+    /// Every object's next label is fresh: its cached state may be stale in
+    /// a way the source did not record.
+    fn forget(&self) {
+        self.labels
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .value += 1;
+            .clear();
+    }
+
+    fn fresh(&self) -> u64 {
+        self.next.fetch_add(1, Ordering::Relaxed)
     }
 }
 
@@ -341,13 +375,8 @@ impl DarwinMountContext {
             directory_checkpoints: Mutex::new(HashMap::new()),
             namespace_revision: AtomicU64::new(0),
             ledger: FlushLedger::new(),
-            change: ChangeClock::new(),
+            changes: ChangeLabels::new(),
         }
-    }
-
-    fn change_attribute(&self) -> u64 {
-        self.change
-            .sample(cache_epochs(self.source.as_ref()), self.ledger.latest())
     }
 
     fn allocate_handle(&self) -> Result<u64, i32> {
@@ -543,11 +572,19 @@ impl DarwinMountContext {
     }
 
     fn attributes(&self, path: &MountPath, handle: u64) -> Result<NativeStat, i32> {
+        // Sampled before observing: a change after it cannot keep the label.
+        let stamp = self.source.view_stamp();
         let lookup = self.lookup_handle(path, handle)?;
-        self.attributes_from_lookup(lookup)
+        self.attributes_from_lookup(path, lookup, stamp)
     }
 
-    fn attributes_from_lookup(&self, lookup: MountLookup) -> Result<NativeStat, i32> {
+    /// Native attributes of `lookup`, observed at `path` after `stamp`.
+    fn attributes_from_lookup(
+        &self,
+        path: &MountPath,
+        lookup: MountLookup,
+        stamp: Option<ViewStamp>,
+    ) -> Result<NativeStat, i32> {
         let node = lookup.node;
         let file_kind = match node.kind {
             MountNodeKind::Regular => mode::IFREG,
@@ -591,6 +628,9 @@ impl DarwinMountContext {
                 .unwrap_or(0),
             block_size: 4096,
             flags: u32::try_from(metadata_or(lookup.metadata.posix_flags, 0)).unwrap_or(u32::MAX),
+            change: self
+                .changes
+                .label(self.source.as_ref(), path, node.file_id, stamp),
         })
     }
 
@@ -867,7 +907,7 @@ impl DarwinMountSession {
         // discard what it cached.
         let context = unsafe { &*(resources.source_context as *const DarwinMountContext) };
         context.namespace_changed();
-        context.change.advance();
+        context.changes.forget();
         let status = unsafe {
             acyclic_fs_darwin_mount_invalidate(
                 resources.driver_session as *mut c_void,
@@ -1169,18 +1209,6 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getattr(
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn acyclic_fs_darwin_mount_access(
-    address: usize,
-    path: *const c_char,
-    _mask: c_int,
-) -> c_int {
-    ffi_status(|| {
-        context(address)?.lookup(&mount_path(path)?)?;
-        Ok(0)
-    })
-}
-
-#[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_open(
     address: usize,
     path: *const c_char,
@@ -1322,18 +1350,6 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(address: usize) -> c_int {
     })
 }
 
-/// Values no clock reaches (it counts from one), for a callback that cannot
-/// sample: each is new, so the client revalidates.
-static UNSAMPLED_CHANGE: AtomicU64 = AtomicU64::new(1 << 63);
-
-#[unsafe(no_mangle)]
-unsafe extern "C" fn acyclic_fs_darwin_mount_change(address: usize) -> u64 {
-    std::panic::catch_unwind(|| context(address).map(DarwinMountContext::change_attribute))
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_else(|| UNSAMPLED_CHANGE.fetch_add(1, Ordering::Relaxed))
-}
-
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
     address: usize,
@@ -1448,11 +1464,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
                     .remove(&directory.path);
                 return Ok(0);
             };
-            let name = CString::new(entry.name.as_slice()).map_err(|_| libc::EIO)?;
-            let attributes = context.attributes_from_lookup(MountLookup {
-                node: entry.node,
-                metadata: entry.metadata,
-            })?;
+            let (name, attributes) = directory_entry(context, &directory, entry)?;
             let next = directory.emitted.checked_add(1).ok_or(libc::EOVERFLOW)?;
             let buffer_full = unsafe {
                 acyclic_fs_darwin_mount_fill_directory(
@@ -1471,6 +1483,25 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
             directory.emitted = next;
         }
     })
+}
+
+/// One listed entry's native name and attributes. The page was read after
+/// the directory's stamp was sampled, which therefore labels the entry.
+fn directory_entry(
+    context: &DarwinMountContext,
+    directory: &DirectoryHandle,
+    entry: &MountDirectoryEntry,
+) -> Result<(CString, NativeStat), i32> {
+    let name = CString::new(entry.name.as_slice()).map_err(|_| libc::EIO)?;
+    let attributes = context.attributes_from_lookup(
+        &directory.path.child(entry.name.clone()),
+        MountLookup {
+            node: entry.node,
+            metadata: entry.metadata,
+        },
+        directory.epochs.map(|epochs| epochs.view),
+    )?;
+    Ok((name, attributes))
 }
 
 fn finish_directory_page(
@@ -2190,6 +2221,9 @@ mod tests {
     unsafe extern "C" {
         fn nfs4_test_read_reply() -> c_int;
         fn nfs4_test_change_attribute() -> c_int;
+        fn nfs4_test_access_rights() -> c_int;
+        fn nfs4_test_verify_attributes() -> c_int;
+        fn nfs4_test_release_open_files() -> c_int;
     }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -2326,39 +2360,66 @@ mod tests {
     }
 
     #[test]
-    fn change_attribute_advances_exactly_when_state_may_differ() -> TestResult {
+    fn change_labels_advance_exactly_for_objects_that_changed() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
-        let idle = context.change_attribute();
+        let label = |path: &MountPath| {
+            context
+                .attributes(path, 0)
+                .map(|attributes| attributes.change)
+                .map_err(os)
+        };
+        let root = MountPath::root();
+        let first = root.child(b"first".to_vec());
+        let second = root.child(b"second".to_vec());
+        for path in [&first, &second] {
+            context
+                .mutate(|| source.create_file(path, FileMetadata::default()))
+                .map_err(os)?;
+        }
+        let (root_label, first_label, second_label) =
+            (label(&root)?, label(&first)?, label(&second)?);
         assert_eq!(
-            context.change_attribute(),
-            idle,
-            "an idle mount keeps caches"
+            label(&first)?,
+            first_label,
+            "an unchanged file keeps its label"
         );
+        assert_ne!(first_label, second_label, "objects never share a label");
 
-        let path = MountPath::root().child(b"changing".to_vec());
         context
-            .mutate(|| source.create_file(&path, FileMetadata::default()))
+            .mutate_file(&first, 0, |file| {
+                file.write_range(0, Bytes::from_static(b"written"))
+            })
             .map_err(os)?;
-        let created = context.change_attribute();
-        assert!(created > idle, "a mount mutation advances it");
-
-        source.write_range(&path, 0, Bytes::from_static(b"external"))?;
-        let written = context.change_attribute();
-        assert!(written > created, "another surface's write advances it");
-
-        context.change.advance();
-        let invalidated = context.change_attribute();
         assert!(
-            invalidated > written,
-            "an external invalidation advances it"
+            label(&first)? > first_label,
+            "a written file gets a new label"
         );
-        assert_eq!(context.change_attribute(), invalidated);
+        assert_eq!(label(&second)?, second_label, "other files keep theirs");
+        assert_eq!(
+            label(&root)?,
+            root_label,
+            "a content write keeps the listing"
+        );
 
-        let clock = ChangeClock::new();
+        source.remove(&second, None)?;
+        assert!(
+            label(&root)? > root_label,
+            "a namespace change relabels its directory"
+        );
+
+        let first_label = label(&first)?;
+        context.changes.forget();
+        assert!(
+            label(&first)? > first_label,
+            "an invalidation relabels everything"
+        );
+
+        let unstamped = ChangeLabels::new();
+        let file_id = source.lookup(&first)?.ok_or("file absent")?.node.file_id;
         assert_ne!(
-            clock.sample(None, 1),
-            clock.sample(None, 1),
-            "an unstable view never repeats a value"
+            unstamped.label(source.as_ref(), &first, file_id, None),
+            unstamped.label(source.as_ref(), &first, file_id, None),
+            "a source without stamps never repeats a label"
         );
         Ok(())
     }
@@ -2372,9 +2433,171 @@ mod tests {
 
     #[test]
     #[allow(unsafe_code)]
-    fn nfs_change_attribute_is_sampled_before_attributes() {
+    fn nfs_change_attribute_travels_with_its_attributes() {
         // SAFETY: the test hook owns all callback state.
         assert_eq!(unsafe { nfs4_test_change_attribute() }, 0);
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn nfs_access_applies_the_callers_identity_to_mode_bits() {
+        // SAFETY: the test hook owns all callback state.
+        assert_eq!(unsafe { nfs4_test_access_rights() }, 0);
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn nfs_verify_compares_current_attribute_values() {
+        // SAFETY: the test hook owns all callback state.
+        assert_eq!(unsafe { nfs4_test_verify_attributes() }, 0);
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn nfs_teardown_releases_every_open_handle_once() {
+        // SAFETY: the test hook owns all callback state.
+        assert_eq!(unsafe { nfs4_test_release_open_files() }, 0);
+    }
+
+    #[test]
+    fn content_changes_stamp_modification_and_status_times() -> TestResult {
+        let (source, context) = checkout_context(MountPublication::Manual)?;
+        let path = MountPath::root().child(b"stamped".to_vec());
+        let created = FileMetadata {
+            modified_ns: MetadataField::Value(1),
+            changed_ns: MetadataField::Value(1),
+            ..create_metadata(0o644, mode::IFREG, 0, 0)
+        };
+        context
+            .mutate(|| source.create_file(&path, created))
+            .map_err(os)?;
+        let times = || -> Result<_, Box<dyn std::error::Error>> {
+            let metadata = source.lookup(&path)?.ok_or("file absent")?.metadata;
+            Ok((metadata.modified_ns, metadata.changed_ns))
+        };
+        context
+            .mutate_file(&path, 0, |file| {
+                file.write_range(0, Bytes::from_static(b"stamped"))
+            })
+            .map_err(os)?;
+        let (MetadataField::Value(modified), MetadataField::Value(changed)) = times()? else {
+            return Err("write dropped a time".into());
+        };
+        assert!(modified > 1 && changed > 1, "a write stamps both times");
+        context
+            .mutate_file(&path, 0, |file| file.resize(1))
+            .map_err(os)?;
+        let (MetadataField::Value(resized), _) = times()? else {
+            return Err("resize dropped a time".into());
+        };
+        assert!(resized >= modified, "a truncation stamps the time again");
+        Ok(())
+    }
+
+    /// Mounts a fresh checkout for one live macOS test.
+    fn live_mount()
+    -> Result<(tempfile::TempDir, crate::NativeMountSession), Box<dyn std::error::Error>> {
+        let (source, _) = checkout_context(MountPublication::Manual)?;
+        let temporary = tempfile::tempdir()?;
+        let mount = crate::mount_native(
+            crate::NativeMountRequest {
+                mount_id: crate::MountId::new(),
+                volume_id: source.volume_id()?,
+                destination: temporary.path().to_path_buf(),
+                writable: true,
+            },
+            source as Arc<dyn MountFilesystem>,
+        )?;
+        Ok((temporary, mount))
+    }
+
+    #[test]
+    #[ignore = "requires a live macOS NFS mount"]
+    fn macos_locks_exclude_other_processes() -> TestResult {
+        use std::os::fd::AsRawFd as _;
+
+        let (temporary, mut mount) = live_mount()?;
+        let path = temporary.path().join("locked");
+        std::fs::write(&path, b"")?;
+        // The NFS client keys locks by process, so another process contends.
+        let contender = |operation: &str| {
+            Command::new("/usr/bin/perl")
+                .arg("-e")
+                .arg(format!(
+                    "use Fcntl qw(:flock :DEFAULT); open(F, '+<', $ARGV[0]) or die;                      exit({operation} ? 0 : 1)"
+                ))
+                .arg(&path)
+                .status()
+                .map(|status| status.success())
+        };
+        let flock = "flock(F, LOCK_EX | LOCK_NB)";
+        let fcntl = "fcntl(F, F_SETLK, my $region = pack('q q l s s', 0, 0, 0, F_WRLCK, 0))";
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        // SAFETY: `file` owns a live descriptor for each call.
+        assert_eq!(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) }, 0);
+        assert!(!contender(flock)?, "a held flock excludes another process");
+        // SAFETY: as above.
+        assert_eq!(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) }, 0);
+        assert!(contender(flock)?, "a released flock admits another process");
+        let region = libc::flock {
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+            l_type: libc::F_WRLCK as libc::c_short,
+            l_whence: libc::SEEK_SET as libc::c_short,
+        };
+        // SAFETY: `region` outlives the call on the live descriptor.
+        assert_eq!(
+            unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &raw const region) },
+            0
+        );
+        assert!(
+            !contender(fcntl)?,
+            "a held record lock excludes another process"
+        );
+        drop(file);
+        assert!(contender(fcntl)?, "closing releases the record lock");
+        assert!(mount.stop()?);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a live macOS NFS mount"]
+    fn macos_mode_bits_deny_access() -> TestResult {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (temporary, mut mount) = live_mount()?;
+        let path = temporary.path().join("read-only");
+        std::fs::write(&path, b"kept")?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444))?;
+        assert_eq!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .err()
+                .map(|error| error.kind()),
+            Some(std::io::ErrorKind::PermissionDenied),
+            "a read-only file refuses a writer"
+        );
+        let script = temporary.path().join("script");
+        std::fs::write(&script, b"#!/bin/sh\nexit 0\n")?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644))?;
+        assert_eq!(
+            Command::new(&script)
+                .status()
+                .err()
+                .map(|error| error.kind()),
+            Some(std::io::ErrorKind::PermissionDenied),
+            "a file without an execute bit does not run"
+        );
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+        assert!(Command::new(&script).status()?.success());
+        assert_eq!(std::fs::read(&path)?, b"kept");
+        assert!(mount.stop()?);
+        Ok(())
     }
 
     #[test]
