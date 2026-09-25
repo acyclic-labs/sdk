@@ -217,7 +217,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::sync::Arc;
 
-    /// Passes when the probe holds `/retries.py`, and litters the probe like a real
+    /// Passes when the probe holds `/retries.rs`, and litters the probe like a real
     /// test run would, proving check artifacts never reach the target.
     struct ProbeCheck<'a, A, O>(&'a FilesystemHost<A, O>);
 
@@ -237,13 +237,13 @@ mod tests {
                         probe,
                         None,
                         &[WorkspaceMutation::PutFile {
-                            path: "/.pytest_cache".into(),
+                            path: "/.test_cache".into(),
                             bytes: b"cache".to_vec(),
                         }],
                         &IdempotencyKey::new(format!("litter-{:?}", probe.as_resource().key()))?,
                     )
                     .await?;
-                let passed = self.0.stat(probe, None, "/retries.py").await.is_ok();
+                let passed = self.0.stat(probe, None, "/retries.rs").await.is_ok();
                 Ok(CheckReport::new(passed, "1 passed"))
             })
         }
@@ -310,7 +310,7 @@ mod tests {
             },
             policy: SpeculationPolicy {
                 judge: fewest_changes_entrypoint(),
-                check: Some(json!({"shell": "pytest"})),
+                check: Some(json!({"shell": "cargo test"})),
                 timing: JudgeTiming::AllSettled,
                 losers: LoserPolicy::CancelOnDecision,
             },
@@ -375,14 +375,14 @@ mod tests {
             return Err(Error::Invalid("three attempts".into()));
         };
         // `b` touches fewer real paths once its AppleDouble companion is ignored.
-        write(&host, &a, &[("/retries.py", "a"), ("/notes.md", "a")]).await?;
+        write(&host, &a, &[("/retries.rs", "a"), ("/notes.md", "a")]).await?;
         write(
             &host,
             &b,
-            &[("/retries.py", "b"), ("/._retries.py", "xattr")],
+            &[("/retries.rs", "b"), ("/._retries.rs", "xattr")],
         )
         .await?;
-        write(&host, &c, &[("/retries.py", "c")]).await?;
+        write(&host, &c, &[("/retries.rs", "c")]).await?;
 
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
         let mut coordinator = DistributedCoordinator::open(&client).await?;
@@ -410,7 +410,7 @@ mod tests {
             .ok_or_else(|| Error::NotFound("merge".into()))?;
 
         assert_eq!(
-            host.read(&target, Some(&merged), "/retries.py", 16).await?,
+            host.read(&target, Some(&merged), "/retries.rs", 16).await?,
             "b"
         );
         assert_eq!(
@@ -418,7 +418,7 @@ mod tests {
             "retry library"
         );
         assert!(host.stat(&target, None, "/notes.md").await.is_err());
-        assert!(host.stat(&target, None, "/.pytest_cache").await.is_err());
+        assert!(host.stat(&target, None, "/.test_cache").await.is_err());
         for workspace in [&a, &b, &c] {
             assert!(
                 host.resolve(workspace).await.is_err(),
@@ -442,7 +442,7 @@ mod tests {
         let host = FilesystemHost::new(filesystem, provider.clone())?;
         let target = workspace_ref(provider, "root")?;
         let attempt = host.fork(&target, None, &key("fork")?).await?;
-        write(&host, &attempt.workspace, &[("/retries.py", "fixed")]).await?;
+        write(&host, &attempt.workspace, &[("/retries.rs", "fixed")]).await?;
         let pinned = host.head(&attempt.workspace).await?;
         let first = host
             .merge(&attempt, &pinned, &target, &key("merge")?)
@@ -452,7 +452,7 @@ mod tests {
             .merge(&attempt, &pinned, &target, &key("merge")?)
             .await?;
         assert_eq!(first, second);
-        assert_eq!(host.read(&target, None, "/retries.py", 16).await?, "fixed");
+        assert_eq!(host.read(&target, None, "/retries.rs", 16).await?, "fixed");
         Ok(())
     }
 }
