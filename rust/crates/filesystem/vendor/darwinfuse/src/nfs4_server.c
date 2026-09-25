@@ -27,9 +27,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
+#include <sys/un.h>
 #include <stdatomic.h>
 
 /* ---- Client connection ---- */
@@ -76,6 +74,9 @@ typedef struct {
 struct darwinfuse_server {
     darwinfuse_config_t config;
     int                 listen_fd;
+    /* A private (0700) directory holding the listening socket */
+    char                socket_dir[32];
+    char                socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
     int                 wakeup_pipe[2]; /* self-pipe for stop signal */
     volatile int        running;
     int                 had_client;     /* true once a client connected */
@@ -108,10 +109,19 @@ static void set_nonblocking(int fd)
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-static void set_tcp_nodelay(int fd)
+/*
+ * Only the kernel's NFS client may speak to the server: it connects from
+ * process 0, which no user process can be.  The socket's private directory
+ * already keeps other users out; this also refuses the owner's processes,
+ * which could otherwise claim any identity in AUTH_SYS credentials.
+ */
+static int peer_is_kernel(int fd)
 {
-    int flag = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+    pid_t peer = -1;
+    socklen_t length = sizeof(peer);
+    if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &peer, &length) != 0)
+        return 0;
+    return peer == 0;
 }
 
 static void client_init(client_conn_t *c, int fd)
@@ -436,10 +446,18 @@ static int client_read(darwinfuse_server_t *srv, client_conn_t *c)
     }
 }
 
+/* Remove the listening socket and its private directory. */
+static void remove_socket(darwinfuse_server_t *srv)
+{
+    if (srv->socket_path[0] != '\0')
+        unlink(srv->socket_path);
+    if (srv->socket_dir[0] != '\0')
+        rmdir(srv->socket_dir);
+}
+
 /* ---- Public API ---- */
 
-darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config,
-                                         uint16_t *port)
+darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config)
 {
     darwinfuse_server_t *srv = calloc(1, sizeof(*srv));
     if (!srv) return NULL;
@@ -460,49 +478,45 @@ darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config,
     set_nonblocking(srv->wakeup_pipe[0]);
     set_nonblocking(srv->wakeup_pipe[1]);
 
-    /* Create TCP listen socket */
-    srv->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    /* Listen on a local socket in a directory only this user can enter.
+     * (A short /tmp path: sun_path holds barely a hundred bytes.) */
+    strlcpy(srv->socket_dir, "/tmp/darwinfuse.XXXXXXXX", sizeof(srv->socket_dir));
+    if (!mkdtemp(srv->socket_dir)) {
+        DFUSE_ERR("mkdtemp: %s", strerror(errno));
+        srv->socket_dir[0] = '\0';
+        goto fail;
+    }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_LOCAL;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/nfs", srv->socket_dir);
+
+    srv->listen_fd = socket(AF_LOCAL, SOCK_STREAM, 0);
     if (srv->listen_fd < 0) {
         DFUSE_ERR("socket: %s", strerror(errno));
         goto fail;
     }
-
-    int reuse = 1;
-    setsockopt(srv->listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = 0;  /* ephemeral port */
-
     if (bind(srv->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         DFUSE_ERR("bind: %s", strerror(errno));
         goto fail;
     }
+    strlcpy(srv->socket_path, addr.sun_path, sizeof(srv->socket_path));
 
     if (listen(srv->listen_fd, 5) < 0) {
         DFUSE_ERR("listen: %s", strerror(errno));
         goto fail;
     }
 
-    /* Retrieve the assigned port */
-    socklen_t addrlen = sizeof(addr);
-    if (getsockname(srv->listen_fd, (struct sockaddr *)&addr, &addrlen) < 0) {
-        DFUSE_ERR("getsockname: %s", strerror(errno));
-        goto fail;
-    }
-    *port = ntohs(addr.sin_port);
-
     set_nonblocking(srv->listen_fd);
     pthread_mutex_init(&srv->client_state.lock, NULL);
     srv->running = 1;
 
-    DFUSE_LOG("NFS server listening on 127.0.0.1:%u", *port);
+    DFUSE_LOG("NFS server listening on %s", srv->socket_path);
     return srv;
 
 fail:
     if (srv->listen_fd >= 0) close(srv->listen_fd);
+    remove_socket(srv);
     if (srv->wakeup_pipe[0] >= 0) close(srv->wakeup_pipe[0]);
     if (srv->wakeup_pipe[1] >= 0) close(srv->wakeup_pipe[1]);
     free(srv);
@@ -607,11 +621,11 @@ int nfs4_server_run(darwinfuse_server_t *srv)
 
         /* Accept new connections */
         if (pfds[0].revents & POLLIN) {
-            struct sockaddr_in client_addr;
-            socklen_t client_len = sizeof(client_addr);
-            int cfd = accept(srv->listen_fd, (struct sockaddr *)&client_addr,
-                             &client_len);
-            if (cfd >= 0) {
+            int cfd = accept(srv->listen_fd, NULL, NULL);
+            if (cfd >= 0 && !peer_is_kernel(cfd)) {
+                DFUSE_ERR("Refused a connection from a user process");
+                close(cfd);
+            } else if (cfd >= 0) {
                 int slot = -1;
                 for (int i = 0; i < srv->num_clients; i++) {
                     if (atomic_load(&srv->clients[i].fd) < 0 &&
@@ -627,7 +641,6 @@ int nfs4_server_run(darwinfuse_server_t *srv)
                     close(cfd);
                 } else {
                     set_nonblocking(cfd);
-                    set_tcp_nodelay(cfd);
                     client_init(&srv->clients[slot], cfd);
                     srv->had_client = 1;
                     DFUSE_LOG("Client connected (fd=%d, slot=%d, high_water=%d)",
@@ -756,10 +769,16 @@ void nfs4_server_destroy(darwinfuse_server_t *srv)
     pthread_mutex_destroy(&srv->client_state.lock);
 
     if (srv->listen_fd >= 0) close(srv->listen_fd);
+    remove_socket(srv);
     if (srv->wakeup_pipe[0] >= 0) close(srv->wakeup_pipe[0]);
     if (srv->wakeup_pipe[1] >= 0) close(srv->wakeup_pipe[1]);
 
     free(srv);
+}
+
+const char *nfs4_server_socket_path(const darwinfuse_server_t *srv)
+{
+    return srv->socket_path;
 }
 
 void nfs4_server_close_inherited_fds(darwinfuse_server_t *srv)

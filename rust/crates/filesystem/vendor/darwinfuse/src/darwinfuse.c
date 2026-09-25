@@ -119,7 +119,6 @@ static int parse_mount_opts(const char *opts, parsed_args_t *out)
 struct fuse_chan {
     darwinfuse_server_t *server;
     dfuse_inode_table_t *inode_table;
-    uint16_t             port;
     char                *mountpoint;
     parsed_args_t        mount_args;
 };
@@ -215,18 +214,25 @@ static int parse_args(int argc, char *argv[], parsed_args_t *out)
 
 /* ---- Mount via mount_nfs ---- */
 
-static int do_mount_nfs(uint16_t port, const char *mount_point,
+/*
+ * Mount the server's local socket.  actimeo=1 matches libfuse's default
+ * one-second attribute and entry timeouts; the change attribute makes every
+ * revalidation exact.  NFSv4.0 callbacks need an IP address, so a local
+ * socket mount takes none (nocallback): the server never delegates.
+ */
+static int do_mount_nfs(const char *socket_path, const char *mount_point,
                          const parsed_args_t *args)
 {
-    /* actimeo=1 matches libfuse's default one-second attribute and entry
-     * timeouts; the change attribute makes every revalidation exact. */
     char opts[512];
     int len = snprintf(opts, sizeof(opts),
-        "vers=4,tcp,actimeo=1,noacl,noresvport,"
+        "vers=4,nocallback,actimeo=1,noacl,"
         "rsize=262144,wsize=262144,"
-        "soft,intr,retrycnt=0,"
-        "port=%u",
-        (unsigned)port);
+        "soft,intr,retrycnt=0");
+    char server[128];
+    if (snprintf(server, sizeof(server), "<%s>:/", socket_path) >= (int)sizeof(server)) {
+        DFUSE_ERR("Socket path is too long: %s", socket_path);
+        return -1;
+    }
 
     if (args && args->nosuid)
         len += snprintf(opts + len, sizeof(opts) - (size_t)len, ",nosuid");
@@ -239,7 +245,7 @@ static int do_mount_nfs(uint16_t port, const char *mount_point,
     if (args && args->namedattr)
         len += snprintf(opts + len, sizeof(opts) - (size_t)len, ",namedattr");
 
-    DFUSE_LOG("mount_nfs -o %s 127.0.0.1:/ %s", opts, mount_point);
+    DFUSE_LOG("mount_nfs -o %s %s %s", opts, server, mount_point);
 
     int err_pipe[2];
     if (pipe(err_pipe) < 0) {
@@ -261,7 +267,7 @@ static int do_mount_nfs(uint16_t port, const char *mount_point,
         close(err_pipe[1]);
         execlp("mount_nfs", "mount_nfs",
                "-o", opts,
-               "127.0.0.1:/",
+               server,
                mount_point,
                NULL);
         _exit(127);
@@ -337,7 +343,7 @@ struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args)
     config.gid = getgid();
     config.inode_table = ch->inode_table;
 
-    ch->server = nfs4_server_create(&config, &ch->port);
+    ch->server = nfs4_server_create(&config);
     if (!ch->server) {
         DFUSE_ERR("Failed to create NFS server");
         dfuse_itable_destroy(ch->inode_table);
@@ -346,7 +352,8 @@ struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args)
         return NULL;
     }
 
-    DFUSE_LOG("fuse_mount: prepared %s (port %u)", mountpoint, ch->port);
+    DFUSE_LOG("fuse_mount: prepared %s (%s)", mountpoint,
+              nfs4_server_socket_path(ch->server));
     return ch;
 }
 
@@ -362,13 +369,14 @@ static int mount_channel(struct fuse_chan *ch)
         DFUSE_ERR("Failed to create server thread");
         return -1;
     }
-    int rc = do_mount_nfs(ch->port, ch->mountpoint, &ch->mount_args);
+    int rc = do_mount_nfs(nfs4_server_socket_path(ch->server), ch->mountpoint,
+                          &ch->mount_args);
     if (rc < 0)
         DFUSE_ERR("Failed to mount NFS");
     nfs4_server_stop(ch->server);
     pthread_join(srv_thread, NULL);
     if (rc == 0)
-        DFUSE_LOG("fuse_loop: mounted on %s (port %u)", ch->mountpoint, ch->port);
+        DFUSE_LOG("fuse_loop: mounted on %s", ch->mountpoint);
     return rc;
 }
 
@@ -658,8 +666,7 @@ int fuse_main_real(int argc, char *argv[],
     config.inode_table = itable;
 
     /* Create NFS server */
-    uint16_t port = 0;
-    darwinfuse_server_t *srv = nfs4_server_create(&config, &port);
+    darwinfuse_server_t *srv = nfs4_server_create(&config);
     if (!srv) {
         DFUSE_ERR("Failed to create NFS server");
         dfuse_itable_destroy(itable);
@@ -682,7 +689,8 @@ int fuse_main_real(int argc, char *argv[],
         return -1;
     }
 
-    if (do_mount_nfs(port, args.mount_point, &args) < 0) {
+    if (do_mount_nfs(nfs4_server_socket_path(srv), args.mount_point, &args) < 0) {
+
         DFUSE_ERR("Failed to mount NFS");
         nfs4_server_stop(srv);
         pthread_join(srv_thread, NULL);

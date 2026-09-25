@@ -2511,6 +2511,73 @@ mod tests {
         Ok((temporary, mount))
     }
 
+    /// The local socket a live mount's server listens on, from the mount
+    /// table's `<socket>:/` source.
+    fn mount_socket(destination: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let destination = destination.canonicalize()?;
+        let mut mounts = std::ptr::null_mut::<libc::statfs>();
+        // SAFETY: `getmntinfo` points `mounts` at an OS-owned array of the
+        // returned length, valid until the next call.
+        let count = unsafe { libc::getmntinfo(&raw mut mounts, libc::MNT_NOWAIT) };
+        // SAFETY: as above.
+        let mounts = unsafe { std::slice::from_raw_parts(mounts, usize::try_from(count)?) };
+        mounts
+            .iter()
+            .find_map(|mount| {
+                // SAFETY: both names are NUL-terminated by the OS.
+                let (on, from) = unsafe {
+                    (
+                        CStr::from_ptr(mount.f_mntonname.as_ptr()),
+                        CStr::from_ptr(mount.f_mntfromname.as_ptr()),
+                    )
+                };
+                (on.to_bytes() == destination.as_os_str().as_bytes())
+                    .then(|| from.to_str().ok())
+                    .flatten()
+                    .and_then(|from| from.strip_prefix('<'))
+                    .and_then(|from| from.split_once(">:"))
+                    .map(|(socket, _)| PathBuf::from(socket))
+            })
+            .ok_or_else(|| "mount has no local socket source".into())
+    }
+
+    #[test]
+    #[ignore = "requires a live macOS NFS mount"]
+    fn macos_server_answers_only_the_kernel() -> TestResult {
+        use std::io::{Read as _, Write as _};
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        let (temporary, mut mount) = live_mount()?;
+        let socket = mount_socket(temporary.path())?;
+        let directory = std::fs::metadata(socket.parent().ok_or("socket has no directory")?)?;
+        assert_eq!(directory.permissions().mode() & 0o777, 0o700);
+        // SAFETY: `getuid` has no preconditions.
+        assert_eq!(directory.uid(), unsafe { libc::getuid() });
+
+        // An NFS NULL call, as any local process could send it.
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket)?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let call: [u32; 11] = [0x8000_0028, 1, 0, 2, 100_003, 4, 0, 0, 0, 0, 0];
+        let bytes = call
+            .iter()
+            .flat_map(|word| word.to_be_bytes())
+            .collect::<Vec<_>>();
+        let _ = stream.write_all(&bytes);
+        let mut reply = [0_u8; 4];
+        assert_eq!(
+            stream.read(&mut reply).unwrap_or(0),
+            0,
+            "the server closes a user process's connection unanswered"
+        );
+        std::fs::write(temporary.path().join("still-served"), b"kernel")?;
+        assert_eq!(
+            std::fs::read(temporary.path().join("still-served"))?,
+            b"kernel"
+        );
+        assert!(mount.stop()?);
+        Ok(())
+    }
+
     #[test]
     #[ignore = "requires a live macOS NFS mount"]
     fn macos_locks_exclude_other_processes() -> TestResult {

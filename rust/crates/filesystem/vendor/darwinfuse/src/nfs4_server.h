@@ -32,12 +32,14 @@ typedef struct {
 typedef struct darwinfuse_server darwinfuse_server_t;
 
 /*
- * Create and bind the TCP server on 127.0.0.1 with an ephemeral port.
- * On success, sets *port to the bound port number and returns the server.
+ * Create the server listening on a local socket in a fresh private
+ * directory; only the kernel's NFS client may connect.
  * On failure, returns NULL.
  */
-darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config,
-                                         uint16_t *port);
+darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config);
+
+/* The listening socket's path, for mount_nfs's "<path>:/" server spec. */
+const char *nfs4_server_socket_path(const darwinfuse_server_t *srv);
 
 /*
  * Run the NFS event loop. Blocks until the server is stopped
