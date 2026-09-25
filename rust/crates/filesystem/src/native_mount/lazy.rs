@@ -1741,13 +1741,28 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    /// A handle names one file, whose facts change with it as a native
+    /// `fstat` reports them: while the path still names the opened file, a
+    /// change made to it in place is what the handle reports; once the path
+    /// names another file, the handle keeps the facts it was opened with.
     fn lookup(&self) -> Result<MountLookup, MountSourceError> {
         let _lease = self.source_lease()?;
         if let Some(file) = self.current_authored()? {
             return file.lookup();
         }
-        let file_id = self.lazy.source_file_id(&self.source_node);
-        Ok(mount_lookup(LazyLookup::Source(self.source_node), file_id))
+        let current = self.runtime.wait(|| async {
+            self.lazy
+                .source_lookup(self.lazy.source_reference(), &self.path)
+                .await
+                .map_err(lazy_error)
+        })?;
+        let node = current
+            .filter(|node| node.file_identity == self.source_node.file_identity)
+            .unwrap_or(self.source_node);
+        Ok(mount_lookup(
+            LazyLookup::Source(node),
+            self.lazy.source_file_id(&node),
+        ))
     }
 
     fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
@@ -4440,9 +4455,16 @@ mod tests {
 
     /// Writers replace, remove, and create source files while readers stat,
     /// list, and read them through the mount. Every read the mount serves is
-    /// one whole version some writer wrote (except on macOS, see below), and
-    /// once the writers stop and the mount revalidates, the mount and the
-    /// source agree name for name and byte for byte.
+    /// one whole version some writer wrote, and once the writers stop and
+    /// the mount revalidates, the mount and the source agree name for name
+    /// and byte for byte.
+    ///
+    /// Not on macOS: under concurrent replacement its NFS client serves
+    /// sizes it cached against content read later, answers a replaced name
+    /// with a stale file handle even after revalidation (as often without a
+    /// source watch as with one), and has hung a `stat`; those belong to the
+    /// NFS client and its loopback server, not to the source's reports.
+    #[cfg(not(target_os = "macos"))]
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "mounts a live native session; requires the host's native mount capability"]
     async fn live_mount_follows_concurrent_changes_to_its_source()
@@ -4542,12 +4564,7 @@ mod tests {
             reader.join().map_err(|_| "reader panicked")?;
         }
         let torn = torn.lock().map_err(|_| "torn reads poisoned")?.clone();
-        // The macOS NFS client can pair a size it cached before a
-        // replacement was reported with content read after it.
-        assert!(
-            torn.is_empty() || cfg!(target_os = "macos"),
-            "reads returned no whole version: {torn:?}"
-        );
+        assert!(torn.is_empty(), "reads returned no whole version: {torn:?}");
 
         live.revalidate()?;
         assert_eq!(sorted_names(&mount)?, sorted_names(&source)?);
@@ -4596,6 +4613,34 @@ mod tests {
             cursor = Some(next);
         }
         assert_eq!(listed, 3, "a, b, and empty");
+        Ok(())
+    }
+
+    /// An open handle reports its file's facts as they are now, as a native
+    /// `fstat` does, while the path still names that file, and keeps the
+    /// facts it was opened with once the path names another.
+    #[test]
+    fn an_open_handle_reports_its_file_as_it_is_now() -> Result<(), Box<dyn std::error::Error>> {
+        let source = tempfile::tempdir()?;
+        std::fs::write(source.path().join("a"), b"short")?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let view = runtime.block_on(mounted_view(source.path(), "handle-facts"))?;
+        let a = mounted(&["a"]);
+        let handle = view.open_file(&a)?;
+        assert_eq!(handle.lookup()?.node.logical_bytes, 5);
+        let opened = handle.lookup()?.node.file_id;
+
+        // Rewritten in place: the same file, with new facts.
+        std::fs::write(source.path().join("a"), b"much longer")?;
+        assert_eq!(handle.lookup()?.node.logical_bytes, 11);
+        assert_eq!(handle.lookup()?.node.file_id, opened);
+
+        // Replaced: the path names another file; the handle keeps its own.
+        std::fs::write(source.path().join("b"), b"replacement!!")?;
+        std::fs::rename(source.path().join("b"), source.path().join("a"))?;
+        let facts = handle.lookup()?;
+        assert_eq!(facts.node.file_id, opened);
+        assert_eq!(facts.node.logical_bytes, 5);
         Ok(())
     }
 
