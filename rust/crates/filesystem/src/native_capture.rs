@@ -2754,14 +2754,11 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             let host_kind = host_kind(&metadata)?;
             let snapshot = HostSnapshot::from_metadata(&metadata)
                 .map_err(|error| OperationFailure::new(error, receipt.work))?;
-            let link_probe =
-                if host_kind == FileKind::Regular && checkout.volume_config().hard_links {
-                    host_link_count(source_root, &host_path, &snapshot, &metadata)
-                        .map_err(|error| OperationFailure::new(error, receipt.work))?
-                } else {
-                    HostLinkProbe::unlinked()
-                };
-            let linked_regular = link_probe.count > 1;
+            let linked_regular = host_kind == FileKind::Regular
+                && checkout.volume_config().hard_links
+                && host_link_count(&metadata)
+                    .map_err(|error| OperationFailure::new(error, receipt.work))?
+                    > 1;
             if linked_regular {
                 let identity = snapshot.identity.to_bytes();
                 if let Some(source) = host_links.get(&identity) {
@@ -2864,19 +2861,8 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 });
                 None
             } else if host_kind == FileKind::Regular {
-                let file = if let Some(file) = link_probe.file {
-                    file
-                } else {
-                    source_root
-                        .open_file(&host_path)
-                        .map_err(|error| OperationFailure::new(error.into(), receipt.work))?
-                };
-                let opened = file
-                    .metadata()
-                    .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
-                ensure_same_host_node(&snapshot, &opened)
-                    .map_err(|error| OperationFailure::new(error, receipt.work))?;
-                drop(file);
+                // Staging opens the file once and proves it is still the
+                // observed node before reading a byte.
                 Some(PreparedPath::Regular(Box::new(PreparedRegular {
                     path,
                     host_path,
@@ -3451,70 +3437,22 @@ impl HostObservation {
     }
 }
 
-struct HostLinkProbe {
-    count: u64,
-    file: Option<cap_std::fs::File>,
-}
-
-impl HostLinkProbe {
-    const fn unlinked() -> Self {
-        Self {
-            count: 1,
-            file: None,
-        }
-    }
-}
-
+/// The link count of the observed node, read by the same query as its
+/// identity, so it describes exactly the observed node.
 #[cfg(unix)]
-fn host_link_count(
-    _source_root: &HostRoot,
-    _host_path: &Path,
-    _snapshot: &HostSnapshot,
-    metadata: &cap_std::fs::Metadata,
-) -> Result<HostLinkProbe, CaptureError> {
+#[allow(clippy::unnecessary_wraps)]
+fn host_link_count(metadata: &cap_std::fs::Metadata) -> Result<u64, CaptureError> {
     use cap_std::fs::MetadataExt;
-    Ok(HostLinkProbe {
-        count: metadata.nlink(),
-        file: None,
-    })
+    Ok(metadata.nlink())
 }
 
+/// The link count of the observed node, read by the same handle query as
+/// its identity, so it describes exactly the observed node.
 #[cfg(windows)]
-#[allow(
-    unsafe_code,
-    reason = "reads FILE_STANDARD_INFO through a held capability-opened file handle"
-)]
-fn host_link_count(
-    source_root: &HostRoot,
-    host_path: &Path,
-    snapshot: &HostSnapshot,
-    _metadata: &cap_std::fs::Metadata,
-) -> Result<HostLinkProbe, CaptureError> {
-    use std::mem::size_of;
-    use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Storage::FileSystem::{
-        FILE_STANDARD_INFO, FileStandardInfo, GetFileInformationByHandleEx,
-    };
-
-    let file = source_root.open_file(host_path)?;
-    ensure_same_host_node(snapshot, &file.metadata()?)?;
-    let mut information = FILE_STANDARD_INFO::default();
-    // SAFETY: file stays open and information is a correctly sized output.
-    unsafe {
-        GetFileInformationByHandleEx(
-            HANDLE(file.as_raw_handle()),
-            FileStandardInfo,
-            (&raw mut information).cast(),
-            u32::try_from(size_of::<FILE_STANDARD_INFO>())
-                .map_err(|_| CaptureError::InvalidOptions)?,
-        )
-        .map_err(|error| CaptureError::Io(std::io::Error::other(error)))?;
-    }
-    Ok(HostLinkProbe {
-        count: u64::from(information.NumberOfLinks),
-        file: Some(file),
-    })
+fn host_link_count(metadata: &cap_std::fs::Metadata) -> Result<u64, CaptureError> {
+    cap_primitives::fs::_WindowsByHandle::number_of_links(metadata)
+        .map(u64::from)
+        .ok_or_else(|| CaptureError::Io(std::io::Error::other("host link count is unavailable")))
 }
 
 impl HostSnapshot {

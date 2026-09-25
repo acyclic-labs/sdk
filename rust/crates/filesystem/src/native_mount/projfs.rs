@@ -897,7 +897,10 @@ impl ProjFsSession {
                 let mut subtrees = Vec::new();
                 for (path, subtree) in paths {
                     let host_path = host_relative_path(path)?;
-                    match host_root.symlink_metadata_held(&host_path) {
+                    // Only whether the name exists decides the capture's
+                    // scope; the capture itself observes it through the
+                    // held walk.
+                    match host_root.stat(&host_path) {
                         Ok(_) => {
                             capture_missing_host_ancestors(source.as_ref(), &root, path)?;
                             if *subtree {
