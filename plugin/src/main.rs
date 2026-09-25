@@ -9586,6 +9586,10 @@ fn hook_invocation() -> Option<(String, String)> {
 }
 
 fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut arguments = env::args().skip(1);
+    if arguments.next().as_deref() == Some("__hook") {
+        return run_native_hook(&arguments.collect::<Vec<_>>());
+    }
     if is_foreground_cli_invocation() {
         let result = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -9614,6 +9618,79 @@ fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
+/// Answers a native hook. A hook that stays inside this process returns
+/// before any runtime, path resolution or state directory is touched.
+fn run_native_hook(arguments: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let [host, event] = arguments else {
+        return Err(io::Error::other("acyclic __hook requires a host and event").into());
+    };
+    if !matches!(
+        host.as_str(),
+        "codex" | "claude-code" | "copilot" | "cursor"
+    ) {
+        return Err(io::Error::other("unsupported native hook host").into());
+    }
+    let mut input = Vec::new();
+    io::stdin()
+        .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
+        .read_to_end(&mut input)?;
+    if input.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
+        return Err(io::Error::other("native hook input exceeds the 4 MiB bound").into());
+    }
+    let input: Value = serde_json::from_slice(&input)?;
+    if native_hook_is_process_local_noop(host, event, &input) {
+        serde_json::to_writer(io::stdout().lock(), &json!({}))?;
+        return Ok(());
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(send_native_hook(host, event, input))
+}
+
+/// Sends one native hook to the service and prints its response.
+async fn send_native_hook(
+    host: &str,
+    event: &str,
+    input: Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let cwd = env::current_dir()?.canonicalize()?;
+    let data = default_data_directory();
+    let request = ControlRequest {
+        version: 1,
+        command: ControlCommand::Hook,
+        cwd,
+        argv: Vec::new(),
+        name: format!("{host}:{event}"),
+        arguments: input,
+    };
+    let envelope = ControlEnvelope::new(request);
+    let response = if matches!(event, "SessionStart" | "sessionStart") {
+        // Session boundaries are the one cheap, deterministic place to advance
+        // an idle service to the installed binary. Tool hooks stay on the direct
+        // single-round-trip path, and a service with live mounts remains intact.
+        ensure_service(&data).await.map_err(io::Error::other)?;
+        send_control_envelope(&data, &envelope)
+            .await
+            .map_err(|error| io::Error::other(error.to_string()))?
+    } else {
+        match send_control_envelope_once(&data, &envelope).await {
+            Ok(response) => response,
+            // An unavailable service never received the envelope, so this
+            // is the only retransmission, and no deadline applies to it.
+            Err(ControlRequestError::Unavailable(_)) => {
+                ensure_service(&data).await.map_err(io::Error::other)?;
+                send_control_envelope(&data, &envelope)
+                    .await
+                    .map_err(|error| io::Error::other(error.to_string()))?
+            }
+            Err(error) => return Err(io::Error::other(error.to_string()).into()),
+        }
+    };
+    serde_json::to_writer(io::stdout().lock(), &response)?;
+    Ok(())
+}
+
 fn is_foreground_cli_invocation() -> bool {
     let mut arguments = env::args_os().skip(1);
     let mut command = arguments.next();
@@ -9629,7 +9706,6 @@ fn is_foreground_cli_invocation() -> bool {
                     | "agents"
                     | "doctor"
                     | "discard"
-                    | "__hook"
                     | "install"
                     | "uninstall"
                     | "__service-drain"
@@ -9754,66 +9830,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if exit_code != 0 {
             std::process::exit(exit_code);
         }
-        return Ok(());
-    }
-    if arguments
-        .first()
-        .is_some_and(|argument| argument == "__hook")
-    {
-        let [_, host, event] = arguments.as_slice() else {
-            return Err(io::Error::other("acyclic __hook requires a host and event").into());
-        };
-        if !matches!(
-            host.as_str(),
-            "codex" | "claude-code" | "copilot" | "cursor"
-        ) {
-            return Err(io::Error::other("unsupported native hook host").into());
-        }
-        let mut input = Vec::new();
-        io::stdin()
-            .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
-            .read_to_end(&mut input)?;
-        if input.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
-            return Err(io::Error::other("native hook input exceeds the 4 MiB bound").into());
-        }
-        let input: Value = serde_json::from_slice(&input)?;
-        if native_hook_is_process_local_noop(host, event, &input) {
-            serde_json::to_writer(io::stdout().lock(), &json!({}))?;
-            return Ok(());
-        }
-        let data = default_data_directory();
-        let request = ControlRequest {
-            version: 1,
-            command: ControlCommand::Hook,
-            cwd,
-            argv: Vec::new(),
-            name: format!("{host}:{event}"),
-            arguments: input,
-        };
-        let envelope = ControlEnvelope::new(request);
-        let response = if matches!(event.as_str(), "SessionStart" | "sessionStart") {
-            // Session boundaries are the one cheap, deterministic place to advance
-            // an idle service to the installed binary. Tool hooks stay on the direct
-            // single-round-trip path, and a service with live mounts remains intact.
-            ensure_service(&data).await.map_err(io::Error::other)?;
-            send_control_envelope(&data, &envelope)
-                .await
-                .map_err(|error| io::Error::other(error.to_string()))?
-        } else {
-            match send_control_envelope_once(&data, &envelope).await {
-                Ok(response) => response,
-                // An unavailable service never received the envelope, so this
-                // is the only retransmission, and no deadline applies to it.
-                Err(ControlRequestError::Unavailable(_)) => {
-                    ensure_service(&data).await.map_err(io::Error::other)?;
-                    send_control_envelope(&data, &envelope)
-                        .await
-                        .map_err(|error| io::Error::other(error.to_string()))?
-                }
-                Err(error) => return Err(io::Error::other(error.to_string()).into()),
-            }
-        };
-        serde_json::to_writer(io::stdout().lock(), &response)?;
         return Ok(());
     }
     if arguments
