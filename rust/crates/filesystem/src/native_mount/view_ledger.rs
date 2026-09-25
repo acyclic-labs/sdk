@@ -10,14 +10,20 @@
 //! Observers learn of every recorded position together with the
 //! [`ViewOrigin`] that made the change, so a driver can tell changes it made
 //! itself (which its kernel already applied) from changes made around it.
+//!
+//! Names are keyed by every spelling a host resolves to them: a lookup may
+//! spell a name differently from the change that later invalidates it, as
+//! when a case-insensitive source reports its own spelling of a name a
+//! caller looked up in another case, or another Unicode normalization.
 
 use crate::FileId;
-use crate::kernel::{LogicalName, NamespacePath};
+use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
+use unicode_normalization::UnicodeNormalization as _;
 
 static VIEW_CHANGES: AtomicU64 = AtomicU64::new(0);
 // Only the Linux and macOS drivers attribute their changes.
@@ -421,8 +427,83 @@ fn path_key(path: &NamespacePath) -> u64 {
     PathKeys::new(path).last().unwrap_or_else(|| key_of(&()))
 }
 
+/// Keys `name` beneath `parent` by its spelling fold: the name's Unicode
+/// text, canonically composed and case-folded, whatever its encoding, or
+/// its bytes when it is not Unicode. Every spelling a case- or
+/// normalization-insensitive host resolves to one entry shares the key, and
+/// distinct names that share it only share positions, which can only
+/// invalidate more.
 fn child_key(parent: u64, name: &LogicalName) -> u64 {
-    key_of(&(parent, name.case_fold_key()))
+    let mut hasher = DefaultHasher::new();
+    hasher.write_u64(parent);
+    hash_spelling_fold(name, &mut hasher);
+    hasher.finish()
+}
+
+fn hash_spelling_fold(name: &LogicalName, hasher: &mut DefaultHasher) {
+    /// Separates folded text from raw bytes that happen to equal it.
+    const TEXT: u8 = 1;
+    const RAW: u8 = 2;
+    let bytes = name.as_bytes();
+    let text = match name.encoding() {
+        NameEncoding::Utf8 | NameEncoding::PosixBytes => {
+            if bytes.is_ascii() {
+                hasher.write_u8(TEXT);
+                hash_ascii_fold(bytes.iter().copied(), hasher);
+                return;
+            }
+            std::str::from_utf8(bytes)
+                .ok()
+                .map(std::borrow::Cow::Borrowed)
+        }
+        NameEncoding::WindowsUtf16Le => {
+            let units = || {
+                bytes
+                    .chunks_exact(2)
+                    .map(|pair| <[u8; 2]>::try_from(pair).map_or(0, u16::from_le_bytes))
+            };
+            if units().all(|unit| unit < 0x80) {
+                hasher.write_u8(TEXT);
+                hash_ascii_fold(units().map(|unit| unit.to_le_bytes()[0]), hasher);
+                return;
+            }
+            char::decode_utf16(units())
+                .collect::<Result<String, _>>()
+                .ok()
+                .map(std::borrow::Cow::Owned)
+        }
+    };
+    let Some(text) = text else {
+        hasher.write_u8(RAW);
+        hasher.write(bytes);
+        return;
+    };
+    hasher.write_u8(TEXT);
+    let mut encoded = [0_u8; 4];
+    for folded in text
+        .nfc()
+        .flat_map(char::to_uppercase)
+        .flat_map(char::to_lowercase)
+    {
+        hasher.write(folded.encode_utf8(&mut encoded).as_bytes());
+    }
+}
+
+/// Hashes ASCII text lowercased, exactly as the Unicode fold hashes it.
+fn hash_ascii_fold(bytes: impl Iterator<Item = u8>, hasher: &mut DefaultHasher) {
+    let mut buffer = [0_u8; 64];
+    let mut filled = 0;
+    for byte in bytes {
+        if let Some(slot) = buffer.get_mut(filled) {
+            *slot = byte.to_ascii_lowercase();
+            filled += 1;
+        }
+        if filled == buffer.len() {
+            hasher.write(&buffer);
+            filled = 0;
+        }
+    }
+    hasher.write(buffer.get(..filled).unwrap_or_default());
 }
 
 fn key_of(value: &impl Hash) -> u64 {
@@ -471,6 +552,72 @@ mod tests {
         assert!(!ledger.unchanged_since(&path(&["writes"])?, None, stamp));
         ledger.record(&ViewChange::Node(file_id));
         assert!(!ledger.unchanged_since(&watched, Some(file_id), stamp));
+        Ok(())
+    }
+
+    /// A change reported under one spelling of a name reaches a lookup made
+    /// under any other spelling a case- or normalization-insensitive host
+    /// resolves to the same entry, whatever either name's encoding.
+    #[test]
+    fn every_spelling_of_a_name_shares_its_changes() -> Result<(), Box<dyn std::error::Error>> {
+        let limits = VolumeLimits::default();
+        let name = |encoding, text: &str| {
+            let bytes = match encoding {
+                NameEncoding::WindowsUtf16Le => {
+                    text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+                }
+                NameEncoding::Utf8 | NameEncoding::PosixBytes => text.as_bytes().to_vec(),
+            };
+            LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
+        };
+        let directory = name(NameEncoding::Utf8, "src")?;
+        let under = |name| NamespacePath::new(vec![directory.clone(), name], limits);
+        let spellings = [
+            (
+                name(NameEncoding::Utf8, "Readme.MD")?,
+                name(NameEncoding::PosixBytes, "README.md")?,
+            ),
+            (
+                name(NameEncoding::WindowsUtf16Le, "ReadMe.md")?,
+                name(NameEncoding::Utf8, "readme.MD")?,
+            ),
+            // Composed and decomposed forms of one accented name, in
+            // different cases.
+            (
+                name(NameEncoding::PosixBytes, "\u{e9}t\u{e9}")?,
+                name(NameEncoding::WindowsUtf16Le, "E\u{301}TE\u{301}")?,
+            ),
+        ];
+        for (changed, looked_up) in spellings {
+            let ledger = ViewLedger::new();
+            let looked_up = under(looked_up)?;
+            let stamp = ledger.stamp();
+            ledger.record(&ViewChange::Bound(&under(changed)?));
+            assert!(!ledger.unchanged_since(&looked_up, None, stamp));
+        }
+        let ledger = ViewLedger::new();
+        let other = under(name(NameEncoding::Utf8, "readme.txt")?)?;
+        let stamp = ledger.stamp();
+        ledger.record(&ViewChange::Bound(&under(name(
+            NameEncoding::Utf8,
+            "readme.md",
+        )?)?));
+        assert!(
+            ledger.unchanged_since(&other, None, stamp),
+            "distinct names stay distinct"
+        );
+        // Bytes that are not Unicode are keyed as bytes.
+        let raw = |bytes: &[u8]| {
+            LogicalName::new(
+                NameEncoding::PosixBytes,
+                bytes.to_vec(),
+                limits.maximum_component_bytes,
+            )
+        };
+        let looked_up = under(raw(&[0xff, b'a'])?)?;
+        let stamp = ledger.stamp();
+        ledger.record(&ViewChange::Bound(&under(raw(&[0xff, b'A'])?)?));
+        assert!(ledger.unchanged_since(&looked_up, None, stamp));
         Ok(())
     }
 
