@@ -19,7 +19,11 @@ expected_source="${CI_HEAD_SHA:-${GITHUB_SHA:-}}"
 source_sha=$(git rev-parse --verify HEAD)
 [[ -z "$expected_source" || "$source_sha" == "$expected_source" ]] || { echo 'package checkout differs from the selected source commit' >&2; exit 1; }
 git status --porcelain=v1 --untracked-files=all >"$work/git-status"
-[[ ! -s "$work/git-status" ]] || { echo 'package checkout is not clean' >&2; exit 1; }
+if [[ -s "$work/git-status" ]]; then
+  echo 'package checkout is not clean; changed paths:' >&2
+  sed -n '1,40p' "$work/git-status" >&2
+  exit 1
+fi
 git ls-files -v >"$work/git-index"
 ! grep -Eq '^[a-zS] ' "$work/git-index" || { echo 'package checkout contains concealed index changes' >&2; exit 1; }
 

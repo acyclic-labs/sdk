@@ -69,7 +69,7 @@ export function copyFileExtentPlan(value: {
     readonly offset: bigint | string;
     readonly length: bigint | string;
     readonly sourceEnd: bigint | string;
-    readonly objectId?: Uint8Array | undefined;
+    readonly objectId?: unknown;
     readonly objectOffset?: bigint | string | undefined;
   }[] | undefined;
   readonly retainedAllocationBytes?: bigint | string | undefined;
@@ -89,12 +89,12 @@ export function copyFileExtentPlan(value: {
         sourceEnd: extentInteger(span.sourceEnd, origin, "file extent span"),
       };
       if (span.kind === "content") {
-        if (!(span.objectId instanceof Uint8Array) || span.objectId.byteLength !== 33 ||
-            span.objectOffset === undefined) {
+        const objectId = copyFixedBytes(span.objectId, 33, "content object identity");
+        if (objectId === undefined || span.objectOffset === undefined) {
           throw new TypeError(`${origin} returned a malformed content extent`);
         }
         return { kind: "content" as const, ...common,
-          objectId: Uint8Array.from(span.objectId),
+          objectId,
           objectOffset: extentInteger(span.objectOffset, origin, "content extent") };
       }
       if (span.kind !== "hole" && span.kind !== "allocated-zero") {
@@ -109,10 +109,10 @@ export function copyFileExtentPlan(value: {
 
 interface RawCommitFields<Status extends string> {
   readonly status: Status;
-  readonly generationId: Uint8Array | undefined;
+  readonly generationId: unknown;
   readonly epoch: bigint | string | undefined;
   readonly sequence: bigint | string | undefined;
-  readonly committedFingerprint: Uint8Array | undefined;
+  readonly committedFingerprint: unknown;
 }
 
 const commitStatuses: ReadonlySet<CommitResult["status"]> = new Set([
@@ -123,11 +123,13 @@ const liveStatuses: ReadonlySet<LiveMutationResult["status"]> = new Set([
 ]);
 
 function copyFixedBytes(value: unknown, length: number, label: string): Uint8Array | undefined {
-  if (value === undefined) return undefined;
-  if (!(value instanceof Uint8Array) || value.byteLength !== length) {
-    throw new TypeError(`${label} must be ${length} bytes`);
+  if (value === undefined || value === null) return undefined;
+  if (value instanceof Uint8Array && value.byteLength === length) return Uint8Array.from(value);
+  if (Array.isArray(value) && value.length === length
+    && value.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+    return Uint8Array.from(value);
   }
-  return Uint8Array.from(value);
+  throw new TypeError(`${label} must be ${length} bytes`);
 }
 
 export function copyRebaseResult(value: Pick<RebaseResult, "status" | "generationId" | "conflictCount" | "truncated">,
@@ -142,7 +144,7 @@ export function copyRebaseResult(value: Pick<RebaseResult, "status" | "generatio
     conflictCount: value.conflictCount, truncated: value.truncated, work };
 }
 
-function copyCreatedFileIds(ids: readonly (Uint8Array | undefined)[]): readonly (Uint8Array | undefined)[] {
+function copyCreatedFileIds(ids: readonly unknown[]): readonly (Uint8Array | undefined)[] {
   return ids.map(id => copyFixedBytes(id, 16, "created file identity"));
 }
 

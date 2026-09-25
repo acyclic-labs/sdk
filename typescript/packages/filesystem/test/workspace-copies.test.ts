@@ -73,13 +73,23 @@ describe("workspace binding result copies", () => {
     span.objectId[0] = 9;
     expect(objectId[0]).toBe(3);
     expect(copyFileExtentPlan({ kind: "inline" }, work, "native binding")).toEqual({ kind: "inline", work });
+    const wasmSpan = copyFileExtentPlan({ kind: "sparse", spans: [{
+      kind: "content", offset: "1", length: "2", sourceEnd: "3",
+      objectId: Array.from(objectId), objectOffset: "4",
+    }] }, work, "WASM");
+    expect(wasmSpan.kind === "sparse" && wasmSpan.spans[0]?.kind === "content"
+      ? wasmSpan.spans[0].objectId : undefined).toEqual(new Uint8Array(objectId));
     expect(() => copyFileExtentPlan({ kind: "sparse", spans: [{
       kind: "content", offset: 0n, length: 1n, sourceEnd: 1n,
     }] }, work, "native binding")).toThrow("malformed content extent");
     expect(() => copyFileExtentPlan({ kind: "sparse", spans: [{
       kind: "content", offset: 0n, length: 1n, sourceEnd: 1n,
       objectId: Buffer.alloc(32), objectOffset: 0n,
-    }] }, work, "native binding")).toThrow("malformed content extent");
+    }] }, work, "native binding")).toThrow("content object identity must be 33 bytes");
+    expect(() => copyFileExtentPlan({ kind: "sparse", spans: [{
+      kind: "content", offset: 0n, length: 1n, sourceEnd: 1n,
+      objectId: Array(33).fill(256), objectOffset: 0n,
+    }] }, work, "WASM")).toThrow("content object identity must be 33 bytes");
     expect(() => copyFileExtentPlan({ kind: "sparse", spans: [{
       kind: "content", offset: 0n, length: 1n, sourceEnd: 1n,
       objectId, objectOffset: null,
@@ -108,6 +118,11 @@ describe("workspace binding result copies", () => {
     const live = copyLiveMutation({ ...fields, conflictCount: 0, truncated: false }, work);
     const transaction = copyLiveTransaction({ ...fields, conflictCount: 0, truncated: false,
       createdFileIds: [fileId, undefined] }, work);
+    const wasmTransaction = copyLiveTransaction({ ...fields,
+      generationId: Array.from(generationId), committedFingerprint: Array.from(fingerprint),
+      conflictCount: 0, truncated: false, createdFileIds: [Array.from(fileId), null] }, work);
+    expect(wasmTransaction.generationId).toEqual(new Uint8Array(generationId));
+    expect(wasmTransaction.createdFileIds).toEqual([new Uint8Array(fileId), undefined]);
     expect([commit.epoch, live.sequence, transaction.createdFileIds.length]).toEqual([4n, 5n, 2]);
     for (const result of [commit, live, transaction]) {
       result.generationId![0] = 9;
