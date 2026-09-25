@@ -536,12 +536,14 @@ struct DependencyLedger {
 /// proof remembers which walks it absorbed: repeating one against the same
 /// base adds nothing. The memory names its base file table and is forgotten
 /// with every proof it describes, so it can never claim an observation the
-/// proof lacks.
+/// proof lacks. Like the dependencies, it is shared between clones until one
+/// of them changes it, so copying a proof for a transaction costs nothing.
 #[derive(Clone)]
 struct Proof {
     dependencies: CheckoutDependencies,
     observed_base: Option<ObjectId>,
-    observed_paths: BTreeSet<(NamespacePath, bool)>,
+    /// Each observed path, and whether its terminal record was observed.
+    observed_paths: Arc<BTreeMap<NamespacePath, bool>>,
 }
 
 impl Proof {
@@ -549,21 +551,23 @@ impl Proof {
         Self {
             dependencies,
             observed_base: None,
-            observed_paths: BTreeSet::new(),
+            observed_paths: Arc::default(),
         }
     }
 
     fn clear(&mut self) {
         self.dependencies.clear();
-        self.observed_paths.clear();
+        self.observed_paths = Arc::default();
     }
 
     /// Whether observing `path` against `base`, with its terminal when
     /// `terminal` is set, would add nothing to the proof.
     fn observes_path(&self, base: ObjectId, path: &NamespacePath, terminal: bool) -> bool {
         self.observed_base == Some(base)
-            && (self.observed_paths.contains(&(path.clone(), true))
-                || (!terminal && self.observed_paths.contains(&(path.clone(), false))))
+            && self
+                .observed_paths
+                .get(path)
+                .is_some_and(|observed_terminal| *observed_terminal || !terminal)
     }
 
     /// Absorbs one complete path observation against `base`. The memory is
@@ -582,13 +586,18 @@ impl Proof {
         let maximum_paths = usize::try_from(maximum_dependencies).unwrap_or(usize::MAX);
         if self.observed_base != Some(base) {
             self.observed_base = Some(base);
-            self.observed_paths.clear();
+            self.observed_paths = Arc::default();
         }
         for path in paths {
-            if self.observed_paths.len() >= maximum_paths {
-                self.observed_paths.clear();
+            if self.observes_path(base, path, terminal) {
+                continue;
             }
-            self.observed_paths.insert((path.clone(), terminal));
+            let observed = Arc::make_mut(&mut self.observed_paths);
+            if observed.len() >= maximum_paths {
+                observed.clear();
+            }
+            let entry = observed.entry(path.clone()).or_insert(terminal);
+            *entry |= terminal;
         }
         Ok(())
     }
