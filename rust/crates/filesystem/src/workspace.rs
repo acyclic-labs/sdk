@@ -337,49 +337,57 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<(Generation<A, O>, bool)>, WorkspaceError> {
-        let mut checkout = self
-            .volume
-            .checkout(
+        let reader = self.head_reader_measured(budget, cancellation).await?;
+        let records = reader
+            .value
+            .file_records_by_id(
+                &[file_id],
+                reader
+                    .work
+                    .remaining(budget)
+                    .map_err(WorkspaceError::engine)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| WorkspaceError::from(failure.error))?;
+        let work = reader
+            .work
+            .checked_add(records.work)
+            .map_err(WorkspaceError::engine)?;
+        Ok(crate::OperationReceipt {
+            value: (
+                Generation {
+                    workspace: self.clone(),
+                    id: reader.value.generation_id(),
+                },
+                records.value.first().is_some_and(Option::is_some),
+            ),
+            work,
+        })
+    }
+
+    /// Opens one immutable reader pinned to the head generation, which can
+    /// answer many identity questions, such as every hard-link alias check
+    /// of a directory page, against one head.
+    pub(crate) async fn head_reader_measured(
+        &self,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<crate::PinnedReader<A, O>>, WorkspaceError> {
+        let checkout = self
+            .engine_checkout_measured(
                 GenerationSelector::Head,
                 CheckoutMode::read_only_pinned(),
                 budget,
                 cancellation,
             )
-            .await
-            .map_err(|failure| WorkspaceError::from(failure.error))?;
-        let mut work = checkout.work;
-        let held = match checkout
-            .value
-            .read_file_record_by_id(
-                file_id,
-                work.remaining(budget).map_err(WorkspaceError::engine)?,
-                cancellation,
-            )
-            .await
-        {
-            Ok(record) => {
-                work = work
-                    .checked_add(record.work)
-                    .map_err(WorkspaceError::engine)?;
-                true
-            }
-            Err(failure) if matches!(failure.error, crate::FsError::NotFound) => {
-                work = work
-                    .checked_add(*failure.work)
-                    .map_err(WorkspaceError::engine)?;
-                false
-            }
-            Err(failure) => return Err(WorkspaceError::from(failure.error)),
-        };
+            .await?;
         Ok(crate::OperationReceipt {
-            value: (
-                Generation {
-                    workspace: self.clone(),
-                    id: checkout.value.generation_id(),
-                },
-                held,
-            ),
-            work,
+            value: checkout
+                .value
+                .pinned_reader()
+                .map_err(WorkspaceError::engine)?,
+            work: checkout.work,
         })
     }
 

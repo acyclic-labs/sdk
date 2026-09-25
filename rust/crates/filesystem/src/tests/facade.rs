@@ -11493,6 +11493,59 @@ fn batch_lookups_observe_every_path_in_one_walk_and_still_conflict()
 }
 
 #[test]
+fn one_reader_answers_a_batch_of_identities() -> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([191; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let mut writer = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("checkout blocked")??
+    .value;
+    let mut identities = Vec::new();
+    for name in ["a", "b"] {
+        poll_ready(writer.create_file(
+            path(name)?,
+            Bytes::from_static(b"x"),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("create blocked")??;
+        let record =
+            poll_ready(writer.lookup_no_follow(&path(name)?, WorkBudget::UNBOUNDED, &cancellation))
+                .ok_or("lookup blocked")??
+                .value
+                .record
+                .ok_or("created file missing")?;
+        identities.push(record);
+    }
+    let absent = FileId::from_bytes([192; 16]);
+    let reader = writer.pinned_reader()?;
+    assert_eq!(reader.generation_id(), writer.generation_id());
+    let records = poll_ready(reader.file_records_by_id(
+        &[identities[1].file_id, absent, identities[0].file_id],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("identity batch blocked")??;
+    assert_eq!(
+        records.value,
+        vec![Some(identities[1]), None, Some(identities[0])]
+    );
+    Ok(())
+}
+
+#[test]
 fn each_grouped_change_has_its_own_budget() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();

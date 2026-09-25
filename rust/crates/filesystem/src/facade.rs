@@ -4868,7 +4868,48 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ContentStager<A, O> {
     }
 }
 
+impl<A, O> PinnedReader<A, O> {
+    /// Exact immutable generation identity this reader is pinned to.
+    #[must_use]
+    pub const fn generation_id(&self) -> GenerationId {
+        GenerationId::new(self.generation_root.digest)
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
+    /// Looks up file records by stable identity, reading each distinct
+    /// file-table frontier once for the whole batch, so one reader answers
+    /// a directory page's identity questions together.
+    ///
+    /// # Errors
+    ///
+    /// Returns measured batch-bound, authentication, cancellation, storage,
+    /// allocation, or bounded-work failures.
+    pub async fn file_records_by_id(
+        &self,
+        file_ids: &[FileId],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<Option<FileRecord>>> {
+        let lookup = lookup_file_records_async(
+            &self.volume.fs.inner.objects,
+            self.root.file_table,
+            file_ids,
+            self.volume.config.limits.maximum_paths_per_batch,
+            decode_limits(self.volume.config),
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| {
+            OperationFailure::new(FsError::FileRecord(failure.error), *failure.work)
+        })?;
+        Ok(FsReceipt {
+            value: lookup.records,
+            work: lookup.work,
+        })
+    }
+
     async fn resolve_file_records(
         &self,
         paths: &[NamespacePath],
