@@ -2,10 +2,12 @@
 //!
 //! Linking `CoreServices` loads it and `CoreFoundation` into every process at
 //! start, before `main`: about 1.1 ms of each start of an executable that most
-//! of the time watches nothing, such as a hook. This watcher resolves the few
-//! functions that it needs when the first one is created, and translates events
-//! exactly as the `notify` `FSEvents` backend does, so it stands in for that
-//! backend behind the same [`Watcher`] interface.
+//! of the time watches nothing, such as a hook. [`EventStream`] resolves the
+//! few functions that it needs when the first one starts. It is the one
+//! stream every watcher in the crate runs on: [`FsEventsWatcher`] translates
+//! its events exactly as the `notify` `FSEvents` backend does, so it stands in
+//! for that backend behind the same [`Watcher`] interface, and a native
+//! source's watch reads them itself.
 
 #![allow(
     unsafe_code,
@@ -60,17 +62,17 @@ const EVENT_ID_SINCE_NOW: u64 = u64::MAX;
 const CREATE_NO_DEFER: u32 = 0x02;
 const CREATE_FILE_EVENTS: u32 = 0x10;
 
-const MUST_SCAN_SUBDIRS: u32 = 0x0000_0001;
-const USER_DROPPED: u32 = 0x0000_0002;
-const KERNEL_DROPPED: u32 = 0x0000_0004;
+pub(crate) const MUST_SCAN_SUBDIRS: u32 = 0x0000_0001;
+pub(crate) const USER_DROPPED: u32 = 0x0000_0002;
+pub(crate) const KERNEL_DROPPED: u32 = 0x0000_0004;
 const HISTORY_DONE: u32 = 0x0000_0010;
 const ROOT_CHANGED: u32 = 0x0000_0020;
-const MOUNT: u32 = 0x0000_0040;
-const UNMOUNT: u32 = 0x0000_0080;
-const ITEM_CREATED: u32 = 0x0000_0100;
-const ITEM_REMOVED: u32 = 0x0000_0200;
+pub(crate) const MOUNT: u32 = 0x0000_0040;
+pub(crate) const UNMOUNT: u32 = 0x0000_0080;
+pub(crate) const ITEM_CREATED: u32 = 0x0000_0100;
+pub(crate) const ITEM_REMOVED: u32 = 0x0000_0200;
 const INODE_META_MOD: u32 = 0x0000_0400;
-const ITEM_RENAMED: u32 = 0x0000_0800;
+pub(crate) const ITEM_RENAMED: u32 = 0x0000_0800;
 const ITEM_MODIFIED: u32 = 0x0000_1000;
 const FINDER_INFO_MOD: u32 = 0x0000_2000;
 const ITEM_CHANGE_OWNER: u32 = 0x0000_4000;
@@ -223,10 +225,13 @@ impl Api {
     }
 }
 
+/// Receives each batch of events a stream delivers: each path with its
+/// flags, in the order the stream reported them.
+pub(crate) type EventHandlerFn = dyn Fn(&[(PathBuf, u32)]) + Send + Sync;
+
 /// What a stream's callback reads; the stream owns it and frees it on release.
 struct StreamContext {
-    handler: Arc<Mutex<dyn EventHandler>>,
-    recursive: HashMap<PathBuf, bool>,
+    handler: Arc<EventHandlerFn>,
 }
 
 extern "C" fn release_context(info: *const c_void) {
@@ -255,23 +260,96 @@ extern "C" fn stream_callback(
             std::slice::from_raw_parts(event_flags, event_count),
         )
     };
-    for (&path, &flags) in paths.iter().zip(flags) {
-        // SAFETY: each path is a NUL-terminated string that lives for the call.
-        let path = PathBuf::from(OsStr::from_bytes(
-            unsafe { CStr::from_ptr(path) }.to_bytes(),
-        ));
-        let watched = context.recursive.iter().any(|(root, recursive)| {
-            path.starts_with(root)
-                && (*recursive || &path == root || path.parent() == Some(root.as_path()))
-        });
-        if !watched {
-            continue;
+    let events = paths
+        .iter()
+        .zip(flags)
+        .map(|(&path, &flags)| {
+            // SAFETY: each path is a NUL-terminated string that lives for the
+            // call.
+            let path = PathBuf::from(OsStr::from_bytes(
+                unsafe { CStr::from_ptr(path) }.to_bytes(),
+            ));
+            (path, flags)
+        })
+        .collect::<Vec<_>>();
+    (context.handler)(&events);
+}
+
+/// One running `FSEvents` stream over some paths, delivering file events as
+/// they happen on its own serial queue. Dropping it stops it, after any
+/// batch in delivery.
+pub(crate) struct EventStream {
+    api: &'static Api,
+    stream: FsEventStreamRef,
+    queue: DispatchQueue,
+}
+
+// SAFETY: `FSEvents` streams and dispatch queues may be stopped and
+// released from any thread, which only `Drop` does.
+unsafe impl Send for EventStream {}
+// SAFETY: as for `Send`; nothing is reachable through `&self`.
+unsafe impl Sync for EventStream {}
+
+impl EventStream {
+    /// Starts one stream over `paths`, with `handler` receiving its events.
+    pub(crate) fn start(paths: &[PathBuf], handler: Arc<EventHandlerFn>) -> notify::Result<Self> {
+        let api = Api::get()?;
+        let paths = api.path_array(paths)?;
+        let context = Box::into_raw(Box::new(StreamContext { handler }));
+        let stream_context = FsEventStreamContext {
+            version: 0,
+            info: context.cast(),
+            retain: None,
+            release: Some(release_context),
+            copy_description: None,
+        };
+        // SAFETY: the array holds `CFString` paths, the context is valid for
+        // the call, and the stream takes ownership of `info`, freeing it
+        // through `release_context`.
+        let stream = unsafe {
+            (api.stream_create)(
+                std::ptr::null(),
+                stream_callback,
+                &raw const stream_context,
+                paths,
+                EVENT_ID_SINCE_NOW,
+                0.0,
+                CREATE_FILE_EVENTS | CREATE_NO_DEFER,
+            )
+        };
+        // SAFETY: the stream retains the array it needs.
+        unsafe { (api.release)(paths) };
+        if stream.is_null() {
+            // SAFETY: no stream took ownership of the context.
+            drop(unsafe { Box::from_raw(context) });
+            return Err(Error::generic("cannot create an FSEvents stream"));
         }
-        for event in translate(flags) {
-            let event = event.add_path(path.clone());
-            if let Ok(mut handler) = context.handler.lock() {
-                handler.handle_event(Ok(event));
-            }
+        // SAFETY: the label is a valid C string; a null attribute makes the
+        // queue serial.
+        let queue =
+            unsafe { dispatch_queue_create(c"acyclic.fsevents".as_ptr(), std::ptr::null()) };
+        // SAFETY: the stream is new and unscheduled, and the queue is live.
+        unsafe { (api.stream_set_dispatch_queue)(stream, queue) };
+        let running = Self { api, stream, queue };
+        // SAFETY: the stream is scheduled on its queue.
+        if unsafe { (api.stream_start)(stream) } == 0 {
+            return Err(Error::generic("cannot start an FSEvents stream"));
+        }
+        Ok(running)
+    }
+}
+
+impl Drop for EventStream {
+    fn drop(&mut self) {
+        // SAFETY: the stream was started on this queue. Once it stops, no new
+        // callback is queued; the synchronous no-op waits for any queued one,
+        // so releasing the stream, which frees its context, races nothing.
+        unsafe {
+            (self.api.stream_stop)(self.stream);
+            dispatch_sync_f(self.queue, std::ptr::null_mut(), drain);
+            (self.api.stream_invalidate)(self.stream);
+            (self.api.stream_release)(self.stream);
+            dispatch_release(self.queue);
         }
     }
 }
@@ -380,42 +458,13 @@ fn translate(flags: u32) -> Vec<Event> {
     events
 }
 
-/// A running stream and the serial queue that delivers its events.
-struct Stream {
-    api: &'static Api,
-    stream: FsEventStreamRef,
-    queue: DispatchQueue,
-}
-
-impl Drop for Stream {
-    fn drop(&mut self) {
-        // SAFETY: the stream was started on this queue. Once it stops, no new
-        // callback is queued; the synchronous no-op waits for any queued one,
-        // so releasing the stream, which frees its context, races nothing.
-        unsafe {
-            (self.api.stream_stop)(self.stream);
-            dispatch_sync_f(self.queue, std::ptr::null_mut(), drain);
-            (self.api.stream_invalidate)(self.stream);
-            (self.api.stream_release)(self.stream);
-            dispatch_release(self.queue);
-        }
-    }
-}
-
 /// An `FSEvents` watcher over every watched path, restarted as they change.
 pub struct FsEventsWatcher {
-    api: &'static Api,
     handler: Arc<Mutex<dyn EventHandler>>,
     paths: Vec<PathBuf>,
     recursive: HashMap<PathBuf, bool>,
-    stream: Option<Stream>,
+    stream: Option<EventStream>,
 }
-
-// SAFETY: the stream handles are only used through `&mut self` or on drop,
-// and `FSEvents` streams may be stopped and released from any thread.
-unsafe impl Send for FsEventsWatcher {}
-// SAFETY: every method that touches the stream takes `&mut self`.
-unsafe impl Sync for FsEventsWatcher {}
 
 impl std::fmt::Debug for FsEventsWatcher {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -434,63 +483,36 @@ impl FsEventsWatcher {
         if self.paths.is_empty() {
             return Ok(());
         }
-        let paths = self.api.path_array(&self.paths)?;
-        let context = Box::into_raw(Box::new(StreamContext {
-            handler: Arc::clone(&self.handler),
-            recursive: self.recursive.clone(),
-        }));
-        let stream_context = FsEventStreamContext {
-            version: 0,
-            info: context.cast(),
-            retain: None,
-            release: Some(release_context),
-            copy_description: None,
-        };
-        // SAFETY: the array holds `CFString` paths, the context is valid for
-        // the call, and the stream takes ownership of `info`, freeing it
-        // through `release_context`.
-        let stream = unsafe {
-            (self.api.stream_create)(
-                std::ptr::null(),
-                stream_callback,
-                &raw const stream_context,
-                paths,
-                EVENT_ID_SINCE_NOW,
-                0.0,
-                CREATE_FILE_EVENTS | CREATE_NO_DEFER,
-            )
-        };
-        // SAFETY: the stream retains the array it needs.
-        unsafe { (self.api.release)(paths) };
-        if stream.is_null() {
-            // SAFETY: no stream took ownership of the context.
-            drop(unsafe { Box::from_raw(context) });
-            return Err(Error::generic("cannot create an FSEvents stream"));
-        }
-        // SAFETY: the label is a valid C string; a null attribute makes the
-        // queue serial.
-        let queue =
-            unsafe { dispatch_queue_create(c"acyclic.fsevents".as_ptr(), std::ptr::null()) };
-        // SAFETY: the stream is new and unscheduled, and the queue is live.
-        unsafe { (self.api.stream_set_dispatch_queue)(stream, queue) };
-        let running = Stream {
-            api: self.api,
-            stream,
-            queue,
-        };
-        // SAFETY: the stream is scheduled on its queue.
-        if unsafe { (self.api.stream_start)(stream) } == 0 {
-            return Err(Error::generic("cannot start an FSEvents stream"));
-        }
-        self.stream = Some(running);
+        let (handler, recursive) = (Arc::clone(&self.handler), self.recursive.clone());
+        self.stream = Some(EventStream::start(
+            &self.paths,
+            Arc::new(move |events: &[(PathBuf, u32)]| {
+                for (path, flags) in events {
+                    let watched = recursive.iter().any(|(root, recursive)| {
+                        path.starts_with(root)
+                            && (*recursive || path == root || path.parent() == Some(root.as_path()))
+                    });
+                    if !watched {
+                        continue;
+                    }
+                    for event in translate(*flags) {
+                        let event = event.add_path(path.clone());
+                        if let Ok(mut handler) = handler.lock() {
+                            handler.handle_event(Ok(event));
+                        }
+                    }
+                }
+            }),
+        )?);
         Ok(())
     }
 }
 
 impl Watcher for FsEventsWatcher {
     fn new<F: EventHandler>(event_handler: F, _config: Config) -> notify::Result<Self> {
+        // Resolved now, so a watcher that cannot run fails where it is made.
+        Api::get()?;
         Ok(Self {
-            api: Api::get()?,
             handler: Arc::new(Mutex::new(event_handler)),
             paths: Vec::new(),
             recursive: HashMap::new(),

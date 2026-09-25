@@ -1799,6 +1799,9 @@ impl FuseSession {
     /// observe one through the mount immediately afterwards.
     pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
         let stopped = || NativeMountError::Driver("session is stopped".to_owned());
+        // Every change made to the source before this call is recorded, and
+        // so notified, before the wait begins.
+        self.core.source.fence_changes().map_err(source_error)?;
         let poisoned = |_| NativeMountError::Driver("FUSE projection state is poisoned".to_owned());
         let mut state = self.lock_state()?;
         let target = state.invalidation.notified;

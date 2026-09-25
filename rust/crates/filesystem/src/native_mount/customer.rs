@@ -397,6 +397,21 @@ where
         advanced.map_err(MountLifecycleError::Source)
     }
 
+    /// Makes every change made to the source outside the mount, and
+    /// completed before the call, visible through it once this returns.
+    ///
+    /// A watched source's changes become visible on their own as the host
+    /// reports them; this waits for exactly those reported so far, and for
+    /// the kernel caches to drop what they superseded. A process that learns
+    /// of a change some other way calls this before it looks.
+    ///
+    /// # Errors
+    ///
+    /// Returns a driver failure when the kernel refuses an invalidation.
+    pub fn revalidate(&self) -> Result<(), MountLifecycleError> {
+        revalidate_session(&self.session)
+    }
+
     /// Publishes pending effects on the source callback runtime.
     pub fn sync_blocking(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;

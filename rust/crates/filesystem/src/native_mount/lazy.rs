@@ -5,7 +5,7 @@ use super::view_gate::{
     ViewGate as SourceViewGate, ViewReadLease as SourceViewLease,
     ViewWriteLease as SourceMutationLease,
 };
-use super::view_ledger::{Installed, ViewChange, ViewStamp};
+use super::view_ledger::{ViewChange, ViewEffect, ViewStamp};
 use super::{
     CheckoutMountSource, ContentSink, MountAttributePage, MountAttributeWriteMode, MountContentPin,
     MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLookup, MountNode,
@@ -14,7 +14,8 @@ use super::{
 };
 use crate::LazySeekTarget;
 use crate::demand::{
-    DemandError, DemandFile, DemandSource, SourceNode, SourceNodeKind, SourceReference,
+    DemandError, DemandFile, DemandSource, SourceChange, SourceChangeSink, SourceNode,
+    SourceNodeKind, SourceReference, SourceWatch,
 };
 use crate::heap_future::in_heap;
 use crate::kernel::{
@@ -35,6 +36,9 @@ const MAXIMUM_PROMOTION_BYTES: u64 = u64::MAX;
 const MAXIMUM_LAZY_DIRECTORY_CURSORS: usize = 1_024;
 const MAXIMUM_REMEMBERED_RESOLUTIONS: usize = 65_536;
 const MAXIMUM_PROMOTION_RETRIES: usize = 3;
+/// First-page listings of one directory before an interrupting change is
+/// reported as stale.
+const MAXIMUM_INTERRUPTED_LISTINGS: usize = 3;
 
 async fn stage_mount_promotion<A, O, D, S>(
     lazy: &LazyWorkspace<A, O, D, S>,
@@ -89,7 +93,7 @@ async fn promotion_effect<A, O, D, S>(
     candidate: &CheckoutCandidate<A, O>,
     path: &str,
     mounted: &MountPath,
-) -> Result<Installed, MountSourceError>
+) -> Result<ViewEffect, MountSourceError>
 where
     A: AsyncAuthorityStore + Send + Sync,
     O: AsyncObjectStore + Send + Sync,
@@ -97,7 +101,7 @@ where
     S: LazyWorkspaceStore,
 {
     in_heap(move || async move {
-        let mut installed = Installed::default();
+        let mut installed = ViewEffect::default();
         let mut prefix = mounted.clone();
         let mut text = path.to_owned();
         loop {
@@ -258,8 +262,9 @@ enum SourceProof {
 
 /// A name the view deferred to the source: the authored checkout and the
 /// overlay left it to what the source named, if anything, in one source
-/// view. The source changes outside the view, so every use proves it again
-/// (see [`SourceProof`]); only the view's deferral is remembered.
+/// view. The source changes outside the view: a watched source reports
+/// each change, and a deferral of an unwatched one is proved again on every
+/// use (see [`SourceProof`]).
 #[derive(Clone, Copy)]
 struct Deferral {
     /// Sampled before the name was resolved.
@@ -268,10 +273,21 @@ struct Deferral {
     node: Option<SourceNode>,
 }
 
+impl Deferral {
+    fn resolution(self) -> Resolution {
+        self.node.map_or(Resolution::Absent, |node| {
+            Resolution::Unauthored(LazyLookup::Source(node), Some(self.source))
+        })
+    }
+}
+
 /// Names the view deferred to the source. A deferral holds only while the
 /// view records no change to the name's binding, its parent directories, or
-/// its node, and answers only while the source, read afresh, still names
-/// exactly what it did: anything else resolves the name anew.
+/// its node. The source changes outside the view: a watched source records
+/// each such change in the view as it reports it, so the deferral answers
+/// until then; an unwatched one is read afresh on every use, and the
+/// deferral answers only while the source still names exactly what it did.
+/// Anything else resolves the name anew.
 #[derive(Default)]
 struct Resolutions(Mutex<HashMap<MountPath, Deferral>>);
 
@@ -331,11 +347,55 @@ type DetachedIdentities<A, O> = Arc<Mutex<BTreeMap<FileId, DetachedIdentity<A, O
 type OpenIdentityHandles = Arc<Mutex<BTreeMap<FileId, Vec<Weak<dyn MountOpenFile>>>>>;
 type DirtyDetachedRecord = (FileId, FileRecord, FileMetadata, u64);
 
+/// Records the changes a watched source reports in the view, as one effect
+/// per batch: each rebound name rebinds with everything reached through it,
+/// each entry altered in place changes its own attributes and the listing
+/// that shows them, and each node changes under all its names.
+struct SourceChangeRecorder<A, O, D, S> {
+    lazy: Arc<LazyWorkspace<A, O, D, S>>,
+    authored: Arc<CheckoutMountSource<A, O>>,
+}
+
+impl<A, O, D, S> SourceChangeSink for SourceChangeRecorder<A, O, D, S>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+    D: DemandSource + 'static,
+    S: LazyWorkspaceStore,
+{
+    fn source_changed(&self, changes: &[SourceChange]) {
+        let mut effect = ViewEffect::default();
+        for change in changes {
+            match change {
+                // Source paths are workspace paths, and the view keys names
+                // by their spelling fold whatever their encoding.
+                SourceChange::Name(path) => effect.subtrees.push(path.clone()),
+                SourceChange::Entry(path) => {
+                    effect.listings.extend(path.parent());
+                    effect.listings.push(path.clone());
+                }
+                SourceChange::Node(identity) => {
+                    effect.nodes.push(self.lazy.source_file_id_of(identity));
+                }
+                SourceChange::Everything => effect.everything = true,
+            }
+        }
+        self.authored
+            .record_projection_change(&ViewChange::Effect(&effect));
+    }
+}
+
 /// One native callback adapter over a source-backed sparse workspace.
 ///
 /// Reads demand only the addressed source facts. Mutations promote the exact
 /// node into the authored checkout before delegating to the ordinary checkout
 /// adapter, keeping all publication semantics in the SDK.
+///
+/// A source that reports its changes records them in the view, which keeps
+/// every remembered answer (the mount's and the kernel's) until a change to
+/// what it depends on is reported. A source that cannot report them is read
+/// afresh behind every remembered answer, and the kernel caches nothing of
+/// it.
 pub struct LazyMountSource<A, O, D, S> {
     lazy: Arc<LazyWorkspace<A, O, D, S>>,
     authored: Arc<CheckoutMountSource<A, O>>,
@@ -348,12 +408,15 @@ pub struct LazyMountSource<A, O, D, S> {
     removals: Mutex<MountedRemovals>,
     detached: DetachedIdentities<A, O>,
     open_sources: OpenIdentityHandles,
+    /// The source's reports of its own changes; `None` when it cannot make
+    /// them. Chosen once, when the view is created.
+    source_watch: Option<Box<dyn SourceWatch>>,
 }
 
 impl<A, O, D, S> LazyMountSource<A, O, D, S>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
@@ -371,6 +434,14 @@ where
                 platform: "a lazy source projection",
             });
         }
+        // A source the host cannot watch, or refuses to, is read afresh.
+        let source_watch = lazy
+            .watch_source(Arc::new(SourceChangeRecorder {
+                lazy: Arc::clone(&lazy),
+                authored: Arc::clone(&authored),
+            }))
+            .ok()
+            .flatten();
         Ok(Self {
             lazy,
             authored,
@@ -383,7 +454,24 @@ where
             removals: Mutex::new(MountedRemovals::default()),
             detached: Arc::new(Mutex::new(BTreeMap::new())),
             open_sources: Arc::new(Mutex::new(BTreeMap::new())),
+            source_watch,
         })
+    }
+
+    /// Whether the source still reports every change made to it.
+    fn source_observed(&self) -> bool {
+        self.source_watch
+            .as_ref()
+            .is_some_and(|watch| watch.is_exact())
+    }
+
+    /// A stamp at or after every change the view has recorded, while it is
+    /// stable.
+    fn ledger_stamp(&self) -> Option<ViewStamp> {
+        self.source_view
+            .is_stable()
+            .then(|| self.authored.view_stamp())
+            .flatten()
     }
 
     /// Cancels the authored callback adapter.
@@ -1093,25 +1181,18 @@ where
         in_heap(move || async move {
             if let Some(deferral) = self.resolutions.get(path) {
                 let file_id = deferral.node.map(|node| self.lazy.source_file_id(&node));
-                if self.unchanged_since(path, file_id, deferral.stamp) {
-                    if proof == SourceProof::Open
-                        && deferral.source == self.lazy.source_reference()
-                        && let Some(node) = deferral.node
+                if deferral.source == self.lazy.source_reference()
+                    && self.unchanged_since(path, file_id, deferral.stamp)
+                {
+                    // A watched source reported any change since; an open at
+                    // the exact version proves a remembered node itself.
+                    if self.source_observed()
+                        || proof == SourceProof::Open && deferral.node.is_some()
                     {
-                        return Ok(Resolution::Unauthored(
-                            LazyLookup::Source(node),
-                            Some(deferral.source),
-                        ));
+                        return Ok(deferral.resolution());
                     }
                     match self.lazy.source_lookup(deferral.source, text).await {
-                        Ok(node) if node == deferral.node => {
-                            return Ok(node.map_or(Resolution::Absent, |node| {
-                                Resolution::Unauthored(
-                                    LazyLookup::Source(node),
-                                    Some(deferral.source),
-                                )
-                            }));
-                        }
+                        Ok(node) if node == deferral.node => return Ok(deferral.resolution()),
                         // The source changed, or its view was invalidated.
                         Ok(_) | Err(LazyWorkspaceError::StaleSource) => {}
                         Err(error) => return Err(lazy_error(error)),
@@ -1120,7 +1201,7 @@ where
             }
             // Sampled first: a change to anything read below records a later
             // position, so a remembered answer can never validate over it.
-            let stamp = self.view_stamp();
+            let stamp = self.ledger_stamp();
             let source = self.lazy.source_reference();
             if let Some(lookup) = self.authored.lookup_async(path, owner).await? {
                 if self.removed_identity(text, lookup.node.file_id)? {
@@ -1255,7 +1336,13 @@ where
                         Some((&removed_children, opaque)),
                     )
                     .await
-                    .map_err(lazy_error)?
+                    .map_err(|error| match error {
+                        // The directory changed while it was listed.
+                        LazyWorkspaceError::Demand(DemandError::StaleVersion) => {
+                            MountSourceError::Stale
+                        }
+                        error => lazy_error(error),
+                    })?
             };
             let mut entries = Vec::with_capacity(page.entries.len());
             for entry in page.entries {
@@ -1319,6 +1406,44 @@ where
                     .transpose()?,
             })
         })
+    }
+
+    /// Resolves `path` like [`Self::resolve`] and, where the source answers
+    /// it with a regular file, opens that file at the version resolved.
+    ///
+    /// A remembered answer proves the view, not the source file: one the
+    /// source changed since, before its report was recorded, fails its
+    /// version proof, and the name is resolved again from the source.
+    async fn resolve_opened(
+        &self,
+        path: &MountPath,
+        text: &str,
+        owner: std::thread::ThreadId,
+        proof: SourceProof,
+    ) -> Result<(Resolution, Option<Box<dyn DemandFile>>), MountSourceError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        for _ in 0..2 {
+            let resolution = self.resolve(path, text, owner, proof).await?;
+            let Resolution::Unauthored(LazyLookup::Source(node), Some(source)) = resolution else {
+                return Ok((resolution, None));
+            };
+            if node.kind != SourceNodeKind::RegularFile {
+                return Ok((resolution, None));
+            }
+            match self.lazy.open_source_file(text, source, node).await {
+                Ok(file) => return Ok((resolution, Some(file))),
+                Err(LazyWorkspaceError::Demand(
+                    DemandError::StaleVersion | DemandError::Absent,
+                )) => {
+                    self.resolutions.forget(path);
+                }
+                Err(error) => return Err(lazy_error(error)),
+            }
+        }
+        Err(MountSourceError::Stale)
     }
 
     fn wait<T: Send, F>(&self, create: impl FnOnce() -> F + Send) -> Result<T, MountSourceError>
@@ -1754,15 +1879,20 @@ where
         self.source_view.is_stable()
     }
 
+    /// Only a view whose source reports every change can be cached: the
+    /// kernel keeps nothing of one whose source changes unseen.
     fn view_stamp(&self) -> Option<ViewStamp> {
-        self.source_view
-            .is_stable()
-            .then(|| self.authored.view_stamp())
-            .flatten()
+        self.ledger_stamp().filter(|_| self.source_observed())
     }
 
     fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
         self.authored.observe_view(observer);
+    }
+
+    fn fence_changes(&self) -> Result<(), MountSourceError> {
+        self.source_watch.as_ref().map_or(Ok(()), |watch| {
+            watch.fence().map_err(|error| lazy_error(error.into()))
+        })
     }
 
     fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
@@ -1831,29 +1961,10 @@ where
         // written through that handle instead of falling through to the still-unaware lazy view.
         let (lease, resolution, source_file) = self.wait(|| async {
             let lease = self.source_view.read_for_callback(owner, None).await?;
-            // A remembered source node proves the view, not the source file:
-            // a file changed outside the view since fails its version proof,
-            // and is resolved again from the source.
-            for _ in 0..2 {
-                let resolution = self
-                    .resolve(path, &path_text, owner, SourceProof::Open)
-                    .await?;
-                let Resolution::Unauthored(LazyLookup::Source(node), Some(source)) = resolution
-                else {
-                    return Ok((lease, resolution, None));
-                };
-                if node.kind != SourceNodeKind::RegularFile {
-                    return Ok((lease, resolution, None));
-                }
-                match self.lazy.open_source_file(&path_text, source, node).await {
-                    Ok(file) => return Ok((lease, resolution, Some(file))),
-                    Err(LazyWorkspaceError::Demand(
-                        DemandError::StaleVersion | DemandError::Absent,
-                    )) => self.resolutions.forget(path),
-                    Err(error) => return Err(lazy_error(error)),
-                }
-            }
-            Err(MountSourceError::Stale)
+            let (resolution, source_file) = self
+                .resolve_opened(path, &path_text, owner, SourceProof::Open)
+                .await?;
+            Ok((lease, resolution, source_file))
         })?;
         let (lookup, source) = match resolution {
             Resolution::Absent => return Err(MountSourceError::NotFound),
@@ -2014,6 +2125,9 @@ where
         })
     }
 
+    /// A first page that a change interrupted is listed again: the change
+    /// precedes the page listed after it. An interrupted continuation fails
+    /// stale, since the pages before it described the view before the change.
     /// A page is empty only where the listing ends: the source's names and
     /// the checkout's are listed in turn, and either may have none.
     fn read_directory(
@@ -2022,7 +2136,19 @@ where
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        let mut page = self.directory_page(path, cursor, maximum_entries)?;
+        let attempts = if cursor.is_some() {
+            1
+        } else {
+            MAXIMUM_INTERRUPTED_LISTINGS
+        };
+        let mut page = Err(MountSourceError::Stale);
+        for _ in 0..attempts {
+            page = self.directory_page(path, cursor, maximum_entries);
+            if !matches!(page, Err(MountSourceError::Stale)) {
+                break;
+            }
+        }
+        let mut page = page?;
         while page.entries.is_empty() {
             let Some(next) = page.next_cursor.take() else {
                 break;
@@ -2582,43 +2708,37 @@ where
         } else {
             SourceProof::Lookup
         };
-        let resolved = self.wait(|| async {
-            match self.resolve(path, &text, owner, proof).await? {
-                Resolution::Authored(_) => Ok(None),
-                Resolution::Absent => Err(MountSourceError::NotFound),
-                Resolution::Unauthored(lookup, source) => Ok(Some((lookup, source))),
+        let (resolution, source_file) =
+            self.wait(|| async { self.resolve_opened(path, &text, owner, proof).await })?;
+        match (resolution, source_file) {
+            (Resolution::Absent, _) => Err(MountSourceError::NotFound),
+            (Resolution::Authored(_), _) => {
+                stream_pieces(offset, length, piece, sink, |offset, length| {
+                    self.authored.read_range(path, offset, length)
+                })
             }
-        })?;
-        match resolved {
-            None => stream_pieces(offset, length, piece, sink, |offset, length| {
-                self.authored.read_range(path, offset, length)
-            }),
-            Some((LazyLookup::Source(node), Some(source))) => {
+            (Resolution::Unauthored(LazyLookup::Source(node), Some(source)), Some(file)) => {
                 if pin.is_some_and(|pin| pin != source_content_pin(source, &node)) {
                     return Err(MountSourceError::Stale);
                 }
                 // One held source file serves the whole range; each read
                 // proves it still is the pinned version.
-                let file = self.wait(|| async {
-                    self.lazy
-                        .open_source_file(&text, source, node)
-                        .await
-                        .map_err(lazy_error)
-                })?;
                 stream_pieces(offset, length, piece, sink, |offset, length| {
                     file.read_range(offset, u64::from(length), &crate::CancellationToken::new())
                         .map(|receipt| receipt.value)
                         .map_err(|failure| lazy_error(failure.error.into()))
                 })
             }
-            Some(_) => stream_pieces(offset, length, piece, sink, |offset, length| {
-                self.wait(|| async {
-                    self.lazy
-                        .read_range(&text, offset, u64::from(length))
-                        .await
-                        .map_err(lazy_error)
+            (Resolution::Unauthored(..), _) => {
+                stream_pieces(offset, length, piece, sink, |offset, length| {
+                    self.wait(|| async {
+                        self.lazy
+                            .read_range(&text, offset, u64::from(length))
+                            .await
+                            .map_err(lazy_error)
+                    })
                 })
-            }),
+            }
         }
     }
 }
@@ -3530,6 +3650,13 @@ mod tests {
         let directory = MountPath::root().child(component("d"));
         let file = directory.child(component("f"));
         let other = MountPath::root().child(component("g"));
+        // NTFS reports a directory's write time, which creating an entry in
+        // it changed, only once the directory is next read; let the source
+        // report what reading it reports before the view is sampled.
+        for path in [&directory, &file, &other] {
+            view.lookup(path)?;
+        }
+        view.fence_changes()?;
         let before = [&directory, &file, &other].map(|path| view.lookup(path));
         let stamp = view.view_stamp().ok_or("lazy view has no stamp")?;
 
@@ -3897,15 +4024,38 @@ mod tests {
         >,
         Box<dyn std::error::Error>,
     > {
-        use crate::demand::native::NativeDemandSource;
-        use crate::model::{CheckoutMode, FilesystemProfile, GenerationSelector, VolumeLimits};
+        mounted_view_of(Arc::new(native_source(source).await?), name).await
+    }
+
+    async fn native_source(
+        source: &Path,
+    ) -> Result<crate::demand::native::NativeDemandSource, Box<dyn std::error::Error>> {
+        use crate::model::{FilesystemProfile, VolumeLimits};
+        Ok(crate::demand::native::NativeDemandSource::open(
+            source,
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        )
+        .await?)
+    }
+
+    /// A lazy mount view over `demand`, publishing only on sync.
+    async fn mounted_view_of<D: DemandSource + 'static>(
+        demand: Arc<D>,
+        name: &str,
+    ) -> Result<
+        LazyMountSource<
+            impl AsyncAuthorityStore + Send + Sync + 'static,
+            impl AsyncObjectStore + Send + Sync + 'static,
+            D,
+            crate::MemoryLazyWorkspaceStore,
+        >,
+        Box<dyn std::error::Error>,
+    > {
+        use crate::model::{CheckoutMode, GenerationSelector};
         use crate::native_mount::{MountPublication, SharedCheckout};
         use crate::{Fs, MemoryLazyWorkspaceStore};
 
-        let demand = Arc::new(
-            NativeDemandSource::open(source, FilesystemProfile::Portable, VolumeLimits::default())
-                .await?,
-        );
         let lazy = Arc::new(
             LazyWorkspace::attach(
                 &Fs::memory(),
@@ -3943,9 +4093,9 @@ mod tests {
         })
     }
 
-    /// The source changes outside the view, so every answer the source gives
-    /// is read afresh: a remembered answer never outlives what the source
-    /// names, and lookups agree with listings.
+    /// The source changes outside the view and reports each change: once
+    /// the report is recorded, no remembered answer outlives what the
+    /// source names, and lookups agree with listings.
     #[test]
     fn lookups_follow_changes_made_to_the_source_outside_the_view()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3954,6 +4104,7 @@ mod tests {
         std::fs::create_dir(source.path().join("d"))?;
         let runtime = tokio::runtime::Runtime::new()?;
         let view = runtime.block_on(mounted_view(source.path(), "source-changes"))?;
+        assert!(view.view_stamp().is_some(), "a local source is watched");
         let (a, d) = (mounted(&["a"]), mounted(&["d"]));
         let (created, beneath) = (mounted(&["d", "x"]), mounted(&["gone", "x"]));
         let size = |path: &MountPath| -> Result<Option<u64>, MountSourceError> {
@@ -3969,6 +4120,7 @@ mod tests {
         std::fs::write(source.path().join("d/x"), b"x")?;
         std::fs::create_dir(source.path().join("gone"))?;
         std::fs::write(source.path().join("gone/x"), b"xy")?;
+        view.fence_changes()?;
         assert_eq!(size(&a)?, Some(11));
         assert_eq!(size(&created)?, Some(1));
         assert_eq!(size(&beneath)?, Some(2));
@@ -3983,26 +4135,429 @@ mod tests {
         );
 
         std::fs::remove_file(source.path().join("a"))?;
+        view.fence_changes()?;
         assert_eq!(size(&a)?, None);
         Ok(())
     }
 
-    /// Promoting a name moves its answer from the source into the checkout,
-    /// which a listing merges separately, so a promotion changes its
-    /// directory's listing even where every name still resolves as it did:
-    /// a continuation begun before must not list the name a second time.
+    /// A source that counts the lookups it answers and, unless told
+    /// otherwise, reports its changes as the source it wraps does.
+    struct Counted<D> {
+        inner: D,
+        lookups: AtomicU64,
+        watched: bool,
+    }
+
+    impl<D> Counted<D> {
+        fn new(inner: D, watched: bool) -> Self {
+            Self {
+                inner,
+                lookups: AtomicU64::new(0),
+                watched,
+            }
+        }
+
+        fn lookups(&self) -> u64 {
+            self.lookups.load(Ordering::Acquire)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl<D: DemandSource> DemandSource for Counted<D> {
+        fn reference(&self) -> SourceReference {
+            self.inner.reference()
+        }
+
+        fn watch(
+            &self,
+            sink: Arc<dyn SourceChangeSink>,
+        ) -> Result<Option<Box<dyn SourceWatch>>, DemandError> {
+            if self.watched {
+                self.inner.watch(sink)
+            } else {
+                Ok(None)
+            }
+        }
+
+        async fn lookup(
+            &self,
+            source: SourceReference,
+            path: &crate::kernel::NamespacePath,
+            cancellation: &crate::CancellationToken,
+        ) -> crate::demand::DemandResult<Option<SourceNode>> {
+            self.lookups.fetch_add(1, Ordering::AcqRel);
+            self.inner.lookup(source, path, cancellation).await
+        }
+
+        async fn list_page(
+            &self,
+            source: SourceReference,
+            directory: &crate::kernel::NamespacePath,
+            cursor: Option<crate::demand::SourceCursor>,
+            maximum_entries: u32,
+            cancellation: &crate::CancellationToken,
+        ) -> crate::demand::DemandResult<crate::demand::SourceDirectoryPage> {
+            self.inner
+                .list_page(source, directory, cursor, maximum_entries, cancellation)
+                .await
+        }
+
+        async fn read_range(
+            &self,
+            source: SourceReference,
+            path: &crate::kernel::NamespacePath,
+            expected: crate::demand::SourceVersion,
+            offset: u64,
+            length: u64,
+            cancellation: &crate::CancellationToken,
+        ) -> crate::demand::DemandResult<Bytes> {
+            self.inner
+                .read_range(source, path, expected, offset, length, cancellation)
+                .await
+        }
+
+        async fn open_file(
+            &self,
+            source: SourceReference,
+            path: &crate::kernel::NamespacePath,
+            expected: crate::demand::SourceVersion,
+            cancellation: &crate::CancellationToken,
+        ) -> crate::demand::DemandResult<Box<dyn DemandFile>> {
+            self.inner
+                .open_file(source, path, expected, cancellation)
+                .await
+        }
+
+        async fn read_link(
+            &self,
+            source: SourceReference,
+            path: &crate::kernel::NamespacePath,
+            expected: crate::demand::SourceVersion,
+            cancellation: &crate::CancellationToken,
+        ) -> crate::demand::DemandResult<Bytes> {
+            self.inner
+                .read_link(source, path, expected, cancellation)
+                .await
+        }
+    }
+
+    /// A watched source is read once per name: a remembered answer, an
+    /// absence included, holds without reading the source again until the
+    /// source reports a change to the name, and then exactly that name is
+    /// read again.
     #[test]
-    fn a_promotion_changes_its_directory_listing() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_watched_source_is_read_again_only_for_what_it_reports_changed()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source = tempfile::tempdir()?;
-        std::fs::create_dir(source.path().join("d"))?;
-        std::fs::write(source.path().join("d/f"), b"source")?;
+        std::fs::write(source.path().join("a"), b"short")?;
+        std::fs::write(source.path().join("b"), b"other")?;
         let runtime = tokio::runtime::Runtime::new()?;
-        let view = runtime.block_on(mounted_view(source.path(), "listing-promotion"))?;
-        let (d, f) = (mounted(&["d"]), mounted(&["d", "f"]));
-        view.promote_locked(&d)?;
-        let stamp = view.view_stamp().ok_or("the view has no stamp")?;
-        view.promote_locked(&f)?;
-        assert!(!view.unchanged_since(&d, None, stamp));
+        let demand = Arc::new(Counted::new(
+            runtime.block_on(native_source(source.path()))?,
+            true,
+        ));
+        let view = runtime.block_on(mounted_view_of(Arc::clone(&demand), "watched-reads"))?;
+        let (a, b, absent) = (mounted(&["a"]), mounted(&["b"]), mounted(&["absent"]));
+        let size = |path: &MountPath| -> Result<Option<u64>, MountSourceError> {
+            Ok(view.lookup(path)?.map(|lookup| lookup.node.logical_bytes))
+        };
+        assert_eq!(size(&a)?, Some(5));
+        assert_eq!(size(&b)?, Some(5));
+        assert_eq!(size(&absent)?, None);
+        let read = demand.lookups();
+        for _ in 0..3 {
+            assert_eq!(size(&a)?, Some(5));
+            assert_eq!(size(&b)?, Some(5));
+            assert_eq!(size(&absent)?, None);
+        }
+        assert_eq!(demand.lookups(), read, "remembered answers read the source");
+
+        std::fs::write(source.path().join("a"), b"much longer")?;
+        std::fs::write(source.path().join("absent"), b"present")?;
+        view.fence_changes()?;
+        assert_eq!(size(&a)?, Some(11));
+        assert_eq!(size(&absent)?, Some(7));
+        let reread = demand.lookups();
+        assert!(reread > read, "a reported change reads the source again");
+        assert_eq!(size(&b)?, Some(5));
+        assert_eq!(
+            demand.lookups(),
+            reread,
+            "an unchanged name is not read again"
+        );
+        Ok(())
+    }
+
+    /// Lost notifications invalidate every remembered answer.
+    #[test]
+    fn a_source_that_lost_changes_is_read_again_in_full() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = tempfile::tempdir()?;
+        std::fs::write(source.path().join("a"), b"short")?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let demand = Arc::new(Counted::new(
+            runtime.block_on(native_source(source.path()))?,
+            true,
+        ));
+        let view = runtime.block_on(mounted_view_of(Arc::clone(&demand), "lost-changes"))?;
+        let a = mounted(&["a"]);
+        assert!(view.lookup(&a)?.is_some());
+        let stamp = view.view_stamp().ok_or("a watched view carries stamps")?;
+        let read = demand.lookups();
+        SourceChangeRecorder {
+            lazy: Arc::clone(&view.lazy),
+            authored: Arc::clone(&view.authored),
+        }
+        .source_changed(&[SourceChange::Everything]);
+        assert!(!view.unchanged_since(&a, None, stamp));
+        assert!(view.lookup(&a)?.is_some());
+        assert!(demand.lookups() > read, "everything is read again");
+        Ok(())
+    }
+
+    /// A live lazy mount of `source` at `destination`, over a native source
+    /// in the host's own profile.
+    async fn live_lazy_mount(
+        source: &Path,
+        destination: &Path,
+        name: &str,
+    ) -> Result<
+        super::super::LazyMount<
+            impl AsyncAuthorityStore + Send + Sync + 'static,
+            impl AsyncObjectStore + Send + Sync + 'static,
+            crate::demand::native::NativeDemandSource,
+            crate::MemoryLazyWorkspaceStore,
+        >,
+        Box<dyn std::error::Error>,
+    > {
+        use crate::model::{FilesystemProfile, Lifecycle, VolumeConfig, VolumeLimits};
+        use crate::native_mount::{MountOptions, MountPublication};
+        use crate::{Fs, MemoryLazyWorkspaceStore};
+
+        let profile = if cfg!(windows) {
+            FilesystemProfile::Windows
+        } else {
+            FilesystemProfile::Posix
+        };
+        let demand = crate::demand::native::NativeDemandSource::open(
+            source,
+            profile,
+            VolumeLimits::default(),
+        )
+        .await?;
+        let lazy = LazyWorkspace::attach_with_config(
+            &Fs::memory(),
+            name,
+            Arc::new(demand),
+            MemoryLazyWorkspaceStore::default(),
+            VolumeConfig::native(Lifecycle::Ephemeral),
+        )
+        .await?;
+        std::fs::create_dir_all(destination)?;
+        Ok(lazy
+            .mount(
+                destination,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?)
+    }
+
+    fn sorted_names(directory: &Path) -> std::io::Result<Vec<std::ffi::OsString>> {
+        let mut names = std::fs::read_dir(directory)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<Result<Vec<_>, _>>()?;
+        names.sort();
+        Ok(names)
+    }
+
+    fn is_absent(path: &Path) -> bool {
+        std::fs::symlink_metadata(path)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    }
+
+    /// Every change made to the source outside the mount becomes visible
+    /// through it: to stat, lookup, listing, and read alike, whatever the
+    /// kernel cached before. Revalidation makes every change completed
+    /// before it visible at once; the source's own reports make each one
+    /// visible without it, shortly after.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "mounts a live native session; requires the host's native mount capability"]
+    async fn live_mount_shows_changes_made_to_its_source() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let (source, mount) = (root.path().join("source"), root.path().join("mount"));
+        std::fs::create_dir_all(source.join("d"))?;
+        std::fs::write(source.join("a"), b"short")?;
+        let live = live_lazy_mount(&source, &mount, "live-source-changes").await?;
+        // Let the kernel cache every fact the changes below supersede.
+        for _ in 0..2 {
+            assert_eq!(std::fs::metadata(mount.join("a"))?.len(), 5);
+            assert_eq!(std::fs::read(mount.join("a"))?, b"short");
+            assert!(sorted_names(&mount.join("d"))?.is_empty());
+            assert!(is_absent(&mount.join("d").join("x")));
+            assert!(is_absent(&mount.join("gone")));
+        }
+
+        std::fs::write(source.join("a"), b"much longer")?;
+        std::fs::write(source.join("d").join("x"), b"x")?;
+        std::fs::create_dir(source.join("gone"))?;
+        std::fs::write(source.join("gone").join("x"), b"xy")?;
+        live.revalidate()?;
+        assert_eq!(std::fs::metadata(mount.join("a"))?.len(), 11);
+        assert_eq!(std::fs::read(mount.join("a"))?, b"much longer");
+        assert_eq!(sorted_names(&mount.join("d"))?, ["x"]);
+        assert_eq!(std::fs::metadata(mount.join("d").join("x"))?.len(), 1);
+        assert_eq!(std::fs::read(mount.join("gone").join("x"))?, b"xy");
+
+        std::fs::remove_file(source.join("a"))?;
+        std::fs::rename(source.join("gone"), source.join("moved"))?;
+        live.revalidate()?;
+        assert!(is_absent(&mount.join("a")));
+        assert!(is_absent(&mount.join("gone")));
+        assert_eq!(std::fs::read(mount.join("moved").join("x"))?, b"xy");
+
+        // Without revalidation, the source's report alone shows a change.
+        std::fs::write(source.join("d").join("x"), b"reported")?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::fs::metadata(mount.join("d").join("x"))?.len() != 8 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a reported change never became visible"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(std::fs::read(mount.join("d").join("x"))?, b"reported");
+        live.unmount().await?;
+        Ok(())
+    }
+
+    /// Writers replace, remove, and create source files while readers stat,
+    /// list, and read them through the mount. Every read the mount serves is
+    /// one whole version some writer wrote (except on macOS, see below), and
+    /// once the writers stop and the mount revalidates, the mount and the
+    /// source agree name for name and byte for byte.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "mounts a live native session; requires the host's native mount capability"]
+    async fn live_mount_follows_concurrent_changes_to_its_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const FILES: usize = 24;
+        const WRITERS: usize = 4;
+        const READERS: usize = 4;
+        const CHANGES: usize = 150;
+
+        /// A whole version: its own name, generation, and length, padded.
+        fn version(name: usize, generation: usize) -> Vec<u8> {
+            let mut bytes = format!("{name}:{generation}:").into_bytes();
+            let length = 16 + (name * 7 + generation * 13) % 200;
+            bytes.resize(length, b'.');
+            let tail = format!(":{length}");
+            bytes.truncate(length - tail.len());
+            bytes.extend_from_slice(tail.as_bytes());
+            bytes
+        }
+        fn whole(bytes: &[u8]) -> bool {
+            std::str::from_utf8(bytes).is_ok_and(|text| {
+                text.rsplit_once(':')
+                    .and_then(|(_, length)| length.parse::<usize>().ok())
+                    == Some(bytes.len())
+            })
+        }
+
+        let root = tempfile::tempdir()?;
+        let (source, mount) = (root.path().join("source"), root.path().join("mount"));
+        std::fs::create_dir_all(&source)?;
+        for name in 0..FILES {
+            std::fs::write(source.join(format!("f{name}")), version(name, 0))?;
+            std::fs::write(source.join(format!("g{name}")), version(name, 0))?;
+        }
+        let live = live_lazy_mount(&source, &mount, "live-concurrent-changes").await?;
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let torn = Arc::new(Mutex::new(Vec::new()));
+        let readers = (0..READERS)
+            .map(|reader| {
+                let (mount, stop, torn) = (mount.clone(), Arc::clone(&stop), Arc::clone(&torn));
+                std::thread::spawn(move || {
+                    let mut turn = reader;
+                    while !stop.load(Ordering::Acquire) {
+                        turn += 1;
+                        let replaced = mount.join(format!("f{}", turn % FILES));
+                        let rewritten = mount.join(format!("g{}", turn % FILES));
+                        let _ = std::fs::metadata(&replaced);
+                        let _ = std::fs::metadata(&rewritten);
+                        let _ = std::fs::read_dir(&mount).map(Iterator::count);
+                        // A file rewritten in place may be read mid-write,
+                        // natively too.
+                        let _ = std::fs::read(&rewritten);
+                        // A read may fail while its file is replaced; one
+                        // that succeeds returns one whole version.
+                        if let Ok(bytes) = std::fs::read(&replaced)
+                            && !whole(&bytes)
+                            && let Ok(mut torn) = torn.lock()
+                        {
+                            torn.push(String::from_utf8_lossy(&bytes).into_owned());
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let writers = (0..WRITERS)
+            .map(|writer| {
+                let source = source.clone();
+                std::thread::spawn(move || -> std::io::Result<()> {
+                    for change in 0..CHANGES {
+                        let name = (writer + change * WRITERS) % FILES;
+                        let path = source.join(format!("f{name}"));
+                        match change % 3 {
+                            // Replaced whole, as an editor saves.
+                            0 | 2 => {
+                                let staged = source.join(format!(".f{name}-{writer}"));
+                                std::fs::write(&staged, version(name, change + 1))?;
+                                std::fs::rename(&staged, &path)?;
+                            }
+                            _ => match std::fs::remove_file(&path) {
+                                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                                    return Err(error);
+                                }
+                                _ => {}
+                            },
+                        }
+                        std::fs::write(source.join(format!("g{name}")), version(name, change + 1))?;
+                    }
+                    Ok(())
+                })
+            })
+            .collect::<Vec<_>>();
+        for writer in writers {
+            writer.join().map_err(|_| "writer panicked")??;
+        }
+        stop.store(true, Ordering::Release);
+        for reader in readers {
+            reader.join().map_err(|_| "reader panicked")?;
+        }
+        let torn = torn.lock().map_err(|_| "torn reads poisoned")?.clone();
+        // The macOS NFS client can pair a size it cached before a
+        // replacement was reported with content read after it.
+        assert!(
+            torn.is_empty() || cfg!(target_os = "macos"),
+            "reads returned no whole version: {torn:?}"
+        );
+
+        live.revalidate()?;
+        assert_eq!(sorted_names(&mount)?, sorted_names(&source)?);
+        for name in sorted_names(&source)? {
+            let (native, mounted) = (source.join(&name), mount.join(&name));
+            assert_eq!(
+                std::fs::metadata(&mounted)?.len(),
+                std::fs::metadata(&native)?.len(),
+                "{name:?} differs in length"
+            );
+            assert_eq!(
+                std::fs::read(&mounted)?,
+                std::fs::read(&native)?,
+                "{name:?} differs"
+            );
+        }
+        live.unmount().await?;
         Ok(())
     }
 
@@ -4034,6 +4589,52 @@ mod tests {
             cursor = Some(next);
         }
         assert_eq!(listed, 3, "a, b, and empty");
+        Ok(())
+    }
+
+    /// A source that cannot report its changes is read afresh behind every
+    /// remembered answer, and no driver may cache what the view answers.
+    #[test]
+    fn an_unwatched_source_is_read_afresh_and_never_cached()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = tempfile::tempdir()?;
+        std::fs::write(source.path().join("a"), b"short")?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let demand = Arc::new(Counted::new(
+            runtime.block_on(native_source(source.path()))?,
+            false,
+        ));
+        let view = runtime.block_on(mounted_view_of(Arc::clone(&demand), "unwatched"))?;
+        assert_eq!(view.view_stamp(), None, "an unwatched view is never cached");
+        let (a, absent) = (mounted(&["a"]), mounted(&["absent"]));
+        let size = |path: &MountPath| -> Result<Option<u64>, MountSourceError> {
+            Ok(view.lookup(path)?.map(|lookup| lookup.node.logical_bytes))
+        };
+        assert_eq!(size(&a)?, Some(5));
+        assert_eq!(size(&absent)?, None);
+        std::fs::write(source.path().join("a"), b"much longer")?;
+        std::fs::write(source.path().join("absent"), b"present")?;
+        assert_eq!(size(&a)?, Some(11));
+        assert_eq!(size(&absent)?, Some(7));
+        Ok(())
+    }
+
+    /// Promoting a name moves its answer from the source into the checkout,
+    /// which a listing merges separately, so a promotion changes its
+    /// directory's listing even where every name still resolves as it did:
+    /// a continuation begun before must not list the name a second time.
+    #[test]
+    fn a_promotion_changes_its_directory_listing() -> Result<(), Box<dyn std::error::Error>> {
+        let source = tempfile::tempdir()?;
+        std::fs::create_dir(source.path().join("d"))?;
+        std::fs::write(source.path().join("d/f"), b"source")?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let view = runtime.block_on(mounted_view(source.path(), "listing-promotion"))?;
+        let (d, f) = (mounted(&["d"]), mounted(&["d", "f"]));
+        view.promote_locked(&d)?;
+        let stamp = view.view_stamp().ok_or("the view has no stamp")?;
+        view.promote_locked(&f)?;
+        assert!(!view.unchanged_since(&d, None, stamp));
         Ok(())
     }
 }

@@ -171,6 +171,50 @@ impl From<NamespacePathError> for DemandError {
 /// Demand result with source-work counters on both success and failure.
 pub type DemandResult<T> = Result<OperationReceipt<T>, OperationFailure<DemandError>>;
 
+/// One change a source reports having happened to it outside every view of
+/// it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SourceChange {
+    /// This name may bind another entry, or none, and so may everything
+    /// reached through it.
+    Name(NamespacePath),
+    /// The entry this name binds may have changed in place: its content or
+    /// attributes. The name, and everything reached through it, still binds
+    /// what it did.
+    Entry(NamespacePath),
+    /// The node with this [`SourceNode::file_identity`] may have changed,
+    /// under every name bound to it.
+    Node([u8; 32]),
+    /// Changes may have gone unreported: anything may have changed.
+    Everything,
+}
+
+/// Receives the changes one watched source reports.
+pub trait SourceChangeSink: Send + Sync {
+    /// One batch of changes, in the order the host reported them. Called on
+    /// the source's notification thread, which holds no lock a source
+    /// request waits on; the sink must not wait on a later notification.
+    fn source_changed(&self, changes: &[SourceChange]);
+}
+
+/// Live observation of every change made to one source outside every view
+/// of it. Dropping it stops the notifications.
+pub trait SourceWatch: Send + Sync {
+    /// Returns once every change that completed before the call has reached
+    /// the sink.
+    ///
+    /// # Errors
+    ///
+    /// Fails only when the host cannot be read; the watch is then inexact.
+    fn fence(&self) -> Result<(), DemandError>;
+
+    /// Whether every change still reaches the sink. False once the host
+    /// stopped reporting changes exactly, after the sink last received
+    /// [`SourceChange::Everything`]; from then on a view reads the source
+    /// afresh.
+    fn is_exact(&self) -> bool;
+}
+
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 fn measured<T>(
     operation: impl FnOnce(&mut WorkCounters) -> Result<T, DemandError>,
@@ -236,6 +280,22 @@ pub trait DemandSource: Send + Sync {
         expected: SourceVersion,
         cancellation: &CancellationToken,
     ) -> DemandResult<Bytes>;
+
+    /// Starts reporting every change made to this source outside every view
+    /// of it to `sink`, when the host reports such changes exactly: `None`
+    /// when it cannot, and every view of the source then reads it afresh.
+    /// The answer holds for the source, not per request.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the host refuses a watch it would otherwise provide.
+    fn watch(
+        &self,
+        sink: std::sync::Arc<dyn SourceChangeSink>,
+    ) -> Result<Option<Box<dyn SourceWatch>>, DemandError> {
+        let _ = sink;
+        Ok(None)
+    }
 
     /// Read metadata without reading a file body.
     async fn read_metadata(
@@ -337,10 +397,45 @@ impl<D> FilteredDemandSource<D> {
     }
 }
 
+/// Forwards changes outside a filtered source's excluded subtrees, which no
+/// view of it can hold facts about.
+struct FilteredChangeSink {
+    excluded: std::sync::Arc<Vec<NamespacePath>>,
+    sink: std::sync::Arc<dyn SourceChangeSink>,
+}
+
+impl SourceChangeSink for FilteredChangeSink {
+    fn source_changed(&self, changes: &[SourceChange]) {
+        let visible = changes
+            .iter()
+            .filter(|change| match change {
+                SourceChange::Name(path) | SourceChange::Entry(path) => {
+                    !self.excluded.iter().any(|root| path.is_within(root))
+                }
+                SourceChange::Node(_) | SourceChange::Everything => true,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !visible.is_empty() {
+            self.sink.source_changed(&visible);
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl<D: DemandSource> DemandSource for FilteredDemandSource<D> {
     fn reference(&self) -> SourceReference {
         self.inner.reference()
+    }
+
+    fn watch(
+        &self,
+        sink: std::sync::Arc<dyn SourceChangeSink>,
+    ) -> Result<Option<Box<dyn SourceWatch>>, DemandError> {
+        self.inner.watch(std::sync::Arc::new(FilteredChangeSink {
+            excluded: std::sync::Arc::clone(&self.excluded),
+            sink,
+        }))
     }
 
     async fn lookup(
@@ -573,6 +668,9 @@ pub mod native {
         next_cursor: AtomicU64,
         requests: Arc<Semaphore>,
         observer: Option<Arc<dyn DemandDirectoryObserver>>,
+        /// Live change watches, which inotify admits directory by directory.
+        #[cfg(target_os = "linux")]
+        watches: std::sync::RwLock<Vec<std::sync::Weak<crate::source_watch::NativeSourceWatch>>>,
     }
 
     struct CancelWorkerOnDrop(CancellationToken);
@@ -764,15 +862,48 @@ pub mod native {
                     next_cursor: AtomicU64::new(0),
                     requests: Arc::new(Semaphore::new(MAXIMUM_NATIVE_REQUESTS)),
                     observer,
+                    #[cfg(target_os = "linux")]
+                    watches: std::sync::RwLock::new(Vec::new()),
                 }),
             })
         }
 
         fn observe_directory(&self, directory: &NamespacePath) -> Result<(), DemandError> {
+            self.admit_to_watches(directory)?;
             self.inner
                 .observer
                 .as_ref()
                 .map_or(Ok(()), |observer| observer.observe_directory(directory))
+        }
+
+        /// Watches `directory`, and every directory on the way to it, before
+        /// anything beneath it is read; returns whether a watch began
+        /// watching `directory` itself only now, after which a fact about it
+        /// read before must be read again.
+        #[cfg(target_os = "linux")]
+        fn admit_to_watches(&self, directory: &NamespacePath) -> Result<bool, DemandError> {
+            let live = self
+                .inner
+                .watches
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .filter_map(std::sync::Weak::upgrade)
+                .collect::<Vec<_>>();
+            if live.is_empty() {
+                return Ok(false);
+            }
+            let relative = self.relative(directory)?;
+            Ok(live
+                .iter()
+                .fold(false, |added, watch| watch.admit(&relative) || added))
+        }
+
+        /// One watch covers the whole root on every other host.
+        #[cfg(not(target_os = "linux"))]
+        #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+        fn admit_to_watches(&self, _directory: &NamespacePath) -> Result<bool, DemandError> {
+            Ok(false)
         }
 
         fn observe_parent(&self, path: &NamespacePath) -> Result<(), DemandError> {
@@ -1219,6 +1350,37 @@ pub mod native {
             }
         }
 
+        /// Watches a root on a local file system, whose changes all pass
+        /// through this kernel and so are all reported; a network or
+        /// user-space file system changes out of its sight.
+        fn watch(
+            &self,
+            sink: Arc<dyn SourceChangeSink>,
+        ) -> Result<Option<Box<dyn SourceWatch>>, DemandError> {
+            if !self.inner.inline {
+                return Ok(None);
+            }
+            let changes = Arc::new(NativeChanges {
+                inner: Arc::clone(&self.inner),
+                sink,
+            });
+            let watch = Arc::new(crate::source_watch::NativeSourceWatch::start(
+                &self.inner.root,
+                changes,
+            )?);
+            #[cfg(target_os = "linux")]
+            {
+                let mut watches = self
+                    .inner
+                    .watches
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                watches.retain(|watch| watch.strong_count() != 0);
+                watches.push(Arc::downgrade(&watch));
+            }
+            Ok(Some(Box::new(NativeWatch(watch))))
+        }
+
         async fn lookup(
             &self,
             source: SourceReference,
@@ -1231,7 +1393,14 @@ pub mod native {
                     provider.check(source, &request_cancellation)?;
                     provider.observe_parent(&path)?;
                     work.source_path_components = path.depth() as u64;
-                    let node = provider.metadata(&path)?.as_ref().map(Self::node);
+                    let mut node = provider.metadata(&path)?.as_ref().map(Self::node);
+                    // A directory's own facts (its listing's times and link
+                    // count) are reported only once it is watched itself.
+                    if node.is_some_and(|node| node.kind == SourceNodeKind::Directory)
+                        && provider.admit_to_watches(&path)?
+                    {
+                        node = provider.metadata(&path)?.as_ref().map(Self::node);
+                    }
                     provider.check(source, &request_cancellation)?;
                     Ok(node)
                 })
@@ -1405,6 +1574,107 @@ pub mod native {
         }
     }
 
+    /// The live watch of one native source.
+    struct NativeWatch(Arc<crate::source_watch::NativeSourceWatch>);
+
+    impl SourceWatch for NativeWatch {
+        fn fence(&self) -> Result<(), DemandError> {
+            self.0.fence().map_err(DemandError::Io)
+        }
+
+        fn is_exact(&self) -> bool {
+            self.0.is_exact()
+        }
+    }
+
+    /// Turns host reports into source changes: each path into its name in
+    /// the source's namespace and, where the host still names a node there,
+    /// that node.
+    struct NativeChanges {
+        inner: Arc<NativeDemandInner>,
+        sink: Arc<dyn SourceChangeSink>,
+    }
+
+    impl NativeChanges {
+        /// The longest prefix of `relative` the source can name, and whether
+        /// that is all of it: a name it cannot represent was never read
+        /// through it, but its directory changed with it.
+        fn name(&self, relative: &Path) -> (NamespacePath, bool) {
+            let limits = self.inner.limits;
+            let mut components = Vec::new();
+            for component in relative.components() {
+                let std::path::Component::Normal(name) = component else {
+                    break;
+                };
+                let Ok((encoding, bytes)) = crate::native_name::host_name_bytes(
+                    name,
+                    self.inner.profile,
+                    limits.maximum_component_bytes,
+                ) else {
+                    break;
+                };
+                let Ok(name) = crate::kernel::LogicalName::new(
+                    encoding,
+                    bytes,
+                    limits.maximum_component_bytes,
+                ) else {
+                    break;
+                };
+                components.push(name);
+            }
+            let mut exact = components.len() == relative.components().count();
+            loop {
+                if let Ok(path) = NamespacePath::new(components.clone(), limits) {
+                    return (path, exact);
+                }
+                exact = false;
+                components.pop();
+            }
+        }
+    }
+
+    impl crate::source_watch::HostChangeSink for NativeChanges {
+        fn host_changed(&self, changes: &[crate::source_watch::HostChange]) {
+            use crate::source_watch::HostChange;
+            let mut reported = Vec::with_capacity(changes.len() * 2);
+            for change in changes {
+                match change {
+                    HostChange::Everything => reported.push(SourceChange::Everything),
+                    #[cfg(windows)]
+                    HostChange::File(index) => reported.push(SourceChange::Node(
+                        windows_file_identity(self.inner.root.identity().device, *index),
+                    )),
+                    HostChange::Rebound(relative) | HostChange::Altered(relative) => {
+                        let (name, exact) = self.name(relative);
+                        // The name identifies its node only while it still
+                        // binds it; NTFS reports the node itself as well.
+                        let node = self
+                            .inner
+                            .root
+                            .stat(relative)
+                            .ok()
+                            .map(|metadata| file_identity(&metadata));
+                        // An entry altered in place that can no longer be
+                        // found may have been replaced meanwhile; the held
+                        // root cannot be.
+                        let altered = matches!(change, HostChange::Altered(_))
+                            && exact
+                            && (node.is_some() || name.is_root());
+                        reported.push(if altered {
+                            SourceChange::Entry(name)
+                        } else if name.is_root() {
+                            SourceChange::Everything
+                        } else {
+                            SourceChange::Name(name)
+                        });
+                        reported.extend(node.map(SourceChange::Node));
+                    }
+                }
+            }
+            self.sink.source_changed(&reported);
+        }
+    }
+
     #[cfg(unix)]
     fn os_string_bytes(value: &std::ffi::OsStr) -> Vec<u8> {
         use std::os::unix::ffi::OsStrExt as _;
@@ -1446,24 +1716,31 @@ pub mod native {
         SourceVersion(*hash.finalize().as_bytes())
     }
 
+    #[cfg(unix)]
     fn file_identity(metadata: &HostStat) -> [u8; 32] {
         let mut hash = blake3::Hasher::new();
         hash.update(b"acyclic-fs-native-source-file-v1\0");
-        #[cfg(unix)]
-        {
-            hash.update(&metadata.dev().to_le_bytes());
-            hash.update(&metadata.ino().to_le_bytes());
-        }
-        #[cfg(windows)]
-        {
-            hash.update(
-                &metadata
-                    .volume_serial_number()
-                    .unwrap_or_default()
-                    .to_le_bytes(),
-            );
-            hash.update(&metadata.file_index().unwrap_or_default().to_le_bytes());
-        }
+        hash.update(&metadata.dev().to_le_bytes());
+        hash.update(&metadata.ino().to_le_bytes());
+        *hash.finalize().as_bytes()
+    }
+
+    #[cfg(windows)]
+    fn file_identity(metadata: &HostStat) -> [u8; 32] {
+        windows_file_identity(
+            u64::from(metadata.volume_serial_number().unwrap_or_default()),
+            metadata.file_index().unwrap_or_default(),
+        )
+    }
+
+    /// The identity of the file with host index `index` on the volume whose
+    /// serial number is `volume`, as a lookup of it reports it.
+    #[cfg(windows)]
+    fn windows_file_identity(volume: u64, index: u64) -> [u8; 32] {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic-fs-native-source-file-v1\0");
+        hash.update(&u32::try_from(volume).unwrap_or_default().to_le_bytes());
+        hash.update(&index.to_le_bytes());
         *hash.finalize().as_bytes()
     }
 
@@ -1572,6 +1849,120 @@ mod tests {
             &portable,
             VolumeLimits::default(),
         )?)
+    }
+
+    /// Every source change delivered, in order.
+    #[derive(Default)]
+    struct RecordedChanges(Mutex<Vec<SourceChange>>);
+
+    impl SourceChangeSink for RecordedChanges {
+        fn source_changed(&self, changes: &[SourceChange]) {
+            if let Ok(mut recorded) = self.0.lock() {
+                recorded.extend_from_slice(changes);
+            }
+        }
+    }
+
+    impl RecordedChanges {
+        fn take(&self) -> Result<Vec<SourceChange>, Box<dyn Error>> {
+            Ok(std::mem::take(
+                &mut *self.0.lock().map_err(|_| "recording poisoned")?,
+            ))
+        }
+    }
+
+    /// A native source reports each change by the name it touched and by
+    /// the node that name still binds, which reaches the node's other names.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("d"))?;
+        std::fs::write(root.path().join("f"), b"one")?;
+        let source = NativeDemandSource::open(
+            root.path(),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        )
+        .await?;
+        let recorded = Arc::new(RecordedChanges::default());
+        let watch = source
+            .watch(recorded.clone())?
+            .ok_or("a local root is watched")?;
+        let cancellation = CancellationToken::new();
+        let node = source
+            .lookup(source.reference(), &path("/f")?, &cancellation)
+            .await?
+            .value
+            .ok_or("f is present")?;
+        // Reading beneath a directory watches it where the host needs that.
+        assert!(
+            source
+                .lookup(source.reference(), &path("/d/x")?, &cancellation)
+                .await?
+                .value
+                .is_none()
+        );
+
+        std::fs::write(root.path().join("f"), b"changed")?;
+        std::fs::write(root.path().join("d").join("x"), b"x")?;
+        watch.fence()?;
+        let changes = recorded.take()?;
+        // `FSEvents` may coalesce the file's recent creation into its write,
+        // which reports the name rebound rather than its entry altered.
+        assert!(
+            changes.contains(&SourceChange::Entry(path("/f")?))
+                || cfg!(target_os = "macos") && changes.contains(&SourceChange::Name(path("/f")?)),
+            "{changes:?}"
+        );
+        assert!(
+            changes.contains(&SourceChange::Node(node.file_identity)),
+            "{changes:?}"
+        );
+        assert!(
+            changes.contains(&SourceChange::Name(path("/d/x")?)),
+            "{changes:?}"
+        );
+        assert!(!changes.contains(&SourceChange::Everything));
+        assert!(watch.is_exact());
+        Ok(())
+    }
+
+    /// Changes beneath an excluded subtree are invisible, as its entries are.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_filtered_source_reports_nothing_beneath_its_exclusions() -> Result<(), Box<dyn Error>>
+    {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join(".git"))?;
+        let source = FilteredDemandSource::new(
+            NativeDemandSource::open(
+                root.path(),
+                FilesystemProfile::Portable,
+                VolumeLimits::default(),
+            )
+            .await?,
+            vec![path("/.git")?],
+        );
+        let recorded = Arc::new(RecordedChanges::default());
+        let watch = source
+            .watch(recorded.clone())?
+            .ok_or("a local root is watched")?;
+        std::fs::write(root.path().join(".git").join("index"), b"x")?;
+        std::fs::write(root.path().join("visible"), b"x")?;
+        watch.fence()?;
+        let changes = recorded.take()?;
+        let excluded = path("/.git")?;
+        assert!(
+            changes.contains(&SourceChange::Name(path("/visible")?)),
+            "{changes:?}"
+        );
+        assert!(
+            !changes.iter().any(|change| matches!(
+                change,
+                SourceChange::Name(name) | SourceChange::Entry(name) if name.is_within(&excluded)
+            )),
+            "{changes:?}"
+        );
+        Ok(())
     }
 
     #[cfg(unix)]

@@ -19,6 +19,22 @@
 //!   lock by process: two descriptors that one process opened never exclude
 //!   each other with `flock`, whereas APFS gives each open file description
 //!   its own `flock`. `fcntl` record locks are per process on both.
+//!
+//! # A lazy mount's source
+//!
+//! A lazy mount projects a source directory that changes outside it. A
+//! source on a local file system reports each change (inotify, `FSEvents`,
+//! or `ReadDirectoryChangesExW`), and the mount records the report in its
+//! view exactly as it records its own changes: every answer the mount or
+//! the kernel remembered holds until a change to what it depends on is
+//! reported, and drivers drop what the report superseded, as they do for
+//! any change made around the mount. A change takes effect in the mount
+//! when its report is recorded, shortly after the host operation returned;
+//! [`NativeMountSession::revalidate`] (and `LazyMount::revalidate`) waits
+//! until every change completed before it is visible. See the
+//! `source_watch` module for the exactness argument. A source the host
+//! cannot watch (a network or user-space file system) is read afresh
+//! behind every remembered answer, and nothing of it is cached.
 
 use crate::kernel::FileMetadata;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -658,6 +674,19 @@ pub trait MountFilesystem: Send + Sync + 'static {
     /// holds, so a source that returns view stamps must report every change
     /// here. Sources without stamps are never cached and need not.
     fn observe_view(&self, _observer: std::sync::Weak<dyn ViewObserver>) {}
+
+    /// Returns once every change made to what this source projects outside
+    /// every view of it, and completed before the call, is recorded in the
+    /// view. A driver calls it before it brings kernel caches in line with
+    /// the view. Sources whose content changes only through their own
+    /// methods, or that are never cached, have nothing to wait for.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed failure when the changes cannot be read.
+    fn fence_changes(&self) -> Result<(), MountSourceError> {
+        Ok(())
+    }
 
     /// Changes only when existing path or handle bindings may be replaced by
     /// an external source transition. Ordinary mutations never change it;

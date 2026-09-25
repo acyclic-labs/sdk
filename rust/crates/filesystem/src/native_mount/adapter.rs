@@ -1,7 +1,7 @@
 //! One native callback adapter for every embedded checkout consumer.
 
 use super::view_gate::{ViewGate, ViewReadLease, ViewWriteLease};
-use super::view_ledger::{Installed, ViewChange, ViewLedger, ViewStamp};
+use super::view_ledger::{ViewChange, ViewEffect, ViewLedger, ViewStamp};
 use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
@@ -896,7 +896,7 @@ impl<A, O> SharedCheckoutState<A, O> {
     pub(super) fn install_candidate(
         &mut self,
         candidate: CheckoutCandidate<A, O>,
-        installed: &Installed,
+        installed: &ViewEffect,
     ) -> bool {
         if !self
             .checkout
@@ -904,7 +904,7 @@ impl<A, O> SharedCheckoutState<A, O> {
         {
             return false;
         }
-        self.record(&ViewChange::Installed(installed));
+        self.record(&ViewChange::Effect(installed));
         true
     }
 
@@ -1010,7 +1010,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutCandidate<A, O> {
         &self,
         scope: InstallScope<'_>,
         cancellation: &CancellationToken,
-    ) -> Installed {
+    ) -> ViewEffect {
         installed_changes(&self.base, &self.checkout, scope, cancellation).await
     }
 
@@ -1046,7 +1046,7 @@ async fn installed_changes<A, O>(
     candidate: &Checkout<A, O>,
     scope: InstallScope<'_>,
     cancellation: &CancellationToken,
-) -> Installed
+) -> ViewEffect
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -1063,9 +1063,9 @@ where
         {
             Ok(receipt) if !receipt.value.truncated => receipt.value,
             _ => {
-                return Installed {
+                return ViewEffect {
                     everything: true,
-                    ..Installed::default()
+                    ..ViewEffect::default()
                 };
             }
         };
@@ -1088,13 +1088,13 @@ where
                 }
             }
         }
-        let mut installed = Installed {
+        let mut installed = ViewEffect {
             nodes: diff
                 .files
                 .into_iter()
                 .map(|change| change.file_id)
                 .collect(),
-            ..Installed::default()
+            ..ViewEffect::default()
         };
         for binding in diff.bindings {
             match (directories.get(&binding.directory_id), scope) {
@@ -2106,13 +2106,13 @@ impl<A, O> CheckoutMountSource<A, O> {
                 )
                 .await
             }
-            Err(_) => Installed {
+            Err(_) => ViewEffect {
                 everything: true,
-                ..Installed::default()
+                ..ViewEffect::default()
             },
         };
         self.checkout.view_gate.begin_transition();
-        checkout.record(&ViewChange::Installed(&installed));
+        checkout.record(&ViewChange::Effect(&installed));
         self.checkout.view_gate.finish_transition();
     }
 
@@ -3728,7 +3728,7 @@ mod tests {
                     .checkout
                     .lock()
                     .await
-                    .install_candidate(candidate, &Installed::default()),
+                    .install_candidate(candidate, &ViewEffect::default()),
             )
         })?;
         assert!(!installed, "a candidate installed over a publication");

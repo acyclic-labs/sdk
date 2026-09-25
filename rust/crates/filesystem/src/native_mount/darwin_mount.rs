@@ -1277,7 +1277,14 @@ impl DarwinMountSession {
 
     /// See [`DarwinMountContext::revalidate`].
     pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
-        self.resources()?.context().revalidate();
+        let context = self.resources()?.context();
+        // Every change made to the source before this call is recorded, and
+        // so counted as made around the mount, before the wait begins.
+        context
+            .source
+            .fence_changes()
+            .map_err(|error| NativeMountError::Driver(error.to_string()))?;
+        context.revalidate();
         Ok(())
     }
 

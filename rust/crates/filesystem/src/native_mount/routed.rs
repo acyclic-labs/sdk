@@ -596,6 +596,17 @@ impl MountFilesystem for RoutedMountSource {
         self.observers.add(observer);
     }
 
+    fn fence_changes(&self) -> Result<(), MountSourceError> {
+        let routes = self
+            .routes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .map(|route| Arc::clone(&route.source))
+            .collect::<Vec<_>>();
+        routes.iter().try_for_each(|source| source.fence_changes())
+    }
+
     fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
         stamp.precedes_none_of(&self.routes_changed)
             && match self.route(path) {

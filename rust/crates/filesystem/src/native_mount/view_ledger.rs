@@ -179,21 +179,25 @@ pub(super) enum ViewChange<'a> {
         moved: FileId,
         replaced: Option<FileId>,
     },
-    /// A prepared candidate replaced the checkout with this exact effect.
-    Installed(&'a Installed),
+    /// An effect enumerated in full: a prepared candidate replaced the
+    /// checkout, or the source reported changes made to it outside the view.
+    Effect(&'a ViewEffect),
     /// An effect set that cannot be enumerated, such as a rebind.
     Everything,
 }
 
-/// The exact effect of installing a candidate prepared from a copy of the
-/// checkout, as the generation diff between the two reports it.
+/// One enumerated effect on the view: installing a candidate prepared from
+/// a copy of the checkout, as the generation diff between the two reports
+/// it, or changes the source reported having happened to it.
 #[derive(Default)]
-pub(super) struct Installed {
+pub(super) struct ViewEffect {
     /// Nodes whose record changed.
     pub(super) nodes: Vec<FileId>,
     /// Names bound, unbound, or rebound within a directory at a known path.
     pub(super) names: Vec<(NamespacePath, LogicalName)>,
-    /// Paths beneath which names changed in directories at unknown paths.
+    /// Names rebound together with everything reached through them, as
+    /// when names changed in directories at unknown paths beneath one, or
+    /// the source reported a change to the entry a name binds.
     pub(super) subtrees: Vec<NamespacePath>,
     /// Directories whose listing changed while every name in them still
     /// resolves as it did, as when promotion moves a name's answer from the
@@ -240,7 +244,10 @@ impl ViewLedger {
     }
 
     /// Records one change at one fresh position. Callers hold the exclusive
-    /// view of what changed, so no lookup overlaps the change it records.
+    /// view of what changed, so no lookup overlaps the change it records;
+    /// a change the source reported was made before it is recorded, so a
+    /// lookup that overlaps it read the source either before it, and is
+    /// invalidated here, or after it, and is already current.
     pub(super) fn record(&self, change: &ViewChange<'_>) {
         let position = ViewStamp::next();
         match change {
@@ -263,22 +270,22 @@ impl ViewLedger {
                     self.node_changed(*replaced, position);
                 }
             }
-            ViewChange::Installed(installed) => {
-                for file_id in &installed.nodes {
+            ViewChange::Effect(effect) => {
+                for file_id in &effect.nodes {
                     self.node_changed(*file_id, position);
                 }
-                for (directory, name) in &installed.names {
+                for (directory, name) in &effect.names {
                     let directory = path_key(directory);
                     self.bindings.record(child_key(directory, name), position);
                     self.directories.record(directory, position);
                 }
-                for subtree in &installed.subtrees {
+                for subtree in &effect.subtrees {
                     self.rebound(subtree, position);
                 }
-                for directory in &installed.listings {
+                for directory in &effect.listings {
                     self.directories.record(path_key(directory), position);
                 }
-                if installed.everything {
+                if effect.everything {
                     position.record_in(&self.everything);
                 }
             }
