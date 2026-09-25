@@ -1,5 +1,5 @@
 //! Durable content retention across workspace advances, restart, and local GC.
-
+#![allow(clippy::too_many_lines)]
 #![cfg(feature = "local")]
 
 use acyclic_fs::{CancellationToken, Fs, LocalOptions, WorkBudget};

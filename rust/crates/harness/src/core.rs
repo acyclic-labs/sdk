@@ -1165,6 +1165,10 @@ impl Reducer {
     ///
     /// Hosts append the returned event to Stream and call [`Self::apply_committed`]
     /// only after the append is known to have committed.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one deterministic admission transition"
+    )]
     pub fn plan(&self, command: &Command) -> Result<ApplyResult> {
         self.authority_verifier.verify_audience(&self.authority)?;
         IdempotencyKey::new(command.idempotency_key.0.clone())?;
@@ -1238,14 +1242,13 @@ impl Reducer {
             }
             self.require_fresh_fork(seed)?;
         }
-        if let Action::PublishProjectMerge { receipt } = &command.action {
-            if receipt.operation_id != command.operation_id
-                || command.scope.agent() != self.conversation.agent
-            {
-                return Err(Error::Unauthorized(
-                    "merge receipt is not bound to the parent agent and operation".into(),
-                ));
-            }
+        if let Action::PublishProjectMerge { receipt } = &command.action
+            && (receipt.operation_id != command.operation_id
+                || command.scope.agent() != self.conversation.agent)
+        {
+            return Err(Error::Unauthorized(
+                "merge receipt is not bound to the parent agent and operation".into(),
+            ));
         }
         validate_causal_parent(
             &self.authority,
@@ -1394,7 +1397,13 @@ impl Reducer {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "fork publication checks one complete seed"
+    )]
     fn validate_fork_reference_ownership(&self, seed: &ForkSeed) -> Result<()> {
+        let inherited_count = usize::try_from(seed.inherited_through_sequence)
+            .map_err(|_| Error::Invalid("inherited conversation prefix is too large".into()))?;
         let parent_agent = self
             .conversation
             .agent
@@ -1442,12 +1451,7 @@ impl Reducer {
         }
         let mut published_refs = std::collections::BTreeMap::new();
         let mut published_manifests = std::collections::BTreeSet::new();
-        for message in self
-            .conversation
-            .messages
-            .iter()
-            .take(seed.inherited_through_sequence as usize)
-        {
+        for message in self.conversation.messages.iter().take(inherited_count) {
             let mut retain = |file: &crate::conversation::FileRef| -> Result<()> {
                 published_refs.insert(file.read_capability()?, file.clone());
                 Ok(())
@@ -1516,24 +1520,24 @@ impl Reducer {
                     _ => false,
                 })
             {
-                let published = self
-                    .conversation
-                    .messages
-                    .iter()
-                    .take(seed.inherited_through_sequence as usize)
-                    .any(|message| {
-                        message.content == *file
-                            || match &message.attachments {
-                                crate::conversation::ReferencedAttachments::Inline { items } => {
-                                    items.iter().any(|item| item.file == *file)
+                let published =
+                    self.conversation
+                        .messages
+                        .iter()
+                        .take(inherited_count)
+                        .any(|message| {
+                            message.content == *file
+                                || match &message.attachments {
+                                    crate::conversation::ReferencedAttachments::Inline {
+                                        items,
+                                    } => items.iter().any(|item| item.file == *file),
+                                    crate::conversation::ReferencedAttachments::Manifest {
+                                        manifest,
+                                        ..
+                                    } => manifest == file,
                                 }
-                                crate::conversation::ReferencedAttachments::Manifest {
-                                    manifest,
-                                    ..
-                                } => manifest == file,
-                            }
-                            || message.extensions.values().any(|value| value == file)
-                    });
+                                || message.extensions.values().any(|value| value == file)
+                        });
                 match &grant.attachment_manifest {
                     None if !published => {
                         return Err(Error::Invalid(
@@ -2427,7 +2431,7 @@ mod tests {
             kind: AggregateKind::Conversation,
             id: "conversation-1".into(),
         };
-        let mut reducer = Reducer::new(authority.clone(), issuer().verifier(), schemas());
+        let mut reducer = Reducer::new(authority, issuer().verifier(), schemas());
         let planned = reducer.plan(&command(
             operation(19),
             0,
@@ -3296,7 +3300,7 @@ mod tests {
         };
         reducer.apply_committed(event)?;
         assert_eq!(reducer.fork(&child), Some(&seed));
-        let mut reused_private = seed.clone();
+        let mut reused_private = seed;
         reused_private.operation_id = operation(9);
         reused_private.child.id = "conversation-3".into();
         reused_private.parent_revision = 2;

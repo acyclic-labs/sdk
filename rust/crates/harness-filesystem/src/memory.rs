@@ -214,6 +214,10 @@ impl MemoryHarnessStorage {
     /// commit before model dispatch; the assistant record commits afterward.
     /// Retrying the same operation recovers both records and the exact
     /// previously selected context rather than silently selecting newer history.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one complete idempotent conversation turn"
+    )]
     pub async fn run_conversation(
         &self,
         bundle: &acyclic_harness::bundle::HarnessBundle,
@@ -236,8 +240,7 @@ impl MemoryHarnessStorage {
         let referenced = if attachments.len() <= 128 {
             ReferencedAttachments::Inline { items: attachments }
         } else {
-            let manifest = self
-                .host
+            self.host
                 .put_attachment_manifest(
                     &self.volume,
                     &self.write,
@@ -246,8 +249,7 @@ impl MemoryHarnessStorage {
                     self.maximum_file_bytes,
                     &IdempotencyKey::new(format!("conversation:{operation_id}:attachments"))?,
                 )
-                .await?;
-            manifest
+                .await?
         };
         let user_operation = derived_operation_id(operation_id, b"conversation-user");
         let user_id = Uuid::from_bytes(user_operation.into_bytes());
@@ -315,7 +317,11 @@ impl MemoryHarnessStorage {
                 .iter()
                 .position(|message| message.id == user_id)
                 .ok_or_else(|| Error::Storage("admitted user message is missing".into()))?;
-            let mut ids = state.messages[..=current]
+            let prefix = state
+                .messages
+                .get(..=current)
+                .ok_or_else(|| Error::Storage("admitted user message is missing".into()))?;
+            let mut ids = prefix
                 .iter()
                 .filter(|message| {
                     matches!(
@@ -335,7 +341,7 @@ impl MemoryHarnessStorage {
             // A bounded suffix can start inside a tool exchange. Never hand a
             // provider a result whose precise call fell outside the window.
             let included = ids.iter().copied().collect::<HashSet<_>>();
-            let by_id = state.messages[..=current]
+            let by_id = prefix
                 .iter()
                 .map(|message| (message.id, message))
                 .collect::<HashMap<_, _>>();
@@ -825,7 +831,6 @@ mod tests {
     use super::*;
     use acyclic_harness::{
         Outcome,
-        executor::TurnInput,
         model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
         runtime::{TaskDefinition, TaskRegistry},
     };

@@ -34,6 +34,10 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     /// Binds the exact conversation authority and an agent-private content owner.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "binds each conversation, volume, and signed authority boundary"
+    )]
     pub fn new(
         stream: StreamClient<P>,
         host: Arc<FilesystemHost<A, O>>,

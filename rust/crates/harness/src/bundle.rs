@@ -121,6 +121,10 @@ impl ToolProjection for HostedCodingTool {
 }
 
 /// Constructs the complete validated coding registry over one explicit host boundary.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the registry owns cloned host handles"
+)]
 pub fn coding_tools(host: Arc<dyn CodingToolHost>) -> Result<ToolRegistry> {
     let mut registry = ToolRegistry::new();
     for &(name, description) in CODING_TOOLS {

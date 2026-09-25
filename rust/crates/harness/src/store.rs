@@ -509,10 +509,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
     /// retain the original command and operation identity until it resolves.
     pub async fn reconcile(&mut self, command: &Command) -> Result<Option<ApplyResult>> {
         let result = self.reconcile_inner(command).await?;
-        if result.is_some() {
-            if let crate::core::Action::PublishFork { seed } = &command.action {
-                self.release_replayed_fork_fence(seed).await?;
-            }
+        if result.is_some()
+            && let crate::core::Action::PublishFork { seed } = &command.action
+        {
+            self.release_replayed_fork_fence(seed).await?;
         }
         Ok(result)
     }

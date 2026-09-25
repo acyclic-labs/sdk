@@ -1,4 +1,9 @@
 //! End-to-end recursive fork qualification across Stream and Filesystem.
+#![allow(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    clippy::indexing_slicing
+)]
 
 use acyclic_fs::{ConflictSide, Fs, JoinOutcome};
 use acyclic_harness::conversation::{

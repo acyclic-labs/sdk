@@ -19,6 +19,10 @@ pub const SUITE: &[u8] = include_bytes!("../conformance/stream.json");
               assertion, and splitting it would only move the same sequential checks behind \
               indirection"
 )]
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "the linear provider conformance walkthrough keeps each assertion visible"
+)]
 pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     if SUITE.is_empty() {
         return Err("Stream conformance inventory is empty".into());
@@ -147,9 +151,10 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         })
         .await
         .map_err(|err| error(&err))?;
-    if first_page.children.len() != 1
-        || first_page.next_after.as_ref() != Some(&first_page.children[0].path)
-    {
+    let [first_child] = first_page.children.as_slice() else {
+        return Err("first hierarchy page did not expose one child".into());
+    };
+    if first_page.next_after.as_ref() != Some(&first_child.path) {
         return Err("first hierarchy page did not expose a continuation".into());
     }
     let final_page = provider
@@ -161,10 +166,10 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         })
         .await
         .map_err(|err| error(&err))?;
-    if final_page.children.len() != 1
-        || final_page.next_after.is_some()
-        || final_page.children[0].path == first_page.children[0].path
-    {
+    let [final_child] = final_page.children.as_slice() else {
+        return Err("final hierarchy page did not expose one child".into());
+    };
+    if final_page.next_after.is_some() || final_child.path == first_child.path {
         return Err("hierarchy pagination duplicated or omitted a child".into());
     }
     provider

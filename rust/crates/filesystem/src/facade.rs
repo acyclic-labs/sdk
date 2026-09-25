@@ -173,6 +173,10 @@ impl<A, O> WorkspaceJoinRequest<'_, A, O> {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "join digest binds every checked Filesystem generation and limit"
+)]
 fn workspace_join_context(
     source_workspace: VolumeId,
     source_generation: GenerationId,

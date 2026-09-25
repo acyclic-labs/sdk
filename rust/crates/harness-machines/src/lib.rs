@@ -1,4 +1,5 @@
 #![deny(unsafe_code)]
+#![cfg_attr(test, allow(clippy::indexing_slicing, clippy::too_many_lines))]
 #![doc = include_str!("../README.md")]
 
 use acyclic_harness::{

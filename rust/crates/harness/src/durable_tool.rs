@@ -35,6 +35,10 @@ impl DurableToolRunner {
     }
 
     /// Executes with the already admitted typed context supplied by a durable task host.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the tool journal state machine is one ordered reconciliation"
+    )]
     pub async fn run_with_context(
         &self,
         task_id: TaskId,
@@ -90,7 +94,7 @@ impl DurableToolRunner {
                         && failed.is_none()
                         && *request_digest == digest =>
                 {
-                    started = true
+                    started = true;
                 }
                 ExecutionEvent::ToolStarted {
                     step: 0,
@@ -129,7 +133,7 @@ impl DurableToolRunner {
                     && failed.is_none()
                     && *call_id == invocation.call_id =>
                 {
-                    failed = Some(*reason)
+                    failed = Some(*reason);
                 }
                 _ => {
                     return Err(Error::Conflict(
@@ -172,9 +176,9 @@ impl DurableToolRunner {
             // Re-read the tail after the Started append. Only a linearizable
             // provider may award execution to this process.
             let current = self.journal.replay(operation_id).await?;
-            if current.len() == 1
-                && matches!(&current[0].event,
-                ExecutionEvent::Started { request_digest } if *request_digest == digest)
+            if matches!(current.as_slice(), [record]
+                if matches!(&record.event,
+                    ExecutionEvent::Started { request_digest } if *request_digest == digest))
             {
                 claimed = match self
                     .journal
@@ -196,28 +200,16 @@ impl DurableToolRunner {
                     }
                     Err(error) => return Err(error),
                 };
-            } else if current.len() < 2
-                || !matches!(&current[1].event,
-                ExecutionEvent::ToolStarted { step: 0, call_id, .. } if *call_id == invocation.call_id)
+            } else if !matches!(current.get(1).map(|record| &record.event),
+                Some(ExecutionEvent::ToolStarted { step: 0, call_id, .. })
+                    if *call_id == invocation.call_id)
             {
                 return Err(Error::Conflict(
                     "durable tool journal changed before dispatch".into(),
                 ));
             }
         }
-        let result = if !claimed {
-            let reconciled = match tool.executor.reconcile(invocation.clone()).await {
-                Ok(result) => result,
-                Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
-                    return Ok(Outcome::Indeterminate { operation_id });
-                }
-                Err(error) => return Err(error),
-            };
-            match reconciled {
-                Some(result) => result,
-                None => return Ok(Outcome::Indeterminate { operation_id }),
-            }
-        } else {
+        let result = if claimed {
             let executed = match context {
                 Some(context) => {
                     tool.executor
@@ -237,23 +229,32 @@ impl DurableToolRunner {
                         .await;
                 }
             }
+        } else {
+            let reconciled = match tool.executor.reconcile(invocation.clone()).await {
+                Ok(result) => result,
+                Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                    return Ok(Outcome::Indeterminate { operation_id });
+                }
+                Err(error) => return Err(error),
+            };
+            match reconciled {
+                Some(result) => result,
+                None => return Ok(Outcome::Indeterminate { operation_id }),
+            }
         };
         if validate_value(&definition.output_schema, &result.value, "tool output").is_err() {
             return self
                 .fail(operation_id, &invocation, ToolFailureKind::InvalidOutput)
                 .await;
         }
-        let projection = match tool.projection.project(&invocation, &result) {
-            Ok(projection) => projection,
-            Err(_) => {
-                return self
-                    .fail(
-                        operation_id,
-                        &invocation,
-                        ToolFailureKind::ProjectionRejected,
-                    )
-                    .await;
-            }
+        let Ok(projection) = tool.projection.project(&invocation, &result) else {
+            return self
+                .fail(
+                    operation_id,
+                    &invocation,
+                    ToolFailureKind::ProjectionRejected,
+                )
+                .await;
         };
         let result_ref =
             match stage_json(self.journal.as_ref(), operation_id, "tool:result", &result).await {

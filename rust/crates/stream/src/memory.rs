@@ -1661,7 +1661,11 @@ mod tests {
             }
         }
         assert_eq!(found.len(), 2_049);
-        assert!(found.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(
+            found
+                .windows(2)
+                .all(|pair| matches!(pair, [left, right] if left < right))
+        );
         Ok(())
     }
 

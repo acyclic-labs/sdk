@@ -1,4 +1,5 @@
 #![deny(unsafe_code)]
+#![cfg_attr(test, allow(clippy::too_many_lines, clippy::indexing_slicing))]
 #![doc = include_str!("../README.md")]
 
 use acyclic_fs::kernel::{FileKind, LogicalName};
@@ -648,7 +649,7 @@ where
                             };
                             match entry.kind {
                                 FileKind::Directory if expected_directories.contains(&path) => {
-                                    pending.push(path)
+                                    pending.push(path);
                                 }
                                 FileKind::Regular if expected.contains(&path) => {
                                     observed.insert(path);
@@ -908,9 +909,13 @@ pub struct ParentMergePlan<A, O> {
 /// Prepared child-owned prefix and the exact read grants needed by every
 /// attached reader. Feed these fields into the parent-controlled `ForkReport`.
 pub struct InheritedContextCapture {
+    /// Child-owned inherited context file.
     pub file: FileRef,
+    /// Pinned child-private generation containing the file.
     pub generation: GenerationRef,
+    /// Exact attached-reader grants for referenced files.
     pub reference_grants: Vec<ReferenceGrant>,
+    /// Pinned attachment-list manifests admitted with the context.
     pub attachment_manifests: Vec<FileRef>,
 }
 
@@ -980,6 +985,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
     /// Materializes an exact bounded parent prefix into a fresh child-private
     /// workspace. Only the parent controller can write this reserved path;
     /// ordinary agent file staging rejects every `.system` path.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "materializes one exact bounded parent prefix"
+    )]
     pub async fn materialize_inherited_conversation(
         &self,
         parent: &Reducer,
@@ -1253,15 +1263,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         notice: acyclic_harness::conversation::ConversationMessage,
     ) -> Result<ProjectMergeReceipt> {
         self.require_merge_plan(plan)?;
-        let application = match outcome {
-            JoinOutcome::Applied(generation) | JoinOutcome::AlreadyApplied(generation) => {
-                generation
-            }
-            _ => {
-                return Err(Error::Conflict(
-                    "project join did not publish a result".into(),
-                ));
-            }
+        let (JoinOutcome::Applied(application) | JoinOutcome::AlreadyApplied(application)) =
+            outcome
+        else {
+            return Err(Error::Conflict(
+                "project join did not publish a result".into(),
+            ));
         };
         let witness = plan
             .plan
@@ -1551,6 +1558,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     #[allow(
         clippy::too_many_arguments,
+        clippy::too_many_lines,
         reason = "one implementation pins the complete staged file contract"
     )]
     async fn put_content_impl(

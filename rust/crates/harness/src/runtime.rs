@@ -297,6 +297,10 @@ pub trait DurableTaskHost: Send + Sync {
     }
 
     /// Admits or reconciles one exact implementation and input.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "durable task admission binds each identity and dependency"
+    )]
     fn admit<'a>(
         &'a self,
         operation_id: OperationId,
@@ -427,19 +431,10 @@ pub trait InteractionRouter: Send + Sync {
 }
 
 /// Effective runtime authority and bounds; child scopes may only narrow them.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct RuntimeScope {
     grants: Capabilities,
     limits: Limits,
-}
-
-impl Default for RuntimeScope {
-    fn default() -> Self {
-        Self {
-            grants: Capabilities::default(),
-            limits: Limits::default(),
-        }
-    }
 }
 
 impl RuntimeScope {
@@ -701,6 +696,10 @@ pub(crate) fn validate_policy_identity(identity: &ComponentIdentity) -> Result<(
     Ok(())
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the terminal outcome is consumed by this admission boundary"
+)]
 pub(crate) fn check_tool_approval(outcome: InteractionOutcome) -> Result<()> {
     match outcome {
         InteractionOutcome::Approved => Ok(()),
@@ -821,6 +820,10 @@ impl AgentHarness {
     }
 
     /// Seals a replaceable tool policy into the immutable runtime composition.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each independently replaceable runtime boundary is explicit"
+    )]
     pub fn with_policy(
         tasks: TaskRegistry,
         tools: ToolRegistry,
@@ -1111,6 +1114,11 @@ impl AgentHarness {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "validates the complete immutable task dependency graph"
+)]
 fn validate_task_dependencies(
     tasks: &TaskRegistry,
     tools: &ToolRegistry,
@@ -1120,6 +1128,10 @@ fn validate_task_dependencies(
     content: Option<&ContentBindings>,
     has_policy: bool,
 ) -> Result<()> {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "walk context remains explicit for dependency validation"
+    )]
     fn visit(
         key: &(String, String),
         tasks: &TaskRegistry,

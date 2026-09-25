@@ -13,6 +13,7 @@ pub const MAXIMUM_EVALUATION_METRICS: usize = 64;
 /// Largest materialized result set.
 pub const MAXIMUM_EVALUATION_RESULTS: u64 = 65_536;
 
+#[derive(Clone, Copy)]
 pub(crate) enum Error {
     Invalid(&'static str),
 }

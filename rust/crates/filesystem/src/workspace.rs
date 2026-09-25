@@ -124,6 +124,7 @@ impl WorkspaceId {
         self.0
     }
 
+    /// Returns the volume identity represented by this workspace identity.
     pub const fn volume_id(self) -> VolumeId {
         VolumeId::from_bytes(self.0)
     }

@@ -99,6 +99,10 @@ pub struct CoordinatorTaskHost<P> {
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     /// Binds a trusted owner and immutable admission payload provider.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each provider boundary is explicit at construction"
+    )]
     pub fn new(
         coordinator: DistributedCoordinator<P>,
         stream: StreamClient<P>,
@@ -151,7 +155,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     /// Pins the policy enforced by this owner, independently of caller contexts.
-    #[must_use]
     pub fn with_policy(mut self, policy: Arc<dyn ToolPolicy>) -> Result<Self> {
         validate_policy_identity(&policy.identity())?;
         self.policy = Some(policy);
@@ -284,10 +287,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     .try_collect::<Vec<_>>()
                     .await
                     .map_err(|error| Error::Storage(error.to_string()))?;
-                if records.len() != 1
-                    || records[0].sequence != receipt.start
-                    || records[0].commit_id != receipt.commit_id
-                    || records[0].value.as_ref() != bytes
+                let [record] = records.as_slice() else {
+                    return Err(Error::Conflict(
+                        "control publication differs from its committed record".into(),
+                    ));
+                };
+                if record.sequence != receipt.start
+                    || record.commit_id != receipt.commit_id
+                    || record.value.as_ref() != bytes
                 {
                     return Err(Error::Conflict(
                         "control publication differs from its committed record".into(),
@@ -576,7 +583,9 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             if after > bounds.tail {
                 return Err(Error::Invalid("inbox cursor is beyond the tail".into()));
             }
-            let page = match mailbox.read(after, limit as u32).await {
+            let page_limit = u32::try_from(limit)
+                .map_err(|_| Error::Invalid("inbox page bound is invalid".into()))?;
+            let page = match mailbox.read(after, page_limit).await {
                 Ok(records) => records
                     .try_collect::<Vec<_>>()
                     .await

@@ -1,3 +1,6 @@
+//! Durable workflow journal qualification.
+#![allow(clippy::indexing_slicing)]
+
 use acyclic_fs::Fs;
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, OperationId, Result,

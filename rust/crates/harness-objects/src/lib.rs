@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![cfg_attr(test, allow(clippy::too_many_lines))]
 
 use acyclic_harness::{
     Error, OperationId, Result,
@@ -28,6 +29,10 @@ pub struct ObjectContentStore {
 
 impl ObjectContentStore {
     /// Checks bucket identity and the signed reader/writer scope before use.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "binds each independent Objects authority and volume boundary"
+    )]
     pub async fn new(
         objects: Arc<dyn ObjectsProvider>,
         bucket: wire::BucketRef,
@@ -275,6 +280,10 @@ impl ContentResidencyVerifier for ObjectContentStore {
     }
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "maps the owned provider error at async boundaries"
+)]
 fn storage(error: acyclic_objects::ObjectsError) -> Error {
     Error::Storage(error.to_string())
 }

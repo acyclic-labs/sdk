@@ -1,4 +1,5 @@
 //! Ref-only durable executor observations across Stream and Filesystem.
+#![allow(clippy::too_many_lines, clippy::indexing_slicing)]
 
 use acyclic_fs::Fs;
 use acyclic_harness::{

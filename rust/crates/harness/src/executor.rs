@@ -810,21 +810,18 @@ impl StockExecutor {
                     ToolFailureKind::InvalidOutput.message().into(),
                 ));
             }
-            let projection = match tool.projection.project(&invocation, &result) {
-                Ok(projection) => projection,
-                Err(_) => {
-                    self.record_tool_failure(
-                        journal,
-                        operation_id,
-                        step,
-                        &invocation.call_id,
-                        ToolFailureKind::ProjectionRejected,
-                    )
-                    .await?;
-                    return Err(Error::Invalid(
-                        ToolFailureKind::ProjectionRejected.message().into(),
-                    ));
-                }
+            let Ok(projection) = tool.projection.project(&invocation, &result) else {
+                self.record_tool_failure(
+                    journal,
+                    operation_id,
+                    step,
+                    &invocation.call_id,
+                    ToolFailureKind::ProjectionRejected,
+                )
+                .await?;
+                return Err(Error::Invalid(
+                    ToolFailureKind::ProjectionRejected.message().into(),
+                ));
             };
             let result_ref = stage_json(
                 journal,
@@ -1469,8 +1466,10 @@ mod tests {
             selected_context: None,
             max_steps: 2,
         };
-        let mut narrow = Limits::default();
-        narrow.model_steps = 1;
+        let narrow = Limits {
+            model_steps: 1,
+            ..Limits::default()
+        };
         assert!(matches!(
             base.clone()
                 .with_limits(narrow)
@@ -1480,8 +1479,10 @@ mod tests {
         ));
         assert_eq!(model.calls.load(Ordering::SeqCst), 0);
         let _ = base.execute(input.clone(), &journal).await?;
-        let mut changed = Limits::default();
-        changed.model_steps = 3;
+        let changed = Limits {
+            model_steps: 3,
+            ..Limits::default()
+        };
         assert!(matches!(
             base.with_limits(changed).execute(input, &journal).await,
             Err(Error::Conflict(_))

@@ -24,6 +24,7 @@ $install = @"
 rustup toolchain install $toolchain --profile minimal --no-self-update --component clippy --component rustfmt
 rustup default $toolchain
 rustup target add aarch64-pc-windows-msvc --toolchain $toolchain
+rustup target add wasm32-unknown-unknown --toolchain $toolchain
 "@
 $unpack = 'cargo fetch --locked'
 

@@ -89,6 +89,7 @@ fn suspension(value: wire::SuspensionPolicy) -> Result<SuspensionPolicy, Provide
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn suspension_bytes(bytes: &[u8]) -> Result<SuspensionPolicy, ProviderError> {
     let value = wire::SuspensionPolicy::decode(bytes)
         .map_err(|_| invalid("suspension protobuf is invalid"))?;
@@ -133,6 +134,7 @@ fn image(value: wire::Image) -> Result<Image, ProviderError> {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn image_bytes(bytes: &[u8]) -> Result<Image, ProviderError> {
     image(wire::Image::decode(bytes).map_err(|_| invalid("image protobuf is invalid"))?)
 }

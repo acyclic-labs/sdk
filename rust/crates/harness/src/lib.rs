@@ -1,4 +1,12 @@
 #![deny(unsafe_code)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::indexing_slicing,
+        clippy::too_many_lines,
+        clippy::cognitive_complexity
+    )
+)]
 #![doc = include_str!("../README.md")]
 
 #[cfg(feature = "host")]

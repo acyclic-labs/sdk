@@ -710,6 +710,10 @@ pub type ContentRef = FileRef;
 /// files; transport and scheduler records carry only the pinned reference.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "keep the public outcome descriptor by value"
+)]
 pub enum TaskOutcomeRecord {
     /// Schema-checked successful result artifact.
     Succeeded {
@@ -1409,9 +1413,11 @@ mod tests {
     #[test]
     fn configured_limits_reject_oversized_references() -> Result<()> {
         let file = file(AgentId::new(), "message.txt")?;
-        let mut limits = Limits::default();
-        limits.file_bytes = 4;
-        limits.render_bytes = 4;
+        let mut limits = Limits {
+            file_bytes: 4,
+            render_bytes: 4,
+            ..Limits::default()
+        };
         assert!(limits.validate_file(&file).is_err());
         limits.file_bytes = 5;
         limits.validate_file(&file)?;

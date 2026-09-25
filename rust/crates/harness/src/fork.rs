@@ -83,7 +83,10 @@ impl InheritedConversationPrefix {
             parent_agent,
             through_sequence,
             attached_agents: attached_agents.to_vec(),
-            messages: messages[..count].to_vec(),
+            messages: messages
+                .get(..count)
+                .ok_or_else(|| Error::Invalid("inherited prefix exceeds parent history".into()))?
+                .to_vec(),
         })
     }
 
@@ -92,6 +95,10 @@ impl InheritedConversationPrefix {
         crate::contract::canonical_json_bytes(self)
     }
 }
+
+/// Provider-owned asynchronous fence guarding one fork publication.
+pub type ForkFenceFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Box<dyn ForkPublicationGuard>>> + Send + 'a>>;
 
 /// One exact provider's admission barrier for state prepared before publication.
 pub trait ForkSeedVerifier: Send + Sync {
@@ -105,10 +112,7 @@ pub trait ForkSeedVerifier: Send + Sync {
     /// Acquires the child-private provider's durable write fence before any
     /// fork verification reads its mutable head. Only that provider implements
     /// this hook; all other provider verifiers remain read-only.
-    fn acquire_private_fence<'a>(
-        &'a self,
-        _seed: &'a ForkSeed,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn ForkPublicationGuard>>> + Send + 'a>> {
+    fn acquire_private_fence<'a>(&'a self, _seed: &'a ForkSeed) -> ForkFenceFuture<'a> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "fork private publication fence is not bound".into(),
@@ -1020,6 +1024,10 @@ pub struct ForkSeed {
 
 impl ForkSeed {
     /// Prevents private-volume inheritance, duplicate singletons, and malformed refs.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "validates the complete fork seed contract"
+    )]
     pub fn validate(&self) -> Result<()> {
         if self.attached_agents.len() > MAX_FORK_AGENTS
             || self.resources.len().saturating_add(self.omissions.len()) > MAX_FORK_RESOURCES
@@ -1261,7 +1269,7 @@ impl ForkSeed {
     }
 
     /// Exact read capabilities issuable to one attached agent. Possession of a
-    /// FileRef alone never authorizes resolution.
+    /// `FileRef` alone never authorizes resolution.
     pub fn reference_capabilities(&self, reader: AgentId) -> Result<Capabilities> {
         self.validate()?;
         if reader != self.child_agent && !self.attached_agents.contains(&reader) {
@@ -1492,7 +1500,7 @@ mod tests {
             VolumeOwner::Project("project".into()),
         )?;
         let source = ResourceRevision::Project {
-            volume: parent.clone(),
+            volume: parent,
             generation: GenerationRef::new(provider.clone(), [1; 32], None)?,
         };
         let revision = ResourceRevision::Project {
@@ -1721,7 +1729,7 @@ mod tests {
         futures::executor::block_on(verifier.verify(&manifest_seed))?;
         assert_eq!(verified_members.load(Ordering::Relaxed), 2);
         let optional = ResourceRevision::SharedVolume(VolumeRef::new(
-            filesystem.clone(),
+            filesystem,
             "shared",
             VolumeClass::SessionShared,
             VolumeOwner::Session("session".into()),
@@ -1830,9 +1838,8 @@ mod tests {
             )
         );
         assert!(
-            !seed
-                .reference_capabilities(AgentId::from_bytes([7; 16]))
-                .is_ok()
+            seed.reference_capabilities(AgentId::from_bytes([7; 16]))
+                .is_err()
         );
         seed.inherited_context.clear();
         seed.parent_revision += 1;

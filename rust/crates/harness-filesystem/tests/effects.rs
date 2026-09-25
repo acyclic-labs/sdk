@@ -1,4 +1,5 @@
 //! End-to-end ref-only effect intent and result across Filesystem and Stream.
+#![allow(clippy::too_many_lines)]
 
 use acyclic_fs::Fs;
 use acyclic_harness::{

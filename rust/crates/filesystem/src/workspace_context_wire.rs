@@ -58,7 +58,7 @@ fn decode<M: Message + Default>(bytes: &[u8]) -> Result<M, WorkspaceContextWireE
     Ok(value)
 }
 
-fn encode<M: Message>(value: M) -> Result<Vec<u8>, WorkspaceContextWireError> {
+fn encode<M: Message>(value: &M) -> Result<Vec<u8>, WorkspaceContextWireError> {
     let bytes = value.encode_to_vec();
     if bytes.len() > MAXIMUM_CONTEXT_WIRE_BYTES {
         return Err(WorkspaceContextWireError::TooLarge);
@@ -125,11 +125,11 @@ pub fn encode_roots(roots: &[WorkspaceContextRoot]) -> Result<Vec<u8>, Workspace
     ordered.sort_by_key(|root| root.root_id);
     if ordered
         .windows(2)
-        .any(|pair| pair[0].root_id == pair[1].root_id)
+        .any(|pair| matches!(pair, [left, right] if left.root_id == right.root_id))
     {
         return Err(WorkspaceContextWireError::InvalidRecord);
     }
-    encode(wire::WorkspaceContextRoots {
+    encode(&wire::WorkspaceContextRoots {
         roots: ordered
             .into_iter()
             .map(root_to_wire)
@@ -148,7 +148,7 @@ pub fn decode_roots(bytes: &[u8]) -> Result<Vec<WorkspaceContextRoot>, Workspace
     if roots.is_empty()
         || roots
             .windows(2)
-            .any(|pair| pair[0].root_id >= pair[1].root_id)
+            .any(|pair| matches!(pair, [left, right] if left.root_id >= right.root_id))
     {
         return Err(WorkspaceContextWireError::InvalidRecord);
     }
@@ -157,7 +157,7 @@ pub fn decode_roots(bytes: &[u8]) -> Result<Vec<WorkspaceContextRoot>, Workspace
 
 /// Encodes one root binding for adoption.
 pub fn encode_root(root: &WorkspaceContextRoot) -> Result<Vec<u8>, WorkspaceContextWireError> {
-    encode(root_to_wire(root)?)
+    encode(&root_to_wire(root)?)
 }
 
 /// Decodes one root binding for adoption.
@@ -175,7 +175,7 @@ pub fn encode_context(context: &WorkspaceContext) -> Result<Vec<u8>, WorkspaceCo
         WorkspaceContextState::Frozen => wire::WorkspaceContextState::Frozen,
         WorkspaceContextState::Discarded => wire::WorkspaceContextState::Discarded,
     };
-    encode(wire::WorkspaceContextSnapshot {
+    encode(&wire::WorkspaceContextSnapshot {
         version: context.version,
         revision: context.revision,
         context_id: context.context_id.into_bytes().to_vec(),
@@ -236,7 +236,7 @@ pub fn encode_discard(ids: &[WorkspaceContextId]) -> Result<Vec<u8>, WorkspaceCo
     if ids.is_empty() || unique.len() != ids.len() {
         return Err(WorkspaceContextWireError::InvalidRecord);
     }
-    encode(wire::WorkspaceContextDiscard {
+    encode(&wire::WorkspaceContextDiscard {
         context_ids: ids.iter().map(|id| id.into_bytes().to_vec()).collect(),
     })
 }

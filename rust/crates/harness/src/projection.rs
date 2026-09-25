@@ -78,6 +78,10 @@ impl SelectedModelContext {
 
 /// Selects a bounded ordered subset. Text and attachments stay as refs;
 /// structured tool artifacts are resolved only within the render bound.
+#[allow(
+    clippy::too_many_lines,
+    reason = "projection enforces one bounded ordered selection"
+)]
 pub async fn select_model_context<R: AttachmentListResolver + ?Sized>(
     conversation: &ConversationState,
     selection: ModelContextSelection,

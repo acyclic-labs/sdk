@@ -44,7 +44,9 @@ fn listing_deadline() -> ListingDeadline {
     }
     #[cfg(target_arch = "wasm32")]
     {
-        js_sys::Date::now() + Duration::from_secs(limits::LISTING_VIEW_SECONDS).as_millis() as f64
+        let millis = Duration::from_secs(limits::LISTING_VIEW_SECONDS).as_millis();
+        js_sys::Date::now()
+            + f64::from(u32::try_from(millis).expect("listing lifetime fits in u32 milliseconds"))
     }
 }
 

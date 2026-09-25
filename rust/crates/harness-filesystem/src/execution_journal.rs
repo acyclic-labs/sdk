@@ -137,6 +137,10 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     }
 
     /// Resolves through the conversation-owned ledger with an exact responder grant.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered interaction resolution transaction"
+    )]
     pub async fn resolve_interaction(
         &self,
         id: InteractionId,
@@ -167,47 +171,48 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .await?
             .ok_or_else(|| Error::Storage("admitted interaction has no request".into()))?;
         request.validate_response(&response)?;
-        if let Some(previous) = &prior {
-            if previous.outcome.is_terminal() {
-                let same = match (&previous.outcome, &response) {
-                    (
-                        InteractionOutcome::Approved,
-                        InteractionResponse::Approval { approved: true, .. },
-                    )
-                    | (
-                        InteractionOutcome::Declined,
-                        InteractionResponse::Approval {
-                            approved: false, ..
-                        },
-                    ) => {
-                        let bytes = self
-                            .interactions
-                            .read_decision_detail(id)
-                            .await?
-                            .ok_or_else(|| {
-                                Error::Storage("admitted approval detail is missing".into())
-                            })?;
-                        let original: InteractionResponse = serde_json::from_slice(&bytes)
-                            .map_err(|error| Error::Storage(error.to_string()))?;
-                        original == response
-                    }
-                    (InteractionOutcome::Answered { .. }, _) => {
-                        let bytes =
-                            self.interactions.read_answer(id).await?.ok_or_else(|| {
-                                Error::Storage("admitted answer is missing".into())
-                            })?;
-                        let original: InteractionResponse = serde_json::from_slice(&bytes)
-                            .map_err(|error| Error::Storage(error.to_string()))?;
-                        original == response
-                    }
-                    _ => false,
-                };
-                return if same {
-                    Ok(())
-                } else {
-                    Err(Error::Conflict("interaction was already resolved".into()))
-                };
-            }
+        if let Some(previous) = &prior
+            && previous.outcome.is_terminal()
+        {
+            let same = match (&previous.outcome, &response) {
+                (
+                    InteractionOutcome::Approved,
+                    InteractionResponse::Approval { approved: true, .. },
+                )
+                | (
+                    InteractionOutcome::Declined,
+                    InteractionResponse::Approval {
+                        approved: false, ..
+                    },
+                ) => {
+                    let bytes = self
+                        .interactions
+                        .read_decision_detail(id)
+                        .await?
+                        .ok_or_else(|| {
+                            Error::Storage("admitted approval detail is missing".into())
+                        })?;
+                    let original: InteractionResponse = serde_json::from_slice(&bytes)
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    original == response
+                }
+                (InteractionOutcome::Answered { .. }, _) => {
+                    let bytes = self
+                        .interactions
+                        .read_answer(id)
+                        .await?
+                        .ok_or_else(|| Error::Storage("admitted answer is missing".into()))?;
+                    let original: InteractionResponse = serde_json::from_slice(&bytes)
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    original == response
+                }
+                _ => false,
+            };
+            return if same {
+                Ok(())
+            } else {
+                Err(Error::Conflict("interaction was already resolved".into()))
+            };
         }
         let expected_version = prior.map_or(Ok(1_u64), |value| {
             value

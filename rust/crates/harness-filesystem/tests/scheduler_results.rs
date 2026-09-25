@@ -1,4 +1,5 @@
 //! Ref-only scheduler completion and aggregate publication against real providers.
+#![allow(clippy::too_many_lines)]
 
 use acyclic_fs::Fs;
 use acyclic_harness::conversation::{
