@@ -9330,12 +9330,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// successful predecessors returns: when the combined mutation fails,
     /// every compiled change is retried alone in order, so one change's
     /// failure never fails another. A change that fails leaves only harmless
-    /// unreferenced staged objects.
+    /// unreferenced staged objects. `budget` bounds each change; the combined
+    /// mutation is bounded by the budgets of the changes it applies.
     ///
     /// # Errors
     ///
-    /// Fails as a whole only once spent work leaves nothing of `budget` or
-    /// overflows; every other failure belongs to its change.
+    /// Fails as a whole only if the group's summed work overflows; every
+    /// other failure, including an exhausted budget, belongs to its change.
     pub async fn apply_group(
         &mut self,
         changes: Vec<GroupedChange>,
@@ -9347,12 +9348,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let mut compiled = Vec::with_capacity(changes.len());
         for change in changes {
             let receipt = self
-                .compile_grouped(
-                    change,
-                    &mut staged_metadata,
-                    remaining(work, budget)?,
-                    cancellation,
-                )
+                .compile_grouped(change, &mut staged_metadata, budget, cancellation)
                 .await;
             compiled.push(match receipt {
                 Ok(receipt) => {
@@ -9365,14 +9361,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 }
             });
         }
-        if compiled.iter().filter(|change| change.is_ok()).count() > 1 {
+        let applicable = compiled.iter().filter(|change| change.is_ok()).count();
+        if applicable > 1 {
             let operations = compiled
                 .iter()
                 .flatten()
                 .flat_map(|(operations, _)| operations.iter().cloned())
                 .collect();
             match self
-                .mutate(operations, remaining(work, budget)?, cancellation)
+                .mutate(operations, group_budget(budget, applicable), cancellation)
                 .await
             {
                 Ok(mutation) => {
@@ -9390,10 +9387,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         for change in compiled {
             let applied = match change {
                 Ok((operations, outcome)) => {
-                    match self
-                        .mutate(operations, remaining(work, budget)?, cancellation)
-                        .await
-                    {
+                    match self.mutate(operations, budget, cancellation).await {
                         Ok(mutation) => {
                             work = add(work, mutation.work)?;
                             Ok(outcome)
@@ -13090,6 +13084,16 @@ fn probe_limits(config: VolumeConfig) -> ProbeLimits {
         maximum_content_payload_bytes: config.limits.maximum_read_bytes,
         maximum_directory_entries: config.limits.maximum_directory_page_entries,
     }
+}
+
+/// The combined bound of `count` changes each bounded by `budget`.
+fn group_budget(budget: WorkBudget, count: usize) -> WorkBudget {
+    let count = u64::try_from(count).unwrap_or(u64::MAX);
+    let mut total = (1..count).fold(budget, |total, _| {
+        total.checked_add(budget).unwrap_or(WorkBudget::UNBOUNDED)
+    });
+    total.peak_allocation_bytes = budget.peak_allocation_bytes.saturating_mul(count);
+    total
 }
 
 fn empty_metadata() -> FileMetadata {

@@ -11370,3 +11370,68 @@ fn repeated_lookups_observe_the_base_once_and_still_conflict()
     assert!(matches!(rebase.value, RebaseDecision::Conflicted { .. }));
     Ok(())
 }
+
+#[test]
+fn each_grouped_change_has_its_own_budget() -> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([161; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let mut checkout = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("checkout blocked")??
+    .value;
+    let mut files = Vec::new();
+    for (index, name) in ["one", "two", "three", "four"].into_iter().enumerate() {
+        let file_id = poll_ready(checkout.create_file(
+            path(name)?,
+            Bytes::from(vec![u8::try_from(index)?; 16]),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("seed create blocked")??
+        .value;
+        files.push(file_id);
+    }
+    let write = |file_id: FileId, fill: u8| GroupedChange::Content {
+        file_id,
+        change: ContentChange::Write {
+            offset: 0,
+            bytes: Bytes::from(vec![fill; 4_096]),
+        },
+        times: ContentTimes::Preserve,
+    };
+    let single = poll_ready(checkout.apply_group(
+        vec![write(files[0], 1)],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("single group blocked")??;
+    assert!(single.value.iter().all(Result::is_ok));
+    // Enough for any one change, far from enough for three sharing it.
+    let mut budget = WorkBudget::UNBOUNDED;
+    budget.bytes_hashed = single.work.bytes_hashed * 3 / 2;
+    let group = poll_ready(checkout.apply_group(
+        vec![write(files[1], 2), write(files[2], 3), write(files[3], 4)],
+        budget,
+        &cancellation,
+    ))
+    .ok_or("group blocked")??;
+    assert!(
+        group.value.iter().all(Result::is_ok),
+        "a change failed on its neighbours' work: {:?}",
+        group.value
+    );
+    assert!(group.work.bytes_hashed > budget.bytes_hashed);
+    Ok(())
+}
