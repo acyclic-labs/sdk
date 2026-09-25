@@ -197,18 +197,25 @@ fn verify_receipt(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         option(args, "--require-kind").ok_or("--verify-receipt requires --require-kind")?;
     let release_version =
         option(args, "--release-version").ok_or("--verify-receipt requires --release-version")?;
+    let expected_arch =
+        option(args, "--release-arch").ok_or("--verify-receipt requires --release-arch")?;
     let (expected_os, provider_process_io_observable) = match required_kind.as_str() {
         "linux-fuse" => ("linux", true),
         "macos-nfs" => ("macos", true),
         "windows-projfs" => ("windows", false),
         _ => return Err(format!("unsupported receipt backend: {required_kind}").into()),
     };
-    let expected_arch = std::env::consts::ARCH;
     let report: ReceiptReport = serde_json::from_slice(&fs::read(receipt_path)?)?;
     let digest = file_blake3(&executable)?;
+    if report.arch != expected_arch {
+        return Err(format!(
+            "native mount receipt architecture {} does not match release target {expected_arch}",
+            report.arch
+        )
+        .into());
+    }
     if report.schema != "acyclic-native-mount-qualification-v2"
         || report.os != expected_os
-        || report.arch != expected_arch
         || !report
             .coverage
             .iter()

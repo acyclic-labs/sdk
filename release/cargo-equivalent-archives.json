@@ -3,9 +3,17 @@
     "checksum": "57a2658416db98bfcbe461b0f6f0f51b2cd3482896aeab4b22f7731c8e3119ce",
     "sourceSha": "166ef038c420afb6eefbdc39339fef69ef62e21f"
   },
+  "acyclic-inference@0.1.2": {
+    "checksum": "3560bc16ea4688523c9b77a50288c328fb843e6fe0b7d3becc6d0ba44ae20047",
+    "sourceSha": "eed25e744be0b4d567b2a7dc85c74de30b231548"
+  },
   "acyclic-machines@0.1.0": {
     "checksum": "3b4027246db57b514eaa5557e294de979864519b2231357d7c3042a86349ef05",
     "sourceSha": "166ef038c420afb6eefbdc39339fef69ef62e21f"
+  },
+  "acyclic-machines@0.1.2": {
+    "checksum": "e36d1a23b7872c51a10e558b120234d846db481c5139eebca478c24abedaad1e",
+    "sourceSha": "eed25e744be0b4d567b2a7dc85c74de30b231548"
   },
   "acyclic-native-runtime@0.1.0": {
     "checksum": "3086b4b9c12472c6f49daeb4b653d700b21cbb2d2c2ac553e3d35deba28b330b",
